@@ -592,10 +592,11 @@ impl<'a> DefaultPackageManager<'a> {
 
     async fn git_update_target(&self, target: &str) -> PackageResult<(Vec<String>, String)> {
         let upstream = self.run("git", vec!["rev-parse".into(), "--abbrev-ref".into(), "@{upstream}".into()], Some(target), true).await;
-        if let Ok(upstream) = upstream && let Some(branch) = upstream.trim().strip_prefix("origin/").filter(|branch| !branch.is_empty()) {
-            if self.run("git", vec!["rev-parse".into(), "@{upstream}".into()], Some(target), true).await.is_ok() {
-                return Ok((vec!["fetch".into(), "--prune".into(), "--no-tags".into(), "origin".into(), format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")], "@{upstream}".into()));
-            }
+        if let Ok(upstream) = upstream
+            && let Some(branch) = upstream.trim().strip_prefix("origin/").filter(|branch| !branch.is_empty())
+            && self.run("git", vec!["rev-parse".into(), "@{upstream}".into()], Some(target), true).await.is_ok()
+        {
+            return Ok((vec!["fetch".into(), "--prune".into(), "--no-tags".into(), "origin".into(), format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")], "@{upstream}".into()));
         }
         if let Err(error) = self.run("git", vec!["remote".into(), "set-head".into(), "origin".into(), "-a".into()], Some(target), false).await { eprintln!("Failed to refresh origin HEAD: {error}"); }
         self.run("git", vec!["rev-parse".into(), "origin/HEAD".into()], Some(target), true).await?;

@@ -496,6 +496,7 @@ pub struct AgentSessionInner {
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
+    settling_with_background_work: std::sync::atomic::AtomicBool,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
@@ -509,6 +510,14 @@ pub struct AgentSessionInner {
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
+
+/// Restores the ctx idle gate's settling flag on every exit path, matching senpi's `finally` in
+/// `_emitAgentSettled` (`agent-session.ts:1905`) so a dropped or cancelled settlement future
+/// cannot leave the session permanently reported as settling.
+struct SettlingBackgroundWorkGuard<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for SettlingBackgroundWorkGuard<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+}
 
 struct ExtensionSessionManagerView {
     session: std::sync::Weak<AgentSessionInner>,
@@ -765,7 +774,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_scoped_models(&self) -> Vec<maho_ext_api::ScopedModel> { self.session().map_or_else(|_| Vec::new(), |session| session.scoped_models().into_iter().map(|model|
         maho_ext_api::ScopedModel { model: model.model, thinking_level: model.thinking_level, service_tier: model.service_tier }).collect()) }
     fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
-    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.work_barrier.has_active_work()) }
+    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.settling_with_background_work.load(Ordering::SeqCst)) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok().or_else(|| self.session().ok()?.state().extension_event_signal.clone()) }
     fn get_compaction_preparation(&self) -> Option<maho_ext_api::CompactionPreparationDetails> { EXTENSION_COMPACTION_PREPARATION.try_with(Clone::clone).ok() }
@@ -1019,7 +1028,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         }
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
-        if let Some(session) = self.session().ok() {
+        if let Ok(session) = self.session() {
             let cwd = session.cwd();
             let state = session.state();
             if let Some(mut sources) = state.loaded_hook_sources.clone() {
@@ -1579,6 +1588,7 @@ impl AgentSession {
             binding_readiness: Mutex::new(None),
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
+            settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
             wake_source_subscription: Mutex::new(None),
             settings_source_subscription: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
@@ -4914,6 +4924,10 @@ impl AgentSession {
                         let previous = previous_payload.clone();
                         let weak = payload_session.clone();
                         Box::pin(async move {
+                            // The event carries the resolved request model. The direct API lanes pass it
+                            // as `model` and leave `metadata` unset, so fall back to it rather than
+                            // dropping the model when only the metadata is absent.
+                            let event_model = metadata.as_ref().map(|request| request.model.clone()).unwrap_or_else(|| model.clone());
                             let payload = match previous {
                                 Some(previous) => previous(payload.clone(), model, metadata.clone()).await?.unwrap_or(payload),
                                 None => payload,
@@ -4922,7 +4936,7 @@ impl AgentSession {
                             let runner = AgentSession { inner }.extension_runner.lock().await.clone();
                             match runner {
                                 Some(mut runner) => runner.emit_before_provider_request_with_metadata(payload,
-                                    metadata.as_ref().map(|request| request.model.clone()),
+                                    Some(event_model),
                                     metadata.map(|request| request.headers), None).await.map(Some).map_err(|error| error.message),
                                 None => Ok(Some(payload)),
                             }
@@ -5127,11 +5141,17 @@ impl AgentSession {
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
         let epoch = self.settlement_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.settled_delivery).begin(generation);
+        // Match senpi's _settlingWithBackgroundWork (agent-session.ts:1896/1905): the ctx idle gate
+        // reports busy for the agent_settled window only while background wake sources are active,
+        // and the flag is restored on every exit path via the guard, as senpi does in its `finally`.
+        self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
+        let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
         self.emit_late_user_abort().await;
         self.state().abort_provenance.close_agent_end_boundary();
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
+        drop(settling);
         for action in batch.actions { action(); }
         let session = self.clone();
         tokio::spawn(async move {

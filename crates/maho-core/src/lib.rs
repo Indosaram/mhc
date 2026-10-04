@@ -132,6 +132,20 @@ pub mod tool_call_display_name;
 pub mod usage_totals;
 pub mod export_html;
 
+/// Test-only helpers shared by maho-core's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// A temp root created outside the real HOME so the ancestor walks that read project
+    /// context files, the nearest parent config dir and project trust never escape into the
+    /// developer's home directory. `tempfile`'s default honours `TMPDIR`, which a verification
+    /// harness may point inside HOME; anchoring on `/tmp` keeps every ancestor marker-free.
+    pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("maho-core-isolated-")
+            .tempdir_in("/tmp")
+            .expect("isolated temp root under /tmp")
+    }
+}
 
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};

@@ -508,7 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_session_preserves_custom_tools_and_auto_title_selection() {
-        let dir = tempfile::tempdir().expect("directory");
+        let dir = crate::test_support::isolated_tempdir();
         let cwd = dir.path().to_string_lossy().into_owned();
         let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
         let services = crate::agent_session_services::create_agent_session_services(
