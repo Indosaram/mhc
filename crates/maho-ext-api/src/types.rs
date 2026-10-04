@@ -130,6 +130,53 @@ impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
     }
 }
 
+/// Object-safe, `Send+Sync` view over a registered typed renderer set. The generic parameters are
+/// erased at registration time so a host can render any card by tool name with JSON args and no
+/// type parameters.
+pub trait ErasedToolRenderers: Send + Sync {
+    fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>>;
+    fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>>;
+}
+struct TypedErasedToolRenderers<TState, TArgs> {
+    renderers: Arc<ToolRenderers<TState, TArgs>>,
+    state: Mutex<Option<TState>>,
+    cwd: PathBuf,
+}
+fn erased_render_context<TState, TArgs>(args: TArgs, state: TState, cwd: PathBuf) -> ToolRenderContext<TState, TArgs> {
+    ToolRenderContext { args, tool_call_id: String::new(), invalidate: std::rc::Rc::new(|| {}), last_component: None, state, cwd,
+        execution_started: false, args_complete: true, is_partial: false, expanded: false, show_images: false,
+        image_protocol: None, is_error: false, has_result: None, spinner_frame: None }
+}
+impl<TState, TArgs> ErasedToolRenderers for TypedErasedToolRenderers<TState, TArgs>
+where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static {
+    fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_call.as_ref()?;
+        let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
+        let mut component = renderer(&typed, theme, &mut context);
+        let lines = component.render(width);
+        *state = Some(context.state);
+        Some(lines)
+    }
+    fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_result.as_ref()?;
+        let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
+        let options = ToolRenderResultOptions { expanded: context.expanded, is_partial: context.is_partial };
+        let mut component = renderer(result, options, theme, &mut context);
+        let lines = component.render(width);
+        *state = Some(context.state);
+        Some(lines)
+    }
+}
+/// Erases the generic parameters of a typed renderer set into a `Send+Sync` handle.
+pub fn erase_tool_renderers<TState, TArgs>(renderers: Arc<ToolRenderers<TState, TArgs>>, cwd: PathBuf) -> Arc<dyn ErasedToolRenderers>
+where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static {
+    Arc::new(TypedErasedToolRenderers { renderers, state: Mutex::new(None), cwd })
+}
+
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone)]
@@ -287,6 +334,20 @@ pub struct ResourcesDiscoverResult { pub skill_paths: Vec<ResourceDiscoverEntry>
 pub struct DiscoveredResources { pub skill_paths: Vec<DiscoveredResourceEntry>, pub prompt_paths: Vec<DiscoveredResourceEntry>, pub theme_paths: Vec<DiscoveredResourceEntry>, pub hook_paths: Vec<DiscoveredResourceEntry> }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Theme { pub name: Option<String>, pub colors: BTreeMap<String, String>, pub backgrounds: BTreeMap<String, String>, pub vars: BTreeMap<String, String> }
+impl Theme {
+    /// senpi's guest `Theme.fg(color, text)`: prefix the text with the named color's exported ANSI
+    /// prefix and reset the foreground after it.
+    pub fn fg(&self, color: &str, text: &str) -> String {
+        let prefix = self.colors.get(color).map(String::as_str).unwrap_or("\u{1b}[39m");
+        format!("{prefix}{text}\u{1b}[39m")
+    }
+    /// senpi's guest `Theme.bg(color, text)`: prefix the text with the named background's exported
+    /// ANSI prefix and reset the background after it.
+    pub fn bg(&self, color: &str, text: &str) -> String {
+        let prefix = self.backgrounds.get(color).map(String::as_str).unwrap_or("\u{1b}[49m");
+        format!("{prefix}{text}\u{1b}[49m")
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLevel>, pub service_tier: Option<ServiceTier> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -705,6 +766,9 @@ impl ExtensionContext {
     pub fn current_steering_signal(&self) -> Result<Option<AbortSignal>, ExtensionFailure> {
         Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_steering_signal() }, None => self.steering_signal.clone() })
     }
+    pub fn current_thinking_level(&self) -> Result<Option<ThinkingLevel>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_thinking_level() }, None => self.thinking_level })
+    }
     pub fn current_model_registry(&self) -> Result<Arc<dyn ModelRegistry>, ExtensionFailure> {
         if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
         Ok(Arc::clone(&self.model_registry))
@@ -773,6 +837,7 @@ impl ToolContext for ExtensionContext {
     fn thinking_level(&self) -> Option<ThinkingLevel> { self.assert_active_or_panic(); self.thinking_level }
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { self.current_steering_signal().ok().flatten() }
     fn take_approved_monitor_parent(
         &self, tool_call_id: &str, input: &JsonValue,
     ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {
@@ -1333,6 +1398,7 @@ pub struct LoadedExtension {
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
     pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
     pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
+    pub erased_tool_renderers: BTreeMap<String, Arc<dyn ErasedToolRenderers>>,
     pub config_watch_registrations: Vec<RegisteredConfigWatch>,
 }
 impl LoadedExtension {
@@ -1340,7 +1406,7 @@ impl LoadedExtension {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new() }
     }
 }
 #[derive(Clone, Default)]
@@ -1364,6 +1430,7 @@ struct RuntimeState {
     live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
     live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
+    live_erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>,
     extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
@@ -1443,7 +1510,7 @@ impl ExtensionRuntime {
         state.live_shortcuts.clear();
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
-        state.live_tools.clear(); state.live_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.live_tools.clear(); state.live_tool_renderers.clear(); state.live_erased_tool_renderers.clear(); state.extension_tool_executors.clear();
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
@@ -1513,6 +1580,9 @@ impl ExtensionRuntime {
     }
     pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
+    }
+    pub fn live_erased_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn ErasedToolRenderers>>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_erased_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
     }
     pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
         let execute = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()?;
@@ -1699,10 +1769,12 @@ impl ExtensionApi {
             })
         }))
     }
-    pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
+    pub fn register_tool_with_renderers<TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
         let name = definition.name.clone();
         self.try_register_tool(definition)?;
-        self.registered.tool_renderers.insert(name, Arc::new(renderers));
+        let renderers = Arc::new(renderers);
+        self.registered.erased_tool_renderers.insert(name.clone(), erase_tool_renderers(Arc::clone(&renderers), self.cwd.clone()));
+        self.registered.tool_renderers.insert(name, renderers);
         self.publish_tools();
         Ok(())
     }
@@ -1722,6 +1794,7 @@ impl ExtensionApi {
         else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.remove(&key); }
         drop(pending);
         self.registered.tool_renderers.remove(&definition.name);
+        self.registered.erased_tool_renderers.remove(&definition.name);
         let tool = RegisteredTool { definition, source_info };
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
@@ -1734,6 +1807,7 @@ impl ExtensionApi {
             let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
+            state.live_erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
         }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
@@ -1753,6 +1827,15 @@ impl ExtensionApi {
     }
     pub fn register_command_with_completions(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler, completions: CommandArgumentCompletions) {
         self.register_command(name, description, argument_hint, handler);
+        self.registered.command_argument_completions.insert(name.into(), completions);
+        self.publish_commands();
+    }
+    /// Registers a command carrying BOTH a command-context handler and argument completions in one
+    /// call: `register_command_with_context` and `register_command_with_completions` each clear the
+    /// other half via `register_command`, so this installs both without clearing either.
+    pub fn register_command_with_context_and_completions(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler, completions: CommandArgumentCompletions) {
+        self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
+        self.registered.command_context_handlers.insert(name.into(), handler);
         self.registered.command_argument_completions.insert(name.into(), completions);
         self.publish_commands();
     }

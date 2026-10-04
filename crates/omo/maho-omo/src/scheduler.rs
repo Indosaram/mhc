@@ -204,7 +204,7 @@ async fn drain(inner: Arc<Inner>) {
         let batch: Vec<DeferredTask> = {
             let mut pending = inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
             if pending.is_empty() {
-                inner.draining.store(false, Ordering::AcqRel);
+                inner.draining.store(false, Ordering::Release);
                 return;
             }
             pending.drain(..).collect()

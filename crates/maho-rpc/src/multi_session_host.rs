@@ -76,7 +76,7 @@ impl HostCore{
                 let argv=std::env::args().skip(2).collect::<Vec<_>>();
                 let mut data=crate::protocol_identity::host_launch_profile(&argv,&self.options.cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&std::env::vars().collect()));
                 data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
-                data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.into();
+                data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
                 data["capabilities"]=serde_json::json!(self.options.capabilities);
                 data["mode"]="multi".into();
                 self.success(connection,command.id.clone(),"get_protocol_info",Some(data),None);
@@ -86,9 +86,9 @@ impl HostCore{
                 let sessions=self.registry.lock().await.list_sessions(include_workers.unwrap_or(false));
                 self.success(connection,command.id.clone(),"list_sessions",Some(serde_json::json!({"sessions":sessions})),None);
             },
-            crate::rpc_types::RpcCommandBody::OpenSession{ref session_path,ref cwd,ref provider,ref model_id,ref thinking_level,ref permission_preset,retain_on_disconnect,ref kind,ref context,auto_title,ref durable_session_id}=>{
+            crate::rpc_types::RpcCommandBody::OpenSession{session_path,cwd,provider,model_id,thinking_level,permission_preset,retain_on_disconnect,kind,context,auto_title,durable_session_id}=>{
                 let profile=crate::session_registry::RpcSessionLaunchProfile{
-                    runtime:maho_core::agent_session_runtime::AgentSessionLaunchProfile{cwd:cwd.clone().unwrap_or_else(||self.options.cwd.clone()),permission_preset:permission_preset.clone(),creation_model:provider.clone().zip(model_id.clone()),initial_thinking_level:thinking_level.clone(),auto_title},
+                    runtime:maho_core::agent_session_runtime::AgentSessionLaunchProfile{cwd:cwd.clone().unwrap_or_else(||self.options.cwd.clone()),permission_preset:permission_preset.clone(),creation_model:provider.clone().zip(model_id.clone()),initial_thinking_level:thinking_level.clone(),auto_title:*auto_title},
                     session_path:session_path.clone(),durable_session_id:durable_session_id.clone(),
                     session_kind:kind.map(|kind|match kind{crate::rpc_types::SessionKind::Worker=>maho_ext_api::SessionKind::Worker,crate::rpc_types::SessionKind::Interactive=>maho_ext_api::SessionKind::Interactive}),
                     session_context:context.clone(),

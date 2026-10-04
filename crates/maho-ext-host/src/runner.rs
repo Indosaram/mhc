@@ -524,6 +524,17 @@ impl ExtensionRunner {
         let selected = selected?;
         self.runtime.live_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.tool_renderers.get(name).cloned())?.downcast::<ToolRenderers<TState, TArgs>>().ok()
     }
+    /// The object-safe erased renderer set for a tool name, over the same canonical per-name
+    /// selection as [`Self::get_tool_renderers`].
+    pub fn get_erased_tool_renderers(&self, name: &str) -> Option<Arc<dyn ErasedToolRenderers>> {
+        let mut selected: Option<&LoadedExtension> = None;
+        for extension in &self.extensions {
+            if self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).iter().any(|tool| tool.definition.name == name)
+                && selected.is_none_or(|current| current.source_info.source == "builtin" && extension.source_info.source != "builtin") { selected = Some(extension); }
+        }
+        let selected = selected?;
+        self.runtime.live_erased_tool_renderer(&selected.identity.path, name).unwrap_or_else(|| selected.erased_tool_renderers.get(name).cloned())
+    }
     pub fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<ToolRenderers<TState, TArgs>>> {
         self.get_all_registered_tools().into_iter().filter_map(|tool| {
             self.get_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers))

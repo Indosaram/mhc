@@ -281,7 +281,7 @@ struct ConfigSettings {
 }
 impl ConfigSettings {
     fn write(&mut self, scope: maho_core::settings_manager::SettingsScope, key: &str, value: serde_json::Value) {
-        if let Err(error) = self.settings.set(scope, &maho_core::settings_manager::Settings::from([(key.into(), value)])) {
+        if let Err(error) = self.settings.set(scope, &maho_core::settings_manager::Settings::from(serde_json::Map::from_iter([(key.into(), value)]))) {
             *self.error.borrow_mut() = Some(error);
         }
     }

@@ -27,7 +27,7 @@ pub enum WarmPromptCacheResult {
 
 pub type WarmPromptCacheOptions = StreamOptions;
 pub type BuildWarmPromptCacheParams<'a> =
-    &'a dyn Fn(&Model, &Context, &StreamOptions) -> Result<Value, String>;
+    &'a (dyn Fn(&Model, &Context, &StreamOptions) -> Result<Value, String> + Send + Sync);
 
 pub async fn warm_prompt_cache(
     model: &Model,

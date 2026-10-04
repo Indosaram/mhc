@@ -31,7 +31,7 @@ pub struct ForkOutcome {
     pub editor_text: Option<String>,
 }
 
-pub trait InteractiveSession {
+pub trait InteractiveSession: Send + Sync {
     fn session_id(&self) -> Option<String>;
     fn session_file(&self) -> Option<String>;
     fn cwd(&self) -> String;
@@ -269,35 +269,35 @@ impl InteractiveSession for RemoteInteractiveRuntime {
     }
 
     fn prompt(&self, message: String, options: maho_core::agent_session::PromptOptions) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::prompt(self, &message, prompt_options_to_wire(&options)).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().prompt(&message, prompt_options_to_wire(&options)).await.map_err(|error| error.to_string()) })
     }
 
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::abort(self).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().abort().await.map_err(|error| error.to_string()) })
     }
 
     fn steer(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::steer(self, &text, None, None).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().steer(&text, None, None).await.map_err(|error| error.to_string()) })
     }
 
     fn follow_up(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::follow_up(self, &text, None, None).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().follow_up(&text, None, None).await.map_err(|error| error.to_string()) })
     }
 
     fn compact(&self, instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::compact(self, instructions.as_deref()).await.map(|_| ()).map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().compact(instructions.as_deref()).await.map(|_| ()).map_err(|error| error.to_string()) })
     }
 
     fn navigate_tree(&self, entry_id: String, options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> {
-        Box::pin(async move { Ok(assistant_edit_result_from_wire(&RemoteInteractiveRuntime::navigate_tree(self, &entry_id, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
+        Box::pin(async move { Ok(assistant_edit_result_from_wire(&self.proxy().navigate_tree(&entry_id, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
     }
 
     fn edit_assistant_message(&self, entry_id: String, text: String, options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> {
-        Box::pin(async move { Ok(assistant_edit_result_from_wire(&RemoteInteractiveRuntime::edit_assistant_message(self, &entry_id, &text, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
+        Box::pin(async move { Ok(assistant_edit_result_from_wire(&self.proxy().edit_assistant_message(&entry_id, &text, tree_options_to_wire(&options)).await.map_err(|error| error.to_string())?)) })
     }
 
     fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::reload(self).await.map(|value| value.get("cancelled").and_then(serde_json::Value::as_bool) != Some(true)).map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().reload().await.map(|value| value.get("cancelled").and_then(serde_json::Value::as_bool) != Some(true)).map_err(|error| error.to_string()) })
     }
 
     fn fire_clear_queue(&self, abort_will_follow: bool) {
@@ -305,28 +305,28 @@ impl InteractiveSession for RemoteInteractiveRuntime {
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::bash(self, &command, serde_json::json!({"excludeFromContext": exclude_from_context})).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().bash(&command, serde_json::json!({"excludeFromContext": exclude_from_context})).await.map_err(|error| error.to_string()) })
     }
 
     fn set_model(&self, provider: String, id: String) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::set_model(self, &provider, &id).await.map(|_| ()).map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().set_model(&provider, &id).await.map(|_| ()).map_err(|error| error.to_string()) })
     }
 
     fn set_session_name(&self, name: String) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::set_session_name(self, &name).await.map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().set_session_name(&name).await.map_err(|error| error.to_string()) })
     }
 
     fn set_session_thinking_level(&self, level: String) -> SessionFuture<'_, Result<(), String>> {
-        Box::pin(async move { RemoteInteractiveRuntime::set_thinking_level(self, &level, Some("turn")).await.map(|_| ()).map_err(|error| error.to_string()) })
+        Box::pin(async move { self.proxy().set_thinking_level(&level, Some("turn")).await.map(|_| ()).map_err(|error| error.to_string()) })
     }
 
     fn cycle_thinking_level(&self) -> SessionFuture<'_, Result<Option<String>, String>> {
-        Box::pin(async move { Ok(RemoteInteractiveRuntime::cycle_thinking_level(self).await.map_err(|error| error.to_string())?.get("level").and_then(serde_json::Value::as_str).map(str::to_owned)) })
+        Box::pin(async move { Ok(self.proxy().cycle_thinking_level().await.map_err(|error| error.to_string())?.get("level").and_then(serde_json::Value::as_str).map(str::to_owned)) })
     }
 
     fn cycle_model(&self, forward: bool) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move {
-            let value = RemoteInteractiveRuntime::cycle_model(self, if forward { "forward" } else { "backward" }).await.map_err(|error| error.to_string())?;
+            let value = self.proxy().cycle_model(if forward { "forward" } else { "backward" }).await.map_err(|error| error.to_string())?;
             Ok(value.get("model").and_then(|model| model.get("name")).and_then(serde_json::Value::as_str).map(str::to_owned))
         })
     }
@@ -336,7 +336,7 @@ impl InteractiveSession for RemoteInteractiveRuntime {
     }
 
     fn export_jsonl(&self, output_path: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
-        Box::pin(async move { Ok(RemoteInteractiveRuntime::export_jsonl(self, output_path.as_deref()).await.map_err(|error| error.to_string())?.get("path").and_then(serde_json::Value::as_str).map(str::to_owned)) })
+        Box::pin(async move { Ok(self.proxy().export_jsonl(output_path.as_deref()).await.map_err(|error| error.to_string())?.get("path").and_then(serde_json::Value::as_str).map(str::to_owned)) })
     }
 
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {

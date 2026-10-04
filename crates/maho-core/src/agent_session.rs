@@ -299,7 +299,7 @@ pub struct SessionStatsTokens {
     pub total: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionStats {
     pub session_file: Option<String>,
     pub session_id: String,
@@ -3379,20 +3379,22 @@ impl AgentSession {
         Ok(())
     }
     pub fn admit_sdk_model(&self, resumed: bool) -> Result<(), String> {
-        let Some(model) = self.model() else { return Ok(()); };
-        let live = if resumed { self.agent.messages().iter().map(crate::compaction::compaction::estimate_tokens).sum() } else { 0 };
+        let model = self.model();
+        if model.context_window == 0 { return Ok(()); }
+        let live = if resumed { self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter().map(crate::compaction::compaction::estimate_tokens).sum() } else { 0 };
         let (budget, reducible) = self.model_budget(&model, live, !resumed)?;
         let admission = if resumed { "resume" } else { "start" };
         if budget.required_tokens <= budget.context_window { return Ok(()); }
         if !resumed || !reducible {
-            return Err(crate::model_selector::ModelUsabilityBudgetError::new(budget, crate::model_selector::ModelUsabilityBudgetErrorOptions {
-                provider: Some(model.provider), model_id: Some(model.id), admission: Some(admission.into()),
-            }).to_string());
+            return Err(format!(
+                "Model \"{}/{}\" cannot {}: context window {} tokens is {} tokens short of the {}-token requirement.",
+                model.provider, model.id, admission, budget.context_window, budget.shortfall_tokens, budget.required_tokens,
+            ));
         }
         let after = self.reduce_for_switch_target(&model, live)?;
         if after == live {
-            self.state().pending_model_switch = Some(PendingModelSwitch { model, live_context_tokens_before: live,
-                persist_default: false, notice: "Resume compaction required before the first provider request".into() });
+            self.state().pending_model_switch = Some(PendingModelSwitch { model, budget, persist_default: false,
+                notice: "Resume compaction required before the first provider request".into() });
         }
         Ok(())
     }
@@ -3705,6 +3707,20 @@ impl AgentSession {
 
     pub async fn native_tool_renderers_snapshot<TState: 'static, TArgs: 'static>(&self) -> BTreeMap<String, Arc<maho_ext_api::ToolRenderers<TState, TArgs>>> {
         self.extension_runner.lock().await.as_ref().map(|runner| runner.native_tool_renderers_snapshot()).unwrap_or_default()
+    }
+
+    /// The object-safe erased renderer set for every registered tool, keyed by tool name, over the
+    /// runner's canonical per-name lookup (`get_erased_tool_renderers`). Used by the interactive card
+    /// path to render a registered tool by name without type parameters.
+    pub async fn tool_renderers_snapshot(&self) -> BTreeMap<String, Arc<dyn maho_ext_api::ErasedToolRenderers>> {
+        let guard = self.extension_runner.lock().await;
+        let Some(runner) = guard.as_ref() else { return BTreeMap::new() };
+        let mut snapshot = BTreeMap::new();
+        for registered in runner.get_all_registered_tools() {
+            let name = registered.definition.name.clone();
+            if let Some(renderers) = runner.get_erased_tool_renderers(&name) { snapshot.insert(name, renderers); }
+        }
+        snapshot
     }
 
     pub async fn user_bash_hook(&self, command: &str, exclude_from_context: bool) -> Result<maho_ext_api::EventResult, String> {
@@ -5502,6 +5518,13 @@ impl AgentSession {
 
     pub fn get_follow_up_messages(&self) -> Vec<String> {
         self.state().follow_up_messages.clone()
+    }
+
+    /// senpi's session-state `ordered` projection: the queued inputs sorted by enqueue order.
+    pub fn get_queued_input_order(&self) -> Vec<QueuedInput> {
+        let mut ordered = self.state().queued_input_order.clone();
+        ordered.sort_by_key(|input| input.enqueue_order);
+        ordered
     }
 
     /// Update the global model narrowing.

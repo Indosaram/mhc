@@ -148,14 +148,7 @@ fn rules() -> Box<dyn Extension> {
 /// (`store_ref::goal_store_ref_from_context`).
 fn goal() -> Box<dyn Extension> {
     let reference: maho_ext_goal::accounting_hooks::GoalStoreReference = Arc::new(
-        |context: &maho_ext_api::ExtensionContext| {
-            maho_ext_goal::store_ref::goal_store_ref_from_context(context).unwrap_or_else(|| {
-                maho_ext_goal::GoalStoreRef {
-                    base_dir: context.agent_dir.join("extensions").join("goal"),
-                    thread_id: context.session_manager.session_id().to_owned(),
-                }
-            })
-        },
+        |context: &maho_ext_api::ExtensionContext| maho_ext_goal::store_ref::context_goal_store_ref(context),
     );
     Box::new(maho_ext_goal::GoalExtension::new(reference))
 }

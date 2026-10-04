@@ -21,7 +21,7 @@ pub fn register_hooks_command(api:&mut maho_ext_api::types::ExtensionApi) {
                 let past=match action {HookCommand::Trust(_)=>"Trusted",HookCommand::Disable(_)=>"Disabled",_=>"Enabled"};ctx.ui.notify(&format!("{past} hook: {id}"),NotificationType::Info);
             },_=>{},
         }Ok(())
-    })),Arc::new(|prefix| {let prefix=prefix.to_owned();Box::pin(async move {hook_argument_completions(&prefix).map(|items|items.into_iter().map(|(value,label)|maho_ext_api::types::AutocompleteItem {value:value.to_owned(),label:label.to_owned(),description:None}).collect())})}));
+    })),Arc::new(|prefix| {let prefix=prefix.to_owned();Box::pin(async move {Ok(hook_argument_completions(&prefix).map(|items|items.into_iter().map(|(value,label)|maho_ext_api::types::AutocompleteItem {value:value.to_owned(),label:label.to_owned(),description:None}).collect()))})}));
 }
 fn sanitize_display_text(value:&str)->String {
     let mut text=value.to_owned();

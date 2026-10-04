@@ -61,7 +61,7 @@ impl SourceOrigin {
 }
 
 /// `SourceInfo`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SourceInfo {
     pub path: String,
     pub source: String,

@@ -61,7 +61,7 @@ impl ExtensionUi for HeadlessUi {
     fn theme(&self) -> Theme { Theme::default() }
 }
 
-pub(super) fn create(session: &AgentSession) -> ExtensionContext {
+pub(crate) fn create(session: &AgentSession) -> ExtensionContext {
     let actions = session.extension_context_actions();
     let idle = actions.clone();
     let wait = session.weak_accessor();

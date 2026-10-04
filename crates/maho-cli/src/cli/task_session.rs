@@ -131,9 +131,10 @@ impl ChildSession for NativeChild {
     }
     fn steer(&self, text: &str) -> Result<(), HostError> { self.executor.block_on(self.session.steer(text, None, Default::default())).map_err(|message| HostError { message }) }
     fn follow_up(&self, text: &str) -> Result<(), HostError> { self.executor.block_on(self.session.follow_up(text, None, Default::default())).map_err(|message| HostError { message }) }
-    fn abort(&self) { let session = self.session.clone(); self.executor.spawn(async move { session.abort().await; }); }
+    fn abort(&self) -> Result<(), HostError> { let session = self.session.clone(); self.executor.spawn(async move { session.abort().await; }); Ok(()) }
+    fn get_last_assistant_text(&self) -> Option<String> { self.session.get_last_assistant_text() }
     fn subscribe(&self, listener: ChildSessionListener) -> senpi_task::manager::child_handle::Unsubscribe {
-        let subscription = self.session.subscribe(Arc::new(move |event| { listener(&serde_json::to_value(event).expect("agent event serialization")); }));
+        let subscription = self.session.subscribe(Arc::new(move |event| { listener(&maho_rpc::session_binding::session_event_record(event).unwrap_or(serde_json::Value::Null)); }));
         let session = self.session.clone();
         Box::new(move || { drop(subscription); drop(session); })
     }

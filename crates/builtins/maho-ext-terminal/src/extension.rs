@@ -188,7 +188,8 @@ impl Extension for TerminalExtension {
                     let delivery=crate::notify::get_terminal_notification_delivery(settings.notify,Some(match ctx.mode {maho_ext_api::types::ExtensionMode::Print=>"print",maho_ext_api::types::ExtensionMode::Json=>"json",_=>"interactive"}),ctx.model.is_some(),false);
                     match lifecycle.acquire(&terminal_dir,&encoded,f64::from(std::process::id()),now) {
                         Ok(crate::terminal_state::TerminalStateAdoption::Acquired)=>{
-                            let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.restore_configured(&mut manager,&mut monitors,now,shell.as_deref(),&settings).await};
+                            let restore_state=lifecycle.read_restore_state().await;
+                            let digest={let mut manager=manager.lock().map_err(|_|ExtensionFailure::new("terminal manager state poisoned"))?;let mut monitors=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?;lifecycle.apply_restore(restore_state,&mut manager,&mut monitors,now,shell.as_deref(),&settings)};
                             if let Some(sentence)=restore_digest_sentence(&digest) {send_terminal_reminder(&sender,delivery,&sentence);}
                             *state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?=Some(lifecycle);
                         }

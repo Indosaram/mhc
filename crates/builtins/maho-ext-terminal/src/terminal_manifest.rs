@@ -34,11 +34,27 @@ impl TerminalManifestWriter {
     pub async fn restore_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64)->crate::restore::RestoreDigest {
         self.restore_configured_live(manager,registry,now,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS).await
     }
+    /// Reads and parses the persisted manifest with no locks held, so a caller that owns the
+    /// manager/registry mutexes can acquire them only for the synchronous apply below (a
+    /// `std::sync::MutexGuard` must never be held across this await).
+    #[cfg(unix)]
+    pub async fn read_restore_state(&self) -> std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>, ()> {
+        match self.store.read().await {
+            Ok(None) => Ok(None),
+            Ok(Some(value)) => match crate::restore::parse_terminal_manifest(&value,&self.session_id) { Ok(state)=>Ok(Some(state)),Err(_)=>Err(()) },
+            Err(_) => Err(()),
+        }
+    }
     #[cfg(unix)]
     pub async fn restore_configured_live(&mut self,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
+        let state=self.read_restore_state().await;
+        self.apply_restore_state(state,manager,registry,now,shell,settings)
+    }
+    #[cfg(unix)]
+    pub fn apply_restore_state(&mut self,state:std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>,()>,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
         use crate::restore::{RestoreDigest,RestoreOutcome};
         let mut digest=RestoreDigest::default();
-        let state=match self.store.read().await {Ok(None)=>return digest,Ok(Some(value))=>match crate::restore::parse_terminal_manifest(&value,&self.session_id) {Ok(state)=>state,Err(_)=>{digest.store_error=true;return digest;}},Err(_)=>{digest.store_error=true;return digest;}};
+        let state=match state {Ok(None)=>return digest,Ok(Some(state))=>state,Err(())=>{digest.store_error=true;return digest;}};
         for monitor in state.monitors {
             if monitor.expires_at.is_some_and(|expiry|expiry<=now) {digest.expired+=1;continue;}
             let outcome=match monitor.durability_class {

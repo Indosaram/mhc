@@ -218,6 +218,12 @@ async fn run_generate(
             ProviderRetryError::Aborted => "Request aborted".to_owned(),
         })?;
 
+    if let Some(options) = options {
+        options.request.apply_response_hook(
+            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
+        ).await?;
+    }
+
     output.response_id = body.get("id").and_then(Value::as_str).map(str::to_owned);
     if let Some(usage) = body.get("usage") {
         output.usage = Some(parse_usage(usage, model));
@@ -339,9 +345,4 @@ mod tests {
         assert_eq!(usage.cache_write, 0);
     }
 }
-    if let Some(options) = options {
-        options.request.apply_response_hook(
-            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
-        ).await?;
-    }
 

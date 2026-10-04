@@ -1,4 +1,3 @@
-use crate::tool_registrar::McpToolRegistrar;
 use std::{collections::BTreeMap,path::{Path,PathBuf},sync::Arc};
 use crate::{config_schema::{LoadMcpConfigOptions,ResolvedMcpConfig,McpServerState},config::{load_mcp_config,McpConfigValidationError},host_registry::HostMcpRegistry,service_connection::{McpSessionConnection,SessionConnectionOptions,create_shared_mcp_session_connection,dispose_entry_connection},service_types::McpServerSnapshot};
 #[derive(Debug,thiserror::Error)]
@@ -80,7 +79,7 @@ impl McpService {
             }
             let cache=crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
             let cached_catalog=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64);
-            if let Some(cached)=&cached_catalog {connection.entry.lock().await.cached_catalog=Some(cached.clone());}
+            if let Some(cached)=&cached_catalog {connection.entry.lock().await.cached_catalog=Some((*cached).clone());}
             // Upstream races every startup connect bounded by the race deadline
             // (`shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`): a cold
             // lazy server with no cached catalog also races so its catalog lands and the

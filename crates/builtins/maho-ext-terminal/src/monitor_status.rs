@@ -46,7 +46,7 @@ pub fn format_monitor_status(snapshot:&[MonitorSnapshotEntry],now_ms:f64)->Optio
 pub fn render_monitor_status(mode:&str,theme:&maho_ext_api::types::Theme,status:Option<&str>)->Option<String> {
     let Some(status)=status else {return None;};
     if mode!="tui" {return Some(status.to_owned());}
-    Some(theme.bg(maho_ext_api::types::ThemeBg::SelectedBg,&theme.fg(maho_ext_api::types::ThemeColor::Text,status)))
+    Some(theme.bg("selectedBg",&theme.fg("text",status)))
 }
 
 #[cfg(test)]

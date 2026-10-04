@@ -180,7 +180,7 @@ impl ModelRuntime {
             }
             let resolution = self.get_auth_with_overrides(id, &AuthResolutionOverrides { signal: Some(signal.clone()), ..Default::default() }).await?;
             if resolution.is_some() {
-                return Ok(Some(AuthCheck { source: self.auth_status(id).label.or_else(|| self.auth_status(id).source), auth_type: AuthType::ApiKey }));
+                return Ok(Some(AuthCheck { source: self.get_provider_auth_status(id).label.or_else(|| self.get_provider_auth_status(id).source), auth_type: AuthType::ApiKey }));
             }
             if let Some(oauth) = oauth {
                 return oauth.check(&maho_ai::auth::context::DefaultAuthContext, None, &signal).await
@@ -197,6 +197,7 @@ impl ModelRuntime {
             let Some(mut resolution) = self.models.get_auth_for_model(model, overrides).await? else { return Ok(None); };
             let mut env = resolution.env.clone().unwrap_or_default();
             env.extend(overrides.env.clone().unwrap_or_default());
+            let env: std::collections::HashMap<String, String> = env.into_iter().collect();
             let headers = self.get_compatibility_request_headers(model, Some(&env)).await
                 .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
             if let Some(headers) = headers { resolution.auth.headers.get_or_insert_with(Default::default).extend(headers); }

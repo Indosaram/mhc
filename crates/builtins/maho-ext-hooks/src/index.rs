@@ -172,6 +172,7 @@ pub const ASK_USER_ASKED_EVENT:&str="ask-user:asked";
 pub const ASK_USER_SETTLED_EVENT:&str="ask-user:settled";
 /// Runs the Notification hook once for a single delivery path (`settled`, native only).
 fn deliver_ask_user(sender:&Arc<ExtensionApi>,ctx:&ExtensionContext,input:Option<serde_json::Value>) {
+    use crate::lifecycle_adapter::{lifecycle_message,lifecycle_result_details};
     let Some(input)=input else {return;};
     let sender=Arc::clone(sender);let ctx=ctx.clone();
     tokio::spawn(async move {if let Ok(result)=dispatch(&ctx,input).await {let details=lifecycle_result_details("Notification",Some(&result));if let Some(message)=lifecycle_message("Notification",&details,None) {let _=sender.send_message(message,SendMessageOptions::default());}}});

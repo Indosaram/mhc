@@ -13,6 +13,33 @@ pub struct CursorCliOAuth {
     pub persist_enabled:std::sync::Arc<dyn Fn(bool)->anyhow::Result<()>+Send+Sync>,
     pub now:std::sync::Arc<dyn Fn()->i64+Send+Sync>,
 }
+/// Production executable check: `resolve_default` over the process environment, returning `Ok` only
+/// when cursor-agent is installed.
+pub fn production_executable_check(environment:std::collections::BTreeMap<String,String>,home:std::path::PathBuf) -> ExecutableCheck {
+    std::sync::Arc::new(move |settings|crate::executable::resolve_default(&environment,settings.executable_path.as_deref(),&home).map(|_|()).map_err(|error|anyhow::anyhow!(error.to_string())))
+}
+/// Production acknowledgement writer over the global settings file.
+pub fn production_acknowledgement_writer(storage:std::sync::Arc<dyn maho_core::settings_manager::SettingsStorage>) -> AcknowledgementWriter {
+    std::sync::Arc::new(move |at|crate::settings::persist_no_approval_acknowledgement(storage.as_ref(),at).map_err(|error|anyhow::anyhow!(error)))
+}
+/// Production enabled-state writer over the global settings file.
+pub fn production_enabled_writer(storage:std::sync::Arc<dyn maho_core::settings_manager::SettingsStorage>) -> std::sync::Arc<dyn Fn(bool)->anyhow::Result<()>+Send+Sync> {
+    std::sync::Arc::new(move |enabled|crate::settings::persist_enabled(storage.as_ref(),enabled).map_err(|error|anyhow::anyhow!(error)))
+}
+impl CursorCliOAuth {
+    /// Production constructor: installs the real HTTP Cursor OAuth flow
+    /// (`maho_ai::auth::oauth::cursor::CursorOAuth::new()`) instead of a test stub.
+    pub fn native(
+        store:std::sync::Arc<dyn maho_ai::auth::types::CredentialStore>,
+        settings:std::sync::Arc<dyn Fn()->CursorCliOauthProviderSettings+Send+Sync>,
+        resolve:ExecutableCheck,
+        persist_acknowledgement:AcknowledgementWriter,
+        persist_enabled:std::sync::Arc<dyn Fn(bool)->anyhow::Result<()>+Send+Sync>,
+        now:std::sync::Arc<dyn Fn()->i64+Send+Sync>,
+    ) -> Self {
+        Self {store,flow:std::sync::Arc::new(maho_ai::auth::oauth::cursor::CursorOAuth::new()),settings,resolve,persist_acknowledgement,persist_enabled,now}
+    }
+}
 #[async_trait::async_trait]
 impl maho_ai::auth::types::OAuthAuth for CursorCliOAuth {
     fn name(&self)->&str {PROVIDER_NAME}

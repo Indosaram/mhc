@@ -1,14 +1,12 @@
 //! Port of the CLI half of the OAuth provider lanes (`main.ts` provider assembly).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ai::auth::types::CredentialStore;
 use maho_core::settings_manager::{SettingsManager, SettingsStorage};
 use maho_ext_api::Extension;
-
-use super::credentials::AuthStorageCredentialStore;
 
 pub const CLAUDE_SDK_ROOT_ENV: &str = "MAHO_CLAUDE_AGENT_SDK_ROOT";
 
@@ -88,7 +86,6 @@ pub fn anthropic_subscription_extension(request: OAuthExtensionRequest) -> Resul
     Ok(Box::new(maho_ext_anthropic_subscription::extension::AnthropicSubscriptionExtension::native(
         oauth,
         executable,
-        resolution.source,
         request.cwd,
         request.agent_dir,
         request.environment,
@@ -133,7 +130,7 @@ pub fn cursor_cli_extension(assembly: CursorAssembly) -> Result<Box<dyn Extensio
     let resolve = maho_ext_cursor_cli_oauth::oauth_login::production_executable_check(environment.clone(), home.clone());
     let persist_acknowledgement = maho_ext_cursor_cli_oauth::oauth_login::production_acknowledgement_writer(Arc::clone(&storage));
     let persist_enabled = maho_ext_cursor_cli_oauth::oauth_login::production_enabled_writer(Arc::clone(&storage));
-    let now: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(|| (maho_ai::utils::diagnostics::now_ms() / 1000.0) as i64);
+    let now: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(|| maho_ai::utils::diagnostics::now_ms() / 1000);
     let oauth = Arc::new(maho_ext_cursor_cli_oauth::oauth_login::CursorCliOAuth::native(
         store, settings.clone(), resolve, persist_acknowledgement, persist_enabled, now,
     ));

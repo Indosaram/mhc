@@ -562,9 +562,9 @@ impl InteractiveMode {
         self.remote_state_snapshot().and_then(|state| state.model).and_then(|value| serde_json::from_value(value).ok()).unwrap_or_else(|| self.session.model())
     }
 
-    fn host_thinking_level(&self) -> maho_ai::types::ThinkingLevel {
+    fn host_thinking_level(&self) -> maho_ai::types::ModelThinkingLevel {
         match self.remote_state_snapshot() {
-            Some(state) => state.thinking_level.as_deref().and_then(maho_ai::types::ThinkingLevel::parse).unwrap_or(maho_ai::types::ThinkingLevel::Off),
+            Some(state) => state.thinking_level.as_deref().and_then(maho_ai::types::ModelThinkingLevel::parse).unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
             None => self.session.thinking_level(),
         }
     }
@@ -615,10 +615,6 @@ impl InteractiveMode {
 
     // ---- turn/session mutations routed through the mounted host ------------------------------
 
-    async fn host_prompt(&self, text: &str, options: PromptOptions) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.prompt(text.to_owned(), options).await, None => self.session.prompt(text, options).await.map(|_| ()) }
-    }
-
     async fn host_abort(&self) -> Result<(), String> {
         match self.session_host.clone() { Some(host) => host.abort().await, None => { self.session.abort().await; Ok(()) } }
     }
@@ -660,24 +656,8 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_execute_bash(&self, command: &str, exclude_from_context: bool) -> Result<serde_json::Value, String> {
-        match self.session_host.clone() { Some(host) => host.execute_bash(command.to_owned(), exclude_from_context).await, None => self.session.execute_bash(command, None, exclude_from_context, None, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) }
-    }
-
     async fn host_set_model(&self, provider: &str, id: &str) -> Result<(), String> {
         match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await, None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|_| ()) } }
-    }
-
-    async fn host_set_session_name(&self, name: &str) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.set_session_name(name.to_owned()).await, None => { self.session.set_session_name(name); Ok(()) } }
-    }
-
-    async fn host_set_session_thinking_level(&self, level: &str) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.set_session_thinking_level(level.to_owned()).await, None => { self.session.set_session_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level).unwrap_or(maho_ai::types::ModelThinkingLevel::Off)); Ok(()) } }
-    }
-
-    async fn host_cycle_thinking_level(&self) -> Result<Option<String>, String> {
-        match self.session_host.clone() { Some(host) => host.cycle_thinking_level().await, None => Ok(self.session.cycle_thinking_level().map(|level| level.as_str().to_owned())) }
     }
 
     async fn host_cycle_model(&self, forward: bool) -> Result<Option<String>, String> {
@@ -715,7 +695,7 @@ impl InteractiveMode {
 
     /// Thinking levels for the active model: derived from the mirrored remote model while a host is
     /// mounted, else the local session's.
-    fn host_available_thinking_levels(&self) -> Vec<maho_ai::types::ThinkingLevel> {
+    fn host_available_thinking_levels(&self) -> Vec<maho_ai::types::ModelThinkingLevel> {
         match self.remote_state_snapshot() {
             Some(state) => state.model.and_then(|value| serde_json::from_value::<maho_ai::model::Model>(value).ok()).map(|model| maho_core::thinking_levels::get_supported_thinking_levels(&model)).unwrap_or_default(),
             None => self.session.get_available_thinking_levels(),
@@ -2156,7 +2136,7 @@ impl InteractiveMode {
             on_own_answer_click: Some(Box::new(move || own_answer_actions.borrow_mut().push_back(QuestionAction::OwnAnswer))),
             on_expand_click: Some(Box::new(move || expand_actions.borrow_mut().push_back(QuestionAction::Expand))),
             on_next_question: Some(Box::new(move || next_actions.borrow_mut().push_back(QuestionAction::Next))),
-            on_expire: Box::new(move || expire_actions.borrow_mut().push_back(QuestionAction::Expire(expire_id))),
+            on_expire: Box::new(move || expire_actions.borrow_mut().push_back(QuestionAction::Expire(expire_id.clone()))),
         }));
     }
 
@@ -2459,13 +2439,14 @@ impl InteractiveMode {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
         let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
-        self.pending_tools.entry(id.into()).or_insert_with(|| {
+        self.pending_tools.get(id).cloned().unwrap_or_else(|| {
             let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(component.clone());
             component.borrow_mut().set_expanded(self.tools_expanded);
             self.tool_cards.push(component.clone());
+            self.pending_tools.insert(id.into(), component.clone());
             component
-        }).clone()
+        })
     }
 
     /// senpi's `getRegisteredToolDefinition`: the session's registered definition for the resolved

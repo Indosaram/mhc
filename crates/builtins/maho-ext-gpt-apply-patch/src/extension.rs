@@ -1,13 +1,6 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use serde_json::Value;
 use crate::types::ApplyPatchWireMode;
-static GPT_ID:LazyLock<Regex>=LazyLock::new(||Regex::new(r"(?i)(?:^|[/@:._-])gpt(?:[._-]|[0-9])").expect("literal pattern"));
-pub fn get_apply_patch_wire_mode(model:Option<(&str,&str)>)->ApplyPatchWireMode {
-    let Some((api,id))=model else { return ApplyPatchWireMode::None; }; if !GPT_ID.is_match(id) { return ApplyPatchWireMode::None; }
-    match api { "openai-responses"|"azure-openai-responses"|"openai-codex-responses"=>ApplyPatchWireMode::Freeform,"openai-completions"=>ApplyPatchWireMode::Json,_=>ApplyPatchWireMode::None }
-}
-pub fn is_openai_gpt_model(model:Option<(&str,&str)>)->bool { get_apply_patch_wire_mode(model)==ApplyPatchWireMode::Freeform }
+pub use maho_ai::apply_patch_wire::{get_apply_patch_wire_mode, is_openai_gpt_model};
 pub fn without_apply_patch(names:&[String])->Vec<String> { names.iter().filter(|name|name.as_str()!="apply_patch").cloned().collect() }
 pub fn replace_edit_tools_with_apply_patch(names:&[String])->Vec<String> {
     let insert=names.iter().position(|name|matches!(name.as_str(),"write"|"edit"|"apply_patch"));

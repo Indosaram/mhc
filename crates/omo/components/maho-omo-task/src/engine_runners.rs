@@ -33,6 +33,24 @@ impl senpi_task::manager::types::ManagedRunner for LiveInProcessRunner {
     fn resume(&self, spec: &senpi_task::manager::types::ManagedStartSpec, path: &str) -> Option<senpi_task::manager::types::ManagedRunnerResult> { self.current().resume(spec, path) }
 }
 pub fn build_live_in_process_runner(build: LiveInProcessRunnerBuildContext) -> std::sync::Arc<dyn senpi_task::manager::types::ManagedRunner> { std::sync::Arc::new(LiveInProcessRunner(build)) }
+/// The combined in-process + process runner set the task engine needs, over a live shared-parent
+/// tool provider when the host supplies one (the parent session's tools grow during a run).
+pub struct TaskRunnerBuildOptions {
+    pub shared_parent_tools: Vec<senpi_task::runners::in_process::shared_tool_filter::ChildToolRef>,
+    pub get_shared_parent_tools: Option<SharedParentTools>,
+    pub max_depth: u32,
+    pub create_session: senpi_task::runners::in_process::runner::CreateChildSession,
+    pub parent_registry: senpi_task::manager::parent_registry_context::ParentModelRegistryResolver,
+    pub rpc_options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions,
+}
+pub fn build_task_runners(build: TaskRunnerBuildOptions) -> senpi_task::manager::types::ManagedRunners {
+    let TaskRunnerBuildOptions { shared_parent_tools, get_shared_parent_tools, max_depth, create_session, parent_registry, rpc_options } = build;
+    let in_process = match get_shared_parent_tools {
+        Some(shared_parent_tools) => build_live_in_process_runner(LiveInProcessRunnerBuildContext { shared_parent_tools, max_depth, create_session, parent_registry }),
+        None => build_in_process_runner(InProcessRunnerBuildContext { shared_parent_tools, max_depth, create_session, parent_registry }),
+    };
+    senpi_task::manager::types::ManagedRunners { in_process, process: build_process_runner(rpc_options) }
+}
 pub fn build_process_runner(options: senpi_task::runners::rpc_process::RpcProcessRunnerOptions) -> std::sync::Arc<dyn senpi_task::manager::types::ManagedRunner> {
     senpi_task::manager::runner::create_rpc_managed_runner(senpi_task::runners::rpc_process::RpcProcessRunner::new(options))
 }

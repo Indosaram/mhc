@@ -23,6 +23,19 @@ impl TerminalStateLifecycle {
         if self.lease.is_none() {return crate::restore::RestoreDigest::default();}
         self.writer.restore_configured_live(manager,registry,now,shell,settings).await
     }
+    /// Reads the persisted manifest with no manager/registry locks held.
+    #[cfg(unix)]
+    pub async fn read_restore_state(&self) -> std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>,()> {
+        if self.lease.is_none() {return Ok(None);}
+        self.writer.read_restore_state().await
+    }
+    /// Applies an already-read manifest synchronously, so the caller can hold the manager/registry
+    /// mutexes only across this non-awaiting call.
+    #[cfg(unix)]
+    pub fn apply_restore(&mut self,state:std::result::Result<Option<crate::terminal_manifest_model::TerminalManifest>,()>,manager:&mut crate::manager::TerminalManager,registry:&mut crate::monitor_registry::MonitorRegistry,now:f64,shell:Option<&str>,settings:&crate::settings::ResolvedTerminalSettings)->crate::restore::RestoreDigest {
+        if self.lease.is_none() {return crate::restore::RestoreDigest::default();}
+        self.writer.apply_restore_state(state,manager,registry,now,shell,settings)
+    }
     pub async fn record_shutdown(&mut self,now:f64) {if self.lease.is_some() {self.writer.record_shutdown(now).await;}}
     #[cfg(unix)]
     pub fn release(&mut self)->std::io::Result<()> {if let Some((path,pid))=self.lease.take() {crate::manifest_lease::release_terminal_lease(&path,pid)?;}Ok(())}

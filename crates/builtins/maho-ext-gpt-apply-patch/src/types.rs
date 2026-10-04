@@ -14,9 +14,7 @@ pub trait AtomicWriteOperations:Send+Sync {
 }
 
 use serde::{Serialize,Deserialize};
-#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
-#[serde(rename_all="lowercase")]
-pub enum ApplyPatchWireMode { Freeform, Json, None }
+pub use maho_ai::apply_patch_wire::ApplyPatchWireMode;
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum ApplyPatchToolVariant { Freeform, Json }

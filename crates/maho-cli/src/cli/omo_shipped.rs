@@ -47,7 +47,7 @@ impl MemoryStore {
             env,
             load_config: config,
             cwd: cwd.clone(),
-            now: Arc::new(maho_ai::utils::diagnostics::now_ms),
+            now: Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64),
             disabled: Arc::new(|| false),
         });
         let wiring = Arc::new(tokio::sync::Mutex::new(create_memory_wiring(MemoryWiringOptions {

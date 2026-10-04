@@ -4,6 +4,17 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use maho_core::session_sidecar_store::{self as sidecar,CreateSidecarStoreOptions,SidecarError,SidecarStore,SidecarStoreRef};
 use crate::types::*;
+/// Upstream `loop/index.ts defaultStoreRef(ctx)`: `<agent-dir>/extensions/loop/no-session` when the
+/// session has no file, else `<session-dir>/extensions/loop`. `None` when the session is persisted
+/// but its directory is unresolved, so callers never write into a synthesized path.
+pub fn loop_store_ref_from_context(context:&maho_ext_api::ExtensionContext)->Option<LoopStoreRef> {
+    let session=context.session_manager.as_ref();
+    let base_dir=match session.session_file() {
+        None=>std::path::PathBuf::from(maho_core::config::get_agent_dir()).join("extensions/loop/no-session"),
+        Some(_)=>session.get_session_dir()?.join("extensions/loop"),
+    };
+    Some(LoopStoreRef { base_dir, session_id:session.session_id().into() })
+}
 #[derive(Debug,thiserror::Error)]
 pub enum LoopStoreError {
     #[error("{0}")] Invalid(String),

@@ -55,9 +55,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("look-at", maho_ext_look_at::index::LookAtExtension {
                 runner: maho_ext_look_at::runner::create_vision_runner(Arc::new(|ctx, model, context, options| ctx.model_registry.stream_simple(model, context, Some(options))),
                     Some(Arc::new(|bytes, mime, options| Box::pin(async move {
-                        use base64::Engine;
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        let prepared = super::super::utils::image_process::process_image(&encoded, &mime,
+                        let prepared = super::super::utils::image_process::process_image(&bytes, &mime,
                             super::super::utils::image_process::ProcessImageOptions { auto_resize_images: Some(options.auto_resize_images), ..Default::default() }).await.map_err(ExtensionFailure::new)?;
                         Ok(maho_ext_look_at::image_input::ProcessedImage { data: prepared.data, mime_type: prepared.mime_type, hints: prepared.hints })
                     })))),
@@ -236,10 +234,20 @@ impl ExtensionActions for TaskActions {
 struct Codemode;
 struct Images;
 impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
-    fn resize_image<'a>(&'a self, base64: &'a str, mime: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, maho_codemode::tool::image_resize::ResizedImage> {
+    fn resize_image<'a>(&'a self, bytes: Vec<u8>, mime: &'a str, max_bytes: Option<usize>) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::ResizedImage>> {
         Box::pin(async move {
-            let resized = super::super::utils::image_process::process_image(base64, mime, Default::default()).await?;
-            Ok(maho_codemode::tool::image_resize::ResizedImage { data: resized.data, mime_type: resized.mime_type, dimension_note: resized.hints.join("\n") })
+            let mut resize = super::super::utils::image_resize_core::ImageResizeOptions::default();
+            if let Some(max_bytes) = max_bytes { resize.max_bytes = max_bytes as f64; }
+            let resized = super::super::utils::image_process::process_image(&bytes, mime,
+                super::super::utils::image_process::ProcessImageOptions { auto_resize_images: Some(true), resize_options: Some(resize) }).await.map_err(|error| error)?;
+            Ok(Some(maho_codemode::tool::image_resize::ResizedImage { data: resized.data, mime_type: resized.mime_type, dimension_note: resized.hints.join("\n") }))
+        })
+    }
+    fn convert_to_png<'a>(&'a self, data: &'a str, _mime_type: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::EvalImageContent>> {
+        Box::pin(async move {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|error| error.to_string())?;
+            Ok(super::super::utils::image_convert::convert_image_bytes_to_png(&bytes).map(|png| maho_codemode::tool::image_resize::EvalImageContent { data: base64::engine::general_purpose::STANDARD.encode(png), mime_type: "image/png".into() }))
         })
     }
 }

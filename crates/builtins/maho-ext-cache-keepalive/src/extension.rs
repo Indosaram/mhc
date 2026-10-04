@@ -11,7 +11,7 @@ impl Default for CacheKeepalive{
     fn default()->Self{Self{warm:Arc::new(|model,messages,ctx,sender|Box::pin(async move{
         let prepared=ctx.prepare_provider_request(messages).await?;
         let active=sender.runtime.session_actions()?.get_active_tools()?;
-        let tools=sender.get_all_tools()?.into_iter().filter(|tool|active.contains(&tool.name)).map(|tool|maho_ai::types::Tool{name:tool.name,description:tool.description,parameters:tool.parameters}).collect::<Vec<_>>();
+        let tools=sender.get_all_tools()?.into_iter().filter(|tool|active.contains(&tool.name)).map(|tool|maho_ai::types::Tool{name:tool.name,description:tool.description,parameters:tool.parameters,freeform:None,constrained_sampling:None}).collect::<Vec<_>>();
         let raw=prepared.messages.iter().map(|message|serde_json::to_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
         let messages=maho_core::messages::convert_to_llm(&maho_core::messages::filter_context_excluded_messages(raw)).into_iter().map(|message|serde_json::from_value(message).map_err(|error|ExtensionFailure::new(error.to_string()))).collect::<Result<Vec<_>,_>>()?;
         let context=maho_ai::types::Context{system_prompt:Some(ctx.get_system_prompt()),messages,tools:(!tools.is_empty()).then_some(tools)};

@@ -345,9 +345,9 @@ fn admit_native_registration(state: &Arc<Mutex<State>>, registration: &maho_ext_
     let mut logger = ConfigReloadLogger::new(&agent_dir, None).ok();
     if let Some(logger) = &mut logger {
         match admission {
-            RegistrationAdmission::Added => logger.log(LogLevel::Info, LogEvent::RegistrationAdded { id: &registration.id }),
-            RegistrationAdmission::Restricted => logger.log(LogLevel::Warn, LogEvent::RegistrationRejected { registration_id: &registration.id, error_count: 1.0 }),
-            RegistrationAdmission::RejectionSuppressed => logger.log(LogLevel::Debug, LogEvent::RegistrationRejectionSuppressed { registration_id: &registration.id }),
+            RegistrationAdmission::Added => { logger.log(LogLevel::Info, LogEvent::RegistrationAdded { id: &registration.id }); },
+            RegistrationAdmission::Restricted => { logger.log(LogLevel::Warn, LogEvent::RegistrationRejected { registration_id: &registration.id, error_count: 1.0 }); },
+            RegistrationAdmission::RejectionSuppressed => { logger.log(LogLevel::Debug, LogEvent::RegistrationRejectionSuppressed { registration_id: &registration.id }); },
             RegistrationAdmission::Identical => {},
         }
     }

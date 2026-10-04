@@ -767,8 +767,15 @@ impl RemoteSessionProxy {
     /// senpi's `editAssistantMessage` proxy arm: forward the edit, then refresh the mirror.
     pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: Value) -> Result<Value, RpcClientError> {
         let result = { self.client.lock().await.edit_assistant_message(entry_id, text, options).await? };
-        self.after_replacement().await;
+        self.refresh().await;
         Ok(result)
+    }
+
+    /// senpi's proxy `refresh()`: re-read the host session state into the mirror.
+    pub async fn refresh(&self) {
+        if let Ok(state) = self.client.lock().await.get_state().await {
+            self.set_state(RemoteSessionState::from_rpc(&state));
+        }
     }
 
     /// senpi's `executeBash` proxy arm (host-side execution; no local chunk callbacks here).

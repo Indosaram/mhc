@@ -10,6 +10,9 @@ fn dismiss(state:&Mutex<State>,ctx:&ExtensionContext,abort:bool){
     if let Some(active)=active{if abort{active.controller.abort(None);}if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
 }
 pub struct Btw{pub thinking_level:Arc<dyn Fn(&ExtensionContext)->Result<Option<maho_ai::types::ThinkingLevel>,ExtensionFailure>+Send+Sync>}
+impl Default for Btw {
+    fn default() -> Self { Self { thinking_level: Arc::new(|ctx: &ExtensionContext| ctx.current_thinking_level()) } }
+}
 impl Extension for Btw{
     fn register(&self,api:&mut ExtensionApi){
         let state=Arc::new(Mutex::new(State{next:0,active:None}));

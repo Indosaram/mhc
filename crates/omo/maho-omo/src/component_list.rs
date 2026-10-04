@@ -38,9 +38,10 @@ pub struct OmoComponentOptions {
 impl Default for OmoComponentOptions {
     fn default() -> Self {
         let env: BTreeMap<String, String> = std::env::vars().collect();
+        let telemetry_env: std::collections::HashMap<String, String> = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
         Self {
             skills_root: builtin_skills_root(),
-            state_dir: maho_omo_telemetry::product_identity::get_omo_native_state_dir(&env),
+            state_dir: maho_omo_telemetry::product_identity::get_omo_native_state_dir(&telemetry_env),
             env,
         }
     }
@@ -114,7 +115,7 @@ pub fn omo_components(
         "telemetry",
         maho_omo_telemetry::omo_native_component::OmoNativeTelemetryComponent::with_default_config(
             maho_omo_telemetry::index::SenpiTelemetryOptions {
-                env: Some(options.env.clone()),
+                env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()),
                 state_dir: Some(options.state_dir.clone()),
                 ..Default::default()
             },

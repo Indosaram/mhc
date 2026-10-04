@@ -174,6 +174,12 @@ async fn run_generate(
             ProviderRetryError::Aborted => "Request aborted".to_owned(),
         })?;
 
+    if let Some(options) = options {
+        options.request.apply_response_hook(
+            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
+        ).await?;
+    }
+
     if let Some(usage) = body.get("usage") {
         output.usage = Some(parse_usage(usage, model));
     }
@@ -515,9 +521,4 @@ mod tests {
         assert_eq!(error_message_from_body("not json"), "not json");
     }
 }
-    if let Some(options) = options {
-        options.request.apply_response_hook(
-            &crate::types::ProviderResponse { status: raw_status, headers: raw_headers }, &payload_model,
-        ).await?;
-    }
 

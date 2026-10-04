@@ -147,6 +147,32 @@ impl ModelThinkingLevel {
     }
 }
 
+impl ThinkingLevel {
+    pub const ALL: [ThinkingLevel; 6] = [
+        ThinkingLevel::Minimal,
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Xhigh,
+        ThinkingLevel::Max,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThinkingLevel::Minimal => "minimal",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::Xhigh => "xhigh",
+            ThinkingLevel::Max => "max",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|level| level.as_str() == value)
+    }
+}
+
 impl From<ThinkingLevel> for ModelThinkingLevel {
     fn from(level: ThinkingLevel) -> Self {
         match level {
