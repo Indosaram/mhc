@@ -2273,6 +2273,21 @@ dependencies = [
 [[package]]
 name = "maho-ext-config-reload"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "notify",
+ "regex",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-cursor-cli-oauth"
@@ -2547,6 +2562,14 @@ dependencies = [
 [[package]]
 name = "maho-ext-nested-agents-md"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-omo-zcode-oauth"
@@ -2738,6 +2761,15 @@ dependencies = [
 [[package]]
 name = "maho-ext-prompt-preset"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "regex",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-quiet-model-profile"
