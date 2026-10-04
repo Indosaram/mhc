@@ -203,9 +203,9 @@ mod tests {
         let request=maho_ext_api::QuestionRequest {request_id:"r1".into(),questions:vec![maho_ext_api::Question {id:"q1".into(),header:"Pick one".into(),question:"Which?".into(),options:vec![],multi_select:false}],wait_for_answer:true,timeout_ms:1000};
         let asked=ask_user_notification_input_typed(&ctx,&request,None).expect("asked");
         assert_eq!(asked["kind"],"ask-user-asked");assert_eq!(asked["notification_source"],"ask-user");assert_eq!(asked["title"],"Pick one");assert_eq!(asked["request_id"],"r1");assert_eq!(asked["status"],"pending");
-        let answered=ask_user_notification_input_typed(&ctx,&request,Some(&maho_ext_api::QuestionResponse {status:maho_ext_api::QuestionStatus::Answered,..Default::default()})).expect("settled");
+        let answered=ask_user_notification_input_typed(&ctx,&request,Some(&maho_ext_api::QuestionResponse {status:maho_ext_api::QuestionStatus::Answered,answers:std::collections::BTreeMap::from([("q1".to_owned(),maho_ext_api::QuestionAnswer {selected:vec!["A".to_owned()],text:None})]),comment:None,unanswered:Vec::new(),auto_resolved_after_ms:None})).expect("settled");
         assert_eq!(answered["kind"],"ask-user-settled");assert_eq!(answered["status"],"answered");
-        let timeout=ask_user_notification_input_typed(&ctx,&request,Some(&maho_ext_api::QuestionResponse {status:maho_ext_api::QuestionStatus::TimedOut,..Default::default()})).expect("timeout");
+        let timeout=ask_user_notification_input_typed(&ctx,&request,Some(&maho_ext_api::QuestionResponse {status:maho_ext_api::QuestionStatus::TimedOut,answers:std::collections::BTreeMap::new(),comment:None,unanswered:vec!["q1".to_owned()],auto_resolved_after_ms:Some(1000)})).expect("timeout");
         assert_eq!(timeout["kind"],"ask-user-timeout");assert_eq!(timeout["status"],"timed_out");
     }
 }
