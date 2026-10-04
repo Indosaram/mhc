@@ -64,8 +64,9 @@ async fn reload_veto(api:&ExtensionApi,ctx:&ExtensionContext)->bool {
     }
     false
 }
+type TimedCallback = (u64, Box<dyn FnOnce()+Send>);
 #[derive(Default)]
-struct Timers { next:Mutex<u64>, callbacks:Mutex<BTreeMap<u64,(u64,Box<dyn FnOnce()+Send>)>> }
+struct Timers { next:Mutex<u64>, callbacks:Mutex<BTreeMap<u64,TimedCallback>> }
 impl maho_omo_task::status_ui::StatusUiTimers for Timers {
     fn set(&self,callback:Box<dyn FnOnce()+Send>,ms:u64)->u64 { let mut next=self.next.lock().expect("next"); *next+=1; self.callbacks.lock().expect("timers").insert(*next,(ms,callback)); *next }
     fn clear(&self,id:u64) { self.callbacks.lock().expect("timers").remove(&id); }

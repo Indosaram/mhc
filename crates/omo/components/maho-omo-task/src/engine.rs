@@ -26,6 +26,13 @@ pub fn compose_task_engine(deps: ComposeTaskEngineDeps) -> TaskEngine {
     compose_task_engine_with_rpc_respawn(deps, None)
 }
 pub fn compose_task_engine_with_rpc_respawn(deps: ComposeTaskEngineDeps, rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>) -> TaskEngine {
+    compose_task_engine_with_clock(deps, rpc_respawn, None)
+}
+/// Composes the engine with an explicit lifecycle clock. Production callers keep the system clock
+/// through [`compose_task_engine`]; deterministic recovery and expiry tests inject a fixed clock
+/// through the existing `LifecycleContext::now` seam so a disposal timestamp and the TTL cutoff can
+/// never race the wall clock.
+pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>, now: Option<senpi_task::lifecycle::context::NowFn>) -> TaskEngine {
     let settings = deps.config.get("task").cloned().unwrap_or_else(|| serde_json::json!({}));
     let store = TaskRecordStore::new(&StateDirConfig { project_dir: deps.cwd.clone(), task_state_dir: settings["state_dir"].as_str().map(PathBuf::from) });
     let runtime = Arc::new(Mutex::new(TaskRuntimeContext::new(deps.cwd.clone())));
@@ -42,7 +49,9 @@ pub fn compose_task_engine_with_rpc_respawn(deps: ComposeTaskEngineDeps, rpc_res
     let manager_ref = Arc::new(OnceLock::<std::sync::Weak<TaskManager>>::new());
     let registry_ref = manager_ref.clone();
     let registry = Arc::new(ManagerResidencyRegistry { get_manager: Arc::new(move || match registry_ref.get().and_then(std::sync::Weak::upgrade) { Some(manager) => (*manager).clone(), None => panic!("task manager accessed outside composed lifetime") }) });
-    let lifecycle = Arc::new(create_task_lifecycle(LifecycleDeps::new(Arc::new(store.clone()), registry, TaskSettings::from_resolved(&settings))));
+    let mut lifecycle_deps = LifecycleDeps::new(Arc::new(store.clone()), registry, TaskSettings::from_resolved(&settings));
+    lifecycle_deps.now = now;
+    let lifecycle = Arc::new(create_task_lifecycle(lifecycle_deps));
     let agents = resolve_task_agents(&deps.config);
     let planner = create_task_child_planner(deps.config.clone(), agents.clone().into_iter().collect(), deps.resolve_registry);
     let state = runtime.clone();
