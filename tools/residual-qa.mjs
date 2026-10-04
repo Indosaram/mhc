@@ -591,14 +591,82 @@ async function scenarioMini(ctx) {
 // Scenario: server — the ported senpi app-server ndjson round-trip.
 // ---------------------------------------------------------------------------------------------
 
+/** A line-based JSON-RPC client over a child's stdio, with responses by id and a notification
+ *  backlog + waiters (for `thread/goal/updated`). */
+function appServerClient(child) {
+	let buffer = "";
+	const responses = new Map();
+	const notifications = [];
+	const waiters = new Set();
+	const responseWaiters = new Map();
+	const decoder = new TextDecoder("utf8");
+	const handle = (line) => {
+		let message;
+		try {
+			message = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
+			responses.set(message.id, message);
+			const waiter = responseWaiters.get(message.id);
+			if (waiter) {
+				responseWaiters.delete(message.id);
+				waiter(message);
+			}
+		} else if (message.method) {
+			notifications.push(message);
+			for (const w of waiters) if (w.pred(message)) (waiters.delete(w), w.resolve(message));
+		}
+	};
+	(async () => {
+		for await (const chunk of child.stdout) buffer += decoder.decode(chunk, { stream: true });
+	})();
+	const poll = setInterval(() => {
+		let index;
+		while ((index = buffer.indexOf("\n")) >= 0) {
+			const line = buffer.slice(0, index).trim();
+			buffer = buffer.slice(index + 1);
+			if (line) handle(line);
+		}
+	}, 10);
+	return {
+		notifications,
+		call(id, method, params, timeoutMs = 20_000) {
+			return new Promise((resolve, reject) => {
+				const timer = setTimeout(() => (responseWaiters.delete(id), reject(new Error(`${method} timed out`))), timeoutMs);
+				responseWaiters.set(id, (message) => (clearTimeout(timer), resolve(message)));
+				child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+			});
+		},
+		waitForNotification(pred, timeoutMs) {
+			const existing = notifications.find(pred);
+			if (existing) return Promise.resolve(existing);
+			return new Promise((resolve, reject) => {
+				const w = { pred, resolve };
+				const timer = setTimeout(() => (waiters.delete(w), reject(new Error("notification timeout"))), timeoutMs);
+				w.resolve = (v) => (clearTimeout(timer), resolve(v));
+				waiters.add(w);
+			});
+		},
+		stop: () => clearInterval(poll),
+	};
+}
+
 async function scenarioServer(ctx) {
+	// Real app-server protocol (pinned senpi `modes/app-server`): a SUCCESSFUL exact `initialize`,
+	// then `thread/start`, then `thread/goal/set` + `thread/goal/get` with a `thread/goal/updated`
+	// notification. A typed error for `initialize` is NOT accepted as success (that only proves
+	// framing). The goal round-trip follows the task-12 handlers.
 	const home = newHome("residual-server-home-");
 	const artifacts = ["server-app-server.log"];
+	const objective = "residual-server-goal-probe";
 	let cleanupOk = false;
 	let ok = false;
 	let detail = "";
+	let status = "blocked";
 	let proc;
-	let stdoutText;
+	let client;
 	let stderrText;
 	let deadline;
 	try {
@@ -613,34 +681,62 @@ async function scenarioServer(ctx) {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		stdoutText = new Response(proc.stdout).text();
 		stderrText = new Response(proc.stderr).text();
-		proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
-		proc.stdin.end();
+		client = appServerClient(proc);
 		deadline = setTimeout(() => {
 			try {
 				process.kill(-proc.pid, "SIGKILL");
 			} catch {
 				/* group already gone */
 			}
-		}, 30_000);
-		const [text, code, stderr] = await Promise.all([stdoutText, proc.exited, stderrText]);
-		clearTimeout(deadline);
-		writeFileSync(join(ctx.qaRoot, "server-app-server.log"), text + stderr);
-		// A live ndjson app-server replies with a line carrying the request id (a response or a
-		// typed error both prove the protocol loop); exit 0 on stdin EOF proves a clean shutdown.
-		const responded = text.trim().split("\n").filter(Boolean).some((line) => {
-			try {
-				return JSON.parse(line).id === 1;
-			} catch {
-				return false;
-			}
-		});
-		ok = code === 0 && responded;
-		detail = `exit=${code} responded=${responded}`;
+		}, 60_000);
+
+		// 1. Exact initialize: a successful result carrying `userAgent` (not an error). A failed
+		//    initialize is a runtime FAIL (protocol/init broken), never a blocked dependency.
+		const init = await client.call(1, "initialize", { clientInfo: { name: "residual-qa", title: "residual gate", version: "1.0.0" } });
+		const initOk = init.result !== undefined && typeof init.result.userAgent === "string" && init.result.userAgent.length > 0;
+		if (!initOk) {
+			status = "fail";
+			detail = `initialize did not succeed: ${JSON.stringify(init).slice(0, 200)}`;
+			throw new Error(detail);
+		}
+		status = "fail";
+
+		// 2. thread/start → a thread id (core app-server; a missing id is a runtime FAIL).
+		const started = await client.call(2, "thread/start", { cwd: home });
+		const threadId = started.result?.thread?.id ?? started.result?.id ?? null;
+		if (!threadId) throw new Error(`thread/start returned no thread id: ${JSON.stringify(started).slice(0, 200)}`);
+
+		// 3. thread/goal/set + thread/goal/get (task-12 goal handlers). If the method is not
+		//    assembled the error is a DEPENDENCY (blocked); a present-but-wrong result is a FAIL.
+		const setResult = await client.call(3, "thread/goal/set", { threadId, objective });
+		if (setResult.error !== undefined) {
+			status = "blocked";
+			throw new Error(`thread/goal/set unavailable: ${JSON.stringify(setResult.error).slice(0, 160)}`);
+		}
+		const getResult = await client.call(4, "thread/goal/get", { threadId });
+		const goal = getResult.result?.goal ?? null;
+		const roundTripped = goal?.objective === objective;
+		let updated = null;
+		try {
+			updated = await client.waitForNotification((message) => message.method === "thread/goal/updated", 15_000);
+		} catch {
+			updated = null;
+		}
+		ok = roundTripped && updated !== null;
+		detail = `initialize=${initOk} threadId=${threadId !== null} goalSet=${setResult.error === undefined} goalRoundTrip=${roundTripped} updatedNotification=${updated !== null}`;
+		writeFileSync(join(ctx.qaRoot, "server-app-server.log"), JSON.stringify({ init: init.result, started: started.result, setResult, getResult: getResult.result, notifications: client.notifications.map((n) => n.method) }, null, 2) + "\n");
+	} catch (error) {
+		detail = `server: ${error.message}`;
 	} finally {
 		clearTimeout(deadline);
+		if (client) client.stop();
 		if (proc) {
+			try {
+				proc.stdin.end();
+			} catch {
+				/* already closed */
+			}
 			try {
 				process.kill(-proc.pid, "SIGTERM");
 			} catch {
@@ -654,12 +750,14 @@ async function scenarioServer(ctx) {
 			}
 			await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 3_000))]);
 		}
+		await Promise.race([stderrText, new Promise((r) => setTimeout(r, 2_000))]);
+		const groupGone = !proc || processGroupGone(proc.pid);
 		rmSync(home, { recursive: true, force: true });
-		cleanupOk = !existsSync(home);
+		cleanupOk = groupGone && !existsSync(home);
 	}
 	return {
-		status: ok && cleanupOk ? "pass" : "blocked",
-		blocker: ok && cleanupOk ? null : `server: ${detail} cleanup=${cleanupOk} (app-server did not complete a live ndjson round-trip and clean EOF shutdown)`,
+		status: ok && cleanupOk ? "pass" : status,
+		blocker: ok && cleanupOk ? null : `server: ${detail} cleanup=${cleanupOk}`,
 		artifacts,
 		cleanup_ok: cleanupOk,
 	};
@@ -675,6 +773,7 @@ async function scenarioRegistry(ctx) {
 	let cleanupOk = false;
 	let ok = false;
 	let detail = "";
+	let rpcProc = null;
 	try {
 		const agent = join(home, ".maho", "agent");
 		mkdirSync(agent, { recursive: true });
@@ -706,11 +805,10 @@ async function scenarioRegistry(ctx) {
 		const { server, baseUrl } = startLoopback();
 		let rpcPrompted = false;
 		let rpcExit = null;
-		let proc;
 		let deadline;
 		try {
 			const rpcAgent = writeOfflineAgent(home, baseUrl);
-			proc = Bun.spawn([ctx.binary, "--mode", "rpc", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--model", "offline/offline"], {
+			rpcProc = Bun.spawn([ctx.binary, "--mode", "rpc", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--model", "offline/offline"], {
 				cwd: home,
 				env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: rpcAgent },
 				detached: true,
@@ -718,6 +816,7 @@ async function scenarioRegistry(ctx) {
 				stdout: "pipe",
 				stderr: "pipe",
 			});
+			const proc = rpcProc;
 			const stdoutText = new Response(proc.stdout).text();
 			const stderrText = new Response(proc.stderr).text();
 			proc.stdin.write(`${JSON.stringify({ type: "prompt", id: "prompt_1", prompt: "registry probe" })}\n`);
@@ -750,8 +849,9 @@ async function scenarioRegistry(ctx) {
 		ok = providerListed && rpcPrompted && rpcExit === 0;
 		detail = `providerListed=${providerListed} rpcPrompted=${rpcPrompted} rpcExit=${rpcExit}`;
 	} finally {
+		const groupGone = !rpcProc || processGroupGone(rpcProc.pid);
 		rmSync(home, { recursive: true, force: true });
-		cleanupOk = !existsSync(home);
+		cleanupOk = groupGone && !existsSync(home);
 	}
 	return {
 		status: ok && cleanupOk ? "pass" : "blocked",
