@@ -44,6 +44,19 @@ pub trait PackageProcessRunner: Send + Sync {
 #[derive(Debug, Default)]
 pub struct SystemPackageProcessRunner;
 
+fn package_stdout(capture: bool, taken_over: bool) -> PackageResult<std::process::Stdio> {
+    if capture { return Ok(std::process::Stdio::piped()); }
+    if !taken_over { return Ok(std::process::Stdio::inherit()); }
+    #[cfg(unix)] {
+        use std::os::fd::AsFd;
+        Ok(std::io::stderr().as_fd().try_clone_to_owned()?.into())
+    }
+    #[cfg(windows)] {
+        use std::os::windows::io::AsHandle;
+        Ok(std::io::stderr().as_handle().try_clone_to_owned()?.into())
+    }
+}
+
 fn command_output(command: &PackageCommand, output: std::process::Output) -> PackageResult<String> {
     if !output.status.success() {
         return Err(PackageManagerError::Message(format!("{} {} failed with {}: {}", command.program,
@@ -59,17 +72,13 @@ impl PackageProcessRunner for SystemPackageProcessRunner {
         child.args(&command.args).envs(&command.env).kill_on_drop(true);
         if let Some(cwd) = &command.cwd { child.current_dir(cwd); }
         child.stdin(std::process::Stdio::null());
-        if command.capture {
-            child.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        } else {
-            child.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit());
-        }
+        child.stdout(package_stdout(command.capture, crate::output_guard::is_stdout_taken_over())?);
+        child.stderr(if command.capture { std::process::Stdio::piped() } else { std::process::Stdio::inherit() });
         let operation = child.output();
         let output = if let Some(ms) = command.timeout_ms {
             tokio::time::timeout(std::time::Duration::from_millis(ms), operation).await
                 .map_err(|_| PackageManagerError::Message(format!("{} {} timed out after {ms}ms", command.program, command.args.join(" "))))??
         } else { operation.await? };
-        if !command.capture { crate::output_guard::maho_write_stdout(&String::from_utf8_lossy(&output.stdout)); }
         command_output(&command, output)
     }
 
@@ -121,6 +130,26 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
     let prefixed = trimmed.starts_with("git:");
     let url = if prefixed { trimmed.strip_prefix("git:")?.trim() } else { trimmed };
     if !prefixed && !["http://", "https://", "ssh://", "git://"].iter().any(|prefix| url.starts_with(prefix)) { return None; }
+    let shortcut = [("github:", "github.com"), ("gitlab:", "gitlab.com"), ("bitbucket:", "bitbucket.org"), ("gist:", "gist.github.com"), ("sourcehut:", "git.sr.ht")]
+        .into_iter().find_map(|(prefix, host)| url.strip_prefix(prefix).map(|path| (host, path)));
+    let shorthand = url.split(['#', '@']).next().unwrap_or(url);
+    let shortcut = shortcut.or_else(|| {
+        (prefixed && !shorthand.contains(':') && !shorthand.starts_with(['.', '/', '@']) && !shorthand.chars().any(char::is_whitespace)
+            && shorthand.split('/').count() == 2 && !shorthand.ends_with('/'))
+            .then_some(("github.com", url))
+    });
+    if let Some((host, path)) = shortcut {
+        let offset = path.find(['@', '#']);
+        let (path, reference) = offset.map_or((path, None), |offset| (&path[..offset], Some(path[offset + 1..].to_owned()).filter(|value| !value.is_empty())));
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        let path = if host == "gist.github.com" && !path.contains('/') { format!("null/{path}") } else { path.to_owned() };
+        let mut parsed = parse_git_source(&format!("https://{host}/{path}"))?;
+        if let ParsedSource::Git { repo, reference: parsed_ref, .. } = &mut parsed {
+            *repo = format!("https://{}", url.split('@').next().unwrap_or(url));
+            *parsed_ref = reference;
+        }
+        return Some(parsed);
+    }
     let path_start = if let Some(rest) = url.strip_prefix("git@") {
         rest.find(':')? + 5
     } else if let Some((scheme, rest)) = url.split_once("://") {
@@ -138,7 +167,7 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
     } else { repo.split_once('/')? };
     let path = path.trim_end_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
-    if host.is_empty() || (!host.contains('.') && host != "localhost") || path.split('/').count() < 2 { return None; }
+    if host.is_empty() || (!repo.contains("://") && !repo.starts_with("git@") && !host.contains('.') && host != "localhost") || path.split('/').count() < 2 { return None; }
     for part in [host, path] {
         // Decode percent escapes before checking managed-storage traversal.
         let mut decoded = Vec::new();
@@ -153,8 +182,18 @@ fn parse_git_source(source: &str) -> Option<ParsedSource> {
         let decoded = String::from_utf8(decoded).ok()?;
         if decoded.contains(['\0', '\\']) || decoded.starts_with('/') || decoded.split('/').any(|part| part == "..") { return None; }
     }
-    let repo = if repo.contains("://") || repo.starts_with("git@") { repo.to_owned() } else { format!("https://{repo}") };
-    Some(ParsedSource::Git { repo, host: host.to_owned(), path: path.to_owned(), reference })
+    let clone_repo = if url.contains('#') && !url[path_start..].contains('@') { url } else { repo };
+    let repo = if clone_repo.contains("://") || clone_repo.starts_with("git@") { clone_repo.to_owned() } else { format!("https://{clone_repo}") };
+    let mut path = path.to_owned();
+    let mut reference = reference;
+    if host == "github.com" || host == "www.github.com" {
+        let parts: Vec<_> = path.split('/').collect();
+        if parts.get(2) == Some(&"tree") && parts.len() >= 4 {
+            reference = Some(parts[3].to_owned());
+            path = format!("{}/{}", parts[0], parts[1].trim_end_matches(".git"));
+        }
+    }
+    Some(ParsedSource::Git { repo, host: host.trim_start_matches("www.").to_owned(), path, reference })
 }
 
 fn join_path(root: &str, part: &str) -> String { Path::new(root).join(part).to_string_lossy().into_owned() }
@@ -633,9 +672,11 @@ impl<'a> DefaultPackageManager<'a> {
         let output = self.npm(vec!["view".into(), if version.is_some() { spec.clone() } else { name.clone() }, "version".into(), "--json".into()], Some(&self.cwd), true).await;
         let Ok(output) = output else { return Ok(true); };
         let Ok(value) = serde_json::from_str::<Value>(&output) else { return Ok(true); };
-        let versions = if let Some(version) = value.as_str() { vec![version.to_owned()] } else { strings(Some(&value)) };
-        let latest = versions.iter().filter(|candidate| npm_matches(candidate, version.as_deref())).filter_map(|version| parse_version(version)).max();
-        Ok(match (latest, parse_version(&installed)) { (Some(latest), Some(installed)) => latest > installed, _ => true })
+        let latest = if let Some(version) = value.as_str() { parse_version(version) } else {
+            strings(Some(&value)).iter().filter(|candidate| npm_matches(candidate, version.as_deref()))
+                .filter_map(|version| parse_version(version)).max_by(|left, right| left.cmp_precedence(right))
+        };
+        Ok(match (latest, parse_version(&installed)) { (Some(latest), Some(installed)) => latest.cmp_precedence(&installed).is_gt(), _ => true })
     }
 
     pub async fn update(&self, source: Option<&str>) -> PackageResult<()> {
@@ -714,24 +755,43 @@ fn read_json(path: &str) -> Option<Value> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(crate::text::strip_bom(&content)).ok()
 }
-fn parse_version(version: &str) -> Option<semver::Version> { semver::Version::parse(version.trim().trim_start_matches(['v', '='])).ok() }
+fn parse_version(version: &str) -> Option<semver::Version> { semver::Version::parse(version.trim().strip_prefix('v').unwrap_or(version.trim())).ok() }
 fn npm_matches(version: &str, range: Option<&str>) -> bool {
     let Some(range) = range else { return true; };
+    if range.is_empty() { return true; }
+    let requirements = npm_requirements(range);
+    let Some(requirements) = requirements else { return true; };
     let Some(version) = parse_version(version) else { return false; };
-    if let Some(exact) = parse_version(range) { return exact.cmp_precedence(&version).is_eq(); }
+    requirements.iter().any(|requirement| requirement.matches(&version))
+}
+
+fn npm_requirements(range: &str) -> Option<Vec<semver::VersionReq>> {
     let ranges: Vec<_> = range.split("||").collect();
-    let mut recognized = false;
+    let mut requirements = Vec::new();
     for range in ranges {
         let range = range.trim();
         // npm joins comparators with whitespace; Rust semver uses commas.
-        let normalized = if let Some((low, high)) = range.split_once(" - ") {
-            let low = complete_version(low, false);
-            let high = complete_version(high, true);
-            format!(">={low}, <={high}")
+        let normalized = if range.is_empty() { "*".to_owned() } else if let Some((low, high)) = range.split_once(" - ") {
+            let low = if parse_version(low).is_some() { low.to_owned() } else { npm_partial_bound(low, false)? };
+            let high = if parse_version(high).is_some() { format!("<={high}") } else { format!("<{}-0", npm_partial_bound(high, true)?) };
+            format!(">={low}, {high}")
         } else {
-            let range = range.replace(">= ", ">=").replace("<= ", "<=").replace("> ", ">").replace("< ", "<").replace("~ ", "~").replace("^ ", "^");
+            let range = range.split_whitespace().collect::<Vec<_>>().join(" ");
+            let range = range.replace(">= ", ">=").replace("<= ", "<=").replace("> ", ">").replace("< ", "<").replace("= ", "=").replace("~ ", "~").replace("^ ", "^");
             range.split_whitespace().map(|part| {
                 let part = part.trim_start_matches('v');
+                if parse_version(part).is_some() { return format!("={part}"); }
+                for operator in [">=", "<=", ">", "<", "="] {
+                    if let Some(value) = part.strip_prefix(operator) && parse_version(value).is_none() {
+                        if matches!(value, "*" | "x" | "X") {
+                            return if operator == ">" || operator == "<" { "<0.0.0-0".into() } else { "*".into() };
+                        }
+                        let upper = operator == ">" || operator == "<=";
+                        if let Some(bound) = npm_partial_bound(value, upper) {
+                            return match operator { ">" => format!(">={bound}"), "<=" => format!("<{bound}-0"), "<" => format!("<{bound}-0"), "=" => format!("{}.*", value.trim_end_matches(".*").trim_end_matches(".x").trim_end_matches(".X")), _ => format!(">={bound}") };
+                        }
+                    }
+                }
                 if part.chars().next().is_some_and(|c| c.is_ascii_digit()) && !part.contains(['-', '+']) {
                     if part.split('.').count() < 3 { format!("{part}.*") } else { format!("={part}") }
                 } else {
@@ -740,19 +800,18 @@ fn npm_matches(version: &str, range: Option<&str>) -> bool {
                 }
             }).collect::<Vec<_>>().join(", ")
         };
-        if let Ok(requirement) = semver::VersionReq::parse(&normalized) {
-            recognized = true;
-            if requirement.matches(&version) { return true; }
-        }
+        requirements.push(semver::VersionReq::parse(&normalized).ok()?);
     }
-    // Dist-tags do not constrain the installed version.
-    !recognized
+    Some(requirements)
 }
 
-fn complete_version(value: &str, upper: bool) -> String {
-    let mut parts: Vec<_> = value.trim().split('.').map(str::to_owned).collect();
-    while parts.len() < 3 { parts.push(if upper { u64::MAX.to_string() } else { "0".into() }); }
-    parts.join(".")
+fn npm_partial_bound(value: &str, upper: bool) -> Option<String> {
+    let parts: Vec<_> = value.trim().trim_start_matches('v').split('.').take_while(|part| !matches!(*part, "*" | "x" | "X")).collect();
+    if parts.is_empty() || parts.len() >= 3 { return None; }
+    let mut numbers = [0u64; 3];
+    for (index, part) in parts.iter().enumerate() { numbers[index] = part.parse().ok()?; }
+    if upper { numbers[parts.len() - 1] = numbers[parts.len() - 1].checked_add(1)?; }
+    Some(format!("{}.{}.{}", numbers[0], numbers[1], numbers[2]))
 }
 
 const DATA_RESOURCE_TYPES: [ResourceType; 4] = [ResourceType::Skills, ResourceType::Prompts, ResourceType::Themes, ResourceType::Hooks];
@@ -808,6 +867,87 @@ fn auto_files(path: &str, kind: ResourceType, mode: SkillDiscoveryMode) -> Vec<S
     }
 }
 
+fn extglob_regex(pattern: &str) -> Option<String> {
+    let chars: Vec<_> = pattern.chars().collect();
+    let mut result = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if matches!(ch, '@' | '?' | '+' | '*' | '!') && chars.get(index + 1) == Some(&'(') {
+            let start = index + 2;
+            let mut end = start;
+            let mut depth = 1;
+            let mut alternatives = Vec::new();
+            let mut branch = start;
+            while end < chars.len() {
+                match chars[end] {
+                    '(' => depth += 1,
+                    ')' => { depth -= 1; if depth == 0 { break; } },
+                    '|' if depth == 1 => { alternatives.push(extglob_regex(&chars[branch..end].iter().collect::<String>())?); branch = end + 1; },
+                    _ => {}
+                }
+                end += 1;
+            }
+            if depth != 0 { return None; }
+            alternatives.push(extglob_regex(&chars[branch..end].iter().collect::<String>())?);
+            let body = alternatives.join("|");
+            if ch == '!' {
+                let suffix = extglob_regex(&chars[end + 1..].iter().collect::<String>())?;
+                result.push_str(&format!("(?!(?:{body}){suffix}(?:/|$))[^/]*"));
+            } else {
+                let repeat = match ch { '?' => "?", '+' => "+", '*' => "*", _ => "" };
+                result.push_str(&format!("(?:{body}){repeat}"));
+            }
+            index = end + 1;
+            continue;
+        }
+        match ch {
+            '*' => result.push_str("[^/]*"),
+            '?' => result.push_str("[^/]"),
+            '\\' if index + 1 < chars.len() => { index += 1; result.push_str(&regex::escape(&chars[index].to_string())); },
+            '[' => {
+                let end = (index + 1..chars.len()).find(|offset| chars[*offset] == ']')?;
+                let mut body = chars[index + 1..end].iter().collect::<String>();
+                if body.starts_with('!') { body.replace_range(..1, "^"); }
+                result.push_str(&format!("[{body}]")); index = end;
+            }
+            '{' => {
+                let end = (index + 1..chars.len()).find(|offset| chars[*offset] == '}')?;
+                let body = chars[index + 1..end].iter().collect::<String>();
+                let alternatives = body.split(',').map(extglob_regex).collect::<Option<Vec<_>>>()?;
+                result.push_str(&format!("(?:{})", alternatives.join("|"))); index = end;
+            }
+            _ => result.push_str(&regex::escape(&ch.to_string())),
+        }
+        index += 1;
+    }
+    Some(result)
+}
+
+fn minimatch_path(candidate: &str, pattern: &str) -> bool {
+    fn segments(candidate: &[&str], pattern: &[&str]) -> bool {
+        let Some((part, rest)) = pattern.split_first() else { return candidate.is_empty(); };
+        if *part == "**" {
+            return segments(candidate, rest) || candidate.split_first().is_some_and(|(head, tail)| !head.starts_with('.') && segments(tail, pattern));
+        }
+        let Some((head, tail)) = candidate.split_first() else { return false; };
+        if head.starts_with('.') && !part.starts_with('.') { return false; }
+        let extglob = part.as_bytes().windows(2).any(|pair| matches!(pair[0], b'@' | b'?' | b'+' | b'*' | b'!') && pair[1] == b'(');
+        let matched = if extglob {
+            extglob_regex(part).and_then(|regex| fancy_regex::Regex::new(&format!("^(?:{regex})$")).ok())
+                .is_some_and(|regex| regex.is_match(head).unwrap_or(false))
+        } else {
+            globset::GlobBuilder::new(part).literal_separator(true).backslash_escape(true).build()
+                .is_ok_and(|glob| glob.compile_matcher().is_match(head))
+        };
+        matched && segments(tail, rest)
+    }
+    if pattern.starts_with('#') { return false; }
+    let negations = pattern.bytes().take_while(|byte| *byte == b'!').count();
+    let matched = segments(&candidate.split('/').collect::<Vec<_>>(), &pattern[negations..].split('/').collect::<Vec<_>>());
+    if negations % 2 == 1 { !matched } else { matched }
+}
+
 fn pattern_matches(path: &str, pattern: &str, base: &str, exact: bool) -> bool {
     let pattern = pattern.strip_prefix("./").or_else(|| pattern.strip_prefix(".\\")).unwrap_or(pattern).replace(std::path::MAIN_SEPARATOR, "/");
     let mut candidates = vec![relative_path(base, path), path.replace(std::path::MAIN_SEPARATOR, "/")];
@@ -818,13 +958,7 @@ fn pattern_matches(path: &str, pattern: &str, base: &str, exact: bool) -> bool {
         if !exact { candidates.push(Path::new(&parent).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()); }
     }
     if exact { return candidates.iter().any(|candidate| candidate == &pattern); }
-    let Ok(glob) = globset::GlobBuilder::new(&pattern).literal_separator(true).backslash_escape(true).build() else { return false; };
-    let matcher = glob.compile_matcher();
-    candidates.iter().any(|candidate| {
-        // minimatch does not match a hidden segment unless the pattern names it.
-        if candidate.split('/').any(|segment| segment.starts_with('.') && segment != "..") && !pattern.split('/').any(|segment| segment.starts_with('.')) { return false; }
-        matcher.is_match(candidate)
-    })
+    candidates.iter().any(|candidate| minimatch_path(candidate, &pattern))
 }
 
 fn enabled_by_patterns(path: &str, patterns: &[String], base: &str) -> bool {
@@ -869,7 +1003,7 @@ fn collect_glob_paths(dir: &str, root: &str, pattern: &str, paths: &mut Vec<Stri
         if entry.file_name().to_string_lossy().starts_with('.') { continue; }
         let path = entry.path().to_string_lossy().into_owned();
         let relative = relative_path(root, &path);
-        if let Ok(glob) = globset::GlobBuilder::new(pattern).literal_separator(true).build() && glob.compile_matcher().is_match(&relative) { paths.push(path.clone()); }
+        if minimatch_path(&relative, pattern) { paths.push(path.clone()); }
         if entry.file_type().is_ok_and(|kind| kind.is_dir()) { collect_glob_paths(&path, root, pattern, paths); }
     }
 }

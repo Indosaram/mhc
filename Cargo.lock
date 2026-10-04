@@ -2084,6 +2084,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "fancy-regex",
  "futures",
  "globset",
  "hex",
