@@ -33,17 +33,20 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
         else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
+    let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
+    let task_parent = Arc::new(std::sync::OnceLock::new());
     let host_factory = maho_core::sdk::HostRuntimeFactory { model_registry: maho_core::model_registry::ModelRegistry::new(models.clone()),
-        model_runtime: models, extension_factories: Vec::new() };
+        model_runtime: models, extension_factories: super::default_extensions::factories(widget_sender, task_parent.clone()) };
     let created = host_factory.create(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
         thinking_selection: options.options.thinking_selection,
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
-        scoped_models: startup::session_model_entries(options.options.scoped_models)?, ..Default::default()
+        scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
+    task_parent.set(Arc::downgrade(&session)).map_err(|_| "Task parent already bound".to_owned())?;
     session.set_context_files_enabled(!parsed.no_context_files);
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
         let templates = maho_core::prompt_templates::load_prompt_templates(&maho_core::prompt_templates::LoadPromptTemplatesOptions {
@@ -62,8 +65,12 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
     indicator.stop();
     if mode == AppMode::Interactive { for warning in migrations.deprecation_warnings { eprintln!("{warning}"); } }
     let result = async { match mode {
-        AppMode::Rpc => maho_rpc::rpc_mode::run_command_stream(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string()),
+        AppMode::Rpc => {
+            session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(maho_ext_api::ExtensionMode::Rpc), ..Default::default() }).await;
+            maho_rpc::rpc_mode::run_command_stream(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())
+        },
         AppMode::Print | AppMode::Json => {
+            session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(if mode == AppMode::Json { maho_ext_api::ExtensionMode::Json } else { maho_ext_api::ExtensionMode::Print }), ..Default::default() }).await;
             use tokio::io::AsyncReadExt;
             let stdin = if stdin_tty { None } else { let mut text = String::new(); tokio::io::stdin().read_to_string(&mut text).await.map_err(|error| error.to_string())?; Some(text) };
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, stdin.as_deref()).await?;
@@ -71,7 +78,7 @@ pub async fn run(mut parsed: Args) -> Result<(), String> {
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
-            super::interactive_entry::run(session.clone(), &parsed, initial).await
+            super::interactive_entry::run(session.clone(), &parsed, initial, widget_requests).await
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } }.await;

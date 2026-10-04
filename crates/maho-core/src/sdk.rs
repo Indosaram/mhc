@@ -47,6 +47,7 @@ pub struct CreateAgentSessionOptions {
     pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
     pub additional_hook_paths: Vec<String>,
     pub minimal_resources: bool,
+    pub defer_extension_start: bool,
 }
 
 /// `noTools` suppression mode.
@@ -250,7 +251,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
                 }
             } };
         session.set_extension_runner(runner).await;
-        session.bind_extensions(Default::default()).await;
+        if !options.defer_extension_start { session.bind_extensions(Default::default()).await; }
         drop(construction.session.take());
     }
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })

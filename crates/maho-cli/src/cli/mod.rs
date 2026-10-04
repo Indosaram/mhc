@@ -19,3 +19,5 @@ pub mod setup;
 pub mod startup_ui;
 pub mod codemode_services;
 pub mod task_runners;
+pub mod default_extensions;
+pub mod task_session;

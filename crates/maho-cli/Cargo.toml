@@ -17,6 +17,31 @@ maho-ext-api = { path = "../maho-ext-api" }
 maho-senpi-task = { path = "../omo/senpi-task" }
 maho-codemode = { path = "../maho-codemode" }
 maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
+maho-ext-tool-search = { path = "../builtins/maho-ext-tool-search" }
+maho-ext-todotools = { path = "../builtins/maho-ext-todotools" }
+maho-ext-websearch = { path = "../builtins/maho-ext-websearch" }
+maho-ext-look-at = { path = "../builtins/maho-ext-look-at" }
+maho-ext-help = { path = "../builtins/maho-ext-help" }
+maho-ext-history-search = { path = "../builtins/maho-ext-history-search" }
+maho-ext-model-fallback = { path = "../builtins/maho-ext-model-fallback" }
+maho-ext-account = { path = "../builtins/maho-ext-account" }
+maho-ext-ask-user = { path = "../builtins/maho-ext-ask-user" }
+maho-ext-video-in = { path = "../builtins/maho-ext-video-in" }
+maho-ext-anthropic-web-search = { path = "../builtins/maho-ext-anthropic-web-search" }
+maho-ext-openai-web-search = { path = "../builtins/maho-ext-openai-web-search" }
+maho-ext-imagegen = { path = "../builtins/maho-ext-imagegen" }
+maho-ext-openai-image-gen = { path = "../builtins/maho-ext-openai-image-gen" }
+maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
+maho-ext-btw = { path = "../builtins/maho-ext-btw" }
+maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
+maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
+maho-ext-compaction = { path = "../builtins/maho-ext-compaction" }
+maho-ext-host = { path = "../maho-ext-host" }
+maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
+maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
+maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
+maho-omo-task = { path = "../omo/components/maho-omo-task" }
+maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true

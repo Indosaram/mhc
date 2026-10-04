@@ -1324,6 +1324,11 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone().ok_or_else(|| ExtensionFailure::new("Extension session actions are unavailable during registration"))
     }
+    pub fn message_actions(&self) -> Result<Arc<dyn ExtensionActions>, ExtensionFailure> {
+        self.assert_active()?;
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone()
+            .ok_or_else(|| ExtensionFailure::new("Extension message actions are unavailable during registration"))
+    }
     fn assert_active_or_panic(&self) {
         if let Err(error) = self.assert_active() { std::panic::panic_any(error); }
     }

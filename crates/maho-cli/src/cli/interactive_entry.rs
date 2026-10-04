@@ -13,7 +13,7 @@ impl Component for RenderedMode {
     fn invalidate(&mut self) {}
 }
 
-pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult) -> Result<(), String> {
+pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>) -> Result<(), String> {
     use maho_interactive::{interactive_mode::InteractiveMode, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     let theme = super::startup_ui::resolve_startup_theme(theme_setting.as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
@@ -41,6 +41,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         let mut installed_native_renderers = Vec::new();
         while !mode.shutdown_requested {
             mode.drain_events();
+            while let Ok(request) = widget_requests.try_recv() { mode.handle_ui_request(request); }
             let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
             let patch = session.native_tool_renderers_snapshot::<maho_ext_gpt_apply_patch::preview_format::ApplyPatchRenderState, serde_json::Value>().await;
             let inventory: Vec<_> = native.iter().map(|(name, renderers)| (name.clone(), Arc::as_ptr(renderers) as usize))
