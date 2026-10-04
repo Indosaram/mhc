@@ -451,6 +451,10 @@ struct AgentSessionState {
     extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
     extension_events: Option<maho_ext_api::EventBus>,
+    /// Latest MCP wire-status snapshot published for this session (pinned
+    /// `mcpService.getWireStatusSnapshot(threadId)`), type-erased so maho-core needs no dependency
+    /// on the MCP crate.
+    mcp_wire_status: Option<Arc<dyn std::any::Any + Send + Sync>>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     extension_tool_backups: BTreeMap<String, Option<(ToolDefinitionEntry, AgentTool)>>,
     extension_lazy_activators: Vec<LazyToolActivator>,
@@ -511,6 +515,9 @@ pub struct AgentSessionInner {
     settlement_epoch: AtomicU64,
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Serializes MCP wire-status publish against bind so a subscriber never misses or
+    /// double-receives an update (pinned subscribe-before-read ordering).
+    mcp_wire_status_order: tokio::sync::Mutex<()>,
 }
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
@@ -1561,6 +1568,7 @@ impl AgentSession {
             extension_command_catalog: None,
             extension_event_sender: None,
             extension_events: None,
+            mcp_wire_status: None,
             extension_tool_context: None,
             extension_tool_backups: BTreeMap::new(),
             extension_lazy_activators: Vec::new(),
@@ -1610,6 +1618,7 @@ impl AgentSession {
             settlement_epoch: AtomicU64::new(0),
             probe_scheduler: Mutex::new(crate::retry_fallback::probe_scheduler::ProbeBackScheduler::default()),
             probe_task: Mutex::new(None),
+            mcp_wire_status_order: tokio::sync::Mutex::new(()),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -5409,18 +5418,46 @@ impl AgentSession {
 
     /// Subscribe to live per-session MCP wire-status snapshots. `T` is the MCP extension's
     /// `McpWireStatusSnapshot`, delivered natively so maho-core needs no dependency on the MCP
-    /// crate; `None` when no extension runner is bound.
+    /// crate; `None` when no extension runner is bound. Use [`Self::bind_mcp_wire_status`] when the
+    /// initial snapshot must not be missed.
     pub async fn subscribe_mcp_wire_status<T: Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
         self.extension_runner.lock().await.as_ref().map(|runner| runner.events.on_native(MCP_WIRE_STATUS_CHANGED_EVENT, handler))
     }
 
-    /// Publish a live MCP wire-status snapshot on this session's extension bus; `false` when no
-    /// runner is bound.
-    pub async fn publish_mcp_wire_status<T: Send + Sync + 'static>(&self, snapshot: &T) -> bool {
-        match self.extension_runner.lock().await.as_ref() {
-            Some(runner) => { runner.events.emit_native(MCP_WIRE_STATUS_CHANGED_EVENT, snapshot); true }
-            None => false,
+    /// The latest MCP wire-status snapshot this session retained (pinned
+    /// `mcpService.getWireStatusSnapshot(threadId)`); `None` before the first publish or on a type
+    /// mismatch. `T` is the MCP extension's `McpWireStatusSnapshot`.
+    pub fn mcp_wire_status_snapshot<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
+        self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned()
+    }
+
+    /// Bind to this session's MCP wire status, delivering the retained initial snapshot first and
+    /// then every later one (pinned `createMcpWireStatusAdapter(getWireStatusSnapshot(threadId))`
+    /// followed by `bindLiveUpdates(onWireStatusChanged)`). The live subscription is installed
+    /// before the retained read, both under the same order lock as [`Self::publish_mcp_wire_status`],
+    /// so a snapshot published around the bind is delivered exactly once (never missed, never
+    /// duplicated). `None` when no extension runner is bound.
+    pub async fn bind_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
+        let _order = self.mcp_wire_status_order.lock().await;
+        let runner = self.extension_runner.lock().await.clone()?;
+        let subscription = runner.events.on_native(MCP_WIRE_STATUS_CHANGED_EVENT, handler.clone());
+        let retained = self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned();
+        if let Some(snapshot) = retained {
+            handler(&snapshot);
         }
+        Some(subscription)
+    }
+
+    /// Retain and publish a live MCP wire-status snapshot for this session; `false` when no runner
+    /// is bound. Retaining the value lets a late subscriber read the current inventory instead of a
+    /// process fallback (pinned session-owned adapter).
+    pub async fn publish_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, snapshot: &T) -> bool {
+        let _order = self.mcp_wire_status_order.lock().await;
+        let runner = self.extension_runner.lock().await.clone();
+        let Some(runner) = runner else { return false; };
+        self.state().mcp_wire_status = Some(Arc::new(snapshot.clone()));
+        runner.events.emit_native(MCP_WIRE_STATUS_CHANGED_EVENT, snapshot);
+        true
     }
 
     /// Rebind the live connection's UI into the bound extension runner, preserving the session's
@@ -7271,6 +7308,34 @@ mod tests {
             .expect("bound runner");
         assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":[]})).await);
         assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":[]})]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn binding_mcp_wire_status_replays_the_retained_snapshot_then_delivers_live() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        // The attach inventory is published BEFORE any subscriber (the Task12 miss scenario).
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["attach"]})).await);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = session
+            .bind_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":["attach"]})], "the retained attach snapshot is replayed exactly once");
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":["live"]})).await);
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":["attach"]}), serde_json::json!({"servers":["live"]})]);
+        // A later bind reads the current retained snapshot once (no duplicate of the replay).
+        let second = Arc::new(Mutex::new(Vec::new()));
+        let captured_second = second.clone();
+        let _second = session
+            .bind_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured_second).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert_eq!(lock(&second).as_slice(), [serde_json::json!({"servers":["live"]})]);
+        assert_eq!(session.mcp_wire_status_snapshot::<serde_json::Value>(), Some(serde_json::json!({"servers":["live"]})));
         session.dispose().await;
     }
 
