@@ -67,6 +67,9 @@ use crate::settings_manager::SettingsManager;
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
 const EVAL_ONLY_TOOL_NAMES: [&str; 2] = ["workflow", "monitor"];
 
+/// Live per-session MCP wire-status channel on the extension bus (native payload, no JSON).
+pub const MCP_WIRE_STATUS_CHANGED_EVENT: &str = "senpi.rpc.mcp_wire_status.changed";
+
 #[allow(dead_code)] // consumed by the eval-only hint publisher in the tool-registry slice
 fn eval_helper_call(name: &str) -> String {
     match name {
@@ -447,6 +450,7 @@ struct AgentSessionState {
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
     extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
+    extension_events: Option<maho_ext_api::EventBus>,
     extension_tool_context: Option<(maho_ext_api::ExtensionRuntime, maho_ext_host::wrapper::ToolContextFactory)>,
     extension_tool_backups: BTreeMap<String, Option<(ToolDefinitionEntry, AgentTool)>>,
     extension_lazy_activators: Vec<LazyToolActivator>,
@@ -545,6 +549,7 @@ impl ExtensionModelRegistryView {
     }
     fn accounts_changed(&self, provider: &str) {
         self.events.emit("provider-accounts-changed", &serde_json::json!({"type":"accounts_changed","provider":provider}));
+        crate::provider_account_events::emit_provider_accounts_changed(provider);
     }
 }
 impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
@@ -1553,6 +1558,7 @@ impl AgentSession {
             extension_commands: Vec::new(),
             extension_command_catalog: None,
             extension_event_sender: None,
+            extension_events: None,
             extension_tool_context: None,
             extension_tool_backups: BTreeMap::new(),
             extension_lazy_activators: Vec::new(),
@@ -4863,6 +4869,7 @@ impl AgentSession {
         if let Ok(context) = runner.create_context() {
             let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
             self.state().extension_event_sender = Some(events.clone());
+            self.state().extension_events = Some(runner.events.clone());
             let weak = Arc::downgrade(&self.inner);
             let ui = maho_ext_host::ui::LifecycleUi::new(context.ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }));
             if let Err(error) = runner.bind_ui(Arc::new(ui)) { self.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
@@ -5351,8 +5358,56 @@ impl AgentSession {
     }
 
     /// Publish on the internal event bus shared by this session's extensions.
+    ///
+    /// Routed to the bound runner's bus (the pinned `resourceLoader` bus extension handlers
+    /// subscribe to) as well as the session-private bus, falling back to the private bus alone
+    /// when no runner is bound.
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
         self.event_bus.emit(channel, data);
+        if let Some(events) = self.state().extension_events.clone() { events.emit(channel, data); }
+    }
+
+    /// Publish a typed payload natively on the bound runner's bus (no serialization), so a consumer
+    /// can hand a non-JSON value such as a command context to a native subscriber.
+    pub fn emit_extension_event_typed<T: Send + Sync + 'static>(&self, channel: &str, event: &T) {
+        if let Some(events) = self.state().extension_events.clone() { events.emit_native(channel, event); }
+    }
+
+    /// The session's command context (pinned `extensionRunner.createCommandContext()`), for a
+    /// consumer that needs the typed context the runner would pass to a command handler.
+    pub async fn extension_command_context(&self) -> Option<maho_ext_api::ExtensionCommandContext> {
+        let runner = self.extension_runner.lock().await.clone()?;
+        runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))).ok()
+    }
+
+    /// Subscribe to live per-session MCP wire-status snapshots. `T` is the MCP extension's
+    /// `McpWireStatusSnapshot`, delivered natively so maho-core needs no dependency on the MCP
+    /// crate; `None` when no extension runner is bound.
+    pub async fn subscribe_mcp_wire_status<T: Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
+        self.extension_runner.lock().await.as_ref().map(|runner| runner.events.on_native(MCP_WIRE_STATUS_CHANGED_EVENT, handler))
+    }
+
+    /// Publish a live MCP wire-status snapshot on this session's extension bus; `false` when no
+    /// runner is bound.
+    pub async fn publish_mcp_wire_status<T: Send + Sync + 'static>(&self, snapshot: &T) -> bool {
+        match self.extension_runner.lock().await.as_ref() {
+            Some(runner) => { runner.events.emit_native(MCP_WIRE_STATUS_CHANGED_EVENT, snapshot); true }
+            None => false,
+        }
+    }
+
+    /// Rebind the live connection's UI into the bound extension runner, preserving the session's
+    /// extension-event forwarding (pinned `runner.setUIContext` at connection attach).
+    pub async fn rebind_extension_ui(&self, ui: Arc<dyn ExtensionUi>) -> Result<(), String> {
+        self.state().extension_ui_context = Some(ui.clone());
+        let sender = self.state().extension_event_sender.clone();
+        let mut guard = self.extension_runner.lock().await;
+        let Some(runner) = guard.as_mut() else { return Ok(()); };
+        let bound: Arc<dyn ExtensionUi> = match sender {
+            Some(events) => Arc::new(maho_ext_host::ui::LifecycleUi::new(ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }))),
+            None => ui,
+        };
+        runner.bind_ui(bound).map_err(|error| error.message)
     }
 
     /// Append a transport-provided entry and publish it on the RPC event stream.
@@ -5441,6 +5496,7 @@ impl AgentSession {
         lock(&self.settings_source_subscription).take();
         lock(&self.agent_subscription).take();
         self.state().extension_event_sender.take();
+        self.state().extension_events = None;
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -7159,6 +7215,69 @@ mod tests {
             assert!(batch.turn_claims.is_empty());
             assert_eq!(ran.load(Ordering::SeqCst), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn session_extension_events_reach_the_bound_runner_bus() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let runner = session.extension_runner.lock().await.clone().expect("bound runner");
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = runner.events.on("goal_store_changed", Arc::new(move |value| lock(&captured).push(value.clone())));
+        session.emit_extension_event("goal_store_changed", &serde_json::json!({"threadId":"thread"}));
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"threadId":"thread"})]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn live_mcp_wire_status_is_delivered_natively_to_the_session_subscriber() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let _subscription = session
+            .subscribe_mcp_wire_status::<serde_json::Value>(Arc::new(move |snapshot| lock(&captured).push(snapshot.clone())))
+            .await
+            .expect("bound runner");
+        assert!(session.publish_mcp_wire_status(&serde_json::json!({"servers":[]})).await);
+        assert_eq!(lock(&observed).as_slice(), [serde_json::json!({"servers":[]})]);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn a_bound_runner_exposes_the_session_command_context() {
+        let session = test_session();
+        let extension = maho_ext_api::LoadedExtension::new("<inline:goal>", session.cwd().into(), Default::default());
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let context = session.extension_command_context().await.expect("command context");
+        assert!(context.runtime.assert_active().is_ok());
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn account_changes_reach_the_process_global_registry() {
+        use maho_ext_api::ModelRegistry as _;
+        let session = test_session();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        let unsubscribe = crate::provider_account_events::subscribe_provider_account_events(Arc::new(move |event| {
+            if matches!(&event, crate::provider_account_events::ProviderAccountEvent::AccountsChanged { provider } if provider == "registry-fixture") {
+                lock(&captured).push(event);
+            }
+        }));
+        session.model_registry().auth_storage.set("registry-fixture", Some(serde_json::json!({
+            "type":"api_key","key":"fixture-flat-secret",
+            "accounts":[{"name":"default","key":"fixture-first-secret","source":"login"},
+                {"name":"work","key":"fixture-second-secret","source":"import"}]
+        }))).expect("seed shared storage");
+        let mut registry = ExtensionModelRegistryView::new(&session, Default::default());
+        registry.pin_credential_account("registry-fixture", Some("work")).await.expect("pin");
+        unsubscribe();
+        session.dispose().await;
+        assert_eq!(lock(&observed).as_slice(), [crate::provider_account_events::ProviderAccountEvent::AccountsChanged { provider: "registry-fixture".to_owned() }]);
     }
 
     #[tokio::test]
