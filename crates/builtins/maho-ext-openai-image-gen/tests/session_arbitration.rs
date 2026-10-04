@@ -150,6 +150,7 @@ async fn truth_table_rows_hold_across_the_session() {
         let system = prompt.unwrap_or_else(|| "base".into());
         assert_eq!(system.contains(maho_ext_imagegen::IMAGE_GEN_SECTION.trim()), row.client_section, "row {index}: client section");
         assert_eq!(system.contains(maho_ext_openai_image_gen::OPENAI_IMAGE_GEN_SECTION.trim()), row.native_section, "row {index}: native section");
+        session.close().await;
     }
 }
 

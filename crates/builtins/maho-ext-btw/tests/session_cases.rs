@@ -61,6 +61,7 @@ async fn runs_a_side_query_in_parallel_with_an_in_flight_main_turn() {
     assert_eq!(messages[0].role(), "user");
     assert_eq!(messages[1].role(), "assistant");
     assert_eq!(text_of(&messages[1]), "main answer");
+    session.close().await;
 }
 
 #[tokio::test]
@@ -86,4 +87,5 @@ async fn snapshots_context_synchronously_so_a_concurrent_turn_cannot_mix_generat
     let calls = session.provider_calls();
     assert_eq!(user_texts(&calls[1].context.messages), snapshot);
     assert_eq!(calls.len(), 3);
+    session.close().await;
 }

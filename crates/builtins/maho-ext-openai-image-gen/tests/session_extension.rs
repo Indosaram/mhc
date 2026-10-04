@@ -1,5 +1,5 @@
-#[path = "support.rs"]
-mod support;
+#[path = "../../maho-ext-imagegen/tests/support.rs"]
+mod imagegen_support;
 
 use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope};
 use maho_ext_api::*;
@@ -35,11 +35,11 @@ fn completions() -> maho_ai::types::Model {
 }
 
 fn credentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(support::FixtureRegistry { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![support::gateway_model()] })
+    Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] })
 }
 
 fn uncredentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(support::FixtureRegistry { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() })
+    Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() })
 }
 
 async fn boot() -> NativeSession {
@@ -67,7 +67,7 @@ async fn payload(session: &NativeSession, model: maho_ai::types::Model) -> Value
     session.emit_before_provider_request(request_payload(), Some(model)).await.expect("payload")
 }
 
-async fn execute(session: &NativeSession, stub: Arc<support::StubImages>) -> Value {
+async fn execute(session: &NativeSession, stub: Arc<imagegen_support::StubImages>) -> Value {
     let scope = ProviderScope::new();
     let outcome = run_with_provider_scope_async(&scope, async {
         maho_ai::images_api_registry::register_images_api_provider("openai-images", stub.clone(), Some("session-stub"))?;
@@ -81,37 +81,40 @@ async fn execute(session: &NativeSession, stub: Arc<support::StubImages>) -> Val
 
 #[tokio::test]
 async fn proxied_responses_with_credentials_exposes_only_the_client_function_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, proxied()).await;
     assert!(tool_names(&payload).contains(&"generate_image".to_owned()));
     assert_eq!(native_tools(&payload), 0);
+    session.close().await;
 }
 
 #[tokio::test]
 async fn official_responses_replaces_the_function_tool_with_one_server_tool_and_bypasses() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
     assert!(tool_names(&payload).contains(&"read".to_owned()));
-    let details = execute(&session, Arc::new(support::StubImages::one())).await;
+    let details = execute(&session, Arc::new(imagegen_support::StubImages::one())).await;
     assert_eq!(details["reason"], "provider_native_bypass");
+    session.close().await;
 }
 
 #[tokio::test]
 async fn proxied_responses_without_credentials_exposes_neither_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
     let payload = payload(&session, proxied()).await;
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
     assert_eq!(native_tools(&payload), 0);
+    session.close().await;
 }
 
 #[tokio::test]
 async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -119,11 +122,12 @@ async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[tokio::test]
 async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -131,13 +135,14 @@ async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
     assert!(tool_names(&payload).contains(&"generate_image".to_owned()));
-    let details = execute(&session, Arc::new(support::StubImages::one())).await;
+    let details = execute(&session, Arc::new(imagegen_support::StubImages::one())).await;
     assert_ne!(details["reason"], "provider_native_bypass");
+    session.close().await;
 }
 
 #[tokio::test]
 async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endpoint() {
-    let _guard = support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -145,11 +150,12 @@ async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endp
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[tokio::test]
 async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint() {
-    let _guard = support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -157,6 +163,7 @@ async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint()
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[test]
@@ -170,25 +177,27 @@ fn proxied_and_azure_responses_default_to_the_client_tool() {
 
 #[tokio::test]
 async fn a_proxied_endpoint_with_compat_opt_in_injects_the_server_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, compat_model("openai-responses", "quotio-openai", "https://gateway.example/openai/v1", true)).await;
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[tokio::test]
 async fn the_official_endpoint_with_compat_disabled_keeps_the_client_tool() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = payload(&session, compat_model("openai-responses", "openai", "https://api.openai.com/v1", false)).await;
     assert_eq!(native_tools(&payload), 0);
     assert!(tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[tokio::test]
 async fn a_non_responses_api_strips_a_preexisting_native_tool_defensively() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let payload = session
         .emit_before_provider_request(json!({"model":"gpt-5.5","tools":[{"type":"image_generation"},{"type":"function","name":"generate_image","parameters":{"type":"object"}}]}), Some(completions()))
@@ -196,31 +205,34 @@ async fn a_non_responses_api_strips_a_preexisting_native_tool_defensively() {
         .expect("payload");
     assert_eq!(native_tools(&payload), 0);
     assert!(tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[tokio::test]
 async fn credentials_resolving_after_start_are_used_at_execution() {
-    let _guard = support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
-    let blocked = execute(&session, Arc::new(support::StubImages::one())).await;
+    let blocked = execute(&session, Arc::new(imagegen_support::StubImages::one())).await;
     assert_eq!(blocked["reason"], "missing_config");
 
-    let stub = Arc::new(support::StubImages::one());
+    let stub = Arc::new(imagegen_support::StubImages::one());
     set_image_gen_registry_override(Some(credentialed()));
     let details = execute(&session, stub.clone()).await;
     assert!(details["reason"].is_null());
     assert_eq!(details["paths"].as_array().map(Vec::len), Some(1));
     assert_eq!(stub.call_count(), 1);
+    session.close().await;
 }
 
 #[tokio::test]
 async fn a_cached_client_model_refreshes_when_the_request_model_differs() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let _ = payload(&session, proxied()).await;
     let payload = session.emit_before_provider_request(request_payload(), Some(official())).await.expect("payload");
     assert_eq!(native_tools(&payload), 1);
     assert!(!tool_names(&payload).contains(&"generate_image".to_owned()));
+    session.close().await;
 }
 
 #[test]
@@ -233,9 +245,10 @@ fn the_enable_env_off_keeps_the_client_tool_active() {
 
 #[tokio::test]
 async fn an_unchanged_client_payload_is_returned_unchanged() {
-    let _guard = support::GlobalStateGuard::acquire(Some(credentialed())).await;
+    let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
     let input = json!({"model":"gpt-5.5","tools":[{"type":"function","name":"read","parameters":{}}]});
     let result = session.emit_before_provider_request(input.clone(), Some(proxied())).await.expect("payload");
     assert_eq!(result, input);
+    session.close().await;
 }
