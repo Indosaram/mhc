@@ -26,3 +26,16 @@ fn pruning_keeps_final_question_and_does_not_mutate_supplied_history(){
     assert!(context.messages.len()<history.len()+1);
     assert_eq!(serde_json::to_value(context.messages.last().expect("question")).expect("value")["content"],"question");
 }
+fn sized_model(window:u64,max_tokens:u64)->Model{serde_json::from_value(json!({"id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"http://unused.invalid","reasoning":false,"input":["text"],"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0},"contextWindow":window,"maxTokens":max_tokens})).expect("model")}
+#[test]
+fn side_query_window_reserves_at_most_half_the_context_for_output(){
+    use maho_ext_btw::side_query::get_side_query_prompt_context_window;
+    assert_eq!(get_side_query_prompt_context_window(&sized_model(2_000,256)),1_744.0);
+    assert_eq!(get_side_query_prompt_context_window(&sized_model(2_000,4_000)),1_000.0);
+    assert_eq!(get_side_query_prompt_context_window(&sized_model(2_000,0)),2_000.0);
+}
+#[test]
+fn large_system_prompt_counts_against_the_side_query_budget(){
+    let context=build_side_query_context(&format!("BASE-{}","s".repeat(10_000)),vec![user(&format!("old-{}","o".repeat(6_000)))],"keep the newest question",&sized_model(14_000,0)).expect("bounded context");
+    assert_eq!(serde_json::to_value(context.messages.last().expect("question")).expect("value")["content"],"keep the newest question");
+}

@@ -1,9 +1,12 @@
 use maho_ai::{types::AssistantMessageEvent,utils::event_stream::AssistantMessageEventStream};
 pub const DEFAULT_ESTABLISHMENT_TIMEOUT_MS:u64=30_000;
 pub const SIDE_QUERY_INSTRUCTION:&str="The user is asking a side question about the conversation so far, outside the main task. Answer it directly and concisely from the context above. Do not continue any task, do not modify anything, and do not treat this as new work.";
+pub fn get_side_query_prompt_context_window(model:&maho_ai::types::Model)->f64{
+    maho_ext_compaction::extension_wiring::get_prompt_context_window(model.context_window as f64,Some(model.max_tokens as f64))
+}
 pub fn build_side_query_context(system_prompt:&str,history:Vec<maho_ai::types::Message>,question:&str,model:&maho_ai::types::Model)->Result<maho_ai::types::Context,String>{
     let system_prompt=format!("{system_prompt}\n\n{SIDE_QUERY_INSTRUCTION}");
-    let window=maho_ext_compaction::extension_wiring::get_prompt_context_window(model.context_window as f64,Some(model.max_tokens as f64));
+    let window=get_side_query_prompt_context_window(model);
     let system_tokens=maho_core::compaction::compaction::estimate_tokens(&serde_json::json!({"role":"user","content":system_prompt,"timestamp":0}));
     let mut messages=history;messages.push(serde_json::from_value(serde_json::json!({"role":"user","content":question,"timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error|error.to_string())?);
     if !window.is_finite()||window<=0.0{return Ok(maho_ai::types::Context{system_prompt:Some(system_prompt),messages,tools:Some(vec![])});}
