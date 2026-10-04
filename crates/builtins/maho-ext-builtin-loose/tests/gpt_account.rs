@@ -125,13 +125,17 @@ fn context(ui: Arc<RecordingUi>) -> ExtensionContext {
 }
 
 #[tokio::test]
-async fn a_successful_add_emits_provider_accounts_changed() {
-    let events = EventBus::default();
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let retained = captured.clone();
-    let _subscription = events.on("provider-accounts-changed", Arc::new(move |value| retained.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value.clone())));
+async fn a_successful_add_routes_accounts_changed_through_the_core_registry_and_unsubscribes() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let sink = observed.clone();
+    let unsubscribe = maho_core::provider_account_events::subscribe_provider_account_events(Arc::new(move |event| {
+        if let maho_core::provider_account_events::ProviderAccountEvent::AccountsChanged { provider } = event
+            && provider == PROVIDER_ID {
+            sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(provider);
+        }
+    }));
 
-    let mut api = ExtensionApi::new(LoadedExtension::new("builtin-loose", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), events, ExtensionRuntime::default());
+    let mut api = ExtensionApi::new(LoadedExtension::new("builtin-loose", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     GptAccount {
         login: Arc::new(|_| Box::pin(async { Ok(Some(AccountLoginReceipt { provider_id: PROVIDER_ID.into(), name: "primary".into(), origin: AccountLoginOrigin::Generated })) })),
         open_browser: Arc::new(|_| {}),
@@ -143,9 +147,10 @@ async fn a_successful_add_emits_provider_accounts_changed() {
     let ctx = context(ui.clone());
     handler("add", &ctx).await.expect("add");
 
-    let events = captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["provider"], PROVIDER_ID);
-    assert_eq!(events[0]["type"], "accounts_changed");
+    assert_eq!(*observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner), vec![PROVIDER_ID.to_owned()]);
     assert!(ui.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|(message, _)| message.contains("account added")));
+
+    unsubscribe();
+    maho_core::provider_account_events::emit_provider_accounts_changed(PROVIDER_ID);
+    assert_eq!(observed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 1, "unsubscribe stops delivery");
 }
