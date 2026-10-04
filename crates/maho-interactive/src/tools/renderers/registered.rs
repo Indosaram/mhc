@@ -93,7 +93,7 @@ mod tests {
             Some(vec![format!("call {} @{width}", args["x"])])
         }
         fn render_result(&self, _args: &Value, result: &AgentToolResult, _theme: &maho_ext_api::Theme, width: usize) -> Option<Vec<String>> {
-            Some(vec![format!("result {} @{width}", result.details["kind"])])
+            Some(vec![format!("result {} @{width}", result.details["kind"].as_str().unwrap_or_default())])
         }
     }
 
