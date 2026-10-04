@@ -3,6 +3,8 @@ use std::{fs, io::Write, process::{Command, Stdio}};
 #[test]
 fn flat_brand_startup_copies_engine_state_once() {
     let home = tempfile::tempdir().expect("isolated home");
+    fs::create_dir_all(home.path().join(".maho")).expect("isolated omo state");
+    fs::write(home.path().join(".maho/onboarding-completed"), "{}\n").expect("onboarding already complete");
     let legacy = home.path().join(".senpi/agent");
     fs::create_dir_all(&legacy).expect("legacy directory");
     fs::write(legacy.join("models.json"), "{\"providers\":{}}\n").expect("models fixture");

@@ -24,6 +24,8 @@ fn real_entry_rejects_session_conflicts_before_mode_dispatch() {
 async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     use tokio::io::AsyncWriteExt;
     let dir = tempfile::tempdir().expect("isolated CLI directory");
+    std::fs::create_dir_all(dir.path().join(".maho")).expect("isolated omo state");
+    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("onboarding already complete");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
         .current_dir(dir.path()).env("HOME", dir.path())
         .env("MAHO_CODING_AGENT_DIR", dir.path().join("agent"))
@@ -54,7 +56,8 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     };
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = String::from_utf8(output.stdout).expect("utf8 responses");
-    let responses: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).expect("JSON response")).collect();
+    let responses: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).expect("JSON response"))
+        .filter(|record| record["type"].as_str() == Some("response")).collect();
     assert_eq!(responses.len(), 2);
     for (response, id) in responses.iter().zip(["query", "query-repeat"]) {
         assert_eq!(response["id"], id);
