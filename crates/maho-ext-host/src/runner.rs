@@ -74,6 +74,13 @@ tokio::task_local! {
 /// Wrap a dispatch handler so its invocation carries the per-extension provider-exclusion path.
 /// Every dispatch site iterates `handlers()`, so this single wrapper keeps the path available
 /// without allocating a fresh `ctx.session_manager` per dispatch.
+///
+/// The path is scoped to the handler future, so `ctx.prepare_provider_request` awaited inside a
+/// handler resolves the same exclusion upstream captures in the `createContext` closure. A handler
+/// that hands `ctx` to a `tokio::spawn` and calls `prepare_provider_request` there loses the path
+/// (task-locals do not cross spawns); that is benign only while the owning extension registers no
+/// `context`/`before_provider_request` handler (the sole spawn caller, cache-keepalive, registers
+/// neither; compaction calls it in-task). See the runner evidence note.
 fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> ExtensionHandler {
     Arc::new(move |event, context| {
         let handler = handler.clone();
@@ -462,14 +469,20 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let mut context = self.context.clone();
         if let Some(actions) = &self.context_actions {
-            let adapter = {
-                let cached = self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-                match cached { Some(adapter) => adapter, None => {
-                    let adapter: Arc<dyn SessionManager> = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(self.clone()) });
-                    *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&adapter));
-                    adapter
-                } }
-            };
+            // ONE stable adapter per runner (session/generation) so identity matches upstream's
+            // single `runner.sessionManager`. A single locked `get_or_insert_with` keeps concurrent
+            // dispatches from allocating distinct adapters; the closure only reads `self` (Arc clone,
+            // never re-locks the cache), so it cannot recursively lock.
+            let adapter = self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| {
+                // The adapter reaches the runner to re-run the nested provider dispatch, but that
+                // clone must NOT reach this cache through `context_session_manager` or the pair forms
+                // a strong cycle (`cache -> adapter -> runner -> cache`) that keeps the runner and its
+                // runtime alive forever. Detach the clone's cache so the edge never closes; the
+                // adapter still owns the clone, preserving its lifetime.
+                let mut provider_runner = self.clone();
+                provider_runner.context_session_manager = Arc::new(std::sync::Mutex::new(None));
+                Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(provider_runner) }) as Arc<dyn SessionManager>
+            }).clone();
             context.session_manager = adapter;
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
