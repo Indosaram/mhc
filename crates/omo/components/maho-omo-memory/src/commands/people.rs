@@ -29,17 +29,36 @@ pub const OBSERVATIONS_PER_LEVEL: usize = 20;
 
 pub use super::people_query::{PersonQueryResolution as PersonQuery, resolve_person_query as resolve_person};
 
+/// Derives the roster and adjacency graph. A repository-open, `head`, or `ls_tree`
+/// failure propagates as an error; only a successful `None` (people disabled) defaults
+/// to an empty graph, matching the pinned command's error behavior.
 pub fn derive_people_graph(
     deps: &MemoryCommandDeps,
     identity: &MemoryCommandIdentity,
     limits: PeopleLimits,
-) -> PalacePeople {
-    let Ok(repo) = open_repo(deps, identity) else {
-        return PalacePeople::default();
-    };
-    let head = repo.head().ok().flatten();
+) -> Result<PalacePeople, String> {
+    let repo = open_repo(deps, identity)?;
+    let head = repo.head().map_err(|error| error.to_string())?;
     let options = crate::palace::PalacePeopleOptions { enabled: true, limits };
-    collect_people(&repo, head.as_deref(), &options).unwrap_or_default()
+    resolve_people_graph(
+        collect_people(&repo, head.as_deref(), &options).map_err(|error| error.to_string()),
+    )
+}
+
+/// Maps the collector carrier: a successful `None` (disabled) defaults to an empty graph,
+/// while an error is propagated so a failed collection never renders as an empty roster.
+pub fn resolve_people_graph(
+    collected: Result<Option<PalacePeople>, String>,
+) -> Result<PalacePeople, String> {
+    match collected {
+        Ok(Some(people)) => Ok(people),
+        Ok(None) => Ok(empty_people_graph()),
+        Err(error) => Err(error),
+    }
+}
+
+fn empty_people_graph() -> PalacePeople {
+    PalacePeople { nodes: Vec::new(), edges: Vec::new(), diagnostics: Vec::new() }
 }
 
 pub fn select_observations(
@@ -91,7 +110,10 @@ pub async fn handle_people(
 
     let (question, rest) = extract_ask(args);
     let parsed = parse_command_args_full(&rest, ParseCommandArgsOptions { booleans: &["all"] });
-    let graph = derive_people_graph(deps, &identity, limits);
+    let graph = match derive_people_graph(deps, &identity, limits) {
+        Ok(graph) => graph,
+        Err(error) => return respond(ctx, error, NotifyLevel::Error),
+    };
     let name = parsed.positionals.join(" ").trim().to_owned();
     if name.is_empty() {
         return respond(ctx, render_roster(&graph), NotifyLevel::Info);
@@ -292,7 +314,7 @@ mod tests {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
 
-        let graph = derive_people_graph(&fake.deps, &identity, LIMITS);
+        let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
 
         let mut slugs: Vec<String> = graph.nodes.iter().map(|node| node.slug.clone()).collect();
         slugs.sort();
@@ -326,17 +348,51 @@ mod tests {
         seeded_repo(&identity, vec![seed("system/persona.md", "---\ndescription: P\n---\nbody\n")]);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
 
-        let graph = derive_people_graph(&fake.deps, &identity, LIMITS);
+        let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
 
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
+    }
+
+    #[test]
+    fn given_a_collector_error_when_the_graph_is_resolved_then_the_error_propagates_instead_of_an_empty_roster() {
+        let error = resolve_people_graph(Err("git ls-tree failed".to_owned()));
+        assert_eq!(error, Err("git ls-tree failed".to_owned()));
+    }
+
+    #[test]
+    fn given_a_disabled_collector_when_the_graph_is_resolved_then_it_defaults_to_an_empty_graph() {
+        let graph = resolve_people_graph(Ok(None)).expect("disabled collector defaults");
+        assert!(graph.nodes.is_empty());
+        assert!(graph.edges.is_empty());
+        assert!(graph.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn given_a_collected_graph_when_resolved_then_the_carrier_passes_through_unchanged() {
+        let collected = PalacePeople {
+            nodes: vec![PalacePeopleNode {
+                slug: "jane-doe".to_owned(),
+                path: "people/jane-doe/card.md".to_owned(),
+                display_name: "Jane Doe".to_owned(),
+                kind: "person".to_owned(),
+                aliases: vec!["JD".to_owned()],
+                state: "committed".to_owned(),
+            }],
+            edges: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let graph = resolve_people_graph(Ok(Some(collected))).expect("passes through");
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].slug, "jane-doe");
+        assert_eq!(graph.nodes[0].aliases, vec!["JD".to_owned()]);
     }
 
     #[tokio::test]
     async fn given_an_alias_when_the_query_resolves_then_it_hits_the_owning_slug() {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let graph = derive_people_graph(&fake.deps, &identity, LIMITS);
+        let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
 
         assert_eq!(
             resolve_person_query(&graph.nodes, "jd"),
@@ -348,7 +404,7 @@ mod tests {
     async fn given_an_unknown_name_when_the_query_resolves_then_it_misses_with_close_slugs() {
         let (_root, identity) = people_fixture(0);
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
-        let graph = derive_people_graph(&fake.deps, &identity, LIMITS);
+        let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
 
         assert_eq!(
             resolve_person_query(&graph.nodes, "jane doh"),
@@ -362,7 +418,7 @@ mod tests {
         let fake = fake_deps(Some(identity.clone()), FakeDepsOverrides::default());
         let context = fake_command_context(FakeContextOptions::default());
 
-        let graph = derive_people_graph(&fake.deps, &identity, LIMITS);
+        let graph = derive_people_graph(&fake.deps, &identity, LIMITS).expect("people graph");
         let response = handle_people(&fake.deps, &context.ctx, "").await;
 
         let slugs: std::collections::BTreeSet<String> =
