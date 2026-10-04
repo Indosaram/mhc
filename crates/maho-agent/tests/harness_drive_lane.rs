@@ -865,3 +865,75 @@ async fn persists_name_and_label_updates_and_deletions() {
         None
     );
 }
+
+/// Causal regression: the typed `ExecutionToolContext.env` installed on the lane's tool runner
+/// reaches a real tool invocation through the public `prompt`/`drive` path. The faux provider
+/// asks the `read` tool to read a real temp file; the committed tool result must carry the file
+/// contents, and the run must settle `completed`.
+#[tokio::test]
+async fn typed_tool_context_env_reaches_a_real_read_invocation() {
+    use maho_agent::harness::env::nodejs::NodeExecutionEnv;
+    use maho_agent::harness::runtime::drive::tools::ToolRunner;
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+    use maho_agent::harness::session::types::TerminalStatus;
+    use maho_agent::harness::tools::{create_read_tool, ExecutionToolContext, ReadToolOptions};
+    use maho_agent::harness::types::{AgentHarnessTool, ExecutionEnv};
+
+    // A real temp directory + file the read tool must open through the real env.
+    let dir = std::env::temp_dir().join(format!("t16-tool-context-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let marker = format!("tool-context-marker-{}", std::process::id());
+    std::fs::write(dir.join("note.txt"), &marker).expect("temp file");
+
+    let (lane, faux) = facade_lane().await;
+    let env: Arc<dyn ExecutionEnv> = Arc::new(NodeExecutionEnv::new(dir.to_string_lossy().to_string()));
+    let tools: Vec<Arc<AgentHarnessTool<ExecutionToolContext>>> = vec![Arc::new(
+        create_read_tool::<ExecutionToolContext>(ReadToolOptions { auto_resize_images: None, image_processor: None }),
+    )];
+    lane.tool_runner = Arc::new(ToolRunner::new(tools, Some(ExecutionToolContext { env, post_mutate: None })));
+    lane.set_active_tools(vec!["read".into()], &BACKGROUND_CONTEXT).await.expect("set active tools");
+
+    // One tool-call turn (read note.txt), then a follow-up text answer.
+    let arguments = serde_json::json!({"path": "note.txt"}).as_object().expect("object args").clone();
+    faux.set_responses(vec![
+        maho_ai::providers::faux::faux_assistant_message(
+            maho_ai::providers::faux::faux_tool_call("read", arguments, Some("call-read")),
+            maho_ai::providers::faux::FauxAssistantMessageOptions { stop_reason: Some(maho_ai::types::StopReason::ToolUse), ..Default::default() },
+        )
+        .into(),
+        maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into(),
+    ]);
+
+    let outcome = lane
+        .prompt(PromptInput::Text { text: "read note.txt".into(), images: vec![] }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    let RunOutcome::Settled(record) = outcome else { panic!("expected a settled run") };
+    assert_eq!(record.status, TerminalStatus::Completed);
+    // The tool round-trip reached the provider twice (tool-call turn + follow-up answer).
+    assert_eq!(faux.state().call_count, 2);
+
+    // The real read tool output (the temp file contents) is in the durable transcript.
+    let entries = lane.find_entries(None, &BACKGROUND_CONTEXT).await.expect("transcript");
+    let tool_result = entries
+        .iter()
+        .find_map(|entry| match entry.kind.message().and_then(|message| message.try_as_llm()) {
+            Some(maho_ai::types::Message::ToolResult(message)) => Some(message.clone()),
+            _ => None,
+        })
+        .expect("a tool result was committed");
+    assert_eq!(tool_result.tool_name, "read");
+    assert!(!tool_result.is_error, "the read tool failed: {tool_result:?}");
+    let text = tool_result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            maho_ai::types::ContentBlock::Text(text) => Some(text.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(&marker), "tool result did not carry the real file content: {text}");
+    std::fs::remove_dir_all(&dir).ok();
+}

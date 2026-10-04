@@ -10,6 +10,26 @@ use crate::harness::hooks::{HookErrorReporter, HookRegistry};
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
 use crate::harness::session::types::{Control, LaneConfiguration, LaneModelRef, Operation, OperationIntentKind, Session, Write};
 use crate::harness::session::values::*;
+use crate::harness::types::AgentHarnessTool;
+
+/// Project one typed harness tool onto the context-free `Config<()>` snapshot.
+///
+/// `drive/generation.rs` (and `execution/assistant.rs`) read `Config.tools` only for the
+/// provider-facing `Tool` definition (`name`/`description`/`parameters`) — the pinned
+/// `config.tools.map((tool) => tool.tool)` — never `execute`. Since the real typed tools live on
+/// `Harness<TContext>`/`Lane.tool_runner`, the context-free snapshot carries an erased clone with
+/// the identical definition; its `execute` is never invoked (the typed runner is).
+fn erase_tool_context<TContext>(tool: &Arc<AgentHarnessTool<TContext>>) -> Arc<AgentHarnessTool<()>> {
+    Arc::new(AgentHarnessTool {
+        label: tool.label.clone(),
+        prepare_arguments: tool.prepare_arguments.clone(),
+        replay: tool.replay,
+        tool: tool.tool.clone(),
+        execute: Arc::new(|_, _, _, _, _, _| {
+            Box::pin(async { Err("Tool definition has no typed execution context".to_owned()) })
+        }),
+    })
+}
 
 /// Pinned `DEFAULT_RETRY_POLICY`/`DEFAULT_COMPACTION_SETTINGS`-backed process-local drive config.
 pub fn default_drive_config() -> Config<()> {
@@ -503,9 +523,10 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
             .unwrap_or_else(|| options.tools.iter().map(|tool| tool.name().to_owned()).collect()),
     };
     // The typed tools and `toolContext` live on the `Harness<TContext>` and are handed to each
-    // lane's `ToolRunner`; the context-free drive config stays `Config<()>`.
+    // lane's `ToolRunner`. The context-free drive config carries only the provider-facing tool
+    // definitions (`drive/generation.rs` reads `config.tools` for `tool.tool`, never `execute`).
     let config = Config {
-        tools: Vec::new(),
+        tools: options.tools.iter().map(erase_tool_context).collect(),
         resources: options.resources.clone().unwrap_or_default(),
         stream_options: options.stream_options.clone().unwrap_or_default(),
         retry_policy: options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy),
