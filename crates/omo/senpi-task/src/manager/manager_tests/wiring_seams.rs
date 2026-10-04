@@ -22,6 +22,21 @@ fn with_admission(admission: SpawnAdmission) -> super::fakes::Harness {
 }
 
 #[test]
+fn admission_bookkeeping_error_is_not_a_retryable_capacity_denial() {
+    let harness = make_manager(HarnessOptions {
+        customize: Some(Box::new(|options| {
+            options.fallible_admit = Some(Arc::new(|_| Err(crate::host::HostError { message: "approval store unavailable".into() })));
+        })),
+        ..HarnessOptions::default()
+    });
+    let result = harness.manager.start(&base_spec());
+    let StartResult::StartFailed(failure) = result else { panic!("expected launch failure"); };
+    assert_eq!(failure.error_message, "host call failed: approval store unavailable");
+    assert_eq!(harness.in_process.started_count(), 0);
+    assert!(harness.manager.list(&crate::manager::types::ListScope::All).is_empty());
+}
+
+#[test]
 fn given_launched_task_when_forgotten_then_live_handle_pruned() {
     let harness = default_manager();
     let task = started(harness.manager.start(&background(base_spec(), true)));

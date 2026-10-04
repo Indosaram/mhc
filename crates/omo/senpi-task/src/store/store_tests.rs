@@ -20,6 +20,28 @@ fn project() -> TempDir {
         .expect("tempdir")
 }
 
+#[test]
+fn mutation_observer_is_shared_by_clones_and_runs_after_unlock() {
+    let root = project();
+    let store = store_for(root.path());
+    let record = base_record("st_00000001");
+    let reads = store.clone();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    store.set_mutation_listener(Some(Arc::new(move || {
+        assert!(reads.load("st_00000001").expect("committed read").is_some());
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })));
+    let writer = store.clone();
+    writer.save(&record).expect("save");
+    assert!(writer.save(&record).is_err());
+    writer.mutate(&record.task_id, Clone::clone).expect("unchanged mutation");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    store.set_mutation_listener(None);
+    writer.replace(&record).expect("replace after unsubscribe");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 fn config(project: &Path) -> StateDirConfig {
     StateDirConfig {
         project_dir: project.to_path_buf(),

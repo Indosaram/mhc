@@ -1,7 +1,7 @@
 //! Production composition over the current public manager and lifecycle ports.
 use std::{path::PathBuf, sync::{Arc, Mutex, OnceLock, PoisonError}};
 use serde_json::Value;
-use senpi_task::{completion::{CompletionNotifier, CompletionNotifierDeps, create_completion_notifier}, lifecycle::{LifecycleDeps, TaskLifecycle, TaskSettings, create_task_lifecycle}, manager::{TaskManager, types::{ManagedRunners, TaskManagerOptions, ManagerConfig, SpawnAdmission}}, store::{StateDirConfig, TaskRecordStore}};
+use senpi_task::{completion::{CompletionNotifier, CompletionNotifierDeps, create_completion_notifier}, lifecycle::{LifecycleDeps, TaskLifecycle, TaskSettings, create_task_lifecycle}, manager::{TaskManager, types::{ManagedRunners, TaskManagerOptions, ManagerConfig}}, store::{StateDirConfig, TaskRecordStore}};
 use crate::{runtime_context::TaskRuntimeContext, parent_notifier::{TaskParentNotifier, CompletionCoordinator}, residency_registry::ManagerResidencyRegistry, lifecycle_adapters::{TaskLifecycleDestruction, admit_lifecycle}, planner::create_task_child_planner, engine_runners::resolve_task_agents};
 
 pub struct ComposeTaskEngineDeps {
@@ -62,9 +62,8 @@ pub fn compose_task_engine_with_rpc_respawn(deps: ComposeTaskEngineDeps, rpc_res
     };
     options.destruction = Some(Arc::new(TaskLifecycleDestruction((*lifecycle).clone())));
     let admission = lifecycle.clone();
-    // The manager's admission callback cannot return a lifecycle error. Reject rather
-    // than admitting a child after failed residency bookkeeping.
-    options.admit = Some(Arc::new(move |session| admit_lifecycle(&admission, session).unwrap_or_else(|error| SpawnAdmission::Rejected { message: error.to_string() })));
+    // Bookkeeping failure must remain a launch failure, never a retryable capacity denial.
+    options.fallible_admit = Some(Arc::new(move |session| admit_lifecycle(&admission, session).map_err(|error| senpi_task::host::HostError { message: error.to_string() })));
     let manager = Arc::new(TaskManager::new(options));
     let _ = manager_ref.set(Arc::downgrade(&manager));
     TaskEngine { manager, lifecycle, notifier, runtime, store, config: deps.config, agents }
