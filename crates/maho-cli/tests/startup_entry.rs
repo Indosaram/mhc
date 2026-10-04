@@ -56,7 +56,7 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     };
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let text = String::from_utf8(output.stdout).expect("utf8 responses");
-    let responses: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str(line).expect("JSON response"))
+    let responses: Vec<serde_json::Value> = text.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON response"))
         .filter(|record| record["type"].as_str() == Some("response")).collect();
     assert_eq!(responses.len(), 2);
     for (response, id) in responses.iter().zip(["query", "query-repeat"]) {
