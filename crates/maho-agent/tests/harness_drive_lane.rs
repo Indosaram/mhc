@@ -355,6 +355,111 @@ async fn fixture() -> Harness {
         .expect("fresh harness attaches")
 }
 
+fn faux_model() -> maho_ai::model::Model {
+    maho_ai::providers::faux::faux_provider(Default::default())
+        .get_model(None)
+        .expect("faux provider ships a model")
+}
+
+#[tokio::test]
+async fn options_constructor_seeds_lane_configuration_and_drive_config() {
+    use maho_agent::harness::agent_harness::AgentHarnessOptions;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::types::{AgentHarnessResources, Skill};
+    let storage = Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) }));
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "options".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        storage,
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let model = faux_model();
+    let (harness, open) = create_agent_harness_with_options(
+        AgentHarnessOptions {
+            session,
+            models: maho_ai::models::create_models(None),
+            model: model.clone(),
+            thinking_level: Some(ModelThinkingLevel::High),
+            active_tool_names: Some(vec!["read".into()]),
+            tools: Vec::new(),
+            system_prompt: None,
+            resources: Some(AgentHarnessResources { skills: Some(vec![Skill { name: "review".into(), description: "Review".into(), content: "Inspect".into(), file_path: "/skills/review/SKILL.md".into(), disable_model_invocation: None }]), prompt_templates: None }),
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: Some(maho_agent::types::QueueMode::OneAtATime),
+            follow_up_mode: None,
+            tool_execution: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("options constructor attaches");
+    assert!(open.is_empty());
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(lane.state().configuration.thinking_level, ModelThinkingLevel::High);
+    assert_eq!(lane.state().configuration.active_tool_names, vec!["read".to_owned()]);
+    assert_eq!(lane.state().configuration.model.provider, model.provider);
+    let config = lane.read_config();
+    assert_eq!(config.steering_mode, maho_agent::types::QueueMode::OneAtATime);
+    assert_eq!(config.resources.skills.as_ref().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn drive_reports_mismatch_for_an_unknown_operation() {
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOptionsError};
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let result = lane
+        .drive(DriveOptions { operation_id: "missing".into(), wait_for_retry: None, poll_deferred: None }, &BACKGROUND_CONTEXT)
+        .await;
+    assert!(matches!(result, Err(DriveOptionsError::Mismatch(_))));
+}
+
+#[tokio::test]
+async fn resume_reports_nothing_to_resume_when_idle() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let resumed = lane.resume(&BACKGROUND_CONTEXT).await.expect("resume does not fault when idle");
+    let message = resumed.expect_err("idle lane has nothing to resume");
+    assert!(message.contains("no active operation to resume"), "unexpected message: {message}");
+}
+
+#[tokio::test]
+async fn concurrent_drive_shares_one_installed_pass() {
+    use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};
+    use maho_agent::harness::runtime::lane::PromptInput;
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let settings = maho_agent::harness::session::types::RunSettings {
+        compaction: maho_agent::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS,
+        steering_mode: maho_agent::types::QueueMode::All,
+        follow_up_mode: maho_agent::types::QueueMode::All,
+        tool_execution: maho_agent::harness::session::types::ToolExecutionMode::Parallel,
+    };
+    let admission = lane
+        .accept_prompt(PromptInput::Text { text: "hello".into(), images: vec![] }, None, settings, &BACKGROUND_CONTEXT)
+        .await
+        .unwrap()
+        .unwrap();
+    let options = DriveOptions { operation_id: admission.operation_id.clone(), wait_for_retry: None, poll_deferred: None };
+    let first = lane.clone();
+    let second = lane.clone();
+    let first_options = options.clone();
+    let second_options = options.clone();
+    let (first_outcome, second_outcome) = tokio::join!(
+        async move { first.drive(first_options, &BACKGROUND_CONTEXT).await },
+        async move { second.drive(second_options, &BACKGROUND_CONTEXT).await },
+    );
+    let first_outcome = first_outcome.expect("the installing drive settles");
+    let second_outcome = second_outcome.expect("the observing drive settles");
+    assert!(matches!(first_outcome, DriveOutcome::Settled { .. }));
+    assert!(matches!(second_outcome, DriveOutcome::Settled { .. }));
+    assert_eq!(first_outcome, second_outcome);
+    assert!(lane.state().operation.is_none());
+    lane.wait_for_idle(&BACKGROUND_CONTEXT).await.unwrap();
+}
+
 #[tokio::test]
 async fn reads_and_replaces_configuration_from_owned_state() {
     let harness = fixture().await;

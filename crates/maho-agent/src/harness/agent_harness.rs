@@ -5,8 +5,14 @@ use std::sync::Arc;
 
 use maho_ai::types::DeferredHandle;
 
-use crate::harness::session::types::{JsonValue, OperationKind, OperationResultRecord};
-use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool, PromptTemplate, Skill};
+use crate::harness::compaction::compaction::CompactionSettings;
+use crate::harness::session::session::SessionError;
+use crate::harness::session::types::{JsonValue, OperationKind, OperationResultRecord, Session, ToolExecutionMode};
+use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool};
+use crate::types::QueueMode;
+
+use super::runtime::lane::OperationMismatch;
+use super::runtime::types::SystemPromptFn;
 
 pub type Resources = crate::harness::types::AgentHarnessResources;
 
@@ -63,10 +69,44 @@ pub struct HarnessEvent {
     pub payload: JsonValue,
 }
 
-pub struct AgentHarnessOptions<TContext> {
-    pub tools: Vec<Arc<AgentHarnessTool<TContext>>>,
+/// The pinned `Context`-taking constructor lives in `runtime::harness`.
+///
+/// `AgentHarnessOptions<TContext>` for the process-local (`()` context) runtime lane.
+///
+/// Mirrors pinned `createAgentHarness(options, context)`: the constructor seeds the lane
+/// configuration from `model`/`thinkingLevel`/`activeToolNames`, installs the process-local
+/// `Config` (tools, resources, stream options, retry, compaction, queue modes, tool execution,
+/// system prompt) and restores every durable lane into the new `Harness`.
+pub struct AgentHarnessOptions {
+    pub session: Arc<dyn Session>,
+    pub models: maho_ai::models::Models,
+    pub model: maho_ai::model::Model,
+    pub thinking_level: Option<maho_ai::types::ModelThinkingLevel>,
+    pub active_tool_names: Option<Vec<String>>,
+    pub tools: Vec<Arc<AgentHarnessTool<()>>>,
+    pub system_prompt: Option<SystemPromptFn>,
     pub resources: Option<Resources>,
     pub stream_options: Option<AgentHarnessStreamOptions>,
-    pub prompt_templates: Option<Vec<PromptTemplate>>,
-    pub skills: Option<Vec<Skill>>,
+    pub retry: Option<maho_ai::utils::retry::RetryPolicy>,
+    pub compaction: Option<CompactionSettings>,
+    pub steering_mode: Option<QueueMode>,
+    pub follow_up_mode: Option<QueueMode>,
+    pub tool_execution: Option<ToolExecutionMode>,
+}
+
+/// Failure of one `Lane::drive` call: the pinned `Result<DriveOutcome, OperationMismatch | Closed>`.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum DriveOptionsError {
+    #[error("{0}")]
+    Session(SessionError),
+    #[error("{0}")]
+    Drive(String),
+    #[error("Operation {0:?} does not own its lane")]
+    Mismatch(OperationMismatch),
+}
+
+impl From<SessionError> for DriveOptionsError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
+    }
 }
