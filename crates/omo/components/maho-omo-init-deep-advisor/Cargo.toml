@@ -10,9 +10,14 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dependencies]
 maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-onboarding = { path = "../maho-omo-onboarding" }
+maho-omo-telemetry = { path = "../maho-omo-telemetry" }
 tokio = { workspace = true, features = ["rt", "time"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
