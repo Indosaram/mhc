@@ -531,3 +531,80 @@ async fn explicit_resources_precede_auto_resources_and_native_extensions_stay_em
     assert_eq!(paths.prompts.len(), 1); assert!(!paths.prompts[0].enabled);
     assert_eq!(paths.prompts[0].metadata.source, "local"); assert!(paths.extensions.is_empty());
 }
+
+#[test]
+fn npm_partial_comparators_and_prerelease_admission_follow_npm() {
+    let cases = [
+        ("1.9.0", ">1", false), ("2.0.0", ">1", true),
+        ("1.2.9", "<=1.2", true), ("1.3.0", "<=1.2", false),
+        ("2.0.0-alpha", "1 - 2", false), ("2.9.0", "1 - 2", true),
+        ("1.2.3-alpha.2", ">=1.2.3-alpha.1 <2", true),
+        ("1.3.0-alpha", ">=1.2.3-alpha.1 <2", false),
+        ("1.2.3+two", "1.2.3+one", true),
+        ("1.2.3-alpha.2", "1.2.3-alpha.1", false),
+        ("1.2.4", "1.2.3 - 1.2.5", true),
+        ("1.2.3-alpha", "*", false), ("1.2.3-alpha", "", true),
+        ("1.2.3-alpha", "latest", true), ("1.0.0", ">*", false),
+        ("1.2.9", "=1.2", true), ("1.3.0", "=1.2", false),
+        ("1.2.9", ">=\t 1.2 <\t2", true),
+    ];
+    for (version, range, expected) in cases { assert_eq!(npm_matches(version, Some(range)), expected, "{version} {range}"); }
+    assert!(parse_version("=1.2.3").is_none());
+    assert!(parse_version("v1.2.3").is_some());
+}
+
+#[tokio::test]
+async fn npm_single_view_version_is_not_range_filtered_or_build_ordered() {
+    let dir = tempfile::tempdir().expect("tempdir"); let mut settings = settings(true);
+    set_packages(&mut settings, SettingsScope::Global, json!(["npm:pkg@^1"]));
+    put(&dir.path().join("agent/npm/node_modules/pkg/package.json"), r#"{"version":"1.0.0"}"#);
+    let runner = Arc::new(FakeRunner { latest: Some("\"2.0.0\"".into()), ..Default::default() });
+    let manager = manager(&dir, &mut settings, runner.clone());
+    manager.update(None).await.expect("update");
+    assert!(runner.calls().iter().any(|command| command.args.first().is_some_and(|arg| arg == "install")));
+    assert!(parse_version("1.0.0+a").expect("version").cmp_precedence(&parse_version("1.0.0+z").expect("version")).is_eq());
+}
+
+#[test]
+fn nested_extglobs_and_hidden_segments_match_minimatch_filters() {
+    let cases = [
+        ("prompts/a.md", "prompts/@(a|b).md", true),
+        ("prompts/c.md", "prompts/@(a|b).md", false),
+        ("ab.md", "+(a|b).md", true), ("c.md", "*(a|b)c.md", true),
+        ("c.md", "?(a|b).md", false), ("ab.md", "@(a?(b)|c).md", true),
+        ("a.txt", "*.!(md|json)", true), ("a.md", "*.!(md|json)", false),
+        ("a.md", "@({a,b}|c).md", true),
+        ("x/.hidden/a.md", "**/.hidden/*.md", true),
+        (".hidden/x/a.md", ".hidden/**/*.md", true),
+        ("x/.other/a.md", "**/.hidden/*.md", false),
+    ];
+    for (path, pattern, expected) in cases { assert_eq!(minimatch_path(path, pattern), expected, "{path} {pattern}"); }
+}
+
+#[test]
+fn hosted_shorthand_keeps_pinned_clone_url_and_storage_identity() {
+    for (source, host, path, repo) in [
+        ("git:user/repo@v1", "github.com", "user/repo", "https://user/repo"),
+        ("git:github:user/repo#v1", "github.com", "user/repo", "https://github:user/repo#v1"),
+        ("git:gitlab:group/sub/repo#v1", "gitlab.com", "group/sub/repo", "https://gitlab:group/sub/repo#v1"),
+        ("git:bitbucket:user/repo#v1", "bitbucket.org", "user/repo", "https://bitbucket:user/repo#v1"),
+        ("git:gist:abc#v1", "gist.github.com", "null/abc", "https://gist:abc#v1"),
+        ("git:sourcehut:~user/repo#v1", "git.sr.ht", "~user/repo", "https://sourcehut:~user/repo#v1"),
+    ] {
+        let Some(ParsedSource::Git { host: actual_host, path: actual_path, repo: actual_repo, reference }) = parse_git_source(source) else { panic!("git {source}"); };
+        assert_eq!(actual_host, host); assert_eq!(actual_path, path); assert_eq!(actual_repo, repo); assert_eq!(reference.as_deref(), Some("v1"));
+    }
+    assert!(parse_git_source("user/repo").is_none());
+    let Some(ParsedSource::Git { path, reference, .. }) = parse_git_source("https://github.com/user/repo/tree/main") else { panic!("tree URL"); };
+    assert_eq!(path, "user/repo"); assert_eq!(reference.as_deref(), Some("main"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn live_stdout_takeover_duplicates_stderr_descriptor_without_buffering() {
+    use std::os::fd::{AsRawFd, OwnedFd};
+    let redirected = OwnedFd::try_from(package_stdout(false, true).expect("stdio")).expect("owned descriptor");
+    assert_eq!(std::fs::read_link(format!("/proc/self/fd/{}", redirected.as_raw_fd())).expect("redirected"), std::fs::read_link("/proc/self/fd/2").expect("stderr"));
+    assert!(OwnedFd::try_from(package_stdout(false, false).expect("stdio")).is_err());
+    assert!(OwnedFd::try_from(package_stdout(true, true).expect("stdio")).is_err());
+}
