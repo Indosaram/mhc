@@ -35,11 +35,13 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
+    let mcp_gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> = Arc::new(std::sync::Mutex::new(None));
+    let tool_search_gate = mcp_gate.clone();
     vec![
             factory("recommended-models", maho_ext_recommended_models::RecommendedModels),
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
             factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
-            factory("tool-search", ToolSearch),
+            factory("tool-search", ToolSearch { mcp_native_enabled: Arc::new(move || tool_search_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|gate| gate.enabled())) }),
             factory("todotools", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
                 provider_native_bypass: Arc::new(|model| {
@@ -88,7 +90,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("rules", maho_ext_rules::Rules),
             factory("goal", maho_ext_goal::GoalExtension::default()),
             factory("codemode", Codemode),
-            factory("mcp", Mcp),
+            factory("mcp", Mcp { gate: mcp_gate.clone() }),
         ].into_iter().map(|factory| {
             let extension: Arc<dyn Extension> = Arc::from(factory.extension);
             NativeAsyncExtensionFactory { path: factory.path, source_info: factory.source_info,
@@ -259,17 +261,28 @@ impl ExtensionActions for RuntimeActions {
     fn append_entry(&self, kind: &str, data: Option<maho_ext_api::JsonValue>) -> Result<(), ExtensionFailure> { self.actions()?.append_entry(kind, data) }
     fn get_all_tools(&self) -> Result<Vec<maho_ext_api::ToolInfo>, ExtensionFailure> { self.actions()?.get_all_tools() }
 }
-struct ToolSearch;
-struct Mcp;
-impl Extension for Mcp {
-    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
-        maho_ext_mcp::index::register_mcp_lifecycle(api, Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), 1);
-    }
-}
+struct ToolSearch { mcp_native_enabled: Arc<dyn Fn() -> bool + Send + Sync> }
 impl Extension for ToolSearch {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         maho_ext_tool_search::index::ToolSearchExtension { actions: Arc::new(RuntimeActions(api.runtime.clone())),
-            mcp_native_enabled: Arc::new(|| std::env::var("MAHO_MCP_NATIVE_TOOL_SEARCH").is_ok_and(|value| value == "1")) }.register(api);
+            mcp_native_enabled: self.mcp_native_enabled.clone() }.register(api);
+    }
+}
+struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> }
+impl Extension for Mcp {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        // The shared tool-search service is created from the live registration api and handed to
+        // the MCP lifecycle; the returned MCP service publishes the native tool-search gate that
+        // the tool-search extension reads through `mcp_native_enabled`.
+        let shared = super::tool_search::SharedToolSearch::new(api.runtime.clone(), Arc::new(RuntimeActions(api.runtime.clone())));
+        let extension = maho_ext_mcp::index::McpExtension {
+            registry: Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), owner: 1,
+            tool_search: Some(shared.into_mcp_argument()),
+        };
+        let service = extension.register_with_service(api);
+        if let Ok(service) = service.try_lock() {
+            *self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service.native_tool_search_gate());
+        }
     }
 }
 struct Todo(tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>);
