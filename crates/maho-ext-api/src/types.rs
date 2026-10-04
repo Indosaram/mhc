@@ -2,7 +2,7 @@
 //! Session, resource, registry and theme ports live here to keep the dependency graph acyclic.
 use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin::Pin, sync::{Arc, Mutex}};
 pub use maho_agent::types::{AgentEvent, AgentMessage};
-pub use maho_agent::types::{AgentTool, AgentToolResult};
+pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
 pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
@@ -467,6 +467,7 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_system_prompt(&self) -> String;
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions;
     fn get_loaded_hook_sources(&self) -> LoadedHookSources;
+    fn get_registered_mcp_servers(&self) -> Option<Vec<RegisteredMcpServerDeclaration>> { None }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools>;
 }
 
@@ -639,6 +640,26 @@ impl ExtensionContext {
         let actions = self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))?;
         actions.assert_active()?; Ok(actions)
     }
+    pub fn current_model(&self) -> Result<Option<Model>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_model() }, None => self.model.clone() })
+    }
+    pub fn current_service_tier(&self) -> Result<Option<ServiceTier>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_service_tier() }, None => self.service_tier })
+    }
+    pub fn current_effective_service_tier(&self) -> Result<Option<ServiceTier>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_effective_service_tier() }, None => self.effective_service_tier.or(self.service_tier) })
+    }
+    pub fn current_steering_signal(&self) -> Result<Option<AbortSignal>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_steering_signal() }, None => self.steering_signal.clone() })
+    }
+    pub fn current_model_registry(&self) -> Result<Arc<dyn ModelRegistry>, ExtensionFailure> {
+        if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
+        Ok(Arc::clone(&self.model_registry))
+    }
+    pub fn current_ui(&self) -> Result<Arc<dyn ExtensionUi>, ExtensionFailure> {
+        if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
+        Ok(Arc::clone(&self.ui))
+    }
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
     pub async fn request_reload(&self) -> Result<(), ExtensionFailure> { self.actions()?.request_reload().await }
@@ -688,7 +709,10 @@ impl ExtensionContext {
     pub fn is_compacting(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_compacting_fn)(), ExtensionContextActions::is_compacting) }
     pub fn get_system_prompt(&self) -> String { self.assert_active_or_panic(); (self.get_system_prompt_fn)() }
     pub fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.assert_active_or_panic(); (self.get_system_prompt_options_fn)() }
-    pub fn get_registered_mcp_servers(&self) -> &[RegisteredMcpServerDeclaration] { self.assert_active_or_panic(); &self.registered_mcp_servers }
+    pub fn get_registered_mcp_servers(&self) -> Vec<RegisteredMcpServerDeclaration> {
+        self.assert_active_or_panic();
+        self.session_manager.extension_context_actions().and_then(ExtensionContextActions::get_registered_mcp_servers).unwrap_or_else(|| self.registered_mcp_servers.clone())
+    }
 }
 impl ToolContext for ExtensionContext {
     fn cwd(&self) -> &Path { self.assert_active_or_panic(); &self.cwd }
@@ -1111,8 +1135,9 @@ pub trait ExtensionSessionActions: Send + Sync {
 }
 
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
+type NativeBusHandler = Arc<dyn Fn(&(dyn std::any::Any + Send + Sync)) + Send + Sync>;
 #[derive(Clone, Default)]
-struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
+struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>>, native_handlers: BTreeMap<String, Vec<(u64, NativeBusHandler)>> }
 #[derive(Clone, Default)]
 pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
@@ -1120,6 +1145,7 @@ impl Drop for BusSubscription {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handlers) = state.handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
+        if let Some(handlers) = state.native_handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
     }
 }
 impl EventBus {
@@ -1134,9 +1160,9 @@ impl EventBus {
     pub fn invalidate_registration(&self) {
         self.registration_stale.store(true, std::sync::atomic::Ordering::Release);
         let owned = std::mem::take(&mut *self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for handlers in self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.values_mut() {
-            handlers.retain(|(id, _)| !owned.contains(id));
-        }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for handlers in state.handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
+        for handlers in state.native_handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
     }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1162,9 +1188,28 @@ impl EventBus {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
+    /// Subscribe to native payloads without serializing contexts or callback objects.
+    pub fn on_native<T: Send + Sync + 'static>(&self, channel: &str, handler: Arc<dyn Fn(&T) + Send + Sync>) -> BusSubscription {
+        self.assert_active_or_panic();
+        let erased: NativeBusHandler = Arc::new(move |data| { if let Some(data) = data.downcast_ref::<T>() { handler(data); } });
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
+        state.native_handlers.entry(channel.into()).or_default().push((id, erased));
+        self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+        BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
+    }
+    /// Publish the same borrowed native object to every matching subscriber.
+    pub fn emit_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
+        self.assert_active_or_panic();
+        let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).native_handlers.get(channel).cloned().unwrap_or_default();
+        for (_, handler) in handlers {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
+        }
+    }
     pub fn clear(&self) {
         if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear();
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.handlers.clear(); state.native_handlers.clear();
     }
 }
 pub struct EventBusCheckpoint(BusState);

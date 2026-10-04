@@ -198,6 +198,10 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_system_prompt(&self) -> String { self.active(); self.actions.get_system_prompt() }
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.active(); self.actions.get_system_prompt_options() }
     fn get_loaded_hook_sources(&self) -> LoadedHookSources { self.active(); self.actions.get_loaded_hook_sources() }
+    fn get_registered_mcp_servers(&self) -> Option<Vec<RegisteredMcpServerDeclaration>> {
+        self.active();
+        self.provider_runner.as_ref().map(ExtensionRunner::get_registered_mcp_servers).or_else(|| self.actions.get_registered_mcp_servers())
+    }
     fn kernel_tools(&self) -> Option<&dyn ExtensionKernelTools> {
         self.active();
         if crate::kernel_tools_context::current_kernel_tools().is_some() || self.actions.kernel_tools().is_some() { Some(self) } else { None }
@@ -380,7 +384,8 @@ impl ExtensionRunner {
         match handlers.get(&resolved.command.name) {
             Some(handler) => handler(args, context).await,
             None => (resolved.command.handler)(args, &context.context).await,
-        }
+        }?;
+        self.runtime.assert_active()
     }
     pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
         let mut shortcuts = BTreeMap::new();
@@ -481,8 +486,8 @@ impl ExtensionRunner {
         tools
     }
     pub fn get_all_tools(&self) -> Vec<ToolInfo> { self.get_all_registered_tools().into_iter().map(|t| normalize_tool_exposure(&t.definition, t.source_info)).collect() }
-    pub fn get_tool_definition(&self, name: &str) -> Option<&ToolDefinition> {
-        self.extensions.iter().flat_map(|e| &e.tools).find(|t| t.definition.name == name).map(|t| &t.definition)
+    pub fn get_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.extensions.iter().find_map(|extension| self.runtime.live_tools(&extension.identity.path).unwrap_or_else(|| extension.tools.clone()).into_iter().find(|tool| tool.definition.name == name).map(|tool| tool.definition))
     }
     pub fn get_tool_definition_owned(&self, name: &str) -> Option<ToolDefinition> {
         self.get_all_registered_tools().into_iter().find(|tool| tool.definition.name == name).map(|tool| tool.definition)
@@ -541,7 +546,7 @@ impl ExtensionRunner {
             } else { owners.insert(server.name, &ext.identity.path); }
         }} warnings
     }
-    pub fn get_message_renderer(&self, custom_type: &str) -> Option<&MessageRenderer> { self.extensions.iter().find_map(|e| e.message_renderers.get(custom_type)) }
+    pub fn get_message_renderer(&self, custom_type: &str) -> Option<MessageRenderer> { self.get_message_renderer_owned(custom_type) }
     pub fn get_message_renderer_owned(&self, custom_type: &str) -> Option<MessageRenderer> {
         self.extensions.iter().find_map(|extension| self.runtime.live_message_renderers(&extension.identity.path).unwrap_or_else(|| extension.message_renderers.clone()).get(custom_type).cloned())
     }
@@ -551,8 +556,8 @@ impl ExtensionRunner {
             None => extension.entry_renderers.get(custom_type).cloned().map(|renderer| (renderer, extension.entry_renderer_options.get(custom_type).cloned())),
         })
     }
-    pub fn get_entry_renderer(&self, custom_type: &str) -> Option<&EntryRenderer> { self.extensions.iter().find_map(|e| e.entry_renderers.get(custom_type)) }
-    pub fn get_entry_renderer_options(&self, custom_type: &str) -> Option<&EntryRendererOptions> { self.extensions.iter().find(|e| e.entry_renderers.contains_key(custom_type)).and_then(|e| e.entry_renderer_options.get(custom_type)) }
+    pub fn get_entry_renderer(&self, custom_type: &str) -> Option<EntryRenderer> { self.get_entry_renderer_owned(custom_type).map(|(renderer, _)| renderer) }
+    pub fn get_entry_renderer_options(&self, custom_type: &str) -> Option<EntryRendererOptions> { self.get_entry_renderer_owned(custom_type).and_then(|(_, options)| options) }
     pub fn get_filesystem_policy_denied_roots(&self) -> Vec<std::path::PathBuf> {
         self.extensions.iter().flat_map(|extension| self.runtime.live_filesystem_policies(&extension.identity.path).unwrap_or_else(|| extension.filesystem_policies.clone())).flat_map(|policy| policy.denied_roots.unwrap_or_default()).collect()
     }

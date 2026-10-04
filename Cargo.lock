@@ -2222,8 +2222,12 @@ dependencies = [
  "anyhow",
  "async-trait",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-test-support",
  "nix",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
