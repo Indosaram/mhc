@@ -20,10 +20,18 @@ pub enum RegistrationAdmission { Added, Identical, Restricted, RejectionSuppress
 pub struct WatchRegistrations {
     registrations: Vec<Arc<crate::protocol::ConfigWatchRegistration>>,
     rejected: BTreeMap<String, String>,
+    validators: BTreeMap<String, maho_ext_api::ConfigWatchValidator>,
 }
 impl WatchRegistrations {
     pub fn register(&mut self, registration: Arc<crate::protocol::ConfigWatchRegistration>, cwd: &Path, agent_dir: &Path, pending: &mut PendingChanges) -> RegistrationAdmission {
-        let fingerprint = crate::protocol::registration_fingerprint(&registration, false);
+        self.register_with_validator(registration, None, cwd, agent_dir, pending)
+    }
+    pub fn register_native(&mut self, registration: &maho_ext_api::RegisteredConfigWatch, cwd: &Path, agent_dir: &Path, pending: &mut PendingChanges) -> RegistrationAdmission {
+        let Some(parsed) = crate::protocol::parse_config_watch_registration(&maho_ext_api::config_watch_registration_json(registration)) else { return RegistrationAdmission::Restricted; };
+        self.register_with_validator(Arc::new(parsed), Some(Arc::clone(&registration.validate)), cwd, agent_dir, pending)
+    }
+    fn register_with_validator(&mut self, registration: Arc<crate::protocol::ConfigWatchRegistration>, validator: Option<maho_ext_api::ConfigWatchValidator>, cwd: &Path, agent_dir: &Path, pending: &mut PendingChanges) -> RegistrationAdmission {
+        let fingerprint = crate::protocol::registration_fingerprint(&registration, validator.is_some());
         if self.rejected.get(&registration.id) == Some(&fingerprint) { return RegistrationAdmission::RejectionSuppressed; }
         if crate::protocol::registration_has_restricted_target(&registration, cwd, agent_dir) {
             self.rejected.insert(registration.id.clone(), fingerprint);
@@ -31,21 +39,38 @@ impl WatchRegistrations {
         }
         self.rejected.remove(&registration.id);
         if let Some(existing) = self.registrations.iter_mut().find(|existing| existing.id == registration.id) {
-            if Arc::ptr_eq(existing, &registration) { return RegistrationAdmission::Identical; }
+            let same_validator = match (self.validators.get(&registration.id), validator.as_ref()) {
+                (Some(existing), Some(next)) => Arc::ptr_eq(existing, next),
+                (None, None) => true,
+                (Some(_), None) | (None, Some(_)) => false,
+            };
+            if Arc::ptr_eq(existing, &registration) || validator.is_some() && **existing == *registration && same_validator { return RegistrationAdmission::Identical; }
             *existing = Arc::clone(&registration);
         } else { self.registrations.push(Arc::clone(&registration)); }
+        if let Some(validator) = validator { self.validators.insert(registration.id.clone(), validator); }
+        else { self.validators.remove(&registration.id); }
         pending.delete(&registration.id);
         RegistrationAdmission::Added
     }
+    pub fn validator(&self, id: &str) -> Option<maho_ext_api::ConfigWatchValidator> { self.validators.get(id).cloned() }
     pub fn unregister(&mut self, id: &str, pending: &mut PendingChanges) -> bool {
         self.rejected.remove(id);
         let before = self.registrations.len();
         self.registrations.retain(|registration| registration.id != id);
+        self.validators.remove(id);
         let removed = self.registrations.len() != before;
         if removed { pending.delete(id); }
         removed
     }
     pub fn snapshot(&self) -> Vec<crate::protocol::ConfigWatchRegistration> { self.registrations.iter().map(|registration| (**registration).clone()).collect() }
+}
+pub fn validate_external_paths(validator: Option<maho_ext_api::ConfigWatchValidator>, paths: &[PathBuf]) -> Vec<String> {
+    let Some(validator) = validator else { return Vec::new(); };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| validator(paths))) {
+        Ok(maho_ext_api::ConfigWatchValidation::Ok) => Vec::new(),
+        Ok(maho_ext_api::ConfigWatchValidation::Rejected { errors }) => errors,
+        Err(error) => vec![error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|message| (*message).to_owned())).unwrap_or_else(|| "Configuration validator panicked".into())],
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReloadAdmission { Empty, InFlight, Busy, Compacting, Unavailable, ProbeVeto }

@@ -1,6 +1,34 @@
 use maho_ext_config_reload::index::*;
 use serde_json::json;
 #[test]
+fn native_validation_refresh_preserves_pending_and_callable_rejection() {
+    use maho_ext_api::{RegisteredConfigWatch, ConfigWatchValidation};
+    use std::{path::Path, sync::Arc};
+    let registration = RegisteredConfigWatch { id: "omo".into(), display_name: "config".into(), targets: vec![], validate: Arc::new(|paths| {
+        assert_eq!(paths, &[std::path::PathBuf::from("changed")]);
+        ConfigWatchValidation::Rejected { errors: vec!["invalid config".into()] }
+    }) };
+    let mut registrations = WatchRegistrations::default();
+    let mut pending = PendingChanges::default();
+    let root = Path::new("/fixture");
+    assert_eq!(registrations.register_native(&registration, root, root, &mut pending), RegistrationAdmission::Added);
+    pending.add("omo", &["changed".into()]);
+    assert_eq!(registrations.register_native(&registration, root, root, &mut pending), RegistrationAdmission::Identical);
+    assert!(!pending.is_empty());
+    assert_eq!(validate_external_paths(registrations.validator("omo"), &["changed".into()]), ["invalid config"]);
+    let replacement = RegisteredConfigWatch { validate: Arc::new(|_| ConfigWatchValidation::Ok), ..registration };
+    assert_eq!(registrations.register_native(&replacement, root, root, &mut pending), RegistrationAdmission::Added);
+    assert!(pending.is_empty());
+    assert!(validate_external_paths(registrations.validator("omo"), &[]).is_empty());
+    assert!(registrations.unregister("omo", &mut pending));
+    assert!(registrations.validator("omo").is_none());
+}
+
+#[test]
+fn native_validator_panic_is_a_rejection_not_a_watcher_failure() {
+    assert_eq!(validate_external_paths(Some(std::sync::Arc::new(|_| panic!("broken validator"))), &[]), ["broken validator"]);
+}
+#[test]
 fn registration_rejection_suppression_and_identity_do_not_clear_pending() {
     use maho_ext_config_reload::protocol::*;
     use std::{path::Path, sync::Arc};

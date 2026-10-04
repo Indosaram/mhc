@@ -12,11 +12,20 @@ struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, 
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
         let state = Arc::new(Mutex::new(State { session_owned: maho_ai::node::provider_scope::active_provider_scope().is_some(), ..Default::default() }));
+        let owner = Arc::downgrade(&state);
+        let events = api.events.clone();
+        let cwd = api.cwd.clone();
+        let subscription = api.on_config_watch_registration(Arc::new(move |_, registration| {
+            if let Some(state) = owner.upgrade() { admit_native_registration(&state, registration, &cwd, &events); }
+        }));
+        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).subscriptions.push(subscription);
+        for (_, registration) in api.events.config_watch_registrations() { admit_native_registration(&state, &registration, &api.cwd, &api.events); }
         for channel in [CONFIG_WATCH_REGISTER, CONFIG_WATCH_UNREGISTER] {
             let owner = Arc::downgrade(&state);
             let events = api.events.clone();
             let cwd = api.cwd.clone();
             let subscription = api.events.on(channel, Arc::new(move |payload| {
+                if channel == CONFIG_WATCH_REGISTER && events.config_watch_registrations().iter().any(|(_, registration)| payload.get("id").and_then(serde_json::Value::as_str) == Some(registration.id.as_str())) { return; }
                 let Some(state) = owner.upgrade() else { return; };
                 let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let (cwd, agent_dir) = state.context.as_ref().map_or_else(|| (cwd.clone(), PathBuf::from(maho_core::config::get_agent_dir())), |ctx| (ctx.cwd.clone(), ctx.agent_dir.clone()));
@@ -197,7 +206,10 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 state.hashes = engine.engine.get_baseline_snapshot(); state.contents = contents.clone();
             }
             for (id, paths) in group_changed_paths(&paths, &targets) {
-                let errors = if id == "builtin" { validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd) } else { Vec::new() };
+                let errors = if id == "builtin" { validate_builtin_paths(&paths, &ctx.agent_dir, &ctx.cwd) } else {
+                    let validator = shared.lock().map_err(|error| error.to_string())?.registrations.validator(&id);
+                    validate_external_paths(validator, &paths)
+                };
                 if !errors.is_empty() {
                     ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
                     logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Warn, LogEvent::ValidationRejected { registration_id: &id, error_count: errors.len() as f64 });
@@ -323,6 +335,24 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     if state.generation == generation { state.in_flight = false; }
     if let Err(error) = result { logger.log(LogLevel::Error, LogEvent::WatcherError { path: "reload", message: &error.to_string() }); }
     Ok(None)
+}
+fn admit_native_registration(state: &Arc<Mutex<State>>, registration: &maho_ext_api::RegisteredConfigWatch, cwd: &std::path::Path, events: &EventBus) {
+    let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (cwd, agent_dir) = state.context.as_ref().map_or_else(|| (cwd.to_path_buf(), PathBuf::from(maho_core::config::get_agent_dir())), |ctx| (ctx.cwd.clone(), ctx.agent_dir.clone()));
+    let State { registrations, pending, .. } = &mut *state;
+    let admission = registrations.register_native(registration, &cwd, &agent_dir, pending);
+    if admission == RegistrationAdmission::Added && state.run.is_some() { state.rebuild.notify_one(); }
+    let mut logger = ConfigReloadLogger::new(&agent_dir, None).ok();
+    if let Some(logger) = &mut logger {
+        match admission {
+            RegistrationAdmission::Added => logger.log(LogLevel::Info, LogEvent::RegistrationAdded { id: &registration.id }),
+            RegistrationAdmission::Restricted => logger.log(LogLevel::Warn, LogEvent::RegistrationRejected { registration_id: &registration.id, error_count: 1.0 }),
+            RegistrationAdmission::RejectionSuppressed => logger.log(LogLevel::Debug, LogEvent::RegistrationRejectionSuppressed { registration_id: &registration.id }),
+            RegistrationAdmission::Identical => {},
+        }
+    }
+    drop(state);
+    if admission == RegistrationAdmission::Restricted { events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":registration.id,"paths":[],"errors":["Configuration watch target is restricted"]})); }
 }
 
 fn handoff_key(state: &Arc<Mutex<State>>, ctx: &ExtensionContext) -> Result<String, ExtensionFailure> {

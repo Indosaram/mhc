@@ -80,6 +80,30 @@ fn stale_legacy_registration_throws_without_mutating_extension() {
 fn api(runtime: ExtensionRuntime) -> ExtensionApi {
     ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime)
 }
+#[test]
+fn callable_watch_replay_live_refresh_rollback_and_invalidation_share_bus_state() {
+    let events = EventBus::default();
+    let scope = events.registration_scope();
+    let registration = RegisteredConfigWatch { id: "omo".into(), display_name: "config".into(), targets: vec![], validate: Arc::new(|_| ConfigWatchValidation::Rejected { errors: vec!["sticky".into()] }) };
+    scope.publish_config_watch("owner", registration.clone());
+    let retained = events.config_watch_registrations();
+    assert_eq!((retained[0].1.validate)(&[]), ConfigWatchValidation::Rejected { errors: vec!["sticky".into()] });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen);
+    let _subscription = events.on_native::<(String, RegisteredConfigWatch)>(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |(path, registration)| observed.lock().unwrap().push((path.clone(), (registration.validate)(&[])))));
+    scope.publish_config_watch("owner", registration);
+    assert_eq!(events.config_watch_registrations().len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let checkpoint = events.registration_checkpoint();
+    let failed = events.registration_scope();
+    failed.publish_config_watch("failed", RegisteredConfigWatch { id: "failed".into(), display_name: "failed".into(), targets: vec![], validate: Arc::new(|_| ConfigWatchValidation::Ok) });
+    events.rollback_registration(checkpoint);
+    failed.invalidate_registration();
+    assert_eq!(events.config_watch_registrations().len(), 1);
+    scope.invalidate_registration();
+    assert!(events.config_watch_registrations().is_empty());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scope.publish_config_watch("late", retained[0].1.clone()))).is_err());
+}
 
 #[test]
 fn extension_tool_executor_is_published_only_after_factory_commit() {
