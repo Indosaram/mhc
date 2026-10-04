@@ -1,0 +1,33 @@
+include!("../tests/registration.rs");
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("policy") => {
+            run_policy_scenario().await;
+            println!("PASS policy: registered context consumes disabled then live enabled admission gate; cleanup: no background resources");
+        }
+        Some("fractional") => run_native_variant(false,false,"fractional").await,
+        Some("reminder") => run_native_variant(false,false,"reminder").await,
+        Some("threshold") => run_native_scenario(false,true).await,
+        Some("cancellation") => run_native_scenario(true,false).await,
+        Some("overflow") => run_native_variant(false,true,"overflow").await,
+        Some("fallback") => run_native_variant(false,false,"fallback").await,
+        Some("remote-http") => run_native_variant(false,false,"remote-http").await,
+        Some("remote-sse") => run_native_variant(false,false,"remote-sse").await,
+        Some("remote-sse-success") => run_native_variant(false,false,"remote-sse-success").await,
+        Some("remote-cancel") => run_native_variant(false,false,"remote-cancel").await,
+        Some("session-abort") => run_native_variant(false,false,"session-abort").await,
+        Some("lifecycle") => run_native_variant(false,false,"lifecycle").await,
+        Some("idle-shutdown") => run_native_variant(false,false,"idle-shutdown").await,
+        Some("idle-model-change") => run_native_variant(false,false,"idle-model-change").await,
+        Some("idle-stale-runner") => run_native_variant(false,false,"idle-stale-runner").await,
+        Some("idle-prompt-retry") => {tokio::time::pause();run_idle_retry_prompt_scenario(true).await;run_idle_retry_prompt_scenario(false).await;},
+        Some("model-auth-http") => run_model_auth_capture(false).await,
+        Some("model-auth-sse") => run_model_auth_capture(true).await,
+        Some("fallback-events") => run_fallback_event_capture().await,
+        Some("remote-auth") => run_native_variant(false,false,"remote-auth").await,
+        Some("remote-network") => run_native_variant(false,false,"remote-network").await,
+        _ => panic!("expected policy, threshold, or cancellation"),
+    }
+}

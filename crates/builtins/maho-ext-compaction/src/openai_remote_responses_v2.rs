@@ -107,7 +107,7 @@ pub async fn attempt_openai_responses_v2_compaction(
     mut options: ResponsesV2Options<'_>,
     request_id: &str,
     timeout: std::time::Duration,
-    emit: &dyn Fn(Value),
+    emit: &(dyn Fn(Value) + Sync),
 ) -> Result<Option<maho_ext_api::CompactionResult>, maho_ai::utils::event_stream::StreamError> {
     let signal = options.signal.clone();
     let model_id = options.model.id.clone();

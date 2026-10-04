@@ -2,6 +2,18 @@ use maho_ext_compaction::restoration_tracker::*;
 use serde_json::{Value,json};
 fn options(settings:&RestorationSettings)->PreparePendingPayloadOptions<'_> {PreparePendingPayloadOptions {accepted:true,reason:"manual",compaction_entry_id:"compact",context_window:200000.,usage_tokens:Some(10000.),reserve_tokens:16384.,settings,kept_messages:&[]}}
 #[test]
+fn fractional_limits_are_floored_only_by_restoration_consumer() {
+    let fractional = RestorationSettings {max_items:Some(2.5),max_tokens_per_item:Some(11.5),max_total_tokens:Some(22.5),..Default::default()};
+    let integral = RestorationSettings {max_items:Some(2.),max_tokens_per_item:Some(11.),max_total_tokens:Some(22.),..Default::default()};
+    let mut state = RestorationTrackerState::default();
+    for name in ["a", "b", "c"] {track_tool_call(&mut state,"skill",&json!({"name":name}));}
+    let mut floored = state.clone();
+    assert_eq!(compute_restoration_budget(&options(&fractional)),22.);
+    prepare_pending_payload(&mut state,&options(&fractional));
+    prepare_pending_payload(&mut floored,&options(&integral));
+    assert_eq!(consume_pending_payload(&mut state),consume_pending_payload(&mut floored));
+}
+#[test]
 fn equal_budget_labels_follow_default_locale_collation() {
     let mut state = RestorationTrackerState::default();
     for name in ["z", "A", "a", "é", "e"] { track_tool_call(&mut state, "skill", &json!({"name":name})); }
