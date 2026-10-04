@@ -3,7 +3,7 @@
 //! The lane, harness, and model registry stay in the worker; each presentation gets its own
 //! `lane.watch()`, whose snapshot and event stream the harness pairs with no gap and no duplicate.
 //! The real harness `Lane` implements `RuntimeLane` (maho-agent, contract S1), so it is passed
-directly to `transcript::watch_lane`.
+//! directly to `transcript::watch_lane`.
 
 use std::collections::HashMap;
 use std::future::Future;
