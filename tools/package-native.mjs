@@ -204,6 +204,26 @@ async function parsePins(repoRoot) {
 	return pins;
 }
 
+/**
+ * Provenance errors for a set of pins and a recorded checkout commit: both expected pins must be
+ * full commits and the checkout commit must equal the OMO pin. Shared by stage (checked before the
+ * destination is cleared, so a bad pin cannot destroy an existing stage) and verify (checked from
+ * the manifest alone, without resolving any host path).
+ */
+function provenanceErrors(pins, omoCommit) {
+	const errors = [];
+	for (const key of PIN_KEYS) {
+		const pin = pins?.[key];
+		if (typeof pin !== "string" || !COMMIT_PATTERN.test(pin)) errors.push(`pin ${key} must be a full 40-hex commit (found ${JSON.stringify(pin)})`);
+	}
+	if (typeof omoCommit !== "string" || !COMMIT_PATTERN.test(omoCommit)) {
+		errors.push(`checkout commit (sources.omoCommit) must be a full 40-hex commit (found ${JSON.stringify(omoCommit)})`);
+	} else if (typeof pins?.omo === "string" && omoCommit !== pins.omo) {
+		errors.push(`checkout commit ${omoCommit} does not match the omo pin ${pins.omo}`);
+	}
+	return errors;
+}
+
 /** The checkout's actual commit, for provenance; absent (null) when it is not a git checkout. */
 async function gitHead(directory) {
 	try {
@@ -277,12 +297,12 @@ export async function stage(options) {
 	const outputExists = existsSync(output);
 	if (outputExists && (await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
 
-	// Resolve and read every input before the destination is cleared: the checkout, the builtin
-	// skill set and its sources, the license sources, and the manifest provenance (versions, pins
-	// and the actual checkout commit). A bad checkout, a missing skill or a missing license text
-	// refuses the run without destroying an existing stage. The destination is removed only once
-	// those inputs are in hand; a copy failure after that point can still leave a partial directory,
-	// which verify() then reports.
+	// Resolve, read and validate every input before the destination is cleared: the checkout, the
+	// builtin skill set and its sources, the license sources, and the manifest provenance (versions,
+	// pins and the actual checkout commit, whose shape and source match are checked here). A bad
+	// checkout, a missing skill, a missing license text or a mismatched pin refuses the run without
+	// destroying an existing stage. The destination is removed only once those inputs are in hand; a
+	// copy failure after that point can still leave a partial directory, which verify() then reports.
 	const omoRoot = resolveOmoRoot(options.omoRoot);
 	const repoRoot = resolveRepoRoot(options.repoRoot);
 	const skillNames = await parseBuiltinSkillNames(repoRoot, omoRoot);
@@ -298,6 +318,8 @@ export async function stage(options) {
 	const sharedSkillsVersion = await parsePackageVersion(join(omoRoot, "packages/shared-skills/package.json"));
 	const pins = await parsePins(repoRoot);
 	const omoCommit = await gitHead(omoRoot);
+	const provenance = provenanceErrors(pins, omoCommit);
+	if (provenance.length > 0) throw new Error(`refusing to stage with invalid provenance:\n  ${provenance.join("\n  ")}`);
 
 	if (outputExists) await rm(output, { recursive: true, force: true });
 
@@ -375,16 +397,7 @@ export async function verify(directory) {
 	// Provenance: the manifest must record both expected upstream pins as full commits, and the
 	// actual checkout commit it staged from must equal the OMO pin. This is read from the manifest
 	// alone, so a staged directory verifies without resolving any host path.
-	for (const key of PIN_KEYS) {
-		const pin = manifest.pins?.[key];
-		if (typeof pin !== "string" || !COMMIT_PATTERN.test(pin)) errors.push(`manifest pin ${key} must be a full 40-hex commit (found ${JSON.stringify(pin)})`);
-	}
-	const omoCommit = manifest.sources?.omoCommit;
-	if (typeof omoCommit !== "string" || !COMMIT_PATTERN.test(omoCommit)) {
-		errors.push(`manifest sources.omoCommit must be a full 40-hex commit (found ${JSON.stringify(omoCommit)})`);
-	} else if (typeof manifest.pins?.omo === "string" && omoCommit !== manifest.pins.omo) {
-		errors.push(`manifest sources.omoCommit ${omoCommit} does not match the omo pin ${manifest.pins.omo}`);
-	}
+	for (const error of provenanceErrors(manifest.pins, manifest.sources?.omoCommit)) errors.push(error);
 	const check = async (entry) => {
 		if (entry === null || typeof entry !== "object" || typeof entry.path !== "string") {
 			errors.push("manifest entry without a path");
@@ -553,6 +566,15 @@ async function selfTest() {
 		await writeFile(join(unmappedSkillDir, MANIFEST_NAME), `${JSON.stringify(unmappedManifest, null, 2)}\n`);
 		const unmappedSkill = await verify(unmappedSkillDir);
 		check("declared skill without a hashed mapping is rejected", !unmappedSkill.ok && unmappedSkill.errors.some((error) => error.includes("not in the hashed manifest") && error.includes("skills/alpha/SKILL.md")));
+
+		// A mismatched pin is a rejected input: it must be refused before the existing stage is
+		// touched, so a bad PINS.md cannot destroy a good stage and only then fail self-verification.
+		const originalPins = await readFile(join(repo, "PINS.md"), "utf8");
+		await writeFile(join(repo, "PINS.md"), originalPins.replace(omoCommit, "c".repeat(40)));
+		const pinsPreserved = await readFile(join(out, CLI_BINARY_NAME));
+		await expectReject("mismatched pin is refused before restage", stage({ binary: join(binDir, "mhc"), output: out, omoRoot: omo, repoRoot: repo, force: true }), "does not match the omo pin");
+		check("existing stage survives a rejected pin mismatch", existsSync(join(out, CLI_BINARY_NAME)) && (await readFile(join(out, CLI_BINARY_NAME))).equals(pinsPreserved));
+		await writeFile(join(repo, "PINS.md"), originalPins);
 
 		const second = await stage({ binary: join(binDir, "mhc"), output: join(root, "out2"), omoRoot: omo, repoRoot: repo });
 		check("manifest is deterministic across runs", JSON.stringify(result.manifest) === JSON.stringify(second.manifest));
