@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use maho_ai::types::ContentBlock;
+use maho_ai::types::{AssistantImages, ContentBlock, ImageContent, ImagesBackground, ImagesContext, ImagesModel, ImagesOptions, ImagesStopReason, TextContent, Usage};
 use maho_ext_api::*;
 use std::{
     path::Path,
