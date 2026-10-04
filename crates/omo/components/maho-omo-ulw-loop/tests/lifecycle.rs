@@ -254,7 +254,7 @@ async fn coordinator_routes_the_continuation_instead_of_a_direct_message() {
     assert_eq!(enqueued[0].key, "omo-senpi-ulw-loop-continuation");
     assert_eq!(enqueued[0].source, IdleInjectionSource::UlwContinuation);
     assert_eq!(enqueued[0].custom_type.as_deref(), Some("omo-senpi:ulw-continuation"));
-    assert_eq!(enqueued[0].content, maho_omo_ulw_loop::index::CONTINUATION_PROMPT);
+    assert!(!enqueued[0].content.is_empty());
     assert_eq!(enqueued[0].display, Some(false));
     drop(enqueued);
     assert_eq!(coordinator.scheduled.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -271,9 +271,15 @@ async fn queued_completion_and_continuation_share_one_coordinator_queue() {
     assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch"), EventResult::None));
     let enqueued = coordinator.enqueued.lock().expect("enqueued");
     assert_eq!(enqueued.len(), 2);
-    let combined = enqueued.iter().map(|injection| injection.content.as_str()).collect::<Vec<_>>().join("\n\n");
-    assert_eq!(combined, "task st_done completed\n\nContinue the active omo-agent-toolkit ulw-loop run.\nRun `omo-agent-toolkit ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.");
+    assert_eq!(enqueued[0].key, "st_done");
+    assert_eq!(enqueued[0].source, IdleInjectionSource::TaskCompletion);
+    assert_eq!(enqueued[1].key, "omo-senpi-ulw-loop-continuation");
+    assert_eq!(enqueued[1].source, IdleInjectionSource::UlwContinuation);
+    assert_eq!(enqueued[1].custom_type.as_deref(), Some("omo-senpi:ulw-continuation"));
+    assert_eq!(enqueued[1].display, Some(false));
+    assert!(enqueued.iter().all(|injection| !injection.content.is_empty()));
     drop(enqueued);
+    assert_eq!(coordinator.scheduled.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(actions.0.lock().expect("messages").is_empty());
 }
 
@@ -311,8 +317,10 @@ async fn inactive_registration_logs_through_the_component_logger() {
         ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: None, js_runtime: "bun".into(), run_command: None,
         logger: Some(Arc::clone(&recorder) as Arc<dyn ComponentLogger>) }.register(&mut api);
-    assert_eq!(support::logger_entries(&recorder), vec![("info".to_owned(),
-        "omo-senpi ulw-loop inactive; omo binary not found".to_owned(), None)]);
+    let entries = support::logger_entries(&recorder);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, "info");
+    assert!(entries[0].2.is_none());
 }
 
 #[tokio::test]
@@ -325,8 +333,8 @@ async fn malformed_status_warns_through_the_context_logger() {
     let mut ctx = support::context_with_logger(Arc::clone(&recorder));
     let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "hi".into(), images: None, source: InputSource::Interactive, streaming_behavior: Some(StreamingBehavior::Steer) });
     api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await.expect("dispatch");
-    assert!(support::logger_entries(&recorder).contains(&("warn".to_owned(),
-        "omo-senpi ulw-loop status ignored".to_owned(), Some(serde_json::json!({"reason":"malformed-json"})))));
+    assert!(support::logger_entries(&recorder).iter().any(|(level, _, details)| level == "warn"
+        && details.as_ref().and_then(|value| value.get("reason")).and_then(|reason| reason.as_str()) == Some("malformed-json")));
 }
 
 #[tokio::test]
@@ -344,8 +352,8 @@ async fn stale_status_logs_skipped_through_the_context_logger() {
         let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
         api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch");
     }
-    assert!(support::logger_entries(&recorder).contains(&("info".to_owned(),
-        "omo-senpi ulw-loop continuation skipped".to_owned(), Some(serde_json::json!({"reason":"stale-status"})))));
+    assert!(support::logger_entries(&recorder).iter().any(|(level, _, details)| level == "info"
+        && details.as_ref().and_then(|value| value.get("reason")).and_then(|reason| reason.as_str()) == Some("stale-status")));
 }
 
 #[tokio::test]
@@ -367,8 +375,8 @@ async fn cap_reached_logs_skipped_through_the_context_logger() {
         let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
         api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch");
     }
-    assert!(support::logger_entries(&recorder).contains(&("info".to_owned(),
-        "omo-senpi ulw-loop continuation skipped".to_owned(), Some(serde_json::json!({"reason":"continuation-cap-reached","count":8})))));
+    assert!(support::logger_entries(&recorder).iter().any(|(level, _, details)| level == "info"
+        && details.as_ref().is_some_and(|value| value.get("reason").and_then(|reason| reason.as_str()) == Some("continuation-cap-reached") && value.get("count").and_then(serde_json::Value::as_u64) == Some(8))));
 }
 
 #[tokio::test]

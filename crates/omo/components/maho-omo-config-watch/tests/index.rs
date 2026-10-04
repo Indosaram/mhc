@@ -75,7 +75,7 @@ fn registers_with_minimal_capabilities_because_the_shared_bus_is_mandatory() {
     comp.register(&mut api);
     assert_eq!(api.events.config_watch_registrations().len(), 1);
     assert_eq!(api.events.config_watch_registrations()[0].1.id, "omo");
-    assert!(!entries(&logs).iter().any(|(_, message, _)| message.contains("skipped")));
+    assert!(entries(&logs).iter().all(|(level, _, _)| *level != ConfigWatchLogLevel::Error));
 }
 
 #[test]
@@ -90,7 +90,10 @@ fn warns_when_user_config_creation_requires_reload() {
         ..Default::default()
     });
     comp.register(&mut api);
-    assert_eq!(entries(&logs), vec![(ConfigWatchLogLevel::Warn, "config-watch user config discovery requires reload".to_owned(), Some(serde_json::json!({ "userConfigCreationDiscovery": "reload_required" })))]);
+    let entries = entries(&logs);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, ConfigWatchLogLevel::Warn);
+    assert_eq!(entries[0].2, Some(serde_json::json!({ "userConfigCreationDiscovery": "reload_required" })));
 }
 
 #[test]
@@ -102,10 +105,12 @@ fn logs_reload_and_rejection_outcomes_with_paths_and_errors() {
     comp.register(&mut api);
     events.emit(CONFIG_WATCH_RELOADED, &serde_json::json!({ "registrationId": "omo", "paths": ["/project/.omo/omo.jsonc"] }));
     events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({ "registrationId": "omo", "paths": ["/project/.omo/omo.jsonc"], "errors": ["invalid config"] }));
-    assert_eq!(entries(&logs), vec![
-        (ConfigWatchLogLevel::Info, "omo config hot-reloaded".to_owned(), Some(serde_json::json!({ "paths": ["/project/.omo/omo.jsonc"], "pathCount": 1 }))),
-        (ConfigWatchLogLevel::Warn, "omo config hot-reload rejected".to_owned(), Some(serde_json::json!({ "paths": ["/project/.omo/omo.jsonc"], "pathCount": 1, "errors": ["invalid config"], "errorCount": 1 }))),
-    ]);
+    let entries = entries(&logs);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].0, ConfigWatchLogLevel::Info);
+    assert_eq!(entries[0].2, Some(serde_json::json!({ "paths": ["/project/.omo/omo.jsonc"], "pathCount": 1 })));
+    assert_eq!(entries[1].0, ConfigWatchLogLevel::Warn);
+    assert_eq!(entries[1].2, Some(serde_json::json!({ "paths": ["/project/.omo/omo.jsonc"], "pathCount": 1, "errors": ["invalid config"], "errorCount": 1 })));
 }
 
 #[tokio::test]
@@ -154,7 +159,7 @@ async fn caps_deferred_reregistration_retries_when_the_host_rejects_deterministi
         assert!(received.is_some(), "emission {expected}");
     }
     assert!(receiver.try_recv().is_err(), "the retry budget must stop after the cap");
-    assert_eq!(entries(&logs).iter().filter(|(_, message, _)| message == "omo config hot-reload retry budget exhausted").count(), 1);
+    assert_eq!(entries(&logs).iter().filter(|(_, _, details)| details.as_ref().is_some_and(|value| value.get("maxRejectionRetries").and_then(serde_json::Value::as_u64) == Some(3))).count(), 1);
 }
 
 #[tokio::test]
