@@ -3378,6 +3378,24 @@ impl AgentSession {
         self.state().message_revision += 1;
         Ok(())
     }
+    pub fn admit_sdk_model(&self, resumed: bool) -> Result<(), String> {
+        let Some(model) = self.model() else { return Ok(()); };
+        let live = if resumed { self.agent.messages().iter().map(crate::compaction::compaction::estimate_tokens).sum() } else { 0 };
+        let (budget, reducible) = self.model_budget(&model, live, !resumed)?;
+        let admission = if resumed { "resume" } else { "start" };
+        if budget.required_tokens <= budget.context_window { return Ok(()); }
+        if !resumed || !reducible {
+            return Err(crate::model_selector::ModelUsabilityBudgetError::new(budget, crate::model_selector::ModelUsabilityBudgetErrorOptions {
+                provider: Some(model.provider), model_id: Some(model.id), admission: Some(admission.into()),
+            }).to_string());
+        }
+        let after = self.reduce_for_switch_target(&model, live)?;
+        if after == live {
+            self.state().pending_model_switch = Some(PendingModelSwitch { model, live_context_tokens_before: live,
+                persist_default: false, notice: "Resume compaction required before the first provider request".into() });
+        }
+        Ok(())
+    }
 
     async fn finish_session_replacement(&self, reason: maho_ext_api::SessionReason, previous: Option<String>) -> Result<(), String> {
         self.clear_queue(false);

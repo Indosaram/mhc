@@ -179,6 +179,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         manager.append_thinking_level_change(thinking_level.as_str(),
             thinking_selection.as_ref().map(|selection| serde_json::to_value(selection).expect("thinking selection serializes")));
     }
+    let resumed = !context.messages.is_empty();
     let messages = context.messages.into_iter().map(crate::agent_session::session_message_from_value)
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
@@ -234,6 +235,10 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     }
     session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
+    if let Err(error) = session.admit_sdk_model(resumed) {
+        session.dispose().await;
+        return Err(error);
+    }
     if options.loaded_extensions.is_some() || !options.extension_factories.is_empty() {
         let mut construction = PendingSessionConstruction {
             session: Some(session.clone()), runtime: tokio::runtime::Handle::current(),
