@@ -37,6 +37,10 @@ struct WireServer {
 
 impl WireServer {
     async fn start() -> Self {
+        Self::with_body("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"must not consume\"},\"finish_reason\":\"stop\"}]}\n\n").await
+    }
+
+    async fn with_body(content_type: &'static str, response_body: &'static str) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let url = format!("http://{}", listener.local_addr().expect("address"));
         let (tx, requests) = mpsc::unbounded_channel();
@@ -667,7 +671,3 @@ async fn rejected_image_http_responses_do_not_invoke_source_success_only_hook() 
     server.abort();
     assert!(server.await.expect_err("aborted").is_cancelled());
 }
-        Self::with_body("text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"must not consume\"},\"finish_reason\":\"stop\"}]}\n\n").await
-    }
-
-    async fn with_body(content_type: &'static str, response_body: &'static str) -> Self {
