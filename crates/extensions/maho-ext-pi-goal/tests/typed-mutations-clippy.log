@@ -1,0 +1,8 @@
+status: completed exit_code: 0
+    Blocking waiting for file lock on build directory
+    Checking maho-tools v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-api)
+    Checking maho-ext-pi-goal v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-goal)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.88s
+
+LANE39_GOAL_TYPED_CLIPPY_EXIT=0

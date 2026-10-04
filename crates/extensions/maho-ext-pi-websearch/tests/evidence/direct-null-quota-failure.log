@@ -1,0 +1,395 @@
+status: exited_100 exit_code: 100
+{"pin":"ddf5f5d21de57ee3e80f1a6f96aff21a9dd34662","sources":[{"path":"provider-endpoints.ts","sha256":"075de7c8fe6bebdfdc5ac3ecb625058ffe8786109b895d93de8cab27b400cc3a"},{"path":"config.ts","sha256":"19685eed06bf2909d2f0f7e4ceab76dd110df8f5b07c7b662300a07d1b94a35b"}],"cases":[{"key":"weight","direct":{"ok":false,"reason":"invalid_config","message":"Provider weight must be greater than 0."},"loaded":{"strategy":"priority","fallback":true,"auto":true,"providers":[{"provider":"duckduckgo-html"}]}},{"key":"timeoutMs","direct":{"ok":false,"reason":"invalid_config","message":"Provider timeoutMs must be greater than 0."},"loaded":{"strategy":"priority","fallback":true,"auto":true,"providers":[{"provider":"duckduckgo-html"}]}}],"exit":0}
+
+DIRECT_NULL_ORACLE_EXIT=0
+   Compiling maho-ext-pi-websearch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-websearch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.46s
+────────────
+ Nextest run ID 4267f3ab-9d6f-4f32-bf3a-843dcede7240 with nextest profile: default
+    Starting 153 tests across 12 binaries
+        FAIL [   0.006s] (  1/153) maho-ext-pi-websearch::config empty_providers_rejected
+  stdout ───
+
+    running 1 test
+    test empty_providers_rejected ... FAILED
+
+    failures:
+
+    failures:
+        empty_providers_rejected
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'empty_providers_rejected' (219496) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:32:224:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.007s] (  2/153) maho-ext-pi-websearch::config exa_missing_key
+        FAIL [   0.007s] (  3/153) maho-ext-pi-websearch::config codex_command_does_not_supply_key
+  stdout ───
+
+    running 1 test
+    test codex_command_does_not_supply_key ... FAILED
+
+    failures:
+
+    failures:
+        codex_command_does_not_supply_key
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'codex_command_does_not_supply_key' (219497) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:25:243:
+    called `Result::unwrap()` on an `Err` value: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.007s] (  4/153) maho-ext-pi-websearch::config exa_key_accepted
+        PASS [   0.007s] (  5/153) maho-ext-pi-websearch::config direct_null_numeric_fields_are_not_loader_defaults
+        PASS [   0.008s] (  6/153) maho-ext-pi-websearch::config codex_missing_key
+        PASS [   0.008s] (  7/153) maho-ext-pi-websearch::config credentials_in_url_rejected
+        PASS [   0.008s] (  8/153) maho-ext-pi-websearch::config anthropic_missing_key
+        PASS [   0.009s] (  9/153) maho-ext-pi-websearch::config conflicting_domains_rejected
+        FAIL [   0.009s] ( 10/153) maho-ext-pi-websearch::config backend_alias_is_preserved
+  stdout ───
+
+    running 1 test
+    test backend_alias_is_preserved ... FAILED
+
+    failures:
+
+    failures:
+        backend_alias_is_preserved
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'backend_alias_is_preserved' (219495) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.010s] ( 11/153) maho-ext-pi-websearch::config direct_validator_does_not_drop_unknown_provider
+        PASS [   0.011s] ( 12/153) maho-ext-pi-websearch::config google_requires_engine_id
+        PASS [   0.005s] ( 13/153) maho-ext-pi-websearch::config kimi_missing_key
+        PASS [   0.006s] ( 14/153) maho-ext-pi-websearch::config missing_config_uses_free_default
+        PASS [   0.005s] ( 15/153) maho-ext-pi-websearch::config non_boolean_auto_rejected
+        FAIL [   0.006s] ( 16/153) maho-ext-pi-websearch::config loader_still_omits_unknown_provider
+  stdout ───
+
+    running 1 test
+    test loader_still_omits_unknown_provider ... FAILED
+
+    failures:
+
+    failures:
+        loader_still_omits_unknown_provider
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'loader_still_omits_unknown_provider' (219523) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.005s] ( 17/153) maho-ext-pi-websearch::config multi_provider_auto_false
+  stdout ───
+
+    running 1 test
+    test multi_provider_auto_false ... FAILED
+
+    failures:
+
+    failures:
+        multi_provider_auto_false
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'multi_provider_auto_false' (219524) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.007s] ( 18/153) maho-ext-pi-websearch::config localhost_rejected
+        FAIL [   0.007s] ( 19/153) maho-ext-pi-websearch::config loader_omits_null_numeric_fields
+  stdout ───
+
+    running 1 test
+    test loader_omits_null_numeric_fields ... FAILED
+
+    failures:
+
+    failures:
+        loader_omits_null_numeric_fields
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'loader_omits_null_numeric_fields' (219528) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.009s] ( 20/153) maho-ext-pi-websearch::config invalid_utf8_config_string_uses_node_replacement
+  stdout ───
+
+    running 1 test
+    test invalid_utf8_config_string_uses_node_replacement ... FAILED
+
+    failures:
+
+    failures:
+        invalid_utf8_config_string_uses_node_replacement
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'invalid_utf8_config_string_uses_node_replacement' (219533) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:6:381:
+    called `Result::unwrap()` on an `Err` value: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.006s] ( 21/153) maho-ext-pi-websearch::config openai_missing_key
+        PASS [   0.006s] ( 22/153) maho-ext-pi-websearch::config perplexity_key_accepted
+        FAIL [   0.010s] ( 23/153) maho-ext-pi-websearch::config legacy_auto_false
+  stdout ───
+
+    running 1 test
+    test legacy_auto_false ... FAILED
+
+    failures:
+
+    failures:
+        legacy_auto_false
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.01s
+
+  stderr ───
+
+    thread 'legacy_auto_false' (219520) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.012s] ( 24/153) maho-ext-pi-websearch::config kimi_key_accepted
+        PASS [   0.007s] ( 25/153) maho-ext-pi-websearch::config private_ipv6_rejected
+        PASS [   0.005s] ( 26/153) maho-ext-pi-websearch::config public_base_url_accepted
+        FAIL [   0.007s] ( 27/153) maho-ext-pi-websearch::config timeout_is_preserved
+  stdout ───
+
+    running 1 test
+    test timeout_is_preserved ... FAILED
+
+    failures:
+
+    failures:
+        timeout_is_preserved
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'timeout_is_preserved' (219546) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.006s] ( 28/153) maho-ext-pi-websearch::config xai_missing_key
+        FAIL [   0.008s] ( 29/153) maho-ext-pi-websearch::config project_overrides_global
+  stdout ───
+
+    running 1 test
+    test project_overrides_global ... FAILED
+
+    failures:
+
+    failures:
+        project_overrides_global
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'project_overrides_global' (219547) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:27:236:
+    called `Result::unwrap()` on an `Err` value: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.007s] ( 30/153) maho-ext-pi-websearch::config routing_policy_is_preserved
+  stdout ───
+
+    running 1 test
+    test routing_policy_is_preserved ... FAILED
+
+    failures:
+
+    failures:
+        routing_policy_is_preserved
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'routing_policy_is_preserved' (219548) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:9:263:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.008s] ( 31/153) maho-ext-pi-websearch::config tavily_missing_key
+        PASS [   0.008s] ( 32/153) maho-ext-pi-websearch::config unsafe_base_url_rejected
+        PASS [   0.008s] ( 33/153) maho-ext-pi-websearch::config zai_missing_key
+        FAIL [   0.006s] ( 34/153) maho-ext-pi-websearch::index session_publishes_loaded_config_before_ui_callbacks
+  stdout ───
+
+    running 1 test
+    test session_publishes_loaded_config_before_ui_callbacks ... FAILED
+
+    failures:
+
+    failures:
+        session_publishes_loaded_config_before_ui_callbacks
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'session_publishes_loaded_config_before_ui_callbacks' (219559) panicked at crates/extensions/maho-ext-pi-websearch/tests/index.rs:19:241:
+    config: Os { code: 122, kind: QuotaExceeded, message: "Disk quota exceeded" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.008s] ( 35/153) maho-ext-pi-websearch::config zero_timeout_rejected
+        PASS [   0.008s] ( 36/153) maho-ext-pi-websearch::index bypass_matches_only_native_provider_extensions
+        PASS [   0.008s] ( 37/153) maho-ext-pi-websearch::native auth_failure_returns_none
+        PASS [   0.005s] ( 38/153) maho-ext-pi-websearch::native claude_48
+        PASS [   0.007s] ( 39/153) maho-ext-pi-websearch::native claude_dated
+        PASS [   0.007s] ( 40/153) maho-ext-pi-websearch::native claude_opus
+        PASS [   0.008s] ( 41/153) maho-ext-pi-websearch::native claude_fable
+        PASS [   0.012s] ( 42/153) maho-ext-pi-websearch::index registers_lifecycle_and_status_command
+        PASS [   0.007s] ( 43/153) maho-ext-pi-websearch::native codex_rejected
+        PASS [   0.006s] ( 44/153) maho-ext-pi-websearch::native endpoint_suffix_is_not_duplicated
+        PASS [   0.008s] ( 45/153) maho-ext-pi-websearch::native codex_spark_rejected
+        PASS [   0.008s] ( 46/153) maho-ext-pi-websearch::native discovery_deduplicates_before_auth_and_keeps_active_first
+        PASS [   0.005s] ( 47/153) maho-ext-pi-websearch::native gpt_5
+        PASS [   0.011s] ( 48/153) maho-ext-pi-websearch::native claude_sonnet
+        PASS [   0.012s] ( 49/153) maho-ext-pi-websearch::native claude_haiku
+        PASS [   0.007s] ( 50/153) maho-ext-pi-websearch::native gpt_41
+        PASS [   0.005s] ( 51/153) maho-ext-pi-websearch::native gpt_54
+        PASS [   0.005s] ( 52/153) maho-ext-pi-websearch::native gpt_turbo_rejected
+        PASS [   0.011s] ( 53/153) maho-ext-pi-websearch::native gpt_4o
+        PASS [   0.005s] ( 54/153) maho-ext-pi-websearch::native grok
+        PASS [   0.008s] ( 55/153) maho-ext-pi-websearch::native gpt_pro
+        PASS [   0.009s] ( 56/153) maho-ext-pi-websearch::native gpt_55
+        PASS [   0.007s] ( 57/153) maho-ext-pi-websearch::native gpt_terra
+        PASS [   0.006s] ( 58/153) maho-ext-pi-websearch::native maps_models_and_preserves_public_id
+        PASS [   0.006s] ( 59/153) maho-ext-pi-websearch::native missing_registry_returns_none
+        PASS [   0.011s] ( 60/153) maho-ext-pi-websearch::native gpt_sol
+        PASS [   0.008s] ( 61/153) maho-ext-pi-websearch::native missing_key_returns_none
+        PASS [   0.012s] ( 62/153) maho-ext-pi-websearch::native gpt_fast
+        PASS [   0.006s] ( 63/153) maho-ext-pi-websearch::native nonclaude_rejected
+        PASS [   0.006s] ( 64/153) maho-ext-pi-websearch::native supported_upstream_endpoint_variants
+        PASS [   0.010s] ( 65/153) maho-ext-pi-websearch::native openrouter_claude
+        PASS [   0.010s] ( 66/153) maho-ext-pi-websearch::native openrouter_without_slash
+        PASS [   0.009s] ( 67/153) maho-ext-pi-websearch::provider_core blocked_not_reintroduced
+        PASS [   0.010s] ( 68/153) maho-ext-pi-websearch::provider_core anthropic_search_result_prefers_page_age_over_joined_text
+        PASS [   0.016s] ( 69/153) maho-ext-pi-websearch::native missing_model_returns_none
+        PASS [   0.011s] ( 70/153) maho-ext-pi-websearch::native unsafe_and_unsupported_routes_do_not_resolve_auth
+        PASS [   0.013s] ( 71/153) maho-ext-pi-websearch::native o3_rejected
+        PASS [   0.009s] ( 72/153) maho-ext-pi-websearch::provider_core brave_replaces_existing_query_and_maps_domains
+        PASS [   0.009s] ( 73/153) maho-ext-pi-websearch::provider_core exa_key_and_body
+        PASS [   0.008s] ( 74/153) maho-ext-pi-websearch::provider_core google_cse_clamps_to_ten_and_encodes_credentials
+        PASS [   0.008s] ( 75/153) maho-ext-pi-websearch::provider_core kimi_preserves_summary_precedence
+        PASS [   0.008s] ( 76/153) maho-ext-pi-websearch::provider_core perplexity_chat_preserves_allowlist_priority
+        PASS [   0.006s] ( 77/153) maho-ext-pi-websearch::provider_core tavily_bearer_and_body
+        PASS [   0.008s] ( 78/153) maho-ext-pi-websearch::provider_core request_narrows_allowlist
+        PASS [   0.009s] ( 79/153) maho-ext-pi-websearch::provider_core request_blocklist_narrows_allowlist
+        PASS [   0.007s] ( 80/153) maho-ext-pi-websearch::provider_core responses_text_urls_are_unique_before_punctuation_cleanup
+        PASS [   0.009s] ( 81/153) maho-ext-pi-websearch::provider_core serper_maps_domain_filters_and_clamps_results
+        PASS [   0.008s] ( 82/153) maho-ext-pi-websearch::provider_core xai_citations_fallback_and_allowlist_limit
+        PASS [   0.010s] ( 83/153) maho-ext-pi-websearch::provider_core responses_annotations_override_sources
+        PASS [   0.010s] ( 84/153) maho-ext-pi-websearch::provider_core z_ai_falls_back_when_chat_results_are_invalid
+        PASS [   0.011s] ( 85/153) maho-ext-pi-websearch::provider_endpoints public_repeated_dot_rejected
+        PASS [   0.022s] ( 86/153) maho-ext-pi-websearch::provider_core duckduckgo_decodes_redirect_and_strips_snippet_tags
+        PASS [   0.013s] ( 87/153) maho-ext-pi-websearch::provider_endpoints pinned_endpoint_boundary_corpus
+        PASS [   0.008s] ( 88/153) maho-ext-pi-websearch::providers anthropic_request
+        PASS [   0.010s] ( 89/153) maho-ext-pi-websearch::provider_endpoints public_terminal_dot_allowed
+        PASS [   0.010s] ( 90/153) maho-ext-pi-websearch::providers brave_request_allowlist
+        PASS [   0.009s] ( 91/153) maho-ext-pi-websearch::providers codex_annotations
+        PASS [   0.011s] ( 92/153) maho-ext-pi-websearch::providers anthropic_response
+        PASS [   0.012s] ( 93/153) maho-ext-pi-websearch::provider_endpoints terminal_dot_private_rejected
+        PASS [   0.010s] ( 94/153) maho-ext-pi-websearch::providers codex_blocklist
+        PASS [   0.009s] ( 95/153) maho-ext-pi-websearch::providers config_allowlist_request_blocklist
+        PASS [   0.006s] ( 96/153) maho-ext-pi-websearch::providers duckduckgo_request
+        PASS [   0.010s] ( 97/153) maho-ext-pi-websearch::providers config_allowlist_request_allowlist
+        PASS [   0.006s] ( 98/153) maho-ext-pi-websearch::providers kimi_request
+        PASS [   0.005s] ( 99/153) maho-ext-pi-websearch::providers perplexity_chat_response
+        PASS [   0.009s] (100/153) maho-ext-pi-websearch::providers exa_request
+        PASS [   0.008s] (101/153) maho-ext-pi-websearch::providers openai_text_url
+        PASS [   0.007s] (102/153) maho-ext-pi-websearch::providers overridden_endpoints
+        PASS [   0.006s] (103/153) maho-ext-pi-websearch::providers perplexity_chat_request
+        PASS [   0.012s] (104/153) maho-ext-pi-websearch::providers config_blocklist_cannot_be_reintroduced
+        PASS [   0.008s] (105/153) maho-ext-pi-websearch::providers kimi_response
+        PASS [   0.006s] (106/153) maho-ext-pi-websearch::providers perplexity_response
+        PASS [   0.007s] (107/153) maho-ext-pi-websearch::providers pinned_exa_response_boundaries
+        PASS [   0.006s] (108/153) maho-ext-pi-websearch::providers responses_cached_request
+        PASS [   0.006s] (109/153) maho-ext-pi-websearch::providers tavily_response
+        PASS [   0.006s] (110/153) maho-ext-pi-websearch::providers xai_request
+        PASS [   0.005s] (111/153) maho-ext-pi-websearch::providers zai_chat_request
+        PASS [   0.018s] (112/153) maho-ext-pi-websearch::providers duckduckgo_response
+        PASS [   0.008s] (113/153) maho-ext-pi-websearch::providers xai_citations
+        PASS [   0.008s] (114/153) maho-ext-pi-websearch::providers tavily_request
+        PASS [   0.005s] (115/153) maho-ext-pi-websearch::providers zai_direct_request
+        PASS [   0.009s] (116/153) maho-ext-pi-websearch::providers serper_response
+        PASS [   0.015s] (117/153) maho-ext-pi-websearch::providers perplexity_direct_request
+        PASS [   0.021s] (118/153) maho-ext-pi-websearch::providers duckduckgo_ascii_word_boundary_matches_source
+        PASS [   0.009s] (119/153) maho-ext-pi-websearch::providers zai_chat_response
+        PASS [   0.005s] (120/153) maho-ext-pi-websearch::providers zai_response
+        PASS [   0.009s] (121/153) maho-ext-pi-websearch::registered native_factory_registers_search_executor_and_renderers
+        PASS [   0.009s] (122/153) maho-ext-pi-websearch::registered registered_context_registry_preserves_scoped_auth_failure_and_header_projection
+        PASS [   0.006s] (123/153) maho-ext-pi-websearch::routing fill_first_prefers_least_successful
+        PASS [   0.008s] (124/153) maho-ext-pi-websearch::renderers native_call_has_zero_padding_and_allowed_filter_precedence
+        PASS [   0.008s] (125/153) maho-ext-pi-websearch::renderers registered_renderer_preserves_typed_details_and_live_theme_colors
+        PASS [   0.010s] (126/153) maho-ext-pi-websearch::registered registered_abort_preserves_custom_reason_and_disconnects
+        PASS [   0.008s] (127/153) maho-ext-pi-websearch::renderers typed_errors_and_absent_details_choose_native_palette
+        PASS [   0.008s] (128/153) maho-ext-pi-websearch::routing native_entry_labels_hide_generated_suffix
+        PASS [   0.009s] (129/153) maho-ext-pi-websearch::renderers progress_expansion_only_adds_route_for_current_provider
+        PASS [   0.009s] (130/153) maho-ext-pi-websearch::renderers progress_numeric_label_uses_javascript_infinity
+        PASS [   0.007s] (131/153) maho-ext-pi-websearch::routing priority_ties_preserve_source_order
+        PASS [   0.012s] (132/153) maho-ext-pi-websearch::registered registered_search_keeps_routing_progress_and_result_contract
+        PASS [   0.006s] (133/153) maho-ext-pi-websearch::routing weighted_round_robin_rotates_unique_routes
+        PASS [   0.009s] (134/153) maho-ext-pi-websearch::search abort_during_request_propagates_and_disconnects_socket
+        PASS [   0.010s] (135/153) maho-ext-pi-websearch::search aggregate_http_failures_keeps_each_detail
+        PASS [   0.009s] (136/153) maho-ext-pi-websearch::search empty_http_error
+        PASS [   0.010s] (137/153) maho-ext-pi-websearch::search empty_primary_falls_back
+        PASS [   0.011s] (138/153) maho-ext-pi-websearch::search native_result_format_hides_generated_entry_id
+        PASS [   0.014s] (139/153) maho-ext-pi-websearch::search all_empty_aggregates_errors
+        PASS [   0.011s] (140/153) maho-ext-pi-websearch::search no_fallback_stops_on_empty
+        PASS [   0.014s] (141/153) maho-ext-pi-websearch::search fill_first_replaces_duplicate_without_reordering_and_reports_progress
+        PASS [   0.010s] (142/153) maho-ext-pi-websearch::search preaborted_search_propagates_without_network
+        PASS [   0.014s] (143/153) maho-ext-pi-websearch::search long_http_error
+        PASS [   0.015s] (144/153) maho-ext-pi-websearch::search nested_http_error
+        PASS [   0.009s] (145/153) maho-ext-pi-websearch::search raw_http_error
+        PASS [   0.009s] (146/153) maho-ext-pi-websearch::search raw_http_error_trims_javascript_whitespace_only
+        PASS [   0.010s] (147/153) maho-ext-pi-websearch::search real_http_primary_failure_falls_back_and_reports_attempts
+        PASS [   0.008s] (148/153) maho-ext-pi-websearch::search string_http_error
+        PASS [   0.011s] (149/153) maho-ext-pi-websearch::search reordered_priority_progress_tracks_resolved_routes
+        PASS [   0.012s] (150/153) maho-ext-pi-websearch::tool configuration_failure_preserves_reason_without_progress
+        PASS [   0.011s] (151/153) maho-ext-pi-websearch::tool conflicting_filters_precede_configuration_failure
+        PASS [   0.012s] (152/153) maho-ext-pi-websearch::tool tool_round_robin_state_persists_and_progress_is_typed
+        PASS [   0.066s] (153/153) maho-ext-pi-websearch::search hanging_provider_times_out_and_falls_through
+────────────
+     Summary [   0.161s] 153 tests run: 141 passed, 12 failed, 0 skipped
+        FAIL [   0.006s] (  1/153) maho-ext-pi-websearch::config empty_providers_rejected
+        FAIL [   0.007s] (  3/153) maho-ext-pi-websearch::config codex_command_does_not_supply_key
+        FAIL [   0.009s] ( 10/153) maho-ext-pi-websearch::config backend_alias_is_preserved
+        FAIL [   0.006s] ( 16/153) maho-ext-pi-websearch::config loader_still_omits_unknown_provider
+        FAIL [   0.005s] ( 17/153) maho-ext-pi-websearch::config multi_provider_auto_false
+        FAIL [   0.007s] ( 19/153) maho-ext-pi-websearch::config loader_omits_null_numeric_fields
+        FAIL [   0.009s] ( 20/153) maho-ext-pi-websearch::config invalid_utf8_config_string_uses_node_replacement
+        FAIL [   0.010s] ( 23/153) maho-ext-pi-websearch::config legacy_auto_false
+        FAIL [   0.007s] ( 27/153) maho-ext-pi-websearch::config timeout_is_preserved
+        FAIL [   0.008s] ( 29/153) maho-ext-pi-websearch::config project_overrides_global
+        FAIL [   0.007s] ( 30/153) maho-ext-pi-websearch::config routing_policy_is_preserved
+        FAIL [   0.006s] ( 34/153) maho-ext-pi-websearch::index session_publishes_loaded_config_before_ui_callbacks
+error: test run failed
+
+DIRECT_NULL_TEST_EXIT=100

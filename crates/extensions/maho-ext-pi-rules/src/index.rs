@@ -20,9 +20,15 @@ pub fn register_rule_injection_hooks_with_engine<D:EngineDeps+Send+'static>(api:
     api.register_flag("pi-rules-mode",FlagType::String{default:Some("both".into())},Some("Rule injection mode: static, dynamic, both, or off.".into()));
     let env_disabled=engine.config.disabled;let engine=Arc::new(Mutex::new(engine));
     crate::commands::register_slash_commands(api,Arc::clone(&engine));
+    let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
     for kind in [EventKind::SessionStart,EventKind::SessionCompact]{
-        let engine=Arc::clone(&engine);let runtime=api.runtime.clone();
-        api.on(kind,Arc::new(move|_,ctx|{let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if kind==EventKind::SessionStart{sync_flags(&mut engine,&runtime,env_disabled);}engine.reset_session(Some(&ctx.cwd.to_string_lossy()));Box::pin(async{Ok(EventResult::None)})}));
+        let engine=Arc::clone(&engine);let runtime=api.runtime.clone();let sender=Arc::clone(&sender);
+        api.on(kind,Arc::new(move|event,ctx|{
+            let append={let mut engine=engine.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if kind==EventKind::SessionStart{sync_flags(&mut engine,&runtime,env_disabled);}engine.reset_session(Some(&ctx.cwd.to_string_lossy()));kind==EventKind::SessionCompact||!engine.config.disabled};
+            let reason=match event{ExtensionEvent::SessionStart(event)=>match event.reason{maho_ext_api::SessionReason::Startup=>"startup",maho_ext_api::SessionReason::Reload=>"reload",maho_ext_api::SessionReason::New=>"new",maho_ext_api::SessionReason::Resume=>"resume",maho_ext_api::SessionReason::Fork=>"fork",maho_ext_api::SessionReason::Quit=>"quit"},_=>"compact"};
+            let sender=Arc::clone(&sender);let cwd=ctx.cwd.to_string_lossy().into_owned();
+            Box::pin(async move{if append{sender.append_entry("pi-rules.scan",Some(serde_json::json!({"cwd":cwd,"reason":reason})))?;}Ok(EventResult::None)})
+        }));
     }
     let static_engine=Arc::clone(&engine);let runtime=api.runtime.clone();
     api.on(EventKind::BeforeAgentStart,Arc::new(move|event,ctx|{

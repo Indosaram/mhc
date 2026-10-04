@@ -1,0 +1,30 @@
+status: completed exit_code: 0
+    Blocking waiting for file lock on artifact directory
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 03s
+
+LANE39_SEARCH_RENDER_BUILD_EXIT=0
+
+LANE39_SEARCH_RENDER_WIDTH=40
+web_search "native renderer" domains:1  
+Searching "native renderer" via tavily  
+(max 5)                                 
+route exa/primary:failed ->             
+tavily:searching                        
+1 result via exa/primary (priority) in  
+2s (truncated)                          
+route exa/primary:1                     
+Native result https://example.org       
+  A deterministic snippet               
+
+LANE39_SEARCH_RENDER_40_EXIT=0
+
+LANE39_SEARCH_RENDER_WIDTH=80
+web_search "native renderer" domains:1                                          
+Searching "native renderer" via tavily (max 5)                                  
+route exa/primary:failed -> tavily:searching                                    
+1 result via exa/primary (priority) in 2s (truncated)                           
+route exa/primary:1                                                             
+Native result https://example.org                                               
+  A deterministic snippet                                                       
+
+LANE39_SEARCH_RENDER_80_EXIT=0

@@ -1,0 +1,38 @@
+status: exited_100 exit_code: 100
+   Compiling maho-ai v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-api)
+   Compiling maho-ext-pi-goal v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-goal)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 16s
+────────────
+ Nextest run ID ecec9f40-3590-424c-ac0b-032bbb5fb749 with nextest profile: default
+    Starting 1 test across 12 binaries (84 tests skipped)
+        FAIL [   0.007s] (1/1) maho-ext-pi-goal::store_errors fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary
+  stdout ───
+
+    running 1 test
+    test fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary ... FAILED
+
+    failures:
+
+    failures:
+        fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary' (3388576) panicked at crates/extensions/maho-ext-pi-goal/tests/store_errors.rs:11:5:
+    assertion `left == right` failed
+      left: Number(1)
+     right: Number(0.75)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 
+────────────
+     Summary [   0.008s] 1 test run: 0 passed, 1 failed, 84 skipped
+        FAIL [   0.007s] (1/1) maho-ext-pi-goal::store_errors fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary
+error: test run failed
+
+LANE39_GOAL_FRACTION_REPRO_EXIT=100

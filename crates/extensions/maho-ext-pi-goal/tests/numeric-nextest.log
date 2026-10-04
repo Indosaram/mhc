@@ -1,0 +1,96 @@
+status: completed exit_code: 0
+   Compiling maho-ext-pi-goal v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-goal)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 25.04s
+────────────
+ Nextest run ID c5f68d87-30c5-46ce-a05e-4bc06a9bf51f with nextest profile: default
+    Starting 86 tests across 12 binaries
+        PASS [   0.008s] ( 1/86) maho-ext-pi-goal::command bare_summary
+        PASS [   0.009s] ( 2/86) maho-ext-pi-goal::command reserved_controls
+        PASS [   0.009s] ( 3/86) maho-ext-pi-goal::continuation pending_stops_continuation
+        PASS [   0.009s] ( 4/86) maho-ext-pi-goal::format blocked_display
+        PASS [   0.010s] ( 5/86) maho-ext-pi-goal::format compact_tokens
+        PASS [   0.010s] ( 6/86) maho-ext-pi-goal::command non_control_words
+        PASS [   0.011s] ( 7/86) maho-ext-pi-goal::command set_not_special
+        PASS [   0.011s] ( 8/86) maho-ext-pi-goal::command arbitrary_objective
+        PASS [   0.011s] ( 9/86) maho-ext-pi-goal::continuation idle_required
+        PASS [   0.013s] (10/86) maho-ext-pi-goal::format compact_tokens_binary_halfway_rounds_away_from_zero
+        PASS [   0.014s] (11/86) maho-ext-pi-goal::continuation continues_active
+        PASS [   0.005s] (12/86) maho-ext-pi-goal::index session_directory_selects_store_without_agent_or_cwd
+        PASS [   0.007s] (13/86) maho-ext-pi-goal::index no_session_store_is_cwd_scoped_and_preserves_thread
+        PASS [   0.017s] (14/86) maho-ext-pi-goal::continuation only_active_continues
+        PASS [   0.008s] (15/86) maho-ext-pi-goal::format nonfinite_and_negative_zero_numbers_match_javascript
+        PASS [   0.009s] (16/86) maho-ext-pi-goal::format elapsed_units
+        PASS [   0.007s] (17/86) maho-ext-pi-goal::lifecycle native_lifecycle_registers_all_six_event_handlers
+        PASS [   0.010s] (18/86) maho-ext-pi-goal::format completed_iso_date_uses_javascript_expanded_year
+        PASS [   0.010s] (19/86) maho-ext-pi-goal::format tool_display_no_budget
+        PASS [   0.011s] (20/86) maho-ext-pi-goal::format machine_snapshot_no_budget
+        PASS [   0.009s] (21/86) maho-ext-pi-goal::lifecycle extension_wires_tools_command_and_hooks_together
+        PASS [   0.006s] (22/86) maho-ext-pi-goal::store accounting_never_changes_status
+        PASS [   0.006s] (23/86) maho-ext-pi-goal::store active_active
+        PASS [   0.006s] (24/86) maho-ext-pi-goal::store active_complete
+        PASS [   0.006s] (25/86) maho-ext-pi-goal::store blocked_blocked
+        PASS [   0.007s] (26/86) maho-ext-pi-goal::store blocked_active
+        PASS [   0.006s] (27/86) maho-ext-pi-goal::store blocked_complete
+        PASS [   0.013s] (28/86) maho-ext-pi-goal::lifecycle streamed_usage_flushes_once
+        PASS [   0.014s] (29/86) maho-ext-pi-goal::lifecycle replaced_goal_does_not_receive_stale_usage
+        PASS [   0.005s] (30/86) maho-ext-pi-goal::store blocked_paused
+        PASS [   0.008s] (31/86) maho-ext-pi-goal::store blocked_finalization
+        PASS [   0.011s] (32/86) maho-ext-pi-goal::store active_blocked
+        PASS [   0.011s] (33/86) maho-ext-pi-goal::store active_paused
+        PASS [   0.007s] (34/86) maho-ext-pi-goal::store clear_preserves_version
+        PASS [   0.006s] (35/86) maho-ext-pi-goal::store complete_blocked
+        PASS [   0.006s] (36/86) maho-ext-pi-goal::store complete_complete
+        PASS [   0.007s] (37/86) maho-ext-pi-goal::store completed_create_archives_one_line
+        PASS [   0.006s] (38/86) maho-ext-pi-goal::store counts_only_input_output
+        PASS [   0.014s] (39/86) maho-ext-pi-goal::store blocked_invariant_boundary
+        PASS [   0.011s] (40/86) maho-ext-pi-goal::store complete_active
+        PASS [   0.008s] (41/86) maho-ext-pi-goal::store complete_paused
+        PASS [   0.011s] (42/86) maho-ext-pi-goal::store complete_finalization
+        PASS [   0.008s] (43/86) maho-ext-pi-goal::store matching_objective_resumes_same_id
+        PASS [   0.010s] (44/86) maho-ext-pi-goal::store completes_stamps_timestamp
+        PASS [   0.011s] (45/86) maho-ext-pi-goal::store inert_budget_preserved
+        PASS [   0.006s] (46/86) maho-ext-pi-goal::store paused_paused
+        PASS [   0.006s] (47/86) maho-ext-pi-goal::store persists_active_without_budget
+        PASS [   0.007s] (48/86) maho-ext-pi-goal::store paused_not_accounted
+        PASS [   0.005s] (49/86) maho-ext-pi-goal::store repeated_blocked_idempotent
+        PASS [   0.014s] (50/86) maho-ext-pi-goal::store paused_blocked
+        PASS [   0.007s] (51/86) maho-ext-pi-goal::store rejects_create_paused
+        PASS [   0.014s] (52/86) maho-ext-pi-goal::store paused_active
+        PASS [   0.011s] (53/86) maho-ext-pi-goal::store paused_complete
+        PASS [   0.011s] (54/86) maho-ext-pi-goal::store reads_invalid_utf8_with_node_replacement
+        PASS [   0.005s] (55/86) maho-ext-pi-goal::store store_envelope_preserves_source_field_order
+        PASS [   0.006s] (56/86) maho-ext-pi-goal::store_errors mutations_preserve_missing_duplicate_corrupt_and_io_identities
+        PASS [   0.007s] (57/86) maho-ext-pi-goal::store_errors fractional_usage_is_written_without_rounding_then_rejected_at_read_boundary
+        PASS [   0.015s] (58/86) maho-ext-pi-goal::store rejects_create_active
+        PASS [   0.007s] (59/86) maho-ext-pi-goal::store_errors parse_errors_preserve_source_identities
+        PASS [   0.009s] (60/86) maho-ext-pi-goal::store_errors nonfinite_usage_persists_null_fields_then_fails_source_read_validation
+        PASS [   0.015s] (61/86) maho-ext-pi-goal::store replacement_resets_usage_status_preserves
+        PASS [   0.013s] (62/86) maho-ext-pi-goal::store spills_exact_oversized_objective
+        PASS [   0.008s] (63/86) maho-ext-pi-goal::tool_registration registered_command_persists_pause_resume_replace_and_clear
+        PASS [   0.014s] (64/86) maho-ext-pi-goal::store user_resume_clears_blocked
+        PASS [   0.012s] (65/86) maho-ext-pi-goal::tool_registration create_replaces_completed_goal_and_preserves_full_objective
+        PASS [   0.013s] (66/86) maho-ext-pi-goal::store_errors read_distinguishes_missing_file_from_io_failure
+        PASS [   0.009s] (67/86) maho-ext-pi-goal::tool_registration registered_lifecycle_marks_live_tool_updates
+        PASS [   0.013s] (68/86) maho-ext-pi-goal::tool_registration registered_goal_confirmation_cancellation_and_ui_are_session_isolated
+        PASS [   0.008s] (69/86) maho-ext-pi-goal::tool_registration tools_enforce_status_contract_and_account_before_update
+        PASS [   0.008s] (70/86) maho-ext-pi-goal::transitions model_transition_matrix
+        PASS [   0.005s] (71/86) maho-ext-pi-goal::transitions resume_clears_blocked_fields
+        PASS [   0.011s] (72/86) maho-ext-pi-goal::transitions blocked_requires_reason
+        PASS [   0.013s] (73/86) maho-ext-pi-goal::transitions blocked_reason_uses_javascript_whitespace
+        PASS [   0.005s] (74/86) maho-ext-pi-goal::turn_usage overflowing_finite_usage_preserves_nan_remaining
+        PASS [   0.012s] (75/86) maho-ext-pi-goal::transitions complete_rejects_reason
+        PASS [   0.017s] (76/86) maho-ext-pi-goal::tool_registration registered_goal_tools_execute_with_live_context
+        PASS [   0.009s] (77/86) maho-ext-pi-goal::transitions user_transition_matrix
+        PASS [   0.011s] (78/86) maho-ext-pi-goal::transitions repeated_block_preserves_reason
+        PASS [   0.008s] (79/86) maho-ext-pi-goal::turn_usage flushed_usage_counted_once
+        PASS [   0.009s] (80/86) maho-ext-pi-goal::turn_usage accounting_window_discards_prior_usage
+        PASS [   0.014s] (81/86) maho-ext-pi-goal::transitions complete_timestamp_idempotent
+        PASS [   0.007s] (82/86) maho-ext-pi-goal::validation empty_rejected
+        PASS [   0.005s] (83/86) maho-ext-pi-goal::validation hard_cut
+        PASS [   0.005s] (84/86) maho-ext-pi-goal::validation oversized_filename_preserves_negative_slice
+        PASS [   0.007s] (85/86) maho-ext-pi-goal::validation exact_limit
+        PASS [   0.005s] (86/86) maho-ext-pi-goal::validation whitespace_cut
+────────────
+     Summary [   0.070s] 86 tests run: 86 passed, 0 skipped
+
+LANE39_GOAL_SERIALIZATION_EXIT=0

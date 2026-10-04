@@ -23,10 +23,9 @@ fn one_decimal(value:f64)->String{
     let rounded=format!("{value:.1}");rounded.strip_suffix(".0").unwrap_or(&rounded).into()
 }
 pub const fn goal_status_label(status:GoalStatus)->&'static str{match status{GoalStatus::Active=>"active",GoalStatus::Paused=>"paused",GoalStatus::Blocked=>"blocked",GoalStatus::Complete=>"complete"}}
-fn number(value:u64)->f64{value.to_string().parse().unwrap_or_else(|_|unreachable!("u64 decimal fits f64"))}
 pub fn format_goal_for_tool(goal:Option<&Goal>)->Result<String,String>{
     let Some(goal)=goal else{return Ok("No active goal is set.".into());};
-    let mut lines=vec![format!("Objective: {}",goal.objective),format!("Status: {}",goal_status_label(goal.status)),format!("Time used: {}",format_goal_elapsed_seconds(number(goal.time_used_seconds))),format!("Tokens used: {}",format_tokens_compact(number(goal.tokens_used)))];
+    let mut lines=vec![format!("Objective: {}",goal.objective),format!("Status: {}",goal_status_label(goal.status)),format!("Time used: {}",format_goal_elapsed_seconds(goal.time_used_seconds)),format!("Tokens used: {}",format_tokens_compact(goal.tokens_used))];
     if let Some(reason)=&goal.blocked_reason&&!reason.is_empty(){lines.push(format!("Blocked reason: {reason}"));}
     if let Some(completed)=goal.completed_at.filter(|value|*value!=0){
         if completed>8_640_000_000_000{return Err("Invalid time value".into());}

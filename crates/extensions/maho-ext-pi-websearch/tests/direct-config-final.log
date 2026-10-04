@@ -1,0 +1,162 @@
+status: completed exit_code: 0
+   Compiling maho-ext-pi-websearch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-websearch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.25s
+────────────
+ Nextest run ID c63c045a-b02f-4728-b2a3-22ed7af3f73e with nextest profile: default
+    Starting 148 tests across 12 binaries
+        PASS [   0.006s] (  1/148) maho-ext-pi-websearch::config codex_command_does_not_supply_key
+        PASS [   0.007s] (  2/148) maho-ext-pi-websearch::config empty_providers_rejected
+        PASS [   0.007s] (  3/148) maho-ext-pi-websearch::config conflicting_domains_rejected
+        PASS [   0.008s] (  4/148) maho-ext-pi-websearch::config credentials_in_url_rejected
+        PASS [   0.008s] (  5/148) maho-ext-pi-websearch::config direct_validator_does_not_drop_unknown_provider
+        PASS [   0.009s] (  6/148) maho-ext-pi-websearch::config exa_missing_key
+        PASS [   0.010s] (  7/148) maho-ext-pi-websearch::config google_requires_engine_id
+        PASS [   0.011s] (  8/148) maho-ext-pi-websearch::config exa_key_accepted
+        PASS [   0.006s] (  9/148) maho-ext-pi-websearch::config kimi_key_accepted
+        PASS [   0.006s] ( 10/148) maho-ext-pi-websearch::config kimi_missing_key
+        PASS [   0.007s] ( 11/148) maho-ext-pi-websearch::config legacy_auto_false
+        PASS [   0.008s] ( 12/148) maho-ext-pi-websearch::config localhost_rejected
+        PASS [   0.008s] ( 13/148) maho-ext-pi-websearch::config missing_config_uses_free_default
+        PASS [   0.016s] ( 14/148) maho-ext-pi-websearch::config backend_alias_is_preserved
+        PASS [   0.016s] ( 15/148) maho-ext-pi-websearch::config invalid_utf8_config_string_uses_node_replacement
+        PASS [   0.006s] ( 16/148) maho-ext-pi-websearch::config non_boolean_auto_rejected
+        PASS [   0.009s] ( 17/148) maho-ext-pi-websearch::config loader_still_omits_unknown_provider
+        PASS [   0.018s] ( 18/148) maho-ext-pi-websearch::config codex_missing_key
+        PASS [   0.008s] ( 19/148) maho-ext-pi-websearch::config multi_provider_auto_false
+        PASS [   0.005s] ( 20/148) maho-ext-pi-websearch::config perplexity_key_accepted
+        PASS [   0.018s] ( 21/148) maho-ext-pi-websearch::config anthropic_missing_key
+        PASS [   0.006s] ( 22/148) maho-ext-pi-websearch::config openai_missing_key
+        PASS [   0.007s] ( 23/148) maho-ext-pi-websearch::config public_base_url_accepted
+        PASS [   0.008s] ( 24/148) maho-ext-pi-websearch::config unsafe_base_url_rejected
+        PASS [   0.008s] ( 25/148) maho-ext-pi-websearch::config xai_missing_key
+        PASS [   0.010s] ( 26/148) maho-ext-pi-websearch::config private_ipv6_rejected
+        PASS [   0.009s] ( 27/148) maho-ext-pi-websearch::config timeout_is_preserved
+        PASS [   0.009s] ( 28/148) maho-ext-pi-websearch::config project_overrides_global
+        PASS [   0.011s] ( 29/148) maho-ext-pi-websearch::index registers_lifecycle_and_status_command
+        PASS [   0.011s] ( 30/148) maho-ext-pi-websearch::config routing_policy_is_preserved
+        PASS [   0.012s] ( 31/148) maho-ext-pi-websearch::config tavily_missing_key
+        PASS [   0.013s] ( 32/148) maho-ext-pi-websearch::index bypass_matches_only_native_provider_extensions
+        PASS [   0.013s] ( 33/148) maho-ext-pi-websearch::config zai_missing_key
+        PASS [   0.014s] ( 34/148) maho-ext-pi-websearch::config zero_timeout_rejected
+        PASS [   0.006s] ( 35/148) maho-ext-pi-websearch::native claude_fable
+        PASS [   0.006s] ( 36/148) maho-ext-pi-websearch::native claude_48
+        PASS [   0.008s] ( 37/148) maho-ext-pi-websearch::index session_publishes_loaded_config_before_ui_callbacks
+        PASS [   0.008s] ( 38/148) maho-ext-pi-websearch::native claude_dated
+        PASS [   0.005s] ( 39/148) maho-ext-pi-websearch::native codex_spark_rejected
+        PASS [   0.011s] ( 40/148) maho-ext-pi-websearch::native auth_failure_returns_none
+        PASS [   0.009s] ( 41/148) maho-ext-pi-websearch::native claude_opus
+        PASS [   0.012s] ( 42/148) maho-ext-pi-websearch::native claude_haiku
+        PASS [   0.010s] ( 43/148) maho-ext-pi-websearch::native codex_rejected
+        PASS [   0.007s] ( 44/148) maho-ext-pi-websearch::native gpt_5
+        PASS [   0.013s] ( 45/148) maho-ext-pi-websearch::native claude_sonnet
+        PASS [   0.006s] ( 46/148) maho-ext-pi-websearch::native gpt_55
+        PASS [   0.010s] ( 47/148) maho-ext-pi-websearch::native gpt_4o
+        PASS [   0.011s] ( 48/148) maho-ext-pi-websearch::native gpt_41
+        PASS [   0.012s] ( 49/148) maho-ext-pi-websearch::native endpoint_suffix_is_not_duplicated
+        PASS [   0.010s] ( 50/148) maho-ext-pi-websearch::native gpt_54
+        PASS [   0.005s] ( 51/148) maho-ext-pi-websearch::native gpt_turbo_rejected
+        PASS [   0.007s] ( 52/148) maho-ext-pi-websearch::native gpt_sol
+        PASS [   0.007s] ( 53/148) maho-ext-pi-websearch::native gpt_terra
+        PASS [   0.009s] ( 54/148) maho-ext-pi-websearch::native gpt_fast
+        PASS [   0.010s] ( 55/148) maho-ext-pi-websearch::native gpt_pro
+        PASS [   0.017s] ( 56/148) maho-ext-pi-websearch::native discovery_deduplicates_before_auth_and_keeps_active_first
+        PASS [   0.006s] ( 57/148) maho-ext-pi-websearch::native missing_model_returns_none
+        PASS [   0.007s] ( 58/148) maho-ext-pi-websearch::native missing_key_returns_none
+        PASS [   0.006s] ( 59/148) maho-ext-pi-websearch::native nonclaude_rejected
+        PASS [   0.010s] ( 60/148) maho-ext-pi-websearch::native maps_models_and_preserves_public_id
+        PASS [   0.011s] ( 61/148) maho-ext-pi-websearch::native missing_registry_returns_none
+        PASS [   0.009s] ( 62/148) maho-ext-pi-websearch::native openrouter_without_slash
+        PASS [   0.010s] ( 63/148) maho-ext-pi-websearch::native o3_rejected
+        PASS [   0.014s] ( 64/148) maho-ext-pi-websearch::native grok
+        PASS [   0.011s] ( 65/148) maho-ext-pi-websearch::native openrouter_claude
+        PASS [   0.011s] ( 66/148) maho-ext-pi-websearch::native supported_upstream_endpoint_variants
+        PASS [   0.007s] ( 67/148) maho-ext-pi-websearch::provider_core brave_replaces_existing_query_and_maps_domains
+        PASS [   0.008s] ( 68/148) maho-ext-pi-websearch::provider_core blocked_not_reintroduced
+        PASS [   0.009s] ( 69/148) maho-ext-pi-websearch::provider_core anthropic_search_result_prefers_page_age_over_joined_text
+        PASS [   0.006s] ( 70/148) maho-ext-pi-websearch::provider_core exa_key_and_body
+        PASS [   0.012s] ( 71/148) maho-ext-pi-websearch::native unsafe_and_unsupported_routes_do_not_resolve_auth
+        PASS [   0.007s] ( 72/148) maho-ext-pi-websearch::provider_core request_blocklist_narrows_allowlist
+        PASS [   0.009s] ( 73/148) maho-ext-pi-websearch::provider_core kimi_preserves_summary_precedence
+        PASS [   0.007s] ( 74/148) maho-ext-pi-websearch::provider_core responses_text_urls_are_unique_before_punctuation_cleanup
+        PASS [   0.008s] ( 75/148) maho-ext-pi-websearch::provider_core z_ai_falls_back_when_chat_results_are_invalid
+        PASS [   0.012s] ( 76/148) maho-ext-pi-websearch::provider_core perplexity_chat_preserves_allowlist_priority
+        PASS [   0.010s] ( 77/148) maho-ext-pi-websearch::provider_core xai_citations_fallback_and_allowlist_limit
+        PASS [   0.011s] ( 78/148) maho-ext-pi-websearch::provider_core responses_annotations_override_sources
+        PASS [   0.011s] ( 79/148) maho-ext-pi-websearch::provider_core serper_maps_domain_filters_and_clamps_results
+        PASS [   0.012s] ( 80/148) maho-ext-pi-websearch::provider_core request_narrows_allowlist
+        PASS [   0.014s] ( 81/148) maho-ext-pi-websearch::provider_core google_cse_clamps_to_ten_and_encodes_credentials
+        PASS [   0.007s] ( 82/148) maho-ext-pi-websearch::provider_endpoints public_repeated_dot_rejected
+        PASS [   0.006s] ( 83/148) maho-ext-pi-websearch::providers anthropic_request
+        PASS [   0.010s] ( 84/148) maho-ext-pi-websearch::provider_endpoints terminal_dot_private_rejected
+        PASS [   0.006s] ( 85/148) maho-ext-pi-websearch::providers brave_request_allowlist
+        PASS [   0.012s] ( 86/148) maho-ext-pi-websearch::provider_endpoints public_terminal_dot_allowed
+        PASS [   0.018s] ( 87/148) maho-ext-pi-websearch::provider_core tavily_bearer_and_body
+        PASS [   0.009s] ( 88/148) maho-ext-pi-websearch::providers codex_annotations
+        PASS [   0.010s] ( 89/148) maho-ext-pi-websearch::providers codex_blocklist
+        PASS [   0.010s] ( 90/148) maho-ext-pi-websearch::providers config_allowlist_request_allowlist
+        PASS [   0.011s] ( 91/148) maho-ext-pi-websearch::providers config_blocklist_cannot_be_reintroduced
+        PASS [   0.014s] ( 92/148) maho-ext-pi-websearch::providers anthropic_response
+        PASS [   0.006s] ( 93/148) maho-ext-pi-websearch::providers exa_request
+        PASS [   0.007s] ( 94/148) maho-ext-pi-websearch::providers openai_text_url
+        PASS [   0.035s] ( 95/148) maho-ext-pi-websearch::provider_core duckduckgo_decodes_redirect_and_strips_snippet_tags
+        PASS [   0.013s] ( 96/148) maho-ext-pi-websearch::providers duckduckgo_request
+        PASS [   0.011s] ( 97/148) maho-ext-pi-websearch::providers kimi_request
+        PASS [   0.008s] ( 98/148) maho-ext-pi-websearch::providers perplexity_chat_request
+        PASS [   0.009s] ( 99/148) maho-ext-pi-websearch::providers perplexity_direct_request
+        PASS [   0.010s] (100/148) maho-ext-pi-websearch::providers perplexity_chat_response
+        PASS [   0.015s] (101/148) maho-ext-pi-websearch::providers kimi_response
+        PASS [   0.011s] (102/148) maho-ext-pi-websearch::providers perplexity_response
+        PASS [   0.014s] (103/148) maho-ext-pi-websearch::providers overridden_endpoints
+        PASS [   0.006s] (104/148) maho-ext-pi-websearch::providers xai_citations
+        PASS [   0.009s] (105/148) maho-ext-pi-websearch::providers responses_cached_request
+        PASS [   0.025s] (106/148) maho-ext-pi-websearch::providers config_allowlist_request_blocklist
+        PASS [   0.011s] (107/148) maho-ext-pi-websearch::providers serper_response
+        PASS [   0.008s] (108/148) maho-ext-pi-websearch::providers zai_chat_request
+        PASS [   0.013s] (109/148) maho-ext-pi-websearch::providers tavily_response
+        PASS [   0.014s] (110/148) maho-ext-pi-websearch::providers tavily_request
+        PASS [   0.011s] (111/148) maho-ext-pi-websearch::providers xai_request
+        PASS [   0.027s] (112/148) maho-ext-pi-websearch::providers duckduckgo_response
+        PASS [   0.010s] (113/148) maho-ext-pi-websearch::providers zai_chat_response
+        PASS [   0.008s] (114/148) maho-ext-pi-websearch::providers zai_response
+        PASS [   0.010s] (115/148) maho-ext-pi-websearch::providers zai_direct_request
+        PASS [   0.016s] (116/148) maho-ext-pi-websearch::registered native_factory_registers_search_executor_and_renderers
+        PASS [   0.009s] (117/148) maho-ext-pi-websearch::routing native_entry_labels_hide_generated_suffix
+        PASS [   0.018s] (118/148) maho-ext-pi-websearch::registered registered_context_registry_preserves_scoped_auth_failure_and_header_projection
+        PASS [   0.015s] (119/148) maho-ext-pi-websearch::renderers registered_renderer_preserves_typed_details_and_live_theme_colors
+        PASS [   0.013s] (120/148) maho-ext-pi-websearch::routing priority_ties_preserve_source_order
+        PASS [   0.017s] (121/148) maho-ext-pi-websearch::renderers progress_expansion_only_adds_route_for_current_provider
+        PASS [   0.025s] (122/148) maho-ext-pi-websearch::registered registered_abort_preserves_custom_reason_and_disconnects
+        PASS [   0.019s] (123/148) maho-ext-pi-websearch::renderers native_call_has_zero_padding_and_allowed_filter_precedence
+        PASS [   0.017s] (124/148) maho-ext-pi-websearch::routing fill_first_prefers_least_successful
+        PASS [   0.025s] (125/148) maho-ext-pi-websearch::registered registered_search_keeps_routing_progress_and_result_contract
+        PASS [   0.025s] (126/148) maho-ext-pi-websearch::renderers progress_numeric_label_uses_javascript_infinity
+        PASS [   0.023s] (127/148) maho-ext-pi-websearch::renderers typed_errors_and_absent_details_choose_native_palette
+        PASS [   0.017s] (128/148) maho-ext-pi-websearch::routing weighted_round_robin_rotates_unique_routes
+        PASS [   0.012s] (129/148) maho-ext-pi-websearch::search native_result_format_hides_generated_entry_id
+        PASS [   0.014s] (130/148) maho-ext-pi-websearch::search long_http_error
+        PASS [   0.022s] (131/148) maho-ext-pi-websearch::search aggregate_http_failures_keeps_each_detail
+        PASS [   0.009s] (132/148) maho-ext-pi-websearch::search no_fallback_stops_on_empty
+        PASS [   0.015s] (133/148) maho-ext-pi-websearch::search empty_http_error
+        PASS [   0.008s] (134/148) maho-ext-pi-websearch::search preaborted_search_propagates_without_network
+        PASS [   0.017s] (135/148) maho-ext-pi-websearch::search empty_primary_falls_back
+        PASS [   0.020s] (136/148) maho-ext-pi-websearch::search all_empty_aggregates_errors
+        PASS [   0.018s] (137/148) maho-ext-pi-websearch::search fill_first_replaces_duplicate_without_reordering_and_reports_progress
+        PASS [   0.025s] (138/148) maho-ext-pi-websearch::search abort_during_request_propagates_and_disconnects_socket
+        PASS [   0.015s] (139/148) maho-ext-pi-websearch::search nested_http_error
+        PASS [   0.010s] (140/148) maho-ext-pi-websearch::search reordered_priority_progress_tracks_resolved_routes
+        PASS [   0.010s] (141/148) maho-ext-pi-websearch::search real_http_primary_failure_falls_back_and_reports_attempts
+        PASS [   0.011s] (142/148) maho-ext-pi-websearch::search raw_http_error
+        PASS [   0.010s] (143/148) maho-ext-pi-websearch::search string_http_error
+        PASS [   0.012s] (144/148) maho-ext-pi-websearch::search raw_http_error_trims_javascript_whitespace_only
+        PASS [   0.011s] (145/148) maho-ext-pi-websearch::tool configuration_failure_preserves_reason_without_progress
+        PASS [   0.012s] (146/148) maho-ext-pi-websearch::tool conflicting_filters_precede_configuration_failure
+        PASS [   0.013s] (147/148) maho-ext-pi-websearch::tool tool_round_robin_state_persists_and_progress_is_typed
+        PASS [   0.064s] (148/148) maho-ext-pi-websearch::search hanging_provider_times_out_and_falls_through
+────────────
+     Summary [   0.187s] 148 tests run: 148 passed, 0 skipped
+
+LANE39_DIRECT_CONFIG_FINAL_EXIT=0
+    Checking maho-ext-pi-websearch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-websearch)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.04s
+
+LANE39_DIRECT_CONFIG_CLIPPY_EXIT=0

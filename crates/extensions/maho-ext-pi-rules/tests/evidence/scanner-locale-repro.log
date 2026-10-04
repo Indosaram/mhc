@@ -1,0 +1,9 @@
+status: completed exit_code: 0
+/bin/bash: line 1: warning: setlocale: LC_ALL: cannot change locale (sv_SE.UTF-8): No such file or directory
+/bin/bash: warning: setlocale: LC_ALL: cannot change locale (sv_SE.UTF-8): No such file or directory
+   Compiling maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.63s
+     Running `/home/indo/T9-Mac/.cargo-target/maho-code/lane-39/debug/examples/scanner_qa`
+["a.md","å.md","ä.md","ö.md","z.md"]
+
+SCANNER_SWEDISH_REPRO_EXIT=0

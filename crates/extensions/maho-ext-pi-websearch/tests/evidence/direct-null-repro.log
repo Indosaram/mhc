@@ -1,0 +1,32 @@
+status: exited_100 exit_code: 100
+   Compiling maho-ext-pi-websearch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-websearch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.57s
+────────────
+ Nextest run ID dc1dc810-1773-48d6-b087-c2a3eaede43b with nextest profile: default
+    Starting 1 test across 12 binaries (151 tests skipped)
+        FAIL [   0.008s] (1/1) maho-ext-pi-websearch::config direct_null_numeric_fields_are_not_loader_defaults
+  stdout ───
+
+    running 1 test
+    test direct_null_numeric_fields_are_not_loader_defaults ... FAILED
+
+    failures:
+
+    failures:
+        direct_null_numeric_fields_are_not_loader_defaults
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 32 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'direct_null_numeric_fields_are_not_loader_defaults' (206593) panicked at crates/extensions/maho-ext-pi-websearch/tests/config.rs:3:283:
+    weight
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure:
+────────────
+     Summary [   0.009s] 1 test run: 0 passed, 1 failed, 151 skipped
+        FAIL [   0.008s] (1/1) maho-ext-pi-websearch::config direct_null_numeric_fields_are_not_loader_defaults
+error: test run failed
+
+DIRECT_NULL_REPRO_EXIT=100

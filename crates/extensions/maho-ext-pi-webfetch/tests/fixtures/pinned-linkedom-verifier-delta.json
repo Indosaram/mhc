@@ -1,0 +1,37 @@
+[
+  {
+    "name": "foster-text-elements",
+    "html": "<table>before<div>element</div><tr><td>cell</td></tr>after</table><p>sibling</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nelement\n\ncell\n\nafter\n\nsibling",
+    "text": "before\nelement\n\ncell\n\nafter\n\nsibling"
+  },
+  {
+    "name": "multiple-tables",
+    "html": "<table>a<tr><td>one</td></tr>b</table><p>middle</p><table>c<tr><td>two</td></tr>d</table>",
+    "url": "https://example.org/page",
+    "markdown": "a\n\none\n\nb\n\nmiddle\n\nc\n\ntwo\n\nd",
+    "text": "a\none\n\nb\n\nmiddle\n\nc\ntwo\n\nd"
+  },
+  {
+    "name": "nested-tables",
+    "html": "<table>outer<tr><td>A<table>inner<tr><td>B</td></tr>endinner</table>C</td></tr>endouter</table>",
+    "url": "https://example.org/page",
+    "markdown": "outer\n\nA\n\ninner\n\nB\n\nendinner\n\nC\n\nendouter",
+    "text": "outer\nA\ninner\nB\n\nendinner\nC\n\nendouter"
+  },
+  {
+    "name": "sibling-insertion",
+    "html": "<p>before</p><table>x<tr><td>cell</td></tr>y</table><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nx\n\ncell\n\ny\n\nafter",
+    "text": "before\n\nx\ncell\n\ny\n\nafter"
+  },
+  {
+    "name": "explicit-table",
+    "html": "<div class=\"entry-content\"><p>Article text longer than thirty characters.</p><table>before<div>element</div><tr><td>cell</td></tr>after</table><p>sibling</p></div>",
+    "url": "https://example.org/page",
+    "markdown": "Article text longer than thirty characters.\n\nbefore\n\nelement\n\ncell\n\nafter\n\nsibling",
+    "text": "Article text longer than thirty characters.\n\nbefore\nelement\n\ncell\n\nafter\n\nsibling"
+  }
+]

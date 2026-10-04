@@ -1,4 +1,60 @@
 use maho_ext_pi_webfetch::webfetch::content::decode_html_entities;
+#[test]fn markdown_base_compares_original_url_string_for_fragments(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<base href='https://example.com/'><a href='#part'>Part</a>","https://example.com");assert!(output.contains("[Part](https://example.com/#part)"));}
+#[test]fn markdown_resolves_image_sources_but_text_conversion_does_not_add_urls(){use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown,html_to_text};let html="<p>Caption</p><img src='image.png' alt='Image'>";assert!(html_to_markdown(html,"https://example.com/docs/").contains("![Image](https://example.com/docs/image.png)"));assert_eq!(html_to_text(html,"https://example.com/docs/"),"Caption");}
+#[test]fn markdown_normalizes_consumed_urls_and_unwraps_javascript(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<a href='/page'>Page</a> <a href='javascript:alert(1)'>Text</a> <a href='#part'>Part</a>","https://example.com/root");assert!(output.contains("[Page](https://example.com/page)"));assert!(!output.contains("javascript:"));assert!(output.contains("Text"));assert!(output.contains("[Part](#part)"));}
+#[test]fn markdown_base_href_changes_fragment_resolution(){use maho_ext_pi_webfetch::webfetch::content::html_to_markdown;let output=html_to_markdown("<base href='/docs/'><a href='page'>Page</a> <a href='#part'>Part</a>","https://example.com/root");assert!(output.contains("[Page](https://example.com/docs/page)"));assert!(output.contains("[Part](https://example.com/docs/#part)"));}
+#[test]
+fn pinned_consumed_rawtext_and_foreign_content_match(){
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown,html_to_text};
+    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-rawtext-foreign-review.json")).expect("actual source");
+    for case in cases.as_array().expect("cases"){
+        let html=case["html"].as_str().expect("html");let url=case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html,url),case["markdown"].as_str().expect("markdown"),"{}",case["name"]);
+        assert_eq!(html_to_text(html,url),case["text"].as_str().expect("text"),"{}",case["name"]);
+    }
+}
+#[test]
+fn pinned_linkedom_independent_verifier_cases_match(){
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown,html_to_text};
+    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-linkedom-verifier-delta.json")).expect("actual source");
+    for case in cases.as_array().expect("cases"){
+        let html=case["html"].as_str().expect("html");let url=case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html,url),case["markdown"].as_str().expect("markdown"),"{}",case["name"]);
+        assert_eq!(html_to_text(html,url),case["text"].as_str().expect("text"),"{}",case["name"]);
+    }
+}
+#[test]
+fn pinned_multiple_nested_and_adjacent_foster_tables_match() {
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
+    let cases:serde_json::Value=serde_json::from_str(include_str!("fixtures/pinned-foster-review-delta.json")).expect("pinned oracle");
+    for case in cases.as_array().expect("cases"){
+        let html=case["html"].as_str().expect("html");let url=case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html,url),case["markdown"].as_str().expect("markdown"),"{}",case["name"]);
+        assert_eq!(html_to_text(html,url),case["text"].as_str().expect("text"),"{}",case["name"]);
+    }
+}
+#[test]
+fn pinned_malformed_dom_and_utf16_article_threshold_match() {
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
+    let cases: serde_json::Value = serde_json::from_str(include_str!("fixtures/pinned-malformed-dom-delta.json")).expect("source-generated fixtures");
+    for case in cases.as_array().expect("cases") {
+        let html = case["html"].as_str().expect("html");
+        let url = case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html, url), case["markdown"].as_str().expect("markdown"), "{}", case["name"]);
+        assert_eq!(html_to_text(html, url), case["text"].as_str().expect("text"), "{}", case["name"]);
+    }
+}
+#[test]
+fn pinned_explicit_selector_priority_noise_and_short_candidate_match() {
+    use maho_ext_pi_webfetch::webfetch::content::{html_to_markdown, html_to_text};
+    let cases: serde_json::Value = serde_json::from_str(include_str!("fixtures/pinned-explicit-selector-delta.json")).expect("source-generated fixtures");
+    for case in cases.as_array().expect("cases") {
+        let html = case["html"].as_str().expect("html");
+        let url = case["url"].as_str().expect("url");
+        assert_eq!(html_to_markdown(html, url), case["markdown"].as_str().expect("markdown"), "{}", case["name"]);
+        assert_eq!(html_to_text(html, url), case["text"].as_str().expect("text"), "{}", case["name"]);
+    }
+}
 #[test]fn markdown_traversal_matches_source_generated_fixtures(){use maho_ext_pi_webfetch::webfetch::content::html_fragment_to_markdown;let cases:serde_json::Value=serde_json::from_str(include_str!("../../../../.omo/evidence/task-39-fetch-markdown.json")).expect("generated fixtures");for case in cases.as_array().expect("cases"){let html=case["html"].as_str().expect("html");assert_eq!(html_fragment_to_markdown(html),case["markdown"].as_str().expect("markdown"),"{html}");}}
 #[test]fn turndown_links_and_images_escape_attributes_without_reescaping_content(){use maho_ext_pi_webfetch::webfetch::content::{inline_link_markdown,image_markdown};assert_eq!(inline_link_markdown("*x*","a(b) c","a\"b"),"[*x*](<a\\(b\\) c> \"a\\\"b\")");assert_eq!(image_markdown("[x]","image",""),"![\\[x\\]](image)");assert_eq!(image_markdown("x","","title"),"");}
 #[test]fn turndown_attributes_and_link_destinations_preserve_source_escaping(){use maho_ext_pi_webfetch::webfetch::content::{clean_markdown_attribute,escape_link_destination};assert_eq!(escape_link_destination("a(b)<c> d"),"<a\\(b\\)\\<c\\> d>");assert_eq!(escape_link_destination("a\tb"),"a\tb");assert_eq!(clean_markdown_attribute(" a \n\n \t\u{feff} b  \r c")," a \nb  \r c");}

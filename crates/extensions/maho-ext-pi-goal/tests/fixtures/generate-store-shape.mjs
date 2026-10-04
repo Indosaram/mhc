@@ -1,0 +1,15 @@
+import { readFile } from 'node:fs/promises';
+const pin='6937ce1d9ae2f9c3da11041cdf953ebe01303668';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-goal/${pin}/src/goal/store.ts`);
+if(!response.ok)throw new Error(`Pinned source ${response.status}`);
+const source=await response.text();
+const start=source.indexOf('function isGoal(value:');
+if(start<0)throw new Error('Pinned validator unavailable');
+const functions=new Bun.Transpiler({loader:'ts'}).transformSync(source.slice(start));
+const fixtures=JSON.parse(await readFile(new URL('pinned-store-shape.json',import.meta.url),'utf8'));
+const inputs=fixtures.map(({name,goal})=>({name,goal}));
+const script=`${functions}\nfunction isRecord(x){return typeof x==='object'&&x!==null&&!Array.isArray(x)} const cases=${JSON.stringify(inputs)};console.log(JSON.stringify(cases.map(x=>({...x,accepted:isGoal(x.goal)})),null,2));`;
+const child=Bun.spawn(['node','--input-type=module','-e',script],{stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+if(exit!==0||JSON.stringify(JSON.parse(output))!==JSON.stringify(fixtures))throw new Error('Source shape corpus mismatch');
+console.log(`PASS pin=${pin}; eight exact store validator shapes reproduced; exit=${exit}`);

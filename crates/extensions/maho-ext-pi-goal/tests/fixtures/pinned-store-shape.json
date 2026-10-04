@@ -1,0 +1,122 @@
+[
+  {
+    "name": "empty-strings",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "accepted": true
+  },
+  {
+    "name": "null-budget",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "tokenBudget": null
+    },
+    "accepted": false
+  },
+  {
+    "name": "null-started",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "lastStartedAt": null
+    },
+    "accepted": false
+  },
+  {
+    "name": "unknown-key",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "extra": {
+        "ignored": true
+      }
+    },
+    "accepted": true
+  },
+  {
+    "name": "wrong-id",
+    "goal": {
+      "id": 12,
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "accepted": false
+  },
+  {
+    "name": "blocked-null-reason",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "blocked",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "blockedAt": 0,
+      "blockedReason": null
+    },
+    "accepted": false
+  },
+  {
+    "name": "nonblocked-null",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 0,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0,
+      "blockedReason": null
+    },
+    "accepted": false
+  },
+  {
+    "name": "safe-float-integer",
+    "goal": {
+      "id": "id",
+      "threadId": "thread",
+      "objective": "",
+      "status": "active",
+      "tokensUsed": 1,
+      "timeUsedSeconds": 0,
+      "createdAt": 0,
+      "updatedAt": 0
+    },
+    "accepted": true
+  }
+]

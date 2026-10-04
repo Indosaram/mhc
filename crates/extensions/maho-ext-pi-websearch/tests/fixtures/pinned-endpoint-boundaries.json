@@ -1,0 +1,122 @@
+[
+  {
+    "input": "https://localhost",
+    "allowed": false
+  },
+  {
+    "input": "https://localhost.",
+    "allowed": false
+  },
+  {
+    "input": "https://localhost..",
+    "allowed": false
+  },
+  {
+    "input": "https://127.1",
+    "allowed": false
+  },
+  {
+    "input": "https://0177.0.0.1",
+    "allowed": false
+  },
+  {
+    "input": "https://0x7f000001",
+    "allowed": false
+  },
+  {
+    "input": "https://2130706433",
+    "allowed": false
+  },
+  {
+    "input": "https://[::1]",
+    "allowed": false
+  },
+  {
+    "input": "https://[2001:db8::1]",
+    "allowed": false
+  },
+  {
+    "input": "https://fc-public.example",
+    "allowed": false
+  },
+  {
+    "input": "https://fd-public.example",
+    "allowed": false
+  },
+  {
+    "input": "https://user@public.example",
+    "allowed": false
+  },
+  {
+    "input": "https://:secret@public.example",
+    "allowed": false
+  },
+  {
+    "input": "https://public.example",
+    "allowed": true
+  },
+  {
+    "input": "https://public.example.",
+    "allowed": true
+  },
+  {
+    "input": "https://public.example..",
+    "allowed": false
+  },
+  {
+    "input": "https://例え.テスト",
+    "allowed": true
+  },
+  {
+    "input": "https://%65xample.com",
+    "allowed": true
+  },
+  {
+    "input": "https:\\public.example\\search",
+    "allowed": true
+  },
+  {
+    "input": " https://public.example/search\n",
+    "allowed": true
+  },
+  {
+    "input": "https://1.2.3.256",
+    "allowed": false
+  },
+  {
+    "input": "https://10.1a.2b.3c",
+    "allowed": false
+  },
+  {
+    "input": "https://172.16.2.3",
+    "allowed": false
+  },
+  {
+    "input": "https://172.32.2.3",
+    "allowed": true
+  },
+  {
+    "input": "https://192.168.1.1",
+    "allowed": false
+  },
+  {
+    "input": "https://169.254.1.1",
+    "allowed": false
+  },
+  {
+    "input": "https://0.1.2.3",
+    "allowed": false
+  },
+  {
+    "input": "https://public.example:443",
+    "allowed": true
+  },
+  {
+    "input": "http://public.example",
+    "allowed": false
+  },
+  {
+    "input": "ftp://public.example",
+    "allowed": false
+  }
+]

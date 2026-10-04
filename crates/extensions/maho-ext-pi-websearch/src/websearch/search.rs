@@ -71,7 +71,7 @@ pub async fn perform_provider_search(client:&reqwest::Client,config:&SearchProvi
     details.duration_ms=now_milliseconds()-started;
     if details.results.is_empty(){details.error=Some(format!("Search provider {} returned no results for \"{}\".",provider_entry_label(provider_name(config.config.provider),config.config.id.as_deref(),None),request.query));}Ok(details)
 }
-pub type SearchAttemptListener<'a>=dyn FnMut(&str,&[SearchAttempt],&[String])+'a;
+pub type SearchAttemptListener<'a>=dyn FnMut(&str,&[SearchAttempt],&[String])+Send+'a;
 pub async fn perform_search(client:&reqwest::Client,config:&WebsearchConfig,request:&SearchRequest,signal:Option<&CancellationToken>,state:&mut SearchRoutingState,mut on_attempt:Option<&mut SearchAttemptListener<'_>>)->Result<SearchDetails,String>{
     let started=now_milliseconds();let order=select_order(config.strategy,&config.providers,state);let mut attempts=Vec::new();
     let labels=order.iter().filter_map(|index|config.providers.get(*index)).map(|entry|provider_entry_label(provider_name(entry.config.provider),entry.config.id.as_deref(),None)).collect::<Vec<_>>();

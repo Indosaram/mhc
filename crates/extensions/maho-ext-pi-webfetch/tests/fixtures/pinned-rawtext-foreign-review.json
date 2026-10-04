@@ -1,0 +1,30 @@
+[
+  {
+    "name": "raw-title-textarea",
+    "html": "<html><head><title>A &amp; B</title></head><body><p>before</p><textarea>&amp;<b>literal</b></textarea><p>after</p></body></html>",
+    "url": "https://example.org/page",
+    "markdown": "# A & B\n\nbefore\n\nafter",
+    "text": "A & B\n\nbefore\n\nafter"
+  },
+  {
+    "name": "raw-xmp",
+    "html": "<p>before</p><xmp>literal <b>bold</b> &amp;</xmp><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nliteral &lt;b&gt;bold&lt;/b&gt; &amp;amp;\n\nafter",
+    "text": "before\nliteral &lt;b&gt;bold&lt;/b&gt; &amp;amp;\nafter"
+  },
+  {
+    "name": "raw-script-style",
+    "html": "<p>before</p><script>if (a < b) { \"<p>hidden</p>\" }</script><style>.x:before {content:\"<p>hidden</p>\"}</style><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nafter",
+    "text": "before\n\nafter"
+  },
+  {
+    "name": "foreign-svg-self-close",
+    "html": "<p>before</p><svg><path/><text>visible</text><foreignObject><div>inside</div></foreignObject></svg><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nvisible\n\ninside\n\nafter",
+    "text": "before\nvisible\ninside\n\nafter"
+  }
+]

@@ -1,0 +1,9 @@
+Command: timeout 15 /usr/bin/node --input-type=module -e <event-driven local net/undici request probe>
+Dependency root: /home/indo/.omo/agent/git/github.com/code-yeongyu/pi-webfetch
+Pinned fetcher.ts request/read branches use undici request and propagate these un-aborted failures.
+{"name":"bad-status","error":"HTTPParserError","message":"Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)"}
+{"name":"bad-header","error":"HTTPParserError","message":"Response does not match the HTTP/1.1 protocol (Invalid header token)"}
+{"name":"short-body","error":"ResponseContentLengthMismatchError","message":"Response body length does not match content-length header","code":"UND_ERR_RES_CONTENT_LENGTH_MISMATCH"}
+Exit: 0
+Cleanup: each accepted socket destroyed, each server.close callback awaited; no sleeps.
+This probe establishes source transport behavior, not native equivalence. Native cause-chain reproduction remains required before a mapping change.

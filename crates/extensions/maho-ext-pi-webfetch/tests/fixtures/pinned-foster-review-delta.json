@@ -1,0 +1,23 @@
+[
+  {
+    "name": "multiple-tables-and-siblings",
+    "html": "<p>before</p><table>first loose<tr><td>first cell</td></tr>first tail</table><p>between</p><table>second loose<tr><td>second cell</td></tr>second tail</table><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nfirst loose\n\nfirst cell\n\nfirst tail\n\nbetween\n\nsecond loose\n\nsecond cell\n\nsecond tail\n\nafter",
+    "text": "before\n\nfirst loose\nfirst cell\n\nfirst tail\n\nbetween\n\nsecond loose\nsecond cell\n\nsecond tail\n\nafter"
+  },
+  {
+    "name": "nested-table-foster",
+    "html": "<table>outer loose<tr><td>outer cell<table>inner loose<tr><td>inner cell</td></tr>inner tail</table>end cell</td></tr>outer tail</table>",
+    "url": "https://example.org/page",
+    "markdown": "outer loose\n\nouter cell\n\ninner loose\n\ninner cell\n\ninner tail\n\nend cell\n\nouter tail",
+    "text": "outer loose\nouter cell\ninner loose\ninner cell\n\ninner tail\nend cell\n\nouter tail"
+  },
+  {
+    "name": "table-adjacent-text",
+    "html": "prefix<table>first<tr><td>cell</td></tr>last</table>suffix<div>end</div>",
+    "url": "https://example.org/page",
+    "markdown": "prefix\n\nfirst\n\ncell\n\nlast\n\nsuffix\n\nend",
+    "text": "prefix\nfirst\ncell\n\nlast\nsuffix\nend"
+  }
+]
