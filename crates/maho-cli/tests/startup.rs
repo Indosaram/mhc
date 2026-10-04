@@ -63,10 +63,54 @@ fn scoped_startup_model_and_tool_suppression_preserve_explicit_thinking_off() {
 #[test]
 fn startup_theme_respects_terminal_background_and_auto_pairs() {
     use maho_cli::cli::startup_ui::resolve_startup_theme;
-    assert_eq!(resolve_startup_theme(None, Some("0;15")).unwrap().name, "light");
-    assert_eq!(resolve_startup_theme(None, Some("15;0")).unwrap().name, "dark");
-    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("0;15")).unwrap().name, "light");
-    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("15;0")).unwrap().name, "dark");
-    assert_eq!(resolve_startup_theme(Some("light"), Some("15;0")).unwrap().name, "light");
-    assert!(resolve_startup_theme(Some("missing-theme"), None).is_err());
+    assert_eq!(resolve_startup_theme(None, Some("0;15")).expect("light terminal").name, "light");
+    assert_eq!(resolve_startup_theme(None, Some("15;0")).expect("dark terminal").name, "dark");
+    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("0;15")).expect("auto light").name, "light");
+    assert_eq!(resolve_startup_theme(Some("light/dark"), Some("15;0")).expect("auto dark").name, "dark");
+    assert_eq!(resolve_startup_theme(Some("light"), Some("15;0")).expect("explicit light").name, "light");
+    assert_eq!(resolve_startup_theme(Some("missing-theme"), None).expect("pinned dark fallback").name, "dark");
+}
+
+fn omarchy_style_theme(name: &str) -> String {
+    let mut colors = serde_json::Map::new();
+    for color in maho_interactive::theme::ThemeColor::ALL {
+        colors.insert(color.key().to_owned(), serde_json::json!("foreground"));
+    }
+    for background in maho_interactive::theme::ThemeBg::ALL {
+        colors.insert(background.key().to_owned(), serde_json::json!("background"));
+    }
+    let mut document = serde_json::Map::new();
+    document.insert("name".into(), serde_json::Value::String(name.to_owned()));
+    document.insert("vars".into(), serde_json::json!({ "foreground": "#a9b1d6", "background": "#1a1b26" }));
+    document.insert("colors".into(), serde_json::Value::Object(colors));
+    serde_json::Value::Object(document).to_string()
+}
+
+#[test]
+fn startup_theme_registry_loads_custom_resources_and_reports_fallbacks() {
+    use maho_cli::cli::startup_ui::{load_theme_resources, resolve_startup_theme_with_registered};
+    use maho_interactive::theme::ColorMode;
+    let directory = tempfile::tempdir().expect("custom themes dir");
+    std::fs::write(directory.path().join("omarchy-system.json"), omarchy_style_theme("omarchy-system")).expect("valid custom theme");
+    let custom = resolve_startup_theme_with_registered(Some("omarchy-system"), None, directory.path(), Vec::new()).expect("resolution");
+    assert_eq!(custom.theme.name, "omarchy-system");
+    assert!(custom.diagnostics.is_empty());
+
+    let missing = resolve_startup_theme_with_registered(Some("absent-theme"), None, directory.path(), Vec::new()).expect("resolution");
+    assert_eq!(missing.theme.name, "dark");
+    assert!(!missing.diagnostics.is_empty(), "missing theme diagnostic must not be hidden");
+
+    std::fs::write(directory.path().join("broken.json"), "{ not json").expect("invalid custom theme");
+    let broken = resolve_startup_theme_with_registered(Some("broken"), None, directory.path(), Vec::new()).expect("resolution");
+    assert_eq!(broken.theme.name, "dark");
+    assert!(!broken.diagnostics.is_empty(), "invalid theme diagnostic must not be hidden");
+
+    let resource_directory = tempfile::tempdir().expect("resource dir");
+    let resource_path = resource_directory.path().join("packaged.json");
+    std::fs::write(&resource_path, omarchy_style_theme("packaged")).expect("resource theme");
+    let (registered, diagnostics) = load_theme_resources([resource_path], ColorMode::Truecolor);
+    assert!(diagnostics.is_empty());
+    let packaged = resolve_startup_theme_with_registered(Some("packaged"), None, directory.path(), registered).expect("resolution");
+    assert_eq!(packaged.theme.name, "packaged");
+    assert!(packaged.diagnostics.is_empty());
 }
