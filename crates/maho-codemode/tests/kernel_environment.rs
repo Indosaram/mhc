@@ -80,6 +80,15 @@ fn sidecar_paths_for_all_interpreters() {
         let local = root.path().join("$bunfs").join(relative);
         let environment = CodemodeRuntimeAssetEnvironment { bun_version: Some("1.4.0"), executable_path: &executable };
         assert_eq!(require_codemode_runtime_asset(&local, Path::new(relative), &environment).unwrap(), sidecar);
+        let wrapper = match relative {
+            "kernels/rb/runner.rb" => maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local), &environment),
+            "kernels/jl/runner.jl" => maho_codemode::kernels::jl::kernel::resolve_julia_runner_path_with(Some(&local), &environment),
+            "kernels/py/prelude.py" => maho_codemode::kernels::py::transport::resolve_python_prelude_path(maho_codemode::kernels::py::transport::PythonPreludePathOptions { local_path:Some(&local), environment }),
+            "kernels/js/worker-entry.js" => maho_codemode::kernels::js::worker_startup::resolve_js_worker_entry_path(Some(&local), &environment),
+            "kernels/js/inline-worker-entry.js" => maho_codemode::kernels::js::inline_worker::resolve_inline_worker_entry_path(Some(&local), &environment),
+            _ => unreachable!("fixture runner list"),
+        };
+        assert_eq!(wrapper.unwrap(), sidecar);
     }
 }
 
@@ -91,6 +100,7 @@ fn local_asset_precedes_sidecar() {
     let executable = root.path().join("pi");
     let env = CodemodeRuntimeAssetEnvironment { bun_version: None, executable_path: &executable };
     assert_eq!(require_codemode_runtime_asset(&local, Path::new("kernels/rb/runner.rb"), &env).unwrap(), local);
+    assert_eq!(maho_codemode::kernels::rb::kernel::resolve_ruby_runner_path_with(Some(&local), &env).unwrap(), local);
 }
 
 #[test]

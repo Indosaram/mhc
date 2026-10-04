@@ -255,7 +255,7 @@ function senpi_call_tool(name::String, arguments)
 end
 
 function senpi_completion(prompt::String, options)
-    senpi_bridge_request("/completion", Dict("prompt" => prompt, "opts" => options))
+    senpi_bridge_request("/completion", Dict("prompt" => prompt, "opts" => options, "cellId" => senpi_current_cell))
 end
 
 function senpi_error(error)

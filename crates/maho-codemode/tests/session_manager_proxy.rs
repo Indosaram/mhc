@@ -2,10 +2,14 @@ use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
 use maho_codemode::extension::session_manager_proxy::*;
 use maho_ai::utils::abort::AbortController;
 
-struct FakeManager { disposals: AtomicUsize, failure: Option<String> }
+struct FakeManager { disposals: AtomicUsize, failure: Option<String>, contexts:Arc<Mutex<std::collections::HashSet<String>>> }
 impl maho_codemode::tool::eval_tool_options::EvalKernelManager for FakeManager {
     fn get_kernel(&self, language: maho_codemode::tool::types::EvalLanguage) -> maho_codemode::tool::types::EvalKernelFuture<'_, Arc<dyn maho_codemode::tool::types::EvalKernel>> {
         Box::pin(async move { Err(format!("fixture kernel {language:?}")) })
+    }
+    fn set_invocation_context(&self,id:&str,_:maho_codemode::tool::eval_tool_options::EvalInvocationContext)->Option<Box<dyn FnOnce()+Send>> {
+        self.contexts.lock().expect("fixture contexts").insert(id.into());let contexts=self.contexts.clone();let id=id.to_owned();
+        Some(Box::new(move || {contexts.lock().expect("fixture contexts").remove(&id);}))
     }
 }
 impl SessionManagerLifecycle for FakeManager {
@@ -14,12 +18,28 @@ impl SessionManagerLifecycle for FakeManager {
     }
 }
 fn manager(failure: Option<&str>) -> Arc<FakeManager> {
-    Arc::new(FakeManager { disposals:AtomicUsize::new(0), failure:failure.map(str::to_owned) })
+    Arc::new(FakeManager { disposals:AtomicUsize::new(0), failure:failure.map(str::to_owned),contexts:Default::default() })
 }
 fn proxy() -> (Arc<SessionManagerProxy>, Arc<Mutex<Vec<String>>>) {
     let failures = Arc::new(Mutex::new(Vec::new()));
     let reported = failures.clone();
     (Arc::new(SessionManagerProxy::new(Arc::new(move |failure| reported.lock().expect("failure list").push(failure.into())))), failures)
+}
+
+#[tokio::test]
+async fn old_invocation_cleanup_preserves_replacement_same_id_context() {
+    use maho_codemode::tool::eval_tool_options::{EvalKernelManager,EvalInvocationContext};
+    let (proxy,_)=proxy();let old=manager(None);let new=manager(None);
+    assert!(proxy.replace(proxy.begin_replacement(),old.clone()).await);
+    let context=EvalInvocationContext {model:None,cwd:"/fixture".into(),thinking_level:None,goal_store_file:None};
+    let clear_old=proxy.set_invocation_context("same-id",context.clone()).unwrap();
+    assert!(proxy.replace(proxy.begin_replacement(),new.clone()).await);
+    let clear_new=proxy.set_invocation_context("same-id",context).unwrap();
+    clear_old();
+    assert!(old.contexts.lock().unwrap().is_empty());
+    assert!(new.contexts.lock().unwrap().contains("same-id"));
+    clear_new();proxy.dispose().await;
+    assert!(new.contexts.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

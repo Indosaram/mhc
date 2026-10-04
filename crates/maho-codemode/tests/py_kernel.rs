@@ -9,6 +9,12 @@ fn input(id:&str,code:&str)->PythonKernelRunOptions {
 }
 
 #[tokio::test]
+async fn cancelled_python_startup_never_admits_worker() {
+    let shutdown=maho_ai::utils::abort::AbortController::new();shutdown.abort(None);
+    assert!(PythonKernel::start_with_signal(options(),&shutdown.signal()).await.is_err());
+}
+
+#[tokio::test]
 async fn real_python_kernel_preserves_state_and_resets() {
     let kernel=PythonKernel::start(options()).await.unwrap();
     assert_eq!(kernel.run(input("first","value = 41\nvalue")).await.unwrap()["valueRepr"],"41");

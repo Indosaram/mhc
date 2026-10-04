@@ -1,6 +1,6 @@
 use serde_json::Value;
 use crate::kernels::shared::subprocess_process::ProcessError;
-use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, start_worker_with_inline_fallback}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS}};
+use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, resolve_js_worker_entry_path}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS}};
 
 pub struct WorkerSlot {
     worker: Option<WorkerHost>,
@@ -22,9 +22,19 @@ impl WorkerSlot {
         if self.worker.is_some() { return Ok(()); }
         if self.generation == 0 { self.generation = 1; }
         options.generation = self.generation;
-        let worker = start_worker_with_inline_fallback(&options, signal).await?;
-        self.mode = worker.mode;
-        self.worker = Some(worker);
+        if signal.aborted() {return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into()));}
+        let primary=resolve_js_worker_entry_path(options.worker_entry,&options.environment).map_err(|error|ProcessError::Startup(error.to_string())).and_then(|entry|WorkerHost::spawn(&entry,options.cwd,options.parallel_pool_width,JavaScriptKernelMode::Worker));
+        if let Ok(worker)=primary {
+            self.worker=Some(worker);
+            let initialized=self.worker.as_mut().expect("published worker").initialize(&options,signal).await;
+            if initialized.is_ok() {self.mode=JavaScriptKernelMode::Worker;return Ok(());}
+            self.retire().await?;
+            if signal.aborted() {return initialized;}
+            options.generation=self.generation;
+        }
+        self.worker=Some(super::inline_worker::create_inline_worker(options.cwd,options.parallel_pool_width,&options.environment)?);
+        self.mode=JavaScriptKernelMode::Inline;
+        if let Err(error)=self.worker.as_mut().expect("published inline worker").initialize(&options,signal).await {self.retire().await?;return Err(error);}
         Ok(())
     }
     pub async fn post_message(&mut self, message: &Value) -> Result<(), ProcessError> {
@@ -52,7 +62,7 @@ impl WorkerSlot {
         }
         match tokio::time::timeout(std::time::Duration::from_millis(WORKER_TERMINATE_DEADLINE_MS), worker.terminate()).await {
             Ok(result) => { result?; Ok(WorkerRetirement::Terminated) },
-            Err(_) => Ok(WorkerRetirement::Abandoned),
+            Err(_) => { worker.terminate().await?; Ok(WorkerRetirement::Terminated) },
         }
     }
 }

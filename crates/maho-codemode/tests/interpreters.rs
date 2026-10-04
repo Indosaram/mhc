@@ -67,6 +67,20 @@ fn ignores_non_executable_and_directories() {
     assert!(resolve_command_path(&root.path().to_string_lossy(), &env, root.path(), false).is_none());
 }
 
+#[cfg(unix)]
+#[test]
+fn slash_command_normalizes_dot_segments_without_resolving_symlinks() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("bin")).unwrap();
+    let executable = root.path().join("bin/probe");
+    std::fs::write(&executable, "fixture").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    symlink("bin", root.path().join("alias")).unwrap();
+    let env = Default::default();
+    assert_eq!(resolve_command_path("./bin/../alias/./probe", &env, root.path(), false), Some(root.path().join("alias/probe")));
+}
+
 #[test]
 fn windows_extension_candidates_prefer_lowercase_before_original() {
     let root=tempfile::tempdir().unwrap();

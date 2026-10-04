@@ -24,12 +24,14 @@ pub struct CellExecution {
     aborted: watch::Sender<Option<AbortReason>>,
     detached: watch::Sender<bool>,
     interrupt: Mutex<Option<KernelInterruptHandle>>,
+    interrupt_ready: watch::Sender<bool>,
 }
 impl CellExecution {
     pub fn new(caller: AbortSignal, cell_id: String, idle: Option<CellIdleWatchdogOptions>, on_abort: Arc<dyn Fn(AbortReason) + Send + Sync>) -> Arc<Self> {
         let (aborted,_)=watch::channel(None);
         let (detached,_)=watch::channel(false);
-        let execution=Arc::new(Self {cell_id,caller:caller.clone(),on_abort,state:Mutex::new(State {active:true,kernel:None,watchdog:None,watchdog_task:None,listener:None}),aborted,detached,interrupt:Mutex::new(None)});
+        let (interrupt_ready,_)=watch::channel(false);
+        let execution=Arc::new(Self {cell_id,caller:caller.clone(),on_abort,state:Mutex::new(State {active:true,kernel:None,watchdog:None,watchdog_task:None,listener:None}),aborted,detached,interrupt:Mutex::new(None),interrupt_ready});
         if let Some(idle)=idle {execution.rearm_idle(idle.timeout_ms,idle.max_pause_grace_ms,idle.on_timeout);}
         let weak=Arc::downgrade(&execution);
         let listener=caller.add_abort_listener(move |reason|{if let Some(execution)=weak.upgrade() {execution.cancel(reason.clone());}});
@@ -84,9 +86,17 @@ impl CellExecution {
                 Ok(handle)=>{*execution.interrupt.lock().expect("interrupt lock")=Some(handle);execution.aborted.send_if_modified(|current|{if current.is_some(){false}else{*current=Some(reason.clone());true}});}
                 Err(error)=>{execution.aborted.send_if_modified(|current|{if current.is_some(){false}else{*current=Some(AbortReason::new("Error",error));true}});}
             }
+            execution.interrupt_ready.send_replace(true);
         });
     }
     pub fn take_interrupt_handle(&self) -> Option<KernelInterruptHandle> {self.interrupt.lock().expect("interrupt lock").take()}
+    pub fn timed_out(&self) -> bool {self.aborted.borrow().as_ref().is_some_and(|reason|reason.name=="TimeoutError")}
+    pub async fn wait_interrupt_handle(&self) -> Option<KernelInterruptHandle> {
+        self.state.lock().expect("execution lock").kernel.as_ref()?;
+        let mut ready=self.interrupt_ready.subscribe();
+        if !*ready.borrow_and_update() {let _=ready.wait_for(|ready|*ready).await;}
+        self.take_interrupt_handle()
+    }
     pub fn finish(&self) {let mut state=self.state.lock().expect("execution lock");state.active=false;self.cleanup(&mut state);}
     fn cleanup(&self,state:&mut State) {
         if let Some(listener)=state.listener.take() {self.caller.remove_abort_listener(listener);}

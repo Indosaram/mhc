@@ -12,6 +12,17 @@ use serde_json::json;
     assert!(resolve_completion_tier(Some("provider/model")).is_err());
 }
 
+#[test]
+fn tier_cost_selection_preserves_registry_ties_and_current_default() {
+    let model=|id:&str,input:f64,output:f64|serde_json::from_value::<maho_ai::model::Model>(json!({"id":id,"name":id,"api":"openai-responses","provider":"openai","baseUrl":"https://example.invalid","reasoning":false,"input":["text"],"cost":{"input":input,"output":output,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100})).unwrap();
+    let current=model("current",20.0,20.0);
+    let available=vec![model("first",1.0,2.0),model("tied",2.0,1.0),model("expensive",4.0,5.0)];
+    assert_eq!(resolve_requested_model(CompletionTier::Default,Some(&current),&available).unwrap().id,"current");
+    assert_eq!(resolve_requested_model(CompletionTier::Smol,None,&available).unwrap().id,"first");
+    assert_eq!(resolve_requested_model(CompletionTier::Slow,None,&available).unwrap().id,"expensive");
+    assert!(resolve_requested_model(CompletionTier::Slow,None,&[]).is_err());
+}
+
 fn message(text: &str) -> maho_ai::types::AssistantMessage {
     use maho_ai::types::*;
     AssistantMessage { content:vec![ContentBlock::text(text)],api:"fake-api".into(),provider:"fake".into(),model:"test".into(),response_model:None,response_id:None,provider_thinking_level:None,diagnostics:None,usage:Usage::default(),stop_reason:StopReason::Stop,stop_details:None,deferred:None,error_message:None,abort_source:None,raw_stop_reason:None,end_turn:None,timestamp:0 }

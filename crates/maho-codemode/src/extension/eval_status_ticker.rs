@@ -70,13 +70,26 @@ impl Drop for EvalStatusTicker {
 }
 
 fn tick(state: &Mutex<TickerState>, render: &EvalStatusRender, now: &EvalStatusClock) {
-    let status = {
-        let mut state = state.lock().expect("eval ticker state poisoned");
-        let status = format_eval_cell_status(&state.entries, now());
-        if state.has_rendered && status == state.last_rendered { return; }
-        state.has_rendered = true;
-        state.last_rendered = status.clone();
-        status
-    };
+    let mut state = state.lock().expect("eval ticker state poisoned");
+    let status = format_eval_cell_status(&state.entries, now());
+    if state.has_rendered && status == state.last_rendered { return; }
+    state.has_rendered = true;
+    state.last_rendered = status.clone();
     render(status);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rendering_owns_state_until_callback_returns() {
+        let state=Arc::new(Mutex::new(TickerState::default()));
+        let observed=state.clone();
+        let render:EvalStatusRender=Arc::new(move |_| {
+            assert!(matches!(observed.try_lock(),Err(std::sync::TryLockError::WouldBlock)),"stop must not reset state while an admitted render is executing");
+        });
+        let now:EvalStatusClock=Arc::new(||0.0);
+        tick(&state,&render,&now);
+        assert!(state.try_lock().is_ok());
+    }
 }

@@ -25,3 +25,17 @@ async fn spawn_names_parent_and_hard_kill_reaps_group_leader() {
 async fn timeout_bounds_unresolved_future() {
     assert_eq!(with_timeout(std::future::pending::<()>(),Duration::from_secs(1),"expired").await,Err("expired".into()));
 }
+
+#[tokio::test]
+async fn dropped_spawn_owner_closes_child_output() {
+    let options = KernelSpawnOptions { command:"python3".into(), args:vec!["-u".into(),"-c".into(),"import signal; print('READY',flush=True); signal.pause()".into()], cwd:"/tmp".into(), env:std::env::vars().collect() };
+    let mut child = default_spawn(&options).unwrap();
+    let pid = child.id().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2),lines.next_line()).await.unwrap().unwrap().as_deref(),Some("READY"));
+    drop(child);
+    let closed = tokio::time::timeout(Duration::from_secs(2),lines.next_line()).await;
+    let cleanup = tokio::process::Command::new("kill").args(["-KILL","--",&format!("-{pid}")]).output().await.unwrap();
+    eprintln!("cleanup: dropped spawn group {pid}, kill exit {}",cleanup.status);
+    assert!(matches!(closed,Ok(Ok(None))),"dropped owner left child output open: {closed:?}");
+}

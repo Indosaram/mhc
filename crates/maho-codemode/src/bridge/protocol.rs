@@ -4,6 +4,42 @@ use sha2::{Digest, Sha256};
 
 pub const BRIDGE_FRAME_MAX_BYTES: usize = 10 * 1024 * 1024;
 
+#[derive(Clone, Debug, Default)]
+pub struct LocalRoots(pub Vec<(String,String)>);
+impl<const N:usize> From<[(String,String);N]> for LocalRoots {
+    fn from(entries:[(String,String);N])->Self {Self(entries.into())}
+}
+impl serde::Serialize for LocalRoots {
+    fn serialize<S:serde::Serializer>(&self,serializer:S)->Result<S::Ok,S::Error> {
+        use serde::ser::SerializeMap;
+        let mut folded=Vec::<(String,&str)>::new();
+        for (key,value) in &self.0 {
+            let key=key.to_lowercase();
+            if let Some((_,previous))=folded.iter_mut().find(|(existing,_)|existing==&key) {*previous=value;} else {folded.push((key,value));}
+        }
+        let mut map=serializer.serialize_map(Some(folded.len()))?;
+        for (key,value) in folded {map.serialize_entry(&key,value)?;}
+        map.end()
+    }
+}
+impl<'de> serde::Deserialize<'de> for LocalRoots {
+    fn deserialize<D:serde::Deserializer<'de>>(deserializer:D)->Result<Self,D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value=LocalRoots;
+            fn expecting(&self,f:&mut std::fmt::Formatter)->std::fmt::Result {f.write_str("an ordered local-root object")}
+            fn visit_map<M:serde::de::MapAccess<'de>>(self,mut map:M)->Result<LocalRoots,M::Error> {
+                let mut entries=Vec::<(String,String)>::new();
+                while let Some((key,value))=map.next_entry::<String,String>()? {
+                    if let Some((_,existing))=entries.iter_mut().find(|(existing,_)|existing==&key) {*existing=value;} else {entries.push((key,value));}
+                }
+                Ok(LocalRoots(entries))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 pub fn generate_correlation_id() -> String { uuid::Uuid::new_v4().to_string() }
 
 pub fn generate_bridge_token(byte_length: usize) -> Result<String, getrandom::Error> {
@@ -46,7 +82,7 @@ pub struct BridgeConnectionConfig {
     pub port: u16,
     pub token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_roots: Option<std::collections::HashMap<String, String>>,
+    pub local_roots: Option<LocalRoots>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifacts_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

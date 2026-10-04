@@ -70,14 +70,26 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     };
     let kernel=match acquired {
         Ok(kernel)=>kernel,
-        Err(error)=>{execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);}
+        Err(mut error)=>{
+            if execution.timed_out() {error=super::interrupt_note::describe_timeout_state(error.as_str(),None::<std::future::Ready<(bool,Option<String>)>>).await;}
+            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            emit_early_failure(&options,&invocation,started_at,&error);
+            return Err(error);
+        }
     };
+    struct InvocationContextGuard(Option<Box<dyn FnOnce()+Send>>);
+    impl Drop for InvocationContextGuard {fn drop(&mut self) {if let Some(clear)=self.0.take() {clear();}}}
+    let context_guard=InvocationContextGuard(invocation.context.as_ref().and_then(|context|options.kernel_manager.set_invocation_context(&invocation.cell_id,context.clone())));
     let queue=kernel.queue_snapshot();
     let state=CellState {input:invocation.input.clone(),runtime:options.runtimes.get(&invocation.input.language).cloned(),started_at,run_started_at:None,queued_behind:Some(queue.0.into_iter().chain(queue.1).collect()),on_update:invocation.on_update,tool_calls:vec![],tool_call_metrics:vec![],status_events:vec![],active:true,output:String::new(),phase:None,error:None,duration_ms:0.0,status:"queued".into()};
-    let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:options.artifacts_dir.as_ref().map(|root|root.join(format!("eval-{}.log",uuid::Uuid::new_v4()))),head_bytes:options.settings.output_sink.head_bytes as usize,max_columns:options.settings.output_sink.max_columns as usize,provider:None,api:None,image_sdk:options.image_sdk.clone()});
+    let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:options.artifacts_dir.as_ref().map(|root|root.join(format!("eval-{}.log",uuid::Uuid::new_v4()))),head_bytes:options.settings.output_sink.head_bytes as usize,max_columns:options.settings.output_sink.max_columns as usize,provider:invocation.model.as_ref().map(|model|model.provider.clone()),api:invocation.model.as_ref().map(|model|model.api.clone()),image_sdk:options.image_sdk.clone()});
     let reply_kernel=kernel.clone();
     let (messages_tx,mut messages)=tokio::sync::mpsc::unbounded_channel();
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete:options.complete.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    let complete=options.complete.as_ref().map(|complete| {
+        let complete=complete.clone();let context=invocation.context.clone();
+        Arc::new(move |request,signal,_|complete(request,signal,context.clone())) as super::cell_handler::CellCompletionHandler
+    });
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete,deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
     let status_tx=messages_tx.clone();
     handler.set_status_emitter(Arc::new(move |event|{let _=status_tx.send(serde_json::json!({"type":"status","event":event}));}));
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
@@ -87,9 +99,10 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let busy=manager.lock().expect("cell manager lock").live_cells(Some(invocation.input.language),Some(&invocation.cell_id));
         if !busy.is_empty() {
             let error=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>()).to_string();
-            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);
+            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            emit_early_failure(&options,&invocation,started_at,&error);return Err(error);
         }
-        if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);return Err(error);}
+        if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);emit_early_failure(&options,&invocation,started_at,&error);return Err(error);}
     }
     execution.set_kernel(kernel.clone());
     cell.lock().expect("managed cell lock").kernel=Some(kernel.clone());
@@ -104,7 +117,10 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let work_options=options.clone();
     let event_cell_id=invocation.cell_id.clone();
     let event_language=invocation.input.language;
-    tokio::spawn(async move {
+    let kernel_tools=if event_language==super::types::EvalLanguage::Js {kernel.clone().kernel_tools()} else {None};
+    let steering_active=active.clone();
+    let run_bound=async move {
+        let _context_guard=context_guard;
         let operation=kernel.run(run_input);
         let guarded=work_execution.wait(operation);
         tokio::pin!(guarded);
@@ -198,6 +214,21 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if active.load(std::sync::atomic::Ordering::SeqCst) && message["type"]=="status" && let Err(error)=handler.handle(&message).await {result=Err(error);}
         }
         if !active.load(std::sync::atomic::Ordering::SeqCst) {handler.builder.state.active=false;}
+        if work_execution.timed_out() && let Err(error)=&mut result {
+            let mut outcome=None;
+            let pending=async {
+                let Some(handle)=work_execution.wait_interrupt_handle().await else {return std::future::pending().await;};
+                let Ok(retained)=handle.state_retained.await else {return std::future::pending().await;};
+                outcome=Some((retained,handle.note.clone()));
+                (retained,handle.note)
+            };
+            *error=super::interrupt_note::describe_timeout_state(error,Some(pending)).await;
+            if let Some((retained,note))=outcome {
+                let mut cell=work_cell.lock().expect("managed cell lock");
+                cell.source.state_retained=Some(retained);
+                cell.source.interrupt_note=note;
+            }
+        }
         let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
         handler.builder.state.active=false;
         active.store(false,std::sync::atomic::Ordering::SeqCst);
@@ -212,13 +243,34 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         }
         match &final_result {Ok(result)=>{work_manager.lock().expect("cell manager lock").complete(&work_cell,result.clone());},Err(error)=>{work_manager.lock().expect("cell manager lock").fail(&work_cell,error);}}
         let _=result_tx.send(final_result);
+    };
+    tokio::spawn(async move {
+        match kernel_tools {
+            Some(tools)=>maho_ext_host::kernel_tools_context::with_kernel_tools(tools,run_bound).await,
+            None=>run_bound.await,
+        }
     });
-    tokio::select! {
-        result=&mut result_rx=>result.map_err(|_|"Eval execution task ended without a result".to_string())?,
+    let steering=invocation.steering_signal.as_ref().filter(|_|detaches && !matches!(invocation.mode.as_str(),"print"|"json"));
+    let mut steering_observed=false;
+    loop {tokio::select! {
+        result=&mut result_rx=>break result.map_err(|_|"Eval execution task ended without a result".to_string())?,
         changed=detached.wait_for(|detached|*detached)=>{
             changed.map_err(|_|"Eval detach signal closed".to_string())?;
             let manager=manager.lock().expect("cell manager lock");
-            Ok(result_after_detach(&manager.peek(&invocation.cell_id)?,&invocation.input,manager.live_cells(None,Some(&invocation.cell_id)).len()))
+            break Ok(result_after_detach(&manager.peek(&invocation.cell_id)?,&invocation.input,manager.live_cells(None,Some(&invocation.cell_id)).len()));
         }
+        ()=async {match steering {Some(signal)=>signal.cancelled().await,None=>std::future::pending().await}},if !steering_observed=>{
+            steering_observed=true;
+            if !invocation.signal.aborted() && steering_active.load(std::sync::atomic::Ordering::SeqCst) && manager.lock().expect("cell manager lock").detach(&cell) {execution.detach();}
+        }
+    }}
+}
+
+fn emit_early_failure(options:&CreateEvalToolOptions,invocation:&EvalCellInvocation,started_at:f64,error:&str) {
+    if let Some(callback)=&options.on_cell_settled {
+        let completed_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
+        callback(super::eval_execution_event::build_eval_execution_event_payload(super::eval_execution_event::BuildEvalExecutionEventOptions {
+            cell_id:&invocation.cell_id,language:invocation.input.language,started_at,completed_at,queued_ms:(completed_at-started_at).max(0.0),detached:false,metrics:&[],tool_calls:&[],state_error:Some(error),outcome:super::eval_execution_event::EvalExecutionSettleOutcome::Error(error),
+        }));
     }
 }
