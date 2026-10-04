@@ -19,19 +19,31 @@ impl Extension for CaptureStart {
     }
 }
 
-async fn scenario(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    scenario_order(cancel, fail_append, abort, timeout, reload, false).await
+struct AgentTurnGate { hit: tokio::sync::mpsc::UnboundedSender<()>, release: Arc<tokio::sync::Notify>, armed: Arc<std::sync::atomic::AtomicBool> }
+impl Extension for AgentTurnGate {
+    fn register(&self, api: &mut ExtensionApi) {
+        let hit = self.hit.clone();
+        let release = self.release.clone();
+        let armed = self.armed.clone();
+        api.on(EventKind::MessageStart, Arc::new(move |_, _| {
+            let hit = hit.clone();
+            let release = release.clone();
+            let armed = armed.clone();
+            Box::pin(async move {
+                if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = hit.send(());
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), release.notified()).await;
+                }
+                Ok(EventResult::None)
+            })
+        }));
+    }
 }
-async fn scenario_order(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    scenario_recovery(cancel, fail_append, abort, timeout, reload, late_rebind, false).await
-}
-async fn scenario_recovery(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    scenario_ui_failure(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,false).await
-}
-async fn scenario_ui_failure(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    scenario_empty_submission(cancel,fail_append,abort,timeout,reload,late_rebind,recovering,fail_ui,false).await
-}
-async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui:bool, empty_submission:bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+
+#[derive(Clone, Copy, Default)]
+struct Scenario { cancel: bool, fail_append: bool, abort: bool, timeout: bool, reload: bool, late_rebind: bool, recovering: bool, fail_ui: bool, empty_submission: bool }
+async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Scenario { cancel, fail_append, abort, timeout, reload, late_rebind, recovering, fail_ui, empty_submission } = opts;
     let root = tempfile::tempdir()?;
     let project = root.path();
     let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
@@ -59,7 +71,13 @@ async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool,
         initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None,
         excluded_tool_names: None, base_tools_override: None, session_start_event: recovering.then_some(SessionStartEvent {reason:SessionReason::Resume,initial_model_provenance:None,previous_session_file:None}), auto_title_sessions: Some(false),
     })?;
-    let loaded = load_extensions(vec![NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) }], project, ExtensionSessionProfile::default());
+    let (gate_hit_tx, mut gate_hit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let gate_release = Arc::new(tokio::sync::Notify::new());
+    let gate_armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let loaded = load_extensions(vec![
+        NativeExtensionFactory { path: "<ask-user-native>".into(), source_info: SourceInfo::default(), extension: Box::new(AskUser) },
+        NativeExtensionFactory { path: "<agent-turn-gate>".into(), source_info: SourceInfo::default(), extension: Box::new(AgentTurnGate { hit: gate_hit_tx, release: gate_release.clone(), armed: gate_armed }) },
+    ], project, ExtensionSessionProfile::default());
     let extension_runtime = loaded.runtime.clone();
     if !loaded.errors.is_empty() { return Err(format!("Factory errors: {:?}", loaded.errors).into()); }
     let (opened, mut opened_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -84,6 +102,10 @@ async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool,
     let runner = ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, event_context);
     session.set_extension_runner(runner).await;
     session.bind_extensions(ExtensionBindings { ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    let (end_tx, mut end_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let _end_subscription = session.subscribe(Arc::new(move |event| {
+        if matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })) { let _ = end_tx.send(()); }
+    }));
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
     let outcome = async {
@@ -235,10 +257,18 @@ async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool,
         if injected{return Err("Cancelled question injected an answer frame".into());}
     }
     if timeout && !reload {
+        tokio::time::timeout(std::time::Duration::from_secs(5), gate_hit_rx.recv()).await.map_err(|_| "timed-out turn never reached the provider")?.ok_or("timed-out turn never reached the provider")?;
         let asked_before=asked.lock().expect("asked").len();
-        let retry=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
+        let retry=session.execute_tool(&tool,args.clone(),ExecuteToolOptions::default()).await;
+        gate_release.notify_one();
+        let retry=retry?;
         if retry.details["status"]!="unavailable"||retry.details["accepted"]==true||!get_pending_questions(&session.session_id()).is_empty()||asked.lock().expect("asked").len()!=asked_before||opened_rx.try_recv().is_ok(){
             return Err("Timed-out turn opened a second question".into());
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), end_rx.recv()).await.map_err(|_| "timed-out turn never ended")?.ok_or("timed-out turn never ended")?;
+        let next=session.execute_tool(&tool,args,ExecuteToolOptions::default()).await?;
+        if next.details["accepted"]!=true||next.details["status"]!="pending" {
+            return Err(format!("Next-turn question was not allowed: {next:?}").into());
         }
     }
     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -264,34 +294,34 @@ async fn scenario_empty_submission(cancel: bool, fail_append: bool, abort: bool,
 }
 
 #[tokio::test]
-async fn registered_async_question_delivers_one_settlement() { scenario(false, false, false, false, false).await.expect("registered answer"); }
+async fn registered_async_question_delivers_one_settlement() { scenario(Scenario::default()).await.expect("registered answer"); }
 #[tokio::test]
 async fn registered_ui_empty_submission_preserves_response_and_retires_timer() {
-    scenario_empty_submission(false,false,false,false,false,false,false,false,true).await.expect("UI-owned empty submission");
+    scenario(Scenario { empty_submission: true, ..Default::default() }).await.expect("UI-owned empty submission");
 }
 #[tokio::test]
-async fn registered_shutdown_settles_and_unregisters_before_returning() { scenario(true, false, false, false, false).await.expect("registered shutdown"); }
+async fn registered_shutdown_settles_and_unregisters_before_returning() { scenario(Scenario { cancel: true, ..Default::default() }).await.expect("registered shutdown"); }
 
 #[tokio::test]
-async fn registered_abort_settles_and_unregisters_owned_question() { scenario(false, false, true, false, false).await.expect("registered abort"); }
+async fn registered_abort_settles_and_unregisters_owned_question() { scenario(Scenario { abort: true, ..Default::default() }).await.expect("registered abort"); }
 
 #[tokio::test(start_paused = true)]
-async fn registered_timeout_settles_once_and_unregisters_owned_question() { scenario(false, false, false, true, false).await.expect("registered timeout"); }
+async fn registered_timeout_settles_once_and_unregisters_owned_question() { scenario(Scenario { timeout: true, ..Default::default() }).await.expect("registered timeout"); }
 
 #[tokio::test(start_paused = true)]
-async fn detached_timeout_queues_outcome_once_on_new_registered_runner() { scenario(false, false, false, true, true).await.expect("registered reload timeout"); }
+async fn detached_timeout_queues_outcome_once_on_new_registered_runner() { scenario(Scenario { timeout: true, reload: true, ..Default::default() }).await.expect("registered reload timeout"); }
 
 #[tokio::test]
-async fn detached_owner_rebinds_before_late_registered_publication() { scenario_order(false, false, false, false, true, true).await.expect("registered late rebind"); }
+async fn detached_owner_rebinds_before_late_registered_publication() { scenario(Scenario { reload: true, late_rebind: true, ..Default::default() }).await.expect("registered late rebind"); }
 
 #[tokio::test]
-async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() { scenario_recovery(false,false,false,false,false,false,true).await.expect("registered resume recovery"); }
+async fn resumed_waiting_call_opens_original_request_without_duplicate_recovery() { scenario(Scenario { recovering: true, ..Default::default() }).await.expect("registered resume recovery"); }
 
 #[tokio::test]
-async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down(){scenario_ui_failure(false,false,false,false,false,false,true,true).await.expect("recovered failure");}
+async fn recovered_ui_failure_settles_orphaned_with_comment_and_tears_down(){scenario(Scenario { recovering: true, fail_ui: true, ..Default::default() }).await.expect("recovered failure");}
 
 #[tokio::test]
-async fn initial_ui_failure_cancels_without_model_injection_and_tears_down(){scenario_ui_failure(false,false,false,false,false,false,false,true).await.expect("initial UI failure");}
+async fn initial_ui_failure_cancels_without_model_injection_and_tears_down(){scenario(Scenario { fail_ui: true, ..Default::default() }).await.expect("initial UI failure");}
 
 struct FailingPersistence;
 impl ExtensionActions for FailingPersistence {
@@ -301,7 +331,7 @@ impl ExtensionActions for FailingPersistence {
     fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
 }
 #[tokio::test]
-async fn failed_persistence_leaves_no_pending_owner_or_notification() { scenario(false, true, false, false, false).await.expect("failed setup cleanup"); }
+async fn failed_persistence_leaves_no_pending_owner_or_notification() { scenario(Scenario { fail_append: true, ..Default::default() }).await.expect("failed setup cleanup"); }
 
 fn maho_frame_matches(text:&str,id:&str)->bool{
     maho_ext_ask_user::format::parse_ask_user_answer_frame(text).is_some_and(|(request,_)|request==id)
