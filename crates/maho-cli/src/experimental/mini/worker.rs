@@ -2,20 +2,24 @@
 //!
 //! One process per session. It owns every live object — storage, harness, lane, model runtime — and
 //! publishes them only as the `Lane` and `Models` services. It speaks JSON over its stdio pipes to
-//! the server that spawned it. Harness tool/model/system-prompt injection (contract S4) and
-//! open-operation recovery (contract S3) are recorded in
-//! `.omo/evidence/residual-source/task-9-contracts.md`; the worker constructs the real session,
-//! harness and lane and serves the delivered seams.
+//! the server that spawned it. The harness is built through the pinned options constructor (S4) with
+//! the read/write/edit/bash tools, the shared `ModelRuntime` models, the `ExecutionToolContext`, and
+//! the `system_prompt(cwd)`; open operations left by a previous worker are re-driven through
+//! `Lane::resume` (S3b).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use maho_agent::harness::agent_harness::AgentHarnessOptions;
 use maho_agent::harness::context::{Context, BACKGROUND_CONTEXT};
 use maho_agent::harness::env::nodejs::NodeExecutionEnv;
-use maho_agent::harness::runtime::harness::{create_agent_harness, Harness};
+use maho_agent::harness::runtime::harness::{create_agent_harness_with_options, Harness};
 use maho_agent::harness::runtime::lane::Lane;
+use maho_agent::harness::runtime::types::SystemPromptFn;
 use maho_agent::harness::session::jsonl::{JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions};
-use maho_agent::harness::session::types::{LaneConfiguration, LaneModelRef, Session};
+use maho_agent::harness::session::types::Session;
+use maho_agent::harness::tools::{create_bash_tool, create_edit_tool, create_read_tool, create_write_tool, BashToolOptions, ExecutionToolContext, ReadToolOptions};
+use maho_agent::harness::types::{AgentHarnessTool, ExecutionEnv};
 use maho_core::model_resolver::{find_initial_model, InitialModelOptions};
 use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use serde_json::Value;
@@ -25,8 +29,6 @@ use super::models_service::ModelsService;
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{LaneEvent, ModelRef, ModelsEvent, WorkerDescription, LANE, MODELS, WORKER};
 use super::shared::rpc::{create_peer, Handler, PeerOptions};
-
-const TOOL_NAMES: [&str; 4] = ["read", "write", "edit", "bash"];
 
 pub fn system_prompt(cwd: &str) -> String {
     ["You are a coding agent working in a terminal.".to_owned(), format!("Working directory: {cwd}"), "Use the read, write, edit, and bash tools to inspect and change files.".to_owned(), "Keep answers short and technical.".to_owned()].join("\n")
@@ -258,20 +260,59 @@ fn worker_handlers(session_id: String) -> HashMap<String, Handler> {
     HashMap::from([("describe".to_owned(), describe)])
 }
 
-async fn open_harness(session: Arc<dyn Session>, model: &maho_ai::types::Model, thinking_level: maho_ai::types::ModelThinkingLevel, context: &Context) -> Result<Harness, String> {
-    let seed = LaneConfiguration {
-        model: LaneModelRef { provider: model.provider.clone(), model_id: model.id.clone() },
-        thinking_level,
-        active_tool_names: TOOL_NAMES.iter().map(|name| (*name).to_owned()).collect(),
-    };
-    create_agent_harness(session, seed, context).await.map_err(|error| error.message)
+type WorkerHarness = Harness<ExecutionToolContext>;
+
+fn worker_tools() -> Vec<Arc<AgentHarnessTool<ExecutionToolContext>>> {
+    vec![
+        Arc::new(create_read_tool::<ExecutionToolContext>(ReadToolOptions::default())),
+        Arc::new(create_write_tool::<ExecutionToolContext>()),
+        Arc::new(create_edit_tool::<ExecutionToolContext>()),
+        Arc::new(create_bash_tool::<ExecutionToolContext>(BashToolOptions::default())),
+    ]
 }
 
-async fn lane_for(harness: &Harness, context: &Context) -> Result<Arc<Lane>, String> {
+async fn open_harness(
+    session: Arc<dyn Session>,
+    model: &maho_ai::types::Model,
+    thinking_level: maho_ai::types::ModelThinkingLevel,
+    runtime: &ModelRuntimeHandle,
+    env: Arc<NodeExecutionEnv>,
+    cwd: &str,
+    context: &Context,
+) -> Result<WorkerHarness, String> {
+    let tools = worker_tools();
+    let execution_env: Arc<dyn ExecutionEnv> = env;
+    let tool_context = ExecutionToolContext { env: execution_env, post_mutate: None };
+    let prompt = system_prompt(cwd);
+    let system_prompt_fn: SystemPromptFn = Arc::new(move |_context: &Context| {
+        let prompt = prompt.clone();
+        Box::pin(async move { prompt })
+    });
+    let options = AgentHarnessOptions::<ExecutionToolContext> {
+        session,
+        models: runtime.models().await,
+        model: model.clone(),
+        thinking_level: Some(thinking_level),
+        active_tool_names: None,
+        tools,
+        tool_context: Some(tool_context),
+        system_prompt: Some(system_prompt_fn),
+        resources: None,
+        stream_options: None,
+        retry: None,
+        compaction: None,
+        steering_mode: None,
+        follow_up_mode: None,
+        tool_execution: None,
+    };
+    create_agent_harness_with_options(options, context).await.map(|(harness, _open)| harness).map_err(|error| error.message)
+}
+
+async fn lane_for(harness: &WorkerHarness, context: &Context) -> Result<Arc<Lane>, String> {
     harness.lane("main", None, context).await.map_err(|error| error.message)
 }
 
-async fn spawn_recoveries(harness: &Harness, context: &Context) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
+async fn spawn_recoveries(harness: &WorkerHarness, context: &Context) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut recoveries = Vec::new();
     for operation in harness.open_operations().map_err(|error| error.message)? {
         let lane = harness.lane(&operation.lane, None, context).await.map_err(|error| error.message)?;
@@ -322,7 +363,7 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     let path = session_path(&repo, &session_id, &context).await?;
     let session: Arc<dyn Session> = Arc::from(session);
 
-    let harness = open_harness(session, &model, thinking_level, &context).await?;
+    let harness = open_harness(session, &model, thinking_level, &runtime, env.clone(), &cwd, &context).await?;
     let lane = lane_for(&harness, &context).await?;
 
     let peer = Arc::new(create_peer(tokio::io::stdin(), tokio::io::stdout(), PeerOptions::default()));

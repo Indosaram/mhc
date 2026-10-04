@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use maho_ai::auth::types::{AuthInteraction, AuthOperationOptions, AuthType, Credential};
-use maho_ai::models::{ModelsError, ModelsRefreshOptions, ModelsRefreshResult, Provider};
+use maho_ai::models::{Models, ModelsError, ModelsRefreshOptions, ModelsRefreshResult, Provider};
 use maho_ai::types::Model;
 use maho_core::model_runtime::ModelRuntime;
 
@@ -22,6 +22,10 @@ impl ModelRuntimeHandle {
 
     pub async fn available(&self) -> Vec<Model> {
         self.inner.lock().await.get_available(None).await
+    }
+
+    pub async fn models(&self) -> Models {
+        self.inner.lock().await.models().clone()
     }
 
     pub async fn providers(&self) -> Vec<Arc<dyn Provider>> {
