@@ -61,7 +61,7 @@ pub fn configured_team_bounds(config: &serde_json::Value) -> Result<senpi_task::
     Ok(bounds)
 }
 
-pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<maho_omo_task::component::TaskComponent>, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, actions: Arc<dyn maho_ext_api::ExtensionActions>) -> Result<(), maho_ext_api::ExtensionFailure> {
+pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<maho_omo_task::component::TaskComponent>, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, actions: Arc<dyn maho_ext_api::ExtensionActions>, coordinator: Arc<maho_omo::task_coordinator::TaskCoordinator>) -> Result<(), maho_ext_api::ExtensionFailure> {
     use maho_omo_task::{team_service::{create_team_service, TeamServiceDeps}, lead_poller_lifecycle::{create_lead_poller_lifecycle, LeadPollerLifecycleDeps, LeadMessageSink}, member_liveness::{create_team_member_liveness_notifier, TeamMemberLivenessDeps}};
     use senpi_task::tools::team::types::TeamToolsService;
     let runtime = component.engine.runtime.clone();
@@ -84,7 +84,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     let parent_state: Arc<dyn Fn() -> senpi_task::completion::ParentState + Send + Sync> = Arc::new(move || runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner).parent_state());
     let listing = service.clone(); let dirs = ownership.state_dir.clone(); let store = component.engine.store.clone();
     let timers = Arc::new(maho_omo_task::timers::HostTimers::default());
-    let sink = Arc::new(LeadMessageSink { actions: actions.clone(), coordinator: None, parent_state: parent_state.clone(), on_error: Arc::new(|error| eprintln!("Team message delivery failed: {error}")) });
+    let sink = Arc::new(LeadMessageSink { actions: actions.clone(), coordinator: Some(coordinator.clone()), parent_state: parent_state.clone(), on_error: Arc::new(|error| eprintln!("Team message delivery failed: {error}")) });
     let pollers = create_lead_poller_lifecycle(LeadPollerLifecycleDeps {
         list_teams: Arc::new(move || listing.list_teams().map_err(|error| error.to_string())), session_id: session, session_file: file,
         parent_state, config, runtime_dir: Arc::new(move |id| senpi_task::team::storage::team_storage_base_dir(&dirs).join("runtime").join(id)),
@@ -94,7 +94,13 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     });
     let read_store = component.engine.store.clone(); let write_store = read_store.clone();
     let liveness = create_team_member_liveness_notifier(TeamMemberLivenessDeps {
-        deliver: Arc::new(move |_, message| actions.send_message(message, maho_ext_api::SendMessageOptions { trigger_turn: true, deliver_as: Some(maho_ext_api::DeliverAs::Steer) }).map_err(|error| error.to_string())),
+        deliver: Arc::new(move |key, message, callbacks| {
+            use maho_omo_task::parent_notifier::CompletionCoordinator;
+            coordinator.enqueue_liveness(key, message, callbacks).map_err(|error| error.to_string())?;
+            coordinator.schedule_flush();
+            if parent_state() == senpi_task::completion::ParentState::Streaming { coordinator.flush_soon(); }
+            Ok(())
+        }),
         was_delivered: Arc::new(move |record| match read_store.load(&record.task_id) {
             Ok(Some(fresh)) => fresh.notification.liveness_notified_epoch.unwrap_or(-1) >= record.notification.run_epoch,
             Ok(None) => false, Err(error) => { eprintln!("Team liveness read failed: {error}"); false },

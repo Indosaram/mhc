@@ -102,10 +102,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(name) = &parsed.name { session.set_session_name(name); }
     indicator.stop();
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
-    let _omo_mount = match build_omo_mount(&session, &parsed, &cwd_text, &agent_dir, &runtime_config, None, None) {
-        Ok(mount) => Some(mount),
-        Err(reason) => { eprintln!("omo composition not mounted: {reason}"); None }
-    };
     let result = async { match mode {
         AppMode::Rpc => {
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
@@ -132,40 +128,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
     result
-}
-
-fn build_omo_mount(
-    session: &maho_core::agent_session::AgentSession,
-    _parsed: &Args,
-    cwd: &str,
-    _agent_dir: &str,
-    _config: &super::host_runtime::CliRuntimeConfiguration,
-    task: Option<super::omo_shipped::TaskInputs>,
-    memory: Option<super::omo_shipped::MemoryInputs>,
-) -> Result<super::omo_mount::OmoMount, String> {
-    let (Some(task), Some(memory)) = (task, memory) else {
-        return Err("omo mount needs the task ManagedRunners child-session factory (lane 44) and the memory wiring/static option builders (lane 43)".to_owned());
-    };
-    let store = super::omo_shipped::MemoryStore::new(
-        &std::path::PathBuf::from(cwd),
-        std::env::vars().collect(),
-        Arc::new(session.with_settings_manager(|settings| {
-            let global = serde_json::Value::Object(settings.get_global().clone());
-            let project = serde_json::Value::Object(settings.get_project().clone());
-            move || Ok(serde_json::json!({ "global": global, "project": project }))
-        })),
-    );
-    let memory_entry = store.entry(memory.wiring_options, memory.static_options);
-    let engine = super::omo_shipped::compose_task_engine_for_session(task.wiring, session.extension_actions());
-    let task_entry = super::omo_shipped::task_entry(engine, task.spawn, task.ownership);
-    let env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-    Ok(super::omo_mount::OmoMount::shipped(
-        task_entry,
-        memory_entry,
-        &super::omo_shipped::component_options(&std::path::PathBuf::from(cwd), &env),
-        Default::default(),
-        Default::default(),
-    ))
 }
 
 async fn run_print(session: &maho_core::agent_session::AgentSession, mode: AppMode, initial: super::initial_message::InitialMessageResult, messages: &[String]) -> Result<(), String> {
