@@ -46,9 +46,10 @@ fn stop_diagnostic(source:&crate::types::HookSourceMetadata,code:&str,path:&str,
 fn stop_output_details(output:&serde_json::Map<String,Value>,stdout:&str)->(Vec<String>,Vec<(String,String)>) {
     let raw=serde_json::from_str::<Value>(stdout.trim()).ok();
     let specific=raw.as_ref().and_then(|value|value.get("hookSpecificOutput")).and_then(Value::as_object);
+    let nested_context=specific.is_some_and(|value|value.contains_key("additionalContext"));
     let mut fields=vec![];
     for key in ["decision","reason","additionalContext","continue","stopReason","suppressOutput","systemMessage"] {
-        if output.contains_key(key) {fields.push(if key=="additionalContext"&&specific.is_some_and(|value|value.contains_key(key)) {"stdout.hookSpecificOutput.additionalContext".to_owned()} else {format!("stdout.{key}")});}
+        if output.contains_key(key)||(key=="additionalContext"&&nested_context) {fields.push(if key=="additionalContext"&&nested_context {"stdout.hookSpecificOutput.additionalContext".to_owned()} else {format!("stdout.{key}")});}
     }
     let mut unsupported=vec![];
     for (key,message) in [("systemMessage","Stop does not support systemMessage."),("suppressOutput","Stop does not support suppressOutput."),("stopReason","Stop output stopReason is diagnostic-only."),("updatedInput","Stop does not support updatedInput."),("updatedToolOutput","Stop does not support updatedToolOutput.")] {

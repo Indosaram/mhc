@@ -18,16 +18,13 @@ fn emit_wake(bus:&EventBus,session:&str){
     bus.emit("wake_source_state",&json!({"source":"ask-user","activeCount":entries.len(),"items":entries.iter().map(|entry|json!({"id":entry.request.request_id,"deadlineAtMs":(entry.deadline_at_ms)(),"description":entry.request.questions.iter().map(|question|question.header.as_str()).collect::<Vec<_>>().join(", ")})).collect::<Vec<_>>()}));
 }
 fn publish(owner: QuestionOwner, request: &QuestionRequest, response: &QuestionResponse, variant: AskUserVariant, resuming: bool) {
-    if response.status == QuestionStatus::TimedOut { owner.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).timed_out = true; }
     owner.sender.events.emit("herdr:blocked", &json!({"active":false,"id":request.request_id}));
-    if !request.wait_for_answer {
-        if let Err(error) = owner.sender.append_entry(ASK_USER_SETTLEMENT_ENTRY, Some(json!({"requestId":request.request_id,"status":crate::format::status_name(response.status)}))) { owner.context.ui.notify(&error.message, NotificationType::Error); }
-    }
-    if !request.wait_for_answer || resuming {
-        if response.status != QuestionStatus::Cancelled
-            && let Err(error) = owner.sender.send_user_message(UserMessageContent::Text(format_user_message(response, &request.request_id, &request.questions)), SendUserMessageOptions { deliver_as: Some(if owner.context.is_idle() { StreamingBehavior::FollowUp } else { StreamingBehavior::Steer }), expand_prompt_templates: false }) {
-            owner.context.ui.notify(&error.message, NotificationType::Error);
-        }
+    if !request.wait_for_answer
+        && let Err(error) = owner.sender.append_entry(ASK_USER_SETTLEMENT_ENTRY, Some(json!({"requestId":request.request_id,"status":crate::format::status_name(response.status)}))) { owner.context.ui.notify(&error.message, NotificationType::Error); }
+    if (!request.wait_for_answer || resuming)
+        && response.status != QuestionStatus::Cancelled
+        && let Err(error) = owner.sender.send_user_message(UserMessageContent::Text(format_user_message(response, &request.request_id, &request.questions)), SendUserMessageOptions { deliver_as: Some(if owner.context.is_idle() { StreamingBehavior::FollowUp } else { StreamingBehavior::Steer }), expand_prompt_templates: false }) {
+        owner.context.ui.notify(&error.message, NotificationType::Error);
     }
     emit_notification(&owner.sender.events, &owner.context, request, response, variant);
 }
@@ -96,6 +93,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
             let owner_request = request.clone();
             let work_completion = terminal_response;
             let context_signal = if resuming { ctx.signal.clone() } else { None };
+            let settle_state = state.clone();
             let task = tokio::spawn(async move {
                 let mut completed = work_completion;
                 let mut reattached=false;
@@ -138,6 +136,7 @@ pub(crate) async fn start_question(sender: Arc<ExtensionApi>, ctx: ExtensionCont
                     attachment_signal.abort();
                     if let Some(response) = response { break response; }
                 };
+                if response.status == QuestionStatus::TimedOut { settle_state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).timed_out = true; }
                 match response.status {
                     QuestionStatus::Answered | QuestionStatus::CommentSubmitted => {
                         timer.submit(response.answers.clone(), response.comment.clone());
