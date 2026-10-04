@@ -149,16 +149,7 @@ impl TeamMemberCancelPort for ManagerPort {
 
 impl TeamRuntimeManagerPort for ManagerPort {
     fn start(&self, spec: &TeamMemberStartSpec) -> Result<TeamStartResult, String> {
-        let manager_spec = ManagerStartSpec {
-            name: spec.name.clone(),
-            prompt: spec.prompt.clone(),
-            parent_session_id: spec.parent_session_id.clone(),
-            depth: spec.depth,
-            category: spec.category.clone(),
-            subagent_type: spec.subagent_type.clone(),
-            model: spec.model.clone(),
-            ..ManagerStartSpec::default()
-        };
+        let manager_spec = ManagerStartSpec::from(spec);
         match self.manager.start(&manager_spec) {
             StartResult::Started(task) => {
                 let task_id = task.task_id.clone();

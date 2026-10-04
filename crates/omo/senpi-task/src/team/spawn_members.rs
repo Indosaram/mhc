@@ -128,8 +128,6 @@ fn spawn_one_member(input: &SpawnMembersInput<'_>, member: &Member) -> Result<Sp
     })
 }
 
-// The narrow manager start spec carries identity, prompt, lineage, mode and role; launch extras
-// (extensions, member env, cwd) are resolved by the manager-side adapter.
 fn build_member_start_spec(input: &SpawnMembersInput<'_>, member: &Member) -> TeamMemberStartSpec {
     let is_category = member.kind.as_str() == "category";
     TeamMemberStartSpec {
@@ -143,6 +141,16 @@ fn build_member_start_spec(input: &SpawnMembersInput<'_>, member: &Member) -> Te
         model: None,
         category: if is_category { member.category.clone() } else { None },
         subagent_type: if is_category { None } else { member.subagent_type.clone() },
+        task_summary: member.task_summary.clone(),
+        cwd: member.worktree_path.clone(),
+        extensions: input.member_extension.as_ref().map(|launch| crate::team::member_extensions::assemble_member_extensions(
+            &launch.entry_path, launch.inherited_extensions.as_deref().unwrap_or(&[]),
+        )),
+        member_env: input.member_extension.as_ref().map(|launch| [
+            ("SENPI_TASK_MEMBER".into(), format!("{}::{}", input.team_run_id, member.name)),
+            ("SENPI_TASK_TEAM_CONFIG".into(), launch.team_config.clone()),
+        ].into()),
+        run_in_background: true,
     }
 }
 
