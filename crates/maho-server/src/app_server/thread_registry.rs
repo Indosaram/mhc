@@ -6,15 +6,13 @@ use indexmap::IndexMap;
 
 pub type SessionFactory = Arc<dyn Fn(CreateAgentSessionOptions) -> Pin<Box<dyn Future<Output = Result<AgentSession, String>> + Send>> + Send + Sync>;
 
-/// Fork a persisted session file into a new session carrying the full history, matching pinned
-/// `SessionManager.forkFrom`: a fresh id and header that references the source as `parentSession`,
-/// followed by every non-header source entry. Sessions with no persisted file start empty.
-fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
-    let existing = source_file.filter(|path| std::path::Path::new(path).exists());
-    let Some(source_file) = existing else {
-        let options = source_file.map(|path| NewSessionOptions { id: None, parent_session: Some(path.to_owned()) });
-        return Ok(SessionManager::create(cwd, session_dir, options));
-    };
+pub fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
+    match source_file.filter(|path| std::path::Path::new(path).exists()) {
+        Some(source_file) => fork_from_session_file(source_file, cwd, session_dir),
+        None => Ok(SessionManager::create(cwd, session_dir, source_file.map(|path| NewSessionOptions { id: None, parent_session: Some(path.to_owned()) }))),
+    }
+}
+pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
     let entries = load_entries_from_file(source_file);
     if entries.is_empty() { return Err(format!("Cannot fork: source session file is empty or invalid: {source_file}")); }
     if !entries.iter().any(|entry| entry.get("type").and_then(Value::as_str) == Some("session")) { return Err(format!("Cannot fork: source session has no header: {source_file}")); }
@@ -32,7 +30,7 @@ fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Optio
         contents.push('\n');
     }
     let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&new_file).map_err(|error| error.to_string())?;
-    std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|error| error.to_string())?;
+    std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|error| { drop(file); let _ = std::fs::remove_file(&new_file); error.to_string() })?;
     let path = new_file.to_string_lossy().into_owned();
     Ok(SessionManager::open(&path, session_dir, Some(cwd), None))
 }

@@ -10,7 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 pub struct Attachment {
     pub target: Value,
@@ -45,13 +45,14 @@ pub struct SessionRouter {
     host: Arc<dyn ServerHost>,
     server_id: String,
     hosted: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
-    opening: Mutex<BTreeMap<String, Weak<Mutex<()>>>>,
+    opening: Mutex<BTreeMap<String, Weak<OpenSlot>>>,
     admissions: RwLock<()>,
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
     close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
     watched: Mutex<BTreeSet<String>>,
 }
+struct OpenSlot { result: watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
 impl SessionRouter {
     pub fn new(host: Arc<dyn ServerHost>, server_id: String) -> Self {
         Self {
@@ -71,29 +72,7 @@ impl SessionRouter {
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
         }
-        let handle = {
-            let opening={
-                let mut opening=self.opening.lock().await;
-                opening.retain(|_,lock|lock.strong_count()>0);
-                let lock=opening.get(session_id).and_then(Weak::upgrade).unwrap_or_else(||Arc::new(Mutex::new(())));
-                opening.insert(session_id.into(),Arc::downgrade(&lock));
-                lock
-            };
-            let _opening=opening.lock().await;
-            let existing=self.hosted.lock().await.get(session_id).cloned();
-            if let Some(handle) = existing {
-                handle.clone()
-            } else {
-                let metadata = self.host.resolve_session(session_id).await?;
-                let handle = self.host.open_session(metadata).await?;
-                if self.closing.load(Ordering::SeqCst) {
-                    handle.close().await?;
-                    return Err(ServerError::draining());
-                }
-                self.hosted.lock().await.insert(session_id.into(), handle.clone());
-                handle
-            }
-        };
+        let handle = self.acquire(session_id).await?;
         let lease = handle.attach_client().await?;
         if self.closing.load(Ordering::SeqCst) {
             lease.release().await?;
@@ -115,6 +94,48 @@ impl SessionRouter {
         leases.retain(|lease| lease.strong_count() > 0);
         leases.push(Arc::downgrade(&attachment));
         Ok(attachment)
+    }
+    async fn acquire(&self, session_id: &str) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
+        loop {
+            if let Some(handle) = self.hosted.lock().await.get(session_id).cloned() {
+                return Ok(handle);
+            }
+            let waiter = {
+                let mut opening = self.opening.lock().await;
+                opening.retain(|_, slot| slot.strong_count() > 0);
+                match opening.get(session_id).and_then(Weak::upgrade) {
+                    Some(slot) => Some(slot),
+                    None => {
+                        let slot = Arc::new(OpenSlot { result: watch::channel(None).0 });
+                        opening.insert(session_id.into(), Arc::downgrade(&slot));
+                        drop(opening);
+                        let result = self.open(session_id).await;
+                        slot.result.send_replace(Some(result.clone()));
+                        let mut opening = self.opening.lock().await;
+                        if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
+                            opening.remove(session_id);
+                        }
+                        return result;
+                    }
+                }
+            };
+            let slot = waiter.expect("waiter slot");
+            let mut receiver = slot.result.subscribe();
+            loop {
+                if let Some(result) = receiver.borrow_and_update().clone() { return result; }
+                if receiver.changed().await.is_err() { break; }
+            }
+        }
+    }
+    async fn open(&self, session_id: &str) -> Result<Arc<dyn RoutedSessionHandle>, ServerError> {
+        let metadata = self.host.resolve_session(session_id).await?;
+        let handle = self.host.open_session(metadata).await?;
+        if self.closing.load(Ordering::SeqCst) {
+            handle.close().await?;
+            return Err(ServerError::draining());
+        }
+        self.hosted.lock().await.insert(session_id.into(), handle.clone());
+        Ok(handle)
     }
     pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {

@@ -1,5 +1,6 @@
 use maho_server::app_server::{envelope::classify_incoming,runtime::AppServerRuntime,thread_registry::SessionFactory};
 use serde_json::{Value,json};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 fn factory() -> SessionFactory {
@@ -22,7 +23,35 @@ fn factory() -> SessionFactory {
     }))
 }
 
-struct Harness { runtime: AppServerRuntime, receive: tokio::sync::mpsc::UnboundedReceiver<Value>, session_dir: std::path::PathBuf }
+struct Harness {
+    runtime: AppServerRuntime,
+    receive: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    notifications: VecDeque<Value>,
+    session_dir: std::path::PathBuf,
+    _directory: tempfile::TempDir,
+}
+impl Harness {
+    async fn call(&mut self, request: Value) -> Value {
+        let id = request["id"].clone();
+        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.unwrap();
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
+            if message.get("id").is_some_and(|value| *value == id) { return message; }
+            self.notifications.push_back(message);
+        }
+    }
+    async fn notification(&mut self) -> Value {
+        if let Some(notification) = self.notifications.pop_front() { return notification; }
+        tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("notification within deadline").expect("connection stays open")
+    }
+    fn recorded_before_response(&self) -> usize { self.notifications.len() }
+    fn write_source(&self, id: &str) -> std::path::PathBuf {
+        let path = self.session_dir.join(format!("2020-01-01T00-00-00-000Z_{id}.jsonl"));
+        let records = [json!({"type":"session","id":id,"version":3,"cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}),json!({"type":"message","id":"u","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":"hello"}}),json!({"type":"message","id":"a","parentId":"u","timestamp":"2020-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"persisted"}]}})];
+        std::fs::write(&path,records.map(|record|record.to_string()).join("\n")).unwrap();
+        path
+    }
+}
 async fn harness() -> Harness {
     let directory = tempfile::tempdir().unwrap();
     let session_dir = directory.path().join("sessions");
@@ -30,19 +59,8 @@ async fn harness() -> Harness {
     let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(session_dir.display().to_string()),Some(factory())).await;
     let (send,receive) = tokio::sync::mpsc::unbounded_channel();
     runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}})).await.unwrap();
-    Harness { runtime, receive, session_dir }
-}
-impl Harness {
-    async fn call(&mut self,request: Value) -> Value {
-        self.runtime.core.read().await.receive("qa",classify_incoming(request)).await.unwrap();
-        self.receive.try_recv().unwrap()
-    }
-    fn write_source(&self,id: &str) -> std::path::PathBuf {
-        let path = self.session_dir.join(format!("2020-01-01T00-00-00-000Z_{id}.jsonl"));        let records = [json!({"type":"session","id":id,"version":3,"cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}),json!({"type":"message","id":"u","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":"hello"}}),json!({"type":"message","id":"a","parentId":"u","timestamp":"2020-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"persisted"}]}})];
-        std::fs::write(&path,records.map(|record|record.to_string()).join("\n")).unwrap();
-        path
-    }
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    Harness { runtime, receive, notifications:VecDeque::new(), session_dir, _directory:directory }
 }
 
 #[tokio::test]
@@ -55,7 +73,8 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     let forked_id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
     assert_ne!(forked_id,"source-thread");
     assert_eq!(response["result"]["thread"]["turns"].as_array().unwrap().len(),1);
-    let notification = tokio::time::timeout(std::time::Duration::from_secs(2),harness.receive.recv()).await.unwrap().unwrap();
+    assert_eq!(harness.recorded_before_response(),0,"response must precede thread/started");
+    let notification = harness.notification().await;
     assert_eq!(notification["method"],"thread/started");
     assert_eq!(notification["params"]["thread"]["id"],forked_id);
     let forked_path = response["result"]["thread"]["path"].as_str().unwrap();
@@ -66,5 +85,6 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     assert!(header["parentSession"].as_str().unwrap().ends_with("source-thread.jsonl"));
     assert!(contents.lines().any(|line| line.contains("\"persisted\"")));
     assert_eq!(harness.call(json!({"id":3,"method":"thread/fork","params":{"threadId":"missing"}})).await["error"]["code"],-32603);
+    assert_eq!(harness.recorded_before_response(),0);
     harness.runtime.dispose().await;
 }

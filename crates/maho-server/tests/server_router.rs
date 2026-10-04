@@ -185,17 +185,24 @@ async fn session_removal_invalidates_all_client_leases() {
 }
 
 #[tokio::test]
-async fn concurrent_failed_open_shares_one_result_and_one_host_call() {
+async fn concurrent_failed_open_shares_one_result_and_later_attach_retries() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
     host.state.lock().await.next_open_session_error=Some(ServerError::new("internal_error","faux open failure"));
+    let gate=host.gate_next_open_session().await;
     let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
-    let (first,second)=tokio::join!(router.attach("session-1"),router.attach("session-1"));
-    let first=first.unwrap_err();let second=second.unwrap_err();
+    let first={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
+    gate.entered.wait().await;
+    let second=router.attach("session-1").await.unwrap_err();
+    gate.release.resolve(());
+    let first=first.await.unwrap().unwrap_err();
     assert_eq!(first,second);
     assert_eq!(first.message,"faux open failure");
     assert_eq!(host.state.lock().await.open_session_count,1);
-    assert!(router.close().await.is_ok());
+    let retried=router.attach("session-1").await.unwrap();
+    assert_eq!(host.state.lock().await.open_session_count,2);
+    retried.release().await.unwrap();
+    router.close().await.unwrap();
 }
 
 #[tokio::test]
