@@ -6,6 +6,7 @@ pub struct MemoryWriteSession { pub context:MemoryIdentityContext,pub memory_sta
 pub type ResolveMemoryWriteSession=Arc<dyn Fn(&str)->Option<Arc<Mutex<MemoryWriteSession>>>+Send+Sync>;
 pub type MemoryWriteRefresh=Arc<dyn Fn(&MemoryIdentityContext,&ExtensionContext)->Result<MemoryStatusResult,String>+Send+Sync>;
 pub type MemoryWriteNotification=Arc<dyn Fn(&str)->Result<(),String>+Send+Sync>;
+#[derive(Clone)]
 pub struct MemoryWriteOptions {
     pub resolve_session:ResolveMemoryWriteSession,
     pub on_memory_write:MemoryWriteNotification,

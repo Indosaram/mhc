@@ -35,6 +35,7 @@ pub type PromptContextResolver = std::sync::Arc<dyn Fn(&str) -> Option<crate::co
 pub type PromptNudgeResolver = std::sync::Arc<dyn Fn(&GitMemoryRepo,&str,&str) -> Result<Option<usize>,String> + Send + Sync>;
 pub type PromptSoulResolver = std::sync::Arc<dyn Fn(&GitMemoryRepo,&str,&str) -> Result<Option<String>,String> + Send + Sync>;
 pub type PromptRepoFactory = std::sync::Arc<dyn Fn(&crate::context::MemoryIdentityContext) -> Result<GitMemoryRepo,String> + Send + Sync>;
+#[derive(Clone)]
 pub struct MemoryPromptInjectionOptions {
     pub resolve_context: PromptContextResolver,
     pub create_repo: Option<PromptRepoFactory>,

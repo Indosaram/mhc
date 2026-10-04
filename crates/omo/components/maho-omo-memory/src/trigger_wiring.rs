@@ -16,6 +16,7 @@ pub struct ReflectionTriggerSession {
     pub enabled: bool,
 }
 pub type ResolveTriggerSession = Arc<dyn Fn(Option<&str>) -> Option<ReflectionTriggerSession> + Send + Sync>;
+#[derive(Clone)]
 pub struct ReflectionTriggerWiringOptions {
     pub resolve_session: ResolveTriggerSession,
     pub on_launch: Arc<dyn Fn(ReflectionRequest) -> Result<(), String> + Send + Sync>,

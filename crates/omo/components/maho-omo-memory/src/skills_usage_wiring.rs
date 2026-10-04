@@ -4,6 +4,7 @@ use crate::{context::MemoryIdentityContext, skills_usage_ledger::skills_usage_pa
 
 pub type SkillsUsageTrackers = Arc<Mutex<BTreeMap<String, SkillsUsageTracker>>>;
 pub type ResolveSkillsUsageContext = Arc<dyn Fn(&ToolCallEvent) -> Option<MemoryIdentityContext> + Send + Sync>;
+#[derive(Clone)]
 pub struct SkillsUsageOptions {
     pub resolve_context: ResolveSkillsUsageContext,
     pub resolve_cwd: Arc<dyn Fn() -> PathBuf + Send + Sync>,
