@@ -29,7 +29,7 @@ fn script(name:&str)->FauxScript {FauxScript {name:name.to_owned(),prompt:"Run t
 fn assistant_call(name:&str,arguments:serde_json::Map<String,serde_json::Value>,call_id:&str)->maho_ai::types::AssistantMessage {faux_assistant_message(vec![faux_tool_call(name,arguments,Some(call_id))],FauxAssistantMessageOptions {stop_reason:Some(StopReason::ToolUse),timestamp:Some(0),..Default::default()})}
 
 fn tool_results(result:&serde_json::Value)->Vec<serde_json::Value> {
-    result["messages"].as_array().unwrap().iter().filter(|message|message["role"]=="toolResult").cloned().collect()
+    result["messages"].as_array().expect("the native transcript exposes a messages array").iter().filter(|message|message["role"]=="toolResult").cloned().collect()
 }
 
 #[tokio::test]
