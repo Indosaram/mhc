@@ -44,7 +44,7 @@ fn context() -> ExtensionContext {
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
         is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(String::new),
-        get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None }
+        get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
 
 #[tokio::main(flavor = "current_thread")]

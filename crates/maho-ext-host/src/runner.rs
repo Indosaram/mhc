@@ -88,7 +88,7 @@ fn with_provider_exclude_path(path: String, handler: ExtensionHandler) -> Extens
         Box::pin(PROVIDER_EXCLUDE_PATH.scope(Some(path), handler(event, context)))
     })
 }
-struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, compaction_signal: std::sync::Mutex<Option<AbortSignal>>, reload: ReloadState, provider_runner: Option<ExtensionRunner> }
+struct ContextSessionManager { session: Arc<dyn SessionManager>, actions: Arc<dyn ExtensionContextActions>, runtime: ExtensionRuntime, reload: ReloadState, provider_runner: Option<ExtensionRunner> }
 impl ContextSessionManager {
     fn active(&self) { if let Err(error) = self.runtime.assert_active() { std::panic::panic_any(error); } }
 }
@@ -193,31 +193,12 @@ impl ExtensionContextActions for ContextSessionManager {
             Ok(result)
         })
     }
-    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> {
-        self.active();
-        let signal = self.actions.begin_compaction(options);
-        *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
-        signal
-    }
-    fn update_compaction(&self, mut options: UpdateCompactionOptions) {
-        self.active();
-        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
-        self.actions.update_compaction(options);
-    }
-    fn end_compaction(&self, mut options: EndCompactionOptions) {
-        self.active();
-        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
-        self.actions.end_compaction(options);
-    }
+    fn begin_compaction(&self, options: BeginCompactionOptions) -> Option<AbortSignal> { self.active(); self.actions.begin_compaction(options) }
+    fn update_compaction(&self, options: UpdateCompactionOptions) { self.active(); self.actions.update_compaction(options); }
+    fn end_compaction(&self, options: EndCompactionOptions) { self.active(); self.actions.end_compaction(options); }
     fn get_message_revision(&self) -> u64 { self.active(); self.actions.get_message_revision() }
-    fn apply_compaction(&self, result: CompactionResult, mut options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
-        Box::pin(async move {
-            self.runtime.assert_active()?;
-            options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
-            let result = self.actions.apply_compaction(result, options).await?;
-            self.runtime.assert_active()?;
-            Ok(result)
-        })
+    fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> ExtensionFuture<'_, ApplyCompactionResult> {
+        Box::pin(async move { self.runtime.assert_active()?; let result = self.actions.apply_compaction(result, options).await?; self.runtime.assert_active()?; Ok(result) })
     }
     fn get_system_prompt(&self) -> String { self.active(); self.actions.get_system_prompt() }
     fn get_system_prompt_options(&self) -> BuildSystemPromptOptions { self.active(); self.actions.get_system_prompt_options() }
@@ -358,7 +339,7 @@ impl ExtensionRunner {
         let option_actions = Arc::clone(&actions);
         self.context.get_system_prompt_options_fn = Arc::new(move || option_actions.get_system_prompt_options());
         self.context_actions = Some(Arc::clone(&actions));
-        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: None });
+        self.context.session_manager = Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions, runtime: self.runtime.clone(), reload: Arc::clone(&self.reload), provider_runner: None });
         *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         Ok(())
     }
@@ -481,9 +462,11 @@ impl ExtensionRunner {
                 // adapter still owns the clone, preserving its lifetime.
                 let mut provider_runner = self.clone();
                 provider_runner.context_session_manager = Arc::new(std::sync::Mutex::new(None));
-                Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), compaction_signal: std::sync::Mutex::new(None), reload: Arc::clone(&self.reload), provider_runner: Some(provider_runner) }) as Arc<dyn SessionManager>
+                Arc::new(ContextSessionManager { session: Arc::clone(&self.context.session_manager), actions: Arc::clone(actions), runtime: self.runtime.clone(), reload: Arc::clone(&self.reload), provider_runner: Some(provider_runner) }) as Arc<dyn SessionManager>
             }).clone();
             context.session_manager = adapter;
+            // Fresh per-invocation signal, matching upstream `createContext`'s closure variable.
+            context.compaction_signal = Arc::new(std::sync::Mutex::new(None));
         }
         if let Some(actions) = context.session_manager.extension_context_actions() {
             actions.assert_active()?;
