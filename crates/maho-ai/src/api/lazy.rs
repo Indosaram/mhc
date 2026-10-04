@@ -5,8 +5,8 @@ use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use crate::types::{
-    AssistantMessageEventStream, Context, DeferredFetchOptions, DeferredHandle, ErrorReason, Model, ProviderStreams,
-    SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle,
+    ErrorReason, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::event_stream::create_assistant_message_event_stream;
 use crate::utils::lazy::setup_error_message;
@@ -163,6 +163,26 @@ impl ProviderStreams for LazyApiProvider {
     fn supports_deferred(&self) -> bool {
         self.capabilities.fetch_deferred
     }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        if !self.capabilities.cancel_deferred {
+            return Box::pin(async { Err("API cannot cancel deferred responses".to_owned()) });
+        }
+        let module = self.module();
+        Box::pin(async move {
+            let module = module?;
+            module.cancel_deferred(model, handle, options).await
+        })
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        self.capabilities.cancel_deferred
+    }
 }
 
 #[cfg(test)]
@@ -289,5 +309,74 @@ mod tests {
         let mut message = setup_error_message(&model(), text);
         message.stop_reason = StopReason::Error;
         message
+    }
+
+    /// Pinned `providers.test.ts` "lazily exposes only declared deferred capabilities": `lazyApi`
+    /// attaches `cancelDeferred` only when the capability is declared, and forwards to the loaded
+    /// module; an undeclared capability stays unsupported with the pinned error.
+    #[tokio::test]
+    async fn lazy_api_exposes_only_the_declared_cancel_capability_and_forwards_to_the_loaded_module() {
+        struct CancelModule {
+            cancelled: std::sync::Mutex<Vec<String>>,
+        }
+        impl ProviderStreams for CancelModule {
+            fn stream(
+                &self,
+                _model: &Model,
+                _context: &Context,
+                _options: Option<StreamOptions>,
+            ) -> AssistantMessageEventStream {
+                create_assistant_message_event_stream()
+            }
+            fn stream_simple(
+                &self,
+                model: &Model,
+                context: &Context,
+                options: Option<SimpleStreamOptions>,
+            ) -> AssistantMessageEventStream {
+                self.stream(model, context, options.map(|options| options.stream))
+            }
+            fn cancel_deferred<'a>(
+                &'a self,
+                _model: &'a Model,
+                handle: &'a DeferredHandle,
+                _options: Option<crate::types::DeferredCancelOptions>,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                let id = handle.id.clone();
+                Box::pin(async move {
+                    self.cancelled.lock().expect("cancelled").push(id);
+                    Ok(())
+                })
+            }
+            fn supports_cancel_deferred(&self) -> bool {
+                true
+            }
+        }
+
+        let module = Arc::new(CancelModule { cancelled: std::sync::Mutex::new(Vec::new()) });
+        let loaded = module.clone();
+        let provider = lazy_api(
+            Arc::new(move || Ok(loaded.clone() as Arc<dyn ProviderStreams>)),
+            LazyApiCapabilities { fetch_deferred: false, cancel_deferred: true },
+        );
+        assert!(provider.supports_cancel_deferred());
+        let handle = DeferredHandle {
+            provider: "p".into(),
+            model_id: "m".into(),
+            api: "maho-lazy-test".into(),
+            id: "d".into(),
+            expires_at: None,
+            poll_after_ms: None,
+            data: None,
+        };
+        provider.cancel_deferred(&model(), &handle, None).await.expect("cancel forwards to the module");
+        assert_eq!(*module.cancelled.lock().expect("cancelled"), vec!["d".to_owned()]);
+
+        let undeclared = lazy_api(Arc::new(|| Err("nope".to_owned())), LazyApiCapabilities::default());
+        assert!(!undeclared.supports_cancel_deferred());
+        assert_eq!(
+            undeclared.cancel_deferred(&model(), &handle, None).await,
+            Err("API cannot cancel deferred responses".to_owned())
+        );
     }
 }

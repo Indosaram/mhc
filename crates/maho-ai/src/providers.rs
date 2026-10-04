@@ -8,8 +8,8 @@ use crate::model_catalog::flatten_model_catalog;
 use crate::models::{AuthResolution, ProviderAuthResult};
 use crate::models_generated::get_builtin_provider_models;
 use crate::types::{
-    AssistantMessageEventStream, Context, DeferredFetchOptions, DeferredHandle, ImagesModel, Model, ProviderStreams,
-    SimpleStreamOptions, StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle,
+    ImagesModel, Model, ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::lazy::error_stream;
 use indexmap::IndexMap;
@@ -164,6 +164,26 @@ impl ProviderStreams for BuiltinApiStreams {
 
     fn supports_deferred(&self) -> bool {
         get_builtin_api_provider(self.api_id).is_some_and(|provider| provider.streams().supports_deferred())
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        let provider = get_builtin_api_provider(self.api_id);
+        match provider {
+            Some(provider) if provider.streams().supports_cancel_deferred() => {
+                let streams = provider.streams().clone();
+                Box::pin(async move { streams.cancel_deferred(model, handle, options).await })
+            }
+            _ => Box::pin(async { Err("API cannot cancel deferred responses".to_owned()) }),
+        }
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        get_builtin_api_provider(self.api_id).is_some_and(|provider| provider.streams().supports_cancel_deferred())
     }
 }
 

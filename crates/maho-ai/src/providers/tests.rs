@@ -12,12 +12,14 @@ use super::faux::{
 };
 use super::opencode_headers::with_open_code_session_header;
 use crate::models_generated::MODELS;
+use crate::models::{CreateProviderOptions, ModelsRequestTransforms, ProviderApi, create_models, create_provider};
 use crate::types::{
-    AssistantMessageEvent, CacheRetention, Context, ContentBlock, Message, Model, ModelThinkingLevel, ProviderEnv,
-    ProviderStreams, SimpleStreamOptions, StopReason, StreamOptions, UserContent, UserMessage,
+    AssistantMessageEvent, BoxFuture, CacheRetention, Context, ContentBlock, DeferredCancelOptions, DeferredHandle,
+    DeferredOption, Message, Model, ModelThinkingLevel, ProviderEnv, ProviderRequestOptions, ProviderStreams,
+    SimpleStreamOptions, StopReason, StreamOptions, UserContent, UserMessage,
 };
 use serde_json::{Map, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn user_message(text: &str) -> Message {
     Message::User(UserMessage { content: UserContent::Text(text.to_owned()), timestamp: 0 })
@@ -413,4 +415,156 @@ async fn faux_records_call_log_and_pending_responses() {
     assert_eq!(log[0].model_id, model.id);
     let state: FauxProviderState = core.state();
     assert_eq!(state.call_count, 1);
+}
+
+/// Pinned `providers.test.ts` "applies resolved request options to deferred fetch and cancellation":
+/// `Models.cancelDeferred` resolves the provider, runs `applyAuth`, and hands the provider the
+/// request model plus the resolved options (apiKey/headers/env/transformHeaders).
+struct CancelRecordingStreams {
+    calls: Mutex<Vec<(Model, DeferredHandle, Option<DeferredCancelOptions>)>>,
+}
+
+impl ProviderStreams for CancelRecordingStreams {
+    fn stream(&self, model: &Model, _context: &Context, _options: Option<StreamOptions>) -> crate::types::AssistantMessageEventStream {
+        let stream = crate::utils::event_stream::create_assistant_message_event_stream();
+        let mut message = faux_assistant_message("ok", FauxAssistantMessageOptions::default());
+        message.model = model.id.clone();
+        stream.push(AssistantMessageEvent::Done { reason: crate::types::DoneReason::Stop, message: message.clone() });
+        stream.end(Some(message));
+        stream
+    }
+
+    fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> crate::types::AssistantMessageEventStream {
+        self.stream(model, context, options.map(|options| options.stream))
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        let recorded = (model.clone(), handle.clone(), options);
+        Box::pin(async move {
+            self.calls.lock().expect("cancel calls").push(recorded);
+            Ok(())
+        })
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn provider_cancel_deferred_receives_the_resolved_model_and_request_options() {
+    let base = get_builtin_model("openai", "").expect("openai model");
+    let mut model = base.clone();
+    model.provider = "cancel-recording".into();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let models = create_models(None);
+    models.set_provider(create_provider(CreateProviderOptions {
+        id: "cancel-recording".into(),
+        name: None,
+        base_url: None,
+        headers: None,
+        models: vec![model.clone()],
+        fetch_models: None,
+        restore_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(CancelRecordingStreams { calls: calls.clone() })),
+    }));
+    let handle = DeferredHandle {
+        provider: model.provider.clone(),
+        model_id: model.id.clone(),
+        api: model.api.clone(),
+        id: "response-1".into(),
+        expires_at: None,
+        poll_after_ms: None,
+        data: None,
+    };
+    let options = ProviderRequestOptions {
+        api_key: Some("request-key".into()),
+        timeout_ms: Some(200),
+        ..ProviderRequestOptions::default()
+    };
+
+    models.cancel_deferred(&model, &handle, Some(options)).await.expect("cancel forwards to the provider");
+
+    let calls = calls.lock().expect("cancel calls");
+    assert_eq!(calls.len(), 1);
+    let (forwarded_model, forwarded_handle, forwarded_options) = &calls[0];
+    assert_eq!(forwarded_model.id, model.id);
+    assert_eq!(forwarded_handle.id, "response-1");
+    let forwarded_options = forwarded_options.as_ref().expect("resolved options");
+    assert_eq!(forwarded_options.api_key.as_deref(), Some("request-key"));
+    assert_eq!(forwarded_options.timeout_ms, Some(200));
+}
+
+#[tokio::test]
+async fn models_cancel_deferred_reports_unsupported_capability_and_unknown_providers() {
+    let base = get_builtin_model("openai", "").expect("openai model");
+    let handle = DeferredHandle {
+        provider: "no-cancel".into(),
+        model_id: base.id.clone(),
+        api: base.api.clone(),
+        id: "h".into(),
+        expires_at: None,
+        poll_after_ms: None,
+        data: None,
+    };
+
+    let models = create_models(None);
+    let mut model = base.clone();
+    model.provider = "no-cancel".into();
+    models.set_provider(create_provider(CreateProviderOptions {
+        id: "no-cancel".into(),
+        name: None,
+        base_url: None,
+        headers: None,
+        models: vec![model.clone()],
+        fetch_models: None,
+        restore_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(EchoStreams)),
+    }));
+    let error = models.cancel_deferred(&model, &handle, None).await.expect_err("unsupported capability");
+    assert_eq!(error, "Provider no-cancel does not support deferred responses");
+
+    let mut unknown = base.clone();
+    unknown.provider = "nobody".into();
+    let error = models.cancel_deferred(&unknown, &handle, None).await.expect_err("unknown provider");
+    assert_eq!(error, "Unknown provider: nobody");
+}
+
+#[tokio::test]
+async fn faux_records_cancellation_and_reports_the_cancelled_fetch_in_band() {
+    // Pinned providers.test.ts "records cancellation and returns deferred fetch failures in-band".
+    let faux = super::faux::faux_provider(RegisterFauxProviderOptions::default());
+    let models = faux_models();
+    models.set_provider(faux.provider.clone());
+    faux.set_responses(vec![faux_assistant_message("cancelled", FauxAssistantMessageOptions::default()).into()]);
+    let model = models.get_models(Some(faux.provider.id())).into_iter().next().expect("faux model");
+
+    let submission = models
+        .complete_simple(
+            &model,
+            &simple_context(),
+            Some(SimpleStreamOptions { deferred: Some(DeferredOption::Enabled(true)), ..SimpleStreamOptions::default() }),
+            ModelsRequestTransforms::default(),
+        )
+        .await
+        .expect("deferred submission");
+    let handle = submission.deferred.clone().expect("deferred handle");
+
+    models.cancel_deferred(&model, &handle, None).await.expect("cancel forwards to faux");
+    assert_eq!(faux.state().cancelled_deferred, vec![handle.clone()]);
+
+    let cancelled = models
+        .stream_deferred(&model, &handle, None, ModelsRequestTransforms::default())
+        .result()
+        .await
+        .expect("result");
+    assert_eq!(cancelled.stop_reason, StopReason::Error);
+    assert!(cancelled.error_message.as_deref().is_some_and(|message| message.contains("was cancelled")));
 }
