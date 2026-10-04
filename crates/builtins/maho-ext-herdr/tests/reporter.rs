@@ -61,9 +61,9 @@ impl ExtensionUi for Ui {
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("No custom UI")) }) }
     fn theme(&self) -> Theme { Theme::default() }
 }
-fn context(session: Arc<dyn SessionManager>, idle: Arc<AtomicBool>, mode: ExtensionMode, loaded: Vec<String>) -> ExtensionContext {
+fn context_in(cwd: &Path, session: Arc<dyn SessionManager>, idle: Arc<AtomicBool>, mode: ExtensionMode, loaded: Vec<String>) -> ExtensionContext {
     ExtensionContext {
-        ui: Arc::new(Ui), mode, has_ui: mode == ExtensionMode::Tui, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
+        ui: Arc::new(Ui), mode, has_ui: mode == ExtensionMode::Tui, cwd: cwd.into(), agent_dir: "/tmp/agent".into(),
         session_manager: session, model_registry: Arc::new(Registry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
         loaded_extension_paths: loaded, signal: None, steering_signal: None,
@@ -73,6 +73,9 @@ fn context(session: Arc<dyn SessionManager>, idle: Arc<AtomicBool>, mode: Extens
         get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
         registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default(),
     }
+}
+fn context(session: Arc<dyn SessionManager>, idle: Arc<AtomicBool>, mode: ExtensionMode, loaded: Vec<String>) -> ExtensionContext {
+    context_in(Path::new("/tmp"), session, idle, mode, loaded)
 }
 async fn dispatch(api: &ExtensionApi, kind: EventKind, event: &mut ExtensionEvent, ctx: &ExtensionContext) -> EventResult {
     let handler = api.registered.handlers[&kind][0].clone();
@@ -324,7 +327,7 @@ async fn four_second_poll_refreshes_child_records_and_stops_on_shutdown() {
     std::fs::write(tasks.join("partial.json"), "{").expect("fixture");
     let mut api = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     register(&mut api, f.socket.clone());
-    let ctx = context(f.session.clone(), f.idle.clone(), ExtensionMode::Tui, Vec::new());
+    let ctx = context_in(f.directory.path(), f.session.clone(), f.idle.clone(), ExtensionMode::Tui, Vec::new());
 
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
     for _ in 0..3 { let _ = f.next_request().await; }
