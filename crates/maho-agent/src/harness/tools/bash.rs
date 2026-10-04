@@ -83,6 +83,7 @@ pub fn create_bash_tool<T: HasExecutionToolContext>(
     AgentHarnessTool {
         label: "bash".into(),
         prepare_arguments: None,
+        replay: None,
         tool: Tool {
             name: "bash".into(),
             description: format!(

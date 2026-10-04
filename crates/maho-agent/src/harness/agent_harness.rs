@@ -9,6 +9,7 @@ use crate::harness::compaction::compaction::CompactionSettings;
 use crate::harness::session::session::SessionError;
 use crate::harness::session::types::{JsonValue, OperationKind, OperationResultRecord, Session, ToolExecutionMode};
 use crate::harness::types::{AgentHarnessStreamOptions, AgentHarnessTool};
+use crate::harness::tools::tool_context::ExecutionToolContext;
 use crate::types::QueueMode;
 
 use super::runtime::lane::OperationMismatch;
@@ -71,19 +72,23 @@ pub struct HarnessEvent {
 
 /// The pinned `Context`-taking constructor lives in `runtime::harness`.
 ///
-/// `AgentHarnessOptions<TContext>` for the process-local (`()` context) runtime lane.
+/// `AgentHarnessOptions<TContext>` mirrors pinned `createAgentHarness(options, context)`: the
+/// constructor seeds the lane configuration from `model`/`thinkingLevel`/`activeToolNames`,
+/// installs the `Config` (tools, resources, stream options, retry, compaction, queue modes, tool
+/// execution, system prompt) and restores every durable lane into the new `Harness`.
 ///
-/// Mirrors pinned `createAgentHarness(options, context)`: the constructor seeds the lane
-/// configuration from `model`/`thinkingLevel`/`activeToolNames`, installs the process-local
-/// `Config` (tools, resources, stream options, retry, compaction, queue modes, tool execution,
-/// system prompt) and restores every durable lane into the new `Harness`.
-pub struct AgentHarnessOptions {
+/// `TContext` is the tool context the built-in execution tools read (`ExecutionToolContext` by
+/// default, matching the pinned `createReadTool<TContext extends ExecutionToolContext =
+/// ExecutionToolContext>` and the pinned worker's `toolContext: { env }`); a worker that carries
+/// extra turn data instantiates it with its own `HasExecutionToolContext` type.
+pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     pub session: Arc<dyn Session>,
     pub models: maho_ai::models::Models,
     pub model: maho_ai::model::Model,
     pub thinking_level: Option<maho_ai::types::ModelThinkingLevel>,
     pub active_tool_names: Option<Vec<String>>,
-    pub tools: Vec<Arc<AgentHarnessTool<()>>>,
+    pub tools: Vec<Arc<AgentHarnessTool<TContext>>>,
+    pub tool_context: Option<TContext>,
     pub system_prompt: Option<SystemPromptFn>,
     pub resources: Option<Resources>,
     pub stream_options: Option<AgentHarnessStreamOptions>,

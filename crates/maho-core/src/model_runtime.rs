@@ -105,6 +105,10 @@ impl ModelRuntime {
         runtime.rebuild_providers(); runtime
     }
     pub async fn create(options: CreateModelRuntimeOptions) -> Self { Self::create_sync(options) }
+    /// The provider/auth registry this runtime resolves against (pinned `models`). Exposed so a
+    /// caller (e.g. the harness constructor) can hand the same registry to a `Models` consumer
+    /// without rebuilding it through `create_models`.
+    pub fn models(&self) -> &Models { &self.models }
     fn recompose_provider(&mut self, id: &str) {
         let id = normalize_provider_id(id);
         let config = self.config.read().unwrap_or_else(|p| p.into_inner()).clone();
