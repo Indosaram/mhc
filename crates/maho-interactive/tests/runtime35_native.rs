@@ -694,6 +694,12 @@ fn retained_options() -> maho_ext_api::QuestionOptions {
     maho_ext_api::QuestionOptions { initial_draft: Some(maho_ext_api::QuestionDraft { answers: Some([("item".into(), maho_ext_api::QuestionAnswer { selected: vec!["A".into()], text: None })].into()), comment: Some("retained-comment".into()) }), ..Default::default() }
 }
 
+/// The retained answer with no comment: a present comment settles the response as
+/// comment-submitted (senpi `submitOutcome`), which the list-selection test does not assert.
+fn retained_answer_options() -> maho_ext_api::QuestionOptions {
+    maho_ext_api::QuestionOptions { initial_draft: Some(maho_ext_api::QuestionDraft { answers: Some([("item".into(), maho_ext_api::QuestionAnswer { selected: vec!["A".into()], text: None })].into()), comment: None }), ..Default::default() }
+}
+
 #[tokio::test]
 async fn blocking_question_seeds_the_producer_draft() {
     use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
@@ -725,7 +731,7 @@ async fn answer_list_selection_expands_the_selected_request() {
     use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
     let first = ui.question(retained_question("first-list", false), retained_options());
-    let second = ui.question(retained_question("second-list", false), retained_options());
+    let second = ui.question(retained_question("second-list", false), retained_answer_options());
     mode.render(80); mode.submit("/answer", Default::default()).await.expect("list");
     mode.handle_input_at("\x1b[B", 1); mode.handle_input_at("\r", 2); mode.render(80);
     mode.handle_input_at("\x1b[13;5u", 3);
@@ -1158,7 +1164,7 @@ async fn import_command_confirms_copies_and_switches_to_the_jsonl() {
     let source = source_dir.path().join("imported.jsonl");
     let cwd = directory.path().to_string_lossy().into_owned();
     let header = serde_json::json!({"type":"session","version":3,"id":"imported","timestamp":"2026-10-03T00:00:00.000Z","cwd":cwd});
-    let message = serde_json::json!({"type":"message","id":"m1","parentId":null,"timestamp":"2026-10-03T00:00:01.000Z","message":{"role":"user","content":"imported prompt"}});
+    let message = serde_json::json!({"type":"message","id":"m1","parentId":null,"timestamp":"2026-10-03T00:00:01.000Z","message":{"role":"user","content":"imported prompt","timestamp":1790985601000}});
     std::fs::write(&source,format!("{header}\n{message}\n")).expect("fixture");
     mode.submit(&format!("/import {}",source.display()),Default::default()).await.expect("confirm dialog");
     assert!(mode.render(80).join("\n").contains("Replace current session with"),"confirmation prompt");
