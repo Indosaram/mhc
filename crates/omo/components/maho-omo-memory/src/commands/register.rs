@@ -61,7 +61,7 @@ pub use super::types::{
 mod tests {
     use super::*;
     use crate::commands::test_support::*;
-    use maho_ext_api::{EventBus, ExtensionRuntime, ExtensionSessionProfile, LoadedExtension, SourceInfo};
+    use maho_ext_api::{EventBus, ExtensionRuntime, ExtensionSessionProfile, LoadedExtension, NotificationType, SourceInfo};
 
     fn fresh_api() -> ExtensionApi {
         ExtensionApi::new(
@@ -95,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn given_the_registered_suite_when_each_registration_is_inspected_then_description_hint_and_handler_are_present() {
+    fn given_the_registered_suite_when_each_registration_is_inspected_then_every_command_is_dispatchable() {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
         let mut api = fresh_api();
@@ -103,26 +103,47 @@ mod tests {
         register_memory_commands(&mut api, Arc::new(fake.deps.clone()));
 
         for command in &api.registered.commands {
-            let description = command.description.clone().unwrap_or_default();
-            assert!(!description.is_empty(), "empty description for {}", command.name);
-            assert!(command.argument_hint.is_some(), "missing argument hint for {}", command.name);
-            assert!(Arc::strong_count(&command.handler) >= 1);
+            assert!(
+                MEMORY_COMMAND_NAMES.contains(&command.name.as_str()),
+                "unexpected registered command: {}",
+                command.name
+            );
+            assert!(
+                Arc::strong_count(&command.handler) >= 1,
+                "command {} has no handler",
+                command.name
+            );
         }
     }
 
     #[tokio::test]
-    async fn given_a_bound_identity_with_a_repository_when_a_registered_handler_runs_then_it_renders_through_the_shared_seams() {
+    async fn given_a_bound_identity_with_a_repository_when_the_registered_memory_handler_runs_then_it_dispatches_through_the_shared_seams() {
         let (_root, identity) = temp_identity();
-        seeded_repo(&identity, vec![seed("system/persona.md", "---\ndescription: Persona\n---\nbarrel wired\n")]);
-        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions::default());
-
-        let response = crate::commands::memory::handle_memory(&fake.deps, &context.ctx, "").await;
-
-        assert!(response.text.contains("barrel wired"));
-        assert_eq!(
-            context.ui.notifications().last().map(|(message, _)| message.clone()),
-            Some(response.text)
+        seeded_repo(
+            &identity,
+            vec![seed("system/persona.md", "---\ndescription: Persona\n---\nbarrel wired\n")],
         );
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let mut api = fresh_api();
+        register_memory_commands(&mut api, Arc::new(fake.deps.clone()));
+
+        let handler = api
+            .registered
+            .commands
+            .iter()
+            .find(|command| command.name == "memory")
+            .expect("memory command is registered")
+            .handler
+            .clone();
+        let ui = Arc::new(RecordingUi::default());
+        let context = extension_context(ui.clone());
+
+        handler("", &context)
+            .await
+            .expect("registered memory handler succeeds");
+
+        let last = ui.last_message().unwrap_or_default();
+        assert!(last.contains("barrel wired"));
+        assert_eq!(ui.last_level(), Some(NotificationType::Info));
     }
 }

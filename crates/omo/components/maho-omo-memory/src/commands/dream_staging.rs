@@ -11,6 +11,7 @@ use memory_core::journal::{
     store::{TranscriptJournal, TranscriptJournalOptions},
 };
 use serde_json::Value;
+use sha1::{Digest, Sha1};
 
 use crate::journal_wiring::project_session_entries;
 
@@ -239,52 +240,9 @@ fn file_mtime_iso(metadata: &std::fs::Metadata) -> String {
         .unwrap_or_default()
 }
 
-/// Minimal SHA-1 (FIPS 180-4), matching `node:crypto` sha1 digests byte for byte.
+/// Lowercase-hex SHA-1 digest, byte-identical to `node:crypto` `digest("hex")`.
 pub fn sha1_hex(input: &[u8]) -> String {
-    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
-    let bit_len = (input.len() as u64) * 8;
-    let mut message = input.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_be_bytes());
-
-    for chunk in message.chunks_exact(64) {
-        let mut w = [0u32; 80];
-        for (index, word) in chunk.chunks_exact(4).enumerate() {
-            w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for index in 16..80 {
-            w[index] = (w[index - 3] ^ w[index - 8] ^ w[index - 14] ^ w[index - 16]).rotate_left(1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
-        for (index, word) in w.iter().enumerate() {
-            let (f, k) = match index {
-                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                _ => (b ^ c ^ d, 0xCA62C1D6),
-            };
-            let temp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(*word);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = temp;
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-    }
-    h.iter().map(|word| format!("{word:08x}")).collect()
+    format!("{:x}", Sha1::digest(input))
 }
 
 #[cfg(test)]
@@ -292,8 +250,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sha1_matches_known_vectors() {
+    fn sha1_hex_matches_node_crypto_lowercase_hex_vectors() {
         assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            sha1_hex(b"The quick brown fox jumps over the lazy dog"),
+            "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
+        );
+        assert_eq!(sha1_hex(b"remember tabs"), "a4d561f91a91d1abb13acbb7d5629104e698c77f");
     }
 }
