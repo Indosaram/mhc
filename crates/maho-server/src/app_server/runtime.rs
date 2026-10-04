@@ -33,7 +33,8 @@ impl AppServerRuntime {
         let process_inventory = super::mcp_wire_status::create_process_mcp_wire_status_adapter(std::path::Path::new(&agent_dir),std::path::Path::new(&cwd),&std::env::vars().collect()).unwrap_or_else(|error| {eprintln!("app-server MCP configuration: {error}");super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())});
         let mcp_inventory = Arc::new(Mutex::new(super::mcp_wire_status::McpWireStatusRegistry::new(Some(process_inventory))));
         super::catalogs::register_catalog_methods(&mut core.registry,threads.clone(),mcp_inventory.clone(),agent_dir.clone(),cwd.clone());
-        super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone());
+        let ui_agent_dir = agent_dir.clone();
+        super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone(), threads.clone());
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let lifecycle_slot=Arc::new(std::sync::OnceLock::<Arc<super::handlers::ThreadLifecycleController>>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
@@ -58,12 +59,14 @@ impl AppServerRuntime {
             let lifecycle_slot=lifecycle_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
+            let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register(method.into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
+                let ui_agent_dir = ui_agent_dir.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
                     if method == "thread/loaded/list" { return Ok(json!({"data":threads.list_loaded().await.iter().map(|thread|thread["id"].clone()).collect::<Vec<_>>(),"nextCursor":null})); }
@@ -116,11 +119,13 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
-                        let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(maho_ext_mcp::service_types::McpWireStatusSnapshot::default())));
-                        let handler_holder = holder.clone();
-                        let subscription = mcp_session.subscribe_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
-                        if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
-                        mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
+                            let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
+                            let handler_holder = holder.clone();
+                            let subscription = mcp_session.bind_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
+                            if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
+                            mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        }
                         let turn_thread_id = thread_id.clone();
                         if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
@@ -134,12 +139,14 @@ impl AppServerRuntime {
             let lifecycle_slot=lifecycle_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
+            let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
+                let ui_agent_dir = ui_agent_dir.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
                     let source = required_string(params,"threadId")?.to_owned();
@@ -170,11 +177,13 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
                         }
-                        let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(maho_ext_mcp::service_types::McpWireStatusSnapshot::default())));
-                        let handler_holder = holder.clone();
-                        let subscription = mcp_session.subscribe_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
-                        if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
-                        mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
+                            let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
+                            let handler_holder = holder.clone();
+                            let subscription = mcp_session.bind_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
+                            if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
+                            mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        }
                         let turn_thread_id = thread_id.clone();
                         if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
@@ -222,5 +231,7 @@ impl AppServerRuntime {
             self.user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
         }}
         self.fuzzy_search.dispose();self.threads.dispose().await;
+        let mut inventory = self.mcp_inventory.lock().await;
+        for id in inventory.thread_ids() {inventory.remove_thread(&id);}
     }
 }

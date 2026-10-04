@@ -22,6 +22,7 @@ impl McpWireStatusRegistry {
     pub fn register_thread(&mut self,id: String,adapter: Arc<std::sync::Mutex<McpWireStatusAdapter>>) {self.threads.insert(id,adapter);}
     pub fn remove_thread(&mut self,id: &str) {self.threads.remove(id);}
     pub fn resolve(&self,id: Option<&str>) -> Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>> {match id {None=>self.global.clone(),Some(id)=>self.threads.get(id).cloned()}}
+    pub fn thread_ids(&self) -> Vec<String> {self.threads.keys().cloned().collect()}
 }
 pub fn create_process_mcp_wire_status_adapter(agent_dir: &Path,cwd: &Path,env: &BTreeMap<String,String>) -> Result<McpWireStatusAdapter,maho_ext_mcp::config::McpConfigValidationError> {
     let config = load_mcp_config(LoadMcpConfigOptions {agent_dir,cwd,env,project_trusted:false})?;
