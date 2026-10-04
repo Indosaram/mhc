@@ -40,9 +40,9 @@ pub struct GptAccount{
 }
 impl Extension for GptAccount{
     fn register(&self,api:&mut ExtensionApi){
-        let login=self.login.clone();let open_browser=self.open_browser.clone();
+        let login=self.login.clone();let open_browser=self.open_browser.clone();let events=api.events.clone();
         api.register_command("gpt-account",Some("List and manage ChatGPT Subscription OAuth accounts.".into()),Some("[add | remove <id> | pin <id> | unpin | rename <id> <display name...> | clear-name <id>]".into()),Arc::new(move|raw,ctx|{
-            let login=login.clone();let open_browser=open_browser.clone();
+            let login=login.clone();let open_browser=open_browser.clone();let events=events.clone();
             Box::pin(async move{
                 if crate::account_display_name::account_display_name_command(ctx,PROVIDER_ID,raw).await{return Ok(());}
                 let operation=async{
@@ -66,6 +66,7 @@ impl Extension for GptAccount{
                                 Err(error)=>return Err(error),
                             };
                             ctx.ui.notify("ChatGPT Subscription OAuth account added.",NotificationType::Info);
+                            events.emit("provider-accounts-changed",&serde_json::json!({"type":"accounts_changed","provider":PROVIDER_ID}));
                             crate::account_display_name::prompt_account_display_name(ctx,receipt.as_ref()).await;
                         }
                         AccountAction::Remove(name)=>{
