@@ -4,6 +4,43 @@ use maho_cli::cli::task_runners::{authenticated_rpc_options, native_rpc_options}
 use senpi_task::runners::types::RpcRunnerSpec;
 
 #[test]
+fn production_team_adapter_forwards_full_member_start_spec_to_manager() {
+    use std::sync::{Arc, Mutex};
+    use senpi_task::{manager::{TaskManager, types::{ManagedRunner, ManagedStartSpec, ManagedRunnerResult, ManagedRunners, TaskManagerOptions, PlanResolutionCode, PlanResolutionError}},
+        team::runtime_types::{TeamMemberStartSpec, TeamRuntimeManagerPort, TeamStartResult}};
+    struct UnexpectedRunner;
+    impl ManagedRunner for UnexpectedRunner {
+        fn start(&self, _: &ManagedStartSpec) -> ManagedRunnerResult { panic!("planner rejects before execution") }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let store = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig { project_dir: root.path().into(), task_state_dir: None });
+    let observed = Arc::new(Mutex::new(None)); let capture = observed.clone();
+    let runner = Arc::new(UnexpectedRunner);
+    let mut options = TaskManagerOptions::new(store, ManagedRunners { in_process: runner.clone(), process: runner }, Arc::new(move |spec| {
+        *capture.lock().unwrap() = Some(spec.clone());
+        Err(Box::new(PlanResolutionError::new(PlanResolutionCode::ModelUnavailable, "fixture rejects model")))
+    }), root.path().to_string_lossy());
+    options.config.max_depth = 8;
+    let adapter = maho_cli::cli::task_session::TeamManager(Arc::new(TaskManager::new(options)));
+    let spec = TeamMemberStartSpec {
+        name: Some("member".into()), description: Some("work".into()), prompt: "task".into(),
+        parent_session_id: "parent".into(), root_session_id: Some("root".into()), depth: 3,
+        execution_mode: Some(senpi_task::manager::execution_mode::ExecutionMode::Process),
+        model: Some("provider/model".into()), category: Some("quick".into()), task_summary: Some("summary".into()),
+        cwd: Some(root.path().to_string_lossy().into_owned()), extensions: Some(vec!["builtin:task".into()]),
+        member_env: Some(BTreeMap::from([("SENPI_TASK_MEMBER".into(), "member".into())])), run_in_background: true,
+        ..Default::default()
+    };
+    assert!(matches!(adapter.start(&spec).unwrap(), TeamStartResult::Rejected { kind, .. } if kind == "plan_unresolved"));
+    let observed = observed.lock().unwrap(); let actual = observed.as_ref().unwrap();
+    assert_eq!(actual.name, spec.name); assert_eq!(actual.description, spec.description); assert_eq!(actual.prompt, spec.prompt);
+    assert_eq!(actual.parent_session_id, spec.parent_session_id); assert_eq!(actual.root_session_id, spec.root_session_id); assert_eq!(actual.depth, spec.depth);
+    assert_eq!(actual.execution_mode, spec.execution_mode); assert_eq!(actual.model, spec.model); assert_eq!(actual.category, spec.category); assert_eq!(actual.subagent_type, spec.subagent_type);
+    assert_eq!(actual.task_summary, spec.task_summary); assert_eq!(actual.cwd, spec.cwd); assert_eq!(actual.extensions, spec.extensions);
+    assert_eq!(actual.member_env, spec.member_env); assert_eq!(actual.run_in_background, spec.run_in_background);
+}
+
+#[test]
 fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
     use senpi_task::runners::in_process::{child_options::build_child_session_options,
         runner::ChildSpec, session_manager::ChildSessionManager};

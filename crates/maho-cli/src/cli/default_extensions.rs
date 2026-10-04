@@ -120,7 +120,7 @@ impl Extension for Task {
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let config = parent.with_settings_manager(|settings| settings.get_value("omo").cloned().unwrap_or_else(|| serde_json::json!({})));
                 let engine = maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
-                    cwd: ctx.cwd.clone(), config, runners, actions, coordinator: None,
+                    cwd: ctx.cwd.clone(), config, runners, actions: actions.clone(), coordinator: None,
                     resolve_registry: Arc::new(move || Some(registry.clone())),
                 }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process)));
                 let handlers = {
@@ -129,8 +129,33 @@ impl Extension for Task {
                         state_dir: senpi_task::store::StateDirConfig { project_dir: ctx.cwd.clone(), task_state_dir: Some(engine.store.state_dir().into()) },
                         team_bounds: senpi_task::team::runtime_config::TeamTaskBounds { max_members: 8, max_parallel_members: 4, max_wall_clock_minutes: 60 }, load_runtime_state: None,
                     };
-                    maho_omo_task::component::TaskComponent::register(&mut api, engine, Default::default(), ownership,
-                        std::env::var("OMO_TEAM_MEMBER").is_ok())?;
+                    let manager = engine.manager.clone();
+                    let spawn = senpi_task::tools::task::execute_spec::TaskToolDeps {
+                        resolve_ancestry: Some(Arc::new(move |session| manager.list(&senpi_task::manager::types::ListScope::All).into_iter()
+                            .find(|entry| entry.record.child_session_id.as_deref() == Some(session))
+                            .map(|entry| senpi_task::tools::task::execute_spec::TaskAncestry { root_session_id: entry.record.root_session_id, depth: u64::from(entry.record.depth) }))),
+                        load_skills: Some(senpi_task::tools::task::skills::create_fs_skill_loader(senpi_task::tools::task::skills::FsSkillLoaderOptions {
+                            home_dir: Some(maho_core::config::home_dir().into()), agent_dir: Some(maho_core::config::get_agent_dir().into()), ..Default::default()
+                        })),
+                        agents: engine.agents.iter().map(|(name, agent)| (name.clone(), senpi_task::tools::task::execute_spec::TaskAgentDefinition { execution_mode: agent.execution_mode.clone() })).collect(),
+                        omo_config: senpi_task::tools::task::execute_spec::TaskOmoConfig {
+                            agents: engine.config.get("agents").and_then(serde_json::Value::as_object).map(|agents| agents.iter().map(|(name, config)| {
+                                (name.clone(), senpi_task::tools::task::execute_spec::TaskOmoAgentConfig {
+                                    execution_mode: config.get("execution_mode").and_then(serde_json::Value::as_str).and_then(senpi_task::manager::execution_mode::ExecutionMode::parse),
+                                })
+                            }).collect()).unwrap_or_default(),
+                            task: Some(senpi_task::tools::task::execute_spec::TaskOmoTaskConfig {
+                                default_execution_mode: engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse),
+                            }),
+                        },
+                    };
+                    let team_ownership = senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
+                        state_dir: ownership.state_dir.clone(), team_bounds: ownership.team_bounds, load_runtime_state: None,
+                    };
+                    if let Some(component) = maho_omo_task::component::TaskComponent::register(&mut api, engine, spawn, ownership,
+                        std::env::var("OMO_TEAM_MEMBER").is_ok())? {
+                        super::task_session::mount_team_runtime(&mut api, &component, team_ownership, actions.clone())?;
+                    }
                     api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).cloned().unwrap_or_default()
                 };
                 registered.store(true, std::sync::atomic::Ordering::Release);

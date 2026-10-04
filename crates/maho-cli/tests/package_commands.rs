@@ -1,4 +1,29 @@
 use maho_cli::package_manager_cli::*;
+#[tokio::test]
+async fn resource_execution_persists_install_and_removal_in_callers_settings() {
+    use maho_core::{package_manager::{DefaultPackageManager, PackageManagerOptions}, settings_manager::SettingsManager};
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project"); let agent = root.path().join("agent");
+    let resource = root.path().join("resource");
+    std::fs::create_dir_all(&cwd).unwrap(); std::fs::create_dir_all(&resource).unwrap();
+    let source = resource.to_string_lossy().into_owned();
+    let cwd = cwd.to_string_lossy(); let agent = agent.to_string_lossy();
+    let mut settings = SettingsManager::create(&cwd, &agent, root.path().to_str().unwrap(), true);
+    {
+        let mut manager = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent, settings_manager: &mut settings });
+        let install = parse_package_command(&args(&["install", &source, "--local"])).unwrap();
+        execute_package_command(&install, &mut manager).await.unwrap();
+        assert_eq!(manager.list_configured_packages().unwrap().len(), 1);
+    }
+    assert_eq!(settings.get_project()["packages"].as_array().unwrap().len(), 1);
+    {
+        let mut manager = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent, settings_manager: &mut settings });
+        let remove = parse_package_command(&args(&["remove", &source, "--local"])).unwrap();
+        execute_package_command(&remove, &mut manager).await.unwrap();
+        assert!(execute_package_command(&remove, &mut manager).await.is_err());
+    }
+    assert!(settings.get_project()["packages"].as_array().unwrap().is_empty());
+}
 #[test]
 fn config_route_preserves_help_priority_scope_and_last_trust_override() {
     let options = parse_config_command(&args(&["config", "--local", "--approve", "--no-approve"])).unwrap().unwrap();

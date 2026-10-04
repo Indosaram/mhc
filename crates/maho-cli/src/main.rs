@@ -57,7 +57,8 @@ fn run() -> Result<(), String> {
         if let Some(argument) = command.invalid_argument { return Err(format!("Unexpected package argument: {argument}")); }
         if let Some(option) = command.missing_option_value { return Err(format!("{option} requires a value")); }
         if let Some(conflict) = command.conflicting_options { return Err(conflict); }
-        return Err("Resource-package execution blocked: maho-core DefaultPackageManager API request (todo 19); native self-update replaced by mhc import-omo".to_owned());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command));
     }
     match argv.first().map(String::as_str) {
         Some("host") => {
@@ -91,8 +92,10 @@ fn run() -> Result<(), String> {
             return Ok(());
         }
         Some("config") => {
-            if maho_cli::package_manager_cli::parse_config_command(&argv)?.is_some_and(|options| options.help) { return output(maho_cli::package_manager_cli::config_command_help()); }
-            return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned());
+            let options = maho_cli::package_manager_cli::parse_config_command(&argv)?.ok_or("Missing config command")?;
+            if options.help { return output(maho_cli::package_manager_cli::config_command_help()); }
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            return runtime.block_on(maho_cli::package_manager_cli::run_config_command(options));
         }
         _ => {},
     }
