@@ -25,7 +25,7 @@ impl ManagedChildHandle for Child {
 struct Runner(mpsc::Sender<Arc<Child>>);
 struct Cleanup {
     component:Arc<TaskComponent>, scheduler:Arc<senpi_task::dag::scheduler::DagSchedulerContext>, run:String,
-    worker:Option<std::thread::JoinHandle<Result<senpi_task::dag::types::DagRunRecordV1,senpi_task::dag::store::DagStoreError>>>,
+    worker:Option<std::thread::JoinHandle<Result<senpi_task::dag::manager::DagRunRecordV1,senpi_task::dag::store::DagStoreError>>>,
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
