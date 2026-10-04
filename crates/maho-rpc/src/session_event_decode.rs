@@ -273,7 +273,7 @@ mod tests {
             AgentSessionEvent::AutoRetryEnd { success: false, attempt: 3, final_error: Some("f".into()) },
             AgentSessionEvent::ThinkingLevelChanged { level: maho_ai::types::ThinkingLevel::High },
             AgentSessionEvent::ServiceTierChanged { tier: Some(ServiceTier::Priority), fast_mode: true },
-            AgentSessionEvent::ModelChanged { model: model(), thinking_level: maho_ai::types::ThinkingLevel::Off, source: ModelSelectSource::Cycle },
+            AgentSessionEvent::ModelChanged { model: model(), thinking_level: maho_ai::types::ThinkingLevel::Minimal, source: ModelSelectSource::Cycle },
             AgentSessionEvent::SessionInfoChanged { name: Some("named".into()) },
             AgentSessionEvent::QueueUpdate { steering: vec!["s".into()], follow_up: vec!["f".into()], ordered: vec![QueuedInput { text: "t".into(), mode: StreamingBehavior::Steer, enqueue_order: 7 }] },
             AgentSessionEvent::BashExecutionUpdate { id: Some("b".into()), delta: "out".into() },
@@ -285,8 +285,8 @@ mod tests {
 
     #[test]
     fn unknown_records_are_ignored() {
-        assert_eq!(session_event_from_record(&json!({"type": "not_a_real_event"})), None);
-        assert_eq!(session_event_from_record(&json!({"no": "type"})), None);
+        assert!(session_event_from_record(&json!({"type": "not_a_real_event"})).is_none());
+        assert!(session_event_from_record(&json!({"no": "type"})).is_none());
     }
 
     fn model() -> maho_ext_api::Model {
