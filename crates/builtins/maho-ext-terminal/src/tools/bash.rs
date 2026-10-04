@@ -125,8 +125,18 @@ mod tests {
             // line cannot be produced (and missed) before we are watching for it.
             assert!(ready.recv().await.unwrap().content.is_empty(),"first update is the subscription marker");
             manager.lock().unwrap().get("bash_1").unwrap().write(b"go\n").unwrap();
-            while let Some(update)=ready.recv().await {if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("trap-ready"))) {break;}}
-            cancel.abort();let result=task.await.unwrap().unwrap();assert_eq!(result.is_error,Some(true));assert!(result.content.iter().any(|part|part.text.contains("Command aborted")));
+            let mut observed=false;
+            while let Some(update)=ready.recv().await {if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("trap-ready"))) {observed=true;break;}}
+            // An event-stream disconnect before the ready line must fail the test, never fall through.
+            assert!(observed,"the trap-ready output must be observed before aborting");
+            let mut exit=manager.lock().unwrap().get("bash_1").unwrap().subscribe_exit();
+            cancel.abort();
+            let result=task.await.unwrap().unwrap();
+            assert_eq!(result.is_error,Some(true));
+            assert!(result.content.iter().any(|part|part.text.contains("Command aborted")));
+            // The SIGKILLed shell must actually exit and be reaped by its exit waiter.
+            tokio::time::timeout(Duration::from_secs(5),async {while exit.borrow_and_update().is_none() {exit.changed().await.unwrap();}}).await.unwrap();
+            assert!(exit.borrow().is_some(),"the aborted shell must be killed and reaped");
         }).await.unwrap();manager.lock().unwrap().teardown().unwrap();
     }
     #[tokio::test]

@@ -150,7 +150,11 @@ impl TerminalRuntimeSession {
         Ok(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
-        self.session.resize(cols,rows)?;
+        // The PTY resize is best-effort and meaningless once the process is gone: upstream's
+        // `resizeScreen` only touches the screen and its `bash_resize` returns early when
+        // `runtime.exited`. Skipping it for a closed session keeps the screen projection resizable
+        // instead of failing with "pty session is closed".
+        if !self.exited()? {self.session.resize(cols,rows)?;}
         let retained=String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer);
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
         if retained.is_empty() {
