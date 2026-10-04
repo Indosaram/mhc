@@ -78,6 +78,19 @@ impl HostRuntimeFactory {
     }
 }
 
+struct PendingSessionConstruction {
+    session: Option<crate::agent_session::AgentSession>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for PendingSessionConstruction {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            self.runtime.spawn(async move { session.dispose().await; });
+        }
+    }
+}
+
 pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
     use std::{collections::BTreeMap, sync::Arc};
     if options.minimal_resources {
@@ -209,16 +222,24 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     if options.loaded_extensions.is_some() || !options.extension_factories.is_empty() {
+        let mut construction = PendingSessionConstruction {
+            session: Some(session.clone()), runtime: tokio::runtime::Handle::current(),
+        };
         let context = extension_context::create(&session);
         let runner = if let Some(loaded) = options.loaded_extensions {
             maho_ext_host::runner::ExtensionRunner::from_loaded_extensions(loaded, options.extension_factories, context, Default::default())
         } else { match maho_ext_host::runner::ExtensionRunner::from_async_factories(
             options.extension_factories, context, Default::default()).await {
                 Ok(runner) => runner,
-                Err(error) => { session.dispose().await; return Err(error.to_string()); }
+                Err(error) => {
+                    session.dispose().await;
+                    drop(construction.session.take());
+                    return Err(error.to_string());
+                }
             } };
         session.set_extension_runner(runner).await;
         session.bind_extensions(Default::default()).await;
+        drop(construction.session.take());
     }
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })
 }
