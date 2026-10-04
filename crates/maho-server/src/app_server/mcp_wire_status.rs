@@ -15,13 +15,13 @@ impl McpWireStatusAdapter {
 }
 impl Drop for McpWireStatusAdapter {fn drop(&mut self) {self.dispose();}}
 #[derive(Default)]
-pub struct McpWireStatusRegistry {global:Option<McpWireStatusAdapter>,threads:BTreeMap<String,McpWireStatusAdapter>}
+pub struct McpWireStatusRegistry {global:Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>>,threads:BTreeMap<String,Arc<std::sync::Mutex<McpWireStatusAdapter>>>}
 impl McpWireStatusRegistry {
-    pub fn new(global: Option<McpWireStatusAdapter>) -> Self {Self {global,threads:BTreeMap::new()}}
-    pub fn set_global(&mut self,adapter: McpWireStatusAdapter) {self.global = Some(adapter);}
-    pub fn register_thread(&mut self,id: String,adapter: McpWireStatusAdapter) {self.threads.insert(id,adapter);}
+    pub fn new(global: Option<McpWireStatusAdapter>) -> Self {Self {global:global.map(|adapter|Arc::new(std::sync::Mutex::new(adapter))),threads:BTreeMap::new()}}
+    pub fn set_global(&mut self,adapter: McpWireStatusAdapter) {self.global = Some(Arc::new(std::sync::Mutex::new(adapter)));}
+    pub fn register_thread(&mut self,id: String,adapter: Arc<std::sync::Mutex<McpWireStatusAdapter>>) {self.threads.insert(id,adapter);}
     pub fn remove_thread(&mut self,id: &str) {self.threads.remove(id);}
-    pub fn resolve(&self,id: Option<&str>) -> Option<&McpWireStatusAdapter> {match id {None=>self.global.as_ref(),Some(id)=>self.threads.get(id)}}
+    pub fn resolve(&self,id: Option<&str>) -> Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>> {match id {None=>self.global.clone(),Some(id)=>self.threads.get(id).cloned()}}
 }
 pub fn create_process_mcp_wire_status_adapter(agent_dir: &Path,cwd: &Path,env: &BTreeMap<String,String>) -> Result<McpWireStatusAdapter,maho_ext_mcp::config::McpConfigValidationError> {
     let config = load_mcp_config(LoadMcpConfigOptions {agent_dir,cwd,env,project_trusted:false})?;

@@ -57,7 +57,9 @@ pub async fn register_thread_goal_handlers(core: &Arc<RwLock<ServerCore>>,thread
                             }
                         };
                         if goal.status == GoalStatus::Active {
+                            let context = session.extension_command_context().await;
                             session.emit_extension_event(maho_ext_goal::GOAL_STORE_CHANGED_EVENT,&json!({"threadId":thread_id}));
+                            session.emit_extension_event_typed(maho_ext_goal::GOAL_STORE_CHANGED_EVENT,&maho_ext_goal::GoalStoreChangedEvent { thread_id:thread_id.clone(), ctx:context.map(|context|context.context) });
                         }
                         let response = json!({"goal":to_thread_goal(&goal)});
                         let weak = weak.clone(); let notify_thread = thread_id.clone(); let notify_goal = response["goal"].clone();

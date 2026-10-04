@@ -20,6 +20,7 @@ pub struct SqliteSessionRepo {
     database_path: Option<PathBuf>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     sessions: Arc<Mutex<BTreeMap<String, Arc<StorageBackedSession>>>>,
+    facades: Arc<Mutex<BTreeMap<String, Arc<MemorySessionFacade>>>>,
     storages: Arc<Mutex<BTreeMap<String,Arc<SqliteStorage>>>>,
     closed: AtomicBool,
 }
@@ -34,6 +35,7 @@ impl SqliteSessionRepo {
             database_path,
             now,
             sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            facades: Arc::new(Mutex::new(BTreeMap::new())),
             storages: Arc::new(Mutex::new(BTreeMap::new())),
             closed: AtomicBool::new(false),
         }
@@ -98,8 +100,10 @@ impl SqliteSessionRepo {
             Box::new(move || (now)()),
         ));
         let tracking = Arc::downgrade(&self.sessions);
+        let facade_tracking = Arc::downgrade(&self.facades);
         self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
         let storage_tracking=Arc::downgrade(&self.storages);
+        let close_id = id.clone();
         let session = Arc::new(StorageBackedSession::new(
             metadata,
             storage,
@@ -109,16 +113,20 @@ impl SqliteSessionRepo {
                         tracking
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&id);
+                            .remove(&close_id);
                     }
-                    if let Some(tracking)=storage_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);}
+                    if let Some(tracking)=facade_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id);}
+                    if let Some(tracking)=storage_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id);}
                 })),
                 ..Default::default()
             },
         ));
         session.attach();
         sessions.insert(session.metadata().id.clone(), session.clone());
-        Box::new(session)
+        let facade = Arc::new(MemorySessionFacade::new(session.clone(), Arc::new(|| {})));
+        facade.attach();
+        self.facades.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, facade.clone());
+        Box::new(facade)
     }
     fn writable(path: &Path, create: bool) -> Result<rusqlite::Connection, SessionError> {
         let db = if create {
@@ -133,6 +141,16 @@ impl SqliteSessionRepo {
     }
     pub async fn close(&self, context: &Context) {
         self.closed.store(true, Ordering::SeqCst);
+        let facades = self
+            .facades
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for facade in facades {
+            facade.close(context).await;
+        }
         let sessions = self
             .sessions
             .lock()

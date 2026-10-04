@@ -12,6 +12,7 @@ pub struct AppServerRuntime {
     pub approvals: Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>,
     pub user_input: Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>,
     pub lifecycle: Arc<super::handlers::ThreadLifecycleController>,
+    provider_account_unsubscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
 }
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
@@ -56,11 +57,13 @@ impl AppServerRuntime {
             let notification_core = notification_core.clone();
             let lifecycle_slot=lifecycle_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+            let mcp_inventory = mcp_inventory.clone();
             core.registry.register(method.into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+                let mcp_inventory = mcp_inventory.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
                     if method == "thread/loaded/list" { return Ok(json!({"data":threads.list_loaded().await.iter().map(|thread|thread["id"].clone()).collect::<Vec<_>>(),"nextCursor":null})); }
@@ -100,6 +103,7 @@ impl AppServerRuntime {
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
+                    let mcp_session = entry.session.clone();
                     let lifecycle = if method == "thread/start" {json!({"method":"thread/started","params":{"thread":response["thread"]}})} else {json!({"method":"thread/status/changed","params":{"threadId":entry.id,"status":{"type":"idle"}}})};
                     context.connection.defer_until_responded(move || {tokio::spawn(async move {
                         if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
@@ -112,6 +116,13 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
+                        let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(maho_ext_mcp::service_types::McpWireStatusSnapshot::default())));
+                        let handler_holder = holder.clone();
+                        let subscription = mcp_session.subscribe_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
+                        if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
+                        mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        let turn_thread_id = thread_id.clone();
+                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
                     Ok(response)
                 })
@@ -122,11 +133,13 @@ impl AppServerRuntime {
             let notification_core = notification_core.clone();
             let lifecycle_slot=lifecycle_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+            let mcp_inventory = mcp_inventory.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
                 let lifecycle_slot=lifecycle_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+                let mcp_inventory = mcp_inventory.clone();
                 Box::pin(async move {
                     let params = &context.request["params"];
                     let source = required_string(params,"threadId")?.to_owned();
@@ -144,6 +157,7 @@ impl AppServerRuntime {
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
+                    let mcp_session = entry.session.clone();
                     let started = json!({"method":"thread/started","params":{"thread":response["thread"]}});
                     context.connection.defer_until_responded(move || {tokio::spawn(async move {
                         if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
@@ -156,6 +170,13 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
                         }
+                        let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(maho_ext_mcp::service_types::McpWireStatusSnapshot::default())));
+                        let handler_holder = holder.clone();
+                        let subscription = mcp_session.subscribe_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
+                        if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
+                        mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                        let turn_thread_id = thread_id.clone();
+                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
                     Ok(response)
                 })
@@ -172,21 +193,29 @@ impl AppServerRuntime {
         }));
         let core = Arc::new(RwLock::new(core));
         if notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("notification core is initialized once");}
-        let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),std::time::Duration::from_secs(30*60));
+        let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
-        super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
+        super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),mcp_inventory.clone(),version.clone()).await;
         super::handlers::register_compaction_handler(&core,threads.clone(),turn_log.clone()).await;
         super::metadata_handlers::register_metadata_handlers(&core,threads.clone(),turn_log.clone(),archive.clone(),version.clone()).await;
         super::list_handlers::register_list_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;
         super::search::register_search_handler(&core,threads.clone(),archive.clone(),turn_log.clone(),version).await;
         super::history_handlers::register_history_handlers(&core,threads.clone(),archive,turn_log.clone()).await;
-        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle }
+        let provider_core = Arc::downgrade(&core);
+        let provider_account_unsubscribe = maho_core::subscribe_provider_account_events(Arc::new(move |event| {
+            let notification = super::account::provider_account_event_notification_native(&event);
+            if let Some(core) = provider_core.upgrade() {
+                tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
+            }
+        }));
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)) }
     }
     pub async fn dispose(&self) {
+        if let Some(unsubscribe) = self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {unsubscribe();}
         self.lifecycle.dispose();
         for thread in self.threads.list_loaded().await {if let Some(id) = thread["id"].as_str() {
             self.approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_pending_for_thread(id);
