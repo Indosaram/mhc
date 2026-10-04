@@ -1220,7 +1220,7 @@ pub fn config_watch_registration_json(registration: &RegisteredConfigWatch) -> J
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
 type NativeBusHandler = Arc<dyn Fn(&(dyn std::any::Any + Send + Sync)) + Send + Sync>;
 #[derive(Clone, Default)]
-struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>>, native_handlers: BTreeMap<String, Vec<(u64, NativeBusHandler)>> }
+struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>>, native_handlers: BTreeMap<String, Vec<(u64, NativeBusHandler)>>, config_watches: Vec<(u64, String, RegisteredConfigWatch)> }
 #[derive(Clone, Default)]
 pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
@@ -1246,6 +1246,7 @@ impl EventBus {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for handlers in state.handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
         for handlers in state.native_handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
+        state.config_watches.retain(|(id, _, _)| !owned.contains(id));
     }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1266,6 +1267,9 @@ impl EventBus {
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
         self.assert_active_or_panic();
+        if channel == "config-watch:unregister" && let Some(id) = data.get("id").and_then(JsonValue::as_str) {
+            self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).config_watches.retain(|(_, _, registration)| registration.id != id);
+        }
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
         for (_, handler) in handlers {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
@@ -1289,10 +1293,28 @@ impl EventBus {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
+    /// Retain callable registrations in the same checkpointed, scoped bus state.
+    pub fn publish_config_watch(&self, path: &str, registration: RegisteredConfigWatch) {
+        self.assert_active_or_panic();
+        {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let id = state.next_id;
+            state.next_id = state.next_id.wrapping_add(1);
+            state.config_watches.retain(|(_, owner, existing)| owner != path || existing.id != registration.id);
+            state.config_watches.push((id, path.into(), registration.clone()));
+            self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+        }
+        self.emit_native(CONFIG_WATCH_REGISTER_CHANNEL, &(path.to_owned(), registration.clone()));
+        self.emit(CONFIG_WATCH_REGISTER_CHANNEL, &config_watch_registration_json(&registration));
+    }
+    pub fn config_watch_registrations(&self) -> Vec<(String, RegisteredConfigWatch)> {
+        self.assert_active_or_panic();
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).config_watches.iter().map(|(_, path, registration)| (path.clone(), registration.clone())).collect()
+    }
     pub fn clear(&self) {
         if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.handlers.clear(); state.native_handlers.clear();
+        state.handlers.clear(); state.native_handlers.clear(); state.config_watches.clear();
     }
 }
 pub struct EventBusCheckpoint(BusState);
@@ -1741,9 +1763,9 @@ impl ExtensionApi {
     }
     pub fn register_config_watch(&mut self, registration: RegisteredConfigWatch) {
         self.runtime.assert_active_or_panic();
-        self.registered.config_watch_registrations.push(registration.clone());
-        self.events.emit(CONFIG_WATCH_REGISTER_CHANNEL, &config_watch_registration_json(&registration));
-        self.events.emit_native(CONFIG_WATCH_REGISTER_CHANNEL, &(self.registered.identity.path.clone(), registration));
+        if let Some(existing) = self.registered.config_watch_registrations.iter_mut().find(|existing| existing.id == registration.id) { *existing = registration.clone(); }
+        else { self.registered.config_watch_registrations.push(registration.clone()); }
+        self.events.publish_config_watch(&self.registered.identity.path, registration);
     }
     pub fn on_config_watch_registration(&self, listener: ConfigWatchRegistrationListener) -> BusSubscription {
         self.events.on_native::<(String, RegisteredConfigWatch)>(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |(path, registration)| listener(path, registration)))

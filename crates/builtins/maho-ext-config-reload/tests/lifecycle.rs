@@ -41,6 +41,23 @@ fn context(root: &Path) -> ExtensionContext {
         is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| false), is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: vec![], update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None }
 }
+#[test]
+fn native_registration_replay_and_live_publication_use_consumer_admission() {
+    use maho_ext_config_reload::protocol::CONFIG_WATCH_REJECTED;
+    let root = tempfile::tempdir().unwrap();
+    let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
+    let events = EventBus::default();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let _subscription = events.on(CONFIG_WATCH_REJECTED, Arc::new(move |payload| sender.send(payload.clone()).unwrap()));
+    let registration = RegisteredConfigWatch { id: "replay".into(), display_name: "replay".into(), targets: vec![ConfigWatchTargetSpec { path: agent_dir.join("auth.json"), kind: ConfigWatchTargetKind::File, filter_globs: vec![] }], validate: Arc::new(|_| ConfigWatchValidation::Ok) };
+    events.publish_config_watch("owner", registration.clone());
+    let mut api = ExtensionApi::new(LoadedExtension::new("config-reload", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), events.clone(), ExtensionRuntime::default());
+    maho_ext_config_reload::ConfigReload.register(&mut api);
+    assert_eq!(receiver.try_recv().unwrap()["registrationId"], "replay");
+    events.publish_config_watch("owner", RegisteredConfigWatch { id: "live".into(), ..registration });
+    assert_eq!(receiver.try_recv().unwrap()["registrationId"], "live");
+    assert!(receiver.try_recv().is_err());
+}
 #[tokio::test]
 async fn print_session_emits_disabled_readiness_and_shutdown_joins() {
     let root = tempfile::tempdir().unwrap();
