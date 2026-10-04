@@ -258,7 +258,11 @@ impl ModelRuntime {
     }
     async fn apply_configured_headers(model:&Model,config:Option<&crate::model_config_schema::ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,options:&mut StreamOptions)->Result<(),String> {
         let env=options.request.env.as_ref().map(|v|v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
-        if let Some(mut headers)=crate::provider_composer::resolve_compatibility_request_headers(model,config,extension,env.as_ref()).await?{headers.extend(options.request.headers.take().unwrap_or_default());options.request.headers=Some(headers);}
+        let signal = maho_ai::utils::abort::operation_signal(options.request.signal.clone());
+        let headers = maho_ai::utils::abort::race_with_abort_signal(
+            crate::provider_composer::resolve_compatibility_request_headers(model,config,extension,env.as_ref()), &signal)
+            .await.map_err(|error| error.message)??;
+        if let Some(mut headers)=headers{headers.extend(options.request.headers.take().unwrap_or_default());options.request.headers=Some(headers);}
         Ok(())
     }
     fn lazy_request(model:&Model,setup:impl std::future::Future<Output=Result<AssistantMessageEventStream,String>>+Send+'static)->AssistantMessageEventStream {
@@ -305,9 +309,28 @@ mod tests {
         let metadata = runtime.list_credentials(None).await.expect("metadata");
         assert!(metadata.iter().any(|entry| entry.provider_id == "p" && entry.credential_type == maho_ai::auth::types::CredentialType::ApiKey));
         let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None);
+        let error = runtime.get_auth_for_model(&model, &AuthResolutionOverrides {
+            signal: Some(controller.signal()), api_key: Some("override-fixture".into()), ..Default::default()
+        }).await.expect_err("preaborted model auth must not resolve");
+        assert_eq!(error.to_string(), maho_ai::utils::abort::AbortReason::dom_default().message);
         assert!(runtime.check_auth("p", Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
         assert!(runtime.list_credentials(Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
     }
+    #[tokio::test]
+    async fn preaborted_configured_stream_preserves_headers_and_stops_setup() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        let model = runtime.get_model("p", "sol").expect("model");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let headers = std::collections::BTreeMap::from([("x-caller".to_owned(), Some("retained".to_owned()))]);
+        let mut options = StreamOptions { request: maho_ai::types::ProviderRequestOptions {
+            signal: Some(controller.signal()), headers: Some(headers.clone()), ..Default::default()
+        }, ..Default::default() };
+        let result = ModelRuntime::apply_configured_headers(&model, None, None, &mut options).await;
+        assert_eq!(result, Err(maho_ai::utils::abort::AbortReason::dom_default().message));
+        assert_eq!(options.request.headers, Some(headers));
+    }
+
     #[test]
     fn real_models_copy_qa_when_requested() {
         let config=match std::env::var("TASK17_MODELS_COPY") {

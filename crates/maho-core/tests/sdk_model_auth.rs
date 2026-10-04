@@ -56,13 +56,13 @@ async fn native_sdk_registry_resolves_distinct_models_and_reports_failed_auth() 
             Box::pin(async { Ok(()) })
         }),
     };
-    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+    let created = tokio::time::timeout(std::time::Duration::from_secs(5), maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
         model: Some(models[0].clone()), model_runtime: Some(runtime), tools: Some(Vec::new()),
         extension_factories: vec![factory],
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
         ..Default::default()
-    }).await.expect("native SDK startup");
+    })).await.expect("bounded model-auth startup").expect("native SDK startup");
     created.session.dispose().await;
     let results = std::mem::take(&mut *captured.lock().expect("projection"));
     assert_eq!(results.len(), 3);

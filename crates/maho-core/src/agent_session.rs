@@ -4450,6 +4450,10 @@ impl AgentSession {
     /// custom tools.
     pub fn register_tool_definition(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
         let mut state = self.state();
+        if state.allowed_tool_names.as_ref().is_some_and(|names| !names.contains(&definition.name))
+            || state.excluded_tool_names.as_ref().is_some_and(|names| names.contains(&definition.name)) {
+            return;
+        }
         if let Some(snippet) = definition.prompt_snippet.as_deref().map(|snippet| snippet.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|snippet| !snippet.is_empty()) { state.tool_prompt_snippets.insert(definition.name.clone(), snippet); }
         if let Some(guidelines) = &definition.prompt_guidelines {
@@ -4468,6 +4472,10 @@ impl AgentSession {
     fn register_extension_tool(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
         {
             let mut state = self.state();
+            if (source_info.source == "builtin" || source_info.path.starts_with("<builtin:"))
+                && state.default_tool_names.as_ref().is_some_and(|names| !names.contains(&definition.name)) {
+                return;
+            }
             if !state.extension_tool_backups.contains_key(&definition.name) {
                 let previous = state.tool_definitions.get(&definition.name).cloned()
                     .zip(state.tool_registry.get(&definition.name).cloned());
@@ -4933,7 +4941,7 @@ impl AgentSession {
             Box::pin(async move {
                 let inner = weak.upgrade()?;
                 let session = AgentSession { inner };
-                let mut guard = session.extension_runner.lock().await;
+                let mut guard = session.extension_runner.lock().await.clone();
                 let runner = guard.as_mut()?;
                 let content = serde_json::from_value(serde_json::to_value(context.result.content).ok()?).ok()?;
                 let rewrite = runner.emit_tool_result(maho_ext_api::ToolResultEvent {
@@ -4955,7 +4963,7 @@ impl AgentSession {
                 if signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { extension_signal.abort(); }
                 session.state().extension_event_signal = Some(extension_signal.clone());
                 let _bridge = signal.map(|signal| AbortSignalBridge(tokio::spawn(async move { signal.cancelled().await; extension_signal.abort(); })));
-                let mut runner = session.extension_runner.lock().await;
+                let mut runner = session.extension_runner.lock().await.clone();
                 match runner.as_mut() {
                     Some(runner) => match runner.emit_context(&messages, None).await {
                         Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
@@ -5786,7 +5794,7 @@ impl AgentSession {
 
     /// Emit a `session_shutdown` event through the bound extension runner.
     pub async fn emit_session_shutdown(&self, reason: maho_ext_api::SessionReason) {
-        let mut guard = self.extension_runner.lock().await;
+        let mut guard = self.extension_runner.lock().await.clone();
         if let Some(runner) = guard.as_mut() {
             let event = maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {
                 reason,
@@ -6211,11 +6219,14 @@ mod tests {
         session.set_active_tools_by_name(vec!["echo".to_owned()]);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut extension = maho_ext_api::LoadedExtension::new("<inline:hooks>", session.cwd().into(), Default::default());
-        for kind in [maho_ext_api::EventKind::ToolCall, maho_ext_api::EventKind::ToolResult] {
+        for kind in [maho_ext_api::EventKind::Context, maho_ext_api::EventKind::ToolCall, maho_ext_api::EventKind::ToolResult] {
             let seen = seen.clone();
+            let session = Arc::downgrade(&session.inner);
             extension.handlers.insert(kind, vec![Arc::new(move |event, _| {
                 let seen = seen.clone();
+                let session = AgentSession { inner: session.upgrade().expect("live callback session") };
                 Box::pin(async move {
+                    assert!(session.has_extension_handlers(kind).await);
                     lock(&seen).push(kind);
                     if let maho_ext_api::ExtensionEvent::ToolResult(_) = event {
                         Ok(maho_ext_api::EventResult::ToolResult(maho_ext_api::ToolResultEventResult {
@@ -6226,10 +6237,12 @@ mod tests {
             })]);
         }
         session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
-            .await.expect("bounded prompt").expect("prompt");
-        assert_eq!(*lock(&seen), [maho_ext_api::EventKind::ToolCall, maho_ext_api::EventKind::ToolResult]);
+        let prompt = tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default())).await;
         let messages = session.messages();
+        session.dispose().await;
+        prompt.expect("bounded reentrant provider callbacks").expect("prompt");
+        assert_eq!(*lock(&seen), [maho_ext_api::EventKind::Context, maho_ext_api::EventKind::ToolCall,
+            maho_ext_api::EventKind::ToolResult, maho_ext_api::EventKind::Context]);
         let result = messages.iter().find_map(|message| match message {
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
         }).expect("tool result");
@@ -6506,6 +6519,53 @@ mod tests {
         assert!(result.expect("bounded cancelled execution").is_err());
         let (invocation, id, input) = lock(&retained).take().expect("retained scope");
         assert!(invocation.take(&id, &input, std::path::Path::new(&session.cwd())).is_err());
+    }
+
+    #[tokio::test]
+    async fn dropping_direct_monitor_execution_retires_its_approval() {
+        let session = retry_session(Vec::new(), 0);
+        let (entered, entry) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let retained = Arc::new(Mutex::new(None));
+        let captured = retained.clone();
+        let mut tool = test_tool("monitor_fixture");
+        tool.execute = Arc::new(move |id, input, _, _| {
+            let captured = captured.clone();
+            let entered = entered.clone();
+            Box::pin(async move {
+                *lock(&captured) = Some((monitor_invocation::CURRENT.with(Arc::clone), id, input));
+                lock(&entered).take().expect("single executor").send(()).expect("entry observer");
+                std::future::pending::<AgentToolResult>().await
+            })
+        });
+        session.register_tool_definition(test_definition("monitor_fixture"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["monitor_fixture".into()]);
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:monitor-drop>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ToolCall, vec![Arc::new(|event, context| {
+            let maho_ext_api::ExtensionEvent::ToolCall(event) = event else { panic!("tool call"); };
+            context.set_approved_monitor_parent(&event.tool_call_id, &event.input, std::path::Path::new("/approved"))
+                .expect("preflight approval");
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(),
+            Default::default(), test_extension_context(&session))).await;
+        let mut execution = Box::pin(session.execute_tool("monitor_fixture", serde_json::json!({}), Default::default()));
+        let admission = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = entry => result.map_err(|error| error.to_string()),
+                result = &mut execution => Err(format!("executor unexpectedly settled: {result:?}")),
+            }
+        }).await;
+        let observed = lock(&retained).take();
+        drop(execution);
+        let retired_on_drop = observed.as_ref().map(|(invocation, id, input)|
+            invocation.take(id, input, std::path::Path::new(&session.cwd())).is_err());
+        session.dispose().await;
+        admission.expect("bounded executor entry").expect("executor entry before settlement");
+        assert_eq!(retired_on_drop, Some(true), "caller drop must retire before session disposal");
+        let (invocation, id, input) = observed.expect("direct executor entered");
+        assert!(invocation.take(&id, &input, std::path::Path::new(&session.cwd())).is_err());
+        assert!(monitor_invocation::CURRENT.try_with(|_| ()).is_err());
     }
 
     #[tokio::test]
@@ -6951,9 +7011,10 @@ mod tests {
         let before = session.messages();
         for action in batch.actions { action(); }
         let disposition = tokio::time::timeout(std::time::Duration::from_secs(5), batch.turn_claims[0].disposition()).await;
-        session.wait_for_idle().await;
+        let idle = tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await;
         let after = session.messages();
         session.dispose().await;
+        idle.expect("bounded retired action settlement");
         assert_eq!(disposition.expect("bounded retired action"), Some(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart));
         assert_eq!(after, before);
         }
@@ -9237,6 +9298,60 @@ mod tests {
         drop(admission);
         assert!(!session.is_compacting());
         assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn before_switch_handler_can_read_inventory_and_cancel_replacement() {
+        let session = test_session();
+        let captured = Arc::downgrade(&session.inner);
+        let observed = Arc::new(AtomicU64::new(0));
+        let calls = observed.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:before-switch-inventory>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeSwitch, vec![Arc::new(move |_, _| {
+            let session = AgentSession { inner: captured.upgrade().expect("live session") };
+            let calls = calls.clone();
+            Box::pin(async move {
+                assert!(session.has_extension_handlers(maho_ext_api::EventKind::SessionBeforeSwitch).await);
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                    cancel: Some(true), ..Default::default()
+                }))
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(),
+            Default::default(), test_extension_context(&session))).await;
+        let original_id = session.session_id();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), session.new_session(None)).await;
+        let current_id = session.session_id();
+        session.dispose().await;
+        assert!(!result.expect("bounded reentrant before-switch handler").expect("replacement disposition"));
+        assert_eq!(current_id, original_id);
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_handler_can_read_live_extension_inventory_without_reentrant_lock() {
+        let session = test_session();
+        let captured = Arc::downgrade(&session.inner);
+        let observed = Arc::new(AtomicU64::new(0));
+        let calls = observed.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:shutdown-inventory>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionShutdown, vec![Arc::new(move |_, _| {
+            let session = AgentSession { inner: captured.upgrade().expect("live session") };
+            let calls = calls.clone();
+            Box::pin(async move {
+                assert!(session.has_extension_handlers(maho_ext_api::EventKind::SessionShutdown).await);
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(maho_ext_api::EventResult::None)
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(),
+            Default::default(), test_extension_context(&session))).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1),
+            session.emit_session_shutdown(maho_ext_api::SessionReason::Resume)).await;
+        session.dispose().await;
+        result.expect("bounded reentrant shutdown handler");
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

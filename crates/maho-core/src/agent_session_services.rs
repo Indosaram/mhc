@@ -230,4 +230,23 @@ mod tests {
         assert!(services.agent_dir.ends_with("agent"));
         assert!(services.diagnostics.is_empty());
     }
+
+    #[test]
+    fn supplied_runtime_and_services_share_the_authoritative_credential_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let credentials = Arc::new(AuthStorage::in_memory(Default::default()));
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+            credentials: Some(credentials.clone()), providers: Some(Vec::new()), ..Default::default()
+        });
+        let services = create_agent_session_services(CreateAgentSessionServicesOptions {
+            cwd: dir.path().to_string_lossy().into_owned(),
+            agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model_runtime: Some(runtime), ..Default::default()
+        });
+        assert!(Arc::ptr_eq(&services.auth_storage, &credentials));
+        assert!(Arc::ptr_eq(&services.auth_storage, &services.model_runtime().credentials));
+        services.auth_storage.set("fixture", Some(serde_json::json!({"type":"api_key","key":"fixture-key"})))
+            .expect("write through service");
+        assert_eq!(credentials.get("fixture"), services.model_runtime().credentials.get("fixture"));
+    }
 }
