@@ -24,3 +24,22 @@ async fn native_session_drives_prompt_reply_and_durable_entries() {
     assert_eq!(events.first().expect("start")["type"], "agent_start");
     assert_eq!(events.last().expect("end")["type"], "agent_end");
 }
+
+#[tokio::test]
+async fn native_handle_drives_a_prompt_and_closes_cleanly() {
+    let session = FauxSession::new(FauxScript {
+        name: "native-handle".to_owned(),
+        prompt: "hi".to_owned(),
+        responses: vec![FauxResponse { content: "hello".to_owned(), stop_reason: "stop".to_owned() }],
+    });
+    let handle = session.run_native_handle().await.expect("native session");
+    assert!(handle.cwd().is_dir());
+    tokio::time::timeout(std::time::Duration::from_secs(10), handle.prompt("hi".to_owned()))
+        .await.expect("prompt settles").expect("join").expect("prompt result");
+    let messages = handle.messages();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].role(), "user");
+    assert_eq!(messages[1].role(), "assistant");
+    assert_eq!(handle.provider_calls().len(), 1);
+    handle.close().await;
+}
