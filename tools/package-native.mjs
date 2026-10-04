@@ -50,6 +50,12 @@ const CLI_BINARY_NAME = "mhc";
 const AST_GREP_MCP_NAME = "ast-grep-mcp";
 const SCHEMA_VERSION = 1;
 
+// Provenance the manifest must record: the two upstream revisions, each a full 40-hex commit read
+// from PINS.md at stage time. verify() enforces these keys and the commit format from the manifest
+// alone, so a staged directory verifies without resolving any host path.
+const PIN_KEYS = ["senpi", "omo"];
+const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+
 // License texts retained with the staged runtime: MIT covers the senpi-derived port, SUL-1.0 the
 // omo-derived components, skills and the native ast-grep MCP server.
 const LICENSE_FILES = [
@@ -264,16 +270,19 @@ export async function stage(options) {
 		throw new Error(`native ast-grep MCP server not found at ${astGrepMcp}: build the workspace bins (cargo build --workspace --bins) so ${AST_GREP_MCP_NAME} sits beside ${CLI_BINARY_NAME}, or pass --ast-grep-mcp`);
 	}
 	// Refuse an unsafe or non-empty destination before anything is written. The destination is not
-	// removed here: every input is validated first so a rejected run leaves an existing stage intact.
+	// removed here: every input is resolved and read first, so a refused run leaves an existing
+	// stage intact.
 	const output = resolve(options.output);
 	if (output === sep || output === resolve(homedir())) throw new Error(`refusing to stage into ${output}`);
 	const outputExists = existsSync(output);
 	if (outputExists && (await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
 
-	// Resolve and validate every input before the destination is cleared, so a bad checkout, a
-	// missing skill or a missing license text refuses the run without destroying an existing stage.
-	// Only once the inputs are known good is the destination removed, so a failed run never leaves a
-	// half-written directory behind.
+	// Resolve and read every input before the destination is cleared: the checkout, the builtin
+	// skill set and its sources, the license sources, and the manifest provenance (versions, pins
+	// and the actual checkout commit). A bad checkout, a missing skill or a missing license text
+	// refuses the run without destroying an existing stage. The destination is removed only once
+	// those inputs are in hand; a copy failure after that point can still leave a partial directory,
+	// which verify() then reports.
 	const omoRoot = resolveOmoRoot(options.omoRoot);
 	const repoRoot = resolveRepoRoot(options.repoRoot);
 	const skillNames = await parseBuiltinSkillNames(repoRoot, omoRoot);
@@ -284,6 +293,11 @@ export async function stage(options) {
 		if (!existsSync(source)) throw new Error(`license text missing from the checkout: ${license.source}`);
 		licenseSources.set(license.name, source);
 	}
+	const workspaceVersion = await parseWorkspaceVersion(repoRoot);
+	const omoSenpiVersion = await parsePackageVersion(join(omoRoot, "packages/omo-senpi/package.json"));
+	const sharedSkillsVersion = await parsePackageVersion(join(omoRoot, "packages/shared-skills/package.json"));
+	const pins = await parsePins(repoRoot);
+	const omoCommit = await gitHead(omoRoot);
 
 	if (outputExists) await rm(output, { recursive: true, force: true });
 
@@ -312,7 +326,6 @@ export async function stage(options) {
 		}
 	}
 
-	const workspaceVersion = await parseWorkspaceVersion(repoRoot);
 	const manifest = {
 		schemaVersion: SCHEMA_VERSION,
 		generator: "tools/package-native.mjs",
@@ -320,11 +333,11 @@ export async function stage(options) {
 		versions: {
 			mhc: workspaceVersion,
 			astGrepMcp: workspaceVersion,
-			omoSenpi: await parsePackageVersion(join(omoRoot, "packages/omo-senpi/package.json")),
-			sharedSkills: await parsePackageVersion(join(omoRoot, "packages/shared-skills/package.json")),
+			omoSenpi: omoSenpiVersion,
+			sharedSkills: sharedSkillsVersion,
 		},
-		pins: await parsePins(repoRoot),
-		sources: { omoRoot, omoCommit: await gitHead(omoRoot) },
+		pins,
+		sources: { omoRoot, omoCommit },
 		executables,
 		licenses,
 		skills: { names: stagedNames, files: skillFiles },
@@ -358,6 +371,19 @@ export async function verify(directory) {
 	const expectedLayout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
 	for (const [key, value] of Object.entries(expectedLayout)) {
 		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
+	}
+	// Provenance: the manifest must record both expected upstream pins as full commits, and the
+	// actual checkout commit it staged from must equal the OMO pin. This is read from the manifest
+	// alone, so a staged directory verifies without resolving any host path.
+	for (const key of PIN_KEYS) {
+		const pin = manifest.pins?.[key];
+		if (typeof pin !== "string" || !COMMIT_PATTERN.test(pin)) errors.push(`manifest pin ${key} must be a full 40-hex commit (found ${JSON.stringify(pin)})`);
+	}
+	const omoCommit = manifest.sources?.omoCommit;
+	if (typeof omoCommit !== "string" || !COMMIT_PATTERN.test(omoCommit)) {
+		errors.push(`manifest sources.omoCommit must be a full 40-hex commit (found ${JSON.stringify(omoCommit)})`);
+	} else if (typeof manifest.pins?.omo === "string" && omoCommit !== manifest.pins.omo) {
+		errors.push(`manifest sources.omoCommit ${omoCommit} does not match the omo pin ${manifest.pins.omo}`);
 	}
 	const check = async (entry) => {
 		if (entry === null || typeof entry !== "object" || typeof entry.path !== "string") {
@@ -398,6 +424,8 @@ export async function verify(directory) {
 	if (skillFiles.length === 0) errors.push("manifest declares no staged skill files");
 	const skillsDir = manifest.layout?.skills ?? SKILLS_DIR;
 	for (const name of skillNames) {
+		const skillMd = `${skillsDir}/${name}/SKILL.md`;
+		if (!skillFiles.some((entry) => entry?.path === skillMd)) errors.push(`declared skill SKILL.md is not in the hashed manifest: ${skillMd}`);
 		if (!existsSync(join(directory, skillsDir, name, "SKILL.md"))) errors.push(`missing skill: ${name}`);
 	}
 	return { ok: errors.length === 0, errors, manifest };
@@ -433,10 +461,6 @@ async function selfTest() {
 		await mkdir(join(repo, "crates/omo/components/maho-omo-telemetry/src"), { recursive: true });
 		await mkdir(join(repo, "LICENSES"), { recursive: true });
 		await writeFile(join(repo, "Cargo.toml"), `[workspace]\n\n[workspace.package]\nversion = "9.9.9"\n`);
-		await writeFile(
-			join(repo, "PINS.md"),
-			`# Source pins\n\n| Source | Short | Full commit | Location |\n| --- | --- | --- | --- |\n| senpi | aaaaaaa | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | /Users/indo/code/senpi |\n| oh-my-openagent | bbbbbbb | bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb | /Users/indo/code/oh-my-openagent |\n`,
-		);
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
 		await writeFile(join(repo, "LICENSES/MIT.txt"), "MIT fixture\n");
 		await writeFile(join(repo, "LICENSES/SUL-1.0.md"), "SUL fixture\n");
@@ -462,6 +486,17 @@ async function selfTest() {
 		await putSkill(join(omo, "packages/shared-skills/skills"), "alpha", "shared");
 		await putSkill(join(omo, "packages/shared-skills/skills"), "beta", "shared");
 
+		// The pinned checkout is a real git repository, so the manifest records concrete provenance:
+		// commit the fixture and pin PINS.md to its revision, which verify() then requires to agree.
+		const gitRun = async (args) => await Bun.spawn(["git", ...args], { stdout: "ignore", stderr: "ignore" }).exited;
+		await gitRun(["-C", omo, "init", "-q"]);
+		await gitRun(["-C", omo, "-c", "user.email=fixture@example.com", "-c", "user.name=fixture", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "fixture"]);
+		const omoCommit = await gitHead(omo);
+		await writeFile(
+			join(repo, "PINS.md"),
+			`# Source pins\n\n| Source | Short | Full commit | Location |\n| --- | --- | --- | --- |\n| senpi | aaaaaaa | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | /Users/indo/code/senpi |\n| oh-my-openagent | bbbbbbb | ${omoCommit} | /Users/indo/code/oh-my-openagent |\n`,
+		);
+
 		await mkdir(binDir, { recursive: true });
 		await writeFile(join(binDir, "mhc"), "#!/bin/sh\necho mhc\n");
 		await writeFile(join(binDir, "ast-grep-mcp"), "#!/bin/sh\necho ast-grep-mcp\n");
@@ -477,7 +512,7 @@ async function selfTest() {
 		check("skill debris excluded", !existsSync(join(out, "skills/alpha/.gitignore")) && !existsSync(join(out, "skills/alpha/junk.test.ts")));
 		check("licenses retained", existsSync(join(out, "licenses/MIT.txt")) && existsSync(join(out, "licenses/SUL-1.0.md")));
 		check("versions recorded", result.manifest.versions.mhc === "9.9.9" && result.manifest.versions.omoSenpi === "5.0.0-beta.9");
-		check("source pins recorded", result.manifest.pins.omo === "b".repeat(40) && result.manifest.pins.senpi === "a".repeat(40));
+		check("source pins recorded", result.manifest.pins.omo === omoCommit && result.manifest.pins.senpi === "a".repeat(40));
 		check("staged executables carry the exec bit", ((await stat(join(out, "mhc"))).mode & 0o111) !== 0 && ((await stat(join(out, "ast-grep-mcp"))).mode & 0o111) !== 0);
 		check("manifest verifies the staged tree", (await verify(out)).ok);
 
@@ -502,6 +537,22 @@ async function selfTest() {
 		await chmod(join(changedModeDir, CLI_BINARY_NAME), 0o644);
 		const changedMode = await verify(changedModeDir);
 		check("changed file mode fails verification", !changedMode.ok && changedMode.errors.some((error) => error.includes("mode mismatch") && error.includes(CLI_BINARY_NAME)));
+
+		const omittedPinsDir = join(root, "omitted-pins");
+		await copyTree(out, omittedPinsDir);
+		const omittedPinsManifest = JSON.parse(await readFile(join(omittedPinsDir, MANIFEST_NAME), "utf8"));
+		delete omittedPinsManifest.pins;
+		await writeFile(join(omittedPinsDir, MANIFEST_NAME), `${JSON.stringify(omittedPinsManifest, null, 2)}\n`);
+		const omittedPins = await verify(omittedPinsDir);
+		check("manifest omitting pins is rejected", !omittedPins.ok && omittedPins.errors.some((error) => error.includes("pin senpi")));
+
+		const unmappedSkillDir = join(root, "unmapped-skill");
+		await copyTree(out, unmappedSkillDir);
+		const unmappedManifest = JSON.parse(await readFile(join(unmappedSkillDir, MANIFEST_NAME), "utf8"));
+		unmappedManifest.skills.files = unmappedManifest.skills.files.filter((entry) => entry.path !== "skills/alpha/SKILL.md");
+		await writeFile(join(unmappedSkillDir, MANIFEST_NAME), `${JSON.stringify(unmappedManifest, null, 2)}\n`);
+		const unmappedSkill = await verify(unmappedSkillDir);
+		check("declared skill without a hashed mapping is rejected", !unmappedSkill.ok && unmappedSkill.errors.some((error) => error.includes("not in the hashed manifest") && error.includes("skills/alpha/SKILL.md")));
 
 		const second = await stage({ binary: join(binDir, "mhc"), output: join(root, "out2"), omoRoot: omo, repoRoot: repo });
 		check("manifest is deterministic across runs", JSON.stringify(result.manifest) === JSON.stringify(second.manifest));
