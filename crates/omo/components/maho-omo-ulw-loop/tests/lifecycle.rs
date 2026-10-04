@@ -214,3 +214,92 @@ async fn default_discovery_does_not_execute_stale_bare_omo() -> Result<(), Box<d
     assert!(!root.path().join("invoked").exists());
     Ok(())
 }
+
+#[derive(Default)]
+struct RecordingCoordinator {
+    enqueued: Mutex<Vec<IdleInjection>>,
+    scheduled: std::sync::atomic::AtomicUsize,
+}
+impl IdleInjectionCoordinator for RecordingCoordinator {
+    fn enqueue(&self, injection: IdleInjection) { self.enqueued.lock().expect("enqueued").push(injection); }
+    fn schedule_flush(&self) { self.scheduled.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    fn flush_soon(&self) {}
+    fn flush_on_idle(&self) -> usize { 0 }
+    fn pending_count(&self) -> usize { self.enqueued.lock().expect("enqueued").len() }
+    fn remove(&self, _: &str) -> bool { false }
+}
+
+fn active_runner() -> maho_omo_ulw_loop::index::CommandRunner {
+    Arc::new(|_, _, _| Box::pin(async { Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0, stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into() }) }))
+}
+
+fn coordinator_harness(runner: Option<maho_omo_ulw_loop::index::CommandRunner>) -> (ExtensionApi, Arc<Actions>, Arc<RecordingCoordinator>) {
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(Arc::clone(&actions));
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), run_command: runner }.register(&mut api);
+    (api, actions, Arc::new(RecordingCoordinator::default()))
+}
+
+#[tokio::test]
+async fn coordinator_routes_the_continuation_instead_of_a_direct_message() {
+    let (api, actions, coordinator) = coordinator_harness(Some(active_runner()));
+    let mut ctx = support::context();
+    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
+    assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch"), EventResult::None));
+    let enqueued = coordinator.enqueued.lock().expect("enqueued");
+    assert_eq!(enqueued.len(), 1);
+    assert_eq!(enqueued[0].key, "omo-senpi-ulw-loop-continuation");
+    assert_eq!(enqueued[0].source, IdleInjectionSource::UlwContinuation);
+    assert_eq!(enqueued[0].custom_type.as_deref(), Some("omo-senpi:ulw-continuation"));
+    assert_eq!(enqueued[0].content, maho_omo_ulw_loop::index::CONTINUATION_PROMPT);
+    assert_eq!(enqueued[0].display, Some(false));
+    drop(enqueued);
+    assert_eq!(coordinator.scheduled.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn queued_completion_and_continuation_share_one_coordinator_queue() {
+    let (api, actions, coordinator) = coordinator_harness(Some(active_runner()));
+    coordinator.enqueue(IdleInjection { key: "st_done".into(), source: IdleInjectionSource::TaskCompletion, custom_type: Some("senpi-task:completion".into()), content: "task st_done completed".into(), display: Some(false), details: None, on_flushed: None, on_delivery_failed: None });
+    let mut ctx = support::context();
+    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
+    assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch"), EventResult::None));
+    let enqueued = coordinator.enqueued.lock().expect("enqueued");
+    assert_eq!(enqueued.len(), 2);
+    let combined = enqueued.iter().map(|injection| injection.content.as_str()).collect::<Vec<_>>().join("\n\n");
+    assert_eq!(combined, "task st_done completed\n\nContinue the active omo-agent-toolkit ulw-loop run.\nRun `omo-agent-toolkit ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.");
+    drop(enqueued);
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn active_boulder_defers_without_enqueuing_a_continuation() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join(".omo/plans"))?;
+    std::fs::write(root.path().join(".omo/plans/plan.md"), "## TODOs\n- [ ] 1. task\n")?;
+    std::fs::write(root.path().join(".omo/boulder.json"), serde_json::json!({
+        "schema_version":2,"active_work_id":"work","works":{"work":{
+            "work_id":"work","active_plan":".omo/plans/plan.md","plan_name":"plan",
+            "session_ids":["senpi:session"],"status":"active","started_at":"2026-07-17T00:00:00Z"
+        }}
+    }).to_string())?;
+    let actions = Arc::new(Actions::default());
+    let runtime = ExtensionRuntime::default();
+    runtime.bind(Arc::clone(&actions));
+    let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
+    maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), run_command: Some(Arc::new(|_, _, _| panic!("boulder precedence must bypass status"))) }.register(&mut api);
+    let coordinator = Arc::new(RecordingCoordinator::default());
+    let mut ctx = support::context();
+    ctx.cwd = root.path().into();
+    ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
+    let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
+    assert!(matches!(api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await?, EventResult::None));
+    assert_eq!(coordinator.pending_count(), 0);
+    assert!(actions.0.lock().expect("messages").is_empty());
+    Ok(())
+}

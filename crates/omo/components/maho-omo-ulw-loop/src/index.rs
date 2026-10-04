@@ -3,6 +3,8 @@ use maho_ext_api::*;
 use crate::omo_command::{to_spawn_target,run_omo_command};
 pub const STEERING_REMINDER:&str="<omo-senpi-ulw-loop>\nAn active omo-agent-toolkit ulw-loop run is present in this working directory.\nBefore continuing, inspect `omo-agent-toolkit ulw-loop status --json` and use the existing .omo/ulw-loop ledger as the source of truth.\nContinue the current ulw-loop story with evidence-bound execution; do not start unrelated work until the active run is complete or checkpointed.\n</omo-senpi-ulw-loop>";
 pub const CONTINUATION_PROMPT:&str="Continue the active omo-agent-toolkit ulw-loop run.\nRun `omo-agent-toolkit ulw-loop status --json` in this session cwd, inspect the active incomplete goals, and keep working until the run is complete or safely checkpointed.";
+pub const ULW_CONTINUATION_INJECTION_KEY:&str="omo-senpi-ulw-loop-continuation";
+pub const ULW_CONTINUATION_CUSTOM_TYPE:&str="omo-senpi:ulw-continuation";
 #[derive(Default)]
 struct State { consecutive:usize,previous:Option<String> }
 pub type CommandFuture=std::pin::Pin<Box<dyn std::future::Future<Output=std::io::Result<crate::omo_command::CommandResult>>+Send>>;
@@ -72,8 +74,14 @@ impl Extension for UlwLoopComponent {
             if !active { state.previous=None;return Ok(EventResult::None); }
             if state.previous.as_ref()==Some(&raw) { return Ok(EventResult::None); }
             state.previous=Some(raw);state.consecutive+=1;
+            drop(state);
+            if let Some(coordinator)=&ctx.idle_coordinator {
+                coordinator.enqueue(IdleInjection{key:ULW_CONTINUATION_INJECTION_KEY.into(),source:IdleInjectionSource::UlwContinuation,custom_type:Some(ULW_CONTINUATION_CUSTOM_TYPE.into()),content:CONTINUATION_PROMPT.into(),display:Some(false),details:None,on_flushed:None,on_delivery_failed:None});
+                coordinator.schedule_flush();
+                return Ok(EventResult::None);
+            }
             let api=ExtensionApi::new(LoadedExtension::new("ulw-loop",ctx.cwd.clone(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
-            api.send_message(CustomMessage{custom_type:"omo-senpi:ulw-continuation".into(),content:vec![ToolContent::text(CONTINUATION_PROMPT)],display:false,details:None},SendMessageOptions{trigger_turn:true,deliver_as:Some(DeliverAs::FollowUp)})?;
+            api.send_message(CustomMessage{custom_type:ULW_CONTINUATION_CUSTOM_TYPE.into(),content:vec![ToolContent::text(CONTINUATION_PROMPT)],display:false,details:None},SendMessageOptions{trigger_turn:true,deliver_as:Some(DeliverAs::FollowUp)})?;
             Ok(EventResult::None)
         }) }));
     }
