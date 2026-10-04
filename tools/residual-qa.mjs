@@ -10,7 +10,7 @@
 // contract — never a proxy pass and never a stub. It writes `$E/qa/residual-qa.json`
 // (schema session2-residual-qa/v1) plus per-scenario artifacts.
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -52,7 +52,39 @@ function parseArgs(argv) {
 
 const { startLoopback, writeOfflineAgent, markOnboardingComplete } = await import(join(HARNESS, "qa-loopback-lib.mjs"));
 
+// The mini scenario uses a UNIQUE prompt + reply so a settled transcript can be proven causally
+// (not merely accepted): the loopback records the request body and returns MINI_REPLY, and the
+// scenario asserts both that the provider saw MINI_PROMPT and that a lane event carried MINI_REPLY.
+const MINI_PROMPT = "residual-mini-probe-unique";
+const MINI_REPLY = "mini-loopback-transcript-ack";
+
 const newHome = (prefix) => mkdtempSync(join(tmpdir(), prefix));
+
+/** A dependency is not yet assembled (the mini entry is not dispatched): blocked, not a regression. */
+class MiniBlocked extends Error {}
+
+/** A loopback provider that records every request body and always streams MINI_REPLY. */
+function startRecordingLoopback() {
+	const requests = [];
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			let body = "";
+			try {
+				body = await request.text();
+			} catch {
+				/* ignore */
+			}
+			requests.push(body);
+			const chunk = (delta, finish = null) =>
+				`data: ${JSON.stringify({ id: "offline", object: "chat.completion.chunk", created: 0, model: "offline", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+			const text = chunk({ role: "assistant", content: MINI_REPLY }) + chunk({}, "stop") + "data: [DONE]\n\n\n";
+			return new Response(text, { headers: { "content-type": "text/event-stream" } });
+		},
+	});
+	return { server, baseUrl: `http://127.0.0.1:${server.port}/v1`, requests };
+}
 
 /** Reads the pinned builtin skill name set from the native telemetry crate source. */
 function pinnedBuiltinSkills(repo) {
@@ -93,14 +125,15 @@ async function run(command, argv, { cwd, env, timeoutMs = 120_000, stdin } = {})
 	}
 }
 
-/** Renders a raw ANSI stream to a same-geometry text grid. xterm parses asynchronously, so the
- *  write callbacks are awaited before the buffer is read. */
-/** Connects to the mini unix socket and returns a minimal NDJSON client with a `call` method. */
+/** Connects to the mini unix socket and returns a minimal NDJSON client with `call`, `events`, and
+ *  `waitForEvent`. */
 async function miniConnect(socketPath, timeoutMs) {
 	return await new Promise((resolvePromise, reject) => {
 		const socket = createConnection({ path: socketPath });
 		let buffer = "";
 		const pending = new Map();
+		const eventBacklog = [];
+		let client = null;
 		const timer = setTimeout(() => reject(new Error("mini socket connect timeout")), timeoutMs);
 		socket.on("data", (chunk) => {
 			buffer += chunk.toString("utf8");
@@ -120,12 +153,20 @@ async function miniConnect(socketPath, timeoutMs) {
 					pending.delete(frame.id);
 					if (frame.kind === "result") waiter.resolve(frame.result);
 					else waiter.reject(new Error(frame.error));
+				} else if (frame.kind === "event") {
+					if (client?._push) client._push(frame.payload);
+					else eventBacklog.push(frame.payload);
 				}
 			}
 		});
 		socket.once("connect", () => {
 			clearTimeout(timer);
-			resolvePromise({
+			const events = [];
+			const eventWaiters = new Set();
+			const deliver = (payload) => {
+				for (const w of eventWaiters) if (w.pred(payload)) (eventWaiters.delete(w), w.resolve(payload));
+			};
+			client = {
 				call(id, method, args, callTimeoutMs = 60_000) {
 					return new Promise((res, rej) => {
 						const callTimer = setTimeout(() => (pending.delete(id), rej(new Error(`mini call ${method} timed out`))), callTimeoutMs);
@@ -133,8 +174,25 @@ async function miniConnect(socketPath, timeoutMs) {
 						socket.write(JSON.stringify({ kind: "call", id, method, args }) + "\n");
 					});
 				},
+				events,
+				waitForEvent(pred, timeoutMs) {
+					const existing = events.find((event) => pred(event));
+					if (existing !== undefined) return Promise.resolve(existing);
+					return new Promise((res, rej) => {
+						const w = { pred, resolve: res };
+						const eventTimer = setTimeout(() => (eventWaiters.delete(w), rej(new Error("mini lane event timeout"))), timeoutMs);
+						w.resolve = (v) => (clearTimeout(eventTimer), res(v));
+						eventWaiters.add(w);
+					});
+				},
 				destroy: () => socket.destroy(),
-			});
+				_push: (payload) => {
+					events.push(payload);
+					deliver(payload);
+				},
+			};
+			for (const buffered of eventBacklog.splice(0)) client._push(buffered);
+			resolvePromise(client);
 		});
 		socket.once("error", (error) => {
 			clearTimeout(timer);
@@ -145,6 +203,35 @@ async function miniConnect(socketPath, timeoutMs) {
 
 async function miniCall(client, id, method, args) {
 	return await client.call(id, method, args);
+}
+
+/** Waits for a socket file to appear using fs.watch on its parent (no polling loop); rejects on a
+ *  bounded timeout. The watcher is registered BEFORE the caller spawns the producer. */
+function waitForSocket(socketPath, parentDir, timeoutMs) {
+	if (existsSync(socketPath)) return Promise.resolve();
+	return new Promise((resolve, reject) => {
+		const watcher = watch(parentDir, () => {
+			if (existsSync(socketPath)) {
+				clearTimeout(timer);
+				watcher.close();
+				resolve();
+			}
+		});
+		const timer = setTimeout(() => {
+			watcher.close();
+			reject(new Error("mini socket did not appear"));
+		}, timeoutMs);
+	});
+}
+
+/** True when the process group is fully gone (no member answers signal 0). */
+function processGroupGone(pid) {
+	try {
+		process.kill(-pid, 0);
+		return false;
+	} catch (error) {
+		return error.code === "ESRCH";
+	}
 }
 
 async function renderGrid(ansiPath, cols, rows) {
@@ -384,8 +471,10 @@ async function scenarioInstall(ctx) {
 
 async function scenarioMini(ctx) {
 	// Real mini server/attach loopback: spawn the mini server (the `__PI_INTERNAL_SPAWN=server` role
-	// the pinned `experimental/mini` main.ts uses), connect a client over its unix socket, and drive
-	// the pinned NDJSON protocol (`sessions.list` -> `sessions.attach` -> `lane.watch` -> `lane.prompt`).
+	// the pinned `experimental/mini` main.ts uses) in its OWN process group, connect a client over its
+	// unix socket, and drive the pinned NDJSON protocol: `sessions.list` -> `sessions.attach` ->
+	// `lane.watch` -> `lane.start` -> `lane.prompt`, then assert a UNIQUE reply reached the settled
+	// transcript (not merely that the prompt was accepted).
 	const artifacts = [];
 	const home = newHome("residual-mini-home-");
 	const socketPath = join(home, "mini.sock");
@@ -393,62 +482,105 @@ async function scenarioMini(ctx) {
 	let cleanupOk = false;
 	let ok = false;
 	let detail = "";
+	let status = "blocked";
 	let server;
+	let serverOut;
+	let serverErr;
+	const { server: loop, baseUrl, requests } = startRecordingLoopback();
 	try {
-		const { server: loop, baseUrl } = startLoopback();
-		let agent;
+		const agent = writeOfflineAgent(home, baseUrl);
+		markOnboardingComplete(home);
+		// Register the socket-creation watch BEFORE spawning the producer, then spawn.
+		const socketReady = waitForSocket(socketPath, home, 15_000);
+		// `detached: true` makes the server a process-group/session leader (pgid==sid==pid) so every
+		// worker it spawns inherits the group; teardown targets ONLY that group (never a broad pkill).
+		server = Bun.spawn([ctx.binary, socketPath, sessionsRoot], {
+			cwd: home,
+			env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: agent, __PI_INTERNAL_SPAWN: "server" },
+			detached: true,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		serverOut = new Response(server.stdout).text();
+		serverErr = new Response(server.stderr).text();
 		try {
-			agent = writeOfflineAgent(home, baseUrl);
-			markOnboardingComplete(home);
-			server = Bun.spawn([ctx.binary, socketPath, sessionsRoot], {
-				cwd: home,
-				env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: agent, __PI_INTERNAL_SPAWN: "server" },
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			const serverOut = new Response(server.stdout).text();
-			const serverErr = new Response(server.stderr).text();
-			// Wait for the socket to appear (bounded), then connect.
-			const connectDeadline = Date.now() + 15_000;
-			while (!existsSync(socketPath) && Date.now() < connectDeadline) await new Promise((r) => setTimeout(r, 50));
-			const client = await miniConnect(socketPath, 15_000);
-			let nextId = 1;
+			await socketReady;
+		} catch (error) {
+			// The socket never appeared: if the server exited, the mini entry was not dispatched (a
+			// dependency, not a regression) -> blocked; a live server that never listened -> fail.
+			detail = `mini: ${error.message} (server exit=${server.exitCode ?? "running"})`;
+			throw new MiniBlocked(detail);
+		}
+		status = "fail";
+		const client = await miniConnect(socketPath, 15_000);
+		let nextId = 1;
+		try {
+			const sessions = await miniCall(client, nextId++, "sessions.list", []);
+			const sessionId = await miniCall(client, nextId++, "sessions.attach", [null, home, "qa-presentation"]);
+			const watch = await miniCall(client, nextId++, "lane.watch", ["qa-presentation"]);
+			const subscriptionId = watch?.subscriptionId ?? watch?.subscription_id ?? null;
+			if (subscriptionId) await miniCall(client, nextId++, "lane.start", [subscriptionId]);
+			// Subscribe to the settled-transcript event BEFORE the prompt so no event is missed
+			// (the client replays any event buffered before registration).
+			const settledEvent = client.waitForEvent(
+				(payload) => payload?.event?.type === "entry_added" && JSON.stringify(payload).includes(MINI_REPLY),
+				60_000,
+			);
+			const promptResult = await miniCall(client, nextId++, "lane.prompt", [MINI_PROMPT]);
+			const settled = promptResult && promptResult.ok === true;
+			const providerSawPrompt = requests.some((body) => body.includes(MINI_PROMPT));
+			let transcript = null;
 			try {
-				const sessions = await miniCall(client, nextId++, "sessions.list", []);
-				const sessionId = await miniCall(client, nextId++, "sessions.attach", [null, home, "qa-presentation"]);
-				const watch = await miniCall(client, nextId++, "lane.watch", ["qa-presentation"]);
-				const subscriptionId = watch?.subscriptionId ?? watch?.subscription_id ?? null;
-				if (subscriptionId) await miniCall(client, nextId++, "lane.start", [subscriptionId]);
-				const promptResult = await miniCall(client, nextId++, "lane.prompt", [REPLY]);
-				const prompted = promptResult && promptResult.ok === true;
-				const listed = Array.isArray(sessions);
-				const attached = typeof sessionId === "string" && sessionId.length > 0;
-				ok = listed && attached && subscriptionId !== null && prompted;
-				detail = `list=${listed} attach=${attached} watch=${subscriptionId !== null} prompt=${prompted}`;
-				writeFileSync(join(ctx.qaRoot, "mini-protocol.log"), JSON.stringify({ sessions, sessionId, subscriptionId, promptResult }, null, 2) + "\n");
-				artifacts.push("mini-protocol.log");
-			} finally {
-				client.destroy();
+				transcript = await settledEvent;
+			} catch {
+				transcript = null;
 			}
-			await Promise.race([Promise.all([serverOut, serverErr]), new Promise((r) => setTimeout(r, 2000))]);
+			const listed = Array.isArray(sessions);
+			const attached = typeof sessionId === "string" && sessionId.length > 0;
+			ok = listed && attached && subscriptionId !== null && settled && providerSawPrompt && transcript !== null;
+			detail = `list=${listed} attach=${attached} watch=${subscriptionId !== null} settled=${settled} providerSawPrompt=${providerSawPrompt} transcript=${transcript !== null}`;
+			writeFileSync(join(ctx.qaRoot, "mini-protocol.log"), JSON.stringify({ sessions, sessionId, subscriptionId, promptResult, providerSawPrompt, eventCount: client.events.length }, null, 2) + "\n");
+			artifacts.push("mini-protocol.log");
 		} finally {
-			loop.stop(true);
+			client.destroy();
 		}
 	} catch (error) {
-		detail = `mini: ${error.message}`;
-	} finally {
-		if (server && server.exitCode === null) server.kill("SIGKILL");
-		// Kill any worker children that survived the server, matched by the unique socket path.
-		try {
-			await run("pkill", ["-f", socketPath], { timeoutMs: 5_000 });
-		} catch {
-			/* pkill may be absent or find nothing */
+		if (error instanceof MiniBlocked) {
+			status = "blocked";
+			detail = error.message;
+		} else {
+			status = "fail";
+			detail = `mini: ${error.message}`;
 		}
+	} finally {
+		// Teardown of the OWNED tree. The server installs its own SIGINT/SIGTERM handler
+		// (entry.rs::run_server_entry) that aborts the shutdown signal and stops every route worker,
+		// so SIGTERM to the group is the graceful path; the group also carries the workers. Then the
+		// group is SIGKILLed unconditionally and its absence is asserted (no member answers signal 0),
+		// so a leaked worker is a cleanup failure. Never a broad pkill.
+		if (server) {
+			try {
+				process.kill(-server.pid, "SIGTERM");
+			} catch {
+				/* group already gone */
+			}
+			await Promise.race([server.exited, new Promise((r) => setTimeout(r, 8_000))]);
+			try {
+				process.kill(-server.pid, "SIGKILL");
+			} catch {
+				/* group already gone */
+			}
+			await Promise.race([server.exited, new Promise((r) => setTimeout(r, 3_000))]);
+		}
+		await Promise.race([Promise.all([serverOut, serverErr]), new Promise((r) => setTimeout(r, 2_000))]);
+		loop.stop(true);
+		const groupGone = !server || processGroupGone(server.pid);
 		rmSync(home, { recursive: true, force: true });
-		cleanupOk = !existsSync(home);
+		cleanupOk = groupGone && !existsSync(home);
+		if (!groupGone) detail = `${detail} leaked-group=${server?.pid}`;
 	}
 	return {
-		status: ok && cleanupOk ? "pass" : "blocked",
+		status: ok && cleanupOk ? "pass" : status === "blocked" ? "blocked" : "fail",
 		blocker: ok && cleanupOk ? null : `${detail} cleanup=${cleanupOk}`,
 		artifacts,
 		cleanup_ok: cleanupOk,
@@ -465,22 +597,33 @@ async function scenarioServer(ctx) {
 	let cleanupOk = false;
 	let ok = false;
 	let detail = "";
+	let proc;
+	let stdoutText;
+	let stderrText;
+	let deadline;
 	try {
 		markOnboardingComplete(home);
 		const agent = join(home, ".maho", "agent");
 		mkdirSync(agent, { recursive: true });
-		const proc = Bun.spawn([ctx.binary, "app-server", "--listen", "stdio://"], {
+		proc = Bun.spawn([ctx.binary, "app-server", "--listen", "stdio://"], {
 			cwd: home,
 			env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: agent },
+			detached: true,
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		const stdoutText = new Response(proc.stdout).text();
-		const stderrText = new Response(proc.stderr).text();
+		stdoutText = new Response(proc.stdout).text();
+		stderrText = new Response(proc.stderr).text();
 		proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })}\n`);
 		proc.stdin.end();
-		const deadline = setTimeout(() => proc.kill("SIGKILL"), 30_000);
+		deadline = setTimeout(() => {
+			try {
+				process.kill(-proc.pid, "SIGKILL");
+			} catch {
+				/* group already gone */
+			}
+		}, 30_000);
 		const [text, code, stderr] = await Promise.all([stdoutText, proc.exited, stderrText]);
 		clearTimeout(deadline);
 		writeFileSync(join(ctx.qaRoot, "server-app-server.log"), text + stderr);
@@ -496,6 +639,21 @@ async function scenarioServer(ctx) {
 		ok = code === 0 && responded;
 		detail = `exit=${code} responded=${responded}`;
 	} finally {
+		clearTimeout(deadline);
+		if (proc) {
+			try {
+				process.kill(-proc.pid, "SIGTERM");
+			} catch {
+				/* group already gone */
+			}
+			await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 5_000))]);
+			try {
+				process.kill(-proc.pid, "SIGKILL");
+			} catch {
+				/* group already gone */
+			}
+			await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 3_000))]);
+		}
 		rmSync(home, { recursive: true, force: true });
 		cleanupOk = !existsSync(home);
 	}
@@ -548,11 +706,14 @@ async function scenarioRegistry(ctx) {
 		const { server, baseUrl } = startLoopback();
 		let rpcPrompted = false;
 		let rpcExit = null;
+		let proc;
+		let deadline;
 		try {
 			const rpcAgent = writeOfflineAgent(home, baseUrl);
-			const proc = Bun.spawn([ctx.binary, "--mode", "rpc", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--model", "offline/offline"], {
+			proc = Bun.spawn([ctx.binary, "--mode", "rpc", "--offline", "--no-session", "--no-tools", "--no-skills", "--no-prompt-templates", "--model", "offline/offline"], {
 				cwd: home,
 				env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: rpcAgent },
+				detached: true,
 				stdin: "pipe",
 				stdout: "pipe",
 				stderr: "pipe",
@@ -561,7 +722,13 @@ async function scenarioRegistry(ctx) {
 			const stderrText = new Response(proc.stderr).text();
 			proc.stdin.write(`${JSON.stringify({ type: "prompt", id: "prompt_1", prompt: "registry probe" })}\n`);
 			proc.stdin.end();
-			const deadline = setTimeout(() => proc.kill("SIGKILL"), 30_000);
+			deadline = setTimeout(() => {
+				try {
+					process.kill(-proc.pid, "SIGKILL");
+				} catch {
+					/* group already gone */
+				}
+			}, 30_000);
 			const [text, code, stderr] = await Promise.all([stdoutText, proc.exited, stderrText]);
 			clearTimeout(deadline);
 			writeFileSync(join(ctx.qaRoot, "registry-rpc.log"), text + stderr);
@@ -569,6 +736,15 @@ async function scenarioRegistry(ctx) {
 			rpcExit = code;
 			rpcPrompted = text.includes("prompt_1") && text.includes(REPLY);
 		} finally {
+			clearTimeout(deadline);
+			if (proc) {
+				try {
+					process.kill(-proc.pid, "SIGKILL");
+				} catch {
+					/* group already gone */
+				}
+				await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 3_000))]);
+			}
 			server.stop(true);
 		}
 		ok = providerListed && rpcPrompted && rpcExit === 0;
