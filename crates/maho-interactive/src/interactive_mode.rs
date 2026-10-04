@@ -2739,7 +2739,7 @@ mod tests {
 
     #[test]
     fn expandable_text_starts_expanded_when_asked() {
-        let expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), true, 1, 0);
+        let mut expandable = ExpandableText::new(Box::new(|| "collapsed".into()), Box::new(|| "expanded".into()), true, 1, 0);
         assert!(expandable.is_expanded());
         assert_eq!(expandable.render(80).join("\n"), "expanded");
     }
