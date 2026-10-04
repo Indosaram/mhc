@@ -13,7 +13,7 @@ impl Drop for ReceiptReader {
     }
 }
 impl ExtensionActions for Actions {
-    fn send_message(&self,message:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&message).map_err(|error| ExtensionFailure::new(error.to_string()))?); Ok(()) }
+    fn send_message(&self,message:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&serde_json::json!({"customType":message.custom_type,"content":message.content,"display":message.display,"details":message.details})).map_err(|error| ExtensionFailure::new(error.to_string()))?); Ok(()) }
     fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err(ExtensionFailure::new("unexpected user message")) }
     fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { Err(ExtensionFailure::new("unexpected entry")) }
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
