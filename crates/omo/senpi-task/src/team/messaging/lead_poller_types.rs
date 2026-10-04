@@ -18,12 +18,14 @@ use crate::team::messaging::session_marker_index::SessionMarkerIndex;
 pub const LEAD_INJECTION_SOURCE: &str = "team-message";
 
 pub type OnFlushed = Box<dyn FnOnce() + Send>;
+pub type OnDeliveryFailed = Box<dyn FnOnce(&str) + Send>;
 
 pub struct LeadInjection {
     pub key: String,
     pub source: &'static str,
     pub content: String,
     pub on_flushed: Option<OnFlushed>,
+    pub on_delivery_failed: Option<OnDeliveryFailed>,
 }
 
 pub trait LeadInjectionSink: Send + Sync {

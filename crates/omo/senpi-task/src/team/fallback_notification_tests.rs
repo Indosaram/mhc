@@ -64,8 +64,9 @@ struct CapturingNotifier {
 }
 
 impl ParentNotifier for CapturingNotifier {
-    fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), HostError> {
+    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), HostError> {
         self.messages.lock().expect("lock").push(message.clone());
+        callbacks.delivered();
         Ok(())
     }
 }

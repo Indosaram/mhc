@@ -1,7 +1,7 @@
 use std::sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering}};
 use maho_omo_task::{runtime_context::TaskRuntimeContext,session_transition_bridge::SessionTransitionBridge};
 use senpi_task::{completion::{ParentNotifier,ParentNotifierMessage,CompletionNotifierDeps,create_completion_notifier,CompletionRequest,TransitionReason,FlushResult,ParentState},host::HostError,store::{TaskRecordStore,StateDirConfig},state::{TaskRecordInput,TaskStatus,create_task_record}};
-struct Parent(Arc<AtomicUsize>); impl ParentNotifier for Parent { fn enqueue(&self,_:&ParentNotifierMessage)->Result<(),HostError> { self.0.fetch_add(1,Ordering::SeqCst); Ok(()) } }
+struct Parent(Arc<AtomicUsize>); impl ParentNotifier for Parent { fn enqueue_with_callbacks(&self,_:&ParentNotifierMessage,callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { self.0.fetch_add(1,Ordering::SeqCst); callbacks.delivered(); Ok(()) } }
 #[test]
 fn buffered_completion_flushes_only_to_same_session() {
     for (reason,replacement,expected_count) in [(TransitionReason::SessionSwitching,"session-a",1),(TransitionReason::SessionSwitching,"session-b",0),(TransitionReason::Compacting,"session-a",1)] {

@@ -151,7 +151,7 @@ async fn recovery(member:bool) {
     });
     let liveness_delivery=actions.clone();
     let liveness=maho_omo_task::member_liveness::create_team_member_liveness_notifier(maho_omo_task::member_liveness::bind_liveness_store_markers(maho_omo_task::member_liveness::TeamMemberLivenessDeps {
-        deliver:Arc::new(move |_,message| { liveness_delivery.0.lock().expect("messages").push(message); Ok(()) }),was_delivered:Arc::new(|_| false),mark_delivered:Arc::new(|_| panic!("binding replaces marker")),on_error:Arc::new(|error| panic!("{error}")),timers:timers.clone(),max_delivery_retries:None,max_persistence_retries:None,
+        deliver:Arc::new(move |_,message,_| { liveness_delivery.0.lock().expect("messages").push(message); Ok(()) }),was_delivered:Arc::new(|_| false),mark_delivered:Arc::new(|_| panic!("binding replaces marker")),on_error:Arc::new(|error| panic!("{error}")),timers:timers.clone(),max_delivery_retries:None,max_persistence_retries:None,
     },component.engine.store.clone()));
     let handlers=api.registered.handlers[&EventKind::SessionStart].len();
     component.register_team_runtime(&mut api,service,pollers,liveness,ownership);
