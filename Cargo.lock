@@ -2140,9 +2140,14 @@ version = "0.0.0"
 name = "maho-ext-gpt-apply-patch"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2249,9 +2254,14 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
+ "icu_collator",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2537,7 +2547,10 @@ name = "maho-ext-todotools"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2558,10 +2571,17 @@ dependencies = [
 name = "maho-ext-tool-search"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2589,11 +2609,16 @@ dependencies = [
  "dom_query",
  "futures",
  "html5ever",
+ "hyper",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "reqwest 0.13.2",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -2603,8 +2628,13 @@ dependencies = [
 name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "regex",
  "reqwest 0.13.2",
  "serde_json",

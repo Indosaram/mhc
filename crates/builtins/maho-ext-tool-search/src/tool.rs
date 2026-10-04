@@ -3,6 +3,41 @@ use crate::engine::{bm25::Bm25Result,document::ToolSearchSource};
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct HiddenToolHint { pub name:String,pub hint:String }
 pub const TOOL_SEARCH_TOOL_NAME: &str="tool_search";
+pub fn renderers()->maho_ext_api::ToolRenderers<(),Value> {
+    use maho_interactive::theme::ThemeColor;
+    use maho_tui::components::text::Text;
+    use std::sync::Arc;
+    let theme=|source:&maho_ext_api::Theme| {
+    use maho_interactive::theme::{theme::ColorMode,theme_json::{ColorValue,ThemeJson}};
+    let colors=source.colors.iter().chain(&source.backgrounds).map(|(key,prefix)| {
+        let code=prefix.strip_prefix("\x1b[").and_then(|value|value.strip_suffix('m')).unwrap_or_else(||panic!("Expected exported ANSI theme prefix"));
+        let fields=code.split(';').collect::<Vec<_>>();
+        let value=match fields.as_slice() {
+            ["39"|"49"]=>ColorValue::Text(String::new()),
+            ["38"|"48","5",index]=>ColorValue::Index(index.parse().unwrap_or_else(|error|std::panic::panic_any(error))),
+            ["38"|"48","2",red,green,blue]=>{
+                let channels=[red,green,blue].map(|channel|channel.parse::<u8>().unwrap_or_else(|error|std::panic::panic_any(error)));
+                ColorValue::Text(format!("#{:02x}{:02x}{:02x}",channels[0],channels[1],channels[2]))
+            },
+            _=>panic!("Unsupported exported ANSI theme prefix"),
+        };
+        (key.clone(),value)
+    }).collect();
+    let mode=if source.colors.values().chain(source.backgrounds.values()).any(|prefix|prefix.starts_with("\x1b[38;2;")||prefix.starts_with("\x1b[48;2;")){ColorMode::Truecolor}else{ColorMode::Color256};
+    maho_interactive::theme::Theme::from_json(ThemeJson {name:source.name.clone().unwrap_or_default(),colors,vars:Default::default(),export_colors:Default::default()},mode).unwrap_or_else(|error|std::panic::panic_any(error))
+    };
+    maho_ext_api::ToolRenderers {
+        render_call:Some(Arc::new(move |args,source,_|{
+            let theme=theme(source);let source=args["source"].as_str().map(|source|format!(" source:{source}")).unwrap_or_default();let group=args["group"].as_str().map(|group|format!(" @{group}")).unwrap_or_default();
+            Box::new(Text::with_padding(theme.fg(ThemeColor::ToolTitle,&theme.bold(&format!("{TOOL_SEARCH_TOOL_NAME} \"{}\"{source}{group}",args["query"].as_str().unwrap_or("")))),0,0))
+        })),
+        render_result:Some(Arc::new(move |result,options,source,_|{
+            let theme=theme(source);let count=result.details["matched"].as_array().map_or(0,Vec::len);
+            let title=if options.is_partial{format!("{TOOL_SEARCH_TOOL_NAME}: searching")}else{format!("{TOOL_SEARCH_TOOL_NAME}: {count} tool(s) found")};
+            Box::new(Text::with_padding(theme.fg(ThemeColor::ToolOutput,&title),0,0))
+        })),
+    }
+}
 pub fn parameters()->Value { json!({"type":"object","properties":{"query":{"type":"string","description":"Natural-language description of the capability you need."},"source":{"anyOf":[{"const":"mcp","type":"string"},{"const":"extension","type":"string"}],"description":"Optional: restrict the search to MCP or extension tools."},"group":{"type":"string","description":"Optional: restrict the search to one catalog group."}},"required":["query"]}) }
 pub fn create_tool_search_tool(service:std::sync::Arc<std::sync::Mutex<crate::service::ToolSearchService>>)->maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolDefinition,ToolError,ToolResult,ToolContent,ToolExecutionMode}; use std::sync::Arc;
@@ -50,6 +85,42 @@ pub fn build_tool_search_result_text(query: &str, matches: &[Bm25Result], hints:
 #[cfg(test)]
 mod argument_tests {
     use super::*;
+    #[test]
+    fn native_renderer_reports_progress_and_machine_match_count() {
+        use maho_ext_api::{AgentToolResult,ToolRenderContext,ToolRendererSession};
+        for width in [40,80,120] {
+            let context=ToolRenderContext {args:json!({"query":"documentation","source":"mcp","group":"docs"}),tool_call_id:"tool-search-render".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:Default::default(),execution_started:false,args_complete:true,is_partial:true,expanded:false,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:None};
+            let mut slots=ToolRendererSession {renderers:std::sync::Arc::new(renderers()),context}.into_slots();let theme=maho_ext_api::Theme::default();
+            let mut states=vec![slots.render_call(&theme,width).unwrap()];let mut result=AgentToolResult::text("");states.push(slots.render_result(&result,&theme,width).unwrap());
+            slots.session.context.is_partial=false;result.details=json!({"matched":["read_docs","find_docs"]});states.push(slots.render_result(&result,&theme,width).unwrap());
+            assert!(states.last().unwrap().join("\n").contains("2 tool(s)"));for lines in &states {assert!(lines.iter().all(|line|maho_tui::utils::visible_width(line)<=width));}
+            println!("TOOL_SEARCH_RENDER_JSON={}",json!({"width":width,"states":states}));
+        }
+    }
     #[test] fn null_source_without_server_still_defaults_to_mcp() { assert_eq!(prepare_tool_search_arguments(json!({"query":"files","source":null})),json!({"query":"files","source":"mcp"})); }
     #[test] fn null_group_without_server_is_omitted() { assert_eq!(prepare_tool_search_arguments(json!({"query":"files","group":null})),json!({"query":"files"})); }
+}
+
+#[cfg(test)]
+mod exported_prefix_tests {
+    use super::*;
+    use maho_ext_api::{ToolRenderContext,ToolRendererSession,AgentToolResult};
+    use maho_interactive::theme::{Theme,ThemeColor,ThemeBg,theme::ColorMode};
+    use serde_json::json;
+    #[test]
+    fn callbacks_preserve_current_exported_prefix_bytes() {
+        for mode in [ColorMode::Color256,ColorMode::Truecolor] {
+            let native=Theme::builtin("dark",mode).unwrap();
+            let exported=maho_ext_api::Theme {name:Some(native.name.clone()),colors:ThemeColor::ALL.iter().map(|color|(color.key().into(),native.get_fg_ansi(*color))).collect(),backgrounds:ThemeBg::ALL.iter().map(|bg|(bg.key().into(),native.get_bg_ansi(*bg))).collect(),vars:Default::default()};
+            let context=ToolRenderContext {args:json!({"query":"documentation"}),tool_call_id:"prefix-proof".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:Default::default(),execution_started:false,args_complete:true,is_partial:false,expanded:true,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:None};
+            let mut slots=ToolRendererSession {renderers:std::sync::Arc::new(renderers()),context}.into_slots();
+            let call=slots.render_call(&exported,80).unwrap().join("
+");
+            assert!(call.contains(&native.get_fg_ansi(ThemeColor::ToolTitle)));
+            let result=slots.render_result(&AgentToolResult::text("native output"),&exported,80).unwrap().join("
+");
+            for output in [&call,&result] {assert!(!output.is_empty());if mode==ColorMode::Color256 {assert!(!output.contains("\x1b[38;2;"));assert!(!output.contains("\x1b[48;2;"));}}
+            println!("CONSUMER_PREFIX_JSON={}",json!({"consumer":"maho-ext-tool-search/src/tool.rs","mode":format!("{mode:?}"),"call":call,"result":result}));
+        }
+    }
 }

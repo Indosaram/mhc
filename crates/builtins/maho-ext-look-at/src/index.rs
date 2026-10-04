@@ -1,4 +1,30 @@
 use maho_ai::{model::Model,types::InputModality};
+pub struct LookAtExtension {pub runner:crate::runner::VisionModelRunner}
+impl maho_ext_api::Extension for LookAtExtension {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+        use std::sync::{Arc,Mutex};
+        let store=Arc::new(Mutex::new(crate::settings::create_look_at_store()));
+        let runner=self.runner.clone();let execute_store=store.clone();
+        let mut definition=maho_ext_api::ToolDefinition::new("look_at",crate::prompts::LOOK_AT_DESCRIPTION,crate::arguments::parameters(),Arc::new(|_|Box::pin(async {Err(maho_ext_api::ToolError::Message("look_at requires full extension context".into()))})));
+        definition.label="Look At".into();definition.prompt_snippet=Some(crate::prompts::LOOK_AT_PROMPT_SNIPPET.into());definition.prepare_arguments=Some(Arc::new(|args|crate::arguments::prepare_look_at_arguments(&args).map_err(Into::into)));
+        api.register_tool_with_renderers(definition.clone(),crate::render::renderers()).unwrap_or_else(|error|std::panic::panic_any(error));
+        let scope=api.runtime.registration_scope();let mut executor_api=maho_ext_api::ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),scope.clone());
+        executor_api.register_tool_with_extension_context(definition,Arc::new(move |_,params,signal,_,ctx|{
+            let runner=runner.clone();let store=execute_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            Box::pin(async move {
+                let args=serde_json::from_value(params).map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                let normalized=crate::arguments::normalize_look_at_args(args,None);
+                if let Some(error)=crate::arguments::validate_look_at_args(&normalized){return Err(maho_ext_api::ExtensionFailure::new(error));}
+                let result=runner(&normalized,ctx,&store,signal).await?;
+                Ok(maho_ext_api::AgentToolResult {details:serde_json::json!({"model":result.model,"sources":result.sources,"mimeTypes":result.mime_types}),..maho_ext_api::AgentToolResult::text(result.text)})
+            })
+        })).unwrap_or_else(|error|std::panic::panic_any(error));
+        scope.commit_registration().unwrap_or_else(|error|std::panic::panic_any(error));
+        register_activation_hooks(api,store.clone());
+        let runtime=api.runtime.clone();let command_store=store.clone();
+        crate::commands::register_look_at_command(api,store,Arc::new(move |ctx|sync_tool_activation(&runtime,ctx,&command_store.lock().unwrap_or_else(std::sync::PoisonError::into_inner))));
+    }
+}
 pub fn register_activation_hooks(api:&mut maho_ext_api::ExtensionApi,store:std::sync::Arc<std::sync::Mutex<crate::settings::LookAtStore>>) {
     let runtime=api.runtime.clone();
     for event in [maho_ext_api::EventKind::SessionStart,maho_ext_api::EventKind::ModelSelect] {

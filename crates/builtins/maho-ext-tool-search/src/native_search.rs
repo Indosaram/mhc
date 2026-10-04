@@ -12,7 +12,10 @@ pub struct AnthropicNativeInjectionConfig<'a> {
     pub get_tool_definition:&'a dyn Fn(&str)->Option<NativeToolDefinition>,
 }
 pub fn add_anthropic_native_tool_search(target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value,config:&AnthropicNativeInjectionConfig<'_>)->Value {
-    if !supports_anthropic_native_tool_search(target) || !payload.is_object() { return payload.clone(); }
+    transform_anthropic_native_tool_search(target,payload,config).unwrap_or_else(||payload.clone())
+}
+fn transform_anthropic_native_tool_search(target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value,config:&AnthropicNativeInjectionConfig<'_>)->Option<Value> {
+    if !supports_anthropic_native_tool_search(target) || !payload.is_object() { return None; }
     let mut tools=payload.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut names:BTreeSet<_>=tools.iter().filter_map(|t|t.get("name").and_then(Value::as_str).map(str::to_owned)).collect();
     for doc in config.catalog {
@@ -22,15 +25,15 @@ pub fn add_anthropic_native_tool_search(target:Option<&AnthropicToolSearchTarget
         tools.push(json!({"name":doc.name,"description":def.description.as_deref().or(doc.description.as_deref()).unwrap_or(&doc.label),"input_schema":parameters,"defer_loading":true}));
         names.insert(doc.name.clone());
     }
-    if tools.len()>ANTHROPIC_MAX_TOOLS { return payload.clone(); }
+    if tools.len()>ANTHROPIC_MAX_TOOLS { return None; }
     for tool in &mut tools {
         let Some(name)=tool.get("name").and_then(Value::as_str) else { continue; };
         if config.search_tool_name==Some(name) || !(config.is_deferrable)(name) || tool.get("cache_control").is_some() || tool.get("defer_loading")==Some(&Value::Bool(true)) { continue; }
         if let Some(object)=tool.as_object_mut() { object.insert("defer_loading".into(),Value::Bool(true)); }
     }
     if !tools.iter().any(|t|t.get("type").and_then(Value::as_str)==Some(ANTHROPIC_TOOL_SEARCH_TYPE)) { tools.push(json!({"type":ANTHROPIC_TOOL_SEARCH_TYPE,"name":ANTHROPIC_TOOL_SEARCH_NAME})); }
-    if tools.len()>ANTHROPIC_MAX_TOOLS { return payload.clone(); }
-    let mut result=payload.clone(); result["tools"]=Value::Array(tools); result
+    if tools.len()>ANTHROPIC_MAX_TOOLS { return None; }
+    let mut result=payload.clone(); result["tools"]=Value::Array(tools); Some(result)
 }
 pub fn build_tool_reference_blocks(names:&[String])->Vec<Value> { names.iter().map(|name|json!({"type":"tool_reference","tool_name":name})).collect() }
 #[derive(Default)]
@@ -39,8 +42,8 @@ impl AnthropicNativeToolSearchAdapter {
     pub fn apply_before_request(&mut self,target:Option<&AnthropicToolSearchTarget<'_>>,payload:&Value,enabled:bool,config:&AnthropicNativeInjectionConfig<'_>)->Value {
         self.injected_last_request=false;
         if self.disabled || !enabled { return payload.clone(); }
-        let next=add_anthropic_native_tool_search(target,payload,config);
-        self.injected_last_request=supports_anthropic_native_tool_search(target) && payload.is_object() && next.get("tools").and_then(Value::as_array).is_some_and(|t|t.len()<=ANTHROPIC_MAX_TOOLS) && (next!=*payload || next.get("tools").and_then(Value::as_array).is_some_and(|t|t.iter().any(|t|t.get("type").and_then(Value::as_str)==Some(ANTHROPIC_TOOL_SEARCH_TYPE)))); next
+        let next=transform_anthropic_native_tool_search(target,payload,config);
+        self.injected_last_request=next.is_some(); next.unwrap_or_else(||payload.clone())
     }
     pub fn note_response_status(&mut self,status:u16)->Option<&str> {
         if status!=400 || !self.injected_last_request || self.disabled { return None; }

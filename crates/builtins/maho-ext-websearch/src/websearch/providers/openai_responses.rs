@@ -3,7 +3,7 @@ use regex::Regex;
 use serde_json::{Value,json};
 use super::shared::{BuildContext,BuiltSearchRequest,SearchResultItem,append_domain_filters,content_headers,result,unique};
 use crate::websearch::provider_endpoints::{provider_url,SearchProvider};
-static URLS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"https?://[^\s)\]}>\"]+"#).expect("literal pattern"));
+static URLS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"https?://[^\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff})\]}>\"]+"#).expect("literal pattern"));
 pub fn build_request(ctx:&BuildContext<'_>,provider:SearchProvider,model:Option<&str>,codex_mode:Option<&str>,search_context_size:Option<&str>,user_location:Option<&Value>)->BuiltSearchRequest {
     let mut tool=json!({"type":"web_search","external_web_access":codex_mode.unwrap_or("live")=="live"});
     if let Some(size)=search_context_size.filter(|size|!size.is_empty()) { tool["search_context_size"]=json!(size); }
