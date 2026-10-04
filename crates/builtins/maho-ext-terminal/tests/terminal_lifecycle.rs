@@ -45,8 +45,33 @@ impl ExtensionUi for Ui {
 fn context(dir:&Path)->ExtensionContext {
     ExtensionContext {ui:Arc::new(Ui),mode:ExtensionMode::Print,has_ui:false,cwd:dir.into(),agent_dir:dir.into(),session_manager:Arc::new(Session {dir:dir.into()}),model_registry:Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:vec![],goal_store_file:None,loaded_extension_paths:vec![],signal:None,steering_signal:None,is_idle_fn:Arc::new(||true),wait_for_idle_fn:Arc::new(||Box::pin(async {})),is_project_trusted_fn:Arc::new(||true),is_compacting_fn:Arc::new(||false),get_system_prompt_fn:Arc::new(String::new),get_system_prompt_options_fn:Arc::new(BuildSystemPromptOptions::default),registered_mcp_servers:vec![],update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None}
 }
+/// Minimal host-side session actions so the extension's `session_start` toolset handler resolves.
+/// Production binds these through `AgentSession` before any `session_start` is dispatched; the test
+/// api must supply them or the handler's `get_active_tools`/`set_active_tools` calls fail closed.
+struct SessionActions;
+impl ExtensionSessionActions for SessionActions {
+    fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Ok(())}
+    fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Ok(None)}
+    fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Ok(())}
+    fn execute_tool<'a>(&'a self,name:&'a str,_:JsonValue,_:ExecuteToolOptions)->ExecuteToolFuture<'a> {Box::pin(async move {Err(ExecuteToolError {code:ExecuteToolErrorCode::UnknownTool,tool_name:name.into(),message:"unused".into(),active_tools:vec![]})})}
+    fn get_active_tools(&self)->Result<Vec<String>,ExtensionFailure> {Ok(vec![])}
+    fn set_active_tools(&self,_:Vec<String>)->Result<(),ExtensionFailure> {Ok(())}
+    fn refresh_tools(&self)->Result<(),ExtensionFailure> {Ok(())}
+    fn register_removed_tool_hint(&self,_:&str,_:&str)->Result<(),ExtensionFailure> {Ok(())}
+    fn register_lazy_tool_activator(&self,_:LazyToolActivator)->Result<(),ExtensionFailure> {Ok(())}
+    fn get_commands(&self)->Result<Vec<SlashCommandInfo>,ExtensionFailure> {Ok(vec![])}
+    fn set_model(&self,_:Model)->ExtensionFuture<'_,bool> {Box::pin(async {Ok(false)})}
+    fn get_thinking_level(&self)->Result<ThinkingLevel,ExtensionFailure> {Ok(ThinkingLevel::Medium)}
+    fn set_thinking_level(&self,_:ThinkingLevel)->Result<(),ExtensionFailure> {Ok(())}
+    fn set_session_model(&self,_:Model)->ExtensionFuture<'_,bool> {Box::pin(async {Ok(false)})}
+    fn set_session_thinking_level(&self,_:ThinkingLevel)->Result<(),ExtensionFailure> {Ok(())}
+    fn set_session_fast_mode(&self,_:bool)->Result<(),ExtensionFailure> {Ok(())}
+    fn exec<'a>(&'a self,_:&'a str,_:&'a [String],_:&'a Path,_:ExecOptions)->ExtensionFuture<'a,ExecResult> {Box::pin(async {Err("unused".into())})}
+}
 fn api(dir:&Path)->ExtensionApi {
-    let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());maho_ext_terminal::extension::TerminalExtension.register(&mut api);api
+    let runtime=ExtensionRuntime::default();
+    runtime.bind_session_actions(Arc::new(SessionActions));
+    let mut api=ExtensionApi::new(LoadedExtension::new("terminal",dir.into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);maho_ext_terminal::extension::TerminalExtension.register(&mut api);api
 }
 async fn start(api:&ExtensionApi,ctx:&ExtensionContext,reason:SessionReason) {
     let mut event=ExtensionEvent::SessionStart(SessionStartEvent {reason,initial_model_provenance:None,previous_session_file:None});

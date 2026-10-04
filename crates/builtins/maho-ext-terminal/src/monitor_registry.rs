@@ -375,8 +375,8 @@ mod registry_tests {
         let event=tokio::time::timeout(std::time::Duration::from_secs(5),ended.recv()).await.unwrap().unwrap();
         assert_eq!((event.id.as_str(),event.description.as_str(),event.reason,event.exit_code),("bash_1","ready",MonitorEndedReason::Exit,Some(0)));assert!(event.fire_count>=1);assert!(ended.try_recv().is_err());registry.dispose();runtime.dispose().unwrap();
     }
-    #[test]
-    fn dispose_emits_disposed_ending_for_every_live_record() {
+    #[tokio::test]
+    async fn dispose_emits_disposed_ending_for_every_live_record() {
         let (ended_sender,ended)=std::sync::mpsc::channel();
         let mut registry=MonitorRegistry::new_with_ended(|_|{},move |event| {ended_sender.send(event).unwrap();});
         let runtime=crate::runtime_session::TerminalRuntimeSession::start("read value",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read value")).unwrap();

@@ -64,9 +64,10 @@ pub async fn execute_configured_bash(manager:Arc<Mutex<TerminalManager>>,call:To
         super::foreground_detach::ForegroundOutcome::Detached=>(None,false,false),
     };
     if sweep {
+        // Interrupt is "stop now": SIGKILL the whole process group in one shot (upstream). The exited
+        // session is reaped by its own exit waiter and pruned by the manager, so no blocking exit wait
+        // runs on the async runtime here (upstream never calls manager.stop on the abort path).
         if let Ok(mut state)=manager.lock() {if let Some(runtime)=state.get(&id) {let _=runtime.kill();}}
-        let sweeping=manager.clone();let sweep_id=id.clone();
-        tokio::spawn(async move {if let Ok(mut state)=sweeping.lock() {let _=state.stop(&sweep_id);}});
     }
     let mut manager=manager.lock().map_err(|_|"terminal manager state poisoned")?;let runtime=manager.get(&id).ok_or("terminal session missing")?;
     let formatted=format_terminal_tool_output(&runtime.full_output().map_err(|error|error.to_string())?);
@@ -117,8 +118,26 @@ mod tests {
     #[tokio::test]
     async fn abort_kills_a_shell_that_ignores_sigterm_after_ready_signal() {
         let manager=Arc::new(Mutex::new(TerminalManager::default()));let running=manager.clone();let signal=maho_tools::definition::AbortSignal::default();let cancel=signal.clone();let (sender,mut ready)=tokio::sync::mpsc::unbounded_channel();
-        let task=tokio::spawn(async move {execute_bash(running,ToolCall {id:"abort",params:json!({"command":"stty -echo; trap '' TERM; printf 'trap-ready\\n'; while :; do :; done","timeout":10}),signal,on_update:Some(Arc::new(move |update| {sender.send(update).unwrap();Ok(())})),context:None}).await});
-        tokio::time::timeout(Duration::from_secs(5),async {while let Some(update)=ready.recv().await {if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("trap-ready"))) {break;}}cancel.abort();let result=task.await.unwrap().unwrap();assert_eq!(result.is_error,Some(true));assert!(result.content.iter().any(|part|part.text.contains("Command aborted")));}).await.unwrap();manager.lock().unwrap().teardown().unwrap();
+        let task=tokio::spawn(async move {execute_bash(running,ToolCall {id:"abort",params:json!({"command":"stty -echo; trap '' TERM; read start; printf 'trap-ready\\n'; while :; do :; done","timeout":10}),signal,on_update:Some(Arc::new(move |update| {sender.send(update).unwrap();Ok(())})),context:None}).await});
+        tokio::time::timeout(Duration::from_secs(5),async {
+            // The first update is emitted only after the output subscription is installed, so
+            // receiving it proves the observer is attached; only then trigger the shell so the ready
+            // line cannot be produced (and missed) before we are watching for it.
+            assert!(ready.recv().await.unwrap().content.is_empty(),"first update is the subscription marker");
+            manager.lock().unwrap().get("bash_1").unwrap().write(b"go\n").unwrap();
+            let mut observed=false;
+            while let Some(update)=ready.recv().await {if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("trap-ready"))) {observed=true;break;}}
+            // An event-stream disconnect before the ready line must fail the test, never fall through.
+            assert!(observed,"the trap-ready output must be observed before aborting");
+            let mut exit=manager.lock().unwrap().get("bash_1").unwrap().subscribe_exit();
+            cancel.abort();
+            let result=task.await.unwrap().unwrap();
+            assert_eq!(result.is_error,Some(true));
+            assert!(result.content.iter().any(|part|part.text.contains("Command aborted")));
+            // The SIGKILLed shell must actually exit and be reaped by its exit waiter.
+            tokio::time::timeout(Duration::from_secs(5),async {while exit.borrow_and_update().is_none() {exit.changed().await.unwrap();}}).await.unwrap();
+            assert!(exit.borrow().is_some(),"the aborted shell must be killed and reaped");
+        }).await.unwrap();manager.lock().unwrap().teardown().unwrap();
     }
     #[tokio::test]
     async fn subscribed_progress_reports_output_before_child_is_released() {

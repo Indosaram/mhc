@@ -150,12 +150,25 @@ impl TerminalRuntimeSession {
         Ok(TerminalScreenSnapshot {cols,rows,visible_grid,scrollback,cursor})
     }
     pub fn resize(&self,cols:u16,rows:u16)->Result<(),RuntimeError> {
-        self.session.resize(cols,rows)?;
+        // The PTY resize is best-effort and meaningless once the process is gone: upstream's
+        // `resizeScreen` only touches the screen and its `bash_resize` returns early when
+        // `runtime.exited`. Skipping it for a closed session keeps the screen projection resizable
+        // instead of failing with "pty session is closed".
+        if !self.exited()? {self.session.resize(cols,rows)?;}
         let retained=String::from_utf16_lossy(&self.output.lock().map_err(|_|RuntimeError::Poisoned)?.buffer);
         let mut screen=self.screen.lock().map_err(|_|RuntimeError::Poisoned)?;
-        let mut rebuilt=vt100::Parser::new(rows,cols,self.scrollback);
-        rebuilt.process(retained.as_bytes());
-        *screen=rebuilt;Ok(())
+        if retained.is_empty() {
+            // Nothing retained to replay: resize the projection in place so its history survives an
+            // empty log buffer (upstream keeps the screen independent of the trimmed read buffer).
+            screen.screen_mut().set_size(rows,cols);
+        } else {
+            // Replay the retained output at the new geometry so wrapped lines reflow, matching the
+            // upstream screen's resize reflow.
+            let mut rebuilt=vt100::Parser::new(rows,cols,self.scrollback);
+            rebuilt.process(retained.as_bytes());
+            *screen=rebuilt;
+        }
+        Ok(())
     }
     pub fn kill(&mut self)->Result<(),RuntimeError> {self.session.kill()?;Ok(())}
     pub fn dispose(mut self)->Result<(),RuntimeError> {
