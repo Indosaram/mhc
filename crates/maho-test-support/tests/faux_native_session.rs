@@ -3,6 +3,21 @@
 use maho_test_support::faux::{FauxResponse, FauxScript};
 use maho_test_support::faux_session::FauxSession;
 
+struct ShutdownProbe(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl maho_ext_api::Extension for ShutdownProbe {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let observed = self.0.clone();
+        api.on(maho_ext_api::EventKind::SessionShutdown, std::sync::Arc::new(move |_, _| {
+            let observed = observed.clone();
+            Box::pin(async move {
+                observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }));
+    }
+}
+
 #[tokio::test]
 async fn native_session_drives_prompt_reply_and_durable_entries() {
     let session = FauxSession::new(FauxScript {
@@ -42,4 +57,32 @@ async fn native_handle_drives_a_prompt_and_closes_cleanly() {
     assert_eq!(messages[1].role(), "assistant");
     assert_eq!(handle.provider_calls().len(), 1);
     handle.close().await;
+}
+
+#[tokio::test]
+async fn close_settles_a_held_prompt_and_observes_shutdown() {
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let session = FauxSession::new(FauxScript {
+        name: "native-close".to_owned(),
+        prompt: "held".to_owned(),
+        responses: vec![FauxResponse { content: "never".to_owned(), stop_reason: "stop".to_owned() }],
+    })
+    .with_native_extension(maho_ext_host::loader::NativeExtensionFactory {
+        path: "<shutdown-probe>".to_owned(),
+        source_info: maho_ext_api::SourceInfo::default(),
+        extension: Box::new(ShutdownProbe(shutdown.clone())),
+    });
+    let handle = session.run_native_handle().await.expect("native session");
+    let cwd = handle.cwd().to_path_buf();
+    let gate = handle.hold_next_response();
+    let prompt = handle.prompt("held".to_owned());
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered())
+        .await.expect("provider entered the held response");
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle.close())
+        .await.expect("close settles a held prompt");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), prompt)
+        .await.expect("prompt task joined").expect("join");
+    assert!(result.is_ok());
+    assert!(shutdown.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!cwd.exists());
 }

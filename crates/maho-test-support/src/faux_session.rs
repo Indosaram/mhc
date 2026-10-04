@@ -173,7 +173,7 @@ impl FauxSession {
         } else {
             bind_native_extensions(&session, extensions).await
         };
-        Ok(NativeSession { session, runner, provider, script, calls, gate: Arc::new(Mutex::new(None)), temp })
+        Ok(NativeSession { session, runner, provider, script, calls, gate: Arc::new(Mutex::new(None)), inflight: Arc::new(Inflight::default()), temp })
     }
 }
 
@@ -253,6 +253,7 @@ pub struct NativeSession {
     script: Vec<maho_ai::types::AssistantMessage>,
     calls: Arc<Mutex<Vec<ProviderCall>>>,
     gate: Arc<Mutex<Option<ResponseGate>>>,
+    inflight: Arc<Inflight>,
     temp: tempfile::TempDir,
 }
 
@@ -303,7 +304,10 @@ impl NativeSession {
     /// prompt can start while the first is held on a scripted gate.
     pub fn prompt(&self, text: String) -> tokio::task::JoinHandle<Result<(), String>> {
         let session = self.session.clone();
+        let inflight = self.inflight.clone();
+        inflight.pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tokio::spawn(async move {
+            let _guard = InflightGuard(inflight);
             session.prompt(&text, maho_core::agent_session::PromptOptions::default()).await.map(|_| ())
         })
     }
@@ -326,16 +330,17 @@ impl NativeSession {
         gate
     }
 
-    /// Canonical teardown: releases any held response, aborts in-flight work, then emits
-    /// `session_shutdown` and disposes (mirroring `AgentSessionRuntime::dispose`, which a bare
-    /// `AgentSession::dispose` omits). Consumes the handle so the temp cwd drops only after the
-    /// session is torn down; call it before the handle goes out of scope so a spawned `prompt` task
-    /// cannot outlive the session or its temp dir.
+    /// Canonical teardown: releases any held response, aborts in-flight work, drains every spawned
+    /// `prompt` task (so none outlives the temp cwd), then emits `session_shutdown` and disposes
+    /// (mirroring `AgentSessionRuntime::dispose`, which a bare `AgentSession::dispose` omits).
+    /// Consumes the handle, so the temp cwd drops only after the session and its tasks are torn
+    /// down.
     pub async fn close(self) {
         if let Some(gate) = self.gate.lock().unwrap_or_else(PoisonError::into_inner).take() {
             gate.release();
         }
         self.session.abort().await;
+        self.inflight.drain().await;
         self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
         self.session.dispose().await;
     }
@@ -351,6 +356,33 @@ impl NativeSession {
             maho_agent::types::AgentMessage::Llm(message) => Some(message),
             maho_agent::types::AgentMessage::Custom(_) => None,
         }).collect()
+    }
+}
+
+#[derive(Default)]
+struct Inflight {
+    pending: std::sync::atomic::AtomicUsize,
+    settled: tokio::sync::Notify,
+}
+
+impl Inflight {
+    async fn drain(&self) {
+        loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.pending.load(std::sync::atomic::Ordering::SeqCst) == 0 { return; }
+            notified.await;
+        }
+    }
+}
+
+struct InflightGuard(Arc<Inflight>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.settled.notify_waiters();
     }
 }
 
