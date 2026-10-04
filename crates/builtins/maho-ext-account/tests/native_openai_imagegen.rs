@@ -14,6 +14,7 @@ impl ModelRegistry for Registry{
 }
 #[tokio::test]
 async fn registered_native_image_handler_uses_effective_model_and_scrubs_history_bytes()->Result<(),Box<dyn std::error::Error>>{
+    let _guard=support::GlobalNativeStateGuard::acquire().await;
     let root=tempfile::tempdir()?;let mut ctx=support::context(Arc::new(Registry),Arc::new(support::TestUi::default()));ctx.cwd=root.path().into();
     let mut api=ExtensionApi::new(LoadedExtension::new("native-image",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     maho_ext_openai_image_gen::OpenAiImageGen.register(&mut api);

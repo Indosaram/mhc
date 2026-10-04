@@ -2,6 +2,32 @@ use maho_core::{auth_storage::AuthStorage, credential_accounts, credential_pool:
 use maho_ext_api::{CredentialAccountSource, CredentialAccountSummary, ExtensionFailure, ExtensionFuture, Model, ModelRegistry};
 use std::sync::Arc;
 
+static NATIVE_GLOBAL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Serializes every account-crate test that touches the process-global imagegen native-bypass flag
+/// or registry override and restores both on drop. One process-wide lock (not per-file), held
+/// across the whole async test body, so the lock is a tokio mutex (a std guard across `.await` is
+/// disallowed).
+pub struct GlobalNativeStateGuard {
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl GlobalNativeStateGuard {
+    pub async fn acquire() -> Self {
+        let guard = NATIVE_GLOBAL_LOCK.lock().await;
+        maho_ext_imagegen::state::set_native_bypass(false);
+        maho_ext_imagegen::state::set_image_gen_registry_override(None);
+        Self { _guard: guard }
+    }
+}
+
+impl Drop for GlobalNativeStateGuard {
+    fn drop(&mut self) {
+        maho_ext_imagegen::state::set_native_bypass(false);
+        maho_ext_imagegen::state::set_image_gen_registry_override(None);
+    }
+}
+
 pub struct SyntheticRegistry { pub storage: Arc<tokio::sync::Mutex<AuthStorage>>, pub repository: Arc<CredentialSlotRepository> }
 fn environment(name: &str) -> Option<String> {
     (name == "ANTHROPIC_API_KEY").then(|| "synthetic-env-secret".into())
