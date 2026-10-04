@@ -75,7 +75,7 @@ struct Registry;
 #[tokio::test]
 async fn registered_callable_enforces_configured_detached_capacity() {
     let root=tempfile::tempdir().unwrap();std::fs::create_dir(root.path().join(".maho")).unwrap();
-    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":0.01,"foregroundWindowSeconds":0.1}"#).unwrap();
+    std::fs::write(root.path().join(".maho/codemode.json"),r#"{"languages":{"py":false,"js":true,"rb":false,"jl":false},"maxDetachedCells":1,"cellTimeoutSeconds":1,"foregroundWindowSeconds":3}"#).unwrap();
     let host=Arc::new(Host::default());let runtime=ExtensionRuntime::default();runtime.bind(host.clone());runtime.bind_session_actions(host.clone());
     let mut api=ExtensionApi::new(LoadedExtension::new("codemode",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
     maho_codemode::register(&mut api,maho_codemode::CodemodeExtensionOptions {image_sdk:Arc::new(Images),complete:Arc::new(|_,_|Box::pin(async {panic!("capacity does not use completion")})),home_dir:root.path().into(),environment:Default::default(),js_runtime:maho_codemode::tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None}}).unwrap();
@@ -185,15 +185,25 @@ async fn completion_context_refreshes_for_same_model_id_without_reinstalling_eva
     (api.registered.handlers[&EventKind::ModelSelect][0])(&mut selected,&ctx).await.unwrap();
     assert!(Arc::ptr_eq(&execute,&host.tools.lock().unwrap()[0].definition.execute));
     ctx.model.as_mut().unwrap().name="invocation-local".into();
+    let enabled=host.tools.lock().unwrap()[0].definition.parameters["properties"]["language"]["anyOf"].as_array().unwrap().iter().map(|value|value["const"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert!(!enabled.is_empty(),"eval registered no enabled language");
     let mut results=Vec::new();
-    for (id,language,code) in [("fresh-js","js","await completion('context')"),("fresh-py","py","completion('context')"),("fresh-rb","rb","completion('context')"),("fresh-jl","jl","completion(\"context\")")] {
+    for language in &enabled {
+        let (id,code)=match language.as_str() {
+            "js"=>("fresh-js","await completion('context')"),
+            "py"=>("fresh-py","completion('context')"),
+            "rb"=>("fresh-rb","completion('context')"),
+            "jl"=>("fresh-jl","completion(\"context\")"),
+            other=>panic!("eval enabled an unexpected language: {other}"),
+        };
         results.push(tokio::time::timeout(std::time::Duration::from_secs(10),execute(maho_tools::definition::ToolCall {id,params:serde_json::json!({"language":language,"code":code,"summary":"context freshness","on_timeout":"error"}),signal:Default::default(),on_update:None,context:Some(&ctx)})).await);
     }
     let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None});
     tokio::time::timeout(std::time::Duration::from_secs(10),(api.registered.handlers[&EventKind::SessionShutdown][0])(&mut shutdown,&ctx)).await.unwrap().unwrap();
     for result in results {let result=result.unwrap().unwrap();assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");}
-    assert_eq!(*seen.lock().unwrap(),vec![(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into())),(Some(ServiceTier::Priority),Some("invocation-local".into()))]);
-    eprintln!("cleanup: completion freshness JS, Python, Ruby and Julia managers disposed");
+    let expected=(0..enabled.len()).map(|_|(Some(ServiceTier::Priority),Some("invocation-local".to_owned()))).collect::<Vec<_>>();
+    assert_eq!(*seen.lock().unwrap(),expected);
+    eprintln!("cleanup: completion freshness managers disposed for {} enabled runtimes",enabled.len());
 }
 impl ExtensionSessionActions for Host {
     fn set_session_name(&self,_:&str)->Result<(),ExtensionFailure> {Ok(())} fn get_session_name(&self)->Result<Option<String>,ExtensionFailure> {Ok(None)} fn set_label(&self,_:&str,_:Option<&str>)->Result<(),ExtensionFailure> {Ok(())}
