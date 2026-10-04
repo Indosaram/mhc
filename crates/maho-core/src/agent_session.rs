@@ -511,6 +511,14 @@ struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
 
 struct SessionExtensionActions(std::sync::Weak<AgentSessionInner>);
 
+/// Restores the ctx idle gate's settling flag on every exit path, matching senpi's `finally` in
+/// `_emitAgentSettled` (`agent-session.ts:1905`) so a dropped or cancelled settlement future
+/// cannot leave the session permanently reported as settling.
+struct SettlingBackgroundWorkGuard<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for SettlingBackgroundWorkGuard<'_> {
+    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+}
+
 struct ExtensionSessionManagerView {
     session: std::sync::Weak<AgentSessionInner>,
     id: String,
@@ -5133,17 +5141,18 @@ impl AgentSession {
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
         let epoch = self.settlement_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.settled_delivery).begin(generation);
-        // Match senpi's _settlingWithBackgroundWork: an extension reading ctx.isIdle() during the
-        // agent_settled delivery sees the session as busy, so an idle trigger (e.g. the memory
-        // idle-dream timer) is rejected while the settled window is still settling.
-        self.settling_with_background_work.store(true, Ordering::SeqCst);
+        // Match senpi's _settlingWithBackgroundWork (agent-session.ts:1896/1905): the ctx idle gate
+        // reports busy for the agent_settled window only while background wake sources are active,
+        // and the flag is restored on every exit path via the guard, as senpi does in its `finally`.
+        self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
+        let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
         self.emit(AgentSessionEvent::AgentSettled);
         self.emit_late_user_abort().await;
         self.state().abort_provenance.close_agent_end_boundary();
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
+        drop(settling);
         for action in batch.actions { action(); }
-        self.settling_with_background_work.store(false, Ordering::SeqCst);
         let session = self.clone();
         tokio::spawn(async move {
             for claim in batch.turn_claims {
