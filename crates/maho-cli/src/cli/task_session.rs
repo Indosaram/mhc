@@ -87,7 +87,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     let sink = Arc::new(LeadMessageSink { actions: actions.clone(), coordinator: Some(coordinator.clone()), parent_state: parent_state.clone(), on_error: Arc::new(|error| eprintln!("Team message delivery failed: {error}")) });
     let pollers = create_lead_poller_lifecycle(LeadPollerLifecycleDeps {
         list_teams: Arc::new(move || listing.list_teams().map_err(|error| error.to_string())), session_id: session, session_file: file,
-        parent_state, config, runtime_dir: Arc::new(move |id| senpi_task::team::storage::team_storage_base_dir(&dirs).join("runtime").join(id)),
+        parent_state: parent_state.clone(), config, runtime_dir: Arc::new(move |id| senpi_task::team::storage::team_storage_base_dir(&dirs).join("runtime").join(id)),
         delivery_journal: Some(Arc::new(senpi_task::team::messaging::delivery_journal::create_lead_delivery_journal(Default::default()))), append_event: Arc::new(move |id, event| {
             if let Err(error) = store.append_event(id, &senpi_task::store::PersistedTaskEvent { event_type: event.event_type, payload: event.payload }) { eprintln!("Team event persistence failed: {error}"); }
         }), sink, factory: None, timers: timers.clone(), on_error: Arc::new(|error| eprintln!("Team poll failed: {error}")),
@@ -97,8 +97,10 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
         deliver: Arc::new(move |key, message, callbacks| {
             use maho_omo_task::parent_notifier::CompletionCoordinator;
             coordinator.enqueue_liveness(key, message, callbacks).map_err(|error| error.to_string())?;
-            coordinator.schedule_flush();
-            if parent_state() == senpi_task::completion::ParentState::Streaming { coordinator.flush_soon(); }
+            // Same edge policy as the lead sink: streaming parents coalesce on the batch window,
+            // idle parents flush on the next macrotask.
+            if parent_state() == senpi_task::completion::ParentState::Streaming { coordinator.schedule_flush(); }
+            else { coordinator.flush_soon(); }
             Ok(())
         }),
         was_delivered: Arc::new(move |record| match read_store.load(&record.task_id) {

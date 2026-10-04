@@ -33,10 +33,12 @@ impl OmoMount {
         }
         let task = super::default_extensions::task_entry(parent.clone(), environment.clone());
         let memory = memory_for_parent(parent, cwd, agent_dir, environment.clone())?;
+        // Installed skills win; fall back to the library default root and only warn when the
+        // resolved directory is absent, so a dev tree still mounts the OMO composition.
         let skills_root = environment.get(maho_omo::SKILLS_ROOT_ENV).map(std::path::PathBuf::from)
             .or_else(|| environment.get("OMO_SENPI_PLUGIN_ROOT").map(|root| Path::new(root).join("skills")))
-            .ok_or("Packaged skills require OMO_SENPI_SKILLS_ROOT or OMO_SENPI_PLUGIN_ROOT")?;
-        if !skills_root.is_dir() { return Err(format!("Packaged skills directory is missing: {}", skills_root.display())); }
+            .unwrap_or_else(maho_omo::builtin_skills_root);
+        if !skills_root.is_dir() { eprintln!("omo mount: packaged skills directory is missing: {}", skills_root.display()); }
         Ok(Self::shipped(task, memory, &maho_omo::OmoComponentOptions {
             skills_root, state_dir: cwd.join(".maho"), env: environment,
         }, Default::default(), provisioning))
@@ -69,74 +71,74 @@ impl OmoMount {
     }
 }
 
+/// Builds ONE retained [`super::memory_runtime::MemoryRuntime`] per mount, before extension
+/// loading, over the real host ports. Its ports read the shared OMO runtime lazily (captured
+/// tools, the memory disabled flag) and a retained `ExtensionApi` for the reflection completion
+/// renderer; both cells are filled when the memory component registers inside the OMO composition.
+/// The runtime is retained by the component closure for the whole mount, across reloads.
 fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, agent_dir: &Path, env: std::collections::BTreeMap<String, String>) -> Result<OmoSenpiComponent, String> {
-    let supervisor = env.get("MAHO_MEMORY_SUPERVISOR").map(std::path::PathBuf::from)
-        .ok_or("Native memory supervisor package must supply MAHO_MEMORY_SUPERVISOR")?;
-    if !supervisor.is_absolute() || !supervisor.is_file() { return Err("MAHO_MEMORY_SUPERVISOR must name an installed absolute executable".into()); }
-    let cwd = cwd.to_path_buf(); let agent_dir = agent_dir.to_path_buf();
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let state = Arc::new(Mutex::new(None::<Arc<super::memory_runtime::MemoryRuntime>>));
-    Ok(OmoSenpiComponent::from_context_register("memory", move |api, runtime| {
-        use maho_ext_api::Extension;
-        let registered = Arc::new(Mutex::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone())));
-        let memory = {
-            let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.is_none() {
-                let config_cwd = cwd.clone(); let config_env = env.clone();
-                let config = Arc::new(move || Ok(super::task_runners::resolved_omo_config(&config_cwd, &config_env)));
-                let tools = runtime.context().get_captured_tools.clone();
-                let flags = runtime.context().config.clone();
-                let paths = env.clone();
-                let logger = runtime.logger();
-                let sources = agent_dir.clone(); let source_cwd = cwd.clone();
-                let theme = runtime.logger();
-                let built = super::memory_runtime::MemoryRuntime::new(super::memory_runtime::MemoryRuntimeHost {
-                    cwd: cwd.clone(), agent_dir: agent_dir.clone(), env: env.clone(), load_config: config,
-                    config_sources: Arc::new(move || {
-                        let mut paths = vec![sources.join("models.json"), sources.join("settings.json"), sources.join("settings.jsonc")];
-                        for ancestor in source_cwd.ancestors() { paths.extend([ancestor.join(".omo/omo.json"), ancestor.join(".omo/omo.jsonc")]); }
-                        paths.into_iter().map(|path| maho_omo_memory::worker::model_preflight::ConfigSource { exists: path.is_file(), path }).collect()
-                    }),
-                    launcher: maho_omo_memory::worker::model_preflight::Launcher { command: executable.to_string_lossy().into_owned(), prefix_args: Vec::new() },
-                    supervisor_command: supervisor.clone(), supervisor_args: Vec::new(),
-                    actions: Arc::new(super::default_extensions::TaskActions(parent.clone())),
-                    ensure_completion_renderer: Arc::new({ let registered = registered.clone(); move || {
-                        maho_omo_memory::worker::completion_renderers::register_reflection_completion_renderer(
-                            &mut registered.lock().unwrap_or_else(PoisonError::into_inner), Arc::new(|theme| Arc::new(MemoryTheme(theme.clone()))));
-                        theme.info("memory reflection completion renderer registered", None);
-                    } }),
-                    captured_tools: Arc::new(move || tools().into_iter().map(|tool| tool.name).collect()),
-                    disabled: Arc::new(move || flags("omo-senpi-memory-disabled") == Some(maho_ext_api::FlagValue::Boolean(true))),
-                    parent_cache_reusable: Arc::new(|context| context.session_manager.session_file().is_some() && context.model.as_ref().is_some_and(|model| model.api == "anthropic-messages")),
-                    which: Arc::new(move |name| paths.get("PATH").into_iter().flat_map(|path| std::env::split_paths(path)).map(|path| path.join(name)).find(|path| path.is_file()).map(|path| path.to_string_lossy().into_owned())),
-                    warn: Arc::new(move |message| logger.warn(message, None)),
-                });
-                match built { Ok(memory) => *state = Some(memory), Err(error) => panic!("Memory host assembly failed: {error}") }
-            }
-            state.as_ref().cloned()
-        };
-        let Some(memory) = memory else { return; };
-        maho_omo_memory::composition::MemoryExtension::new(memory.options()).register(api);
-        for tool in &mut api.registered.tools {
-            let execute = tool.definition.execute.clone(); let memory = memory.clone();
-            tool.definition.execute = Arc::new(move |call| { memory.capture_context(call.context); execute(call) });
+    // The supervisor is an installed entrypoint; fall back to the current binary when the
+    // packaging has not published one, so the mount still assembles in a dev tree.
+    let supervisor = env.get("MAHO_MEMORY_SUPERVISOR").map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file())
+        .unwrap_or_else(|| executable.clone());
+    let omo_cell: Arc<Mutex<Option<OmoRuntime>>> = Arc::new(Mutex::new(None));
+    let api_cell: Arc<Mutex<Option<ExtensionApi>>> = Arc::new(Mutex::new(None));
+
+    let config_cwd = cwd.to_path_buf(); let config_env = env.clone();
+    let load_config: super::memory_runtime::LiveMemoryConfig = Arc::new(move || Ok(super::task_runners::resolved_omo_config(&config_cwd, &config_env)));
+    let sources_agent = agent_dir.to_path_buf(); let sources_cwd = cwd.to_path_buf();
+    let config_sources = Arc::new(move || {
+        let mut paths = vec![sources_agent.join("models.json"), sources_agent.join("settings.json"), sources_agent.join("settings.jsonc")];
+        for ancestor in sources_cwd.ancestors() { paths.extend([ancestor.join(".omo/omo.json"), ancestor.join(".omo/omo.jsonc")]); }
+        paths.into_iter().map(|path| maho_omo_memory::worker::model_preflight::ConfigSource { exists: path.is_file(), path }).collect()
+    });
+    let captured_cell = omo_cell.clone();
+    let captured_tools = Arc::new(move || captured_cell.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        .map(|runtime| runtime.captured_tools().into_iter().map(|tool| tool.name).collect()).unwrap_or_default());
+    let disabled_cell = omo_cell.clone();
+    let disabled = Arc::new(move || disabled_cell.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+        .is_some_and(|runtime| runtime.context().get_flag(&maho_omo::component_disabled_flag("memory")) == Some(maho_ext_api::FlagValue::Boolean(true))));
+    let renderer_cell = api_cell.clone();
+    let ensure_completion_renderer = Arc::new(move || {
+        if let Some(api) = renderer_cell.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
+            maho_omo_memory::worker::completion_renderers::register_reflection_completion_renderer(api,
+                Arc::new(|theme: &maho_ext_api::Theme| Arc::new(MemoryTheme(theme.clone())) as Arc<dyn maho_omo_memory::worker::entry_renderers::EntryRenderTheme>));
         }
-        let handlers = std::mem::take(&mut api.registered.handlers);
-        for (kind, handlers) in handlers {
-            for original in handlers {
-                let memory = memory.clone();
-                api.on(kind, Arc::new(move |event, context| {
-                    memory.capture_context(context); original(event, context)
-                }));
-            }
-        }
+    });
+    let paths = env.clone();
+    let which = Arc::new(move |name: &str| paths.get("PATH").into_iter().flat_map(|path| std::env::split_paths(path))
+        .map(|path| path.join(name)).find(|path| path.is_file()).map(|path| path.to_string_lossy().into_owned()));
+    let warn = Arc::new(move |message: &str| eprintln!("memory: {message}"));
+
+    let runtime = super::memory_runtime::MemoryRuntime::new(super::memory_runtime::MemoryRuntimeHost {
+        cwd: cwd.to_path_buf(), agent_dir: agent_dir.to_path_buf(), env: env.clone(),
+        load_config, config_sources,
+        launcher: maho_omo_memory::worker::model_preflight::Launcher { command: executable.to_string_lossy().into_owned(), prefix_args: Vec::new() },
+        supervisor_command: supervisor, supervisor_args: Vec::new(),
+        actions: Arc::new(super::default_extensions::TaskActions(parent.clone())),
+        ensure_completion_renderer, captured_tools, disabled,
+        parent_cache_reusable: Arc::new(|context| context.session_manager.session_file().is_some() && context.model.as_ref().is_some_and(|model| model.api == "anthropic-messages")),
+        which, warn,
+    })?;
+
+    Ok(OmoSenpiComponent::from_context_register("memory", move |api, omo_runtime| {
+        *omo_cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(omo_runtime.clone());
+        *api_cell.lock().unwrap_or_else(PoisonError::into_inner) = Some(ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone()));
+        maho_omo_memory::composition::MemoryExtension::new(runtime.options()).register(api);
     }))
 }
 
 struct MemoryTheme(maho_ext_api::Theme);
 impl maho_omo_memory::worker::entry_renderers::EntryRenderTheme for MemoryTheme {
-    fn fg(&self, tone: &str, text: &str) -> String { self.0.fg(tone, text) }
-    fn italic(&self, text: &str) -> String { self.0.italic(text) }
+    fn fg(&self, tone: &str, text: &str) -> String {
+        let color = self.0.colors.get(tone).map(String::as_str).unwrap_or("");
+        let prefix = color.strip_prefix('#').filter(|hex| hex.len() == 6).and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .map(|rgb| format!("\x1b[38;2;{};{};{}m", (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)).unwrap_or_else(|| "\x1b[39m".into());
+        format!("{prefix}{text}\x1b[39m")
+    }
+    fn italic(&self, text: &str) -> String { format!("\x1b[3m{text}\x1b[23m") }
 }
 
 pub fn memory_entry(build: impl Fn() -> maho_omo_memory::composition::MemoryExtensionOptions + Send + Sync + 'static) -> OmoSenpiComponent {
