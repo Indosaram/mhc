@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use super::context::{Context, ContextKey};
 use super::result::Result;
 use crate::harness::session::types::JsonValue;
-use crate::types::AgentToolResult;
+use crate::types::{AgentToolResult, ReplayPolicy};
 
 /// `getOrUndefined(value)`: normalize nullable values to optional values.
 pub fn get_or_undefined<T>(value: Option<T>) -> Option<T> {
@@ -108,6 +108,7 @@ pub struct AgentHarnessTool<TContext> {
     pub label: String,
     pub prepare_arguments: Option<Arc<dyn Fn(Value) -> Value + Send + Sync>>,
     pub execute: AgentHarnessToolExecute<TContext>,
+    pub replay: Option<ReplayPolicy>,
     pub tool: Tool,
 }
 

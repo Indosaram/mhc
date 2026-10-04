@@ -11,7 +11,7 @@ use tokio::sync::{Notify, oneshot};
 
 use crate::harness::context::Context;
 use crate::harness::session::types::{Entry, JsonValue, OperationError, UsageRow};
-use crate::types::AgentMessage;
+use crate::types::{AgentMessage, AgentToolResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaneQueuedItem {
@@ -78,7 +78,7 @@ pub enum HarnessEventPayload {
     MessageUpdate { run_id: String, message: AgentMessage, event: Box<maho_ai::types::AssistantMessageEvent>, frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame> },
     MessageEnd { run_id: Option<String>, message: AgentMessage, entry_id: Option<String> },
     ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
-    ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
+    ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, partial_result: AgentToolResult },
     ToolEnd { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, is_error: bool, terminate: bool },
     EntryAdded { entry: Box<Entry> },
     QueueUpdate { queues: Vec<LaneQueuedItem> },
@@ -340,12 +340,18 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
             object.insert("message".into(), wire_value_of(message));
             wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
         }
-        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name }
-        | HarnessEventPayload::ToolUpdate { run_id, turn_id, tool_call_id, tool_name } => {
+        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
             object.insert("toolName".into(), serde_json::json!(tool_name));
+        }
+        HarnessEventPayload::ToolUpdate { run_id, turn_id, tool_call_id, tool_name, partial_result } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+            object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
+            object.insert("toolName".into(), serde_json::json!(tool_name));
+            object.insert("partialResult".into(), wire_value_of(partial_result));
         }
         HarnessEventPayload::ToolEnd { run_id, turn_id, tool_call_id, tool_name, is_error, terminate } => {
             object.insert("runId".into(), serde_json::json!(run_id));
@@ -1126,5 +1132,25 @@ mod wire_tests {
             event_to_value(&event),
             json!({"type": "queue_update", "lane": "main", "queues": [{"entryId": "entry", "kind": "steer", "type": "message"}]})
         );
+    }
+
+    #[test]
+    fn tool_update_carries_the_partial_result() {
+        let partial_result = crate::types::AgentToolResult::text("partial");
+        let event = HarnessEvent::new(
+            HarnessEventPayload::ToolUpdate {
+                run_id: "op".into(),
+                turn_id: "turn".into(),
+                tool_call_id: "call".into(),
+                tool_name: "bash".into(),
+                partial_result: partial_result.clone(),
+            },
+            Some("main".into()),
+        );
+        let value = event_to_value(&event);
+        assert_eq!(value["type"], json!("tool_update"));
+        assert_eq!(value["toolCallId"], json!("call"));
+        assert_eq!(value["partialResult"], serde_json::to_value(&partial_result).expect("partial result wire"));
+        assert_eq!(value["partialResult"]["content"][0]["text"], json!("partial"));
     }
 }
