@@ -16,3 +16,41 @@ async fn service_registration_snapshot_refreshes_the_original_entry_catalog() {
     assert!(prepared[0].cached_catalog.is_none());
     service.dispose().await.unwrap(); registry.dispose().await.unwrap();
 }
+
+#[tokio::test]
+async fn service_registration_preserves_artifact_owner_and_optional_auth_refresh() {
+    // Given a connected-session entry with a session-owned output artifact tracker.
+    let root = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let registry = Arc::new(HostMcpRegistry::default());
+    let mut service = McpService::new(registry.clone(), 1);
+    let declaration = maho_ext_api::RegisteredMcpServerDeclaration {
+        name: "fx".into(),
+        config: maho_ext_api::McpServerDeclaration {
+            transport: Some(maho_ext_api::McpTransport::Stdio),
+            command: Some("/usr/bin/node".into()),
+            ..Default::default()
+        },
+        extension_path: "fixture".into(),
+        registration_cwd: cwd.path().into(),
+    };
+    service.attach_session(cwd.path(), root.path(), &BTreeMap::new(), true, &[declaration]).await.unwrap();
+    let original = service.connections["fx"].entry.clone();
+    let artifacts = original.lock().await.artifacts.as_ref().unwrap().clone();
+    let spill = root.path().join("owned-spill.txt");
+    std::fs::write(&spill, "output").unwrap();
+    artifacts.track(spill.clone());
+
+    // When the entry is adapted for exposure registration.
+    let prepared = prepare_mcp_service_registration_entries(
+        service.config.as_ref().unwrap(), std::slice::from_ref(&original),
+    ).await;
+
+    // Then registration retains the same tracker, and non-OAuth refresh is a no-op.
+    assert!(Arc::ptr_eq(prepared[0].artifacts.as_ref().unwrap(), &artifacts));
+    (prepared[0].ensure_fresh)().await.unwrap();
+    assert_eq!(original.lock().await.connection.state(), maho_ext_mcp::connection::ServerConnectionState::Idle);
+    service.dispose().await.unwrap();
+    assert!(!spill.exists());
+    registry.dispose().await.unwrap();
+}

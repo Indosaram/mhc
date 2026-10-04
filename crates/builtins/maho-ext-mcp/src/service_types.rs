@@ -48,4 +48,6 @@ pub struct McpServerSnapshot {
 pub struct McpConnectionEntry {
     pub key:String,pub name:String,pub config_hash:String,pub connection:Arc<ServerConnection>,pub logger:Arc<Mutex<McpLogger>>,
     pub created_at_ms:f64,pub counters:McpServerCounters,pub agent_dir:Option<PathBuf>,pub cached_catalog:Option<McpCachedServerCatalog>,pub cache_refreshed_after_connect:bool,
+    pub auth_plan:crate::auth::context::ServerAuthPlan,
+    pub artifacts:Option<Arc<crate::guard::output_guard::McpOutputArtifacts>>,
 }

@@ -41,7 +41,7 @@ fn normalize_globs(value:Option<&Value>)->Vec<String> {
 }
 pub fn match_include_tools(globs:&[String],tool:&str)->bool {
     globs.iter().any(|glob| {
-        let pattern=format!("^{}$",glob.split('*').map(regex::escape).collect::<Vec<_>>().join(".*"));
+        let pattern=format!("^{}$",glob.split('*').map(regex::escape).collect::<Vec<_>>().join(r"[^\n\r\x{2028}\x{2029}]*"));
         regex::Regex::new(&pattern).is_ok_and(|r|r.is_match(tool))
     })
 }
@@ -52,5 +52,6 @@ pub fn skill_activation_targets(declarations:&SkillMcpDeclarations,skill:&str,re
         let Some(globs)=declaration.include_tools_by_skill.get(skill) else{continue;};
         for tool in registered {if &tool.server==server && match_include_tools(globs,&tool.tool_name){targets.insert(tool.name.clone());}}
     }
-    targets.into_iter().collect()
+    let mut targets=targets.into_iter().collect::<Vec<_>>();
+    targets.sort_by_cached_key(|name|name.encode_utf16().collect::<Vec<_>>());targets
 }

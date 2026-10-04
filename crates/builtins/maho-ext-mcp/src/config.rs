@@ -32,16 +32,18 @@ fn schema_error(path:&str,message:&str)->McpConfigValidationError {McpConfigVali
 fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationError> {
     let object=raw.as_object().ok_or_else(||schema_error(path,"must be object"))?;
     for name in object.keys(){if !["mcpServers","settings"].contains(&name.as_str()){return Err(schema_error(name,"schema is false"));}}
-    for (name,value) in object {
-        match name.as_str() {
+    for name in ["settings", "mcpServers"] {
+        let Some(value) = object.get(name) else {continue;};
+        match name {
             "mcpServers"=>{
                 let servers=value.as_object().ok_or_else(||schema_error("mcpServers","must be object"))?;
                 for (name,server) in servers {
                     let path=format!("mcpServers.{name}");let server=server.as_object().ok_or_else(||schema_error(&path,"must be object"))?;
                     for name in server.keys(){if !["type","command","args","cwd","env","url","headers","bearerTokenEnv","auth","oauth","enabled","lifecycle","connectTimeoutMs","requestTimeoutMs","startupTimeoutMs","idleTimeoutMin","exposure","directTools","includeTools","excludeTools","logLevel"].contains(&name.as_str()){return Err(schema_error(&format!("{path}.{name}"),"schema is false"));}}
-                    for (field,value) in server {
+                    for field in ["type","url","command","args","env","cwd","headers","auth","bearerTokenEnv","oauth","enabled","lifecycle","idleTimeoutMin","requestTimeoutMs","connectTimeoutMs","startupTimeoutMs","includeTools","excludeTools","directTools","exposure","logLevel"] {
+                        let Some(value) = server.get(field) else {continue;};
                         let path=format!("{path}.{field}");
-                        match field.as_str() {
+                        match field {
                             "command"|"cwd"|"url"|"bearerTokenEnv"=>check_type(value,&path,"string")?,
                             "enabled"=>check_type(value,&path,"boolean")?,
                             "connectTimeoutMs"|"requestTimeoutMs"|"startupTimeoutMs"|"idleTimeoutMin"=>check_type(value,&path,"number")?,
@@ -56,7 +58,7 @@ fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationErr
                             "oauth"=>{
                                 let oauth=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;
                                 for name in oauth.keys() {if !["clientId","callbackPort","scopes","clientMetadataUrl","flow"].contains(&name.as_str()){return Err(schema_error(&format!("{path}.{name}"),"schema is false"));}}
-                                for (name,value) in oauth {let path=format!("{path}.{name}");match name.as_str(){
+                                for name in ["clientId","callbackPort","scopes","clientMetadataUrl","flow"] {let Some(value)=oauth.get(name) else {continue;};let path=format!("{path}.{name}");match name{
                                     "clientId"|"clientMetadataUrl"=>check_type(value,&path,"string")?,"scopes"=>check_strings(value,&path)?,
                                     "flow"=>check_literals(value,&path,&["code","client_credentials"] )?,
                                     "callbackPort"=>{
@@ -74,11 +76,11 @@ fn validate_schema_value(raw:&Value,path:&str)->Result<(),McpConfigValidationErr
             "settings"=>{
                 let settings=value.as_object().ok_or_else(||schema_error("settings","must be object"))?;
                 for name in settings.keys(){if !["toolPrefix","searchThreshold","outputGuard","importConfigs","oauthCallbackUrl","stubSwap","nativeToolSearch"].contains(&name.as_str()){return Err(schema_error(&format!("settings.{name}"),"schema is false"));}}
-                for (field,value) in settings {let path=format!("settings.{field}");match field.as_str(){
+                for field in ["toolPrefix","searchThreshold","outputGuard","importConfigs","oauthCallbackUrl","stubSwap","nativeToolSearch"] {let Some(value)=settings.get(field) else {continue;};let path=format!("settings.{field}");match field{
                     "toolPrefix"|"oauthCallbackUrl"=>check_type(value,&path,"string")?,"searchThreshold"=>check_type(value,&path,"number")?,"stubSwap"=>check_type(value,&path,"boolean")?,
                     "nativeToolSearch" if value!=&Value::String("auto".into()) && !value.is_boolean()=>return Err(schema_error(&path,if value.is_string(){"must be equal to constant"}else{"must be string"})),
                     "importConfigs"=>{let array=value.as_array().ok_or_else(||schema_error(&path,"Expected array"))?;for (index,value) in array.iter().enumerate(){let path=format!("{path}.{index}");check_type(value,&path,"string")?;if value!=&Value::String("claude".into()){return Err(schema_error(&path,"must be equal to constant"));}}},
-                    "outputGuard"=>{let guard=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for field in guard.keys(){if !["maxBytes","maxLines","maxTokens"].contains(&field.as_str()){return Err(schema_error(&format!("{path}.{field}"),"schema is false"));}}for (field,value) in guard {check_type(value,&format!("{path}.{field}"),"number")?;}},_=>(),
+                    "outputGuard"=>{let guard=value.as_object().ok_or_else(||schema_error(&path,"must be object"))?;for field in guard.keys(){if !["maxBytes","maxLines","maxTokens"].contains(&field.as_str()){return Err(schema_error(&format!("{path}.{field}"),"schema is false"));}}for field in ["maxBytes","maxLines","maxTokens"] {if let Some(value)=guard.get(field){check_type(value,&format!("{path}.{field}"),"number")?;}}},_=>(),
                 }}
             }
             _=>(),
@@ -129,7 +131,7 @@ fn stable_stringify(value: &Value) -> String {
     match value {
         Value::Array(items) => format!("[{}]", items.iter().map(stable_stringify).collect::<Vec<_>>().join(",")),
         Value::Object(map) => {
-            let mut keys: Vec<_> = map.keys().collect(); keys.sort();
+            let mut keys: Vec<_> = map.keys().collect(); keys.sort_by_cached_key(|key|key.encode_utf16().collect::<Vec<_>>());
             format!("{{{}}}", keys.iter().map(|key| format!("{}:{}", Value::String((*key).clone()), stable_stringify(&map[*key]))).collect::<Vec<_>>().join(","))
         }
         Value::Number(n) if n.as_f64().is_some_and(|f| f.fract() == 0.0) => format!("{:.0}", n.as_f64().unwrap_or_default()),

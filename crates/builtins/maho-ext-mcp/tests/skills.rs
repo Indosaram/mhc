@@ -1,6 +1,11 @@
 use maho_ext_mcp::{skills::*,auth::context::*,config_schema::*};
 use serde_json::json;
 #[test]
+fn skill_wildcards_exclude_javascript_line_terminators() {
+    for name in ["a\nb","a\rb","a\u{2028}b","a\u{2029}b"] {assert!(!match_include_tools(&["a*b".into()],name));}
+    assert!(match_include_tools(&["a*b".into()],"a/b"));
+}
+#[test]
 fn sidecar_wins_over_frontmatter() {
     let root=tempfile::tempdir().unwrap();
     let path=root.path().join("SKILL.md");std::fs::write(&path,"---\nmcp:\n  loser:\n    command: node\n---\nBody").unwrap();
@@ -43,4 +48,12 @@ fn array_wrapped_server_map_uses_numeric_entry_names() {
     let declarations=parse_skill_mcp_declarations(&[SkillLike {name:"skill".into(),file_path:path,base_dir:root.path().into()}]);
     assert_eq!(declarations.servers.keys().cloned().collect::<Vec<_>>(),vec!["0","3"]);
     assert_eq!(declarations.servers["0"].raw["command"],"node");
+}
+#[test]
+fn skill_targets_use_javascript_utf16_order() {
+    let root=tempfile::tempdir().unwrap();let path=root.path().join("SKILL.md");
+    std::fs::write(root.path().join("mcp.json"),json!({"server":{"command":"node"}}).to_string()).unwrap();
+    let declarations=parse_skill_mcp_declarations(&[SkillLike {name:"skill".into(),file_path:path,base_dir:root.path().into()}]);
+    let registered=["\u{e000}","\u{10000}"].map(|name|RegisteredSkillTool {name:name.into(),tool_name:"tool".into(),server:"server".into()});
+    assert_eq!(skill_activation_targets(&declarations,"skill",&registered),vec!["\u{10000}","\u{e000}"]);
 }

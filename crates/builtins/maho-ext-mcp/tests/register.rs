@@ -45,6 +45,19 @@ async fn native_tool_runtime_reconnects_after_idle_generation_change() {
     lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
 }
 #[tokio::test]
+async fn real_error_tool_execution_never_spills_output() {
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--iserror-tool".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let transport=create_mcp_transport("errors",&config,None,Arc::new(Mutex::new(McpLogger::new("errors",root.path(),None).unwrap()))).unwrap();
+    let client=connect_mcp_transport(&transport).await.unwrap();let catalog=collect_tool_catalog("errors",client,Duration::from_secs(3)).await.unwrap();
+    let artifacts=Arc::new(McpOutputArtifacts::default());
+    let tools=build_mcp_tool_definitions(&catalog,root.path().into(),artifacts.clone(),Some(OutputGuardSettings {max_bytes:Some(1.0),max_lines:Some(1.0),max_tokens:None}));
+    let tool=tools.iter().find(|tool|tool.name=="mcp_errors_iserror_tool").unwrap();
+    let result=(tool.execute)(ToolCall {id:"error",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    shutdown_mcp_transport(&transport).await.unwrap();artifacts.cleanup().unwrap();
+    assert!(result.is_err());assert!(!root.path().join("tmp/mcp-out").exists());
+}
+#[tokio::test]
 async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again() {
     use tokio::io::{AsyncBufReadExt,BufReader};
     let mut fixture=tokio::process::Command::new("/usr/bin/node").args(["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/http-server.ts","--tools","1","--always-expire-tool-calls"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
@@ -74,4 +87,37 @@ async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() 
     let result=(tools[0].execute)(ToolCall {id:"lazy",params:json!({"value":"lazy-call"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap();
     assert!(matches!(&result.content[0],ToolContent::Text {text,..} if text.contains("Full output saved to:")));assert!(artifact_root.path().join("tmp/mcp-out").exists());assert!(!root.path().join("tmp/mcp-out").exists());
     lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+}
+#[tokio::test]
+async fn terminal_auth_refresh_blocks_cached_connect_and_marks_needs_auth() {
+    use maho_ext_mcp::{connection::*,errors::*};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
+    let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
+    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
+    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
+    let connected=Arc::new(std::sync::atomic::AtomicBool::new(false));let observed=connected.clone();
+    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(move ||{observed.store(true,std::sync::atomic::Ordering::SeqCst);Box::pin(async {Ok(())})}));
+    entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {Err(McpError::new(McpErrorKind::Auth,"fixture refresh requires auth"))})));
+    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&entries,root.path().into(),artifacts.clone(),None);
+    let result=(tools[0].execute)(ToolCall {id:"auth",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    let state=connection.state();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+    assert!(result.is_err());assert!(!connected.load(std::sync::atomic::Ordering::SeqCst));assert_eq!(state,ServerConnectionState::NeedsAuth);
+}
+#[tokio::test]
+async fn transient_auth_refresh_does_not_trigger_failed_send_reconnect() {
+    use maho_ext_mcp::{connection::*,errors::*};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/missing/never-spawn".into()),..Default::default()};
+    let connection=ServerConnection::new("auth",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("auth",root.path(),None).unwrap())));
+    let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
+    let cached=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
+    let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});
+    let mut entries=maho_ext_mcp::catalog::cached_mcp_catalog_entries("auth",&cached,runtime,Duration::from_secs(2),Arc::new(||Box::pin(async {Ok(())})));
+    entries[0].ensure_fresh=Some(Arc::new(||Box::pin(async {let mut error=McpError::new(McpErrorKind::Connect,"fixture network auth refresh failure");error.retriable=true;Err(error)})));
+    let artifacts=Arc::new(McpOutputArtifacts::default());let tools=build_mcp_tool_definitions(&entries,root.path().into(),artifacts.clone(),None);
+    let result=(tools[0].execute)(ToolCall {id:"auth",params:json!({}),signal:Default::default(),on_update:None,context:None}).await;
+    let state=connection.state();let generation=connection.generation();lifecycle.dispose();connection.dispose().await.unwrap();artifacts.cleanup().unwrap();
+    assert!(result.is_err());assert_eq!(state,ServerConnectionState::Idle);assert_eq!(generation,0);
 }

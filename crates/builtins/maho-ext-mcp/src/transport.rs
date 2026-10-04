@@ -34,7 +34,17 @@ pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTre
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
-        self.client.get_or_try_init(||async {let client=McpClient::materialize(&self.server_name,&self.spec,self.logger.clone()).await?;if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}*self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));Ok::<_,McpError>(client)}).await.cloned()
+        self.client.get_or_try_init(||async {
+            let mut spec=self.spec.clone();
+            if let (McpTransportSpec::Stdio {env,..},Some(auth))=(&mut spec,&self.auth)
+                && let Some(tokens)=auth.ensure_fresh().await.map_err(|error|McpError::new(McpErrorKind::Auth,error.to_string()))? {
+                env.insert("OAUTH_ACCESS_TOKEN".into(),tokens.access_token);
+            }
+            let client=McpClient::materialize(&self.server_name,&spec,self.logger.clone()).await?;
+            if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}
+            *self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));
+            Ok::<_,McpError>(client)
+        }).await.cloned()
     }
     pub fn client(&self)->Result<Arc<McpClient>,McpError> {
         self.client.get().cloned().ok_or_else(||{
@@ -63,11 +73,12 @@ pub async fn shutdown_mcp_transport(connection:&McpTransportConnection)->Result<
     if *shutdown{return Ok(());}
     if let Some(task)=connection.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
     if let Some(client)=connection.client.get() {
-        if let Some(pid)=client.root_pid {
-            let reaper=crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500));
-            let (result,())=tokio::join!(client.close(),reaper);result?;
-        }else{client.close().await?;}
-    }
+        let cleanup=async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if let Some(pid)=client.root_pid {crate::process_tree::reap_process_tree(pid,Duration::from_millis(400),Duration::from_millis(500)).await;}
+        };
+        let (result,())=tokio::join!(client.close(),cleanup);result?;
+    }else{tokio::time::sleep(Duration::from_millis(100)).await;}
     *shutdown=true;Ok(())
 }
 impl Drop for McpTransportConnection {fn drop(&mut self){if let Some(task)=self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}}}

@@ -31,6 +31,15 @@ async fn form_accepts_typed_answers() {
     assert_eq!(content["count"].as_f64(),Some(42.0));assert_eq!(content["confirmed"],true);assert_eq!(content["mode"],"beta");assert_eq!(content["name"],"Ada");
 }
 #[tokio::test]
+async fn numeric_answers_accept_javascript_radix_forms_and_whitespace() {
+    for (answer,expected) in [("0x10",16.0),("0b10",2.0),("0o10",8.0),(" ",0.0)] {
+        let ui=ScriptedUi {answer:Some(answer),hanging:false};
+        let result=run_elicitation_form(&ui,"Ask",&json!({"properties":{"count":{"type":"number"}}}),Duration::from_secs(2)).await;
+        assert_eq!(result.action,ElicitationAction::Accept);
+        assert_eq!(result.content.unwrap()["count"].as_f64(),Some(expected));
+    }
+}
+#[tokio::test]
 async fn missing_required_answer_and_invalid_number_decline() {
     for answer in [None,Some("not-a-number")] {
         let ui=ScriptedUi {answer,hanging:false};

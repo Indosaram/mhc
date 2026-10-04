@@ -21,6 +21,14 @@ fn catalog_diff_is_sorted_and_deduplicated() {
     let diff=diff_mcp_tool_names(&strings(&["a","b","c"]),&strings(&["b","d","e","e"]));assert_eq!(diff,McpCatalogDiff {added:strings(&["d","e"]),removed:strings(&["a","c"]),unchanged:strings(&["b"])});
 }
 #[test]
+fn catalog_diff_uses_javascript_utf16_order() {
+    let names=vec!["\u{e000}".into(),"\u{10000}".into()];
+    let expected=vec!["\u{10000}".to_owned(),"\u{e000}".to_owned()];
+    assert_eq!(diff_mcp_tool_names(&[],&names).added,expected);
+    assert_eq!(diff_mcp_tool_names(&names,&[]).removed,expected);
+    assert_eq!(diff_mcp_tool_names(&names,&names).unchanged,expected);
+}
+#[test]
 fn delta_reports_additions_as_inactive() {
     assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec!["a".into()],removed:vec!["b".into()],unchanged:vec![]}),"1 added (inactive), 1 removed");assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec![],removed:vec![],unchanged:vec![]}),"no change");
 }
@@ -44,6 +52,17 @@ async fn second_refresh_obeys_minimum_interval() {
     let coalescer=McpListChangeCoalescer::new(None,None);let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
     let first=sender.clone();coalescer.notify(move||async move {first.send(tokio::time::Instant::now()).unwrap();});let fired=receiver.recv().await.unwrap();
     coalescer.notify(move||async move {sender.send(tokio::time::Instant::now()).unwrap();});let second=receiver.recv().await.unwrap();assert_eq!(second-fired,std::time::Duration::from_secs(1));
+}
+#[tokio::test(start_paused=true)]
+async fn refresh_errors_reach_sink_and_next_burst_still_runs() {
+    use std::sync::Arc;
+    let coalescer=McpListChangeCoalescer::new(None,None);
+    let (sender,mut errors)=tokio::sync::mpsc::unbounded_channel();
+    let sink=maho_ext_mcp::wrap::McpAsyncErrorSink {logger:Arc::new(move|_,data|{sender.send(data.clone()).unwrap();Ok(())}),notify:None};
+    coalescer.notify_guarded(||async {Err(maho_ext_mcp::errors::McpError::new(maho_ext_mcp::errors::McpErrorKind::Protocol,"refresh failed"))},sink.clone());
+    assert_eq!(errors.recv().await.unwrap()["message"],"refresh failed");
+    coalescer.notify_guarded(||async {panic!("refresh panic");},sink);
+    assert_eq!(errors.recv().await.unwrap()["message"],"refresh panic");
 }
 #[tokio::test(start_paused=true)]
 async fn dispose_cancels_pending_refresh() {

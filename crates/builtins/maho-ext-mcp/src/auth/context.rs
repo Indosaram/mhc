@@ -1,7 +1,20 @@
 use crate::config_schema::{Auth,AuthMode,McpServerConfig,Transport};
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum ServerAuthMode {None,Bearer,OAuth}
-pub struct ServerAuthPlan {pub mode:ServerAuthMode,pub provider:Option<std::sync::Arc<super::oauth_provider::McpOAuthProvider>>,pub refresh:Option<super::oauth_refresh::McpRefreshManager>}
+pub struct ServerAuthPlan {pub mode:ServerAuthMode,pub provider:Option<std::sync::Arc<super::oauth_provider::McpOAuthProvider>>,pub refresh:Option<std::sync::Arc<super::oauth_refresh::McpRefreshManager>>}
+impl ServerAuthPlan {
+    pub async fn ensure_fresh(&self)->Result<(),crate::errors::McpError> {
+        if let Some(refresh)=&self.refresh {
+            refresh.ensure_fresh().await.map_err(|error| {
+                let terminal=crate::needs_auth::is_oauth_needs_auth_error(&error);
+                let mut failure=crate::errors::McpError::new(if terminal {crate::errors::McpErrorKind::Auth}else{crate::errors::McpErrorKind::Connect},error.to_string());
+                failure.retriable = !terminal;
+                failure
+            })?;
+        }
+        Ok(())
+    }
+}
 pub struct ServerAuthDeps<'a> {
     pub server_name:&'a str,pub config:&'a McpServerConfig,pub agent_dir:Option<&'a std::path::Path>,
     pub logger:Option<std::sync::Arc<std::sync::Mutex<crate::log::McpLogger>>>,pub redirect_url:Option<&'a str>,
@@ -16,7 +29,7 @@ pub fn resolve_server_auth_with(deps:ServerAuthDeps<'_>)->ServerAuthPlan {
     if let Some(oauth)=&deps.config.oauth {provider.scopes=oauth.scopes.clone();provider.client_id=oauth.client_id.clone();provider.client_metadata_url=oauth.client_metadata_url.clone();}
     provider.logger=deps.logger;provider.on_redirect=deps.on_redirect;
     let provider=std::sync::Arc::new(provider);let refresh=super::oauth_refresh::McpRefreshManager::new(provider.clone(),deps.client);
-    ServerAuthPlan {mode,provider:Some(provider),refresh:Some(refresh)}
+    ServerAuthPlan {mode,provider:Some(provider),refresh:Some(std::sync::Arc::new(refresh))}
 }
 pub fn resolve_server_auth(server_name:&str,config:&McpServerConfig,agent_dir:&std::path::Path,redirect_url:Option<&str>,client:reqwest::Client)->ServerAuthPlan {
     resolve_server_auth_with(ServerAuthDeps {server_name,config,agent_dir:Some(agent_dir),logger:None,redirect_url,on_redirect:None,client})

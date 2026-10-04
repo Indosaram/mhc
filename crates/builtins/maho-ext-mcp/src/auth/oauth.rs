@@ -18,6 +18,10 @@ pub enum OAuthRequestError {
 pub struct OAuthServerInfo {pub authorization_server_url:String,pub authorization_server_metadata:Value,pub resource_metadata:Value}
 pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
     if let Some(cached)=provider.discovery_state()? {return Ok(serde_json::from_value(cached)?);}
+    let info=discover_uncached(provider,client).await?;
+    provider.save_discovery_state(serde_json::to_value(&info)?)?;Ok(info)
+}
+pub(crate) async fn discover_uncached(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
     let resource=url::Url::parse(&provider.store.server_url)?;
     let mut metadata_url=resource.clone();metadata_url.set_path(&format!("/.well-known/oauth-protected-resource{}",resource.path()));metadata_url.set_query(None);
     let mut metadata=Value::Null;
@@ -37,8 +41,7 @@ pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Resul
         if response.status().is_client_error(){continue;}
         authorization=response.error_for_status()?.json::<Value>().await?;break;
     }
-    let info=OAuthServerInfo {authorization_server_url:issuer.into(),authorization_server_metadata:authorization,resource_metadata:metadata};
-    provider.save_discovery_state(serde_json::to_value(&info)?)?;Ok(info)
+    Ok(OAuthServerInfo {authorization_server_url:issuer.into(),authorization_server_metadata:authorization,resource_metadata:metadata})
 }
 pub struct BeginAuthResult {pub authorized:bool,pub authorization_url:Option<url::Url>}
 pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {

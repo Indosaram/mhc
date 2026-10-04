@@ -45,7 +45,13 @@ async fn collect_form(ui:&dyn ExtensionUi,message:&str,schema:&Value)->Elicitati
             continue;
         };
         let value=if matches!(kind,Some("number"|"integer")) {
-            let number=if answer.trim().is_empty(){Some(0.0)}else{answer.trim().parse::<f64>().ok()};
+            let raw=answer.trim();
+            let radix=raw.strip_prefix("0x").or_else(||raw.strip_prefix("0X")).map(|digits|(digits,16))
+                .or_else(||raw.strip_prefix("0b").or_else(||raw.strip_prefix("0B")).map(|digits|(digits,2)))
+                .or_else(||raw.strip_prefix("0o").or_else(||raw.strip_prefix("0O")).map(|digits|(digits,8)));
+            let number=if raw.is_empty(){Some(0.0)}else if let Some((digits,radix))=radix {
+                digits.chars().try_fold(0.0,|number,digit|digit.to_digit(radix).map(|digit|number*f64::from(radix)+f64::from(digit))).filter(|_|!digits.is_empty())
+            }else{raw.parse::<f64>().ok()};
             let Some(number)=number.filter(|number|number.is_finite()) else{return response(ElicitationAction::Decline);};
             json!(number)
         }else{json!(answer)};

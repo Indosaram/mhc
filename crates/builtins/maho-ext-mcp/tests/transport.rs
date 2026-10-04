@@ -38,6 +38,20 @@ fn auth_false_does_not_resolve_bearer_variable() {
     let McpTransportSpec::Http {headers,..}=create_mcp_transport_spec("srv",&config,None).unwrap() else{panic!("wrong kind")};assert!(headers.is_empty());
 }
 #[tokio::test]
+async fn stdio_oauth_materialization_passes_current_token_to_child() {
+    use std::sync::{Arc,Mutex};
+    let root=tempfile::tempdir().unwrap();
+    let store=maho_ext_mcp::auth::token_store::McpTokenStore::new(root.path(),"oauth-env","https://fixture.test");
+    store.write(maho_ext_mcp::auth::token_store::McpStoredAuth {access_token:Some("fixture-current".into()),..Default::default()}).unwrap();
+    let provider=Arc::new(maho_ext_mcp::auth::oauth_provider::McpOAuthProvider::new(store));
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec![format!("{}/tests/fixtures/oauth-env.mjs",env!("CARGO_MANIFEST_DIR"))]),..Default::default()};
+    let mut transport=create_mcp_transport("oauth-env",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("oauth-env",root.path(),None).unwrap()))).unwrap();
+    transport.auth=Some(Arc::new(maho_ext_mcp::auth::oauth_refresh::McpRefreshManager::new(provider,reqwest::Client::new())));
+    let client=connect_mcp_transport(&transport).await.unwrap();
+    assert_eq!(client.server_info.read().await["version"],"current");
+    shutdown_mcp_transport(&transport).await.unwrap();
+}
+#[tokio::test]
 async fn native_stdio_connects_to_pinned_senpi_fixture() {
     use std::{sync::{Arc,Mutex},time::Duration};
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("fixture",root.path(),None).unwrap()));
@@ -119,8 +133,19 @@ async fn concurrent_shutdowns_coalesce_and_wait_for_the_child() {
     let (first,second)=tokio::join!(shutdown_mcp_transport(&connection),shutdown_mcp_transport(&connection));first.unwrap();second.unwrap();
     assert!(!maho_ext_mcp::process_tree::is_process_alive(pid).await);
 }
+#[tokio::test(start_paused=true)]
+async fn shutdown_preserves_pinned_grace_before_completing() {
+    use std::{sync::{Arc,Mutex},time::Duration};
+    let root=tempfile::tempdir().unwrap();
+    let config=McpServerConfig {transport:Some(Transport::Http),url:Some("http://127.0.0.1:1/mcp".into()),..Default::default()};
+    let connection=create_mcp_transport("grace",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("grace",root.path(),None).unwrap()))).unwrap();
+    connection.materialize().await.unwrap();let started=tokio::time::Instant::now();
+    shutdown_mcp_transport(&connection).await.unwrap();
+    assert_eq!(started.elapsed(),Duration::from_millis(100));
+    let repeated=tokio::time::Instant::now();shutdown_mcp_transport(&connection).await.unwrap();assert_eq!(repeated.elapsed(),Duration::ZERO);
+}
 #[tokio::test]
-async fn http_post_sse_accepts_carriage_return_delimiters() {
+async fn http_post_sse_accepts_bom_and_carriage_return_delimiters() {
     use axum::{Router,routing::post,Json,response::IntoResponse};
     use serde_json::{Value,json};use std::{sync::{Arc,Mutex},time::Duration};
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let address=listener.local_addr().unwrap();
@@ -128,7 +153,7 @@ async fn http_post_sse_accepts_carriage_return_delimiters() {
     let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/mcp",post(|Json(value):Json<Value>|async move {
         if value.get("id").is_none(){return axum::http::StatusCode::ACCEPTED.into_response();}
         let result=if value["method"]=="initialize" {json!({"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"cr","version":"1"}})}else{json!({"tools":[]})};
-        ([("content-type","text/event-stream")],format!("data: {}\r\r",json!({"jsonrpc":"2.0","id":value["id"],"result":result}))).into_response()
+        ([("content-type","text/event-stream")],format!("\u{feff}event: custom\rdata: not-json\r\revent: message\rdata: malformed-message\r\revent: custom\revent\rdata: {}\r\r",json!({"jsonrpc":"2.0","id":value["id"],"result":result}))).into_response()
     }))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let client=McpClient::materialize("cr",&McpTransportSpec::Http {url:format!("http://{address}/mcp").parse().unwrap(),headers:Default::default()},Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("cr",root.path(),None).unwrap()))).await.unwrap();
     client.initialize(Duration::from_secs(2)).await.unwrap();assert_eq!(client.request("tools/list",json!({}),Duration::from_secs(2)).await.unwrap()["tools"],json!([]));
