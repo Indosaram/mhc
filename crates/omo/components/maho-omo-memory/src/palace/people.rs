@@ -6,7 +6,6 @@ use memory_core::memfs::parse_memory_file;
 use memory_core::people::{PeopleLimits, parse_people_card};
 use serde::Serialize;
 
-use super::PalaceError;
 use super::entry_collector::PalaceEntryState;
 
 pub const PRIMARY_HUMAN_SLUG: &str = "human";
@@ -23,7 +22,7 @@ pub struct PalacePeopleNode {
     pub display_name: String,
     pub kind: String,
     pub aliases: Vec<String>,
-    pub state: PalaceEntryState,
+    pub state: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -42,7 +41,7 @@ pub struct PalacePeopleDiagnostic {
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PalacePeople {
     pub nodes: Vec<PalacePeopleNode>,
     pub edges: Vec<PalacePeopleEdge>,
@@ -76,15 +75,16 @@ struct Relationship {
 pub fn collect_people(
     repo: &GitMemoryRepo,
     head: Option<&str>,
-    options: PalacePeopleOptions,
-) -> Result<Option<PalacePeople>, PalaceError> {
+    options: &PalacePeopleOptions,
+) -> Option<PalacePeople> {
     if !options.enabled {
-        return Ok(None);
+        return None;
     }
 
     let committed = match head {
         Some(head) => repo
-            .ls_tree(Some(head), None)?
+            .ls_tree(Some(head), None)
+            .ok()?
             .into_iter()
             .filter(|path| is_card_path(path.as_str()))
             .collect::<Vec<_>>(),
@@ -93,7 +93,12 @@ pub fn collect_people(
     let dirty = dirty_paths(repo);
     let working = working_card_paths(&repo.dir);
     let committed_set: BTreeSet<String> = committed.iter().cloned().collect();
-    let mut paths: Vec<String> = committed.into_iter().chain(working).collect::<BTreeSet<_>>().into_iter().collect();
+    let mut paths: Vec<String> = committed
+        .into_iter()
+        .chain(working)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     paths.sort_by(|left, right| by_primary_human_first(left, right));
 
     let mut nodes = Vec::new();
@@ -131,7 +136,7 @@ pub fn collect_people(
             display_name: display_name_of(&file.frontmatter.description, &slug),
             kind: file.frontmatter.kind.unwrap_or_else(|| "person".to_string()),
             aliases: file.frontmatter.aliases.unwrap_or_default(),
-            state,
+            state: state.label().to_string(),
         });
         for entry in parsed.card.entries {
             if entry.prefix != "RELATIONSHIP" {
@@ -162,11 +167,11 @@ pub fn collect_people(
             target: edge.target,
         })
         .collect();
-    Ok(Some(PalacePeople {
+    Some(PalacePeople {
         nodes,
         edges,
         diagnostics,
-    }))
+    })
 }
 
 fn parse_relationship(source: &str, content: &str) -> Option<Relationship> {
@@ -313,8 +318,7 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(true))
-            .unwrap()
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
             .unwrap();
 
         let mut slugs = people.nodes.iter().map(|node| node.slug.clone()).collect::<Vec<_>>();
@@ -331,8 +335,7 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(true))
-            .unwrap()
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
             .unwrap();
 
         let edges = people
@@ -363,8 +366,7 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(true))
-            .unwrap()
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
             .unwrap();
 
         assert!(!people.edges.iter().any(|edge| edge.predicate == "senior-engineer"));
@@ -380,23 +382,20 @@ mod tests {
             "---\ndescription: Person - Kim Lee\nkind: person\naliases: [\"Kim\"]\n---\n\nIDENTITY: draft person\n",
         );
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(true))
-            .unwrap()
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
             .unwrap();
 
         let kim = people.nodes.iter().find(|node| node.slug == "kim-lee").unwrap();
-        assert_eq!(kim.state, PalaceEntryState::Uncommitted);
-        assert_eq!(kim.state.label(), UNCOMMITTED_LABEL);
+        assert_eq!(kim.state, UNCOMMITTED_LABEL);
         let jane = people.nodes.iter().find(|node| node.slug == "jane-doe").unwrap();
-        assert_eq!(jane.state, PalaceEntryState::Committed);
+        assert_eq!(jane.state, "committed");
     }
 
     #[test]
     fn repo_without_people_directory_has_only_human() {
         let fixture = create_palace_fixture(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(true))
-            .unwrap()
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(true))
             .unwrap();
 
         assert_eq!(people.nodes.iter().map(|node| node.slug.as_str()).collect::<Vec<_>>(), ["human"]);
@@ -408,8 +407,7 @@ mod tests {
         let mut fixture = create_palace_fixture(false);
         fixture.seed_people(false);
 
-        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), limits_options(false))
-            .unwrap();
+        let people = collect_people(&fixture.repo, Some(fixture.head.as_str()), &limits_options(false));
 
         assert!(people.is_none());
     }
@@ -422,7 +420,7 @@ mod tests {
         let people = collect_people(
             &fixture.repo,
             Some(fixture.head.as_str()),
-            PalacePeopleOptions {
+            &PalacePeopleOptions {
                 enabled: true,
                 limits: PeopleLimits {
                     max_entries: 40,
@@ -430,7 +428,6 @@ mod tests {
                 },
             },
         )
-        .unwrap()
         .unwrap();
 
         assert!(people.diagnostics.iter().any(|entry| entry.path == "people/jane-doe/card.md"));
