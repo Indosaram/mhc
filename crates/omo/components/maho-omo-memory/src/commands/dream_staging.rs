@@ -1,0 +1,318 @@
+//! External transcript staging for `/dream --from transcript:<path>`.
+//! Port of `components/memory/commands/dream-staging.ts` at pin 77f3067f1.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
+
+use memory_core::journal::{
+    entries::{TranscriptEntry, project_transcript_entries},
+    store::{TranscriptJournal, TranscriptJournalOptions},
+};
+use serde_json::Value;
+use sha1::{Digest, Sha1};
+
+use crate::journal_wiring::project_session_entries;
+
+const MAX_TRANSCRIPT_BYTES: u64 = 64 * 1024 * 1024;
+
+pub struct StagedDreamTranscript {
+    pub conversation_id: String,
+    pub staged_message_ids: Vec<String>,
+    pub skipped_message_ids: Vec<String>,
+}
+
+struct NormalizedSessionEntry {
+    value: Value,
+    captured_at: String,
+}
+
+pub fn stage_dream_transcript(
+    input_path: &str,
+    transcripts_dir: &Path,
+    cwd: &Path,
+) -> Result<StagedDreamTranscript, String> {
+    let file_path = resolve_path(cwd, input_path);
+    let metadata = std::fs::metadata(&file_path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("--from transcript:<path> must name a senpi session JSONL file".to_owned());
+    }
+    if metadata.len() > MAX_TRANSCRIPT_BYTES {
+        return Err("--from transcript file exceeds the 64 MiB limit".to_owned());
+    }
+
+    let bytes = std::fs::read(&file_path).map_err(|error| error.to_string())?;
+    let raw = String::from_utf8(bytes)
+        .map_err(|_| "--from transcript file must be valid UTF-8".to_owned())?;
+
+    let fallback_captured_at = file_mtime_iso(&metadata);
+    let mut normalized: Vec<NormalizedSessionEntry> = Vec::new();
+    let mut has_session_header = false;
+    for (line_index, line) in raw.split('\n').enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if !parsed.is_object() {
+            continue;
+        }
+        if parsed.get("type").and_then(Value::as_str) == Some("session")
+            && parsed.get("id").and_then(Value::as_str).is_some()
+        {
+            has_session_header = true;
+            continue;
+        }
+        if let Some(item) = normalize_message(&parsed, &file_path, line_index, &fallback_captured_at)
+        {
+            normalized.push(item);
+        }
+    }
+    if !has_session_header || normalized.is_empty() {
+        return Err(
+            "--from accepts only senpi session JSONL with a session header and message rows"
+                .to_owned(),
+        );
+    }
+
+    let mut captured_at_by_id: BTreeMap<String, String> = BTreeMap::new();
+    for item in &normalized {
+        if let Some(id) = item.value.get("id").and_then(Value::as_str) {
+            captured_at_by_id.insert(id.to_owned(), item.captured_at.clone());
+        }
+    }
+    let values: Vec<Value> = normalized.into_iter().map(|item| item.value).collect();
+    let projections = project_session_entries(&values);
+    let mut entries: Vec<TranscriptEntry> = Vec::new();
+    for projection in &projections {
+        let message_id = projection_message_id(projection);
+        let captured_at = captured_at_by_id
+            .get(&message_id)
+            .cloned()
+            .unwrap_or_else(|| fallback_captured_at.clone());
+        entries.extend(project_transcript_entries(projection, &captured_at));
+    }
+    if entries.is_empty() {
+        return Err(
+            "--from senpi session JSONL contains no stageable user or assistant messages".to_owned(),
+        );
+    }
+
+    let conversation_id = format!(
+        "from-transcript-{}",
+        &sha1_hex(file_path.to_string_lossy().as_bytes())[..12]
+    );
+    let journal = TranscriptJournal::new(TranscriptJournalOptions::new(
+        transcripts_dir.join(&conversation_id),
+    ));
+    let existing_message_ids: BTreeSet<String> = journal
+        .read_entries()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|entry| entry.source_message_id().to_owned())
+        .collect();
+    let fresh: Vec<TranscriptEntry> = entries
+        .iter()
+        .filter(|entry| !existing_message_ids.contains(entry.source_message_id()))
+        .cloned()
+        .collect();
+    let staged_message_ids = unique(
+        fresh
+            .iter()
+            .map(|entry| entry.source_message_id().to_owned())
+            .collect(),
+    );
+    let skipped_message_ids = unique(
+        entries
+            .iter()
+            .filter(|entry| existing_message_ids.contains(entry.source_message_id()))
+            .map(|entry| entry.source_message_id().to_owned())
+            .collect(),
+    );
+    journal.append(&fresh).map_err(|error| error.to_string())?;
+    Ok(StagedDreamTranscript { conversation_id, staged_message_ids, skipped_message_ids })
+}
+
+fn projection_message_id(projection: &memory_core::journal::entries::TranscriptProjection) -> String {
+    use memory_core::journal::entries::TranscriptProjection;
+    match projection {
+        TranscriptProjection::User { message_id, .. }
+        | TranscriptProjection::Error { message_id, .. }
+        | TranscriptProjection::Assistant { message_id, .. } => message_id.clone(),
+    }
+}
+
+fn normalize_message(
+    row: &Value,
+    file_path: &Path,
+    line_index: usize,
+    fallback_captured_at: &str,
+) -> Option<NormalizedSessionEntry> {
+    if row.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let message = row.get("message")?;
+    if !message.is_object() {
+        return None;
+    }
+    if message.get("role").and_then(Value::as_str).is_none() {
+        return None;
+    }
+    let supplied_id = row.get("source_message_id").and_then(Value::as_str);
+    let text = message_text(message);
+    let id = supplied_id.map(str::to_owned).unwrap_or_else(|| {
+        let seed = format!("{}:{line_index}:{text}", file_path.display());
+        sha1_hex(seed.as_bytes())[..16].to_owned()
+    });
+    let captured_at = row
+        .get("captured_at")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback_captured_at.to_owned());
+    let mut value = row.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("id".to_owned(), Value::String(id));
+    }
+    Some(NormalizedSessionEntry { value, captured_at })
+}
+
+fn message_text(message: &Value) -> String {
+    if let Some(text) = message.get("content").and_then(Value::as_str) {
+        return text.to_owned();
+    }
+    let Some(content) = message.get("content").and_then(Value::as_array) else {
+        return String::new();
+    };
+    let mut values: Vec<String> = Vec::new();
+    for part in content {
+        let Some(part) = part.as_object() else {
+            continue;
+        };
+        for key in ["text", "thinking"] {
+            if let Some(value) = part.get(key).and_then(Value::as_str) {
+                values.push(value.to_owned());
+            }
+        }
+        if part.get("type").and_then(Value::as_str) == Some("toolCall")
+            && let Some(arguments) = part.get("arguments")
+        {
+            values.push(safe_stringify(arguments));
+        }
+    }
+    values.join("\n")
+}
+
+fn safe_stringify(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_owned();
+    }
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+fn unique(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        if seen.insert(value.clone()) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+fn resolve_path(cwd: &Path, input_path: &str) -> PathBuf {
+    let path = Path::new(input_path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+fn file_mtime_iso(metadata: &std::fs::Metadata) -> String {
+    metadata
+        .modified()
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .map(|instant| instant.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_default()
+}
+
+/// Lowercase-hex SHA-1 digest, byte-identical to `node:crypto` `digest("hex")`.
+pub fn sha1_hex(input: &[u8]) -> String {
+    format!("{:x}", Sha1::digest(input))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session_jsonl() -> String {
+        [
+            serde_json::json!({
+                "type": "session",
+                "id": "source-session",
+                "timestamp": "2026-08-10T10:00:00.000Z",
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "message",
+                "id": "message-1",
+                "timestamp": "2026-08-10T10:01:00.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "remember tabs" }],
+                },
+            })
+            .to_string(),
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn sha1_hex_matches_node_crypto_lowercase_hex_vectors() {
+        assert_eq!(sha1_hex(b""), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(sha1_hex(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        assert_eq!(
+            sha1_hex(b"The quick brown fox jumps over the lazy dog"),
+            "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
+        );
+        assert_eq!(sha1_hex(b"remember tabs"), "a4d561f91a91d1abb13acbb7d5629104e698c77f");
+    }
+
+    #[test]
+    fn given_an_unreadable_journal_when_staging_then_the_read_error_propagates_without_appending() {
+        let root = tempfile::tempdir().expect("root");
+        let transcripts_dir = root.path().join("transcripts");
+        std::fs::create_dir_all(&transcripts_dir).expect("transcripts dir");
+        let source = root.path().join("source.jsonl");
+        std::fs::write(&source, session_jsonl()).expect("source transcript");
+
+        let conversation_id = format!(
+            "from-transcript-{}",
+            &sha1_hex(source.to_string_lossy().as_bytes())[..12]
+        );
+        let journal_dir = transcripts_dir.join(&conversation_id);
+        // A directory where the transcript file belongs: `read_to_string` fails with a
+        // non-`NotFound` IO error, so `TranscriptJournal::read_entries` returns `Err`.
+        std::fs::create_dir_all(journal_dir.join("transcript.jsonl")).expect("blocked transcript path");
+
+        let result = stage_dream_transcript(
+            source.to_string_lossy().as_ref(),
+            &transcripts_dir,
+            root.path(),
+        );
+
+        assert!(result.is_err(), "an unreadable journal must propagate the read error");
+        assert!(
+            journal_dir.join("transcript.jsonl").is_dir(),
+            "the failed read must not replace the transcript path"
+        );
+        assert!(
+            !journal_dir.join("state.json").exists(),
+            "a failed read must not append or write journal state"
+        );
+    }
+}
