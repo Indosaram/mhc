@@ -3421,6 +3421,24 @@ dependencies = [
 [[package]]
 name = "maho-omo-memory"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-memory-core",
+ "maho-omo-config-core",
+ "maho-rpc",
+ "maho-senpi-task",
+ "maho-test-support",
+ "maho-tools",
+ "nix",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-native-badge"
