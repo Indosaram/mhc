@@ -1,5 +1,46 @@
 use maho_omo_task::task_rpc_codec::{task_snapshot,bounded_task_output};
 use senpi_task::{state::{TaskRecordInput,create_task_record}, tools::output::types::TaskOutputDetails};
+#[test] fn transcript_exact_utf16_boundary_retains_mode_source_and_no_truncation() {
+    use senpi_task::tools::output::{snapshot::build_task_snapshot,types::{TranscriptMode,TranscriptSource}};
+    let record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record");
+    for text in ["x".repeat(32000),"🦀".repeat(16000)] {
+        let snapshot=build_task_snapshot(&record,"/tmp",1000);
+        let value=bounded_task_output(&TaskOutputDetails::Transcript { mode:TranscriptMode::Full,source:TranscriptSource::SessionJsonl,transcript:text.clone(),truncated:false,snapshot }).expect("output");
+        assert_eq!(value["transcript"],text); assert_eq!(value["truncated"],false); assert_eq!(value["mode"],"full"); assert_eq!(value["source"],"session-jsonl");
+    }
+}
+#[test] fn output_snapshot_bounds_complete_text_and_model_matrix() {
+    use senpi_task::{state::{ResolvedModelRecord,ResolvedModelSource},tools::output::snapshot::build_task_snapshot};
+    let record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record");
+    let mut snapshot=build_task_snapshot(&record,"/tmp",1000);
+    snapshot.age_ms=999;
+    snapshot.task_id="i".repeat(257); snapshot.child_session_id=Some("i".repeat(257)); snapshot.execution_mode="x".repeat(32001); snapshot.model="x".repeat(32001);
+    snapshot.name=Some("x".repeat(32001)); snapshot.task_summary=Some("x".repeat(32001)); snapshot.agent_type=Some("x".repeat(32001)); snapshot.category=Some("x".repeat(32001)); snapshot.description=Some("x".repeat(32001)); snapshot.final_response=Some("x".repeat(32001)); snapshot.error_message=Some("x".repeat(32001));
+    snapshot.resolved_model=Some(ResolvedModelRecord { provider:"x".repeat(32001),model_id:"x".repeat(32001),display:"x".repeat(32001),source:ResolvedModelSource::Category,variant:Some("x".repeat(32001)),reasoning_effort:Some("x".repeat(32001)),reasoning:Some("x".repeat(32001)) });
+    let value=bounded_task_output(&TaskOutputDetails::Status { snapshot }).expect("output"); assert_eq!(value["kind"],"status"); let snapshot=&value["snapshot"];
+    for key in ["task_id","child_session_id"] { assert_eq!(snapshot[key].as_str().expect("id").len(),256); }
+    for key in ["name","task_summary","execution_mode","model","agent_type","category","description","final_response","error_message"] { assert_eq!(snapshot[key].as_str().expect("text").len(),32000,"{key}"); }
+    for key in ["description","final_response","error_message"] { assert_eq!(snapshot[format!("{key}_truncated")],true); }
+    for key in ["provider","model_id","display","variant","reasoning_effort","reasoning"] { assert_eq!(snapshot["resolved_model"][key].as_str().expect("model text").len(),32000); }
+    assert_eq!(snapshot["resolved_model"]["source"],"category"); assert_eq!(snapshot["age_ms"],999);
+}
+#[test] fn live_progress_projects_all_optional_fields_including_zero() {
+    use senpi_task::progress::{ProgressActivity,ToolProgressDetails};
+    let mut details=ToolProgressDetails { progress:ProgressActivity { activity:"working".into(),started_at:12.0 },child_id:"private-child".into(),current_tool:None,last_assistant_line:None,turns:0.0,tool_calls:None,tokens:None,output_tokens:None,tokens_per_second:None };
+    let required=serde_json::json!({"activity":"working","started_at":12.0,"turns":0.0});
+    assert_eq!(maho_omo_task::task_rpc_codec::live_progress_snapshot(&details),required);
+    details.current_tool=Some("read".into()); details.last_assistant_line=Some("line".into()); details.tool_calls=Some(0.0); details.tokens=Some(0.0); details.output_tokens=Some(0.0); details.tokens_per_second=Some(0.0);
+    let progress=maho_omo_task::task_rpc_codec::live_progress_snapshot(&details);
+    assert_eq!(progress,serde_json::json!({"activity":"working","started_at":12.0,"turns":0.0,"current_tool":"read","last_assistant_line":"line","tool_calls":0.0,"total_tokens":0.0,"output_tokens":0.0,"tokens_per_second":0.0}));
+    let record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record");
+    assert_eq!(task_snapshot(&record,None,Some(&progress)).expect("snapshot")["live_progress"],progress);
+}
+#[test] fn task_snapshot_bounds_every_text_field_without_flagging_exact_boundary() {
+    let mut record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record");
+    record.task_id="i".repeat(257); record.name=Some("x".repeat(32001)); record.task_summary=Some("x".repeat(32001)); record.agent_type=Some("x".repeat(32001)); record.category=Some("x".repeat(32001)); record.model="x".repeat(32001); record.description=Some("x".repeat(32000));
+    let value=task_snapshot(&record,None,None).expect("snapshot"); assert_eq!(value["task_id"].as_str().expect("id").len(),256);
+    for key in ["name","task_summary","agent_type","category","model","description"] { assert_eq!(value[key].as_str().expect("text").len(),32000,"{key}"); assert!(value.get(format!("{key}_truncated")).is_none(),"{key}"); }
+}
 #[test] fn task_snapshot_bounds_text_and_sets_truncation_flags() { let mut record = create_task_record(TaskRecordInput::default(),Some(1)).unwrap(); record.description = Some("x".repeat(32001)); record.final_response = Some("x".repeat(32001)); record.error_message = Some("x".repeat(32001)); let snapshot = task_snapshot(&record,None,None).unwrap(); for key in ["description","final_response","error_message"] { assert_eq!(snapshot[key].as_str().unwrap().len(),32000); assert_eq!(snapshot[format!("{key}_truncated")],true); } }
 #[test] fn missing_task_output_does_not_disclose_known_tasks() { let value = bounded_task_output(&TaskOutputDetails::NotFound { reason:"private".into(),known_tasks:vec!["private".into()] }).unwrap(); assert_eq!(value,serde_json::json!({"kind":"not_found","reason":"Task not found."})); }
 #[test] fn invalid_output_arguments_remain_machine_readable() { let value = bounded_task_output(&TaskOutputDetails::InvalidArguments { reason:"invalid".into() }).unwrap(); assert_eq!(value["reason"],"invalid"); }

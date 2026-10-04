@@ -18,9 +18,16 @@ use crate::state::{
 const TOMBSTONE_SUFFIX: &str = ".json.expunging";
 
 /// File-backed task record store rooted at the resolved state directory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskRecordStore {
     state_dir: PathBuf,
+    mutation_listener: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>>,
+}
+
+impl std::fmt::Debug for TaskRecordStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskRecordStore").field("state_dir", &self.state_dir).finish_non_exhaustive()
+    }
 }
 
 enum WriteMode {
@@ -32,11 +39,22 @@ impl TaskRecordStore {
     pub fn new(config: &StateDirConfig) -> Self {
         Self {
             state_dir: resolve_state_dir(config),
+            mutation_listener: Default::default(),
         }
     }
 
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// All manager/lifecycle clones share the post-commit observer. Clear it during shutdown.
+    pub fn set_mutation_listener(&self, listener: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        *self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = listener;
+    }
+
+    fn notify_mutation(&self) {
+        let listener = self.mutation_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(listener) = listener { listener(); }
     }
 
     fn tasks_dir(&self) -> PathBuf {
@@ -54,13 +72,17 @@ impl TaskRecordStore {
 
     /// Creates a new record file; an existing file for the id is a [`StoreError::Collision`].
     pub fn save(&self, record: &TaskRecord) -> Result<(), StoreError> {
-        self.write_record(record, WriteMode::Create)
+        self.write_record(record, WriteMode::Create)?;
+        self.notify_mutation();
+        Ok(())
     }
 
     /// Manager-owned overwrite for bookkeeping outside the transition table.
     pub fn replace(&self, record: &TaskRecord) -> Result<(), StoreError> {
         let path = self.task_path(parse_task_id(&record.task_id)?);
-        with_task_record_lock(&path, || self.write_record(record, WriteMode::Replace))
+        with_task_record_lock(&path, || self.write_record(record, WriteMode::Replace))?;
+        self.notify_mutation();
+        Ok(())
     }
 
     /// Serialized read-modify-write over the freshest on-disk record; returning an equal record
@@ -71,7 +93,7 @@ impl TaskRecordStore {
         mutation: impl FnOnce(&TaskRecord) -> TaskRecord,
     ) -> Result<Option<TaskRecord>, StoreError> {
         let path = self.task_path(parse_task_id(task_id)?);
-        with_task_record_lock(&path, || {
+        let result = with_task_record_lock(&path, || {
             let Some(current) = read_record(&path, &mut Vec::new())? else {
                 return Ok(None);
             };
@@ -80,7 +102,9 @@ impl TaskRecordStore {
                 self.write_record(&next, WriteMode::Replace)?;
             }
             Ok(Some(next))
-        })
+        })?;
+        self.notify_mutation();
+        Ok(result)
     }
 
     pub fn load(&self, task_id: &str) -> Result<Option<TaskRecord>, StoreError> {
@@ -141,7 +165,7 @@ impl TaskRecordStore {
     ) -> Result<TaskTransitionResult, StoreError> {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
-        with_task_record_lock(&path, || {
+        let result = with_task_record_lock(&path, || {
             let record = read_record(&path, &mut Vec::new())?
                 .ok_or_else(|| StoreError::NotFound(task_id.to_string()))?;
             let result = transition_task_record(&record, transition);
@@ -158,14 +182,18 @@ impl TaskRecordStore {
                 self.write_record(&result.record, WriteMode::Replace)?;
             }
             Ok(result)
-        })
+        })?;
+        self.notify_mutation();
+        Ok(result)
     }
 
     /// Deletes every durable artifact of a task, record last; idempotent.
     pub fn remove(&self, task_id: &str) -> Result<(), StoreError> {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
-        with_task_record_lock(&path, || self.remove_record(parsed))
+        with_task_record_lock(&path, || self.remove_record(parsed))?;
+        self.notify_mutation();
+        Ok(())
     }
 
     /// TTL expunge phase 1: under the lock, re-read and tombstone unless `should_retain` holds.
@@ -177,7 +205,7 @@ impl TaskRecordStore {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
         std::fs::create_dir_all(self.tasks_dir())?;
-        with_task_record_lock(&path, || {
+        let result = with_task_record_lock(&path, || {
             let Some(current) = read_record(&path, &mut Vec::new())? else {
                 return Ok(TombstoneResult::Missing);
             };
@@ -186,14 +214,18 @@ impl TaskRecordStore {
             }
             std::fs::rename(&path, self.tombstone_path(parsed))?;
             Ok(TombstoneResult::Tombstoned(Box::new(current)))
-        })
+        })?;
+        if matches!(result, TombstoneResult::Tombstoned(_)) { self.notify_mutation(); }
+        Ok(result)
     }
 
     /// TTL expunge phase 2 and crash recovery; the record is already committed to deletion.
     pub fn complete_expunge(&self, task_id: &str) -> Result<(), StoreError> {
         let parsed = parse_task_id(task_id)?;
         self.remove_record(parsed)?;
-        remove_if_present(&self.tombstone_path(parsed))
+        remove_if_present(&self.tombstone_path(parsed))?;
+        self.notify_mutation();
+        Ok(())
     }
 
     pub fn list_expunging(&self) -> Result<Vec<String>, StoreError> {

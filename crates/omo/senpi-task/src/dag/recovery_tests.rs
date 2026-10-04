@@ -362,6 +362,34 @@ fn recovery_for(store: &Arc<DagFileStore>, manager: Arc<crate::manager::TaskMana
     })
 }
 
+#[test]
+fn failed_pause_checkpoint_is_not_reported_as_success() {
+    let root = tempfile::tempdir().expect("root");
+    let store = Arc::new(create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store"));
+    let mut record = base_record(&definition(vec![node("active", &[])]), &[]);
+    record.record.status = DagRunStatus::Running;
+    store.write_checkpoint(&run_id(), &record).expect("initial checkpoint");
+    store.set_checkpoint_hook(Arc::new(|_| Err(crate::dag::store::DagStoreError::Message("pause persistence denied".into()))));
+    let harness = make_manager(HarnessOptions::default());
+    let error = recovery_for(&store, Arc::new(harness.manager)).try_pause_runs_for_shutdown(PARENT_SESSION_ID).expect_err("pause fails");
+    assert_eq!(error.to_string(), "pause persistence denied");
+    assert_eq!(store.read_checkpoint::<RecoverableRecord>(&run_id()).expect("read").expect("record").record.status, DagRunStatus::Running);
+}
+
+#[test]
+fn plain_scheduler_checkpoint_preserves_and_explicit_release_clears_lease() {
+    let root = tempfile::tempdir().expect("root");
+    let store = create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store");
+    let mut record = base_record(&definition(vec![node("active", &[])]), &[]);
+    record.lease_holder_pid = Some(101);
+    store.write_checkpoint(&run_id(), &record).expect("leased checkpoint");
+    store.write_checkpoint(&run_id(), &record.record).expect("plain scheduler checkpoint");
+    assert_eq!(store.read_checkpoint::<RecoverableRecord>(&run_id()).expect("read").expect("record").lease_holder_pid, Some(101));
+    record.lease_holder_pid = None;
+    store.write_checkpoint(&run_id(), &record).expect("release checkpoint");
+    assert_eq!(store.read_checkpoint::<RecoverableRecord>(&run_id()).expect("read").expect("record").lease_holder_pid, None);
+}
+
 fn recovered(outcomes: Vec<DagRecoveryOutcome>) -> Box<DagRunRecordV1> {
     assert_eq!(outcomes.len(), 1);
     match outcomes.into_iter().next().unwrap() {

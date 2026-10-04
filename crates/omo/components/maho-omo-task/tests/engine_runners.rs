@@ -2,6 +2,63 @@ use std::sync::{Arc,Mutex};
 use maho_omo_task::engine_runners::{InProcessRunnerBuildContext,build_in_process_runner};
 use senpi_task::{host::HostError,manager::types::{ManagedStartSpec,ManagedRunnerError},runners::{RunnerFailureKind,in_process::shared_tool_filter::ChildTool}};
 struct Tool(&'static str); impl ChildTool for Tool { fn name(&self)->&str { self.0 } fn description(&self)->&str { "fixture" } fn execute(&self,_:&str,_:&serde_json::Value)->Result<serde_json::Value,HostError> { panic!("not executed") } }
+struct ResumeRegistry;
+impl senpi_task::manager::parent_registry_context::ChildModelRegistry for ResumeRegistry {
+    fn find(&self, provider: &str, model: &str) -> Option<senpi_task::runners::in_process::child_options::HostHandle> {
+        (provider == "faux" && model == "resume").then(|| Arc::new(()) as senpi_task::runners::in_process::child_options::HostHandle)
+    }
+    fn auth_storage(&self) -> senpi_task::runners::in_process::child_options::HostHandle { Arc::new(()) }
+    fn model_runtime(&self) -> Option<senpi_task::runners::in_process::child_options::HostHandle> { None }
+}
+#[test]
+fn live_parent_tools_are_resolved_for_each_child_launch() {
+    let root = tempfile::tempdir().expect("root");
+    let current = Arc::new(Mutex::new(vec![Arc::new(Tool("read")) as senpi_task::runners::in_process::shared_tool_filter::ChildToolRef]));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let sink = captured.clone();
+    let tools = current.clone();
+    let build = maho_omo_task::engine_runners::LiveInProcessRunnerBuildContext {
+        shared_parent_tools: Arc::new(move || tools.lock().expect("tools").clone()),
+        max_depth: 2,
+        parent_registry: Arc::new(|| None),
+        create_session: Arc::new(move |options| {
+            sink.lock().expect("captures").push(options.custom_tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>());
+            Err(HostError { message: "fixture stop".into() })
+        }),
+    };
+    let runner = maho_omo_task::engine_runners::build_live_in_process_runner(build);
+    let spec = ManagedStartSpec { task_id: "st_live".into(), cwd: root.path().to_string_lossy().into_owned(), state_dir: root.path().to_string_lossy().into_owned(), depth: 1, ..Default::default() };
+    assert!(runner.start(&spec).is_err());
+    *current.lock().expect("tools") = vec![Arc::new(Tool("write")), Arc::new(Tool("memory"))];
+    assert!(runner.start(&spec).is_err());
+    assert_eq!(*captured.lock().expect("captures"), vec![vec!["read".to_owned()], vec!["write".to_owned()]]);
+}
+#[test]
+fn live_parent_tools_are_resolved_when_resuming_existing_session() {
+    let root = tempfile::tempdir().expect("root");
+    let session = senpi_task::runners::in_process::session_manager::ChildSessionManager::create(
+        root.path().to_str().expect("cwd"), root.path().to_str().expect("session dir"),
+    ).expect("persisted session");
+    session.append_message(&serde_json::json!({"role":"user","content":"previous turn"})).expect("session header");
+    let current = Arc::new(Mutex::new(vec![Arc::new(Tool("read")) as senpi_task::runners::in_process::shared_tool_filter::ChildToolRef]));
+    let captured = Arc::new(Mutex::new(None));
+    let tools = current.clone();
+    let sink = captured.clone();
+    let runner = maho_omo_task::engine_runners::build_live_in_process_runner(maho_omo_task::engine_runners::LiveInProcessRunnerBuildContext {
+        shared_parent_tools: Arc::new(move || tools.lock().expect("tools").clone()),
+        max_depth: 2,
+        parent_registry: Arc::new(|| Some(Arc::new(ResumeRegistry))),
+        create_session: Arc::new(move |options| {
+            *sink.lock().expect("capture") = Some((options.session_manager.session_file().to_path_buf(), options.custom_tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>()));
+            Err(HostError { message: "fixture stop".into() })
+        }),
+    });
+    *current.lock().expect("tools") = vec![Arc::new(Tool("write")), Arc::new(Tool("memory")), Arc::new(Tool("task_send"))];
+    let spec = ManagedStartSpec { task_id: "st_resume".into(), cwd: root.path().to_string_lossy().into_owned(), state_dir: root.path().to_string_lossy().into_owned(), depth: 1, resolved_model: Some(senpi_task::state::ResolvedModelRecord::new(senpi_task::state::ResolvedModelSource::Explicit, "faux", "resume")), ..Default::default() };
+    let result = runner.resume(&spec, session.session_file().to_str().expect("path")).expect("resume supported");
+    assert!(matches!(result, Err(ManagedRunnerError::Runner(failure)) if failure.kind == RunnerFailureKind::SessionUnavailable));
+    assert_eq!(*captured.lock().expect("capture"), Some((session.session_file().to_path_buf(), vec!["write".to_owned()])));
+}
 #[test]
 fn factory_filters_memory_and_task_family_tools_before_child_creation() {
     let root=tempfile::tempdir().expect("root"); let captured=Arc::new(Mutex::new(Vec::new())); let tools=captured.clone();

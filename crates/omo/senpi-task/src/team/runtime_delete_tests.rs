@@ -260,6 +260,7 @@ fn given_a_member_sidecar_points_at_a_foreign_task_when_deleted_then_that_task_i
             model: None,
             category: None,
             subagent_type: None,
+            ..TeamMemberStartSpec::default()
         })
         .expect("start foreign");
     let TeamStartResult::Started(foreign) = foreign else {

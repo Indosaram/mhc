@@ -300,6 +300,8 @@ pub struct TaskManagerOptions {
     pub now: Option<Clock>,
     pub destruction: Option<Arc<dyn DestructionPort>>,
     pub admit: Option<AdmitResident>,
+    /// Host/lifecycle errors are failures, not capacity denials that DAGs may retry.
+    pub fallible_admit: Option<Arc<dyn Fn(&str) -> Result<SpawnAdmission, crate::host::HostError> + Send + Sync>>,
     pub trusted_respawn_launch: Option<TrustedRespawnLaunchResolver>,
     pub host_pid: Option<i64>,
     pub rpc_respawn_runner: Option<Arc<dyn RpcRespawnRunner>>,
@@ -323,6 +325,7 @@ impl TaskManagerOptions {
             now: None,
             destruction: None,
             admit: None,
+            fallible_admit: None,
             trusted_respawn_launch: None,
             host_pid: None,
             rpc_respawn_runner: None,

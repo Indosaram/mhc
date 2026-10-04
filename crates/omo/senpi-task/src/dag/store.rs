@@ -304,6 +304,7 @@ type CheckpointHook = Arc<dyn Fn(&Value) -> Result<(), DagStoreError> + Send + S
 type AppendHook = Arc<dyn Fn(&DagRunEvent) -> Result<(), DagStoreError> + Send + Sync>;
 
 pub struct DagFileStore {
+    checkpoint_listener: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     pub state_dir: PathBuf,
     pub paths: DagStorePaths,
     diagnostic_log: Mutex<Vec<DagStoreDiagnostic>>,
@@ -329,6 +330,7 @@ pub fn create_dag_file_store(
     let paths = DagStorePaths::new(&state_dir);
     let dag = config.dag();
     let store = DagFileStore {
+        checkpoint_listener: Mutex::new(None),
         state_dir,
         diagnostic_log: Mutex::new(Vec::new()),
         recovered_paths: Mutex::new(HashSet::new()),
@@ -365,6 +367,9 @@ pub fn create_dag_file_store(
 }
 
 impl DagFileStore {
+    pub fn set_checkpoint_listener(&self, listener: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *guard(&self.checkpoint_listener) = listener;
+    }
     #[cfg(test)]
     pub(crate) fn set_checkpoint_hook(&self, hook: CheckpointHook) {
         *guard(&self.checkpoint_hook) = Some(hook);
@@ -487,13 +492,21 @@ impl DagFileStore {
         checkpoint: &C,
     ) -> Result<(), DagStoreError> {
         assert_safe_segment(run_id, "run id")?;
-        let value = serde_json::to_value(checkpoint)?;
+        let mut value = serde_json::to_value(checkpoint)?;
+        if let (Some(next), Some(existing)) = (value.as_object_mut(), self.read_checkpoint::<Value>(run_id)?) {
+            for field in ["leaseHolderPid", "previousLeaseHolderPid"] {
+                if !next.contains_key(field) && let Some(prior) = existing.get(field) { next.insert(field.into(), prior.clone()); }
+            }
+        }
         #[cfg(test)]
         if let Some(hook) = guard(&self.checkpoint_hook).clone() {
             hook(&value)?;
         }
         assert_supported_schema(&value, &self.paths.run(run_id), Some(run_id), self.clock())?;
-        self.write_checkpoint_within_session_limit(run_id, &value)
+        self.write_checkpoint_within_session_limit(run_id, &value)?;
+        let listener = guard(&self.checkpoint_listener).clone();
+        if let Some(listener) = listener { listener(); }
+        Ok(())
     }
 
     pub fn read_checkpoint<T: DeserializeOwned>(
