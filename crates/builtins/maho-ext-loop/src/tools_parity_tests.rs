@@ -1,0 +1,35 @@
+use super::*;
+use std::sync::Mutex;
+#[derive(Default)]
+struct State { schedules:Vec<ScheduleWakeupRequest>,stops:Vec<StopDynamicLoopRequest>,streak:f64 }
+struct Scheduler { kind:Option<crate::types::LoopKind>,state:Mutex<State> }
+impl Scheduler { fn new(kind:Option<crate::types::LoopKind>)->Self { Self { kind,state:Default::default() } } }
+impl ScheduleWakeupSchedulerPort for Scheduler {
+    fn get_wakeup_target(&self)->Option<ScheduleWakeupTarget> { self.kind.map(|kind|ScheduleWakeupTarget { kind,loop_id:"loop-dyn-1".into() }) }
+    fn schedule_wakeup(&self,request:ScheduleWakeupRequest)->ExtensionFuture<'_,ScheduleWakeupOutcome> {
+        Box::pin(async move { let mut state=self.state.lock().unwrap(); state.streak=if request.noop { state.streak+1.0 } else { 0.0 }; let outcome=ScheduleWakeupOutcome { wakeup_id:"wake-1".into(),replaced_wakeup_id:Some("wake-0".into()),due_at:1000.0+request.delay_seconds*1000.0,noop_streak:state.streak }; state.schedules.push(request); Ok(outcome) })
+    }
+    fn stop_dynamic_loop(&self,request:StopDynamicLoopRequest)->ExtensionFuture<'_,StopDynamicLoopOutcome> { Box::pin(async move { self.state.lock().unwrap().stops.push(request); Ok(StopDynamicLoopOutcome { ended_at:1000.0 }) }) }
+}
+fn scheduler()->Scheduler { Scheduler::new(Some(crate::types::LoopKind::Dynamic)) }
+#[tokio::test] async fn upstream_floor_clamp() { let s=scheduler(); let result=execute_schedule_wakeup(&s,&json!({"delaySeconds":30,"reason":"poll deploy","prompt":"/loop check the deploy"})).await.unwrap(); let d=result.details.unwrap(); assert_eq!(d["requestedDelaySeconds"],30.0); assert_eq!(d["delaySeconds"],60.0); assert_eq!(d["clamped"],true); assert_eq!(s.state.lock().unwrap().schedules[0].delay_seconds,60.0); }
+#[tokio::test] async fn upstream_ceiling_clamp() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"delaySeconds":99999,"reason":"hold","prompt":"/loop x"})).await.unwrap().details.unwrap(); assert_eq!(d["delaySeconds"],3600.0); assert_eq!(d["requestedDelaySeconds"],99999.0); assert_eq!(d["clamped"],true); }
+#[tokio::test] async fn upstream_in_range_due_time() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"delaySeconds":1200,"reason":"hold","prompt":"/loop x"})).await.unwrap().details.unwrap(); assert_eq!(d["delaySeconds"],1200.0); assert_eq!(d["clamped"],false); assert_eq!(d["dueAt"],1201000.0); }
+async fn rejected(params:Value,field:&str) { let s=scheduler(); let error=execute_schedule_wakeup(&s,&params).await.unwrap_err(); assert!(error.to_string().contains(field)); assert!(s.state.lock().unwrap().schedules.is_empty()); assert!(s.state.lock().unwrap().stops.is_empty()); }
+#[tokio::test] async fn upstream_fractional_delay_rejection() { rejected(json!({"delaySeconds":1.5,"reason":"poll","prompt":"/loop x"}),"delaySeconds").await; }
+#[tokio::test] async fn upstream_nonfinite_json_delay_rejection() { rejected(json!({"delaySeconds":null,"reason":"poll","prompt":"/loop x"}),"delaySeconds").await; }
+#[tokio::test] async fn upstream_missing_prompt_rejection() { rejected(json!({"delaySeconds":900,"reason":"poll"}),"prompt").await; }
+#[tokio::test] async fn upstream_blank_prompt_rejection() { rejected(json!({"delaySeconds":900,"reason":"poll","prompt":"   "}),"prompt").await; }
+#[tokio::test] async fn upstream_missing_delay_rejection() { rejected(json!({"reason":"poll","prompt":"/loop x"}),"delaySeconds").await; }
+#[tokio::test] async fn upstream_blank_reason_rejection() { rejected(json!({"delaySeconds":900,"reason":" ","prompt":"/loop x"}),"reason").await; }
+#[tokio::test] async fn upstream_prompt_reason_replacement_and_noop_details() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"delaySeconds":900,"reason":"  nothing changed  ","prompt":"  /loop check the deploy  ","noop":true})).await.unwrap().details.unwrap(); assert_eq!(d["prompt"],"  /loop check the deploy  "); assert_eq!(d["reason"],"nothing changed"); assert_eq!(d["noopStreak"],1.0); assert_eq!(d["replacedWakeupId"],"wake-0"); assert_eq!(d["wakeupId"],"wake-1"); }
+#[tokio::test] async fn upstream_actionable_turn_resets_noop_streak() { let s=scheduler(); execute_schedule_wakeup(&s,&json!({"delaySeconds":900,"reason":"quiet","prompt":"/loop x","noop":true})).await.unwrap(); let d=execute_schedule_wakeup(&s,&json!({"delaySeconds":900,"reason":"work","prompt":"/loop x"})).await.unwrap().details.unwrap(); assert_eq!(d["noop"],false); assert_eq!(d["noopStreak"],0.0); }
+#[tokio::test] async fn upstream_stop_terminal_details() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"stop":true,"reason":"done"})).await.unwrap().details.unwrap(); assert_eq!(d["terminalReason"],"stopped"); assert_eq!(d["endedAt"],1000.0); assert_eq!(d["ignoredFields"],json!([])); assert_eq!(s.state.lock().unwrap().stops.len(),1); assert!(s.state.lock().unwrap().schedules.is_empty()); }
+#[tokio::test] async fn upstream_stop_noop_rejection() { rejected(json!({"stop":true,"reason":"done","noop":true}),"noop").await; }
+#[tokio::test] async fn upstream_stop_blank_reason_rejection() { rejected(json!({"stop":true,"reason":" "}),"reason").await; }
+#[tokio::test] async fn upstream_stop_ignored_fields() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"stop":true,"reason":"done","delaySeconds":900,"prompt":"/loop x"})).await.unwrap().details.unwrap(); assert_eq!(d["ignoredFields"],json!(["delaySeconds","prompt"])); assert!(s.state.lock().unwrap().schedules.is_empty()); }
+#[tokio::test] async fn upstream_false_stop_schedules() { let s=scheduler(); let d=execute_schedule_wakeup(&s,&json!({"stop":false,"delaySeconds":900,"reason":"continue","prompt":"/loop x"})).await.unwrap().details.unwrap(); assert_eq!(d["action"],"scheduled"); }
+#[tokio::test] async fn upstream_absent_context_rejection() { let s=Scheduler::new(None); assert!(execute_schedule_wakeup(&s,&json!({"delaySeconds":900,"reason":"poll","prompt":"/loop x"})).await.is_err()); assert!(s.state.lock().unwrap().schedules.is_empty()); }
+#[tokio::test] async fn upstream_absent_context_stop_rejection() { let s=Scheduler::new(None); assert!(execute_schedule_wakeup(&s,&json!({"stop":true,"reason":"done"})).await.is_err()); assert!(s.state.lock().unwrap().stops.is_empty()); }
+#[tokio::test] async fn upstream_fixed_tick_rejection() { let s=Scheduler::new(Some(crate::types::LoopKind::Fixed)); let error=execute_schedule_wakeup(&s,&json!({"delaySeconds":900,"reason":"poll","prompt":"/loop x"})).await.unwrap_err(); assert!(error.to_string().contains("fixed /loop tick")); assert!(s.state.lock().unwrap().schedules.is_empty()); }
+#[test] fn upstream_registration_is_sequential_search_and_not_lazy() { let mut api=ExtensionApi::new(maho_ext_api::LoadedExtension::new("loop",".".into(),Default::default()),Default::default(),Default::default(),Default::default()); register_loop_tools(&mut api,Arc::new(scheduler())); let tool=&api.registered.tools[0].definition; assert_eq!(tool.name,SCHEDULE_WAKEUP_TOOL); assert_eq!(tool.execution_mode,Some(ToolExecutionMode::Sequential)); assert_eq!(tool.exposure,Some(ToolExposure::Search)); assert_eq!(tool.allow_lazy_activation,Some(false)); }

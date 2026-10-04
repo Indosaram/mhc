@@ -7,7 +7,8 @@ async fn canonical_public_store_preserves_budget_tristate_and_seconds() {
     let reference:GoalStoreRef=goal_store_ref(&session,"/workspace");
     assert_eq!(reference.base_dir,temp.path().join("extensions/goal"));
     assert!(read_goal(&reference).unwrap().is_none());
-    let created=create_goal(&reference,"work",Some(10),123).await.unwrap();
+    for value in [-1.0,0.5,f64::INFINITY,9_007_199_254_740_992.0] { assert!(create_goal(&reference,"invalid",Some(value),123).await.is_err()); assert!(read_goal(&reference).unwrap().is_none()); }
+    let created=create_goal(&reference,"work",Some(10.0),123).await.unwrap();
     assert_eq!(created.created_at,123); assert_eq!(created.token_budget,Some(10));
     let preserved=update_goal(&reference,&GoalUpdate::default(),GoalUpdateSource::User,124).await.unwrap();
     assert_eq!(preserved.token_budget,Some(10));
