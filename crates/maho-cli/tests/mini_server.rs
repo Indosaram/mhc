@@ -1,5 +1,20 @@
 use std::sync::Arc;
 use maho_agent::harness::{context::BACKGROUND_CONTEXT, env::nodejs::NodeExecutionEnv, session::jsonl::{JsonlSessionRepo, JsonlSessionRepoOptions, JsonlSessionCreateOptions}};
+#[cfg(unix)]
+#[tokio::test]
+async fn process_worker_uses_json_pipes_and_closes_when_stopped() {
+    use maho_cli::experimental::mini::server::process_worker_factory;
+    let script = "printf '%s\\n' '{\"kind\":\"announce\",\"services\":[\"worker\"]}'; while IFS= read -r line; do case \"$line\" in *'\"kind\":\"call\"'*) printf '%s\\n' '{\"kind\":\"result\",\"id\":1,\"result\":{\"sessionId\":\"child\"}}';; esac; done";
+    let spawn = process_worker_factory("/bin/sh".into(), vec!["-c".into(), script.into(), "worker".into()], "/sessions".into());
+    let worker = spawn(Some("child".into()), "/cwd".into()).await.unwrap();
+    let (closed, closure) = tokio::sync::oneshot::channel();
+    let closed = std::sync::Mutex::new(Some(closed));
+    worker.peer.on_close(move || { if let Some(closed) = closed.lock().unwrap().take() { let _ = closed.send(()); } });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), worker.peer.call("worker.describe", vec![])).await.unwrap().unwrap();
+    assert_eq!(result["sessionId"], "child");
+    (worker.stop)();
+    tokio::time::timeout(std::time::Duration::from_secs(5), closure).await.unwrap().unwrap();
+}
 #[tokio::test]
 async fn server_lists_real_repository_metadata_without_opening_agent_runtime() {
     let dir = tempfile::tempdir().unwrap();

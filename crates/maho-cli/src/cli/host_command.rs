@@ -25,15 +25,18 @@ pub async fn run_host_command(args: &[String]) -> Result<i32, String> {
     use std::io::Write;
     let parsed = parse_host_args(args)?;
     let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
-    let socket = parsed.socket.unwrap_or_else(|| {
+    let socket = parsed.socket.clone().unwrap_or_else(|| {
         maho_core::brand::env_value("RPC_SOCKET", &maho_core::config::current_env())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| agent_dir.join("rpc/rpc.sock").to_string_lossy().into_owned())
     });
-    let outcome = match parsed.subcommand {
-        HostSubcommand::Status => maho_rpc::host_runner::status_outcome(&socket, &agent_dir, parsed.include_workers).await,
-        HostSubcommand::Stop => maho_rpc::host_runner::stop_outcome(&socket, &agent_dir, parsed.drain, parsed.force).await,
-        HostSubcommand::Ensure | HostSubcommand::Handoff => return Err("Host launch/handoff requires maho-rpc run_host_request runtime binding (todo 36 owner API request)".into()),
-    }.map_err(|error| error.to_string())?;
+    let outcome = match super::host_request::run(&parsed, &socket, &agent_dir).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            writeln!(std::io::stdout().lock(), "{}", error.payload()).map_err(|write| write.to_string())?;
+            return Ok(error.exit_code());
+        }
+    };
     writeln!(std::io::stdout().lock(), "{}", outcome.payload).map_err(|error| error.to_string())?;
     Ok(outcome.exit_code)
 }

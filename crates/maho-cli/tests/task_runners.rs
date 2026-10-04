@@ -192,7 +192,7 @@ fn retired_parent_rejects_admission_before_catalog_probe() {
         })),
         ..Default::default()
     };
-    let options = authenticated_rpc_options(options, std::sync::Weak::new());
+    let options = authenticated_rpc_options(options, std::sync::Arc::new(|| None));
     let spec = RpcRunnerSpec { model: Some("provider/model".into()), ..Default::default() };
 
     let result = options.model_admission.expect("authenticated admission")(&spec);
@@ -229,7 +229,7 @@ async fn child_registry_retains_native_credentials_and_retires_with_parent() {
         })).await.expect("bounded native construction").expect("native SDK parent");
     let session = std::sync::Arc::new(created.session);
 
-    let resolve = maho_cli::cli::task_runners::live_parent_registry(std::sync::Arc::downgrade(&session));
+    let resolve = maho_cli::cli::task_runners::live_parent_registry(session.weak_accessor());
     let registry = resolve().expect("live parent registry");
     let child_credentials = registry.auth_storage().downcast::<maho_core::auth_storage::AuthStorage>().expect("native credential type");
     let child_model = registry.find("task-fixture", "selected").expect("resolved model")
@@ -286,9 +286,9 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
             tools: Some(vec!["guarded".into()]), extension_factories: vec![factory], ..Default::default()
         })).await.expect("bounded construction").expect("native parent");
     let session = Arc::new(created.session);
-    let resolve = maho_cli::cli::task_runners::live_parent_tools(Arc::downgrade(&session), tokio::runtime::Handle::current());
+    let resolve = maho_cli::cli::task_runners::live_parent_tools(session.weak_accessor(), tokio::runtime::Handle::current());
     let tool = resolve().into_iter().find(|tool| tool.name() == "guarded").expect("live tool");
-    let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition("guarded", Arc::downgrade(&session))
+    let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition("guarded", session.weak_accessor())
         .expect("native shared definition");
     assert_eq!(definition.parameters, session.get_tool_definition("guarded").expect("parent definition").parameters);
     let async_result = (definition.execute)(maho_tools::definition::ToolCall {
@@ -344,7 +344,7 @@ async fn native_shared_definition_cancels_an_entered_parent_tool() {
     }).await.expect("native parent");
     let session = Arc::new(created.session);
     let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition(
-        "pending_child_tool", Arc::downgrade(&session)).expect("shared definition");
+        "pending_child_tool", session.weak_accessor()).expect("shared definition");
     let signal = maho_tools::definition::AbortSignal::default();
 
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -382,7 +382,7 @@ async fn native_shared_definition_forwards_parent_tool_updates() {
     }).await.expect("native parent");
     let session = Arc::new(created.session);
     let definition = maho_cli::cli::task_runners::native_shared_parent_tool_definition(
-        "updating_child_tool", Arc::downgrade(&session)).expect("shared definition");
+        "updating_child_tool", session.weak_accessor()).expect("shared definition");
     let updates = Arc::new(Mutex::new(Vec::new()));
     let observed = updates.clone();
 
@@ -423,7 +423,7 @@ async fn shared_definition_normalizes_arguments_once_through_child_sdk() {
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
         tools: Some(vec![tool.name.clone()]), custom_tools: vec![tool], ..Default::default()
     }).await.expect("parent").session);
-    let shared = maho_cli::cli::task_runners::native_shared_parent_tool_definition("normalizing_child_tool", Arc::downgrade(&parent)).expect("shared definition");
+    let shared = maho_cli::cli::task_runners::native_shared_parent_tool_definition("normalizing_child_tool", parent.weak_accessor()).expect("shared definition");
     let child = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), model: Some(model), minimal_resources: true,
         session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),

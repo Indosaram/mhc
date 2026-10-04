@@ -14,7 +14,6 @@ maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }
 maho-rpc = { path = "../maho-rpc" }
 maho-ext-api = { path = "../maho-ext-api" }
-maho-senpi-task = { path = "../omo/senpi-task" }
 maho-codemode = { path = "../maho-codemode" }
 maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
 maho-ext-tool-search = { path = "../builtins/maho-ext-tool-search" }
@@ -41,7 +40,36 @@ maho-ext-mcp = { path = "../builtins/maho-ext-mcp" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-omo-task = { path = "../omo/components/maho-omo-task" }
-maho-ext-gpt-apply-patch = { path = "../builtins/maho-ext-gpt-apply-patch" }
+maho-server = { path = "../maho-server" }
+maho-ext-loop-guard = { path = "../builtins/maho-ext-loop-guard" }
+maho-ext-hooks = { path = "../builtins/maho-ext-hooks" }
+maho-ext-prompt-preset = { path = "../builtins/maho-ext-prompt-preset" }
+maho-ext-anthropic-bash = { path = "../builtins/maho-ext-anthropic-bash" }
+maho-ext-bash-timeout = { path = "../builtins/maho-ext-bash-timeout" }
+maho-ext-terminal = { path = "../builtins/maho-ext-terminal" }
+maho-ext-tool-pair-guard = { path = "../builtins/maho-ext-tool-pair-guard" }
+maho-ext-nested-agents-md = { path = "../builtins/maho-ext-nested-agents-md" }
+maho-ext-rules = { path = "../builtins/maho-ext-rules" }
+maho-ext-goal = { path = "../builtins/maho-ext-goal" }
+maho-ext-loop = { path = "../builtins/maho-ext-loop" }
+maho-ext-ttsr = { path = "../builtins/maho-ext-ttsr" }
+maho-ext-config-reload = { path = "../builtins/maho-ext-config-reload" }
+maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
+maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
+maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
+maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }
+maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-state" }
+maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }
+maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status" }
+maho-ext-orca-titlebar-spinner = { path = "../extensions/maho-ext-orca-titlebar-spinner" }
+maho-omo = { path = "../omo/maho-omo" }
+maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
+senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
+maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
+maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
+async-trait = "=0.1.92"
+anyhow = "=1.0.104"
+crossterm = "=0.29.0"
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }
 regex.workspace = true
@@ -55,7 +83,7 @@ photon-rs = { version = "=0.3.3", default-features = false }
 tempfile.workspace = true
 notify = "=8.2.0"
 nix = { version = "=0.28.0", features = ["signal", "process"] }
-tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal"] }
+tokio = { workspace = true, features = ["time", "macros", "rt", "process", "io-util", "io-std", "fs", "signal", "sync"] }
 
 [dev-dependencies]
 maho-ext-host = { path = "../maho-ext-host" }

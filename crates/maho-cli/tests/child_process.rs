@@ -16,3 +16,12 @@ async fn preaborted_signal_releases_pipes_and_observes_exit() {
     let mut child = tokio::process::Command::new("sh").args(["-c", "exit 0"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
     assert_eq!(wait_for_child_process(&mut child, WaitForChildProcessOptions { signal: Some(&signal), ..Default::default() }, |_, _| {}).await.unwrap(), Some(0));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn absent_pipes_wait_for_exit_without_reading() {
+    let mut child = tokio::process::Command::new("sh").args(["-c", "exit 7"])
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let status = wait_for_child_process(&mut child, Default::default(), |_, _| panic!("null pipes have no output")).await.unwrap();
+    assert_eq!(status, Some(7));
+}

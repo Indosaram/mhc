@@ -55,6 +55,7 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub auto_title_sessions: Option<bool>,
     pub extension_factories: Vec<maho_ext_host::loader::NativeAsyncExtensionFactory>,
     pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
+    pub defer_extension_start: bool,
 }
 
 pub struct MountedAgentSessionServices {
@@ -95,7 +96,7 @@ pub async fn create_agent_session_from_services(services: AgentSessionServices, 
         scoped_models: options.scoped_models, favorite_models: options.favorite_models, tools: options.tools,
         exclude_tools: options.exclude_tools, no_tools: options.no_tools, custom_tools: options.custom_tools,
         auto_title_sessions: options.auto_title_sessions, extension_factories: options.extension_factories,
-        loaded_extensions: options.loaded_extensions, ..Default::default()
+        loaded_extensions: options.loaded_extensions, defer_extension_start: options.defer_extension_start, ..Default::default()
     }).await?;
     let settings_manager = created.session.shared_settings_manager();
     Ok(CreateAgentSessionFromServicesResult { services: MountedAgentSessionServices {

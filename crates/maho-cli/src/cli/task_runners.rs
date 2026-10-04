@@ -26,9 +26,9 @@ impl senpi_task::manager::parent_registry_context::ChildModelRegistry for Native
 }
 
 pub fn live_parent_registry(
-    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
 ) -> senpi_task::manager::parent_registry_context::ParentModelRegistryResolver {
-    Arc::new(move || parent.upgrade().map(|session| {
+    Arc::new(move || parent().map(|session| {
         Arc::new(NativeChildModelRegistry(session.model_registry().clone()))
             as Arc<dyn senpi_task::manager::parent_registry_context::ChildModelRegistry>
     }))
@@ -46,7 +46,7 @@ pub fn native_child_session_manager(
 struct NativeParentTool {
     name: String,
     description: String,
-    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
     executor: tokio::runtime::Handle,
 }
 
@@ -97,9 +97,9 @@ pub fn native_child_settings(
 
 pub fn native_shared_parent_tool_definition(
     name: &str,
-    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
 ) -> Result<maho_ext_api::ToolDefinition, senpi_task::host::HostError> {
-    let session = parent.upgrade().ok_or_else(|| senpi_task::host::HostError { message: "Parent session retired".into() })?;
+    let session = parent().ok_or_else(|| senpi_task::host::HostError { message: "Parent session retired".into() })?;
     let mut definition = session.get_tool_definition(name).ok_or_else(|| senpi_task::host::HostError {
         message: format!("Shared parent tool {name} has no native definition"),
     })?;
@@ -111,7 +111,7 @@ pub fn native_shared_parent_tool_definition(
         let parent = parent.clone();
         let name = name.clone();
         Box::pin(async move {
-            let result = match parent.upgrade() {
+            let result = match parent() {
                 Some(parent) => parent.execute_prepared_shared_tool(&id, &name, params,
                     maho_core::agent_session::ExecuteToolOptions { signal, activate_inactive_tool: None }, updates).await,
                 None => {
@@ -143,7 +143,7 @@ impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativePa
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(failure("Synchronous child tools must execute on the task worker, not the host executor".into()));
         }
-        let parent = self.parent.upgrade().ok_or_else(|| failure("Parent session retired".into()))?;
+        let parent = (self.parent)().ok_or_else(|| failure("Parent session retired".into()))?;
         let result = self.executor.block_on(parent.execute_tool_with_call_id(tool_call_id, &self.name, input.clone(),
             maho_core::agent_session::ExecuteToolOptions { signal: None, activate_inactive_tool: None }))
             .map_err(|error| failure(error.to_string()))?;
@@ -159,10 +159,10 @@ impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativePa
 }
 
 pub fn live_parent_tools(
-    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
     executor: tokio::runtime::Handle,
 ) -> Arc<dyn Fn() -> Vec<senpi_task::runners::in_process::shared_tool_filter::ChildToolRef> + Send + Sync> {
-    Arc::new(move || match parent.upgrade() {
+    Arc::new(move || match parent() {
         Some(session) => session.get_all_tools().into_iter().filter_map(|tool| {
             session.get_registered_tool(&tool.name)?;
             Some(Arc::new(NativeParentTool {
@@ -211,13 +211,13 @@ pub fn native_rpc_options(
 
 pub fn authenticated_rpc_options(
     mut options: RpcProcessRunnerOptions,
-    parent: std::sync::Weak<maho_core::agent_session::AgentSession>,
+    parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>,
 ) -> RpcProcessRunnerOptions {
     let catalog_admission = options.model_admission.take();
     options.model_admission = Some(Arc::new(move |spec| {
         let unavailable = |message| senpi_task::runners::RunnerFailure::new(
             senpi_task::runners::RunnerFailureKind::ModelUnavailable, message);
-        let session = parent.upgrade().ok_or_else(|| unavailable("Parent session retired".to_owned()))?;
+        let session = parent().ok_or_else(|| unavailable("Parent session retired".to_owned()))?;
         let reference = match spec.model.as_deref().filter(|model| !model.trim().is_empty()) {
             Some(reference) => reference,
             None => return Err(unavailable("Authenticated process admission requires the planner's resolved model".to_owned())),

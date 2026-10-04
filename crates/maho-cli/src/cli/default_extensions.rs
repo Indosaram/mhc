@@ -7,12 +7,29 @@ fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionF
     NativeExtensionFactory { path: format!("<builtin:{name}>"), source_info: Default::default(), extension: Box::new(extension) }
 }
 
-pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<std::sync::Weak<maho_core::agent_session::AgentSession>>>) -> Vec<NativeAsyncExtensionFactory> {
+pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {
+    factories.into_iter().map(|factory| {
+        let extension: Arc<dyn Extension> = Arc::from(factory.extension);
+        NativeAsyncExtensionFactory { path: factory.path, source_info: factory.source_info,
+            factory: Arc::new(move |api| { extension.register(api); Box::pin(async { Ok(()) }) }) }
+    }).collect()
+}
+
+pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>) -> Vec<NativeAsyncExtensionFactory> {
+    let mut assembled = factories(widget_sender, parent);
+    let paths: std::collections::BTreeSet<_> = assembled.iter().map(|factory| factory.path.clone()).collect();
+    let native = super::extension_registry::native_extension_factories().into_iter()
+        .filter(|factory| !paths.contains(&factory.path)).collect();
+    assembled.extend(async_factories(native));
+    assembled
+}
+
+pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
     vec![
             factory("recommended-models", maho_ext_recommended_models::RecommendedModels),
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
-            factory("patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
+            factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
             factory("tool-search", ToolSearch),
             factory("todotools", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
@@ -55,7 +72,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
                 })),
             }),
             factory("model-fallback", maho_ext_model_fallback::ModelFallback { is_using_oauth: Arc::new(move |model| {
-                fallback_parent.get().and_then(std::sync::Weak::upgrade).is_some_and(|parent| parent.model_registry().is_using_oauth(model))
+                fallback_parent.get().and_then(|parent| parent()).is_some_and(|parent| parent.model_registry().is_using_oauth(model))
             }) }),
             factory("compaction", maho_ext_compaction::CompactionExtension),
             factory("webfetch", maho_ext_webfetch::index::WebfetchExtension),
@@ -70,7 +87,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
 }
 
 struct RuntimeActions(maho_ext_api::ExtensionRuntime);
-struct Task(Arc<std::sync::OnceLock<std::sync::Weak<maho_core::agent_session::AgentSession>>>);
+struct Task(Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>);
 struct Registry(Arc<dyn maho_ext_api::ModelRegistry>);
 impl senpi_task::host::SenpiModelRegistry for Registry {
     fn get_available(&self) -> Result<serde_json::Value, senpi_task::host::HostError> {
@@ -87,16 +104,16 @@ impl Extension for Task {
             let parent = parent.clone(); let registered = registered.clone(); let registration = registration.clone();
             let actions = actions.clone();
             Box::pin(async move {
-                let Some(parent) = parent.get().and_then(std::sync::Weak::upgrade) else { return Ok(maho_ext_api::EventResult::None); };
+                let Some(parent) = parent.get().and_then(|parent| parent()) else { return Ok(maho_ext_api::EventResult::None); };
                 if registered.load(std::sync::atomic::Ordering::Acquire) { return Ok(maho_ext_api::EventResult::None); }
-                let executor = tokio::runtime::Handle::current(); let weak = Arc::downgrade(&parent);
-                let parent_registry = super::task_runners::parent_registry_scope(weak.clone());
+                let executor = tokio::runtime::Handle::current(); let weak = parent.weak_accessor();
+                let parent_registry = super::task_runners::live_parent_registry(weak.clone());
                 let process = super::task_runners::authenticated_rpc_options(super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
                     &maho_core::config::get_agent_dir(), std::env::vars().collect(), Vec::new()), weak.clone());
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth: 3,
-                    create_session: super::task_session::factory(executor, Arc::downgrade(&parent)), parent_registry, rpc_options: process.clone(),
+                    create_session: super::task_session::factory(executor, parent.weak_accessor()), parent_registry, rpc_options: process.clone(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let config = parent.with_settings_manager(|settings| settings.get_value("omo").cloned().unwrap_or_else(|| serde_json::json!({})));

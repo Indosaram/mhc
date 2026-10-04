@@ -22,17 +22,16 @@ impl ChildSession for NativeChild {
     fn dispose(&self) { let session = self.session.clone(); self.executor.block_on(async move { session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await; session.dispose().await; }); }
 }
 
-pub fn factory(executor: tokio::runtime::Handle, parent: std::sync::Weak<maho_core::agent_session::AgentSession>) -> senpi_task::runners::in_process::runner::CreateChildSession {
+pub fn factory(executor: tokio::runtime::Handle, parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>) -> senpi_task::runners::in_process::runner::CreateChildSession {
     Arc::new(move |options| {
         let model = options.model.as_ref().and_then(|model| model.downcast_ref::<maho_ai::model::Model>()).cloned();
-        let registry = options.model_registry.as_ref().and_then(|registry| registry.downcast_ref::<maho_core::model_registry::ModelRegistry>()).cloned();
+        let registry = options.model_registry.as_ref().and_then(|registry| registry.downcast_ref::<super::task_runners::NativeChildModelRegistry>()).map(|registry| registry.0.clone());
         let models = options.model_runtime.as_ref().and_then(|runtime| runtime.downcast_ref::<maho_core::model_runtime::ModelRuntime>()).cloned();
-        let manager = maho_core::session_manager::SessionManager::open(&options.session_manager.session_file,
-            Some(&options.session_manager.session_dir), Some(&options.cwd), None);
+        let manager = super::task_runners::native_child_session_manager(&options);
         let custom = options.custom_tools.iter().map(|tool| {
             let tool = tool.clone();
             let name = tool.name().to_owned(); let description = tool.description().to_owned();
-            let parameters = parent.upgrade().and_then(|parent| parent.get_registered_tool_definition(&name)).map(|tool| tool.parameters)
+            let parameters = parent().and_then(|parent| parent.get_tool_definition(&name)).map(|tool| tool.parameters)
                 .ok_or_else(|| HostError { message: format!("Shared parent tool {name} has no native schema") })?;
             Ok(maho_ext_api::ToolDefinition::new(&name, &description, parameters,
                 Arc::new(move |call| { let tool = tool.clone(); let id = call.id.to_owned(); let params = call.params; Box::pin(async move {

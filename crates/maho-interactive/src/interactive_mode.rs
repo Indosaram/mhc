@@ -1941,7 +1941,7 @@ impl InteractiveMode {
         }
     }
 
-    fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
+    pub fn handle_ui_request(&mut self, request: crate::interactive_extension_ui::UiRequest) {
         use crate::interactive_extension_ui::UiRequest;
         match request {
             UiRequest::WidgetFrame => self.editor_host.request_render(),

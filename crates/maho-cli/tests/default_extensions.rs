@@ -16,3 +16,18 @@ async fn concrete_default_factories_register_tools_and_commands() {
     let tools = loaded.extensions.iter().flat_map(|extension| &extension.tools).map(|tool| tool.definition.name.as_str()).collect::<Vec<_>>();
     for name in ["eval", "look_at", "todo", "webfetch", "websearch"] { assert!(tools.contains(&name), "Missing tool {name}: {tools:?}"); }
 }
+
+#[tokio::test]
+async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
+    let root = tempfile::tempdir().expect("isolated factory directory");
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()));
+    let paths = factories.iter().map(|factory| factory.path.clone()).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(paths.len(), factories.len());
+    for path in ["<builtin:gpt-apply-patch>", "<builtin:todotools>", "<builtin:task>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<user:pi-ast-grep>"] {
+        assert!(paths.contains(path), "Missing factory {path}");
+    }
+    let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
+    assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+    assert_eq!(loaded.extensions.len(), paths.len());
+}
