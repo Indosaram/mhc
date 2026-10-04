@@ -104,27 +104,6 @@ impl Drop for SubprocessKernel {
     fn drop(&mut self) {self.shutdown.abort(None);}
 }
 
-#[cfg(test)]
-mod startup_ownership_tests {
-    use super::*;
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn dropped_shared_startup_retires_after_started_event() {
-        use tokio::io::AsyncReadExt;
-        let root=tempfile::tempdir().unwrap();let socket=root.path().join("startup.sock");
-        let listener=tokio::net::UnixListener::bind(&socket).unwrap();
-        let code=format!("import socket,signal\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall(b'STARTED')\nwhile True: signal.pause()\n",serde_json::to_string(&socket.to_string_lossy()).unwrap());
-        let options=SubprocessKernelOptions {command:"python3".into(),args:vec!["-c".into(),code],cwd:root.path().into(),env:None,session_env:None,session_id:"shared-drop".into(),connection:crate::bridge::protocol::BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},on_message:None};
-        let signal=maho_ai::utils::abort::AbortController::new().signal();
-        let mut startup=Box::pin(spawn_process_with_signal(&options,&signal));
-        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=listener.accept()=>stream.unwrap().0,result=&mut startup=>panic!("silent startup settled: {}",result.err().unwrap())}}).await;
-        drop(startup);
-        let mut stream=accepted.unwrap();let mut bytes=Vec::new();
-        tokio::time::timeout(Duration::from_secs(5),stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
-        assert_eq!(bytes,b"STARTED");
-    }
-}
-
 async fn spawn_process_with_signal(options: &SubprocessKernelOptions, signal:&maho_ai::utils::abort::AbortSignal) -> Result<SubprocessProcess, ProcessError> {
     let options=options.clone();let owner=signal.clone();
     let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
@@ -263,4 +242,25 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
     }
     *snapshot.lock().expect("kernel queue lock") = (None, vec![]);
     *pid.lock().expect("kernel pid lock") = None;
+}
+
+#[cfg(test)]
+mod startup_ownership_tests {
+    use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_shared_startup_retires_after_started_event() {
+        use tokio::io::AsyncReadExt;
+        let root=tempfile::tempdir().unwrap();let socket=root.path().join("startup.sock");
+        let listener=tokio::net::UnixListener::bind(&socket).unwrap();
+        let code=format!("import socket,signal\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall(b'STARTED')\nwhile True: signal.pause()\n",serde_json::to_string(&socket.to_string_lossy()).unwrap());
+        let options=SubprocessKernelOptions {command:"python3".into(),args:vec!["-c".into(),code],cwd:root.path().into(),env:None,session_env:None,session_id:"shared-drop".into(),connection:crate::bridge::protocol::BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},on_message:None};
+        let signal=maho_ai::utils::abort::AbortController::new().signal();
+        let mut startup=Box::pin(spawn_process_with_signal(&options,&signal));
+        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=listener.accept()=>stream.unwrap().0,result=&mut startup=>panic!("silent startup settled: {}",result.err().unwrap())}}).await;
+        drop(startup);
+        let mut stream=accepted.unwrap();let mut bytes=Vec::new();
+        tokio::time::timeout(Duration::from_secs(5),stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        assert_eq!(bytes,b"STARTED");
+    }
 }
