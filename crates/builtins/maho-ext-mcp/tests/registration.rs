@@ -207,9 +207,9 @@ async fn cached_service_registration_connects_on_first_call_and_reads_current_cl
     let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(),config:maho_ext_api::McpServerDeclaration {command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),exposure:Some(maho_ext_api::McpExposure::Direct),..Default::default()},extension_path:"fixture".into(),registration_cwd:root.path().into()};
     seed_cache(root.path(),"fx",&declaration);
     service.attach_session(root.path(),root.path(),&Default::default(),true,&[declaration]).await.unwrap();
-    let entry=service.connections["fx"].entry.clone();let connection=entry.lock().await.connection.clone();
-    entry.lock().await.cached_catalog=Some(McpCachedServerCatalog {config_hash:"fixture".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None});
-    let prepared=maho_ext_mcp::service_register::prepare_mcp_service_registration_entries(service.config.as_ref().unwrap(),&[entry]).await;
+    let connection_entry=service.connections["fx"].entry.clone();let connection=connection_entry.lock().await.connection.clone();
+    connection_entry.lock().await.cached_catalog=Some(McpCachedServerCatalog {config_hash:"fixture".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None});
+    let prepared=maho_ext_mcp::service_register::prepare_mcp_service_registration_entries(service.config.as_ref().unwrap(),&[connection_entry]).await;
     let current=prepared[0].connection.clone();let connect=prepared[0].ensure_cached_tool_connected.clone();
     let mut catalog_entry=entry("fx","tool_1");catalog_entry.connection=Some(current);catalog_entry.ensure_connected=Some(connect);
     let tools=maho_ext_mcp::expose::register::build_mcp_tool_definitions(&[catalog_entry],root.path().into(),Arc::new(McpOutputArtifacts::default()),None);
