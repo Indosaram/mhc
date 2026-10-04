@@ -7,3 +7,30 @@ license = "LicenseRef-SUL-1.0"
 
 [lints]
 workspace = true
+[dependencies]
+maho-omo-task = { path = "../components/maho-omo-task" }
+senpi-task = { package = "maho-senpi-task", path = "../senpi-task" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-omo-ast-grep = { path = "../components/maho-omo-ast-grep" }
+maho-omo-comment-checker = { path = "../components/maho-omo-comment-checker" }
+maho-omo-config-startup = { path = "../components/maho-omo-config-startup" }
+maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }
+maho-omo-fallback-architect = { path = "../components/maho-omo-fallback-architect" }
+maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor" }
+maho-omo-lsp = { path = "../components/maho-omo-lsp" }
+maho-omo-mass-ulw = { path = "../components/maho-omo-mass-ulw" }
+maho-omo-memory = { path = "../components/maho-omo-memory" }
+maho-omo-native-badge = { path = "../components/maho-omo-native-badge" }
+maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
+maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-continuation" }
+maho-omo-telemetry = { path = "../components/maho-omo-telemetry" }
+maho-omo-todo-fanout-reminder = { path = "../components/maho-omo-todo-fanout-reminder" }
+maho-omo-ultrawork = { path = "../components/maho-omo-ultrawork" }
+maho-omo-ulw-loop = { path = "../components/maho-omo-ulw-loop" }
+indexmap = "=2.14.0"
+serde_json = "=1.0.149"
+tokio = { version = "=1.52.3", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "=1.52.3", features = ["macros", "rt", "rt-multi-thread", "time"] }
+tempfile = "=3.27.0"
