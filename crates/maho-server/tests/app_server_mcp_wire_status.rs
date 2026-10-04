@@ -12,9 +12,11 @@ fn adapters_keep_global_and_thread_inventory_separate_and_release_subscriptions(
     assert_eq!(adapter.server_statuses()[0]["tools"]["tool"]["description"],"description");
     assert!(adapter.server_statuses()[0]["tools"]["tool"].get("private").is_none());
     let mut registry = McpWireStatusRegistry::new(Some(McpWireStatusAdapter::new(snapshot("global"))));
-    registry.register_thread("id".into(),adapter);
-    assert_eq!(registry.resolve(None).unwrap().server_statuses()[0]["name"],"global");
-    assert_eq!(registry.resolve(Some("id")).unwrap().server_statuses()[0]["name"],"updated");
+    registry.register_thread("id".into(),Arc::new(std::sync::Mutex::new(adapter)));
+    let global = registry.resolve(None).unwrap();
+    assert_eq!(global.lock().unwrap().server_statuses()[0]["name"],"global");
+    let thread = registry.resolve(Some("id")).unwrap();
+    assert_eq!(thread.lock().unwrap().server_statuses()[0]["name"],"updated");
     assert!(registry.resolve(Some("missing")).is_none());registry.remove_thread("id");
     assert_eq!(disposed.load(Ordering::SeqCst),1);
 }

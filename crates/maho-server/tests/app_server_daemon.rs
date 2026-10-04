@@ -291,7 +291,7 @@ async fn idle_lifecycle_unloads_only_unsubscribed_inactive_threads_and_dispose_c
     let connection=runtime.core.write().await.add_connection("observer".into(),Arc::new(move|message|{let send=send.clone();Box::pin(async move {send.send(message).unwrap();Ok(())})}));
     connection.initialized.lock().await.initialize(&json!({"clientInfo":{"name":"qa","version":"1"}}),"1","Linux","","x64");
     let entry=runtime.threads.create_thread(directory.path().display().to_string(),None).await.unwrap();let id=entry.lock().await.id.clone();
-    let lifecycle=ThreadLifecycleController::new(Arc::downgrade(&runtime.core),runtime.threads.clone(),std::time::Duration::from_secs(60));
+    let lifecycle=ThreadLifecycleController::new(Arc::downgrade(&runtime.core),runtime.threads.clone(),runtime.mcp_inventory.clone(),std::time::Duration::from_secs(60));
     entry.lock().await.subscribers.insert("observer".into());lifecycle.schedule_idle_unload_for_thread(&id).await;
     tokio::time::advance(std::time::Duration::from_secs(60)).await;assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
     entry.lock().await.subscribers.clear();lifecycle.schedule_idle_unload_for_thread(&id).await;

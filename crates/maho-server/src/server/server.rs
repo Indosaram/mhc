@@ -60,8 +60,10 @@ impl Server {
                 "Server handshakeTimeoutMs must be an integer between 1 and 2147483647",
             ));
         }
+        let router = Arc::new(SessionRouter::new(host.clone(), server_id.clone()));
+        router.bind_self();
         Ok(Arc::new(Self {
-            router: Arc::new(SessionRouter::new(host.clone(), server_id.clone())),
+            router,
             server_id,
             host,
             max_frame_length,

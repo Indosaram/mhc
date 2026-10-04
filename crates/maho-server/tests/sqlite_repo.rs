@@ -96,6 +96,17 @@ async fn failed_fork_initialization_rolls_back_destination_and_allows_retry() {
 }
 
 #[tokio::test]
+async fn opened_sessions_use_the_admitted_read_facade_and_reject_reads_after_close() {
+    let directory = tempfile::tempdir().unwrap();
+    let repo = SqliteSessionRepo::new(directory.path().into(), None, Arc::new(|| 123));
+    let context = background_context();
+    let session = repo.create(SessionCreateOptions { id: Some("facade".into()), ..Default::default() }, &context).await.unwrap();
+    assert!(session.get_entries(Vec::new(), &context).await.is_ok(), "admitted read through the facade");
+    repo.close(&context).await;
+    assert_eq!(session.get_entries(Vec::new(), &context).await.unwrap_err().kind, SessionErrorKind::Closed, "repository close drains the facade and rejects later reads");
+}
+
+#[tokio::test]
 async fn shared_container_deletion_preserves_other_session() {
     let directory = tempfile::tempdir().unwrap();
     let repo = SqliteSessionRepo::new(

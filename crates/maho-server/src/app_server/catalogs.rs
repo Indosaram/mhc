@@ -35,7 +35,7 @@ pub fn register_catalog_methods(registry: &mut MethodRegistry,threads: Arc<Threa
                 } else if method == "experimentalFeature/list" {Vec::new()} else {
                     let detail = match params.get("detail") {None|Some(Value::Null)=>"full",Some(Value::String(value)) if matches!(value.as_str(),"full"|"toolsAndAuthOnly")=>value,_=>return Err(JsonRpcError::new(-32600,"mcpServerStatus/list detail must be full, toolsAndAuthOnly, or null"))};
                     let inventory = inventory.lock().await;
-                    inventory.resolve(scope).map(|adapter|adapter.server_statuses().iter().map(|server| {let mut server = server.clone();if detail == "toolsAndAuthOnly" {server["serverInfo"] = Value::Null;server["resources"] = json!([]);server["resourceTemplates"] = json!([]);}server}).collect::<Vec<_>>()).unwrap_or_default()
+                    inventory.resolve(scope).map(|adapter|{let adapter=adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner);adapter.server_statuses().iter().map(|server| {let mut server = server.clone();if detail == "toolsAndAuthOnly" {server["serverInfo"] = Value::Null;server["resources"] = json!([]);server["resourceTemplates"] = json!([]);}server}).collect::<Vec<_>>()}).unwrap_or_default()
                 };
                 paginate_catalog(&items,params,method)
             })

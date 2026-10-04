@@ -58,3 +58,11 @@ pub fn provider_account_event_notification(event: &Value) -> Value {
     if event["type"] == "accounts_changed" { json!({"method":"account/providerAccounts/updated","params":{"provider":event["provider"]}}) }
     else { json!({"method":"account/providerAccounts/failover","params":{"provider":event["provider"],"from":event["from"],"to":event["to"],"reason":event["reason"]}}) }
 }
+/// Native port of the pinned `providerAccountEventNotification`, consuming the typed event the
+/// core provider-account registry delivers (no JSON round-trip).
+pub fn provider_account_event_notification_native(event: &maho_core::ProviderAccountEvent) -> Value {
+    match event {
+        maho_core::ProviderAccountEvent::AccountsChanged { provider } => json!({"method":"account/providerAccounts/updated","params":{"provider":provider}}),
+        maho_core::ProviderAccountEvent::Failover { provider, from, to, reason } => json!({"method":"account/providerAccounts/failover","params":{"provider":provider,"from":from,"to":to,"reason":reason}}),
+    }
+}

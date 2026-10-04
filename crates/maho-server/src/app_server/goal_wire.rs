@@ -15,3 +15,21 @@ pub struct ThreadGoal {
     pub created_at: f64,
     pub updated_at: f64,
 }
+
+pub fn to_thread_goal(goal: &maho_ext_goal::Goal) -> ThreadGoal {
+    ThreadGoal {
+        thread_id: goal.thread_id.clone(),
+        objective: goal.objective.clone(),
+        status: match goal.status {
+            maho_ext_goal::GoalStatus::Active => GoalStatus::Active,
+            maho_ext_goal::GoalStatus::Paused => GoalStatus::Paused,
+            maho_ext_goal::GoalStatus::Blocked => GoalStatus::Blocked,
+            maho_ext_goal::GoalStatus::Complete => GoalStatus::Complete,
+        },
+        token_budget: goal.token_budget.map(|budget| budget as f64),
+        tokens_used: goal.tokens_used as f64,
+        time_used_seconds: goal.time_used_seconds,
+        created_at: goal.created_at as f64,
+        updated_at: goal.updated_at as f64,
+    }
+}

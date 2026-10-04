@@ -1,11 +1,19 @@
-use super::{connection::{InitializedConnection, parse_initialize_params}, envelope::{ClassifiedIncoming, populate_outbound_notification}, errors, notifications::SendMessage, registry::MethodRegistry};
+use super::{connection::{InitializedConnection, TransportKind, parse_initialize_params}, envelope::{ClassifiedIncoming, populate_outbound_notification}, errors, notifications::SendMessage, registry::MethodRegistry};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
+pub struct ConnectionInput {
+    pub id: String,
+    pub transport_kind: TransportKind,
+    pub send: SendMessage,
+    pub close: Option<Arc<dyn Fn(String) + Send + Sync>>,
+}
 pub struct CoreConnection {
     pub initialized: Mutex<InitializedConnection>,
+    pub transport_kind: TransportKind,
     pub send: SendMessage,
+    pub close: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 pub struct ServerCore {
     connections: BTreeMap<String, Arc<CoreConnection>>,
@@ -25,9 +33,17 @@ impl ServerCore {
         Self { connections: BTreeMap::new(), registry: MethodRegistry::default(), agent_home, version, os_type, os_release, arch, platform, on_disconnect: None, approvals:None, user_input:None }
     }
     pub fn add_connection(&mut self, id: String, send: SendMessage) -> Arc<CoreConnection> {
-        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), send });
-        self.connections.insert(id, connection.clone());
+        self.add_connection_input(ConnectionInput {id, transport_kind:TransportKind::Stdio, send, close:None})
+    }
+    pub fn add_connection_input(&mut self, input: ConnectionInput) -> Arc<CoreConnection> {
+        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), transport_kind: input.transport_kind, send: input.send, close: input.close });
+        self.connections.insert(input.id, connection.clone());
         connection
+    }
+    pub fn close_connection(&self, id: &str, reason: &str) -> bool {
+        let Some(connection) = self.connections.get(id) else { return false; };
+        if let Some(close) = &connection.close { close(reason.to_owned()); }
+        true
     }
     pub fn remove_connection(&mut self, id: &str) {
         if self.connections.remove(id).is_some() && let Some(on_disconnect) = &self.on_disconnect { on_disconnect(id.to_owned()); }

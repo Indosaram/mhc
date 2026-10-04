@@ -22,6 +22,11 @@ pub fn parse_initialize_params(value:&Value)->Option<Value> {
     };
     Some(json!({"clientInfo":{"name":name,"title":title,"version":version},"capabilities":capabilities}))
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportKind {#[default] Stdio, WebSocket, Unix}
+impl TransportKind {
+    pub fn as_str(self) -> &'static str {match self {Self::Stdio=>"stdio",Self::WebSocket=>"websocket",Self::Unix=>"unix"}}
+}
 #[derive(Default)]
 pub struct InitializedConnection {
     pub state:Option<Value>,

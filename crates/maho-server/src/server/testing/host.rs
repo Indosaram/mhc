@@ -59,6 +59,10 @@ impl RoutedSessionHandle for TestHarness {
         self.state.lock().await.attached_clients+=1;
         Ok(Arc::new(TestAttachment {state:self.state.clone(),released:Mutex::new(false)}) as Arc<dyn RoutedSessionAttachment>)
     })}
+    fn terminated(&self)->Option<TerminationFuture> {
+        let terminated=self.terminated.clone();
+        Some(Box::pin(async move {terminated.wait().await}))
+    }
     fn close(&self)->ServerFuture<'_,()> {Box::pin(async move {
         let gate={let mut state=self.state.lock().await;state.close_count+=1;state.next_close_gate.take()};
         if let Some(gate)=gate {gate.entered.resolve(());gate.release.wait().await;}
