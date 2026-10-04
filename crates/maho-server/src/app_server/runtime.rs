@@ -117,6 +117,50 @@ impl AppServerRuntime {
                 })
             }) });
         }
+        {
+            let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+            let notification_core = notification_core.clone();
+            let lifecycle_slot=lifecycle_slot.clone();
+            let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+            core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
+                let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
+                let notification_core = notification_core.clone();
+                let lifecycle_slot=lifecycle_slot.clone();
+                let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
+                Box::pin(async move {
+                    let params = &context.request["params"];
+                    let source = required_string(params,"threadId")?.to_owned();
+                    let requested_cwd = params["cwd"].as_str().map(str::to_owned);
+                    let entry = threads.fork_thread(&source,requested_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    let mut entry = entry.lock().await;
+                    if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
+                    entry.subscribers.insert(context.connection.id.clone());
+                    let mut log = turn_log.lock().await;
+                    let mut wire = build_wire_thread(&entry, &mut log, true, &version).await.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
+                    wire["forkedFromId"] = json!(source);
+                    let model = entry.session.model();
+                    let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });
+                    let response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
+                    let queued = std::mem::take(&mut entry.queued_terminal_notifications);
+                    let client_id = context.connection.id.clone();
+                    let thread_id = entry.id.clone();
+                    let started = json!({"method":"thread/started","params":{"thread":response["thread"]}});
+                    context.connection.defer_until_responded(move || {tokio::spawn(async move {
+                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
+                            let core = core.read().await;
+                            if let Some(connection) = core.get_connection(&client_id) {
+                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            }
+                            if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
+                            for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
+                        }
+                    });});
+                    Ok(response)
+                })
+            })});
+        }
         let disconnected_threads = threads.clone();
         let disconnected_lifecycle=lifecycle_slot.clone();
         core.on_disconnect = Some(Arc::new(move |id| {
@@ -131,6 +175,7 @@ impl AppServerRuntime {
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
         super::handlers::register_storage_lifecycle_handlers(&core,threads.clone(),archive.clone(),version.clone()).await;

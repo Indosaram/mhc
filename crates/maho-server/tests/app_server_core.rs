@@ -1,6 +1,6 @@
-use maho_server::app_server::{envelope::classify_incoming, server_core::ServerCore};
+use maho_server::app_server::{connection::TransportKind,envelope::classify_incoming,server_core::{ConnectionInput,ServerCore}};
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
 
 #[tokio::test]
 async fn initialize_dispatch_correlates_errors_and_gates_notifications() {
@@ -19,6 +19,24 @@ async fn initialize_dispatch_correlates_errors_and_gates_notifications() {
     assert_eq!(receive.try_recv().unwrap()["emittedAtMs"], 123);
     core.remove_connection("client");
     assert_eq!(core.broadcast_notification(json!({"method":"turn/started"}), 124).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn connection_input_records_transport_kind_and_invokes_close_callback() {
+    let mut core = ServerCore::new("/tmp/home".into(), "1".into(), "Linux".into(), "test".into(), "x64".into(), "linux".into());
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    let closed = Arc::new(AtomicBool::new(false));
+    let close_flag = closed.clone();
+    let connection = core.add_connection_input(ConnectionInput { id:"ws".into(), transport_kind:TransportKind::WebSocket,
+        send:Arc::new(move |message| { send.send(message).unwrap(); Box::pin(async { Ok(()) }) }),
+        close:Some(Arc::new(move |reason| { assert_eq!(reason, "slow-client"); close_flag.store(true, Ordering::SeqCst); })) });
+    assert_eq!(connection.transport_kind, TransportKind::WebSocket);
+    core.receive("ws", classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}})).await.unwrap());
+    assert_eq!(receive.try_recv().unwrap()["id"], 1);
+    assert!(core.close_connection("ws", "slow-client"));
+    assert!(closed.load(Ordering::SeqCst));
+    assert!(!core.close_connection("missing", "slow-client"));
+    core.remove_connection("ws");
 }
 
 #[tokio::test]

@@ -1,10 +1,41 @@
-use maho_core::{agent_session::AgentSession, sdk::{CreateAgentSessionOptions, create_agent_session}, session_manager::SessionManager};
+use maho_core::{agent_session::AgentSession, sdk::{CreateAgentSessionOptions, create_agent_session}, session_manager::{CURRENT_SESSION_VERSION, NewSessionOptions, SessionManager, create_session_id, get_default_session_dir, load_entries_from_file, now_iso_millis, serialize_entry}};
 use serde_json::{Value, json};
 use std::{collections::{BTreeMap, BTreeSet}, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::Mutex;
 use indexmap::IndexMap;
 
 pub type SessionFactory = Arc<dyn Fn(CreateAgentSessionOptions) -> Pin<Box<dyn Future<Output = Result<AgentSession, String>> + Send>> + Send + Sync>;
+
+/// Fork a persisted session file into a new session carrying the full history, matching pinned
+/// `SessionManager.forkFrom`: a fresh id and header that references the source as `parentSession`,
+/// followed by every non-header source entry. Sessions with no persisted file start empty.
+fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
+    let existing = source_file.filter(|path| std::path::Path::new(path).exists());
+    let Some(source_file) = existing else {
+        let options = source_file.map(|path| NewSessionOptions { id: None, parent_session: Some(path.to_owned()) });
+        return Ok(SessionManager::create(cwd, session_dir, options));
+    };
+    let entries = load_entries_from_file(source_file);
+    if entries.is_empty() { return Err(format!("Cannot fork: source session file is empty or invalid: {source_file}")); }
+    if !entries.iter().any(|entry| entry.get("type").and_then(Value::as_str) == Some("session")) { return Err(format!("Cannot fork: source session has no header: {source_file}")); }
+    let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(cwd));
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let new_id = create_session_id();
+    let timestamp = now_iso_millis();
+    let file_timestamp = timestamp.replace([':', '.'], "-");
+    let new_file = std::path::Path::new(&dir).join(format!("{file_timestamp}_{new_id}.jsonl"));
+    let header = json!({"type":"session","version":CURRENT_SESSION_VERSION,"id":new_id,"timestamp":timestamp,"cwd":cwd,"parentSession":source_file});
+    let mut contents = format!("{}\n", serde_json::to_string(&header).map_err(|error| error.to_string())?);
+    for entry in &entries {
+        if entry.get("type").and_then(Value::as_str) == Some("session") { continue; }
+        contents.push_str(&serialize_entry(entry));
+        contents.push('\n');
+    }
+    let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&new_file).map_err(|error| error.to_string())?;
+    std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|error| error.to_string())?;
+    let path = new_file.to_string_lossy().into_owned();
+    Ok(SessionManager::open(&path, session_dir, Some(cwd), None))
+}
 
 pub struct ThreadEntry {
     pub id: String,
@@ -51,6 +82,15 @@ impl ThreadRegistry {
     }
     pub async fn create_thread(&self, cwd: String, model: Option<maho_ai::model::Model>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(SessionManager::create(&cwd, self.session_dir.as_deref(), None)), model, ..Default::default() }).await?;
+        self.deleted.lock().await.remove(&session.session_id());
+        Ok(self.register_session(session, cwd, None).await)
+    }
+    pub async fn fork_thread(&self, thread_id: &str, cwd: Option<String>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
+        let source = self.resume_thread(thread_id).await?;
+        let (source_cwd, source_file) = {let source = source.lock().await;(source.cwd.clone(),source.session.session_file())};
+        let cwd = maho_core::paths::resolve_path(cwd.as_deref().unwrap_or(&source_cwd),&source_cwd,&Default::default());
+        let manager = fork_session_manager(source_file.as_deref(),&cwd,self.session_dir.as_deref())?;
+        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
         Ok(self.register_session(session, cwd, None).await)
     }
