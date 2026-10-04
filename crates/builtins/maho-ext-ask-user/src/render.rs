@@ -33,6 +33,18 @@ pub fn result_text(result: &Value) -> String {
     lines.join("\n")
 }
 pub fn supports_tool(tool_name: &str) -> bool { matches!(tool_name,"request_user_input"|"ask_user_question") }
+pub fn renderers()->maho_ext_api::ToolRenderers<(),Value>{
+    maho_ext_api::ToolRenderers{
+        render_call:Some(std::sync::Arc::new(|args,theme,_|{
+            let color=theme.colors.get("toolTitle").map_or("\x1b[39m",String::as_str);
+            Box::new(maho_tui::components::text::Text::with_padding(format!("{color}{}\x1b[39m {}",call_headers(args),if wait_for_answer(args){"wait for answer"}else{"answer later"}),0,0))
+        })),
+        render_result:Some(std::sync::Arc::new(|result,_,_,_|{
+            let value=serde_json::json!({"details":result.details,"content":result.content});
+            Box::new(maho_tui::components::text::Text::with_padding(result_text(&value),0,0))
+        })),
+    }
+}
 
 #[cfg(test)]
 mod tests {

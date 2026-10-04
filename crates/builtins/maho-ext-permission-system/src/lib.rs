@@ -49,7 +49,10 @@ impl Extension for PermissionSystem{
                 let requests={let guard=state.lock().expect("permission state lock");let Some(policy)=guard.as_ref()else{return Ok(EventResult::None)};policy.registry.parse(&event.tool_name,&event.input,(&ctx.cwd,std::path::Path::new(&home)))};
                 for parsed in requests{
                     let mut metadata=event.input.as_object().cloned().unwrap_or_default();metadata.insert("toolName".into(),event.tool_name.clone().into());
-                    let path=metadata.get("path").or_else(||metadata.get("file_path")).cloned();
+                    let path=metadata.get("path").or_else(||metadata.get("file_path")).cloned().or_else(||{
+                        let patch=metadata.get("input").or_else(||metadata.get("patchText"))?.as_str()?;
+                        maho_ext_gpt_apply_patch::text::extract_patched_paths(patch).into_iter().next().map(serde_json::Value::String)
+                    });
                     if let Some(path)=path{
                         if config::EDIT_TOOLS.contains(&event.tool_name.as_str()){metadata.insert("filepath".into(),path.clone());}
                         if event.tool_name=="read"{metadata.insert("filePath".into(),path);}

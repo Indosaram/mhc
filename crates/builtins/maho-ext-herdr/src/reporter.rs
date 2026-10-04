@@ -87,7 +87,8 @@ impl Extension for Herdr{
                     if !state.lock().expect("reporter lock").owns(ctx){return Ok(EventResult::None);}
                     if kind==EventKind::SessionInfoChanged{report_title(state,ctx).await;return Ok(EventResult::None);}
                     if let ExtensionEvent::SessionShutdown(event)=event{
-                        let pending={let mut guard=state.lock().expect("reporter lock");guard.stopped=true;if let Some(poll)=guard.poll.take(){poll.abort();}guard.subscriptions.clear();std::mem::take(&mut guard.pending)};
+                        let (pending,poll)={let mut guard=state.lock().expect("reporter lock");guard.stopped=true;let poll=guard.poll.take();if let Some(poll)=&poll{poll.abort();}guard.subscriptions.clear();(std::mem::take(&mut guard.pending),poll)};
+                        if let Some(poll)=poll{let _result=poll.await;}
                         for work in pending{let _result=work.await;}
                         let drain=state.lock().expect("reporter lock").client.as_ref().expect("bound client").drain();drain.await;
                         if event.reason==SessionReason::Quit{let work=enqueue(&mut state.lock().expect("reporter lock"),HerdrMethod::ReleaseAgent,json!({"agent":"pi"}).as_object().expect("object").clone());if let Some(work)=work{let _result=work.await;}}

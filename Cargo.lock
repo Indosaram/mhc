@@ -2097,6 +2097,15 @@ dependencies = [
 [[package]]
 name = "maho-ext-account"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-anthropic-bash"
@@ -2115,7 +2124,9 @@ name = "maho-ext-anthropic-web-search"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
+ "tokio",
  "url",
 ]
 
@@ -2135,8 +2146,15 @@ dependencies = [
 name = "maho-ext-ask-user"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "maho-ext-host",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2162,9 +2180,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "regex",
  "serde_json",
  "tokio",
 ]
@@ -2173,7 +2194,9 @@ dependencies = [
 name = "maho-ext-cache-keepalive"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
  "maho-ai",
+ "serde_json",
 ]
 
 [[package]]
@@ -2331,6 +2354,7 @@ dependencies = [
  "maho-ai",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2424,7 +2448,9 @@ name = "maho-ext-openai-web-search"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
+ "tokio",
  "url",
 ]
 
@@ -2458,8 +2484,14 @@ dependencies = [
 name = "maho-ext-permission-system"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "maho-ext-host",
+ "maho-test-support",
+ "maho-tools",
  "serde",
  "serde_json",
  "tempfile",
@@ -2688,8 +2720,11 @@ name = "maho-ext-video-in"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-tools",
  "serde",
  "serde_json",

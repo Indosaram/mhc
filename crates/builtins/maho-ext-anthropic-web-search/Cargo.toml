@@ -10,5 +10,9 @@ maho-ext-api = { path = "../../maho-ext-api" }
 serde_json.workspace = true
 url = "=2.5.8"
 
+[dev-dependencies]
+maho-ext-host = { path = "../../maho-ext-host" }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true
