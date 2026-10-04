@@ -602,11 +602,34 @@ fn hosted_shorthand_keeps_pinned_clone_url_and_storage_identity() {
 #[cfg(target_os = "linux")]
 #[test]
 fn live_stdout_takeover_duplicates_stderr_descriptor_without_buffering() {
-    use std::os::fd::{AsRawFd, OwnedFd};
-    let redirected = OwnedFd::try_from(package_stdout(false, true).expect("stdio")).expect("owned descriptor");
-    assert_eq!(std::fs::read_link(format!("/proc/self/fd/{}", redirected.as_raw_fd())).expect("redirected"), std::fs::read_link("/proc/self/fd/2").expect("stderr"));
-    assert!(OwnedFd::try_from(package_stdout(false, false).expect("stdio")).is_err());
-    assert!(OwnedFd::try_from(package_stdout(true, true).expect("stdio")).is_err());
+    use std::process::{Command, Stdio};
+
+    // The Stdio owns its descriptor, so assert the redirection where it lands: spawn a probe that
+    // parks on stdin (keeping the pid alive) and read which descriptor the kernel handed it as fd 1.
+    fn probe_stdout_target(stdio: Stdio) -> std::path::PathBuf {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("read _maho_stdout_probe")
+            .stdin(Stdio::piped())
+            .stdout(stdio)
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("probe child");
+        let target = std::fs::read_link(format!("/proc/{}/fd/1", child.id())).expect("probe fd 1");
+        drop(child.stdin.take());
+        child.wait().expect("probe exit");
+        target
+    }
+
+    // Taken-over stdout without capture duplicates the process stderr descriptor.
+    let redirected = probe_stdout_target(package_stdout(false, true).expect("stdio"));
+    assert_eq!(redirected, std::fs::read_link("/proc/self/fd/2").expect("stderr"));
+    // Without takeover the child inherits the process stdout descriptor.
+    let inherited = probe_stdout_target(package_stdout(false, false).expect("stdio"));
+    assert_eq!(inherited, std::fs::read_link("/proc/self/fd/1").expect("stdout"));
+    // Captured stdout is a fresh pipe, never the duplicated stderr descriptor.
+    let captured = probe_stdout_target(package_stdout(true, true).expect("stdio"));
+    assert!(captured.to_string_lossy().starts_with("pipe:"), "captured stdout is not a pipe: {captured:?}");
 }
 
 #[test]
