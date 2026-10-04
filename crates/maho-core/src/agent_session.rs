@@ -1019,7 +1019,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         }
     }
     fn get_loaded_hook_sources(&self) -> maho_ext_api::LoadedHookSources {
-        if let Some(session) = self.session().ok() {
+        if let Ok(session) = self.session() {
             let cwd = session.cwd();
             let state = session.state();
             if let Some(mut sources) = state.loaded_hook_sources.clone() {
@@ -4914,6 +4914,10 @@ impl AgentSession {
                         let previous = previous_payload.clone();
                         let weak = payload_session.clone();
                         Box::pin(async move {
+                            // The event carries the resolved request model. The direct API lanes pass it
+                            // as `model` and leave `metadata` unset, so fall back to it rather than
+                            // dropping the model when only the metadata is absent.
+                            let event_model = metadata.as_ref().map(|request| request.model.clone()).unwrap_or_else(|| model.clone());
                             let payload = match previous {
                                 Some(previous) => previous(payload.clone(), model, metadata.clone()).await?.unwrap_or(payload),
                                 None => payload,
@@ -4922,7 +4926,7 @@ impl AgentSession {
                             let runner = AgentSession { inner }.extension_runner.lock().await.clone();
                             match runner {
                                 Some(mut runner) => runner.emit_before_provider_request_with_metadata(payload,
-                                    metadata.as_ref().map(|request| request.model.clone()),
+                                    Some(event_model),
                                     metadata.map(|request| request.headers), None).await.map(Some).map_err(|error| error.message),
                                 None => Ok(Some(payload)),
                             }

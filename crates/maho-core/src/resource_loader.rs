@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn the_agent_context_file_comes_first_then_ancestors_from_the_root_down() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::test_support::isolated_tempdir();
         let agent_dir = dir.path().join("agent");
         let project = dir.path().join("project");
         let nested = project.join("sub");
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn a_repeated_context_file_is_loaded_once() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::test_support::isolated_tempdir();
         let agent_dir = dir.path().to_string_lossy().into_owned();
         write(&dir.path().join("AGENTS.md"), "rules");
         let files = load_project_context_files(&agent_dir, &agent_dir);
