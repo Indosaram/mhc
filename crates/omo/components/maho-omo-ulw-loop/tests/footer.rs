@@ -23,3 +23,20 @@ fn headless_context_does_not_publish_or_start_footer() -> Result<(), Box<dyn std
     assert!(ui.0.lock().expect("status").is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn session_scoped_goal_path_resolves_from_cwd() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let goal_dir = root.path().join(".omo/goal");
+    std::fs::create_dir_all(&goal_dir)?;
+    std::fs::write(goal_dir.join("session.json"), r#"{"version":1,"goal":{"status":"active"}}"#)?;
+    let mut ctx = support::context();
+    ctx.has_ui = true;
+    ctx.cwd = root.path().into();
+    ctx.goal_store_file = None;
+    let footer = std::sync::Arc::new(std::sync::Mutex::new(FooterStatus::default()));
+    sync_shared(&footer, &ctx, true);
+    assert!(footer.lock().expect("footer").running);
+    footer.lock().expect("footer").dispose();
+    Ok(())
+}
