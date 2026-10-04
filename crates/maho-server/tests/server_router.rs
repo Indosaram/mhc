@@ -246,3 +246,53 @@ async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
     assert_eq!(result.unwrap_err().code,"session_not_attached");
     router.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn stale_terminated_handle_cannot_invalidate_reopened_session() {
+    use maho_server::server::testing::host::Deferred;
+    struct WatchHandle { terminated: Deferred<Option<ServerError>>, closes: Arc<AtomicUsize> }
+    struct WatchHost { handles: std::sync::Mutex<Vec<Arc<WatchHandle>>>, opens: AtomicUsize }
+    struct WatchLease;
+    impl RoutedSessionAttachment for WatchLease {
+        fn invoke_service<'a>(&'a self,_:Value,_:Publisher,_:Context)->ServerFuture<'a,Option<Value>> {Box::pin(async {Ok(None)})}
+        fn release(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    impl RoutedSessionHandle for WatchHandle {
+        fn attach_client(&self)->ServerFuture<'_,Arc<dyn RoutedSessionAttachment>> {Box::pin(async {Ok(Arc::new(WatchLease) as Arc<dyn RoutedSessionAttachment>)})}
+        fn terminated(&self)->Option<TerminationFuture> {let terminated=self.terminated.clone();Some(Box::pin(async move {terminated.wait().await}))}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async move {self.closes.fetch_add(1,Ordering::SeqCst);Ok(())})}
+    }
+    impl RoutedServerServiceHost for WatchHost {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(async {Err(ServerError::new("internal_error","Unused"))})}
+    }
+    impl ServerHost for WatchHost {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,_:&'a str)->ServerFuture<'a,Value> {Box::pin(async {Ok(json!({"id":"s"}))})}
+        fn open_session(&self,_:Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async move {
+            self.opens.fetch_add(1,Ordering::SeqCst);
+            let handle=Arc::new(WatchHandle {terminated:Deferred::default(),closes:Arc::new(AtomicUsize::new(0))});
+            self.handles.lock().unwrap().push(handle.clone());
+            Ok(handle as Arc<dyn RoutedSessionHandle>)
+        })}
+    }
+    let host=Arc::new(WatchHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
+    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+    let _first=router.attach("s").await.unwrap();
+    router.watch_termination("s").await;
+    router.remove("s").await.unwrap();
+    let _second=router.attach("s").await.unwrap();
+    router.watch_termination("s").await;
+    assert_eq!(host.opens.load(Ordering::SeqCst),2);
+    assert_eq!(host.handles.lock().unwrap()[0].closes.load(Ordering::SeqCst),1);
+    host.handles.lock().unwrap()[0].terminated.resolve(Some(ServerError::new("internal_error","stale crash")));
+    tokio::task::yield_now().await;
+    let _third=router.attach("s").await.unwrap();
+    assert_eq!(host.opens.load(Ordering::SeqCst),2,"stale termination must not invalidate the replacement");
+    assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),0);
+    host.handles.lock().unwrap()[1].terminated.resolve(Some(ServerError::new("internal_error","replacement crash")));
+    tokio::task::yield_now().await;
+    let _fourth=router.attach("s").await.unwrap();
+    assert_eq!(host.opens.load(Ordering::SeqCst),3,"current termination invalidates and reopens");
+    assert_eq!(host.handles.lock().unwrap()[1].closes.load(Ordering::SeqCst),1);
+    router.close().await.unwrap();
+}

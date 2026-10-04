@@ -4,7 +4,7 @@ use super::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
@@ -50,9 +50,10 @@ pub struct SessionRouter {
     attachments: Mutex<BTreeMap<String, Vec<Weak<Attachment>>>>,
     closing: AtomicBool,
     close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
-    watched: Mutex<BTreeSet<String>>,
+    watched: Mutex<BTreeMap<String, Arc<dyn RoutedSessionHandle>>>,
 }
 struct OpenSlot { result: watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
+enum Acquire { Wait(Arc<OpenSlot>), Lead(Arc<OpenSlot>) }
 impl SessionRouter {
     pub fn new(host: Arc<dyn ServerHost>, server_id: String) -> Self {
         Self {
@@ -64,7 +65,7 @@ impl SessionRouter {
             attachments: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
             close_result: tokio::sync::OnceCell::new(),
-            watched: Mutex::new(BTreeSet::new()),
+            watched: Mutex::new(BTreeMap::new()),
         }
     }
     pub async fn attach(&self, session_id: &str) -> Result<Arc<Attachment>, ServerError> {
@@ -100,30 +101,39 @@ impl SessionRouter {
             if let Some(handle) = self.hosted.lock().await.get(session_id).cloned() {
                 return Ok(handle);
             }
-            let waiter = {
+            let decision = {
                 let mut opening = self.opening.lock().await;
                 opening.retain(|_, slot| slot.strong_count() > 0);
                 match opening.get(session_id).and_then(Weak::upgrade) {
-                    Some(slot) => Some(slot),
+                    Some(slot) => Acquire::Wait(slot),
                     None => {
                         let slot = Arc::new(OpenSlot { result: watch::channel(None).0 });
                         opening.insert(session_id.into(), Arc::downgrade(&slot));
-                        drop(opening);
-                        let result = self.open(session_id).await;
-                        slot.result.send_replace(Some(result.clone()));
-                        let mut opening = self.opening.lock().await;
-                        if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
-                            opening.remove(session_id);
-                        }
-                        return result;
+                        Acquire::Lead(slot)
                     }
                 }
             };
-            let slot = waiter.expect("waiter slot");
-            let mut receiver = slot.result.subscribe();
-            loop {
-                if let Some(result) = receiver.borrow_and_update().clone() { return result; }
-                if receiver.changed().await.is_err() { break; }
+            match decision {
+                Acquire::Wait(slot) => {
+                    let mut receiver = slot.result.subscribe();
+                    loop {
+                        if let Some(result) = receiver.borrow_and_update().clone() { return result; }
+                        if receiver.changed().await.is_err() { break; }
+                    }
+                    let mut opening = self.opening.lock().await;
+                    if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
+                        opening.remove(session_id);
+                    }
+                }
+                Acquire::Lead(slot) => {
+                    let result = self.open(session_id).await;
+                    slot.result.send_replace(Some(result.clone()));
+                    let mut opening = self.opening.lock().await;
+                    if opening.get(session_id).and_then(Weak::upgrade).is_some_and(|current| Arc::ptr_eq(&current, &slot)) {
+                        opening.remove(session_id);
+                    }
+                    return result;
+                }
             }
         }
     }
@@ -166,24 +176,32 @@ impl SessionRouter {
         let handle = self.hosted.lock().await.get(session_id).cloned();
         let Some(handle) = handle else { return };
         let Some(terminated) = handle.terminated() else { return };
-        if !self.watched.lock().await.insert(session_id.to_owned()) { return; }
-        let router = self.clone();
+        {
+            let mut watched = self.watched.lock().await;
+            if watched.get(session_id).is_some_and(|current| Arc::ptr_eq(current, &handle)) { return; }
+            watched.insert(session_id.to_owned(), handle.clone());
+        }
+        let router = Arc::clone(self);
         let session_id = session_id.to_owned();
         tokio::spawn(async move {
             let error = terminated.await;
-            router.invalidate(&session_id, error).await;
+            router.invalidate(&session_id, &handle, error).await;
         });
     }
-    async fn invalidate(&self, session_id: &str, error: Option<ServerError>) {
-        let (leases, handle) = {
-            let mut attachments = self.attachments.lock().await;
-            let handle = self.hosted.lock().await.remove(session_id);
-            (attachments.remove(session_id).unwrap_or_default(), handle)
+    async fn invalidate(&self, session_id: &str, handle: &Arc<dyn RoutedSessionHandle>, error: Option<ServerError>) {
+        let leases = {
+            let mut hosted = self.hosted.lock().await;
+            if !hosted.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { return; }
+            hosted.remove(session_id);
+            let mut watched = self.watched.lock().await;
+            if watched.get(session_id).is_some_and(|current| Arc::ptr_eq(current, handle)) { watched.remove(session_id); }
+            drop(watched);
+            self.attachments.lock().await.remove(session_id).unwrap_or_default()
         };
         for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
             if let Err(release) = lease.release().await { eprintln!("{}", release.message); }
         }
-        if let Some(handle) = handle && let Err(close) = handle.close().await { eprintln!("{}", close.message); }
+        if let Err(close) = handle.close().await { eprintln!("{}", close.message); }
         if let Some(error) = error { eprintln!("{}", error.message); }
     }
     async fn close_internal(&self) -> Result<(), ServerError> {
