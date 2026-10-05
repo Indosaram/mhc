@@ -23,9 +23,12 @@ pub fn resolve_search_root_windows(current:&str,default:&str)->String{
 use maho_ext_api::*;
 use std::sync::Arc;
 pub type HistorySelection=Arc<dyn Fn(ExtensionContext,Vec<types::HistoryEntry>)->ExtensionFuture<'static,Option<types::HistoryEntry>>+Send+Sync>;
+pub type HistoryRenderer=Arc<dyn Fn(&dyn ExtensionTuiHost)->std::rc::Rc<dyn Fn()>+Send+Sync>;
+pub type HistoryThemeMapper=Arc<dyn Fn(&Theme)->Result<maho_interactive::theme::Theme,ExtensionFailure>+Send+Sync>;
+pub type SessionDirProvider=Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>;
 pub struct HistoryUiBindings{
-    pub render:Arc<dyn Fn(&dyn ExtensionTuiHost)->std::rc::Rc<dyn Fn()>+Send+Sync>,
-    pub theme:Arc<dyn Fn(&Theme)->Result<maho_interactive::theme::Theme,ExtensionFailure>+Send+Sync>,
+    pub render:HistoryRenderer,
+    pub theme:HistoryThemeMapper,
 }
 pub fn native_selection(bindings:HistoryUiBindings)->HistorySelection{
     let bindings=Arc::new(bindings);
@@ -41,7 +44,7 @@ pub fn native_selection(bindings:HistoryUiBindings)->HistorySelection{
     })})
 }
 pub struct HistorySearch{
-    pub session_dir:Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>,
+    pub session_dir:SessionDirProvider,
     pub default_sessions_root:Arc<dyn Fn()->PathBuf+Send+Sync>,
     pub select:HistorySelection,
 }

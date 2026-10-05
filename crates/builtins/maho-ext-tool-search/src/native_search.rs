@@ -6,6 +6,8 @@ pub const ANTHROPIC_TOOL_SEARCH_TYPE:&str="tool_search_tool_bm25_20251119";
 pub const ANTHROPIC_TOOL_SEARCH_NAME:&str="tool_search_tool_bm25";
 pub const ANTHROPIC_MAX_TOOLS:usize=10000;
 pub struct NativeToolDefinition { pub description:Option<String>,pub parameters:Option<Value> }
+pub type NativeToolDefinitionGetter=Arc<dyn Fn(&str)->Option<NativeToolDefinition>+Send+Sync>;
+pub type NativeFallbackNotifier=Option<Arc<dyn Fn(&str)+Send+Sync>>;
 pub struct AnthropicNativeInjectionConfig<'a> {
     pub search_tool_name:Option<&'a str>,
     pub is_deferrable:&'a dyn Fn(&str)->bool,
@@ -48,11 +50,11 @@ pub struct AnthropicNativeAdapterDeps {
     pub search_tool_name:Option<String>,
     pub is_deferrable:Arc<dyn Fn(&str)->bool+Send+Sync>,
     pub get_catalog:Arc<dyn Fn()->Vec<ToolSearchDocument>+Send+Sync>,
-    pub get_tool_definition:Arc<dyn Fn(&str)->Option<NativeToolDefinition>+Send+Sync>,
+    pub get_tool_definition:NativeToolDefinitionGetter,
     /// Resolved provider/config gate (upstream `enabled()`).
     pub enabled:Arc<dyn Fn()->bool+Send+Sync>,
     /// Invoked once when a 400 forces the local-search fallback (upstream `onFallback?`).
-    pub on_fallback:Option<Arc<dyn Fn(&str)+Send+Sync>>,
+    pub on_fallback:NativeFallbackNotifier,
 }
 #[derive(Default)]
 pub struct AnthropicNativeToolSearchAdapter { pub disabled:bool, injected_last_request:bool, pub fallback_reason:Option<String>, deps:Option<AnthropicNativeAdapterDeps> }

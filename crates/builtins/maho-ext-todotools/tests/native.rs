@@ -11,7 +11,7 @@ fn native_todo_factory_registers_state_command_renderers_and_cleanup() {
     let directory=tempfile::tempdir().unwrap();
     let loaded=maho_ext_host::loader::load_extensions(vec![maho_ext_host::loader::NativeExtensionFactory {
         path:"builtin:todotools".into(),source_info:Default::default(),
-        extension:Box::new(maho_ext_todotools::index::NativeTodotoolsExtension {actions:std::sync::Arc::new(Actions),copy_markdown:std::sync::Arc::new(|_|Box::pin(async {Ok(())}))}),
+        extension:Box::new(maho_ext_todotools::index::NativeTodotoolsExtension {actions:std::sync::Arc::new(Actions),copy_markdown:std::sync::Arc::new(|_|Box::pin(async {Ok(())})),widget_sender:tokio::sync::mpsc::unbounded_channel().0}),
     }],directory.path(),Default::default());
     assert!(loaded.errors.is_empty(),"{:?}",loaded.errors);
     let extension=&loaded.extensions[0];

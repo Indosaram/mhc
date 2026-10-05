@@ -1,4 +1,5 @@
 use crate::engine::document::{ToolSearchDocument,ToolSearchSource};
+type ToolSearchStateSnapshot=std::sync::Arc<dyn Fn()->(Vec<ToolSearchDocument>,Vec<String>,bool)+Send+Sync>;
 pub struct ToolSearchExtension {pub actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,pub mcp_native_enabled:std::sync::Arc<dyn Fn()->bool+Send+Sync>}
 impl maho_ext_api::Extension for ToolSearchExtension {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
@@ -22,9 +23,9 @@ impl ToolSearchExtension {
         let catalog_service=service.clone();
         let get_catalog:Arc<dyn Fn()->Vec<ToolSearchDocument>+Send+Sync>=Arc::new(move ||catalog_service.try_lock().map(|mut service|service.get_catalog().unwrap_or_default()).unwrap_or_default());
         let definition_actions=self.actions.clone();
-        let get_tool_definition:Arc<dyn Fn(&str)->Option<crate::native_search::NativeToolDefinition>+Send+Sync>=Arc::new(move |name|definition_actions.get_all_tools().ok().and_then(|tools|tools.into_iter().find(|tool|tool.name==name)).map(|tool|crate::native_search::NativeToolDefinition {description:Some(tool.description),parameters:Some(tool.parameters)}));
+        let get_tool_definition:crate::native_search::NativeToolDefinitionGetter=Arc::new(move |name|definition_actions.get_all_tools().ok().and_then(|tools|tools.into_iter().find(|tool|tool.name==name)).map(|tool|crate::native_search::NativeToolDefinition {description:Some(tool.description),parameters:Some(tool.parameters)}));
         let state_service=service.clone();let state_runtime=api.runtime.clone();let state_mcp=self.mcp_native_enabled.clone();
-        let state:Arc<dyn Fn()->(Vec<ToolSearchDocument>,Vec<String>,bool)+Send+Sync>=Arc::new(move ||{
+        let state:ToolSearchStateSnapshot=Arc::new(move ||{
             let catalog=state_service.try_lock().map(|mut service|service.get_catalog().unwrap_or_default()).unwrap_or_default();
             let active=state_runtime.session_actions().ok().and_then(|actions|actions.get_active_tools().ok()).unwrap_or_default();
             (catalog,active,(state_mcp)())
@@ -32,7 +33,7 @@ impl ToolSearchExtension {
         let is_deferrable:Arc<dyn Fn(&str)->bool+Send+Sync>={let state=state.clone();Arc::new(move |name|{let (catalog,active,mcp)=state();is_deferrable(name,&catalog,&active,mcp)})};
         let enabled:Arc<dyn Fn()->bool+Send+Sync>={let state=state.clone();Arc::new(move ||{let (catalog,active,mcp)=state();native_search_enabled(&catalog,&active,mcp)})};
         let fallback_service=service.clone();
-        let on_fallback:Option<Arc<dyn Fn(&str)+Send+Sync>>=Some(Arc::new(move |reason|{if let Ok(mut service)=fallback_service.try_lock(){service.note_native_injection_failure(reason.to_owned());}}));
+        let on_fallback:crate::native_search::NativeFallbackNotifier=Some(Arc::new(move |reason|{if let Ok(mut service)=fallback_service.try_lock(){service.note_native_injection_failure(reason.to_owned());}}));
         let adapter=Arc::new(std::sync::Mutex::new(crate::native_search::AnthropicNativeToolSearchAdapter::new(crate::native_search::AnthropicNativeAdapterDeps {search_tool_name:Some(crate::tool::TOOL_SEARCH_TOOL_NAME.to_owned()),is_deferrable,get_catalog,get_tool_definition,enabled,on_fallback})));
         let request_adapter=adapter.clone();
         api.on(maho_ext_api::EventKind::BeforeProviderRequest,Arc::new(move |event,ctx|{

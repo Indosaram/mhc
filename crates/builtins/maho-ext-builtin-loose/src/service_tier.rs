@@ -45,10 +45,10 @@ pub async fn apply_fast_mode(sender:&ExtensionApi,ctx:&ExtensionContext,host:&dy
     }
     let memory=memory_model(ctx,host,model);let tier=if enabled{ServiceTier::Priority}else{ServiceTier::Auto};host.persist(ctx,&memory,tier).await?;
     let base=sibling(ctx,host,model,false);let target=if enabled{sibling(ctx,host,model,true)}else{base.clone()};
-    if let Some(target)=&target{if !sender.set_session_model(target.clone()).await?{
+    if let Some(target)=&target&& !sender.set_session_model(target.clone()).await?{
         ctx.ui.notify(&format!("Could not switch to {}.",key(target)),NotificationType::Error);
         return Ok(FastModeResult{enabled:base.is_none(),applied:false,recorded_tier:ServiceTier::Auto});
-    }}
+    }
     sender.set_session_fast_mode(enabled)?;
     ctx.ui.notify(&format!("Fast mode {}: {}",if enabled{"enabled"}else{"disabled"},target.as_ref().unwrap_or(model).id),NotificationType::Info);
     Ok(FastModeResult{enabled,applied:true,recorded_tier:tier})

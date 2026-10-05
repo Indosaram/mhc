@@ -1,6 +1,7 @@
 use maho_ext_api::*;
 use std::sync::{Arc,atomic::{AtomicU64,Ordering}};
-pub struct Redraws{pub full_redraws:Arc<dyn Fn(&dyn ExtensionTuiHost)->u64+Send+Sync>}
+pub type FullRedrawCounter=Arc<dyn Fn(&dyn ExtensionTuiHost)->u64+Send+Sync>;
+pub struct Redraws{pub full_redraws:FullRedrawCounter}
 impl Extension for Redraws{
     fn register(&self,api:&mut ExtensionApi){
         let full_redraws=self.full_redraws.clone();

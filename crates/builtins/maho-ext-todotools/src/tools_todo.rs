@@ -195,7 +195,7 @@ mod tests {
         let ui=std::sync::Arc::new(CommandUi::default());
         let ctx=command_context(ui.clone(),Default::default());
         let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
-        maho_ext_api::Extension::register(&crate::index::NativeTodotoolsExtension {actions:fixture,copy_markdown:std::sync::Arc::new(|_|Box::pin(async {panic!("not used")}))},&mut api);
+        maho_ext_api::Extension::register(&crate::index::NativeTodotoolsExtension {actions:fixture,copy_markdown:std::sync::Arc::new(|_|Box::pin(async {panic!("not used")})),widget_sender:tokio::sync::mpsc::unbounded_channel().0},&mut api);
         let mut tree=maho_ext_api::ExtensionEvent::SessionTree{new_leaf_id:None,old_leaf_id:None,summary_entry:None,from_extension:None};
         for handler in &api.registered.handlers[&maho_ext_api::EventKind::SessionTree] {handler(&mut tree,&ctx).await.unwrap();}
         assert!(ui.1.lock().unwrap()[0].1.is_none());
