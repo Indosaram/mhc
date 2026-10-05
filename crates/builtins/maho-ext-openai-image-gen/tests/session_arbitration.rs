@@ -214,7 +214,9 @@ fn credentials_without_native_are_live() {
 #[test]
 fn gate_discriminates_official_from_proxied() {
     use maho_ext_openai_image_gen::gate::{supports_native_image_generation, NativeImageGenModel};
-    let model = |provider: &'static str, api: &'static str, base_url: &'static str, compat: Option<&Value>| NativeImageGenModel { id: "gpt-5.5", provider, api, base_url, compat };
+    fn model<'a>(provider: &'a str, api: &'a str, base_url: &'a str, compat: Option<&'a Value>) -> NativeImageGenModel<'a> {
+        NativeImageGenModel { id: "gpt-5.5", provider, api, base_url, compat }
+    }
     let compat_on = json!({"supportsImageGeneration": true});
     let compat_off = json!({"supportsImageGeneration": false});
     assert!(supports_native_image_generation(Some(&model("openai", "openai-responses", "https://api.openai.com/v1", None))));

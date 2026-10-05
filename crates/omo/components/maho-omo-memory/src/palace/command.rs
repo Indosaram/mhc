@@ -210,6 +210,9 @@ mod tests {
     use crate::palace::test_support::create_palace_fixture;
     use std::sync::Mutex;
 
+    /// The `(command, args)` pairs the palace opener handed to the platform exec seam.
+    type ExecCalls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
     struct FakeUi {
         notifications: Arc<Mutex<Vec<(String, PalaceNotificationLevel)>>>,
     }
@@ -225,7 +228,7 @@ mod tests {
 
     struct Harness {
         context: PalaceCommandContext,
-        exec_calls: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        exec_calls: ExecCalls,
         notifications: Arc<Mutex<Vec<(String, PalaceNotificationLevel)>>>,
         outputs: Arc<Mutex<Vec<String>>>,
     }

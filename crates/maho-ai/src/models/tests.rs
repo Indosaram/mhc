@@ -2118,10 +2118,13 @@ fn supports_a_hole_between_high_and_max() {
     assert_eq!(clamp_thinking_level(&model, L::Xhigh), L::Max, "{title}");
 }
 
+/// The `(model, handle, options)` triples a recording provider was asked to cancel.
+type CancelCalls = Arc<Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>>;
+
 /// A provider streams that records the `(model, handle, options)` it was asked to cancel, so the
 /// `Models.cancelDeferred` dispatch (provider resolution + `applyAuth` + forward) is observable.
 struct CancelRecorder {
-    calls: Arc<Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>>,
+    calls: CancelCalls,
 }
 
 impl ProviderStreams for CancelRecorder {
@@ -2186,10 +2189,11 @@ async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_
     }));
 
     models.cancel_deferred(&model, &handle, None).await.expect("cancel forwards");
-    let calls = calls.lock().expect("cancel calls");
-    assert_eq!(calls.len(), 1, "{title}");
-    assert_eq!(calls[0].1.id, "h", "{title}");
-    drop(calls);
+    {
+        let calls = calls.lock().expect("cancel calls");
+        assert_eq!(calls.len(), 1, "{title}");
+        assert_eq!(calls[0].1.id, "h", "{title}");
+    }
 
     let unknown = with_provider(&base, "nobody");
     let error = models.cancel_deferred(&unknown, &handle, None).await.expect_err("unknown provider");

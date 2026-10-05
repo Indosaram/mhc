@@ -7437,7 +7437,7 @@ mod tests {
             "accounts":[{"name":"default","key":"fixture-first-secret","source":"login"},
                 {"name":"work","key":"fixture-second-secret","source":"import"}]
         }))).expect("seed shared storage");
-        let mut registry = ExtensionModelRegistryView::new(&session, Default::default());
+        let registry = ExtensionModelRegistryView::new(&session, Default::default());
         registry.pin_credential_account("registry-fixture", Some("work")).await.expect("pin");
         unsubscribe();
         session.dispose().await;

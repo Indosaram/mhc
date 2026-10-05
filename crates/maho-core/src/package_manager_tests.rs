@@ -26,17 +26,16 @@ impl FakeRunner {
         if args.first().is_some_and(|arg| arg == "rev-parse") {
             return Ok(if args.get(1).is_some_and(|arg| arg == "--abbrev-ref") { "origin/main" } else { "same-head" }.into());
         }
-        if args.first().is_some_and(|arg| arg == "install") {
-            if let Some(offset) = args.iter().position(|arg| arg == "--prefix" || arg == "--cwd") {
-                let root = &args[offset + 1];
-                for spec in &args[1..offset] {
-                    if let ParsedSource::Npm { name, version, .. } = parse_source(&format!("npm:{spec}")) {
-                        let path = join_path(root, &format!("node_modules/{name}"));
-                        std::fs::create_dir_all(join_path(&path, "prompts"))?;
-                        let version = version.filter(|version| parse_version(version).is_some()).unwrap_or_else(|| "2.0.0".into());
-                        std::fs::write(join_path(&path, "package.json"), json!({"version":version}).to_string())?;
-                        std::fs::write(join_path(&path, "prompts/npm.md"), "npm prompt")?;
-                    }
+        if args.first().is_some_and(|arg| arg == "install")
+            && let Some(offset) = args.iter().position(|arg| arg == "--prefix" || arg == "--cwd") {
+            let root = &args[offset + 1];
+            for spec in &args[1..offset] {
+                if let ParsedSource::Npm { name, version, .. } = parse_source(&format!("npm:{spec}")) {
+                    let path = join_path(root, &format!("node_modules/{name}"));
+                    std::fs::create_dir_all(join_path(&path, "prompts"))?;
+                    let version = version.filter(|version| parse_version(version).is_some()).unwrap_or_else(|| "2.0.0".into());
+                    std::fs::write(join_path(&path, "package.json"), json!({"version":version}).to_string())?;
+                    std::fs::write(join_path(&path, "prompts/npm.md"), "npm prompt")?;
                 }
             }
         }
