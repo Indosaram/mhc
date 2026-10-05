@@ -2,6 +2,7 @@ use maho_server::app_server::{envelope::classify_incoming,runtime::AppServerRunt
 use serde_json::{Value,json};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 fn factory() -> SessionFactory {
     Arc::new(|options| Box::pin(async move {
@@ -141,4 +142,108 @@ async fn runtime_registers_a_per_thread_mcp_inventory_on_thread_start() {
     assert!(inventory.resolve(None).is_some(), "the process-global holder remains available");
     drop(inventory);
     harness.runtime.dispose().await;
+}
+
+/// A stateless UI whose editor text does not round-trip, so a stateful AppServerUiContext bound by
+/// the runtime is distinguishable from this initial UI (guards against a false positive).
+struct HeadlessUi;
+impl maho_ext_api::ExtensionUi for HeadlessUi {
+    fn select<'a>(&'a self,_:&'a str,_:&'a [String],_:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {Box::pin(async {None})}
+    fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,bool> {Box::pin(async {false})}
+    fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {Box::pin(async {None})}
+    fn notify(&self,_:&str,_:maho_ext_api::NotificationType) {}
+    fn set_status(&self,_:&str,_:Option<&str>) {}
+    fn set_widget(&self,_:&str,_:Option<maho_ext_api::WidgetContent>,_:maho_ext_api::ExtensionWidgetOptions) {}
+    fn set_header(&self,_:Option<maho_ext_api::ComponentFactory>) {}
+    fn set_footer(&self,_:Option<maho_ext_api::ComponentFactory>) {}
+    fn set_title(&self,_:&str) {}
+    fn paste_to_editor(&self,_:&str) {}
+    fn set_editor_text(&self,_:&str) {}
+    fn get_editor_text(&self)->String {String::new()}
+    fn custom(&self,_:maho_ext_api::ComponentFactory,_:maho_ext_api::CustomUiOptions)->maho_ext_api::ExtensionFuture<'_,maho_ext_api::JsonValue> {Box::pin(async {Err(maho_ext_api::ExtensionFailure::new("UI unavailable"))})}
+    fn theme(&self)->maho_ext_api::Theme {maho_ext_api::Theme::default()}
+}
+
+/// A probe extension that exposes the runner's currently-bound UI through a slash command: it writes
+/// a marker into the UI editor and reads it back. A stateful bound UI (AppServerUiContext) round-trips
+/// the marker; the stateless HeadlessUi does not.
+struct ProbeUi { captured: Arc<Mutex<Option<String>>>, ready: Arc<tokio::sync::Notify> }
+impl maho_ext_api::Extension for ProbeUi {
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
+        let captured=self.captured.clone(); let ready=self.ready.clone();
+        api.register_command("probe_ui_editor",None,None,Arc::new(move |_args,ctx:&maho_ext_api::ExtensionContext| {
+            ctx.ui.set_editor_text("probe-marker");
+            *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(ctx.ui.get_editor_text());
+            ready.notify_one();
+            Box::pin(async {Ok(())})
+        }));
+    }
+}
+
+fn probe_factory(session_slot:Arc<Mutex<Option<maho_core::agent_session::AgentSession>>>,captured:Arc<Mutex<Option<String>>>,ready:Arc<tokio::sync::Notify>)->SessionFactory {
+    Arc::new(move |options| {
+        let session_slot=session_slot.clone(); let captured=captured.clone(); let ready=ready.clone();
+        Box::pin(async move {
+            use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
+            use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings};
+            let cwd = options.cwd.unwrap_or_default();
+            let provider = faux_provider(RegisterFauxProviderOptions {api:Some("faux".into()),models:Some(vec![maho_ai::providers::faux::FauxModelDefinition {id:"faux-1".into(),reasoning:Some(true),..Default::default()}]),tokens_per_second:Some(0.0),..Default::default()});
+            let model = provider.get_model(Some("faux-1")).ok_or("Missing faux model")?;
+            provider.set_responses(vec![faux_assistant_message("retained transcript",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}).into()]);
+            let streams = faux_streams(provider.core.clone());
+            let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
+            let credentials=Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),json!({"type":"api_key","key":"faux-test"}))].into_iter().collect()));
+            let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()])});
+            let session = AgentSession::new(AgentSessionConfig {
+                agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
+                session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
+                cwd:cwd.clone(),agent_dir:Some(cwd),fallback_now:Some(Arc::new(||0.0)),retry_random:Some(Arc::new(||0.5)),scoped_models:Vec::new(),favorite_models:Vec::new(),flag_values:Default::default(),custom_tools:Vec::new(),model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
+            }).map_err(|error|error.to_string())?;
+            session.set_extension_runner(maho_ext_host::runner::ExtensionRunner::from_static(vec![Box::new(ProbeUi{captured:captured.clone(),ready:ready.clone()})],session.extension_context(Arc::new(HeadlessUi)))).await;
+            session.bind_extensions(ExtensionBindings::default()).await;
+            *session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(session.clone());
+            Ok(session)
+        })
+    })
+}
+
+/// UB1 causal regression: the runtime rebinds the live connection's AppServerUiContext into the
+/// started thread's extension runner. The runner's bound UI is observed through a real slash-command
+/// probe reading the extension context ui, NOT through the session setter or the inventory registry
+/// count. The inventory registration signal (taken before the trigger) is a deterministic post-rebind anchor.
+#[tokio::test]
+async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let session_slot:Arc<Mutex<Option<maho_core::agent_session::AgentSession>>>=Arc::new(Mutex::new(None));
+    let captured:Arc<Mutex<Option<String>>>=Arc::new(Mutex::new(None));
+    let ready=Arc::new(tokio::sync::Notify::new());
+    let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(probe_factory(session_slot.clone(),captured.clone(),ready.clone()))).await;
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    receive.try_recv().unwrap();
+    let registration = runtime.mcp_inventory.lock().await.ready_signal();
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":2,"method":"thread/start","params":{}}))).await.unwrap();
+    let mut thread = None;
+    while let Ok(message) = receive.try_recv() { if message["id"] == 2 { thread = message["result"]["thread"]["id"].as_str().map(str::to_owned); } }
+    let thread = thread.expect("thread/start must respond with a thread id");
+    tokio::time::timeout(std::time::Duration::from_secs(5), registration.notified()).await.expect("inventory registration within deadline (strictly after the UI rebind)");
+    let session = session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().expect("factory captured the session");
+    let disposition = session.prompt("/probe_ui_editor", maho_core::agent_session::PromptOptions::default()).await.unwrap();
+    assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified()).await.expect("probe command within deadline");
+    assert_eq!(captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref(), Some("probe-marker"), "thread/start must rebind the stateful AppServerUiContext into the session runner");
+    // Fork: a new thread/runner is created and rebound by the identical fork block.
+    *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":3,"method":"thread/fork","params":{"threadId":thread}}))).await.unwrap();
+    let mut forked = false;
+    while let Ok(message) = receive.try_recv() { if message["id"] == 3 { forked = true; } }
+    assert!(forked, "thread/fork must respond");
+    tokio::time::timeout(std::time::Duration::from_secs(5), registration.notified()).await.expect("fork inventory registration within deadline (strictly after the fork UI rebind)");
+    let forked_session = session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().expect("factory captured the forked session");
+    let disposition = forked_session.prompt("/probe_ui_editor", maho_core::agent_session::PromptOptions::default()).await.unwrap();
+    assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
+    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified()).await.expect("fork probe command within deadline");
+    assert_eq!(captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref(), Some("probe-marker"), "thread/fork must rebind the stateful AppServerUiContext into the forked session runner");
+    runtime.dispose().await;
 }
