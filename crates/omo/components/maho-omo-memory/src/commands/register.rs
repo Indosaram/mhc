@@ -1,110 +1,149 @@
+//! Barrel registrar for the memory slash-command suite.
+//! Port of `components/memory/commands/register.ts` at pin 77f3067f1.
+
 use std::sync::Arc;
-use maho_ext_api::{ExtensionApi, ExtensionContext, ExtensionFailure, NotificationType};
-use memory_core::reflection::ReflectionEvent;
-use crate::{context::MemoryIdentityContext, facts_wiring::FactsExtractorWork};
 
-/// The reflection runner the command layer calls.
-pub type Reflect = Arc<dyn Fn(&str, ReflectionEvent) -> Result<(String, String), String> + Send + Sync>;
-pub struct MemoryCommandDeps {
-    pub resolve_context: crate::prompt::PromptContextResolver,
-    pub settings: Arc<dyn Fn() -> Result<serde_json::Value, String> + Send + Sync>,
-    pub actions: Arc<dyn maho_ext_api::ExtensionActions>,
-    pub prompt: Arc<crate::prompt::MemoryPromptHandler>,
-    pub sessions_dir: std::path::PathBuf,
-    pub reflect: Reflect,
-    pub dream: Arc<crate::dream_trigger::DreamTriggerWiring>,
-    pub facts_retry: Arc<dyn Fn(String) -> FactsExtractorWork + Send + Sync>,
+use maho_ext_api::ExtensionApi;
+
+use super::doctor::register_doctor_command;
+use super::dream::register_dream_command;
+use super::facts::register_facts_command;
+use super::init::register_init_command;
+use super::memfs::register_memfs_command;
+use super::memory::register_memory_command;
+use super::memory_repository::register_memory_repository_command;
+use super::people::register_people_command;
+use super::recompile::register_recompile_command;
+use super::reflect::register_reflect_command;
+use super::remember::register_remember_command;
+use super::search::register_search_command;
+use super::sleeptime::register_sleeptime_command;
+
+pub const MEMORY_COMMAND_NAMES: [&str; 13] = [
+    "memory",
+    "memfs",
+    "remember",
+    "init",
+    "doctor",
+    "recompile",
+    "memory-repository",
+    "sleeptime",
+    "reflect",
+    "dream",
+    "search",
+    "people",
+    "facts",
+];
+
+pub fn register_memory_commands(api: &mut ExtensionApi, deps: Arc<MemoryCommandDeps>) {
+    register_memory_command(api, deps.clone());
+    register_memfs_command(api, deps.clone());
+    register_remember_command(api, deps.clone());
+    register_init_command(api, deps.clone());
+    register_doctor_command(api, deps.clone());
+    register_recompile_command(api, deps.clone());
+    register_memory_repository_command(api, deps.clone());
+    register_sleeptime_command(api, deps.clone());
+    register_reflect_command(api, deps.clone());
+    register_dream_command(api, deps.clone());
+    register_search_command(api, deps.clone());
+    register_people_command(api, deps.clone());
+    register_facts_command(api, deps);
 }
 
-pub fn register_memory_commands(api: &mut ExtensionApi, deps: MemoryCommandDeps) {
-    let deps = Arc::new(deps);
-    for name in ["memory", "remember", "init", "recompile", "search", "reflect", "dream", "facts", "sleeptime"] {
-        let deps = deps.clone();
-        api.register_command(name, Some(format!("Memory {name}")), None, Arc::new(move |args, context| {
-            let deps = deps.clone(); Box::pin(async move {
-                let result = run_command(name, args, context, &deps).await;
-                match result {
-                    Ok(text) => { context.ui.notify(&text, NotificationType::Info); Ok(()) },
-                    Err(error) => { context.ui.notify(&error, NotificationType::Error); Err(ExtensionFailure::new(error)) },
-                }
-            })
-        }));
-    }
-}
+pub use super::types::{
+    CommandContext, CommandResponse, DreamCommandOutcome, DreamRequestSink,
+    ManualDreamCommandRequest, ManualReflectionRequest, MemoryCommandDeps, MemoryCommandIdentity,
+    MemoryCommandUi, NotifyLevel, ReflectionDisposition, ReflectionRequestReceipt,
+};
 
-async fn run_command(name: &str, args: &str, context: &ExtensionContext, deps: &MemoryCommandDeps) -> Result<String, String> {
-    let session = context.session_manager.session_id();
-    let identity = (deps.resolve_context)(session).ok_or("memory is not bound to this session; start a session with memory enabled and retry")?;
-    let (positionals, flags) = super::args::parse_command_args(args, &[]);
-    let conversations = flags.get("conversation").and_then(Option::as_ref).map(|ids| ids.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned).collect::<Vec<_>>());
-    let focus = (!positionals.is_empty()).then(|| positionals.join(" "));
-    match name {
-        "memory" => {
-            let repo=memory_core::git::GitMemoryRepo::open(&identity.identity_paths.repo,&identity.identity).map_err(|error|error.to_string())?;
-            let head=repo.head().map_err(|error|error.to_string())?.ok_or("memory repository has no commits yet; run /init")?;
-            let paths=repo.ls_tree(Some(&head),None).map_err(|error|error.to_string())?;
-            let mut lines=vec![format!("# Memory: {}",identity.identity),format!("HEAD: {head}"),format!("Repository: {}",identity.identity_paths.repo.display())];
-            for path in paths{if path.starts_with("system/")&&path.ends_with(".md"){lines.push(format!("\n### {path}\n{}",repo.show(&head,&path).map_err(|error|error.to_string())?));}else{lines.push(format!("- {path}"));}}
-            let status=repo.status(&[] as &[&str]).map_err(|error|error.to_string())?;if !status.trim().is_empty(){lines.push(format!("\n## Uncommitted changes\n{status}"));}Ok(lines.join("\n"))
-        },
-        "remember" => {
-            if args.trim().is_empty(){return Err("usage: /remember <text>".into());}
-            context.wait_for_idle().await;
-            deps.actions.send_user_message(maho_ext_api::UserMessageContent::Text(format!("[MEMORY REQUEST] Persist this as long-term memory if appropriate. Use your memory tools: choose the most appropriate memory file (create one if no relevant file exists), avoid duplicates, match the existing formatting of the file, then briefly confirm what you remembered and where you stored it.\n\n{}",args.trim())),Default::default()).map_err(|error|error.to_string())?;
-            Ok(format!("memory request sent for {}",identity.identity))
-        },
-        "init" => {
-            let repo=memory_core::git::GitMemoryRepo::open(&identity.identity_paths.repo,&identity.identity).map_err(|error|error.to_string())?;
-            if identity.identity_paths.repo.join(".git").exists()&&repo.head().map_err(|error|error.to_string())?.is_some(){return Err(format!("memory already initialized for {}; use /memory to view or /doctor to audit",identity.identity));}
-            crate::engine_session::prepare_memory_engine_session(&identity.identity,&identity.identity_paths,Default::default()).map_err(|error|error.to_string())?;
-            context.wait_for_idle().await;
-            deps.actions.send_user_message(maho_ext_api::UserMessageContent::Text(format!("[MEMORY INITIALIZATION]\nThe user invoked /init. Your memory repository was just initialized at {} and is projected on the local filesystem. Inspect it before writing. Create initial system/persona.md and system/human.md memory with description frontmatter. Store durable, generalizable knowledge, not transient session state. Do not overwrite existing files; extend them.",identity.identity_paths.repo.display())),Default::default()).map_err(|error|error.to_string())?;
-            Ok(format!("initialized memory repository at {}; initialization turn sent",identity.identity_paths.repo.display()))
-        },
-        "recompile" => {deps.prompt.cache.clear();Ok(format!("memory prompt cache cleared for {}; the next agent run recompiles from HEAD (the current run keeps its prompt)",identity.identity))},
-        "search" => {
-            let settings=(deps.settings)()?;if settings["search"]["enabled"]==false{return Err("memory search is disabled".into());}
-            let provider=memory_core::search::senpi_session_provider::SenpiSessionProvider::new(memory_core::search::senpi_session_provider::SenpiSessionProviderOptions{sessions_dir:deps.sessions_dir.clone(),excluded_dirs:None,hidden_marker_file:None,is_hidden:None});
-            let results=memory_core::search::search_transcripts(&provider,&positionals.join(" "),&memory_core::search::SearchOptions{conversation_id:flags.get("conversation").and_then(Clone::clone),limit:flags.get("limit").and_then(Option::as_ref).and_then(|value|value.parse().ok()),include_hidden:Some(flags.contains_key("include-hidden")),..Default::default()});
-            serde_json::to_string_pretty(&results).map_err(|error|error.to_string())
-        },
-        "reflect" => {
-            if !crate::trigger_wiring::resolve_reflection_trigger_config(&(deps.settings)()?, Some(&identity.identity))?.enabled { return Err("reflection is disabled; set reflection.enabled to true in your omo config to enable it".into()); }
-            let recent_n = flags.get("recent").map(|value| value.as_deref().and_then(|value| value.parse::<usize>().ok()).filter(|value| *value > 0).ok_or("--recent expects a positive integer, for example /reflect --recent 5")).transpose()?;
-            let (status, run) = (deps.reflect)(session, ReflectionEvent::Manual { focus, recent_n, conversation_ids: conversations })?;
-            Ok(if status == "active" { format!("reflection run {run} reserved; it starts at the next idle boundary") } else { format!("reflection request queued as {run}; a run is already active and this request runs next") })
-        },
-        "dream" => deps.dream.request_manual_dream(crate::dream_trigger_fire::ManualDreamRequest {
-            focus, conversation_ids: conversations, target_doc: flags.get("target").and_then(Clone::clone), deadline_at: None,
-        }).await.map(|result| format!("{result:?}")),
-        "facts" => facts(&identity, &positionals, &flags, deps).await,
-        "sleeptime" => {
-            let settings = (deps.settings)()?;
-            let mut effective = settings.clone();
-            for section in ["reflection", "nudge", "facts", "dream", "people", "soul"] {
-                if section == "reflection" { effective[section] = crate::reflection_settings::resolve_agent_reflection_settings(Some(&settings), &identity.identity)?; }
-                else if let Some(overrides) = settings["agents"][&identity.identity][section].as_object()
-                    && let Some(values) = effective[section].as_object_mut() { values.extend(overrides.clone()); }
-            }
-            serde_json::to_string_pretty(&effective).map_err(|error| error.to_string())
-        },
-        _ => unreachable!(),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::*;
+    use maho_ext_api::{EventBus, ExtensionRuntime, ExtensionSessionProfile, LoadedExtension, NotificationType, SourceInfo};
 
-async fn facts(identity: &MemoryIdentityContext, positionals: &[String], flags: &std::collections::BTreeMap<String, Option<String>>, deps: &MemoryCommandDeps) -> Result<String, String> {
-    let store = memory_core::facts::failures_store::FactsFailureStore::new(memory_core::facts::failures_store::FactsFailureStoreOptions { identity_paths: identity.identity_paths.clone(), now: None, lock_wait_ms: None });
-    let failures = store.read_failures().map_err(|error| format!("failure ledger is UNREADABLE: {error}"))?;
-    if positionals.first().map(String::as_str) == Some("retry") {
-        let conversation_id = flags.get("conversation").and_then(Clone::clone);
-        let matching = failures.entries.iter().filter(|entry| conversation_id.as_ref().is_none_or(|id| id == &entry.conversation_id)).count();
-        if matching == 0 { return Ok("no failure records to clear; nothing was retried".into()); }
-        let removed = store.clear_for_retry(&memory_core::facts::failures_backoff::FactsFailureFilter { conversation_id, end_message_id: None }).map_err(|error| error.to_string())?;
-        (deps.facts_retry)(identity.identity.clone()).await?;
-        return Ok(format!("cleared {removed} records; one launch attempt was triggered"));
+    fn fresh_api() -> ExtensionApi {
+        ExtensionApi::new(
+            LoadedExtension::new("memory", std::path::PathBuf::from("/tmp"), SourceInfo::default()),
+            ExtensionSessionProfile::default(),
+            EventBus::default(),
+            ExtensionRuntime::default(),
+        )
     }
-    if !positionals.is_empty() { return Err(format!("unknown /facts subcommand {:?}; use /facts or /facts retry", positionals[0])); }
-    let queue = memory_core::facts::queue::FactsQueue::new(memory_core::facts::queue::FactsQueueOptions { identity_paths: identity.identity_paths.clone(), now: None, on_publish: None });
-    let pending = queue.list_pending().map_err(|error| error.to_string())?;
-    Ok(format!("facts {}: {} queued endpoints\n{}", identity.identity, pending.len(), serde_json::to_string_pretty(&failures).map_err(|error| error.to_string())?))
+
+    #[test]
+    fn given_a_fresh_extension_api_when_the_suite_registers_then_exactly_the_documented_commands_appear() {
+        let (_root, identity) = temp_identity();
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let mut api = fresh_api();
+
+        register_memory_commands(&mut api, Arc::new(fake.deps.clone()));
+
+        let mut names: Vec<String> = api.registered.commands.iter().map(|command| command.name.clone()).collect();
+        names.sort();
+        let mut expected: Vec<String> = MEMORY_COMMAND_NAMES.iter().map(|name| (*name).to_owned()).collect();
+        expected.sort();
+        assert_eq!(names, expected);
+        assert_eq!(
+            MEMORY_COMMAND_NAMES,
+            [
+                "memory", "memfs", "remember", "init", "doctor", "recompile", "memory-repository",
+                "sleeptime", "reflect", "dream", "search", "people", "facts",
+            ]
+        );
+    }
+
+    #[test]
+    fn given_the_registered_suite_when_each_registration_is_inspected_then_every_command_is_dispatchable() {
+        let (_root, identity) = temp_identity();
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let mut api = fresh_api();
+
+        register_memory_commands(&mut api, Arc::new(fake.deps.clone()));
+
+        for command in &api.registered.commands {
+            assert!(
+                MEMORY_COMMAND_NAMES.contains(&command.name.as_str()),
+                "unexpected registered command: {}",
+                command.name
+            );
+            assert!(
+                Arc::strong_count(&command.handler) >= 1,
+                "command {} has no handler",
+                command.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn given_a_bound_identity_with_a_repository_when_the_registered_memory_handler_runs_then_it_dispatches_through_the_shared_seams() {
+        let (_root, identity) = temp_identity();
+        seeded_repo(
+            &identity,
+            vec![seed("system/persona.md", "---\ndescription: Persona\n---\nbarrel wired\n")],
+        );
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let mut api = fresh_api();
+        register_memory_commands(&mut api, Arc::new(fake.deps.clone()));
+
+        let handler = api
+            .registered
+            .commands
+            .iter()
+            .find(|command| command.name == "memory")
+            .expect("memory command is registered")
+            .handler
+            .clone();
+        let ui = Arc::new(RecordingUi::default());
+        let context = extension_context(ui.clone());
+
+        handler("", &context)
+            .await
+            .expect("registered memory handler succeeds");
+
+        let last = ui.last_message().unwrap_or_default();
+        assert!(last.contains("barrel wired"));
+        assert_eq!(ui.last_level(), Some(NotificationType::Info));
+    }
 }

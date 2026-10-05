@@ -4,6 +4,17 @@ use maho_ext_api::{ExtensionMode, ExtensionUi, ExtensionUiDialogOptions, Notific
 use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
 
 pub const LOGIN_CANCELLED_MESSAGE: &str = "Login cancelled";
+
+pub fn platform_open_browser() -> Arc<dyn Fn(&str) + Send + Sync> {
+    Arc::new(|url: &str| {
+        use std::process::{Command, Stdio};
+        let mut command = if cfg!(target_os = "macos") { Command::new("open") } else if cfg!(target_os = "windows") { let mut command = Command::new("rundll32"); command.arg("url.dll,FileProtocolHandler"); command } else { Command::new("xdg-open") };
+        command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Ok(mut child) = command.spawn() {
+            std::thread::spawn(move || { let _result = child.wait(); });
+        }
+    })
+}
 type PendingLogins = Mutex<HashMap<String, Weak<AbortController>>>;
 static PENDING_LOGINS: OnceLock<PendingLogins> = OnceLock::new();
 

@@ -34,7 +34,7 @@ impl ThreadSearchCache {
         Ok(record)
     }
 }
-fn timestamp(value: &Value,fallback: i64) -> i64 {value.as_i64().or_else(||value.as_str().and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map(|value|value.timestamp_millis())).unwrap_or(fallback)}
+fn timestamp(value: &Value,fallback: i64) -> i64 {value.as_i64().or_else(||value.as_str().and_then(super::js_semantics::date_parse_ms)).unwrap_or(fallback)}
 fn iso(value: i64) -> Option<String> {chrono::DateTime::from_timestamp_millis(value).map(|time|time.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))}
 pub fn parse_search_session(path: &str,mtime: i64,contents: &str) -> Option<SearchSessionRecord> {
     let mut header = None;let mut name = None;let mut preview = None;let mut activity = mtime;let mut recency = mtime;let mut messages = Vec::new();

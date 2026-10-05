@@ -12,8 +12,9 @@ pub struct ImageGen { pub skill_path: PathBuf }
 impl Default for ImageGen { fn default()->Self{Self{skill_path:PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skill/SKILL.md")}} }
 impl Extension for ImageGen {
     fn register(&self,api:&mut ExtensionApi){
-        let mut definition=ToolDefinition::new("generate_image","Generate or edit an image and save it as a PNG, JPEG, or WEBP file.",params::parameters(),Arc::new(|_|Box::pin(async{Err(ToolError::Message("Extension context required".into()))})));
+        let mut definition=ToolDefinition::new("generate_image","Generate or edit an image with OpenAI gpt-image-2.5 (Sunburst by default, the most capable; Flare when speed matters more than quality) and save it as a png, jpeg, or webp file, optionally with a transparent background. Pass reference_image_paths to edit or reference existing images. Generate directly when the request is clear instead of asking for confirmation. Returns the saved file paths.",params::parameters(),Arc::new(|_|Box::pin(async{Err(ToolError::Message("Extension context required".into()))})));
         definition.label="Generate Image".into();definition.exposure=Some(ToolExposure::Search);definition.search_group=Some("imagegen".into());
+        definition.prompt_snippet=Some("Generate or edit images from prompts and optional reference images, saving them as png/jpeg/webp files.".into());
         definition.search_keywords=Some(["generate image","image generation","edit image","create a picture","illustration","mockup","gpt-image","transparent png"].map(str::to_owned).to_vec());
         api.register_tool_with_extension_context(definition,Arc::new(|id,args,signal,_,ctx|Box::pin(async move{tool::execute_image(id,&args,signal,ctx).await}))).unwrap_or_else(|error|std::panic::panic_any(error));
         let skill=self.skill_path.clone();

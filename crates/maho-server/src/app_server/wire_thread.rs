@@ -2,7 +2,7 @@ use super::{metadata_state::{MetadataStateError, ThreadMetadataState}, thread_re
 use serde_json::{Value, json};
 
 fn iso_seconds(value: &str) -> Option<f64> {
-    chrono::DateTime::parse_from_rfc3339(value).ok().map(|time| time.timestamp_millis() as f64 / 1000.0)
+    super::js_semantics::date_parse_ms(value).map(|millis| millis as f64 / 1000.0)
 }
 pub async fn build_disk_wire_thread(wire: &Value,version: &str) -> Result<Value,MetadataStateError> {
     let git_info = match wire["sessionPath"].as_str() {Some(path)=>ThreadMetadataState.read_git_info(std::path::Path::new(path)).await?,None=>None};

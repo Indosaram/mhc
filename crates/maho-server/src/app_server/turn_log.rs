@@ -48,12 +48,8 @@ pub struct TurnLog {
     turns_by_thread_id: BTreeMap<String, Vec<LoggedTurn>>,
 }
 fn duration_between(started_at: &str, completed_at: Option<&str>) -> Option<i64> {
-    let start = chrono::DateTime::parse_from_rfc3339(started_at)
-        .ok()?
-        .timestamp_millis();
-    let end = chrono::DateTime::parse_from_rfc3339(completed_at?)
-        .ok()?
-        .timestamp_millis();
+    let start = super::js_semantics::date_parse_ms(started_at)?;
+    let end = super::js_semantics::date_parse_ms(completed_at?)?;
     Some(end - start)
 }
 impl TurnLog {

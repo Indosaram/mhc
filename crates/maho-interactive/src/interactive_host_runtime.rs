@@ -430,15 +430,15 @@ impl RemoteSessionProxy {
                 }
                 return;
             }
-            Some(RpcClientEventKind::MessageStart) => {
-                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") {
-                    *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
-                }
+            Some(RpcClientEventKind::MessageStart)
+                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") =>
+            {
+                *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
             }
-            Some(RpcClientEventKind::MessageEnd) => {
-                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") {
-                    *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
-                }
+            Some(RpcClientEventKind::MessageEnd)
+                if event.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant") =>
+            {
+                *self.streaming_assistant.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = event.get("message").cloned();
             }
             _ => {}
         }

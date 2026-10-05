@@ -12,6 +12,14 @@ fn parser_distinguishes_user_recency_from_assistant_activity() {
     assert!(parse_search_session("bad",0,"{\"type\":\"message\"}").is_none());
 }
 
+#[test]
+fn parser_accepts_non_rfc3339_session_timestamps() {
+    let contents = [json!({"type":"session","id":"s","cwd":"/work","timestamp":"2020-01-01"}),json!({"type":"message","timestamp":"2020-01-01 00:00:05","message":{"role":"user","content":"hi"}})].map(|entry|entry.to_string()).join("\n");
+    let record = parse_search_session("session.jsonl",0,&contents).unwrap();
+    assert_eq!(record.thread["createdAt"],"2020-01-01T00:00:00.000Z");
+    assert_eq!(record.thread["updatedAt"],"2020-01-01T00:00:05.000Z");
+}
+
 #[tokio::test]
 async fn cache_invalidates_submillisecond_file_modification() {
     let directory = tempfile::tempdir().unwrap();

@@ -1,14 +1,29 @@
 use super::{errors::JsonRpcError, ndjson::{NdjsonEmission, NdjsonReader, serialize_ndjson_message}, server_core::ServerCore};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, sync::{Mutex, RwLock}};
+
+static ACTIVE_STDIO: AtomicBool = AtomicBool::new(false);
+pub type StdioShutdownCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
+struct ActiveStdioGuard;
+impl Drop for ActiveStdioGuard {
+    fn drop(&mut self) { ACTIVE_STDIO.store(false, Ordering::SeqCst); }
+}
+fn acquire_active_stdio() -> Result<ActiveStdioGuard, JsonRpcError> {
+    if ACTIVE_STDIO.swap(true, Ordering::SeqCst) {
+        return Err(JsonRpcError::new(-32603, "stdio transport already active"));
+    }
+    Ok(ActiveStdioGuard)
+}
 
 pub async fn run_shared_stdio<R, W>(core: Arc<RwLock<ServerCore>>, input: R, output: W) -> Result<(), JsonRpcError>
 where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
-    run_shared_stdio_until(core,input,output,std::future::pending()).await
+    run_shared_stdio_until(core,input,output,std::future::pending(),None).await
 }
 
-pub async fn run_shared_stdio_until<R, W>(core: Arc<RwLock<ServerCore>>, mut input: R, output: W, shutdown: impl std::future::Future<Output=()>) -> Result<(), JsonRpcError>
+pub async fn run_shared_stdio_until<R, W>(core: Arc<RwLock<ServerCore>>, mut input: R, output: W, shutdown: impl std::future::Future<Output=()>, on_shutdown: Option<StdioShutdownCallback>) -> Result<(), JsonRpcError>
 where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
+    let _active = acquire_active_stdio()?;
     let writer = Arc::new(Mutex::new(output));
     core.write().await.add_connection("stdio".into(),Arc::new(move |message| {
         let writer = writer.clone();
@@ -22,6 +37,7 @@ where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
     let result = async {
         tokio::pin!(shutdown);
         let mut reader = NdjsonReader::default(); let mut buffer = [0;8192];
+        let mut reason = "shutdown";
         loop {
             let length = tokio::select! {
                 biased;
@@ -38,12 +54,15 @@ where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
                     },
                 }
             }
-            if length == 0 {break;}
+            if length == 0 {reason = "stdin ended";break;}
         }
-        Ok(())
+        Ok(reason)
     }.await;
     core.write().await.remove_connection("stdio");
-    result
+    let reason = match &result { Ok(reason) => *reason, Err(_) => "error" };
+    eprintln!("app-server stdio closed: {reason}");
+    if let Some(callback) = &on_shutdown { callback(reason); }
+    result.map(|_| ())
 }
 
 pub async fn run_stdio<R, W>(core: &mut ServerCore, id: &str, mut input: R, output: W) -> Result<(), JsonRpcError>

@@ -112,3 +112,58 @@ async fn session_start_registers_direct_mode_mcp_tools_into_the_real_session() {
     session.dispose().await;
     registry.dispose().await.unwrap();
 }
+
+#[tokio::test]
+async fn session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe() {
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
+    use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings, PromptOptions};
+    use maho_ext_mcp::service_types::McpWireStatusSnapshot;
+    let temp = tempfile::tempdir().unwrap();
+    let cwd: PathBuf = temp.path().to_path_buf();
+    seed_direct_server(&cwd);
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
+    let model = provider.get_model(Some("faux-1")).expect("faux-1 model");
+    provider.set_responses(vec![faux_assistant_message(vec![ContentBlock::text("ok")], FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
+    let streams = faux_streams(provider.core.clone());
+    let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model, context, options.map(|options| options.simple)));
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(cwd.join("models.json")), auth_path: Some(cwd.join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    });
+    let cwd_string = cwd.to_string_lossy().into_owned();
+    let session = AgentSession::new(AgentSessionConfig {
+        agent: maho_agent::Agent::new(maho_agent::AgentOptions {
+            initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), ..Default::default() }),
+            stream_fn: Some(stream_fn), ..Default::default()
+        }),
+        session_manager: maho_core::session_manager::SessionManager::in_memory(&cwd_string, None, None),
+        settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+        cwd: cwd_string.clone(), agent_dir: Some(cwd_string), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
+        scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
+        model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
+        initial_active_tool_names: None, default_tool_names: None, eval_only_tool_names: None,
+        allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
+        session_start_event: None, auto_title_sessions: Some(false),
+    }).unwrap();
+    let registry = Arc::new(HostMcpRegistry::default());
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(McpExtension {registry: registry.clone()})], context())).await;
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<McpWireStatusSnapshot>();
+    let subscription = session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(move |snapshot| { let _ = send.send(snapshot.clone()); })).await.expect("runner bound");
+    session.bind_extensions(ExtensionBindings::default()).await;
+    session.prompt("hi", PromptOptions::default()).await.unwrap();
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), receive.recv()).await.expect("attach publish within deadline").expect("subscription alive");
+    assert!(snapshot.servers.iter().any(|server| server.name == "fx"), "expected the attach publisher to deliver the session snapshot, saw {:?}", snapshot.servers.iter().map(|server| server.name.clone()).collect::<Vec<_>>());
+    // The live receive proves the erased publication landed; the session's retention subscription
+    // (installed at runner bind) must also have caught the same erased Arc, so a late bind replays it.
+    let retained = session.mcp_wire_status_snapshot::<McpWireStatusSnapshot>().expect("retention caught the erased publication");
+    assert!(retained.servers.iter().any(|server| server.name == "fx"));
+    let (late_send, mut late_receive) = tokio::sync::mpsc::unbounded_channel::<McpWireStatusSnapshot>();
+    let late_subscription = session.bind_mcp_wire_status::<McpWireStatusSnapshot>(Arc::new(move |snapshot| { let _ = late_send.send(snapshot.clone()); })).await.expect("runner bound");
+    let replayed = late_receive.try_recv().expect("a late bind replays the retained snapshot synchronously");
+    assert!(replayed.servers.iter().any(|server| server.name == "fx"));
+    drop(late_subscription);
+    drop(subscription);
+    let _ = session.publish_mcp_wire_status(&McpWireStatusSnapshot::default()).await;
+    assert!(receive.try_recv().is_err(), "an unsubscribed consumer must receive nothing");
+    session.dispose().await;
+    registry.dispose().await.unwrap();
+}

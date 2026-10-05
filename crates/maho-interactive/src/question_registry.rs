@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 
 use crate::components::ask_user_question_state::{QuestionDraft, QuestionRequest};
 
+/// senpi's `onProgress` slot: a live draft observer the question widget invokes as the user types.
+pub type QuestionProgressCallback = std::rc::Rc<std::cell::RefCell<Box<dyn FnMut(&QuestionDraft)>>>;
+
 /// senpi's `questionSurface`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum QuestionSurface {
@@ -30,7 +33,7 @@ pub struct PendingQuestion {
     pub timeout_ms: u64,
     pub asked_at_ms: u64,
     pub get_deadline_at_ms: Option<std::rc::Rc<dyn Fn() -> u64>>,
-    pub on_progress: Option<std::rc::Rc<std::cell::RefCell<Box<dyn FnMut(&QuestionDraft)>>>>,
+    pub on_progress: Option<QuestionProgressCallback>,
     pub replies: Vec<tokio::sync::oneshot::Sender<maho_ext_api::QuestionResponse>>,
 }
 

@@ -9,9 +9,9 @@ use tokio::sync::{Mutex,RwLock};
 struct SearchCursor {search_term:String,sort_key:String,sort_direction:String,source_kinds:Vec<String>,archived:bool,anchor_id:String,include_anchor:bool}
 fn invalid(message: impl Into<String>) -> JsonRpcError {JsonRpcError::new(-32600,message)}
 pub fn search_window(records: &mut Vec<SearchSessionRecord>,params: &ParsedSearchParams,archived: &BTreeSet<String>) -> Result<Value,JsonRpcError> {
-    records.retain(|record|params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread["id"].as_str().unwrap_or_default()) == params.archived && record.searchable_text.to_lowercase().contains(&params.search_term));
-    let time = |record: &SearchSessionRecord|{let field = match params.sort_key.as_str() {"created_at"=>record.thread["createdAt"].as_str(),"updated_at"=>record.thread["updatedAt"].as_str(),_=>Some(record.recency_at.as_str())};field.and_then(|value|chrono::DateTime::parse_from_rfc3339(value).ok()).map_or(0,|time|time.timestamp_millis())};
-    records.sort_by(|left,right|{let order = time(left).cmp(&time(right)).then_with(||left.thread["id"].as_str().cmp(&right.thread["id"].as_str()));if params.sort_direction == "asc" {order} else {order.reverse()}});
+    records.retain(|record|params.source_kinds.iter().any(|kind|kind == "appServer") && archived.contains(record.thread["id"].as_str().unwrap_or_default()) == params.archived && super::js_semantics::to_locale_lowercase(&record.searchable_text).contains(&params.search_term));
+    let time = |record: &SearchSessionRecord|{let field = match params.sort_key.as_str() {"created_at"=>record.thread["createdAt"].as_str(),"updated_at"=>record.thread["updatedAt"].as_str(),_=>Some(record.recency_at.as_str())};field.and_then(super::js_semantics::date_parse_ms).unwrap_or(0)};
+    records.sort_by(|left,right|{let order = time(left).cmp(&time(right)).then_with(||super::js_semantics::locale_compare(left.thread["id"].as_str().unwrap_or_default(),right.thread["id"].as_str().unwrap_or_default()));if params.sort_direction == "asc" {order} else {order.reverse()}});
     let start = if let Some(value) = &params.cursor {
         let cursor: SearchCursor = serde_json::from_str(value).map_err(|_|invalid(format!("thread/search received an invalid cursor: {value}")))?;
         if !matches!(cursor.sort_direction.as_str(),"asc"|"desc") {return Err(invalid(format!("thread/search received an invalid cursor: {value}")));}
@@ -56,7 +56,7 @@ pub async fn register_search_handler(core: &Arc<RwLock<ServerCore>>,threads: Arc
     })});
 }
 pub fn literal_snippet(text: &str,term: &str) -> String {
-    let lower = text.to_lowercase();let Some(byte_index) = lower.find(term) else {return String::new()};
+    let lower = super::js_semantics::to_locale_lowercase(text);let Some(byte_index) = lower.find(term) else {return String::new()};
     let index = lower[..byte_index].encode_utf16().count();let text = text.encode_utf16().collect::<Vec<_>>();
     let start = index.saturating_sub(80);let end = (index+term.encode_utf16().count()+80).min(text.len());
     format!("{}{}{}",if start > 0 {"... "} else {""},String::from_utf16_lossy(&text[start.min(text.len())..end]),if end < text.len() {" ..."} else {""})

@@ -66,6 +66,7 @@ impl Extension for GptAccount{
                                 Err(error)=>return Err(error),
                             };
                             ctx.ui.notify("ChatGPT Subscription OAuth account added.",NotificationType::Info);
+                            maho_core::provider_account_events::emit_provider_accounts_changed(PROVIDER_ID);
                             crate::account_display_name::prompt_account_display_name(ctx,receipt.as_ref()).await;
                         }
                         AccountAction::Remove(name)=>{

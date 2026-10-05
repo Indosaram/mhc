@@ -43,3 +43,19 @@ async fn queue_cap_closes_non_stdio_client_and_requests_bypass_notification_filt
     assert!(receive.try_recv().is_err());
     assert!(router.broadcast(json!({"method":"turn/completed"}), 4).is_err());
 }
+
+#[tokio::test]
+async fn configurable_experimental_catalog_replaces_the_default_gate() {
+    let mut router = NotificationRouter::default();
+    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    router.add_thread("thread".into(), RoutableThread::default());
+    router.add_connection(RoutableConnection { id: "client".into(), initialized: true, stdio: true,
+        experimental_api: false, opt_out_notification_methods: BTreeSet::new(), close: None,
+        send: Arc::new(move |message| { send.send(message).unwrap(); Box::pin(async { Ok(()) }) }) });
+    router.subscribe("thread", "client");
+    router.to_thread("thread", json!({"method":"turn/moderationMetadata"}), 1);
+    assert!(receive.try_recv().is_err());
+    router.set_experimental_notification_methods(Vec::new());
+    router.to_thread("thread", json!({"method":"turn/moderationMetadata"}), 2);
+    assert_eq!(receive.try_recv().unwrap()["emittedAtMs"], 2);
+}

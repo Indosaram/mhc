@@ -28,13 +28,15 @@ pub struct NotificationRouter {
     threads: BTreeMap<String, RoutableThread>,
     pub outbound_queue_limit: usize,
     pub terminal_queue_limit: usize,
+    pub experimental_notification_methods: BTreeSet<String>,
 }
 impl Default for NotificationRouter {
     fn default() -> Self {
-        Self { connections: BTreeMap::new(), threads: BTreeMap::new(), outbound_queue_limit: 32_768, terminal_queue_limit: 100 }
+        Self { connections: BTreeMap::new(), threads: BTreeMap::new(), outbound_queue_limit: 32_768, terminal_queue_limit: 100, experimental_notification_methods: EXPERIMENTAL_SERVER_NOTIFICATION_METHODS.iter().map(|method|(*method).to_owned()).collect() }
     }
 }
 impl NotificationRouter {
+    pub fn set_experimental_notification_methods(&mut self,methods: impl IntoIterator<Item=String>) {self.experimental_notification_methods = methods.into_iter().collect();}
     pub fn add_connection(&mut self, connection: RoutableConnection) {
         self.connections.insert(connection.id.clone(), ConnectionState { connection, pending: Arc::new(AtomicUsize::new(0)), closed: AtomicBool::new(false) });
     }
@@ -50,7 +52,7 @@ impl NotificationRouter {
         let Some(thread) = self.threads.get_mut(thread_id) else { return; };
         thread.subscribers.insert(connection_id.to_owned());
         let Some(connection) = self.connections.get(connection_id) else { return; };
-        for message in thread.queued_terminal_notifications.drain(..) { Self::enqueue(connection, message, self.outbound_queue_limit); }
+        for message in thread.queued_terminal_notifications.drain(..) { Self::enqueue(connection, message, self.outbound_queue_limit, &self.experimental_notification_methods); }
     }
     pub fn unsubscribe(&mut self, thread_id: &str, connection_id: &str) {
         if let Some(thread) = self.threads.get_mut(thread_id) { thread.subscribers.remove(connection_id); }
@@ -61,7 +63,7 @@ impl NotificationRouter {
             return Err(JsonRpcError::new(-32600, format!("Notification method {method} is not allowed for broadcast")));
         }
         let message = populate_outbound_notification(notification, now);
-        for connection in self.connections.values().filter(|state| state.connection.initialized) { Self::enqueue(connection, message.clone(), self.outbound_queue_limit); }
+        for connection in self.connections.values().filter(|state| state.connection.initialized) { Self::enqueue(connection, message.clone(), self.outbound_queue_limit, &self.experimental_notification_methods); }
         Ok(())
     }
     pub fn to_thread(&mut self, thread_id: &str, message: Value, now: u64) {
@@ -71,7 +73,7 @@ impl NotificationRouter {
         for id in &thread.subscribers {
             if let Some(connection) = self.connections.get(id).filter(|state| state.connection.initialized) {
                 routed += 1;
-                Self::enqueue(connection, message.clone(), self.outbound_queue_limit);
+                Self::enqueue(connection, message.clone(), self.outbound_queue_limit, &self.experimental_notification_methods);
             }
         }
         if routed == 0 && message.get("id").is_none() && matches!(message["method"].as_str(), Some("turn/completed" | "error")) {
@@ -79,10 +81,10 @@ impl NotificationRouter {
             while thread.queued_terminal_notifications.len() > self.terminal_queue_limit { thread.queued_terminal_notifications.pop_front(); }
         }
     }
-    fn enqueue(state: &ConnectionState, message: Value, limit: usize) {
+    fn enqueue(state: &ConnectionState, message: Value, limit: usize, experimental: &BTreeSet<String>) {
         let connection = &state.connection;
         let method = message["method"].as_str().unwrap_or_default();
-        if state.closed.load(Ordering::SeqCst) || (message.get("id").is_none() && (connection.opt_out_notification_methods.contains(method) || (EXPERIMENTAL_SERVER_NOTIFICATION_METHODS.contains(&method) && !connection.experimental_api))) { return; }
+        if state.closed.load(Ordering::SeqCst) || (message.get("id").is_none() && (connection.opt_out_notification_methods.contains(method) || (experimental.contains(method) && !connection.experimental_api))) { return; }
         if !connection.stdio && state.pending.load(Ordering::SeqCst) >= limit {
             state.closed.store(true, Ordering::SeqCst);
             if let Some(close) = &connection.close { close(); }

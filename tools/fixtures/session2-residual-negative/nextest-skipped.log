@@ -1,0 +1,4 @@
+   Starting 2 tests across 2 binaries
+        PASS [   0.001s] (   1/2) maho-cli::mini_worker unwatch_and_close_release_watch_subscriptions
+        SKIP [   0.000s] (   2/2) maho-cli::mini_worker models_login_rejects_an_unknown_provider
+   Summary [   0.010s] 2 tests run: 1 passed, 0 failed, 1 skipped

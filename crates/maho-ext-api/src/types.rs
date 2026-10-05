@@ -670,6 +670,11 @@ pub trait ExtensionUi: Send + Sync {
     fn set_theme(&self, theme: ThemeSelection) -> Result<SetThemeResult, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Theme selection is not available"))?.set_theme(theme)) }
     fn get_tools_expanded(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.get_tools_expanded()) }
     fn set_tools_expanded(&self, expanded: bool) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.set_tools_expanded(expanded); Ok(()) }
+    /// Send-safe repaint request. Extension workers (async HTTP backends on non-UI threads) hold an
+    /// `Arc<dyn ExtensionUi>` and cannot capture the non-`Send` `ExtensionTuiHost`; this is the
+    /// capability-gated seam for them. A context with no repaint path returns an error rather than
+    /// silently pretending the frame was scheduled.
+    fn request_render(&self) -> Result<(), ExtensionFailure> { Err(ExtensionFailure::new("Repaint requests are not available")) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, opts: ExtensionUiDialogOptions) -> UiFuture<'a, bool>;
     fn input<'a>(&'a self, title: &'a str, placeholder: Option<&'a str>, opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;

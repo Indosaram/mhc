@@ -15,3 +15,14 @@ fn search_cursor_scopes_query_and_reverses_from_inclusive_anchor() {
     assert_eq!(search_window(&mut records.clone(),&params,&BTreeSet::new()).unwrap()["start"],2);
     assert_eq!(literal_snippet("Hello world","hello"),"Hello world");
 }
+
+#[test]
+fn search_orders_by_parsed_dates_including_non_rfc3339_forms() {
+    let record = |id:&str,created:&str| SearchSessionRecord {thread:json!({"id":id,"createdAt":created,"updatedAt":created}),recency_at:created.into(),searchable_text:"Hello".into()};
+    let mut records = vec![record("b","2020-01-01"),record("a","2019-12-31T23:59:59.000Z")];
+    let params = parse_search_params(&json!({"searchTerm":"hello","sourceKinds":["appServer"],"sortKey":"created_at","sortDirection":"asc"})).unwrap();
+    let window = search_window(&mut records,&params,&BTreeSet::new()).unwrap();
+    assert_eq!(window["start"],0);
+    assert_eq!(records[0].thread["id"],"a");
+    assert_eq!(records[1].thread["id"],"b");
+}

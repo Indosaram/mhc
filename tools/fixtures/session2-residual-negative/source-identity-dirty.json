@@ -1,0 +1,12 @@
+{
+  "schema": "session2-residual-source-identity/v1",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_matches_sha": true,
+  "status_porcelain": " M crates/maho-core/src/lib.rs",
+  "dirty_sources": [
+    "tracked change:  M crates/maho-core/src/lib.rs"
+  ],
+  "clean": false,
+  "note": "Negative fixture: a begin source identity with a dirty worktree. The verifier MUST reject a non-clean begin identity."
+}

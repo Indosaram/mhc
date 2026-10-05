@@ -4,6 +4,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tokio::sync::watch;
 
 pub type ServerFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ServerError>> + Send + 'a>>;
+pub type TerminationFuture = Pin<Box<dyn Future<Output = Option<ServerError>> + Send + 'static>>;
 pub type Publisher = Arc<dyn Fn(String, Value) -> ServerFuture<'static, ()> + Send + Sync>;
 
 #[derive(Clone)]
@@ -22,6 +23,8 @@ pub trait RoutedSessionAttachment: Send + Sync {
 }
 pub trait RoutedSessionHandle: Send + Sync {
     fn attach_client(&self) -> ServerFuture<'_, Arc<dyn RoutedSessionAttachment>>;
+    /// Resolves with an error for unexpected termination, or `None` after an expected close.
+    fn terminated(&self) -> Option<TerminationFuture> { None }
     fn close(&self) -> ServerFuture<'_, ()>;
 }
 pub trait RoutedServerServiceAttachment: Send + Sync {

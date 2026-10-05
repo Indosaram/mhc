@@ -1,6 +1,6 @@
 //! Native user/assistant transcript slice of interactive-mode.ts.
 //! Command dispatch, runtime replacement and extension UI remain partial.
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, future::Future, pin::Pin, rc::Rc, sync::Arc};
 use maho_agent::types::AgentEvent;
 use maho_core::agent_session::{AgentSession, AgentSessionSubscription, PromptDisposition, PromptOptions};
 use maho_tui::tui::{Component, Container};
@@ -12,6 +12,14 @@ use crate::grok::chrome::InteractiveChrome;
 type ImageSubmissions = std::collections::VecDeque<(String, Vec<maho_ai::types::ImageContent>)>;
 type CustomUiBuild = std::pin::Pin<Box<dyn std::future::Future<Output=Result<Box<dyn Component>, maho_ext_api::ExtensionFailure>>>>;
 type QuestionActions = Rc<RefCell<std::collections::VecDeque<QuestionAction>>>;
+/// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
+type PendingTreeEdit = (String, String, Option<String>);
+/// A queued tree-navigation choice: `(entryId, summarize, customInstructions)`.
+type PendingTreeNav = (String, bool, Option<String>);
+/// The in-flight provider turn (senpi's awaited `session.prompt` in the main loop).
+type TurnFuture = Pin<Box<dyn Future<Output = Result<PromptDisposition, String>>>>;
+/// A requested abort (`AgentSession::abort`) that `poll_turn` drives next to the turn.
+type AbortFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// A header slot in the document header container (senpi's `Component` children).
 type HeaderSlot = Rc<RefCell<dyn Component>>;
 
@@ -115,10 +123,16 @@ pub struct InteractiveMode {
     tree_copies: Rc<RefCell<std::collections::VecDeque<Option<String>>>>,
     /// senpi `editAssistantMessageFromTree`: the (entryId, editedText, expectedLeafId) captured when
     /// the tree edit editor opened (the leaf is the token the edit is checked against).
-    pending_tree_edit: Rc<RefCell<Option<(String, String, Option<String>)>>>,
+    pending_tree_edit: Rc<RefCell<Option<PendingTreeEdit>>>,
     /// senpi `runTreeNavigation`: the (entryId, summarize, customInstructions) chosen by the branch
     /// summary prompt, consumed by `/tree-navigate`.
-    pending_tree_nav: Rc<RefCell<Option<(String, bool, Option<String>)>>>,
+    pending_tree_nav: Rc<RefCell<Option<PendingTreeNav>>>,
+    /// The in-flight provider turn: `submit_start` initiates it and returns, `poll_turn` advances it
+    /// so input pumping, event consumption and rendering keep running while a turn is in flight.
+    pending_turn: Option<TurnFuture>,
+    /// A requested abort (`AgentSession::abort`). `poll_turn` drives it next to the turn so the
+    /// interrupt key never blocks the loop behind a held provider.
+    pending_abort: Option<AbortFuture>,
     rename_input: Option<crate::components::extension_input::ExtensionInputComponent>,
     rename_result: Rc<RefCell<Option<Option<String>>>>,
     shortcut_overlay: bool,
@@ -457,7 +471,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -925,7 +939,9 @@ impl InteractiveMode {
         self.handle_editor_input(data);
     }
 
-    pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
+    /// Pop the next queued editor submission (draining any pending tree copies first), paired with
+    /// the pinned steer options. `None` when nothing is queued.
+    async fn next_submission(&mut self) -> Option<(String, PromptOptions)> {
         loop {
             let copy=self.tree_copies.borrow_mut().pop_front();
             let Some(copy)=copy else {break;};
@@ -937,14 +953,42 @@ impl InteractiveMode {
             }else{self.show_status("Selected entry has no text to copy".into());}
         }
         let text = self.submissions.borrow_mut().pop_front();
-        let Some(text) = text else { return Ok(None); };
+        let Some(text) = text else { return None; };
         self.editor.editor.add_to_history(&text);
         let images = {
             let mut queued = self.submission_images.borrow_mut();
             queued.iter().position(|(submitted, _)| submitted == &text).and_then(|index| queued.remove(index)).map(|(_, images)| images)
         };
         let options = PromptOptions { images, streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
+        Some((text, options))
+    }
+
+    /// senpi's `onSubmit` for direct callers: initiate the next queued submission and await the turn
+    /// to completion. The production loop uses `dispatch_submission` instead.
+    pub async fn submit_editor(&mut self) -> Result<Option<PromptDisposition>, String> {
+        let Some((text, options)) = self.next_submission().await else { return Ok(None); };
         self.submit(&text, options).await.map(Some)
+    }
+
+    /// senpi's main-loop `onSubmit` for the production loop: initiate the next queued submission
+    /// without awaiting the turn. `poll_turn` advances the turn on later frames so rendering, input
+    /// pumping and session-event consumption keep running while the turn is in flight.
+    pub async fn dispatch_submission(&mut self) -> Result<Option<PromptDisposition>, String> {
+        let Some((text, options)) = self.next_submission().await else { return Ok(None); };
+        self.submit_start(&text, options).await.map(Some)
+    }
+
+    /// Queue a submission for the production loop to start (senpi's `onSubmit` capture). Startup
+    /// uses this to hand the initial prompt(s) to the loop instead of awaiting a turn before the
+    /// first frame; order is the queue order and images are paired with their text for
+    /// `next_submission`.
+    pub fn enqueue_submission(&mut self, text: &str, images: Option<Vec<maho_ai::types::ImageContent>>) {
+        let text = text.trim();
+        if text.is_empty() { return; }
+        if let Some(images) = images.filter(|images| !images.is_empty()) {
+            self.submission_images.borrow_mut().push_back((text.to_owned(), images));
+        }
+        self.submissions.borrow_mut().push_back(text.to_owned());
     }
 
     /// Pair an editor marker with its in-memory image payload.
@@ -1001,7 +1045,7 @@ impl InteractiveMode {
             }
             return Ok(());
         }
-        if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue().await; return Ok(()); }
+        if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue(); return Ok(()); }
         self.handle_filtered_input_at(data, now_ms);
         Ok(())
     }
@@ -1018,7 +1062,28 @@ impl InteractiveMode {
         self.show_status(format!("Tool output: {}", if expanded { "expanded" } else { "collapsed" }));
     }
 
+    /// senpi's main-loop step: initiate the next queued submission (starting a turn or routing it
+    /// into a live one), then advance the in-flight turn one step. A submission error surfaces as a
+    /// status line (senpi's `showError`) instead of tearing the loop down.
+    pub async fn pump_turn(&mut self) { self.pump_turn_with(std::task::Waker::noop()).await; }
+
+    /// `pump_turn` with an explicit waker so an event-driven caller can re-poll exactly when the
+    /// in-flight turn (or abort future) wakes, instead of on a fixed cadence.
+    pub async fn pump_turn_with(&mut self, waker: &std::task::Waker) {
+        if let Err(error) = self.dispatch_submission().await { self.show_status(error); }
+        self.poll_turn_with(waker);
+    }
+
+    /// senpi's awaited `session.prompt` for direct callers: start the turn, then wait it out.
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
+        let had_turn = self.pending_turn.is_some();
+        let disposition = self.submit_start(text, options).await?;
+        if !had_turn && self.pending_turn.is_some() { self.await_turn().await; }
+        Ok(disposition)
+    }
+
+    /// Start the turn for `text` and return, or route it into a turn that is already in flight.
+    async fn submit_start(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         self.refresh_tool_renderer_snapshots().await;
         if !text.trim_start().starts_with('/') && !text.trim_start().starts_with('!') && let Some(request_id) = self.questions.composer_request_id().map(str::to_owned) {
             let response = self.questions.get(&request_id).map(|entry| to_extension_response(crate::components::ask_user_async_widget::build_comment_response(&entry.request, &entry.draft, text.trim())));
@@ -1221,34 +1286,74 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
-        let result = match self.session_host.clone() {
-            Some(host) => {
-                let prompt = host.prompt(text.to_owned(), options);
-                tokio::pin!(prompt);
-                let result = loop {
-                    tokio::select! {
-                        result = &mut prompt => break result,
-                        Some(event) = self.events.recv() => { self.handle_session_event(&event); }
-                        Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
-                    }
-                };
-                result.map(|_| PromptDisposition::Started)
-            }
-            None => {
-                let session = self.session.clone();
-                let prompt = session.prompt(text, options);
-                tokio::pin!(prompt);
-                loop {
-                    tokio::select! {
-                        result = &mut prompt => break result,
-                        Some(event) = self.events.recv() => { self.handle_session_event(&event); }
-                        Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
-                    }
-                }
+        if self.pending_turn.is_some() {
+            // A turn is already in flight: hand the submission to the session's steer/follow-up
+            // queue (the pinned `streamingBehavior` path) instead of replacing the running turn.
+            let result = match self.session_host.clone() {
+                Some(host) => host.prompt(text.to_owned(), options).await.map(|_| PromptDisposition::Started),
+                None => self.session.prompt(text, options).await,
+            };
+            self.drain_events();
+            return result;
+        }
+        self.start_turn(text.to_owned(), options);
+        Ok(PromptDisposition::Started)
+    }
+
+    /// Initiate a provider turn without waiting for it to finish.
+    fn start_turn(&mut self, text: String, options: PromptOptions) {
+        let turn: TurnFuture = match self.session_host.clone() {
+            Some(host) => Box::pin(async move { host.prompt(text, options).await.map(|_| PromptDisposition::Started) }),
+            None => { let session = self.session.clone(); Box::pin(async move { session.prompt(&text, options).await }) }
+        };
+        self.pending_turn = Some(turn);
+    }
+
+    /// Advance the in-flight abort request and turn one step so a running provider keeps producing
+    /// session events, then consume those events. Never blocks: a held provider leaves the turn
+    /// pending and the caller keeps rendering. The abort is polled first so its signal is set before
+    /// the run loop is advanced (an abort must beat the held delta). `waker` receives the turn's and
+    /// abort's wakeups, so an event-driven caller re-polls exactly when there is progress; the
+    /// production loop passes `Waker::noop()` and re-polls every frame.
+    pub fn poll_turn_with(&mut self, waker: &std::task::Waker) {
+        let mut context = std::task::Context::from_waker(waker);
+        let abort_done = self.pending_abort.as_mut().is_some_and(|abort| abort.as_mut().poll(&mut context).is_ready());
+        if abort_done { self.pending_abort = None; }
+        let turn_result = self.pending_turn.as_mut().and_then(|turn| match turn.as_mut().poll(&mut context) {
+            std::task::Poll::Pending => None,
+            std::task::Poll::Ready(result) => Some(result),
+        });
+        if let Some(result) = turn_result {
+            self.pending_turn = None;
+            if let Err(error) = result { self.show_status(error); }
+        }
+        self.drain_events();
+    }
+
+    /// One production frame step: advance the in-flight turn with a noop waker.
+    pub fn poll_turn(&mut self) { self.poll_turn_with(std::task::Waker::noop()); }
+
+    /// Whether a provider turn is currently in flight.
+    pub fn has_pending_turn(&self) -> bool { self.pending_turn.is_some() }
+
+    /// Await the in-flight turn to completion, consuming session events while it runs. Direct
+    /// `submit` callers use this; the production loop uses `poll_turn` instead.
+    async fn await_turn(&mut self) {
+        let Some(mut turn) = self.pending_turn.take() else { return; };
+        let result = loop {
+            let abort_done = self.pending_abort.as_mut().is_some_and(|abort| {
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                abort.as_mut().poll(&mut context).is_ready()
+            });
+            if abort_done { self.pending_abort = None; }
+            tokio::select! {
+                result = &mut turn => break result,
+                Some(event) = self.events.recv() => { self.handle_session_event(&event); }
+                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
             }
         };
+        if let Err(error) = result { self.show_status(error); }
         self.drain_events();
-        result
     }
 
     pub async fn abort(&self) { let _ = self.host_abort().await; }
@@ -1266,15 +1371,29 @@ impl InteractiveMode {
         count
     }
 
-    pub async fn abort_and_restore_queue(&mut self) -> usize {
+    /// senpi's interrupt handler: clear the queued messages back into the editor and *request* the
+    /// abort. The abort is not awaited (`void session.abort()`): the run finishes when its own loop
+    /// observes the signal, and the production loop must keep polling the turn meanwhile - awaiting
+    /// `wait_for_idle` here would deadlock behind a held provider.
+    pub fn abort_and_restore_queue(&mut self) -> usize {
         let queued = self.host_clear_queue(true);
-        let _ = self.host_abort().await;
+        self.request_abort();
         if !queued.is_empty() {
             let text = queued.iter().map(|message| message.text.as_str()).collect::<Vec<_>>().join("\n\n");
             let current = self.editor.editor.get_text();
             self.editor.editor.set_text(&[text.as_str(), current.as_str()].into_iter().filter(|text| !text.trim().is_empty()).collect::<Vec<_>>().join("\n\n"));
         }
         queued.len()
+    }
+
+    /// Queue the abort request for `poll_turn` to drive. No `tokio::spawn`, so the mode keeps its
+    /// non-`Send` shape.
+    fn request_abort(&mut self) {
+        let abort: AbortFuture = match self.session_host.clone() {
+            Some(host) => Box::pin(async move { let _ = host.abort().await; }),
+            None => { let session = self.session.clone(); Box::pin(async move { session.abort().await; }) }
+        };
+        self.pending_abort = Some(abort);
     }
 
     pub async fn steer(&self, text: &str) -> Result<(), String> { self.host_steer(text).await }
@@ -2170,7 +2289,7 @@ impl InteractiveMode {
         let request_id = request.request_id.clone();
         options.on_progress = Some(Box::new(move |draft| {
             actions.borrow_mut().push_back(QuestionAction::Progress(request_id.clone(), draft.clone()));
-            if let Some(progress) = &progress { let mut callback = progress.borrow_mut(); (&mut **callback)(draft); }
+            if let Some(progress) = &progress { let mut callback = progress.borrow_mut(); (**callback)(draft); }
         }));
         self.questions.surface = crate::question_registry::QuestionSurface::Expanded;
         self.blocking_question = false;

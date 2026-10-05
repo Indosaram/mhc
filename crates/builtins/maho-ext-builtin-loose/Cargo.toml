@@ -12,6 +12,7 @@ maho-ext-host = { path = "../../maho-ext-host" }
 maho-tui = { path = "../../maho-tui" }
 maho-agent = { path = "../../maho-agent" }
 maho-ai = { path = "../../maho-ai" }
+maho-core = { path = "../../maho-core" }
 maho-ext-gpt-apply-patch = { path = "../maho-ext-gpt-apply-patch" }
 anyhow = "=1.0.104"
 async-trait = "=0.1.92"

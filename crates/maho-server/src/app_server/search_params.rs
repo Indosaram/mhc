@@ -91,7 +91,7 @@ pub fn parse_search_params(value: &Value) -> Result<ParsedSearchParams, JsonRpcE
         _ => return Err(invalid("thread/search received an invalid archived flag")),
     };
     Ok(ParsedSearchParams {
-        search_term: term.to_lowercase(),
+        search_term: super::js_semantics::to_locale_lowercase(term),
         cursor,
         limit,
         sort_key: sort_key.into(),

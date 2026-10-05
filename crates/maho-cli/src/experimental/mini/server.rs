@@ -27,6 +27,9 @@ pub fn process_worker_factory(executable: PathBuf, prefix_args: Vec<String>, ses
             let mut command = tokio::process::Command::new(executable);
             command.args(prefix_args).arg(sessions_root).arg(cwd);
             if let Some(id) = session_id { command.arg(id); }
+            // The worker boots `mhc <sessionsRoot> <cwd> [sessionId]`; the role env var is what makes
+            // the binary dispatch it to the session-worker entry (pinned `worker/entry.ts`).
+            command.env(crate::experimental::process::INTERNAL_PROCESS_ENV, "session-worker");
             let mut child = command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|error| error.to_string())?;
             let input = child.stdout.take().ok_or("Worker stdout is not piped")?;
