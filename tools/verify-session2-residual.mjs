@@ -33,6 +33,7 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const RUN_IDENTITY = "run-identity.json";
 const SOURCE_IDENTITY = "source-identity.json";
+const SOURCE_IDENTITY_END = "source-identity-end.json";
 // The causal TUI fields every case must prove (own prompt, gated stream, steer, abort, resize).
 const TUI_REQUIRED_FIELDS = [
 	"onboarding_pre_completed",
@@ -291,24 +292,30 @@ export function validateCommandManifest(evidenceDir, sha, manifest, report, fina
 			if (!self || final) report.fail(`gate command has no exit code${final ? " in the final audit" : ""}: ${template}`);
 		} else if (entry.exit_code !== 0) {
 			report.fail(`gate command exited ${entry.exit_code} (expected 0): ${template}`);
-		}
-		if (entry.log && existsSync(join(evidenceDir, entry.log))) {
-			if (entry.log_sha256 && sha256(readFileSync(join(evidenceDir, entry.log))) !== entry.log_sha256) {
+		} else {
+			// A COMPLETED command must carry an immutable raw log with a 64-hex hash that matches the
+			// actual bytes; a missing/malformed hash is not accepted.
+			if (!entry.log) {
+				report.fail(`completed command has no log: ${template}`);
+			} else if (!existsSync(join(evidenceDir, entry.log))) {
+				report.fail(`command log missing for a completed command: ${entry.log}`);
+			} else if (!SHA256_HEX.test(String(entry.log_sha256 ?? ""))) {
+				report.fail(`completed command log has no 64-hex log_sha256: ${template}`);
+			} else if (sha256(readFileSync(join(evidenceDir, entry.log))) !== entry.log_sha256) {
 				report.fail(`command log is STALE (hash changed since capture): ${entry.log}`);
 			}
-		} else if (!missing) {
-			report.fail(`command log missing for a completed command: ${template} (log=${entry.log})`);
 		}
 	}
 	if (final) {
 		for (const entry of entries) {
 			if (entry.exit_code === null || entry.exit_code === undefined) report.fail(`final audit: command never completed: ${entry.template}`);
 			if (!entry.log) report.fail(`final audit: command has no log: ${entry.template}`);
+			if (!SHA256_HEX.test(String(entry.log_sha256 ?? ""))) report.fail(`final audit: command has no 64-hex log_sha256: ${entry.template}`);
 		}
 	}
 }
 
-export function validateSourceIdentity(evidenceDir, repo, sha, report) {
+export function validateSourceIdentity(evidenceDir, repo, sha, report, final = false) {
 	const runPath = join(evidenceDir, RUN_IDENTITY);
 	if (!existsSync(runPath)) report.fail(`run identity missing: ${RUN_IDENTITY}`);
 	else {
@@ -318,11 +325,29 @@ export function validateSourceIdentity(evidenceDir, repo, sha, report) {
 	const srcPath = join(evidenceDir, SOURCE_IDENTITY);
 	if (!existsSync(srcPath)) {
 		report.fail(`source identity missing: ${SOURCE_IDENTITY} (the supplied SHA is not proven to be the worktree HEAD)`);
-		return;
+	} else {
+		const src = readJson(srcPath);
+		if (src.sha !== sha) report.fail(`source identity sha ${src.sha} != gate SHA ${sha}`);
+		if (src.head !== sha) report.fail(`source identity HEAD ${src.head} != gate SHA ${sha} (SHA is not the worktree HEAD)`);
+		if (src.clean !== true || (Array.isArray(src.dirty_sources) && src.dirty_sources.length > 0)) {
+			report.fail(`begin source identity is not clean: dirty=${JSON.stringify(src.dirty_sources ?? null)}`);
+		}
 	}
-	const src = readJson(srcPath);
-	if (src.sha !== sha) report.fail(`source identity sha ${src.sha} != gate SHA ${sha}`);
-	if (src.head !== sha) report.fail(`source identity HEAD ${src.head} != gate SHA ${sha} (SHA is not the worktree HEAD)`);
+	if (final) {
+		// The runner records an end identity after every command; the FINAL audit requires it and
+		// fails on a dirty tree or HEAD drift. A pre-final audit must not require it (it does not
+		// exist yet), so this check is gated on `final`.
+		const endPath = join(evidenceDir, SOURCE_IDENTITY_END);
+		if (!existsSync(endPath)) {
+			report.fail(`end source identity missing: ${SOURCE_IDENTITY_END}`);
+		} else {
+			const end = readJson(endPath);
+			if (end.head !== sha) report.fail(`end source identity HEAD ${end.head} != gate SHA ${sha} (worktree HEAD drifted during the gate)`);
+			if (end.clean !== true || (Array.isArray(end.dirty_sources) && end.dirty_sources.length > 0)) {
+				report.fail(`end source identity is not clean (the gate mutated the worktree): dirty=${JSON.stringify(end.dirty_sources ?? null)}`);
+			}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -698,10 +723,23 @@ export function validateUnresolved(manifest, report) {
 			report.fail(`awaited-executed category ${entry.category} disposition "${entry.disposition}" has no reason`);
 		}
 	}
-	// Required-but-not-authored entries must link an exact authored+passing test, never prose.
+	// Required-but-not-authored entries must link an exact authored test that is ALSO present as an
+	// exact (package, target, test) triple in execution_coverage.required_tests, so an orphan fn
+	// identifier cannot satisfy the requirement; validateNextest then proves that triple executed PASS.
+	const requiredTriples = new Set(
+		(manifest?.execution_coverage?.required_tests ?? []).map((entry) => `${entry.package}\u0000${entry.target}\u0000${entry.test}`),
+	);
 	for (const entry of manifest?.awaited_executed_tests?.required_but_not_authored ?? []) {
-		if (entry.authored !== true || !EXACT_TEST_ID.test(String(entry.test ?? ""))) {
-			report.fail(`required-but-not-authored entry has no exact authored test: ${JSON.stringify(entry.id ?? entry.category ?? entry)}`);
+		const label = JSON.stringify(entry.id ?? entry.category ?? entry.test ?? entry);
+		const packageId = String(entry.package ?? "");
+		const targetId = String(entry.target ?? "");
+		const testId = String(entry.test ?? "");
+		if (entry.authored !== true || !PACKAGE_ID.test(packageId) || !EXACT_TARGET_ID.test(targetId) || !EXACT_TEST_ID.test(testId)) {
+			report.fail(`required-but-not-authored entry has no exact authored (package, target, test): ${label}`);
+			continue;
+		}
+		if (!requiredTriples.has(`${packageId}\u0000${targetId}\u0000${testId}`)) {
+			report.fail(`required-but-not-authored entry is an orphan test not linked into execution_coverage.required_tests: ${label}`);
 		}
 	}
 	// Completeness against the fixed approved requirement IDs.
@@ -770,7 +808,7 @@ export function verify({ repo, evidenceDir, sha, final = false }) {
 	}
 	const manifest = validateBoundManifest(evidenceDir, sha, report, repo);
 	if (manifest) {
-		validateSourceIdentity(evidenceDir, repo, sha, report);
+		validateSourceIdentity(evidenceDir, repo, sha, report, final);
 		validatePackageManifest(evidenceDir, repo, sha, manifest, report);
 		validateCommandManifest(evidenceDir, sha, manifest, report, final);
 		validateNextest(evidenceDir, repo, manifest, report);
@@ -903,7 +941,8 @@ function buildValidFixture(root, sha) {
 	};
 	put(join(evidence, "requirements-manifest.json"), JSON.stringify(manifest, null, 2));
 	put(join(evidence, "run-identity.json"), JSON.stringify({ schema: "session2-residual-run-identity/v1", sha }, null, 2));
-	put(join(evidence, "source-identity.json"), JSON.stringify({ schema: "session2-residual-source-identity/v1", sha, head: sha, head_matches_sha: true }, null, 2));
+	put(join(evidence, "source-identity.json"), JSON.stringify({ schema: "session2-residual-source-identity/v1", sha, head: sha, head_matches_sha: true, status_porcelain: "", dirty_sources: [], clean: true }, null, 2));
+	put(join(evidence, "source-identity-end.json"), JSON.stringify({ schema: "session2-residual-source-identity/v1", sha, head: sha, head_matches_sha: true, status_porcelain: "", dirty_sources: [], clean: true }, null, 2));
 	put(
 		join(evidence, "package-manifest.json"),
 		JSON.stringify(
@@ -921,12 +960,14 @@ function buildValidFixture(root, sha) {
 			2,
 		),
 	);
-	const commands = gateCommands.map((template) => ({
-		template,
-		command: template.replace("cargo4", "/cargo4"),
-		exit_code: template.includes(VERIFY_COMMAND_MARKER) ? null : 0,
-		log: null,
-	}));
+	const commands = gateCommands.map((template, index) => {
+		const self = template.includes(VERIFY_COMMAND_MARKER);
+		if (self) return { template, command: template.replace("cargo4", "/cargo4"), exit_code: null, log: null };
+		const log = `command-${String(index + 1).padStart(2, "0")}.log`;
+		const bytes = Buffer.from(`${template}\nexit 0\n`);
+		put(join(evidence, log), bytes);
+		return { template, command: template.replace("cargo4", "/cargo4"), exit_code: 0, log, log_sha256: sha256(bytes) };
+	});
 	put(join(evidence, "command-manifest.json"), JSON.stringify({ schema: COMMAND_SCHEMA, sha, commands }, null, 2));
 	put(
 		join(evidence, "nextest.log"),
@@ -1117,6 +1158,47 @@ export function selfTest() {
 	check("source identity mismatch rejected", mutate(({ evidence, write, join, sha }) => {
 		write(join(evidence, "source-identity.json"), JSON.stringify({ schema: "session2-residual-source-identity/v1", sha: "b".repeat(40), head: "b".repeat(40), head_matches_sha: false }));
 	}));
+	check("dirty begin source identity rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "source-identity.json");
+		const s = JSON.parse(read(p, "utf8"));
+		s.clean = false;
+		s.dirty_sources = ["untracked source: crates/x.rs"];
+		write(p, JSON.stringify(s));
+	}));
+	check("final mode rejects a dirty end identity", (() => {
+		const root = mkdtempSync(join(tmpdir(), "verify-session2-endid-"));
+		try {
+			const sha = "a".repeat(40);
+			const { repo, evidence } = buildValidFixture(root, sha);
+			const endPath = join(evidence, "source-identity-end.json");
+			const end = JSON.parse(readFileSync(endPath, "utf8"));
+			end.clean = false;
+			end.dirty_sources = ["tracked change:  M crates/x.rs"];
+			writeFileSync(endPath, JSON.stringify(end));
+			const report = verify({ repo, evidenceDir: evidence, sha, final: true });
+			return { ok: report.problems.some((p) => p.includes("end source identity is not clean")), detail: report.problems.join("; ") };
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	})());
+	check("completed command missing log hash rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "command-manifest.json");
+		const c = JSON.parse(read(p, "utf8"));
+		delete c.commands[0].log_sha256;
+		write(p, JSON.stringify(c));
+	}));
+	check("completed command malformed log hash rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "command-manifest.json");
+		const c = JSON.parse(read(p, "utf8"));
+		c.commands[0].log_sha256 = "not-a-64-hex-hash";
+		write(p, JSON.stringify(c));
+	}));
+	check("stale command log hash rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "command-manifest.json");
+		const c = JSON.parse(read(p, "utf8"));
+		write(join(evidence, c.commands[0].log), "tampered log bytes\n");
+		write(p, JSON.stringify(c));
+	}));
 	check("missing task-8 ledger rejected", mutate(({ repo, read, write, join }) => {
 		const p = join(repo, TASK8_LEDGER);
 		write(p, "");
@@ -1126,6 +1208,30 @@ export function selfTest() {
 		m.awaited_executed_tests.required_but_not_authored = [{ id: "G12-TOOLCTX-INVOCATION", authored: false, detail: "no test drives a real typed tool" }];
 		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
 	}));
+	check("orphan required-but-not-authored test rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.awaited_executed_tests.required_but_not_authored = [
+			{ id: "G12-TOOLCTX-INVOCATION", authored: true, package: "maho-agent", target: "harness_drive_lane", test: "some_orphan_fn_not_in_required_tests" },
+		];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("linked required-but-not-authored test accepted", (() => {
+		const root = mkdtempSync(join(tmpdir(), "verify-session2-rbn-"));
+		try {
+			const sha = "a".repeat(40);
+			const { repo, evidence } = buildValidFixture(root, sha);
+			const p = join(evidence, "requirements-manifest.json");
+			const m = JSON.parse(readFileSync(p, "utf8"));
+			m.awaited_executed_tests.required_but_not_authored = [
+				{ id: "SDK-NATIVE-SESSION", authored: true, package: "maho-test-support", target: "faux_native_session", test: "native_handle_drives_a_prompt_and_closes_cleanly" },
+			];
+			writeFileSync(p, JSON.stringify(m));
+			const report = verify({ repo, evidenceDir: evidence, sha });
+			return { ok: report.problems.length === 0, detail: report.problems.join("; ") };
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	})());
 	check("omitted requirement id rejected", mutate(({ evidence, read, write, join }) => {
 		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
 		m.requirements = m.requirements.filter((r) => r.id !== "IS-6");
@@ -1174,6 +1280,34 @@ export function selfTest() {
 		const parsed = parseNextestLog(readFileSync(path, "utf8"));
 		const key = `${binaryIdFor("maho-cli", "mini_worker")}\u0000models_login_rejects_an_unknown_provider`;
 		return { ok: parsed.statuses.get(key) === undefined, detail: `status=${parsed.statuses.get(key)}` };
+	})());
+	check("on-disk fixture: command missing log hash rejected", (() => {
+		const path = join(FIXTURES, "command-manifest-missing-hash.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const commands = readJson(path).commands ?? [];
+		const bad = commands.filter((entry) => entry.exit_code !== null && !SHA256_HEX.test(String(entry.log_sha256 ?? "")));
+		return { ok: bad.length === commands.length && bad.length > 0, detail: `${bad.length}/${commands.length} rejected` };
+	})());
+	check("on-disk fixture: command malformed log hash rejected", (() => {
+		const path = join(FIXTURES, "command-manifest-malformed-hash.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const commands = readJson(path).commands ?? [];
+		const bad = commands.filter((entry) => !SHA256_HEX.test(String(entry.log_sha256 ?? "")));
+		return { ok: bad.length === commands.length && bad.length > 0, detail: `${bad.length}/${commands.length} rejected` };
+	})());
+	check("on-disk fixture: dirty source identity rejected", (() => {
+		const path = join(FIXTURES, "source-identity-dirty.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const src = readJson(path);
+		return { ok: src.clean !== true && (src.dirty_sources ?? []).length > 0, detail: `clean=${src.clean} dirty=${(src.dirty_sources ?? []).length}` };
+	})());
+	check("on-disk fixture: orphan required-but-not-authored rejected", (() => {
+		const path = join(FIXTURES, "required-but-not-authored-orphan.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const parsed = readJson(path);
+		const triples = new Set((parsed.execution_coverage?.required_tests ?? []).map((e) => `${e.package}\u0000${e.target}\u0000${e.test}`));
+		const orphans = (parsed.awaited_executed_tests?.required_but_not_authored ?? []).filter((e) => !triples.has(`${e.package}\u0000${e.target}\u0000${e.test}`));
+		return { ok: orphans.length > 0, detail: `orphans=${orphans.length}` };
 	})());
 
 	const failed = results.filter((r) => !r.ok);

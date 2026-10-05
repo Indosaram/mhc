@@ -1,0 +1,26 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: required_but_not_authored lists an authored test that is NOT present as an exact (package, target, test) triple in execution_coverage.required_tests, so it is an orphan. The verifier MUST reject it (and a linked triple would then be checked for executed PASS by validateNextest).",
+  "execution_coverage": {
+    "required_tests": [
+      {
+        "package": "maho-agent",
+        "target": "harness_drive_lane",
+        "test": "prompt_settles_through_the_public_facade",
+        "requirement": "G12"
+      }
+    ]
+  },
+  "awaited_executed_tests": {
+    "items": [],
+    "required_but_not_authored": [
+      {
+        "id": "G12-TOOLCTX-INVOCATION",
+        "authored": true,
+        "package": "maho-agent",
+        "target": "harness_drive_lane",
+        "test": "some_orphan_fn_not_linked"
+      }
+    ]
+  }
+}
