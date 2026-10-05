@@ -19,6 +19,8 @@ use serde_json::Value;
 
 pub type LiveMemoryConfig = Arc<dyn Fn() -> Result<Value, String> + Send + Sync>;
 pub type MemoryWarning = Arc<dyn Fn(&str) + Send + Sync>;
+/// The host's `which` resolver (pinned `WhichFn`): a command name to its resolved path.
+pub type WhichResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Required production dependencies; launcher and supervisor are installed
 /// native entrypoints, not fixture processes or guessed executable-relative paths.
@@ -36,15 +38,15 @@ pub struct MemoryRuntimeHost {
     pub captured_tools: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     pub disabled: Arc<dyn Fn() -> bool + Send + Sync>,
     pub parent_cache_reusable: Arc<dyn Fn(&ExtensionContext) -> bool + Send + Sync>,
-    pub which: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub which: WhichResolver,
     pub warn: MemoryWarning,
 }
 
 struct IdentityWorker {
     identity: MemoryIdentityContext,
     store: Arc<ReflectionReservationStore>,
-    runner: Mutex<worker::runner::SenpiSubprocessRunner>,
-    cache: Mutex<worker::model_preflight::ModelPreflight>,
+    runner: tokio::sync::Mutex<worker::runner::SenpiSubprocessRunner>,
+    cache: tokio::sync::Mutex<worker::model_preflight::ModelPreflight>,
     sandbox: Mutex<maho_omo_memory::identity_runtime::IdentitySandbox>,
 }
 
@@ -246,8 +248,8 @@ impl MemoryRuntime {
         let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(worker) = workers.get(&identity.identity) { return Ok(worker.clone()); }
         let store = maho_omo_memory::identity_runtime::create_identity_reservation_store(identity, &self.settings()?)?;
-        let worker = Arc::new(IdentityWorker { identity: identity.clone(), store, runner: Mutex::new(Default::default()),
-            cache: Mutex::new(Default::default()), sandbox: Mutex::new(Default::default()) });
+        let worker = Arc::new(IdentityWorker { identity: identity.clone(), store, runner: tokio::sync::Mutex::new(Default::default()),
+            cache: tokio::sync::Mutex::new(Default::default()), sandbox: Mutex::new(Default::default()) });
         workers.insert(identity.identity.clone(), worker.clone());
         Ok(worker)
     }
@@ -454,8 +456,8 @@ impl MemoryRuntime {
                     memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(identity.paths.transcripts.join(conversation))).get_state().map(Some).map_err(|error| error.to_string()))
             };
             let mut live = LiveSession { runtime: self, context: &context, identity: &identity.id };
-            let mut runner = worker.runner.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut cache = worker.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut runner = worker.runner.lock().await;
+            let mut cache = worker.cache.lock().await;
             let dir = identity.paths.reflection.join("runs").join(&run.run_id);
             let result = runner.launch_native(worker::runner::ReflectionRunnerInput {
                 run: &run, identity: &identity, config: &config, resolution: &resolution, reservation: worker.store.as_ref(), started_at: &started, now_ms: &memory_core::support::time::now_millis,

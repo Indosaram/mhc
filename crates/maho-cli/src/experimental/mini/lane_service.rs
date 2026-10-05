@@ -20,6 +20,9 @@ use maho_agent::harness::session::types::LaneModelRef;
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{CommandResult, LaneSubscription, ModelRef, ModelsState, SessionSnapshot};
 
+/// The worker's lane-event publisher: `(subscriptionId, presentationId, event)`.
+pub type LaneEventPublisher = Arc<dyn Fn(&str, &str, &HarnessEvent) + Send + Sync>;
+
 pub struct SessionIdentity {
     pub id: String,
     pub cwd: String,
@@ -32,7 +35,7 @@ pub struct LaneServiceOptions {
     pub context: Context,
     pub session: SessionIdentity,
     pub models_state: Arc<dyn Fn() -> ModelsState + Send + Sync>,
-    pub publish: Arc<dyn Fn(&str, &str, &HarnessEvent) + Send + Sync>,
+    pub publish: LaneEventPublisher,
 }
 
 struct Watch {
