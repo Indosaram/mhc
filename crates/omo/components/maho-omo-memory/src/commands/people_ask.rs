@@ -146,13 +146,14 @@ async fn run_child(
     env: &BTreeMap<String, String>,
     deadline_ms: u64,
 ) -> Result<String, String> {
-    let mut child = tokio::process::Command::new(command)
+    let child = tokio::process::Command::new(command)
         .args(args)
         .envs(env)
         .env("SENPI_PTY_FORCE_PIPE", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|error| error.to_string())?;
 
@@ -174,9 +175,8 @@ async fn run_child(
             }
         }
         Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => {
-            let _ = child.start_kill();
-            Ok(ABSTENTION_LINE.to_owned())
-        }
+        // The deadline drops `wait_with_output`, whose `Child` is `kill_on_drop`, so the
+        // child is SIGKILLed exactly as the pinned runner does on timeout.
+        Err(_) => Ok(ABSTENTION_LINE.to_owned()),
     }
 }

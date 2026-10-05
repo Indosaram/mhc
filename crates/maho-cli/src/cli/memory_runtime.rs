@@ -118,6 +118,7 @@ impl MemoryRuntime {
             resolve_context: {let this=this.clone();Arc::new(move |session| this.identity(session))},
             resolve_identity: Some({let this=this.clone();Arc::new(move || this.context().and_then(|context| this.identity(context.session_manager.session_id())))}),
             settings: {let this=this.clone();Arc::new(move || this.settings())},
+            bust_prompt_cache: {let prompt=self.prompt.clone();Arc::new(move || prompt.cache.clear())},
             config_path: Some({let cwd=self.host.cwd.clone();let agent_dir=self.host.agent_dir.clone();Arc::new(move || {
                 cwd.ancestors().flat_map(|ancestor| [ancestor.join(".omo/omo.json"), ancestor.join(".omo/omo.jsonc")]).find(|path| path.is_file())
                     .or_else(|| [agent_dir.join("settings.json"), agent_dir.join("settings.jsonc")].into_iter().find(|path| path.is_file()))

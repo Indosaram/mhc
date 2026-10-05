@@ -7,7 +7,7 @@ use memory_core::{
     people::format::{ObservationGroup, PeopleLimits, parse_people_card},
 };
 
-use crate::palace::{PalacePeople, PalacePeopleEdge, PalacePeopleNode};
+use crate::palace::people::{PalacePeople, PalacePeopleEdge, PalacePeopleNode};
 
 const TREE_BRANCH: &str = "|-";
 const TREE_LAST: &str = "`-";

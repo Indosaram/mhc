@@ -7,7 +7,7 @@ use super::repo::run_git;
 use super::tokens::estimate_system_tokens;
 use super::types::{BoxFuture, respond, NotifyLevel};
 
-pub fn memfs_backup(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::types::CommandResponse> {
+pub fn memfs_backup<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(_repo) => _repo,
@@ -21,7 +21,7 @@ pub fn memfs_backup(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::ty
     })
 }
 
-pub fn memfs_restore(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::types::CommandResponse> {
+pub fn memfs_restore<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let backups = list_repo_backups(input.identity);
         if backups.is_empty() {
@@ -87,7 +87,7 @@ pub fn memfs_restore(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::t
     })
 }
 
-pub fn memfs_diff(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::types::CommandResponse> {
+pub fn memfs_diff<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -120,7 +120,7 @@ pub fn memfs_diff(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::type
     })
 }
 
-pub fn memfs_tokens(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, super::types::CommandResponse> {
+pub fn memfs_tokens<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, super::types::CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,

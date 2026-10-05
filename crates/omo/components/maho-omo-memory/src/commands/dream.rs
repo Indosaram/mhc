@@ -58,12 +58,10 @@ pub async fn handle_dream(
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
     };
 
-    let mut conversation_ids: Option<Vec<String>> = None;
-    let selection = select_conversations(deps, ctx, &identity, &parsed, &focus).await;
-    match selection {
-        Ok(ids) => conversation_ids = ids,
+    let conversation_ids = match select_conversations(deps, ctx, &identity, &parsed, &focus).await {
+        Ok(ids) => ids,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
-    }
+    };
 
     let request = ManualDreamCommandRequest {
         focus: focus.clone(),
