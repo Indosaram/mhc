@@ -72,6 +72,10 @@ const SERVER_ROW_IDS = [
 	28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
 	710,
 ];
+// The ONLY rows that may be approved-exclusions: the original D-M5 chord/Node exclusions (1,2,3) and the
+// historical Windows identity-probe exclusion (5, whose Linux probe still has a test). Any other row
+// claiming an exclusion is rejected (an exclusion must be an explicit original one, not invented).
+const ALLOWED_EXCLUSION_ROWS = new Set([1, 2, 3, 5]);
 // The mandatory TUI matrix (independent of the manifest's own arrays).
 const TUI_GEOMETRIES = ["80x24", "120x36", "200x50"];
 const TUI_MODES = ["regular", "fullscreen"];
@@ -796,11 +800,11 @@ export function validateServerRows(manifest, repo, report) {
 		if (present.has(row.id)) report.fail(`duplicate server row id: ${row.id}`);
 		present.add(row.id);
 		const trips = Array.isArray(row.required_tests) ? row.required_tests : [];
-		if (row.status === "approved-exclusion") {
-			if (trips.length !== 0) report.fail(`${label} is approved-exclusion but cites ${trips.length} test(s)`);
-			continue;
+		const excluded = row.status === "approved-exclusion";
+		if (excluded && !ALLOWED_EXCLUSION_ROWS.has(row.id)) {
+			report.fail(`${label} claims an exclusion that is not an allowed original exclusion`);
 		}
-		if (trips.length === 0) {
+		if (!excluded && trips.length === 0) {
 			report.fail(`${label} is not an approved-exclusion but cites no exact required_tests`);
 			continue;
 		}
@@ -1373,10 +1377,9 @@ export function selfTest() {
 		m.server_row_manifest.rows.find((row) => row.id === 25).required_tests = [{ package: "maho-server", target: "lifecycle_registration", test: "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe" }];
 		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
 	}));
-	check("server row approved-exclusion with tests rejected", mutate(({ evidence, read, write, join }) => {
+	check("server row claims a non-allowed exclusion rejected", mutate(({ evidence, read, write, join }) => {
 		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
-		m.server_row_manifest.rows[0].status = "approved-exclusion";
-		m.server_row_manifest.rows[0].required_tests = [{ package: "maho-cli", target: "mini_worker", test: "unwatch_and_close_release_watch_subscriptions" }];
+		m.server_row_manifest.rows.find((row) => row.id === 7).status = "approved-exclusion";
 		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
 	}));
 	check("server row completeness gap rejected", mutate(({ evidence, read, write, join }) => {
