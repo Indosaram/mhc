@@ -151,7 +151,9 @@ export function packageManifests(repo) {
 
 /** Locates the source file behind a (package, target) pair.
  *  `target: "lib"` is the crate unit-test target (`src/lib.rs`); anything else is an
- *  auto-discovered integration test (`tests/<target>.rs`). */
+ *  auto-discovered integration test. Cargo accepts both the single-file form
+ *  (`tests/<target>.rs`) and the directory form (`tests/<target>/main.rs`, with sibling
+ *  modules), so both must resolve or a real target is rejected as nonexistent. */
 export function findTargetFile(repo, pkg, target) {
 	const manifests = packageManifests(repo);
 	const manifest = manifests.get(pkg);
@@ -164,8 +166,10 @@ export function findTargetFile(repo, pkg, target) {
 		}
 		return null;
 	}
-	const candidate = join(dir, "tests", `${target}.rs`);
-	return existsSync(candidate) ? candidate : null;
+	for (const candidate of [join(dir, "tests", `${target}.rs`), join(dir, "tests", target, "main.rs")]) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return null;
 }
 
 /** The nextest binary id for a (package, target): a lib target reports under the bare package
@@ -405,15 +409,20 @@ export function validateNextest(evidenceDir, repo, manifest, report) {
 		return;
 	}
 	const parsed = parseNextestLog(readFileSync(path, "utf8"));
-	if (parsed.run === null) {
+	// A missing summary means the test build never produced a binary, so no test can be shown to have
+	// executed. Report that once, but keep going into the static per-requirement checks below:
+	// returning here would hide every target/identifier problem behind the first build failure (the
+	// same masking a failed cargo lib target causes for its integration targets).
+	const executed = parsed.run !== null;
+	if (!executed) {
 		report.fail("nextest log has no summary line (tests did not run)");
-		return;
-	}
-	if (parsed.run <= 0) report.fail("nextest summary reports zero tests run");
-	if (parsed.failed !== 0) report.fail(`nextest summary reports ${parsed.failed} failed test(s) (expected 0)`);
-	if (parsed.skipped !== 0) report.fail(`nextest summary reports ${parsed.skipped} skipped test(s) (expected 0)`);
-	if (parsed.statuses.size === 0) {
-		report.fail("nextest log has no per-test status lines; execution cannot be proven (run nextest with NEXTEST_STATUS_LEVEL=all)");
+	} else {
+		if (parsed.run <= 0) report.fail("nextest summary reports zero tests run");
+		if (parsed.failed !== 0) report.fail(`nextest summary reports ${parsed.failed} failed test(s) (expected 0)`);
+		if (parsed.skipped !== 0) report.fail(`nextest summary reports ${parsed.skipped} skipped test(s) (expected 0)`);
+		if (parsed.statuses.size === 0) {
+			report.fail("nextest log has no per-test status lines; execution cannot be proven (run nextest with NEXTEST_STATUS_LEVEL=all)");
+		}
 	}
 	const required = manifest?.execution_coverage?.required_tests ?? [];
 	if (required.length === 0) report.fail("manifest declares no execution_coverage.required_tests");
@@ -429,6 +438,9 @@ export function validateNextest(evidenceDir, repo, manifest, report) {
 			report.fail(`nonexistent target id: ${entry.package}::${entry.target} has no tests/${entry.target}.rs (or src/lib.rs for \`lib\`)`);
 			continue;
 		}
+		// Without a summary nothing can be shown to have run; the run-level failure above already
+		// fails the verdict, so only the static identity of the requirement is asserted here.
+		if (!executed) continue;
 		const key = `${binaryIdFor(entry.package, entry.target)}\u0000${entry.test}`;
 		const status = parsed.statuses.get(key);
 		if (status === undefined) {
