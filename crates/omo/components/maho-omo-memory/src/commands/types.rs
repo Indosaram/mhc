@@ -298,7 +298,7 @@ impl MemoryCommandDeps {
         self.now
             .as_ref()
             .map(|now| now())
-            .unwrap_or_else(|| memory_core::support::time::now_millis())
+            .unwrap_or_else(memory_core::support::time::now_millis)
     }
 
     /// Resolved settings, defaulting to an empty object when the resolver is absent.

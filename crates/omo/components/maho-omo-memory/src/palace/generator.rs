@@ -142,8 +142,7 @@ pub fn encode_palace_data(data: &PalaceData) -> String {
 
 fn file_timestamp(date: DateTime<Utc>) -> String {
     date.to_rfc3339_opts(SecondsFormat::Millis, true)
-        .replace(':', "-")
-        .replace('.', "-")
+        .replace([':', '.'], "-")
 }
 
 fn write_file(path: &Path, contents: &str, mode: u32) -> Result<(), PalaceError> {

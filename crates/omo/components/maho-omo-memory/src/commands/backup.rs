@@ -72,10 +72,10 @@ pub fn restore_repo_backup(
     } else {
         None
     };
-    if let Err(error) = fs::remove_dir_all(repo_dir) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error.to_string());
-        }
+    if let Err(error) = fs::remove_dir_all(repo_dir)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error.to_string());
     }
     copy_dir_recursive(&source, repo_dir).map_err(|error| error.to_string())?;
     Ok(RestoreResult { restored: name.to_owned(), safety_backup })

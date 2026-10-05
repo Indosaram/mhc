@@ -237,7 +237,8 @@ mod tests {
             Some(identity),
             FakeDepsOverrides { sessions_dir: Some(sessions_dir), ..Default::default() },
         );
-        (root, root.path().to_path_buf(), fake)
+        let dir = root.path().to_path_buf();
+        (root, dir, fake)
     }
 
     #[tokio::test]

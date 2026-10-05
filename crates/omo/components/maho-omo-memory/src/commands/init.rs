@@ -114,7 +114,7 @@ mod tests {
 
         let response = handle_init(&fake.deps, &context.ctx, "").await;
 
-        let repo = open_repo(&identity);
+        let repo = crate::commands::repo::open_repo(&fake.deps, &identity).expect("repo");
         assert!(repo.head().expect("head").is_some());
         assert_eq!(order_of(&context), vec!["waitForIdle".to_owned(), "sendUserMessage".to_owned()]);
         let messages = fake.actions.user_messages();

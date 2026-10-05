@@ -157,9 +157,7 @@ fn normalize_message(
     if !message.is_object() {
         return None;
     }
-    if message.get("role").and_then(Value::as_str).is_none() {
-        return None;
-    }
+    message.get("role").and_then(Value::as_str)?;
     let supplied_id = row.get("source_message_id").and_then(Value::as_str);
     let text = message_text(message);
     let id = supplied_id.map(str::to_owned).unwrap_or_else(|| {
