@@ -375,7 +375,7 @@ async fn options_constructor_seeds_lane_configuration_and_drive_config() {
     session.attach();
     let model = faux_model();
     let (harness, open) = create_agent_harness_with_options(
-        AgentHarnessOptions {
+        AgentHarnessOptions::<()> {
             session,
             models: maho_ai::models::create_models(None),
             model: model.clone(),

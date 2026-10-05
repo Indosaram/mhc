@@ -421,7 +421,7 @@ async fn faux_records_call_log_and_pending_responses() {
 /// `Models.cancelDeferred` resolves the provider, runs `applyAuth`, and hands the provider the
 /// request model plus the resolved options (apiKey/headers/env/transformHeaders).
 struct CancelRecordingStreams {
-    calls: Mutex<Vec<(Model, DeferredHandle, Option<DeferredCancelOptions>)>>,
+    calls: Arc<Mutex<Vec<(Model, DeferredHandle, Option<DeferredCancelOptions>)>>>,
 }
 
 impl ProviderStreams for CancelRecordingStreams {

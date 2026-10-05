@@ -335,7 +335,7 @@ async fn run_native_variant(cancel: bool, threshold: bool, variant: &str) {
     } else if variant=="fallback" {
         provider.set_responses(vec![faux_assistant_message(Vec::<ContentBlock>::new(),Default::default()).into(),faux_assistant_message(vec![ContentBlock::text("continued")],Default::default()).into()]);
     }
-    let mut credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
+    let credentials = maho_core::auth_storage::AuthStorage::in_memory(Default::default());
     credentials.set(&model.provider,Some(serde_json::json!({"type":"api_key","key":"faux"}))).expect("native compaction scenario invariant");
     let native = faux_provider(RegisterFauxProviderOptions { api: Some(model.api.clone()), provider: Some(model.provider.clone()), tokens_per_second: Some(0.), ..Default::default() });
     let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {

@@ -18,7 +18,7 @@ use maho_agent::harness::session::types::{
 };
 use maho_agent::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
 use maho_agent::harness::session::{
-    MemorySessionFacade, MemoryStorage, MemoryStorageOptions, Session, SessionError, SessionReader,
+    MemorySessionFacade, MemoryStorage, MemoryStorageOptions, Session, SessionReader,
     SessionResult, StorageBackedSession, StorageBackedSessionOptions,
 };
 
