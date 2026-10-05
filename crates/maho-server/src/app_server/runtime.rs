@@ -119,6 +119,10 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
+                        // Bind the live connection UI into the session runner first, so the inventory
+                        // registration below is a deterministic post-rebind completion anchor.
+                        let turn_thread_id = thread_id.clone();
+                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
                             let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
                             let handler_holder = holder.clone();
@@ -126,8 +130,6 @@ impl AppServerRuntime {
                             if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
                             mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
                         }
-                        let turn_thread_id = thread_id.clone();
-                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
                     Ok(response)
                 })
@@ -177,6 +179,10 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
                         }
+                        // Bind the live connection UI into the session runner first, so the inventory
+                        // registration below is a deterministic post-rebind completion anchor.
+                        let turn_thread_id = thread_id.clone();
+                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
                             let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
                             let handler_holder = holder.clone();
@@ -184,8 +190,6 @@ impl AppServerRuntime {
                             if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
                             mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
                         }
-                        let turn_thread_id = thread_id.clone();
-                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                     });});
                     Ok(response)
                 })
