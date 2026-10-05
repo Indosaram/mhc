@@ -632,6 +632,13 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
             self.accounts_changed(provider); Ok(())
         })
     }
+    fn refresh<'a>(&'a self, options: maho_ai::models::ModelsRefreshOptions) -> maho_ext_api::ExtensionFuture<'a, maho_ai::models::ModelsRefreshResult> {
+        // The core `ModelRegistry` shares its `ModelRuntime` state (config/extensions are `Arc`,
+        // `models` is `Arc`-backed), so refreshing an owned clone updates the session's live catalog
+        // exactly like pinned `modelRuntime.refresh(options)` mutating the single runtime.
+        let mut registry = self.registry.clone();
+        Box::pin(async move { Ok(registry.refresh(options).await) })
+    }
 }
 impl maho_ext_api::ToolSessionManager for ExtensionSessionManagerView {
     fn session_id(&self) -> &str { &self.id }

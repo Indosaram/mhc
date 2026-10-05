@@ -18,8 +18,6 @@ use maho_ext_llama::llama;
 use maho_ext_api::{Extension, ExtensionSessionProfile, SourceInfo};
 use maho_ext_host::loader::{load_extensions, LoadExtensionsResult, NativeExtensionFactory};
 
-use crate::cli::llama::llama;
-
 /// senpi `globalDefaultExtensionIds` (`core/extensions/builtin/index.ts`).
 pub const GLOBAL_DEFAULT_EXTENSION_IDS: [&str; 4] = ["diff", "files", "prompt-url-widget", "tps"];
 

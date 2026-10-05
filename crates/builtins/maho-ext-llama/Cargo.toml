@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 maho-ext-api = { path = "../../maho-ext-api" }
 maho-ai = { path = "../../maho-ai" }
+maho-tui = { path = "../../maho-tui" }
+maho-interactive = { path = "../../maho-interactive" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "stream"] }

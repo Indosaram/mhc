@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use maho_ai::utils::abort::AbortSignal;
+use maho_ai::utils::abort::{AbortController, AbortSignal};
 use maho_ext_api::{CustomUiDone, CustomUiFactoryOptions, ExtensionContext, ExtensionFailure, ExtensionOverlayOptions, ExtensionTuiHost, ExtensionUi, JsonValue};
 use maho_interactive::components::keybinding_hints::key_hint;
 use maho_interactive::theme::{Theme, ThemeColor};
@@ -38,7 +38,7 @@ pub struct ProgressState {
 
 pub type SearchFn = Arc<dyn Fn(String, AbortSignal) -> UiFuture<'static, Result<Vec<HuggingFaceModel>, String>> + Send + Sync>;
 
-pub trait LlamaUi {
+pub trait LlamaUi: Send + Sync {
     fn show_models(&self, server_url: String, models: Vec<LlamaModelInfo>) -> UiFuture<'static, LlamaManagerAction>;
     fn select(&self, title: String, options: Vec<String>) -> UiFuture<'static, Option<String>>;
     fn confirm(&self, title: String, message: String) -> UiFuture<'static, bool>;
@@ -335,7 +335,7 @@ impl LlamaView {
             let ui = self.ui.clone();
             let closed = self.closed.clone();
             tokio::spawn(async move {
-                let results = search(query.clone(), AbortSignal::default()).await.unwrap_or_default();
+                let results = search(query.clone(), AbortController::new().signal()).await.unwrap_or_default();
                 if tx.send(SearchOutcome::Results { query, results }).is_err() || ui.request_render().is_err() {
                     closed.notify_waiters();
                 }
@@ -378,9 +378,16 @@ impl Component for LlamaView {
 }
 
 pub struct ShowLlamaOptions {
-    pub render: Arc<dyn Fn(&dyn ExtensionTuiHost) -> Rc<dyn Fn()> + Send + Sync>,
+    /// The UI-thread repaint handle. The llama flow builds it from `ctx.ui`'s `request_render`
+    /// repaint seam, so the binding carries no per-session host state and the extension stays the
+    /// pinned static inline factory.
+    pub render: RenderBinding,
     pub flow: Box<dyn FnOnce(Arc<dyn LlamaUi>) -> UiFuture<'static, ()> + Send>,
 }
+
+/// `RenderBinding`: given the extension TUI host, returns a `'static` request-render closure
+/// (mirrors `maho-ext-builtin-loose::files::RenderBinding`).
+pub type RenderBinding = Arc<dyn Fn(&dyn ExtensionTuiHost) -> Rc<dyn Fn()> + Send + Sync>;
 
 /// Pinned `showLlamaUi`: the Send flow runs on the runtime, driving the UI-thread component over channels.
 pub async fn show_llama_ui(ctx: ExtensionContext, options: ShowLlamaOptions) -> Result<(), ExtensionFailure> {
@@ -445,7 +452,7 @@ pub struct RunProgressOptions<T> {
 }
 
 pub async fn run_with_progress<T: Send + 'static>(ui: Arc<dyn LlamaUi>, options: RunProgressOptions<T>) -> Result<Option<T>, String> {
-    let signal = AbortSignal::default();
+    let signal = AbortController::new().signal();
     let progress_slot: Arc<std::sync::Mutex<ProgressState>> = Arc::new(std::sync::Mutex::new(ProgressState { title: options.title.clone(), model: options.model.clone(), message: options.initial_message.clone(), ratio: None, detail: None }));
     let update_slot = progress_slot.clone();
     let ui_update = ui.clone();
@@ -481,6 +488,14 @@ pub async fn run_with_progress<T: Send + 'static>(ui: Arc<dyn LlamaUi>, options:
 mod tests {
     use super::*;
     use crate::client::{LlamaModelMeta, LlamaModelState};
+    use maho_ext_api::{
+        ComponentFactory, CustomUiOptions, ExtensionFuture, ExtensionUiDialogOptions,
+        ExtensionWidgetOptions, NotificationType, WidgetContent,
+    };
+    use maho_interactive::theme::ColorMode;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     fn model(id: &str, status: &str) -> LlamaModelInfo {
         LlamaModelInfo { id: id.to_owned(), status: LlamaModelState { value: status.to_owned(), ..Default::default() }, ..Default::default() }
@@ -509,5 +524,205 @@ mod tests {
         assert!(!exact_query("repo"));
         assert!(!exact_query("owner/"));
         assert!(!exact_query("a/b/c"));
+    }
+
+    struct FauxUi {
+        updates: Mutex<Vec<ProgressState>>,
+        confirm_answers: Mutex<VecDeque<bool>>,
+        confirms: AtomicUsize,
+        confirm_permits: Arc<tokio::sync::Semaphore>,
+        progress_gates: Mutex<VecDeque<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl FauxUi {
+        fn new() -> Self {
+            Self {
+                updates: Mutex::new(Vec::new()),
+                confirm_answers: Mutex::new(VecDeque::new()),
+                confirms: AtomicUsize::new(0),
+                confirm_permits: Arc::new(tokio::sync::Semaphore::new(0)),
+                progress_gates: Mutex::new(VecDeque::new()),
+            }
+        }
+        fn gate(&self) -> tokio::sync::oneshot::Sender<()> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.progress_gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push_back(rx);
+            tx
+        }
+        fn answer(&self, value: bool) {
+            self.confirm_answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push_back(value);
+        }
+    }
+
+    impl LlamaUi for FauxUi {
+        fn show_models(&self, _: String, _: Vec<LlamaModelInfo>) -> UiFuture<'static, LlamaManagerAction> {
+            panic!("show_models is not expected in a run_with_progress test")
+        }
+        fn select(&self, _: String, _: Vec<String>) -> UiFuture<'static, Option<String>> {
+            panic!("select is not expected in a run_with_progress test")
+        }
+        fn confirm(&self, _: String, _: String) -> UiFuture<'static, bool> {
+            self.confirms.fetch_add(1, Ordering::SeqCst);
+            self.confirm_permits.add_permits(1);
+            let answer = self.confirm_answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop_front().unwrap_or(false);
+            Box::pin(async move { answer })
+        }
+        fn connection_error(&self, _: String, _: String) -> UiFuture<'static, bool> {
+            panic!("connection_error is not expected in a run_with_progress test")
+        }
+        fn search_models(&self, _: SearchFn) -> UiFuture<'static, Option<String>> {
+            panic!("search_models is not expected in a run_with_progress test")
+        }
+        fn show_status(&self, _: String, _: String) {
+            panic!("show_status is not expected in a run_with_progress test")
+        }
+        fn progress(&self, _: ProgressState) -> UiFuture<'static, ()> {
+            match self.progress_gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop_front() {
+                Some(receiver) => Box::pin(async move { let _ = receiver.await; }),
+                None => Box::pin(std::future::pending::<()>()),
+            }
+        }
+        fn update_progress(&self, state: ProgressState) {
+            self.updates.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(state);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_progress_streams_updates_and_returns_the_completed_value() {
+        let faux = Arc::new(FauxUi::new());
+        let ui: Arc<dyn LlamaUi> = faux.clone();
+        let outcome = tokio::time::timeout(Duration::from_secs(3), run_with_progress::<u32>(ui, RunProgressOptions {
+            title: "Loading model".to_owned(), model: "m".to_owned(), initial_message: "Starting".to_owned(),
+            cancel_title: "Stop loading?".to_owned(), cancel_message: "m".to_owned(),
+            run: Box::new(|_signal, mut update| Box::pin(async move {
+                update(LlamaProgress { message: "half".to_owned(), ratio: Some(0.5), detail: None });
+                update(LlamaProgress { message: "done".to_owned(), ratio: Some(1.0), detail: Some("x".to_owned()) });
+                Ok(42)
+            })),
+            cancel: Box::new(|| -> UiFuture<'static, ()> { Box::pin(async { panic!("cancel must not run when the run completes"); }) }),
+        })).await.expect("bounded");
+        assert_eq!(outcome.expect("completed"), Some(42));
+        let updates = faux.updates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(updates.len(), 2, "every progress update must reach update_progress");
+        assert_eq!(updates[0].message, "half");
+        assert_eq!(updates[1].ratio, Some(1.0));
+        assert_eq!(faux.confirms.load(Ordering::SeqCst), 0, "a completed run must not prompt for cancellation");
+    }
+
+    #[tokio::test]
+    async fn declining_cancellation_keeps_the_same_pending_operation() {
+        let faux = Arc::new(FauxUi::new());
+        faux.answer(false);
+        let gate = faux.gate();
+        let ui: Arc<dyn LlamaUi> = faux.clone();
+        let permits = faux.confirm_permits.clone();
+        let started = Arc::new(AtomicUsize::new(0));
+        let cancels = Arc::new(AtomicUsize::new(0));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let run_started = started.clone();
+        let cancel_count = cancels.clone();
+        let handle = tokio::spawn(async move {
+            run_with_progress::<u32>(ui, RunProgressOptions {
+                title: "Loading model".to_owned(), model: "m".to_owned(), initial_message: "Starting".to_owned(),
+                cancel_title: "Stop loading?".to_owned(), cancel_message: "m".to_owned(),
+                run: Box::new(move |_signal, _update| Box::pin(async move {
+                    run_started.fetch_add(1, Ordering::SeqCst);
+                    let _ = release_rx.await;
+                    Ok(7)
+                })),
+                cancel: Box::new(move || {
+                    let cancel_count = cancel_count.clone();
+                    Box::pin(async move { cancel_count.fetch_add(1, Ordering::SeqCst); })
+                }),
+            }).await
+        });
+        gate.send(()).expect("progress gate");
+        tokio::time::timeout(Duration::from_secs(3), permits.acquire()).await.expect("the cancel prompt must appear").expect("permit");
+        release_tx.send(()).expect("release");
+        let outcome = tokio::time::timeout(Duration::from_secs(3), handle).await.expect("bounded").expect("join");
+        assert_eq!(outcome.expect("completed"), Some(7));
+        assert_eq!(started.load(Ordering::SeqCst), 1, "the same operation must continue, not restart");
+        assert_eq!(cancels.load(Ordering::SeqCst), 0, "a declined cancellation must not run the cancel closure");
+        assert_eq!(faux.confirms.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn confirming_cancellation_runs_cancel_and_drops_the_operation() {
+        let faux = Arc::new(FauxUi::new());
+        faux.answer(true);
+        let gate = faux.gate();
+        let ui: Arc<dyn LlamaUi> = faux.clone();
+        let cancels = Arc::new(AtomicUsize::new(0));
+        let cancel_count = cancels.clone();
+        let handle = tokio::spawn(async move {
+            run_with_progress::<u32>(ui, RunProgressOptions {
+                title: "Loading model".to_owned(), model: "m".to_owned(), initial_message: "Starting".to_owned(),
+                cancel_title: "Stop loading?".to_owned(), cancel_message: "m".to_owned(),
+                run: Box::new(|_signal, _update| Box::pin(async { std::future::pending::<Result<u32, String>>().await })),
+                cancel: Box::new(move || {
+                    let cancel_count = cancel_count.clone();
+                    Box::pin(async move { cancel_count.fetch_add(1, Ordering::SeqCst); })
+                }),
+            }).await
+        });
+        gate.send(()).expect("progress gate");
+        let outcome = tokio::time::timeout(Duration::from_secs(3), handle).await.expect("bounded").expect("join");
+        assert_eq!(outcome.expect("cancelled"), None, "a confirmed cancellation returns the cancelled outcome");
+        assert_eq!(cancels.load(Ordering::SeqCst), 1, "the cancel closure must run exactly once");
+    }
+
+    struct NullUi {
+        renders: AtomicUsize,
+    }
+
+    impl ExtensionUi for NullUi {
+        fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
+        fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn notify(&self, _: &str, _: NotificationType) {}
+        fn set_status(&self, _: &str, _: Option<&str>) {}
+        fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+        fn set_header(&self, _: Option<ComponentFactory>) {}
+        fn set_footer(&self, _: Option<ComponentFactory>) {}
+        fn set_title(&self, _: &str) {}
+        fn paste_to_editor(&self, _: &str) {}
+        fn set_editor_text(&self, _: &str) {}
+        fn get_editor_text(&self) -> String { String::new() }
+        fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("unavailable")) }) }
+        fn theme(&self) -> Theme { Theme::builtin("dark", ColorMode::Truecolor).expect("theme") }
+        fn request_render(&self) -> Result<(), ExtensionFailure> { self.renders.fetch_add(1, Ordering::SeqCst); Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn finish_marks_the_view_done_and_requests_a_redraw() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (search_tx, search_rx) = mpsc::unbounded_channel();
+        let renders = Arc::new(AtomicUsize::new(0));
+        let render_request = {
+            let renders = renders.clone();
+            Rc::new(move || { renders.fetch_add(1, Ordering::SeqCst); }) as Rc<dyn Fn()>
+        };
+        let null = Arc::new(NullUi { renders: AtomicUsize::new(0) });
+        let ui: Arc<dyn ExtensionUi> = null.clone();
+        let done_count = Arc::new(AtomicUsize::new(0));
+        let done: CustomUiDone = {
+            let done_count = done_count.clone();
+            Rc::new(move |_: JsonValue| { done_count.fetch_add(1, Ordering::SeqCst); })
+        };
+        let mut view = LlamaView::new(
+            Theme::builtin("dark", ColorMode::Truecolor).expect("theme"),
+            render_request,
+            ui,
+            Arc::new(tokio::sync::Notify::new()),
+            rx,
+            search_tx,
+            search_rx,
+            done,
+        );
+        tx.send(UiRequest::Finish).expect("finish");
+        let _ = view.render(80);
+        assert_eq!(done_count.load(Ordering::SeqCst), 1, "the finished flow must complete the custom UI exactly once");
+        assert!(renders.load(Ordering::SeqCst) >= 1, "the finished flow must request a repaint");
+        assert!(null.renders.load(Ordering::SeqCst) >= 1, "the repaint must reach the UI seam");
     }
 }

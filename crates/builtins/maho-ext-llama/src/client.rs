@@ -198,6 +198,7 @@ fn apply_download_event(event: &LlamaModelEvent, model: &str, finished: &mut boo
     }
 }
 
+#[derive(Clone)]
 pub struct LlamaClient {
     pub server_url: String,
     api_key: Option<String>,
