@@ -1,5 +1,5 @@
 #[path = "native_account/support.rs"]
-mod support;
+pub mod support;
 use maho_core::{auth_storage::AuthStorage, credential_accounts, credential_pool::state_store::CredentialSlotRepository};
 use maho_ext_api::*;
 use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 async fn registered_account_command_mutates_persisted_synthetic_storage() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let path = root.path().join("auth.json");
-    let mut storage = AuthStorage::create(&path.to_string_lossy());
+    let storage = AuthStorage::create(&path.to_string_lossy());
     storage.set("synthetic", Some(json!({"type":"api_key","key":"synthetic-secret","accounts":[{"name":"first","key":"synthetic-secret","source":"login"},{"name":"second","key":"synthetic-secret","source":"import"}]}))).map_err(ExtensionFailure::from)?;
     let repository = Arc::new(CredentialSlotRepository::new(&root.path().join("pool.json").to_string_lossy()));
     let registry = Arc::new(support::SyntheticRegistry {storage:Arc::new(tokio::sync::Mutex::new(storage)), repository:repository.clone()});
@@ -64,7 +64,7 @@ async fn registered_gpt_account_uses_shared_storage_and_requires_ui_for_login()-
     use std::sync::atomic::{AtomicUsize,Ordering};
     let root=tempfile::tempdir()?;
     let path=root.path().join("auth.json");
-    let mut storage=AuthStorage::create(&path.to_string_lossy());
+    let storage=AuthStorage::create(&path.to_string_lossy());
     storage.set(PROVIDER_ID,Some(json!({"type":"api_key","key":"fixture-secret","accounts":[{"name":"first","key":"fixture-secret","source":"login"},{"name":"second","key":"fixture-secret","source":"import"}]}))).map_err(ExtensionFailure::from)?;
     let repository=Arc::new(CredentialSlotRepository::new(&root.path().join("pool.json").to_string_lossy()));
     let registry=Arc::new(support::SyntheticRegistry{storage:Arc::new(tokio::sync::Mutex::new(storage)),repository:repository.clone()});

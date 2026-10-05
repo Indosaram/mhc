@@ -1,5 +1,5 @@
 #[path="native_account/support.rs"]
-mod support;
+pub mod support;
 use maho_ext_api::*;
 use maho_ext_builtin_loose::service_tier::{ServiceTierExtension,ServiceTierHost,CODEX_RESPONSES_API};
 use std::sync::{Arc,Mutex};
@@ -24,14 +24,14 @@ async fn registered_fast_pin_refusal_and_model_memory_do_not_mutate_settings()->
     let mut api=ExtensionApi::new(LoadedExtension::new("tier",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());
     ServiceTierExtension{host:host.clone()}.register(&mut api);
     let command=api.registered.commands.iter().find(|command|command.name=="fast").expect("fast").handler.clone();
-    let selected=ExtensionEvent::ModelSelect(ModelSelectEvent{model:model.clone(),previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});
-    let payload=ExtensionEvent::BeforeProviderRequest{payload:serde_json::json!({"model":"codex"}),model:Some(model),headers:None};
+    let mut selected=ExtensionEvent::ModelSelect(ModelSelectEvent{model:model.clone(),previous_model:None,source:ModelSelectSource::Set,system_prompt:String::new(),system_prompt_options:Default::default()});
+    let mut payload=ExtensionEvent::BeforeProviderRequest{payload:serde_json::json!({"model":"codex"}),model:Some(model),headers:None};
     let outcome=async{
-        (api.registered.handlers[&EventKind::ModelSelect][0])(&selected,&ctx).await?;
+        (api.registered.handlers[&EventKind::ModelSelect][0])(&mut selected,&ctx).await?;
         assert_eq!(*host.reads.lock().expect("reads"),["codex"]);
         command("off",&ctx).await?;
         assert_eq!(ui.0.lock().expect("notifications").last().expect("refusal").1,NotificationType::Info);
-        let EventResult::ProviderPayload(value)=(api.registered.handlers[&EventKind::BeforeProviderRequest][0])(&payload,&ctx).await?else{panic!("payload")};
+        let EventResult::ProviderPayload(value)=(api.registered.handlers[&EventKind::BeforeProviderRequest][0])(&mut payload,&ctx).await?else{panic!("payload")};
         assert_eq!(value["service_tier"],"priority");
         let before=host.reads.lock().expect("reads").len();command("invalid",&ctx).await?;
         assert_eq!(host.reads.lock().expect("reads").len(),before);
