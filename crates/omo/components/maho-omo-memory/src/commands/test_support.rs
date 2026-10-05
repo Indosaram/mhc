@@ -332,6 +332,7 @@ pub struct FakeDeps {
     pub actions: Arc<FakeActions>,
 }
 
+#[derive(Default)]
 pub struct FakeDepsOverrides {
     pub identity: Option<MemoryCommandIdentity>,
     pub resolve_identity: Option<Option<MemoryCommandIdentity>>,
@@ -344,24 +345,6 @@ pub struct FakeDepsOverrides {
     pub people_ask: Option<bool>,
     pub now_ms: Option<i64>,
     pub exec: Option<Arc<dyn GitExec>>,
-}
-
-impl Default for FakeDepsOverrides {
-    fn default() -> Self {
-        Self {
-            identity: None,
-            resolve_identity: None,
-            settings: None,
-            config_path: None,
-            sessions_dir: None,
-            reflection_sink: None,
-            dream_sink: None,
-            facts_sink: None,
-            people_ask: None,
-            now_ms: None,
-            exec: None,
-        }
-    }
 }
 
 pub fn fake_deps(

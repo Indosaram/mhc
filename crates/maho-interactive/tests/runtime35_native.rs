@@ -1,5 +1,8 @@
 use maho_test_support::{faux::{FauxResponse, FauxScript}, faux_session::FauxSession};
 
+/// The mounted host's history-fetch channel sender, shared behind the mode's mount.
+type HistorySender = std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>>>>;
+
 struct EditorHost;
 impl maho_tui::components::editor::EditorTuiHost for EditorHost {
     fn request_render(&self) {}
@@ -1398,7 +1401,7 @@ async fn mounted_host_publishes_authoritative_remote_history_without_local_fallb
     struct HistoryHost {
         listener: Arc<Mutex<Option<SessionEventListener>>>,
         generation: Arc<Mutex<Option<u64>>>,
-        sender: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>>>>,
+        sender: HistorySender,
     }
     impl InteractiveSession for HistoryHost {
         fn session_id(&self) -> Option<String> { None }
@@ -1418,7 +1421,7 @@ async fn mounted_host_publishes_authoritative_remote_history_without_local_fallb
         fn dispose(&self) -> SessionFuture<'_, ()> { Box::pin(async {}) }
     }
 
-    fn host() -> (Arc<HistoryHost>, Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>>>>, Arc<Mutex<Option<u64>>>, Arc<Mutex<Option<SessionEventListener>>>) {
+    fn host() -> (Arc<HistoryHost>, HistorySender, Arc<Mutex<Option<u64>>>, Arc<Mutex<Option<SessionEventListener>>>) {
         let host = Arc::new(HistoryHost { listener: Arc::new(Mutex::new(None)), generation: Arc::new(Mutex::new(None)), sender: Arc::new(Mutex::new(None)) });
         (host.clone(), host.sender.clone(), host.generation.clone(), host.listener.clone())
     }
@@ -1447,7 +1450,7 @@ async fn stale_history_fetch_completion_is_discarded() {
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
-    struct StaleHost { generation: Arc<Mutex<Option<u64>>>, sender: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>>>> }
+    struct StaleHost { generation: Arc<Mutex<Option<u64>>>, sender: HistorySender }
     impl InteractiveSession for StaleHost {
         fn session_id(&self) -> Option<String> { None }
         fn session_file(&self) -> Option<String> { None }
@@ -1486,7 +1489,7 @@ async fn remote_live_event_during_history_fetch_is_still_applied() {
     use maho_interactive::interactive_host_runtime::{SessionEventListener, SessionSubscription};
     use maho_interactive::interactive_session::{ForkOutcome, InteractiveSession, ReplacementOutcome, SessionFuture};
 
-    struct LiveHost { listener: Arc<Mutex<Option<SessionEventListener>>>, generation: Arc<Mutex<Option<u64>>>, sender: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<(u64, Result<Vec<serde_json::Value>, String>)>>>> }
+    struct LiveHost { listener: Arc<Mutex<Option<SessionEventListener>>>, generation: Arc<Mutex<Option<u64>>>, sender: HistorySender }
     impl InteractiveSession for LiveHost {
         fn session_id(&self) -> Option<String> { None }
         fn session_file(&self) -> Option<String> { None }

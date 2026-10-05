@@ -71,6 +71,7 @@ async fn execute_mode(project: &Path, allow: bool, tool: &str, input: Value, per
     Ok(json!({"execution":execution?,"asked":asked,"activeTools":active_tools}))
 }
 
+#[cfg(test)]
 pub async fn mode_matrix() -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let outcome = async {

@@ -1,5 +1,6 @@
 //! Port of `omo-senpi/src/extension/component-list.ts`: the ordered registration list.
 
+use maho_ext_api::Extension;
 use maho_omo::{OmoComponentOptions, OmoExtension, OmoSenpiComponent, RecordingLogger, omo_component_names, omo_components, try_omo_components};
 use crate::support::{FakeComponent, manual_runtime_options, new_api};
 

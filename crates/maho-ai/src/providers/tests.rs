@@ -417,11 +417,14 @@ async fn faux_records_call_log_and_pending_responses() {
     assert_eq!(state.call_count, 1);
 }
 
+/// The `(model, handle, options)` triples a recording provider was asked to cancel.
+type CancelCalls = Arc<Mutex<Vec<(Model, DeferredHandle, Option<DeferredCancelOptions>)>>>;
+
 /// Pinned `providers.test.ts` "applies resolved request options to deferred fetch and cancellation":
 /// `Models.cancelDeferred` resolves the provider, runs `applyAuth`, and hands the provider the
 /// request model plus the resolved options (apiKey/headers/env/transformHeaders).
 struct CancelRecordingStreams {
-    calls: Arc<Mutex<Vec<(Model, DeferredHandle, Option<DeferredCancelOptions>)>>>,
+    calls: CancelCalls,
 }
 
 impl ProviderStreams for CancelRecordingStreams {
