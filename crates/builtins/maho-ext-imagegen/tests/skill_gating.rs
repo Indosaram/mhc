@@ -1,5 +1,5 @@
 #[path = "support.rs"]
-mod support;
+pub mod support;
 
 use maho_ext_api::*;
 use maho_ext_imagegen::{ImageGen, IMAGE_GEN_SECTION};

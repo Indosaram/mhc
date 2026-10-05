@@ -104,7 +104,7 @@ async fn plain_keys_do_not_synthesize_authorization() {
     let ImageGenAuthResolution::Configured { api_key, headers, .. } = resolve(&registry, &env(&[])).await else { panic!("gateway") };
     assert_eq!(api_key, "plain-key");
     assert_eq!(headers.get("X-Route").map(String::as_str), Some("two"));
-    assert!(headers.get("Authorization").is_none());
+    assert!(!headers.contains_key("Authorization"));
 }
 
 #[tokio::test]

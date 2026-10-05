@@ -1,5 +1,5 @@
 #[path = "support.rs"]
-mod support;
+pub mod support;
 
 use maho_ai::types::{ContentBlock, InputModality};
 use serde_json::json;
