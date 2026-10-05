@@ -438,3 +438,29 @@ fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
     events.emit("shared", &JsonValue::Null);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// A UI context that implements only the required surface and takes every default, so it exercises
+/// the `ExtensionUi::request_render` default rather than an override.
+struct DefaultUi;
+impl ExtensionUi for DefaultUi {
+    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
+    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String { String::new() }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("custom UI is not available")) }) }
+    fn theme(&self) -> Theme { Theme::default() }
+}
+
+#[test]
+fn extension_ui_default_request_render_reports_unavailable_capability() {
+    let failure = DefaultUi.request_render().expect_err("a context with no repaint path must not report success");
+    assert!(!failure.message.is_empty(), "the unavailable reason must be carried on the failure");
+}
