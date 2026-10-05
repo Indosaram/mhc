@@ -154,6 +154,23 @@ impl MemoryRuntime {
             now: Some(Arc::new(memory_core::support::time::now_millis)),
             is_process_alive: None,
         };
+        // Palace registration mirrors upstream `registerMemoryStatic`, which calls
+        // `registerPalaceCommand(pi, resolver, resolvePalacePeople)`: the resolver binds the active
+        // session identity, and the people resolver reads the resolved `memory.people` gate.
+        let this = self.clone();
+        let resolve_palace: maho_omo_memory::palace::command::PalaceExtensionResolver =
+            Arc::new(move |context: &ExtensionContext| {
+                this.capture_context(context);
+                this.identity(context.session_manager.session_id())
+            });
+        let this = self.clone();
+        let resolve_palace_people: maho_omo_memory::palace::command::PalacePeopleResolver =
+            Arc::new(move || this.palace_people_options());
+        maho_omo_memory::palace::command::register_palace_command(
+            api,
+            resolve_palace,
+            Some(resolve_palace_people),
+        );
         maho_omo_memory::commands::register::register_memory_commands(api, command_deps);
     }
 
@@ -182,6 +199,33 @@ impl MemoryRuntime {
     pub fn settings(&self) -> Result<Value, String> {
         let config = (self.host.load_config)()?;
         maho_omo_memory::reflection_settings::resolve_memory_settings(config.get("memory"))
+    }
+
+    /// Config-driven people gate for `/palace`, mirroring upstream `resolvePalacePeople`
+    /// (`wiring.ts`): the resolved `memory.people` block drives the viewer's people panel and caps.
+    /// Fields the resolved block omits fall back to the schema defaults.
+    pub(crate) fn palace_people_options(
+        &self,
+    ) -> Option<maho_omo_memory::palace::people::PalacePeopleOptions> {
+        let settings = match self.settings() {
+            Ok(settings) => settings,
+            Err(error) => {
+                (self.host.warn)(&error);
+                return None;
+            }
+        };
+        let people = &settings["people"];
+        let mut options = maho_omo_memory::palace::people::PalacePeopleOptions::default();
+        if let Some(enabled) = people["enabled"].as_bool() {
+            options.enabled = enabled;
+        }
+        if let Some(max_entries) = people["max_entries"].as_u64() {
+            options.limits.max_entries = max_entries as usize;
+        }
+        if let Some(max_entry_chars) = people["max_entry_chars"].as_u64() {
+            options.limits.max_entry_chars = max_entry_chars as usize;
+        }
+        Some(options)
     }
 
     fn context(&self) -> Option<ExtensionContext> {
@@ -603,5 +647,50 @@ mod tests {
     fn component_is_the_retained_memory_list_entry() {
         let runtime = runtime(serde_json::json!({ "memory": {} }));
         assert_eq!(runtime.component().name, "memory");
+    }
+
+    /// The memory host registers `/palace` through `register_host` (the CLI body of
+    /// `register_memory_static`), so the command is reachable in production.
+    #[test]
+    fn register_host_installs_the_palace_command() {
+        let runtime = runtime(serde_json::json!({ "memory": {} }));
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+
+        runtime.register_host(&mut api);
+
+        let palace = api
+            .registered
+            .commands
+            .iter()
+            .find(|command| command.name == "palace")
+            .expect("the /palace command is registered by the memory host");
+        assert!(palace.description.is_some());
+        assert!(Arc::strong_count(&palace.handler) >= 1);
+    }
+
+    /// The `/palace` people resolver is config-driven: it reads the resolved `memory.people` block
+    /// rather than returning a constant, and falls back to the schema defaults when fields are absent.
+    #[test]
+    fn palace_people_options_follow_the_resolved_memory_people_block() {
+        let defaults = runtime(serde_json::json!({ "memory": {} }))
+            .palace_people_options()
+            .expect("resolved people options");
+        assert!(defaults.enabled);
+        assert_eq!(defaults.limits.max_entries, 40);
+        assert_eq!(defaults.limits.max_entry_chars, 200);
+
+        let configured = runtime(serde_json::json!({
+            "memory": { "people": { "enabled": false, "max_entries": 5, "max_entry_chars": 50 } }
+        }))
+        .palace_people_options()
+        .expect("resolved people options");
+        assert!(!configured.enabled);
+        assert_eq!(configured.limits.max_entries, 5);
+        assert_eq!(configured.limits.max_entry_chars, 50);
     }
 }
