@@ -143,7 +143,6 @@ async fn runtime_registers_a_per_thread_mcp_inventory_on_thread_start() {
     drop(inventory);
     harness.runtime.dispose().await;
 }
-
 /// A stateless UI whose editor text does not round-trip, so a stateful AppServerUiContext bound by
 /// the runtime is distinguishable from this initial UI (guards against a false positive).
 struct HeadlessUi;
@@ -164,25 +163,22 @@ impl maho_ext_api::ExtensionUi for HeadlessUi {
     fn theme(&self)->maho_ext_api::Theme {maho_ext_api::Theme::default()}
 }
 
-/// A probe extension that exposes the runner's currently-bound UI through a slash command: it writes
-/// a marker into the UI editor and reads it back. A stateful bound UI (AppServerUiContext) round-trips
-/// the marker; the stateless HeadlessUi does not.
-struct ProbeUi { captured: Arc<Mutex<Option<String>>>, ready: Arc<tokio::sync::Notify> }
+/// A probe extension exposing the runner's currently-bound UI through two slash commands: `probe_ui_write`
+/// sets the UI editor text, `probe_ui_read` records the UI editor text into `captured`. A stateful
+/// bound UI (AppServerUiContext) round-trips; the stateless HeadlessUi does not. Distinct per-thread
+/// values prove distinct bound UI instances (owning-thread isolation).
+struct ProbeUi { captured: Arc<Mutex<Vec<String>>> }
 impl maho_ext_api::Extension for ProbeUi {
     fn register(&self,api:&mut maho_ext_api::ExtensionApi) {
-        let captured=self.captured.clone(); let ready=self.ready.clone();
-        api.register_command("probe_ui_editor",None,None,Arc::new(move |_args,ctx:&maho_ext_api::ExtensionContext| {
-            ctx.ui.set_editor_text("probe-marker");
-            *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(ctx.ui.get_editor_text());
-            ready.notify_one();
-            Box::pin(async {Ok(())})
-        }));
+        api.register_command("probe_ui_write",None,None,Arc::new(move |args,ctx:&maho_ext_api::ExtensionContext| {ctx.ui.set_editor_text(args);Box::pin(async {Ok(())})}));
+        let reader=self.captured.clone();
+        api.register_command("probe_ui_read",None,None,Arc::new(move |_args,ctx:&maho_ext_api::ExtensionContext| {reader.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(ctx.ui.get_editor_text());Box::pin(async {Ok(())})}));
     }
 }
 
-fn probe_factory(session_slot:Arc<Mutex<Option<maho_core::agent_session::AgentSession>>>,captured:Arc<Mutex<Option<String>>>,ready:Arc<tokio::sync::Notify>)->SessionFactory {
+fn probe_factory(sessions:Arc<Mutex<std::collections::BTreeMap<String,maho_core::agent_session::AgentSession>>>,captured:Arc<Mutex<Vec<String>>>)->SessionFactory {
     Arc::new(move |options| {
-        let session_slot=session_slot.clone(); let captured=captured.clone(); let ready=ready.clone();
+        let sessions=sessions.clone(); let captured=captured.clone();
         Box::pin(async move {
             use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
             use maho_core::agent_session::{AgentSession, AgentSessionConfig, ExtensionBindings};
@@ -199,51 +195,130 @@ fn probe_factory(session_slot:Arc<Mutex<Option<maho_core::agent_session::AgentSe
                 session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
                 cwd:cwd.clone(),agent_dir:Some(cwd),fallback_now:Some(Arc::new(||0.0)),retry_random:Some(Arc::new(||0.5)),scoped_models:Vec::new(),favorite_models:Vec::new(),flag_values:Default::default(),custom_tools:Vec::new(),model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
             }).map_err(|error|error.to_string())?;
-            session.set_extension_runner(maho_ext_host::runner::ExtensionRunner::from_static(vec![Box::new(ProbeUi{captured:captured.clone(),ready:ready.clone()})],session.extension_context(Arc::new(HeadlessUi)))).await;
+            session.set_extension_runner(maho_ext_host::runner::ExtensionRunner::from_static(vec![Box::new(ProbeUi{captured:captured.clone()})],session.extension_context(Arc::new(HeadlessUi)))).await;
             session.bind_extensions(ExtensionBindings::default()).await;
-            *session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(session.clone());
+            sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session.session_id(),session.clone());
             Ok(session)
         })
     })
 }
 
-/// UB1 causal regression: the runtime rebinds the live connection's AppServerUiContext into the
-/// started thread's extension runner. The runner's bound UI is observed through a real slash-command
-/// probe reading the extension context ui, NOT through the session setter or the inventory registry
-/// count. The inventory registration signal (taken before the trigger) is a deterministic post-rebind anchor.
+struct ProbeHarness {
+    runtime: AppServerRuntime,
+    receive: tokio::sync::mpsc::UnboundedReceiver<Value>,
+    sessions: Arc<Mutex<std::collections::BTreeMap<String,maho_core::agent_session::AgentSession>>>,
+    captured: Arc<Mutex<Vec<String>>>,
+    _directory: tempfile::TempDir,
+}
+impl ProbeHarness {
+    async fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let sessions=Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+        let captured=Arc::new(Mutex::new(Vec::new()));
+        let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(probe_factory(sessions.clone(),captured.clone()))).await;
+        let (send,receive) = tokio::sync::mpsc::unbounded_channel();
+        runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+        runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+        Self { runtime, receive, sessions, captured, _directory:directory }
+    }
+    async fn call(&mut self, request: Value) -> Value {
+        let id = request["id"].clone();
+        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.unwrap();
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
+            if message.get("id").is_some_and(|value| *value == id) { return message; }
+        }
+    }
+    async fn anchor(&self) -> Arc<tokio::sync::Notify> { self.runtime.mcp_inventory.lock().await.ready_signal() }
+    async fn await_anchor(&self, anchor: &Arc<tokio::sync::Notify>) { tokio::time::timeout(std::time::Duration::from_secs(5), anchor.notified()).await.expect("post-rebind inventory anchor within deadline"); }
+    fn session(&self, id: &str) -> maho_core::agent_session::AgentSession { self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).cloned().expect("factory captured the session") }
+    async fn probe_write(&self, id: &str, value: &str) {
+        let disposition = self.session(id).prompt(&format!("/probe_ui_write {value}"), maho_core::agent_session::PromptOptions::default()).await.unwrap();
+        assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
+    }
+    async fn probe_read(&self, id: &str) -> String {
+        let disposition = self.session(id).prompt("/probe_ui_read", maho_core::agent_session::PromptOptions::default()).await.unwrap();
+        assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
+        self.captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned().expect("probe recorded a read")
+    }
+}
+
+/// UB1 start path: the runtime rebinds the live connection's AppServerUiContext into the started
+/// thread's extension runner, observed through a real slash command reading the runner's bound UI
+/// (not the session setter or the inventory count). The post-rebind inventory anchor is taken before
+/// the trigger and awaited with a bounded timeout (no sleeps).
 #[tokio::test]
 async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_start() {
-    let directory = tempfile::tempdir().unwrap();
-    let session_slot:Arc<Mutex<Option<maho_core::agent_session::AgentSession>>>=Arc::new(Mutex::new(None));
-    let captured:Arc<Mutex<Option<String>>>=Arc::new(Mutex::new(None));
-    let ready=Arc::new(tokio::sync::Notify::new());
-    let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(probe_factory(session_slot.clone(),captured.clone(),ready.clone()))).await;
-    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
-    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
-    receive.try_recv().unwrap();
-    let registration = runtime.mcp_inventory.lock().await.ready_signal();
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":2,"method":"thread/start","params":{}}))).await.unwrap();
-    let mut thread = None;
-    while let Ok(message) = receive.try_recv() { if message["id"] == 2 { thread = message["result"]["thread"]["id"].as_str().map(str::to_owned); } }
-    let thread = thread.expect("thread/start must respond with a thread id");
-    tokio::time::timeout(std::time::Duration::from_secs(5), registration.notified()).await.expect("inventory registration within deadline (strictly after the UI rebind)");
-    let session = session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().expect("factory captured the session");
-    let disposition = session.prompt("/probe_ui_editor", maho_core::agent_session::PromptOptions::default()).await.unwrap();
-    assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
-    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified()).await.expect("probe command within deadline");
-    assert_eq!(captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref(), Some("probe-marker"), "thread/start must rebind the stateful AppServerUiContext into the session runner");
-    // Fork: a new thread/runner is created and rebound by the identical fork block.
-    *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":3,"method":"thread/fork","params":{"threadId":thread}}))).await.unwrap();
-    let mut forked = false;
-    while let Ok(message) = receive.try_recv() { if message["id"] == 3 { forked = true; } }
-    assert!(forked, "thread/fork must respond");
-    tokio::time::timeout(std::time::Duration::from_secs(5), registration.notified()).await.expect("fork inventory registration within deadline (strictly after the fork UI rebind)");
-    let forked_session = session_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().expect("factory captured the forked session");
-    let disposition = forked_session.prompt("/probe_ui_editor", maho_core::agent_session::PromptOptions::default()).await.unwrap();
-    assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
-    tokio::time::timeout(std::time::Duration::from_secs(5), ready.notified()).await.expect("fork probe command within deadline");
-    assert_eq!(captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref(), Some("probe-marker"), "thread/fork must rebind the stateful AppServerUiContext into the forked session runner");
-    runtime.dispose().await;
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let response = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let thread = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    harness.probe_write(&thread, "start-marker").await;
+    assert_eq!(harness.probe_read(&thread).await, "start-marker", "thread/start must rebind the stateful AppServerUiContext into the session runner");
+    harness.runtime.dispose().await;
+}
+
+/// UB1 resume path: a genuine non-loaded thread/resume. The thread is unloaded (registry entry + its
+/// inventory holder removed, as the idle-unload lifecycle does), then thread/resume re-creates the
+/// session through the factory and runs the resume block; the fresh inventory registration is the
+/// post-rebind anchor, and the probe proves the runner holds the rebound UI.
+#[tokio::test]
+async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_resume() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    // Make the thread non-loaded (its inventory holder would be removed by the idle-unload lifecycle).
+    assert!(harness.runtime.threads.unload_thread(&thread).await);
+    harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
+    let anchor = harness.anchor().await;
+    let resumed = harness.call(json!({"id":3,"method":"thread/resume","params":{"threadId":thread}})).await;
+    assert_eq!(resumed["result"]["thread"]["id"].as_str(), Some(thread.as_str()));
+    harness.await_anchor(&anchor).await;
+    harness.probe_write(&thread, "resume-marker").await;
+    assert_eq!(harness.probe_read(&thread).await, "resume-marker", "thread/resume must rebind the stateful AppServerUiContext into the session runner");
+    harness.runtime.dispose().await;
+}
+
+/// UB1 fork path: thread/fork creates a new thread/runner and runs the fork block; the fresh inventory
+/// registration is the post-rebind anchor and the probe proves the forked runner holds the rebound UI.
+#[tokio::test]
+async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_fork() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let source = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    let anchor = harness.anchor().await;
+    let forked = harness.call(json!({"id":3,"method":"thread/fork","params":{"threadId":source}})).await;
+    let forked_id = forked["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(forked_id, source);
+    harness.await_anchor(&anchor).await;
+    harness.probe_write(&forked_id, "fork-marker").await;
+    assert_eq!(harness.probe_read(&forked_id).await, "fork-marker", "thread/fork must rebind the stateful AppServerUiContext into the forked session runner");
+    harness.runtime.dispose().await;
+}
+
+/// UB1 owning-thread isolation: two live threads must each bind a DISTINCT AppServerUiContext. Writing
+/// a per-thread marker and reading it back through each thread's own runner yields that thread's own
+/// marker; a shared UI would leak the other thread's last write.
+#[tokio::test]
+async fn runtime_binds_distinct_ui_contexts_per_owning_thread() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let first = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let first = first["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    let anchor = harness.anchor().await;
+    let second = harness.call(json!({"id":3,"method":"thread/start","params":{}})).await;
+    let second = second["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(first, second);
+    harness.await_anchor(&anchor).await;
+    harness.probe_write(&first, "first-thread").await;
+    harness.probe_write(&second, "second-thread").await;
+    assert_eq!(harness.probe_read(&first).await, "first-thread", "the first thread must keep its own bound UI context");
+    assert_eq!(harness.probe_read(&second).await, "second-thread", "the second thread must keep its own bound UI context");
+    harness.runtime.dispose().await;
 }
