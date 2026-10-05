@@ -5,9 +5,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use maho_ai::utils::abort::{AbortController, AbortSignal};
-use maho_ext_api::{CustomUiDone, CustomUiFactoryOptions, ExtensionContext, ExtensionFailure, ExtensionOverlayOptions, ExtensionTuiHost, ExtensionUi, JsonValue};
-use maho_interactive::components::keybinding_hints::key_hint;
-use maho_interactive::theme::{Theme, ThemeColor};
+use maho_ext_api::{CustomUiDone, CustomUiFactoryOptions, ExtensionContext, ExtensionFailure, ExtensionOverlayOptions, ExtensionTuiHost, ExtensionUi, JsonValue, Theme};
+use maho_interactive::components::keybinding_hints::key_text;
 use maho_tui::components::input::{Input, InputOptions};
 use maho_tui::keybindings::get_keybindings;
 use maho_tui::tui::{Component, SizeValue};
@@ -17,6 +16,17 @@ use crate::client::{LlamaModelInfo, LlamaProgress};
 use crate::huggingface::HuggingFaceModel;
 
 pub const DOWNLOAD_VALUE: &str = "\u{0}download";
+
+/// The pinned `keyHint` renders through the interactive theme, which a custom UI factory does not
+/// receive; this renders the same hint through the extension-facing theme.
+fn key_hint(keybinding: &str, description: &str, theme: &Theme) -> String {
+    theme.fg("dim", &key_text(keybinding)) + &theme.fg("muted", &format!(" {description}"))
+}
+
+/// `Theme.bold`: the extension-facing theme exposes only `fg`/`bg`, so bold uses the same SGR wrap.
+fn bold(text: &str) -> String {
+    format!("\u{1b}[1m{}\u{1b}[22m", text.replace("\u{1b}[22m", "\u{1b}[1m"))
+}
 
 pub type UiFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -238,50 +248,50 @@ impl LlamaView {
 
     fn body_lines(&self, width: usize) -> Vec<String> {
         let theme = &self.theme;
-        let border = theme.fg(ThemeColor::Accent, &"─".repeat(width.max(1)));
+        let border = theme.fg("accent", &"─".repeat(width.max(1)));
         let mut lines = vec![border.clone()];
         match &self.screen {
             Screen::Empty => {}
             Screen::List { server_url, models, selected, .. } => {
-                lines.push(theme.fg(ThemeColor::Accent, &theme.bold("llama.cpp models")));
-                lines.push(theme.fg(ThemeColor::Dim, server_url));
+                lines.push(theme.fg("accent", &bold("llama.cpp models")));
+                lines.push(theme.fg("dim", server_url));
                 let mut sorted = models.clone();
                 sorted.sort_by(|left, right| model_is_loaded(right).cmp(&model_is_loaded(left)).then_with(|| left.id.cmp(&right.id)));
                 for (index, model) in sorted.iter().enumerate() {
                     let line = format!("{}{}  {}", if index == *selected { "→ " } else { "  " }, model.id, model_description(model));
-                    lines.push(if index == *selected { theme.fg(ThemeColor::Accent, &line) } else { line });
+                    lines.push(if index == *selected { theme.fg("accent", &line) } else { line });
                 }
                 lines.push(format!("{}Download model…  Hugging Face owner/repository[:quant]", if *selected == sorted.len() { "→ " } else { "  " }));
-                lines.push(theme.fg(ThemeColor::Dim, &format!("{} • {}", key_hint("tui.select.confirm", "load/unload/download", theme), key_hint("tui.select.cancel", "close", theme))));
+                lines.push(theme.fg("dim", &format!("{} • {}", key_hint("tui.select.confirm", "load/unload/download", theme), key_hint("tui.select.cancel", "close", theme))));
             }
             Screen::Select { title, options, selected, .. } => {
-                lines.push(theme.fg(ThemeColor::Accent, &theme.bold(title)));
+                lines.push(theme.fg("accent", &bold(title)));
                 for (index, option) in options.iter().enumerate() {
                     let line = format!("{}{option}", if index == *selected { "→ " } else { "  " });
-                    lines.push(if index == *selected { theme.fg(ThemeColor::Accent, &line) } else { line });
+                    lines.push(if index == *selected { theme.fg("accent", &line) } else { line });
                 }
-                lines.push(theme.fg(ThemeColor::Dim, &format!("{} • {}", key_hint("tui.select.confirm", "select", theme), key_hint("tui.select.cancel", "cancel", theme))));
+                lines.push(theme.fg("dim", &format!("{} • {}", key_hint("tui.select.confirm", "select", theme), key_hint("tui.select.cancel", "cancel", theme))));
             }
             Screen::Search { results, status, input, .. } => {
-                lines.push(theme.fg(ThemeColor::Accent, &theme.bold("Download model")));
-                lines.push(theme.fg(ThemeColor::Dim, "Model name or owner/repository[:quant]"));
+                lines.push(theme.fg("accent", &bold("Download model")));
+                lines.push(theme.fg("dim", "Model name or owner/repository[:quant]"));
                 let mut input = input.clone();
                 lines.extend(input.render(width));
                 for model in results.iter().take(10) { lines.push(format!("  {}  {} downloads", model.id, compact_count(model.downloads))); }
-                if !status.is_empty() { lines.push(theme.fg(ThemeColor::Dim, &format!("  {status}"))); }
-                lines.push(theme.fg(ThemeColor::Dim, &format!("{} • {}", key_hint("tui.select.confirm", "select", theme), key_hint("tui.select.cancel", "back", theme))));
+                if !status.is_empty() { lines.push(theme.fg("dim", &format!("  {status}"))); }
+                lines.push(theme.fg("dim", &format!("{} • {}", key_hint("tui.select.confirm", "select", theme), key_hint("tui.select.cancel", "back", theme))));
             }
             Screen::Progress { state, .. } => {
-                lines.push(theme.fg(ThemeColor::Accent, &theme.bold(&state.title)));
-                lines.push(theme.fg(ThemeColor::Text, &state.model));
-                lines.push(theme.fg(ThemeColor::Muted, &state.message));
+                lines.push(theme.fg("accent", &bold(&state.title)));
+                lines.push(theme.fg("text", &state.model));
+                lines.push(theme.fg("muted", &state.message));
                 if let Some(ratio) = state.ratio {
                     let available = 40usize;
                     let filled = ((ratio.clamp(0.0, 1.0)) * available as f64).round() as usize;
-                    lines.push(theme.fg(ThemeColor::Accent, &format!("{}{} {}%", "█".repeat(filled), "─".repeat(available - filled), (ratio * 100.0).round() as u64)));
+                    lines.push(theme.fg("accent", &format!("{}{} {}%", "█".repeat(filled), "─".repeat(available - filled), (ratio * 100.0).round() as u64)));
                 }
-                if let Some(detail) = &state.detail { lines.push(theme.fg(ThemeColor::Dim, detail)); }
-                lines.push(theme.fg(ThemeColor::Dim, &key_hint("tui.select.cancel", "stop", theme)));
+                if let Some(detail) = &state.detail { lines.push(theme.fg("dim", detail)); }
+                lines.push(theme.fg("dim", &key_hint("tui.select.cancel", "stop", theme)));
             }
         }
         lines.push(border);
@@ -492,7 +502,6 @@ mod tests {
         ComponentFactory, CustomUiOptions, ExtensionFuture, ExtensionUiDialogOptions,
         ExtensionWidgetOptions, NotificationType, WidgetContent,
     };
-    use maho_interactive::theme::ColorMode;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -689,7 +698,7 @@ mod tests {
         fn set_editor_text(&self, _: &str) {}
         fn get_editor_text(&self) -> String { String::new() }
         fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("unavailable")) }) }
-        fn theme(&self) -> Theme { Theme::builtin("dark", ColorMode::Truecolor).expect("theme") }
+        fn theme(&self) -> Theme { Theme::default() }
         fn request_render(&self) -> Result<(), ExtensionFailure> { self.renders.fetch_add(1, Ordering::SeqCst); Ok(()) }
     }
 
@@ -710,7 +719,7 @@ mod tests {
             Rc::new(move |_: JsonValue| { done_count.fetch_add(1, Ordering::SeqCst); })
         };
         let mut view = LlamaView::new(
-            Theme::builtin("dark", ColorMode::Truecolor).expect("theme"),
+            Theme::default(),
             render_request,
             ui,
             Arc::new(tokio::sync::Notify::new()),
