@@ -13,3 +13,7 @@ Each file is a real input the verifier must REJECT. They are consumed by
 | `command-manifest-missing-hash.json` | a completed gate command whose entry has a log but no `log_sha256` | mandatory 64-hex raw-log hash |
 | `command-manifest-malformed-hash.json` | a completed gate command with a non-64-hex `log_sha256` | mandatory 64-hex raw-log hash |
 | `source-identity-dirty.json` | a begin source identity with a dirty worktree (`clean:false`, non-empty `dirty_sources`) | clean begin/end source identity |
+| `server-row-missing-required-tests.json` | an accepted (non-excluded) server row citing no exact `required_tests` | server-row completeness (each non-excluded row must cite exact triples) |
+| `server-row-unlinked-triple.json` | a server row citing a triple not linked into `execution_coverage.required_tests` | server-row triple integration (no parallel unverified list) |
+| `server-row-uncovered-behavior.json` | a non-empty `server_row_manifest.uncovered_behavior` | uncovered behavior blocks success |
+| `server-row-mcp-wrong-package.json` | server row 25 typing the cross-crate MCP test as `maho-server` | row-25 cross-crate triple must be typed `maho-ext-mcp` |

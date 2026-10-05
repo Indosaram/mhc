@@ -1,0 +1,15 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: server row 25 types the cross-crate MCP lifecycle_registration test as maho-server, which is a wrong assertion (the test lives in maho-ext-mcp). The verifier MUST reject it.",
+  "execution_coverage": {
+    "required_tests": [
+      { "package": "maho-server", "target": "lifecycle_registration", "test": "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe", "requirement": "G9" }
+    ]
+  },
+  "server_row_manifest": {
+    "rows": [
+      { "id": 25, "ts": "registry.ts", "module": "thread_registry.rs", "status": "source-complete", "required_tests": [{ "package": "maho-server", "target": "lifecycle_registration", "test": "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe" }] }
+    ],
+    "uncovered_behavior": []
+  }
+}

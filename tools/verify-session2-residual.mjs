@@ -65,6 +65,13 @@ const REQUIRED_REQUIREMENT_IDS = [
 	"IS-1", "IS-2", "IS-3", "IS-4", "IS-5", "IS-6",
 	"SDK-NATIVE-SESSION", "SDK-ROW10-14", "PARSE-HIDDEN-ROW",
 ];
+// The accepted task-12 server rows (53-row manifest rows 1-53 + row 710). The server map is only
+// complete when EVERY accepted row is present, so a dropped/renamed row cannot silently escape.
+const SERVER_ROW_IDS = [
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+	28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+	710,
+];
 // The mandatory TUI matrix (independent of the manifest's own arrays).
 const TUI_GEOMETRIES = ["80x24", "120x36", "200x50"];
 const TUI_MODES = ["regular", "fullscreen"];
@@ -763,6 +770,81 @@ export function validateUnresolved(manifest, report) {
 
 /** An empty `src/lib.rs` is a silent gap unless the manifest records an approved exclusion with
  *  evidence (e.g. the quiet-model-profile bootstrap crate: no pinned source, no consumer). */
+/** The server row map (task-12 accepted partials) must be machine-enforced, not decorative: every
+ *  accepted row is present; every non-excluded row cites exact (package, target, test) triples that
+ *  resolve to a real target file AND are linked into execution_coverage.required_tests (so the same
+ *  nextest execution machinery proves them PASS - no parallel list); approved-exclusion rows cite no
+ *  tests; row 25's cross-crate MCP test is typed maho-ext-mcp, never a wrong maho-server assertion;
+ *  and any declared uncovered_behavior blocks success until resolved. */
+export function validateServerRows(manifest, repo, report) {
+	const server = manifest?.server_row_manifest;
+	if (!server || typeof server !== "object") {
+		report.fail("manifest has no server_row_manifest (accepted server rows are unenforced)");
+		return;
+	}
+	const rows = Array.isArray(server.rows) ? server.rows : [];
+	if (rows.length === 0) {
+		report.fail("server_row_manifest has no rows");
+		return;
+	}
+	const requiredTriples = new Set(
+		(manifest?.execution_coverage?.required_tests ?? []).map((entry) => `${entry.package}\u0000${entry.target}\u0000${entry.test}`),
+	);
+	const present = new Set();
+	for (const row of rows) {
+		const label = `server row ${row.id} (${row.ts ?? "?"})`;
+		if (present.has(row.id)) report.fail(`duplicate server row id: ${row.id}`);
+		present.add(row.id);
+		const trips = Array.isArray(row.required_tests) ? row.required_tests : [];
+		if (row.status === "approved-exclusion") {
+			if (trips.length !== 0) report.fail(`${label} is approved-exclusion but cites ${trips.length} test(s)`);
+			continue;
+		}
+		if (trips.length === 0) {
+			report.fail(`${label} is not an approved-exclusion but cites no exact required_tests`);
+			continue;
+		}
+		for (const entry of trips) {
+			const pkg = String(entry.package ?? "");
+			const tgt = String(entry.target ?? "");
+			const test = String(entry.test ?? "");
+			const triple = `${pkg}::${tgt}::${test}`;
+			if (!PACKAGE_ID.test(pkg) || !EXACT_TARGET_ID.test(tgt) || !EXACT_TEST_ID.test(test)) {
+				report.fail(`invalid server row triple: ${label} -> ${triple}`);
+				continue;
+			}
+			if (!findTargetFile(repo, pkg, tgt)) {
+				report.fail(`server row triple names a nonexistent target: ${label} -> ${triple}`);
+				continue;
+			}
+			if (!requiredTriples.has(`${pkg}\u0000${tgt}\u0000${test}`)) {
+				report.fail(`server row triple is not linked into execution_coverage.required_tests: ${label} -> ${triple}`);
+			}
+		}
+	}
+	for (const id of SERVER_ROW_IDS) {
+		if (!present.has(id)) report.fail(`server_row_manifest omits accepted task-12 row ${id} (incomplete coverage)`);
+	}
+	// Row 25 is cross-crate: the MCP lifecycle_registration test must be typed maho-ext-mcp, never a
+	// wrong maho-server assertion.
+	const row25 = rows.find((row) => row.id === 25);
+	if (row25) {
+		const mcp = (row25.required_tests ?? []).filter((entry) => String(entry.test ?? "").includes("session_start_attach_publishes_live_mcp_status"));
+		if (mcp.length === 0) {
+			report.fail("server row 25 does not type the cross-crate MCP lifecycle_registration test");
+		}
+		for (const entry of mcp) {
+			if (entry.package !== "maho-ext-mcp" || entry.target !== "lifecycle_registration") {
+				report.fail(`server row 25 MCP test must be typed maho-ext-mcp::lifecycle_registration (got ${entry.package}::${entry.target})`);
+			}
+		}
+	}
+	// Declared uncovered behavior blocks success until it is resolved (no silent gap).
+	for (const entry of Array.isArray(server.uncovered_behavior) ? server.uncovered_behavior : []) {
+		report.fail(`server_row_manifest.uncovered_behavior unresolved (blocks completion): ${entry?.id ?? entry?.detail ?? JSON.stringify(entry)}`);
+	}
+}
+
 export function validateEmptyLibExports(manifest, repo, report) {
 	// Discover the ACTUAL empty (<=1 byte) `src/lib.rs` files across workspace members, so an omitted
 	// entry cannot escape: every empty lib must be recorded with an approved exclusion + evidence.
@@ -818,6 +900,7 @@ export function verify({ repo, evidenceDir, sha, final = false }) {
 		validateQa(evidenceDir, sha, manifest, report);
 		validateUnresolved(manifest, report);
 		validateEmptyLibExports(manifest, repo, report);
+		validateServerRows(manifest, repo, report);
 	}
 	return report;
 }
@@ -876,7 +959,7 @@ function buildValidFixture(root, sha) {
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, text);
 	};
-	put(join(repo, "Cargo.toml"), '[workspace]\nmembers = [\n  "crates/maho-cli",\n  "crates/maho-core",\n  "crates/maho-test-support",\n  "crates/extensions/maho-ext-quiet-model-profile",\n]\n');
+	put(join(repo, "Cargo.toml"), '[workspace]\nmembers = [\n  "crates/maho-cli",\n  "crates/maho-core",\n  "crates/maho-test-support",\n  "crates/extensions/maho-ext-quiet-model-profile",\n  "crates/builtins/maho-ext-mcp",\n]\n');
 	put(join(repo, "crates/maho-cli/Cargo.toml"), '[package]\nname = "maho-cli"\n');
 	put(join(repo, "crates/maho-cli/tests/mini_worker.rs"), "// fixture\n");
 	put(
@@ -891,6 +974,8 @@ function buildValidFixture(root, sha) {
 	// A one-byte lib with an approved exclusion (must be recorded, not silently skipped).
 	put(join(repo, "crates/extensions/maho-ext-quiet-model-profile/Cargo.toml"), '[package]\nname = "maho-ext-quiet-model-profile"\n');
 	put(join(repo, "crates/extensions/maho-ext-quiet-model-profile/src/lib.rs"), "\n");
+	put(join(repo, "crates/builtins/maho-ext-mcp/Cargo.toml"), '[package]\nname = "maho-ext-mcp"\n');
+	put(join(repo, "crates/builtins/maho-ext-mcp/tests/lifecycle_registration.rs"), "// fixture\n");
 	// The committed machine-consumable template the bound copy must be derived from.
 	const templateText = JSON.stringify({ schema: SCHEMA, produced_by: "task-17", gate_commands: [] }, null, 2) + "\n";
 	put(join(repo, TEMPLATE_PATH), templateText);
@@ -899,6 +984,7 @@ function buildValidFixture(root, sha) {
 	const supportManifest = join(repo, "crates/maho-test-support/Cargo.toml");
 	const coreManifest = join(repo, "crates/maho-core/Cargo.toml");
 	const quietManifest = join(repo, "crates/extensions/maho-ext-quiet-model-profile/Cargo.toml");
+	const mcpManifest = join(repo, "crates/builtins/maho-ext-mcp/Cargo.toml");
 	const gateCommands = [
 		"cargo4 nextest run --workspace --no-fail-fast",
 		"cargo4 clippy --workspace --all-targets --keep-going -- -D warnings",
@@ -922,6 +1008,7 @@ function buildValidFixture(root, sha) {
 				{ package: "maho-test-support", target: "faux_native_session", test: "native_handle_drives_a_prompt_and_closes_cleanly", requirement: "SDK-NATIVE-SESSION" },
 				{ package: "maho-cli", target: "mini_worker", test: "unwatch_and_close_release_watch_subscriptions", requirement: "G7" },
 				{ package: "maho-core", target: "lib", test: "provider_account_events::tests::the_global_registry_delivers_then_stops_after_unsubscribe", requirement: "G12" },
+				{ package: "maho-ext-mcp", target: "lifecycle_registration", test: "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe", requirement: "G9" },
 			],
 		},
 		requirements: REQUIRED_REQUIREMENT_IDS.map((id) => ({ id, proof: "unrun", scenarios: [], packages: id === "G7" ? ["maho-cli"] : [] })),
@@ -937,6 +1024,22 @@ function buildValidFixture(root, sha) {
 					evidence: "parity.d/40.md records n/a: no pinned source and no consumer",
 				},
 			],
+		},
+		server_row_manifest: {
+			rows: Array.from({ length: 54 }, (_, index) => {
+				const id = index === 53 ? 710 : index + 1;
+				return {
+					id,
+					ts: `row-${id}.ts`,
+					module: "m",
+					status: "done",
+					required_tests:
+						id === 25
+							? [{ package: "maho-ext-mcp", target: "lifecycle_registration", test: "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe" }]
+							: [{ package: "maho-cli", target: "mini_worker", test: "unwatch_and_close_release_watch_subscriptions" }],
+				};
+			}),
+			uncovered_behavior: [],
 		},
 	};
 	put(join(evidence, "requirements-manifest.json"), JSON.stringify(manifest, null, 2));
@@ -954,6 +1057,7 @@ function buildValidFixture(root, sha) {
 					{ name: "maho-test-support", manifest_path: "crates/maho-test-support/Cargo.toml", sha256: sha256(readFileSync(supportManifest)) },
 					{ name: "maho-core", manifest_path: "crates/maho-core/Cargo.toml", sha256: sha256(readFileSync(coreManifest)) },
 					{ name: "maho-ext-quiet-model-profile", manifest_path: "crates/extensions/maho-ext-quiet-model-profile/Cargo.toml", sha256: sha256(readFileSync(quietManifest)) },
+					{ name: "maho-ext-mcp", manifest_path: "crates/builtins/maho-ext-mcp/Cargo.toml", sha256: sha256(readFileSync(mcpManifest)) },
 				],
 			},
 			null,
@@ -972,11 +1076,12 @@ function buildValidFixture(root, sha) {
 	put(
 		join(evidence, "nextest.log"),
 		[
-			"   Starting 3 tests across 3 binaries",
-			"        PASS [   0.001s] (   1/3) maho-test-support::faux_native_session native_handle_drives_a_prompt_and_closes_cleanly",
-			"        PASS [   0.002s] (   2/3) maho-cli::mini_worker unwatch_and_close_release_watch_subscriptions",
-			"        PASS [   0.003s] (   3/3) maho-core provider_account_events::tests::the_global_registry_delivers_then_stops_after_unsubscribe",
-			"   Summary [   0.010s] 3 tests run: 3 passed, 0 failed, 0 skipped",
+			"   Starting 4 tests across 4 binaries",
+			"        PASS [   0.001s] (   1/4) maho-test-support::faux_native_session native_handle_drives_a_prompt_and_closes_cleanly",
+			"        PASS [   0.002s] (   2/4) maho-cli::mini_worker unwatch_and_close_release_watch_subscriptions",
+			"        PASS [   0.003s] (   3/4) maho-core provider_account_events::tests::the_global_registry_delivers_then_stops_after_unsubscribe",
+			"        PASS [   0.004s] (   4/4) maho-ext-mcp::lifecycle_registration session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe",
+			"   Summary [   0.010s] 4 tests run: 4 passed, 0 failed, 0 skipped",
 			"",
 		].join("\n"),
 	);
@@ -1064,9 +1169,9 @@ export function selfTest() {
 	}));
 	check("skipped test rejected", mutate(({ evidence, read, write, join }) => {
 		const text = read(join(evidence, "nextest.log"), "utf8").replace(
-			"3 tests run: 3 passed, 0 failed, 0 skipped",
-			"3 tests run: 2 passed, 0 failed, 1 skipped",
-		).replace("PASS [   0.002s] (   2/3)", "SKIP [   0.002s] (   2/3)");
+			"4 tests run: 4 passed, 0 failed, 0 skipped",
+			"4 tests run: 3 passed, 0 failed, 1 skipped",
+		).replace("PASS [   0.002s] (   2/4)", "SKIP [   0.002s] (   2/4)");
 		write(join(evidence, "nextest.log"), text);
 	}));
 	check("discovered-but-not-executed required test rejected", mutate(({ evidence, read, write, join }) => {
@@ -1253,6 +1358,37 @@ export function selfTest() {
 			rmSync(root, { recursive: true, force: true });
 		}
 	})());
+	check("server row without required_tests rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.rows.find((row) => row.id === 7).required_tests = [];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("server row unlinked triple rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.rows.find((row) => row.id === 7).required_tests = [{ package: "maho-cli", target: "mini_worker", test: "some_fn_not_in_required_tests" }];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("server row 25 MCP wrong package rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.rows.find((row) => row.id === 25).required_tests = [{ package: "maho-server", target: "lifecycle_registration", test: "session_start_attach_publishes_live_mcp_status_to_the_bound_subscriber_and_stops_after_unsubscribe" }];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("server row approved-exclusion with tests rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.rows[0].status = "approved-exclusion";
+		m.server_row_manifest.rows[0].required_tests = [{ package: "maho-cli", target: "mini_worker", test: "unwatch_and_close_release_watch_subscriptions" }];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("server row completeness gap rejected", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.rows = m.server_row_manifest.rows.filter((row) => row.id !== 25);
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
+	check("server row uncovered_behavior rejects success", mutate(({ evidence, read, write, join }) => {
+		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
+		m.server_row_manifest.uncovered_behavior = [{ id: "UB-TEST", rows: [10], detail: "unresolved behavior" }];
+		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
+	}));
 	check("on-disk fixture: hidden row", (() => {
 		const path = join(FIXTURES, "parity-hidden-row.md");
 		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
@@ -1308,6 +1444,36 @@ export function selfTest() {
 		const triples = new Set((parsed.execution_coverage?.required_tests ?? []).map((e) => `${e.package}\u0000${e.target}\u0000${e.test}`));
 		const orphans = (parsed.awaited_executed_tests?.required_but_not_authored ?? []).filter((e) => !triples.has(`${e.package}\u0000${e.target}\u0000${e.test}`));
 		return { ok: orphans.length > 0, detail: `orphans=${orphans.length}` };
+	})());
+
+	check("on-disk fixture: server row without required tests rejected", (() => {
+		const path = join(FIXTURES, "server-row-missing-required-tests.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const parsed = readJson(path);
+		const bad = (parsed.server_row_manifest?.rows ?? []).filter((row) => row.status !== "approved-exclusion" && !(row.required_tests ?? []).length);
+		return { ok: bad.length > 0, detail: `rows-without-required_tests=${bad.length}` };
+	})());
+	check("on-disk fixture: server row unlinked triple rejected", (() => {
+		const path = join(FIXTURES, "server-row-unlinked-triple.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const parsed = readJson(path);
+		const triples = new Set((parsed.execution_coverage?.required_tests ?? []).map((e) => `${e.package}\u0000${e.target}\u0000${e.test}`));
+		const unlinked = (parsed.server_row_manifest?.rows ?? []).flatMap((row) => row.required_tests ?? []).filter((e) => !triples.has(`${e.package}\u0000${e.target}\u0000${e.test}`));
+		return { ok: unlinked.length > 0, detail: `unlinked=${unlinked.length}` };
+	})());
+	check("on-disk fixture: server row uncovered behavior rejected", (() => {
+		const path = join(FIXTURES, "server-row-uncovered-behavior.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const parsed = readJson(path);
+		return { ok: (parsed.server_row_manifest?.uncovered_behavior ?? []).length > 0, detail: `uncovered=${(parsed.server_row_manifest?.uncovered_behavior ?? []).length}` };
+	})());
+	check("on-disk fixture: server row 25 MCP wrong package rejected", (() => {
+		const path = join(FIXTURES, "server-row-mcp-wrong-package.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const parsed = readJson(path);
+		const row25 = (parsed.server_row_manifest?.rows ?? []).find((row) => row.id === 25);
+		const mcp = (row25?.required_tests ?? []).filter((e) => String(e.test ?? "").includes("session_start_attach_publishes_live_mcp_status"));
+		return { ok: mcp.length > 0 && mcp.some((e) => e.package !== "maho-ext-mcp"), detail: `mcp=${JSON.stringify(mcp)}` };
 	})());
 
 	const failed = results.filter((r) => !r.ok);
