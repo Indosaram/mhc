@@ -406,6 +406,13 @@ pub trait ModelRegistry: Send + Sync {
     fn rename_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str, _display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account renaming is not supported by this model registry")) })
     }
+    /// Pinned `ModelRegistry.refresh` (`core/model-registry.ts`): reload the provider catalog and
+    /// refresh the selected providers' models, returning the pinned `ModelsRefreshResult` (aborted
+    /// flag plus per-provider errors) rather than rejecting. The llama.cpp `/llama` flow refreshes
+    /// its provider catalog after every server interaction.
+    fn refresh<'a>(&'a self, _options: maho_ai::models::ModelsRefreshOptions) -> ExtensionFuture<'a, maho_ai::models::ModelsRefreshResult> {
+        Box::pin(async { Err(ExtensionFailure::new("Model catalog refresh is not supported by this model registry")) })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionEntry { pub id: String, pub parent_id: Option<String>, pub timestamp: String, pub kind: String, pub data: JsonValue }

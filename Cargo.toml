@@ -33,6 +33,7 @@ members = [
     "crates/builtins/maho-ext-hooks",
     "crates/builtins/maho-ext-imagegen",
     "crates/builtins/maho-ext-look-at",
+    "crates/builtins/maho-ext-llama",
     "crates/builtins/maho-ext-loop-guard",
     "crates/builtins/maho-ext-loop",
     "crates/builtins/maho-ext-mcp",

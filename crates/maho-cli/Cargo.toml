@@ -32,6 +32,7 @@ maho-ext-imagegen = { path = "../builtins/maho-ext-imagegen" }
 maho-ext-openai-image-gen = { path = "../builtins/maho-ext-openai-image-gen" }
 maho-ext-herdr = { path = "../builtins/maho-ext-herdr" }
 maho-ext-btw = { path = "../builtins/maho-ext-btw" }
+maho-ext-llama = { path = "../builtins/maho-ext-llama" }
 maho-ext-cache-keepalive = { path = "../builtins/maho-ext-cache-keepalive" }
 maho-ext-webfetch = { path = "../builtins/maho-ext-webfetch" }
 maho-ext-goal = { path = "../builtins/maho-ext-goal" }
