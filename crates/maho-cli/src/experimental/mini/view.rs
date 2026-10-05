@@ -236,7 +236,7 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
     let view = Rc::new(RefCell::new(MiniView::new()));
     let root: Rc<RefCell<dyn Component>> = view.clone();
     renderer.set_layout_root(Some(root.clone()));
-    renderer.base_mut().set_focus(Some(root));
+    renderer.base.set_focus(Some(root));
     let input: Rc<RefCell<VecDeque<String>>> = Rc::new(RefCell::new(VecDeque::new()));
     let resized = Rc::new(std::cell::Cell::new(false));
     renderer.before_terminal_start(&mut terminal, false, false);
@@ -254,11 +254,11 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
     let result = loop {
         terminal.pump(16).map_err(|error| error.to_string())?;
         if resized.replace(false) {
-            renderer.base_mut().invalidate();
+            renderer.base.invalidate();
         }
         while let Some(data) = input.borrow_mut().pop_front() {
-            if renderer.base().has_overlay() {
-                renderer.base_mut().handle_terminal_input(&data, false);
+            if renderer.base.has_overlay() {
+                renderer.base.handle_terminal_input(&data, false);
                 continue;
             }
             view.borrow_mut().dispatch_input(&data);

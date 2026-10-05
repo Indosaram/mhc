@@ -19,7 +19,7 @@ use maho_agent::harness::runtime::types::SystemPromptFn;
 use maho_agent::harness::session::jsonl::{JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions};
 use maho_agent::harness::session::types::Session;
 use maho_agent::harness::tools::{create_bash_tool, create_edit_tool, create_read_tool, create_write_tool, BashToolOptions, ExecutionToolContext, ReadToolOptions};
-use maho_agent::harness::types::{AgentHarnessTool, ExecutionEnv};
+use maho_agent::harness::types::{AgentHarnessTool, ExecutionEnv, FileSystem};
 use maho_core::model_resolver::{find_initial_model, InitialModelOptions};
 use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use serde_json::Value;

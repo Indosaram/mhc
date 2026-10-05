@@ -172,7 +172,7 @@ impl MemoryRuntime {
             resolve_palace,
             Some(resolve_palace_people),
         );
-        maho_omo_memory::commands::register::register_memory_commands(api, command_deps);
+        maho_omo_memory::commands::register::register_memory_commands(api, Arc::new(command_deps));
     }
 
     pub fn new(host: MemoryRuntimeHost) -> Result<Arc<Self>, String> {
