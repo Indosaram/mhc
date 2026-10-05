@@ -953,7 +953,7 @@ impl InteractiveMode {
             }else{self.show_status("Selected entry has no text to copy".into());}
         }
         let text = self.submissions.borrow_mut().pop_front();
-        let Some(text) = text else { return None; };
+        let text = text?;
         self.editor.editor.add_to_history(&text);
         let images = {
             let mut queued = self.submission_images.borrow_mut();

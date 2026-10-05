@@ -50,7 +50,7 @@ pub async fn register_thread_goal_handlers(core: &Arc<RwLock<ServerCore>>,thread
                                     let created = maho_ext_goal::create_goal(&reference,objective,token_budget.if_present(),now).await.map_err(goal_error)?;
                                     match status {
                                         None|Some(GoalStatus::Active) => created,
-                                        Some(status) => maho_ext_goal::update_goal(&reference,&GoalUpdate {status:Some(status),..Default::default()},source(status),now).await.map_err(goal_error)?,
+                                        Some(status) => maho_ext_goal::update_goal(&reference,&GoalUpdate {status:Some(status),..Default::default()},source(Some(status)),now).await.map_err(goal_error)?,
                                     }
                                 },
                                 Some(_) => maho_ext_goal::update_goal(&reference,&GoalUpdate {objective,status,reason:None,token_budget:token_budget.update_value()},source(status),now).await.map_err(goal_error)?,

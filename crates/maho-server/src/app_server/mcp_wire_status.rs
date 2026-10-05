@@ -1,6 +1,6 @@
 use maho_ext_mcp::{auth::context::{ServerAuthMode,resolve_auth_mode},config::load_mcp_config,config_schema::{LoadMcpConfigOptions,McpServerSource},service_types::{McpWireAuthStatus,McpWireStatusServer,McpWireStatusSnapshot}};
 use serde_json::{Value,json};
-use std::{collections::BTreeMap,path::Path};
+use std::{collections::BTreeMap,path::Path,sync::Arc};
 
 pub struct McpWireStatusAdapter {
     servers: Vec<Value>,
