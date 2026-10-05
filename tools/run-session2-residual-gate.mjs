@@ -25,6 +25,8 @@ const BUILD_PROVENANCE_SCHEMA = "session2-residual-build-provenance/v1";
 const BUILD_PROVENANCE = "build-provenance.json";
 const RUN_IDENTITY = "run-identity.json";
 const SOURCE_IDENTITY = "source-identity.json";
+const HARNESS_IDENTITY = "harness-identity.json";
+const HARNESS_IDENTITY_SCHEMA = "session2-residual-harness-identity/v1";
 // The workspace build command whose success gates every binary-dependent command, and the commands
 // that consume the built `$BIN`/staged artifact (they must never run against a stale binary).
 const BUILD_COMMAND_RE = /build --workspace/;
@@ -305,6 +307,34 @@ async function sourceIdentity(repo, sha, evidenceRel) {
 	};
 }
 
+// The active harness/tooling set the QA evidence is bound to: the harness-v2 scripts plus the
+// invoked tracked tools (verifier, residual-qa, parity, package). Each entry is hashed at run start
+// and re-verified at run end; a change during the run means a QA leg may have executed a different
+// harness revision than the one recorded, so the run fails rather than certify.
+const HARNESS_TOOLING = [
+	"tools/run-session2-residual-gate.mjs",
+	"tools/verify-session2-residual.mjs",
+	"tools/residual-qa.mjs",
+	"tools/parity-audit.mjs",
+	"tools/package-native.mjs",
+	".omo/evidence/session2-residual/harness-v2/run-qa.sh",
+	".omo/evidence/session2-residual/harness-v2/qa-tui-pty.mjs",
+	".omo/evidence/session2-residual/harness-v2/tui-driver.mjs",
+	".omo/evidence/session2-residual/harness-v2/qa-loopback-lib.mjs",
+	".omo/evidence/session2-residual/harness-v2/qa-help-flags.mjs",
+	".omo/evidence/session2-residual/harness-v2/qa-import-omo.mjs",
+	".omo/evidence/session2-residual/harness-v2/qa-loopback-print.mjs",
+	".omo/evidence/session2-residual/harness-v2/qa-rpc-ids.mjs",
+	".omo/evidence/session2-residual/harness-v2/png-render.mjs",
+];
+
+function harnessIdentity(repo) {
+	return HARNESS_TOOLING.map((rel) => {
+		const path = join(repo, rel);
+		return { path: rel, sha256: existsSync(path) ? sha256(readFileSync(path)) : null };
+	});
+}
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const repo = resolve(args.workspace);
@@ -342,6 +372,13 @@ async function main() {
 	mkdirSync(evidence, { recursive: true });
 	writeFileSync(join(evidence, RUN_IDENTITY), JSON.stringify({ schema: "session2-residual-run-identity/v1", sha, started_at: new Date(runStartedAtMs).toISOString(), started_at_ms: runStartedAtMs, runner: "tools/run-session2-residual-gate.mjs" }, null, 2) + "\n");
 	writeFileSync(join(evidence, SOURCE_IDENTITY), JSON.stringify(identity, null, 2) + "\n");
+
+	// Bind the QA evidence to the exact harness/tooling revision: record the start hashes BEFORE any
+	// command runs; the end block is re-verified after the last command (a mid-run change fails).
+	const harnessStart = harnessIdentity(repo);
+	const writeHarnessIdentity = (end, changed, match) =>
+		writeFileSync(join(evidence, HARNESS_IDENTITY), JSON.stringify({ schema: HARNESS_IDENTITY_SCHEMA, sha, start: harnessStart, end, changed, match }, null, 2) + "\n");
+	writeHarnessIdentity(null, [], null);
 
 	// Freeze + bind BEFORE running anything, so the verifier's inputs exist even if a command fails.
 	writeFileSync(join(evidence, "package-manifest.json"), JSON.stringify(await freezePackageManifest(repo, sha, resolve(args.cargo)), null, 2) + "\n");
@@ -427,6 +464,17 @@ async function main() {
 	writeFileSync(join(evidence, "source-identity-end.json"), JSON.stringify(endIdentity, null, 2) + "\n");
 	if (!endIdentity.clean || !endIdentity.head_matches_sha) {
 		console.error(`run-session2-residual-gate: worktree changed during the gate (clean=${endIdentity.clean} head=${endIdentity.head}); failing.`);
+		runFailures += 1;
+	}
+
+	// End-of-run harness identity: a harness/tooling file that changed during the gate means a QA leg
+	// may have executed a different revision than the one recorded at start — fail rather than certify.
+	const harnessEnd = harnessIdentity(repo);
+	const harnessChanged = harnessStart.filter((entry) => harnessEnd.find((e) => e.path === entry.path)?.sha256 !== entry.sha256).map((entry) => entry.path);
+	const harnessMatch = harnessChanged.length === 0;
+	writeHarnessIdentity(harnessEnd, harnessChanged, harnessMatch);
+	if (!harnessMatch) {
+		console.error(`run-session2-residual-gate: harness/tooling changed during the gate (${harnessChanged.join(", ")}); failing — QA evidence is not bound to the recorded harness revision.`);
 		runFailures += 1;
 	}
 
