@@ -38,7 +38,7 @@ fn watched(targets: Vec<OmoConfigWatchTarget>, logs: &Logs) -> ConfigWatchCompon
     ConfigWatchComponentOptions {
         resolve_cwd: Some(Arc::new(|| "/project".into())),
         resolve_targets: Some(Arc::new(move |_| targets.clone())),
-        create_validator: Some(Arc::new(|cwd| validator(cwd))),
+        create_validator: Some(Arc::new(validator)),
         log: Some(sink(logs)),
         ..Default::default()
     }
@@ -85,7 +85,7 @@ fn warns_when_user_config_creation_requires_reload() {
     let comp = make(ConfigWatchComponentOptions {
         resolve_cwd: Some(Arc::new(|| "/project".into())),
         resolve_target_resolution: Some(Arc::new(|_| OmoConfigWatchTargetResolution { targets: Vec::new(), user_config_creation_watched: false, user_config_creation_discovery: "reload_required" })),
-        create_validator: Some(Arc::new(|cwd| validator(cwd))),
+        create_validator: Some(Arc::new(validator)),
         log: Some(sink(&logs)),
         ..Default::default()
     });
@@ -125,7 +125,7 @@ async fn refreshes_targets_after_rejection_without_replacing_the_sticky_validato
             0 => vec![target("/project", &["/.omo"])],
             _ => vec![target("/project", &["/.omo"]), target("/project/.omo", &["/omo.jsonc", "/omo.json"])],
         })),
-        create_validator: Some(Arc::new(|cwd| validator(cwd))),
+        create_validator: Some(Arc::new(validator)),
         log: Some(sink(&logs)),
         ..Default::default()
     });
@@ -179,7 +179,7 @@ async fn resets_the_rejection_retry_budget_when_the_registration_payload_changes
     let comp = make(ConfigWatchComponentOptions {
         resolve_cwd: Some(Arc::new(|| "/project".into())),
         resolve_targets: Some(Arc::new(move |_| vec![target(&format!("/project/v{}", resolved.load(Ordering::SeqCst)), &["/.omo"])])),
-        create_validator: Some(Arc::new(|cwd| validator(cwd))),
+        create_validator: Some(Arc::new(validator)),
         log: Some(sink(&logs)),
         ..Default::default()
     });
