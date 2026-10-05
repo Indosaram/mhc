@@ -2078,6 +2078,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -2192,6 +2193,7 @@ dependencies = [
  "maho-ext-hooks",
  "maho-ext-host",
  "maho-ext-imagegen",
+ "maho-ext-llama",
  "maho-ext-look-at",
  "maho-ext-loop",
  "maho-ext-loop-guard",
@@ -2380,6 +2382,7 @@ dependencies = [
  "chrono",
  "dirs",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-builtin-loose",
  "maho-ext-host",
@@ -2448,7 +2451,9 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-compaction",
+ "maho-ext-host",
  "maho-interactive",
+ "maho-test-support",
  "maho-tui",
  "serde_json",
  "tokio",
@@ -2463,6 +2468,7 @@ dependencies = [
  "base64 0.22.1",
  "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-gpt-apply-patch",
  "maho-ext-host",
@@ -2712,6 +2718,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "maho-ext-llama"
+version = "0.0.0"
+dependencies = [
+ "futures-util",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "maho-ext-look-at"
 version = "0.0.0"
 dependencies = [
@@ -2850,9 +2872,12 @@ dependencies = [
  "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-ext-imagegen",
+ "maho-test-support",
  "serde_json",
  "tempfile",
+ "tokio",
  "url",
 ]
 
@@ -3054,6 +3079,8 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-tui",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -3537,6 +3564,7 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
+ "sha1",
  "tempfile",
  "tokio",
 ]
@@ -3729,6 +3757,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-ask-user",
+ "maho-ext-goal",
  "maho-ext-host",
  "maho-ext-mcp",
  "maho-interactive",
