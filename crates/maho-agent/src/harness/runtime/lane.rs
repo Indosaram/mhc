@@ -648,7 +648,7 @@ impl Lane {
 
     /// Pinned `Lane.resume`: re-drive the one open operation, polling deferred handles and waiting retries.
     pub async fn resume(self: &Arc<Self>, context: &Context) -> Result<Result<crate::harness::agent_harness::DriveOutcome, String>, SessionError> {
-        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError, DriveOutcome};
+        use crate::harness::agent_harness::{DriveOptions, DriveOptionsError};
         if let Err(error) = self.assert_open() {
             return Ok(Err(error.message));
         }
