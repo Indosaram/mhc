@@ -996,7 +996,7 @@ function buildValidFixture(root, sha) {
 		"SENPI_SRC=/home/indo/code/senpi OMO_SRC=/home/indo/code/oh-my-openagent bun tools/parity-audit.mjs --self-test",
 		"SENPI_SRC=/home/indo/code/senpi OMO_SRC=/home/indo/code/oh-my-openagent bun tools/parity-audit.mjs --all",
 		'bun tools/package-native.mjs --binary "$BIN" --output "$E/install"',
-		'bash .omo/evidence/session2-final/run-qa.sh "$BIN" "$SHA"',
+		'bash .omo/evidence/session2-residual/harness-v2/run-qa.sh "$BIN" "$SHA"',
 		'bun tools/residual-qa.mjs --binary "$BIN" --installed "$E/install/mhc" --scenario all --evidence "$E"',
 		"bun tools/verify-session2-residual.mjs --self-test",
 		'bun tools/verify-session2-residual.mjs --evidence "$E" --sha "$SHA"',
