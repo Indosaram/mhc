@@ -13,7 +13,7 @@ pub async fn register_thread_goal_handlers(core: &Arc<RwLock<ServerCore>>,thread
             let threads = threads.clone(); let weak = weak.clone();
             Box::pin(async move {
                 let params = object_value(&context.request["params"]);
-                let thread_id = required_string(&value(&params,"threadId"),"threadId")?.to_owned();
+                let thread_id = required_string(value(&params,"threadId"),"threadId")?.to_owned();
                 match method {
                     "thread/goal/get" => {
                         let entry = require_thread(&threads,&thread_id).await?;
@@ -35,8 +35,8 @@ pub async fn register_thread_goal_handlers(core: &Arc<RwLock<ServerCore>>,thread
                         Ok(json!({"cleared":cleared}))
                     },
                     _ => {
-                        let status = parse_status(&value(&params,"status"))?;
-                        let objective = parse_objective(&value(&params,"objective"))?;
+                        let status = parse_status(value(&params,"status"))?;
+                        let objective = parse_objective(value(&params,"objective"))?;
                         let token_budget = parse_token_budget(&params)?;
                         let entry = require_thread(&threads,&thread_id).await?;
                         let (session,cwd,tasks) = session_parts(&entry).await;

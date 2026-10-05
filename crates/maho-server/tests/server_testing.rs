@@ -138,7 +138,7 @@ async fn client_failure_rejects_only_registered_waiters_and_later_receive_resolv
 
 #[tokio::test]
 async fn native_server_aggregates_owned_listeners_and_reports_errors_to_the_observer() {
-    use maho_server::server::listener::ServerListener;
+    use maho_server::server::listener::{ByteConnectionAcceptor,ServerListener};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize,Ordering};
     struct Host;
@@ -178,7 +178,7 @@ async fn native_server_aggregates_owned_listeners_and_reports_errors_to_the_obse
     assert_eq!(starts.load(Ordering::SeqCst),1);
     let (sender,inbound)=tokio::sync::mpsc::channel(1);let (_shutdown,signal)=tokio::sync::watch::channel(false);
     sender.send(Ok(maho_server::protocol::codec::encode_client_message(&json!({"type":"hello","version":8}),maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap())).await.unwrap();
-    let error=test.server.serve(Arc::new(Connection),inbound,signal).await.unwrap_err();
+    let error=test.server.clone().serve(Arc::new(Connection),inbound,signal).await.unwrap_err();
     assert_eq!(error.message,"hello send failed");
     assert_eq!(errors.lock().unwrap().as_slice(),["hello send failed".to_string()]);
     test.server.close().await.unwrap();

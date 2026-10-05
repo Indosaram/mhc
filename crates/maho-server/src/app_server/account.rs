@@ -18,7 +18,7 @@ pub fn register_account_methods(registry: &mut MethodRegistry, agent_dir: String
                 if method == "account/rateLimits/read" { return Err(JsonRpcError::new(-32600, "codex account authentication required to read rate limits")); }
                 if method == "account/usage/read" { return Err(JsonRpcError::new(-32600, "codex account authentication required to read token usage")); }
                 let path = Path::new(&directory).join("auth.json").to_string_lossy().into_owned();
-                let mut storage = AuthStorage::create(&path);
+                let storage = AuthStorage::create(&path);
                 if method == "account/read" {
                     if !params.is_null() && !params.is_object() { return Err(JsonRpcError::new(-32600, "account/read params must be an object")); }
                     if params.get("refreshToken").is_some_and(|value| !value.is_boolean()) { return Err(JsonRpcError::new(-32600, "account/read refreshToken must be a boolean")); }
@@ -40,12 +40,12 @@ pub fn register_account_methods(registry: &mut MethodRegistry, agent_dir: String
                     },
                     "account/providerAccounts/pin" => {
                         let name = match params.get("name") { Some(Value::Null) => None, Some(Value::String(name)) => Some(name.as_str()), _ => return Err(JsonRpcError::new(-32600, "account/providerAccounts/pin name must be a string or null")) };
-                        pin_credential_account(&mut storage, &provider, name, &env, &repository, now).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                        pin_credential_account(&storage, &provider, name, &env, &repository, now).await.map_err(|error| JsonRpcError::new(-32603, error))?;
                         Ok(json!({}))
                     },
                     "account/providerAccounts/remove" => {
                         let name = params["name"].as_str().filter(|name| !name.is_empty()).ok_or_else(|| JsonRpcError::new(-32600, "account/providerAccounts/remove name must be a non-empty string"))?;
-                        remove_credential_account(&mut storage, &provider, name, &env, &repository, now).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                        remove_credential_account(&storage, &provider, name, &env, &repository, now).await.map_err(|error| JsonRpcError::new(-32603, error))?;
                         Ok(json!({}))
                     },
                     _ => unreachable!(),
