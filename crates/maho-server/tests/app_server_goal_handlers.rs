@@ -322,3 +322,27 @@ async fn runtime_binds_distinct_ui_contexts_per_owning_thread() {
     assert_eq!(harness.probe_read(&second).await, "second-thread", "the second thread must keep its own bound UI context");
     harness.runtime.dispose().await;
 }
+
+/// UB1 loaded-resume path: thread/resume of an ALREADY-loaded thread reuses the session (no factory
+/// call) but still runs the resume block's rebind. A pre-resume editor marker written through the
+/// runner's bound UI must be gone after resume because the block binds a fresh AppServerUiContext.
+/// The MCP holder is cleared first (a realistic missing-holder state) so the resume's registration is
+/// the exact post-rebind anchor, avoiding sleeps.
+#[tokio::test]
+async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_loaded_thread_resume() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    harness.probe_write(&thread, "before-resume").await;
+    assert_eq!(harness.probe_read(&thread).await, "before-resume");
+    // Clear the holder (the session stays loaded) so the loaded-resume registration re-fires and anchors the rebind.
+    harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
+    let anchor = harness.anchor().await;
+    let resumed = harness.call(json!({"id":3,"method":"thread/resume","params":{"threadId":thread}})).await;
+    assert_eq!(resumed["result"]["thread"]["id"].as_str(), Some(thread.as_str()));
+    harness.await_anchor(&anchor).await;
+    assert_eq!(harness.probe_read(&thread).await, "", "loaded thread/resume must bind a fresh AppServerUiContext, clearing the prior editor state");
+    harness.runtime.dispose().await;
+}
