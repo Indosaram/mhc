@@ -111,8 +111,6 @@ fn shard_suffix_stripped(stem: &str) -> String {
     }
 }
 
-fn is_quantization_token(token: &str) -> bool { quant_grammar(token) }
-
 pub struct HuggingFaceClient {
     token: Option<String>,
     base_url: String,
@@ -128,7 +126,7 @@ impl HuggingFaceClient {
         }
     }
 
-    fn request(&self, path: &str, signal: Option<&AbortSignal>) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+    fn request<'a>(&'a self, path: &'a str, signal: Option<&'a AbortSignal>) -> futures_util::future::BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let mut request = self.http.get(format!("{}{}", self.base_url, path)).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
             if let Some(token) = &self.token { request = request.header("authorization", format!("Bearer {token}")); }

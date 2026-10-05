@@ -134,10 +134,10 @@ impl ChannelUi {
         true
     }
 
-    async fn request<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> UiRequest) -> Option<T> {
+    fn request<T: Send + 'static>(&self, make: impl FnOnce(oneshot::Sender<T>) -> UiRequest) -> UiFuture<'static, Option<T>> {
         let (tx, rx) = oneshot::channel();
-        if !self.send(make(tx)) { return None; }
-        rx.await.ok()
+        if !self.send(make(tx)) { return Box::pin(async { None }); }
+        Box::pin(async move { rx.await.ok() })
     }
 }
 
@@ -246,11 +246,11 @@ impl LlamaView {
         }
     }
 
-    fn body_lines(&self, width: usize) -> Vec<String> {
+    fn body_lines(&mut self, width: usize) -> Vec<String> {
         let theme = &self.theme;
         let border = theme.fg("accent", &"─".repeat(width.max(1)));
         let mut lines = vec![border.clone()];
-        match &self.screen {
+        match &mut self.screen {
             Screen::Empty => {}
             Screen::List { server_url, models, selected, .. } => {
                 lines.push(theme.fg("accent", &bold("llama.cpp models")));
@@ -275,7 +275,6 @@ impl LlamaView {
             Screen::Search { results, status, input, .. } => {
                 lines.push(theme.fg("accent", &bold("Download model")));
                 lines.push(theme.fg("dim", "Model name or owner/repository[:quant]"));
-                let mut input = input.clone();
                 lines.extend(input.render(width));
                 for model in results.iter().take(10) { lines.push(format!("  {}  {} downloads", model.id, compact_count(model.downloads))); }
                 if !status.is_empty() { lines.push(theme.fg("dim", &format!("  {status}"))); }
@@ -421,12 +420,13 @@ pub async fn show_llama_ui(ctx: ExtensionContext, options: ShowLlamaOptions) -> 
         if let Some(flow) = flow.lock().unwrap_or_else(|error| error.into_inner()).take() {
             let ui: Arc<dyn LlamaUi> = Arc::new(ChannelUi { tx: tx.clone(), ui: ui_host.clone(), closed: closed.clone() });
             let tx = tx.clone();
+            let flow_closed = closed.clone();
             tokio::spawn(async move {
                 let flow = flow(ui);
                 tokio::pin!(flow);
                 tokio::select! {
                     _ = &mut flow => {}
-                    _ = closed.notified() => {}
+                    _ = flow_closed.notified() => {}
                 }
                 let _ = tx.send(UiRequest::Finish);
             });
@@ -462,7 +462,8 @@ pub struct RunProgressOptions<T> {
 }
 
 pub async fn run_with_progress<T: Send + 'static>(ui: Arc<dyn LlamaUi>, options: RunProgressOptions<T>) -> Result<Option<T>, String> {
-    let signal = AbortController::new().signal();
+    let controller = AbortController::new();
+    let signal = controller.signal();
     let progress_slot: Arc<std::sync::Mutex<ProgressState>> = Arc::new(std::sync::Mutex::new(ProgressState { title: options.title.clone(), model: options.model.clone(), message: options.initial_message.clone(), ratio: None, detail: None }));
     let update_slot = progress_slot.clone();
     let ui_update = ui.clone();
@@ -487,7 +488,7 @@ pub async fn run_with_progress<T: Send + 'static>(ui: Arc<dyn LlamaUi>, options:
                     continue;
                 }
                 (options.cancel)().await;
-                signal.abort(None);
+                controller.abort(None);
                 return Ok(None);
             }
         }
@@ -505,6 +506,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
 
     fn model(id: &str, status: &str) -> LlamaModelInfo {
         LlamaModelInfo { id: id.to_owned(), status: LlamaModelState { value: status.to_owned(), ..Default::default() }, ..Default::default() }

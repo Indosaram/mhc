@@ -43,11 +43,11 @@ fn parse_hugging_face_model(value: &str) -> (String, Option<String>) {
 
 /// `AbortSignal.timeout(ms)`: a signal that aborts itself after the deadline.
 fn timeout_signal(ms: u64) -> AbortSignal {
-    let signal = AbortController::new().signal();
-    let timer = signal.clone();
+    let controller = AbortController::new();
+    let signal = controller.signal();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(ms)).await;
-        timer.abort(None);
+        controller.abort(None);
     });
     signal
 }
@@ -399,7 +399,10 @@ impl Extension for LlamaExtension {
                 "llama",
                 Some("Manage llama.cpp router models".to_owned()),
                 None,
-                Arc::new(move |_args, _ctx| Box::pin(async move { Err(error.clone()) })),
+                Arc::new(move |_args, _ctx| {
+                    let error = error.clone();
+                    Box::pin(async move { Err(error) })
+                }),
             );
             return;
         }
@@ -445,7 +448,7 @@ mod tests {
         BuildSystemPromptOptions, ComponentFactory, CustomComponentFactory, CustomUiFactoryOptions,
         CustomUiOptions, EditMessageOptions, EditMessageResult, EventBus, ExtensionApi,
         ExtensionCommandContext, ExtensionCommandContextActions, ExtensionContext, ExtensionFailure,
-        ExtensionRuntime, ExtensionSessionProfile, ExtensionTreeNavigationOptions, ExtensionUi,
+        ExtensionFuture, ExtensionRuntime, ExtensionSessionProfile, ExtensionTreeNavigationOptions, ExtensionUi,
         ExtensionUiDialogOptions, ExtensionUiFactories, ExtensionWidgetOptions, FooterComponentFactory,
         ForkOptions, JsonValue, LoadedExtension, Model, ModelRegistry, NewSessionOptions,
         NotificationType, SessionEntry, SessionManager, SessionNavigationResult, SourceInfo,
