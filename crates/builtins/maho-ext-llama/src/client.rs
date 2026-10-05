@@ -6,6 +6,7 @@ use std::time::Duration;
 use maho_ai::utils::abort::AbortSignal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
 
 pub const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
@@ -169,6 +170,34 @@ pub fn llama_inference_url(server_url: &str) -> Result<String, String> {
     Ok(format!("{}/v1", normalize_llama_server_url(server_url)?))
 }
 
+async fn signal_cancelled(signal: Option<&AbortSignal>) {
+    match signal {
+        Some(signal) => signal.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn apply_load_event(event: &LlamaModelEvent, model: &str, loaded: &mut bool, error: &mut Option<String>, on_progress: &mut dyn FnMut(LlamaProgress)) {
+    if event.model != model { return; }
+    if event.event != "model_status" && event.event != "status_change" { return; }
+    let status = event.data.as_ref().and_then(|data| data.get("status")).and_then(Value::as_str);
+    if status == Some("loaded") { *loaded = true; }
+    if status == Some("unloaded") { *error = Some("Model failed to load".to_owned()); }
+    if let Some(progress) = event.data.as_ref().and_then(parse_load_progress) { on_progress(progress); }
+}
+
+fn apply_download_event(event: &LlamaModelEvent, model: &str, finished: &mut bool, failure: &mut Option<String>, saw_downloading: &mut bool, on_progress: &mut dyn FnMut(LlamaProgress)) {
+    if event.model != model { return; }
+    if event.event == "download_finished" { *finished = true; }
+    if event.event == "download_failed" {
+        *failure = Some(event.data.as_ref().map_or_else(|| "Download failed".to_owned(), |data| error_message(data, "Download failed")));
+    }
+    if event.event == "download_progress" {
+        *saw_downloading = true;
+        if let Some(progress) = event.data.as_ref().and_then(parse_download_progress) { on_progress(progress); }
+    }
+}
+
 pub struct LlamaClient {
     pub server_url: String,
     api_key: Option<String>,
@@ -189,17 +218,17 @@ impl LlamaClient {
         if body.is_some() { request = request.header("content-type", "application/json"); }
         if let Some(key) = &self.api_key { request = request.header("authorization", format!("Bearer {key}")); }
         if let Some(body) = body { request = request.json(&body); }
-        let send = request.send();
-        let response = match signal {
-            Some(signal) => tokio::select! {
-                biased;
-                _ = signal.cancelled() => return Err("Cancelled".to_owned()),
-                result = send => result.map_err(|error| format!("llama.cpp request failed: {error}"))?,
-            },
-            None => send.await.map_err(|error| format!("llama.cpp request failed: {error}"))?,
+        let response = tokio::select! {
+            biased;
+            _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+            result = request.send() => result.map_err(|error| format!("llama.cpp request failed: {error}"))?,
         };
         let status = response.status();
-        let payload: Value = response.json().await.unwrap_or(Value::Null);
+        let payload = tokio::select! {
+            biased;
+            _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+            result = response.json::<Value>() => result.unwrap_or(Value::Null),
+        };
         if !status.is_success() {
             return Err(error_message(&payload, &format!("llama.cpp returned HTTP {}", status.as_u16())));
         }
@@ -240,31 +269,78 @@ impl LlamaClient {
             if signal.is_some_and(AbortSignal::aborted) { return Err("Cancelled".to_owned()); }
             let entry = self.list(false, signal).await?.into_iter().find(|candidate| candidate.id == model);
             if entry.is_none_or(|entry| entry.status.value == "unloaded") { return Ok(()); }
-            sleep(100, signal).await?;
+            tokio::select! {
+                biased;
+                _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
         }
     }
 
+    /// Subscribes to the SSE stream first; the oneshot resolves once connected, so the caller triggers the load/download only after the subscription is live.
+    fn subscribe(&self, signal: Option<&AbortSignal>) -> (mpsc::UnboundedReceiver<LlamaModelEvent>, oneshot::Receiver<Result<(), String>>) {
+        use futures_util::StreamExt;
+        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let http = self.http.clone();
+        let url = format!("{}/models/sse", self.server_url);
+        let api_key = self.api_key.clone();
+        let signal = signal.cloned();
+        tokio::spawn(async move {
+            let mut request = http.get(url).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
+            if let Some(key) = &api_key { request = request.header("authorization", format!("Bearer {key}")); }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) => { let _ = ready_tx.send(Err(format!("llama.cpp SSE failed: {error}"))); return; }
+            };
+            if !response.status().is_success() {
+                let _ = ready_tx.send(Err(format!("llama.cpp SSE returned HTTP {}", response.status().as_u16())));
+                return;
+            }
+            let _ = ready_tx.send(Ok(()));
+            let mut stream = response.bytes_stream();
+            let mut buffer = String::new();
+            loop {
+                let chunk = tokio::select! {
+                    biased;
+                    _ = events_tx.closed() => break,
+                    _ = signal_cancelled(signal.as_ref()) => break,
+                    chunk = stream.next() => chunk,
+                };
+                let Some(chunk) = chunk else { break; };
+                let Ok(chunk) = chunk else { break; };
+                buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
+                while let Some(boundary) = buffer.find("\n\n") {
+                    let frame: String = buffer.drain(..boundary + 2).collect();
+                    let data: String = frame.lines().filter_map(|line| line.strip_prefix("data:")).map(|line| line.trim_start()).collect::<Vec<_>>().join("\n");
+                    if data.is_empty() { continue; }
+                    if let Ok(event) = serde_json::from_str::<LlamaModelEvent>(&data)
+                        && !event.model.is_empty() && !event.event.is_empty()
+                        && events_tx.send(event).is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        });
+        (events_rx, ready_rx)
+    }
+
     pub async fn load_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<LlamaModelInfo, String> {
-        let mut event_loaded = false;
-        let mut event_error: Option<String> = None;
-        let watcher_signal = signal.cloned();
-        let watch = self.watch(&mut |event: LlamaModelEvent| {
-            if event.model != model { return; }
-            if event.event != "model_status" && event.event != "status_change" { return; }
-            let status = event.data.as_ref().and_then(|data| data.get("status")).and_then(Value::as_str);
-            if status == Some("loaded") { event_loaded = true; }
-            if status == Some("unloaded") { event_error = Some("Model failed to load".to_owned()); }
-            if let Some(progress) = event.data.as_ref().and_then(parse_load_progress) { on_progress(progress); }
-        }, watcher_signal.as_ref());
-        tokio::pin!(watch);
-        let mut watch = watch;
+        let (mut events, ready) = self.subscribe(signal);
+        ready.await.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??;
         self.load(model, signal).await?;
         on_progress(LlamaProgress { message: "Loading model".to_owned(), ..Default::default() });
+        let mut event_loaded = false;
+        let mut event_error: Option<String> = None;
         loop {
+            while let Ok(event) = events.try_recv() { apply_load_event(&event, model, &mut event_loaded, &mut event_error, on_progress); }
             if signal.is_some_and(AbortSignal::aborted) { return Err("Cancelled".to_owned()); }
             let entry = self.list(false, signal).await?.into_iter().find(|candidate| candidate.id == model);
             if entry.as_ref().is_some_and(|entry| entry.status.value == "loaded") { return Ok(entry.expect("checked")); }
-            if event_loaded && entry.is_none() { return Ok(LlamaModelInfo { id: model.to_owned(), status: LlamaModelState { value: "loaded".to_owned(), ..Default::default() }, ..Default::default() }); }
+            if event_loaded && entry.is_none() {
+                return Ok(LlamaModelInfo { id: model.to_owned(), status: LlamaModelState { value: "loaded".to_owned(), ..Default::default() }, ..Default::default() });
+            }
             if entry.as_ref().is_some_and(|entry| entry.status.failed == Some(true)) || event_error.is_some() {
                 let exit_code = entry.and_then(|entry| entry.status.exit_code);
                 return Err(match exit_code {
@@ -272,36 +348,28 @@ impl LlamaClient {
                     Some(code) => format!("Model exited with code {code}"),
                 });
             }
-            sleep(250, signal).await?;
+            tokio::select! {
+                biased;
+                _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+                event = events.recv() => { if let Some(event) = event { apply_load_event(&event, model, &mut event_loaded, &mut event_error, on_progress); } }
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            }
         }
     }
 
     pub async fn download_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<Vec<LlamaModelInfo>, String> {
+        let (mut events, ready) = self.subscribe(signal);
+        ready.await.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??;
+        self.download(model, signal).await?;
+        on_progress(LlamaProgress { message: "Downloading model".to_owned(), ..Default::default() });
         let mut finished = false;
         let mut failure: Option<String> = None;
         let mut saw_downloading = false;
         let mut polls = 0;
-        let mut event_error: Option<String> = None;
-        let mut event_progress: Option<LlamaProgress> = None;
-        {
-            let mut watch = self.watch(&mut |event: LlamaModelEvent| {
-                if event.model != model { return; }
-                if event.event == "download_finished" { finished = true; }
-                if event.event == "download_failed" { failure = Some(event.data.as_ref().map_or_else(|| "Download failed".to_owned(), |data| error_message(data, "Download failed"))); }
-                if event.event == "download_progress" {
-                    saw_downloading = true;
-                    event_progress = event.data.as_ref().and_then(parse_download_progress);
-                }
-            }, signal).await?;
-            let _ = &mut watch;
-        }
-        let _ = event_error;
-        self.download(model, signal).await?;
-        on_progress(LlamaProgress { message: "Downloading model".to_owned(), ..Default::default() });
         loop {
-            if signal.is_some_and(AbortSignal::aborted) { return Err("Cancelled".to_owned()); }
+            while let Ok(event) = events.try_recv() { apply_download_event(&event, model, &mut finished, &mut failure, &mut saw_downloading, on_progress); }
             if let Some(failure) = &failure { return Err(failure.clone()); }
-            if let Some(progress) = event_progress.take() { on_progress(progress); }
+            if signal.is_some_and(AbortSignal::aborted) { return Err("Cancelled".to_owned()); }
             let models = self.list(false, signal).await?;
             polls += 1;
             let entry = models.iter().find(|candidate| candidate.id == model).cloned();
@@ -311,44 +379,13 @@ impl LlamaClient {
             } else if finished || (entry.is_some() && (saw_downloading || polls >= 2)) {
                 return self.list(true, signal).await;
             }
-            sleep(500, signal).await?;
-        }
-    }
-
-    async fn watch(&self, on_event: &mut dyn FnMut(LlamaModelEvent), signal: Option<&AbortSignal>) -> Result<(), String> {
-        use futures_util::StreamExt;
-        let mut request = self.http.get(format!("{}/models/sse", self.server_url)).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
-        if let Some(key) = &self.api_key { request = request.header("authorization", format!("Bearer {key}")); }
-        let response = request.send().await.map_err(|error| format!("llama.cpp SSE failed: {error}"))?;
-        if !response.status().is_success() { return Err(format!("llama.cpp SSE returned HTTP {}", response.status().as_u16())); }
-        let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
-        loop {
-            let next = match signal {
-                Some(signal) => tokio::select! { biased; _ = signal.cancelled() => return Ok(()), chunk = stream.next() => chunk },
-                None => stream.next().await,
-            };
-            let Some(chunk) = next else { break; };
-            let chunk = chunk.map_err(|error| format!("llama.cpp SSE stream failed: {error}"))?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
-            while let Some(boundary) = buffer.find("\n\n") {
-                let frame: String = buffer.drain(..boundary + 2).collect();
-                let data: String = frame.lines().filter_map(|line| line.strip_prefix("data:")).map(|line| line.trim_start()).collect::<Vec<_>>().join("\n");
-                if data.is_empty() { continue; }
-                if let Ok(event) = serde_json::from_str::<LlamaModelEvent>(&data)
-                    && !event.model.is_empty() && !event.event.is_empty() {
-                    on_event(event);
-                }
+            tokio::select! {
+                biased;
+                _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+                event = events.recv() => { if let Some(event) = event { apply_download_event(&event, model, &mut finished, &mut failure, &mut saw_downloading, on_progress); } }
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
             }
         }
-        Ok(())
-    }
-}
-
-async fn sleep(ms: u64, signal: Option<&AbortSignal>) -> Result<(), String> {
-    match signal {
-        Some(signal) => tokio::select! { biased; _ = signal.cancelled() => Err("Cancelled".to_owned()), _ = tokio::time::sleep(Duration::from_millis(ms)) => Ok(()) },
-        None => { tokio::time::sleep(Duration::from_millis(ms)).await; Ok(()) }
     }
 }
 
@@ -393,5 +430,36 @@ mod tests {
         assert!(is_model_info(&serde_json::json!({ "id": "m", "status": { "value": "loaded" } })));
         assert!(!is_model_info(&serde_json::json!({ "id": "m" })));
         assert!(!is_model_info(&serde_json::json!({ "status": { "value": "loaded" } })));
+    }
+
+    #[test]
+    fn load_event_sets_loaded_and_error_and_progress() {
+        let (mut loaded, mut error) = (false, None);
+        let mut progress = Vec::new();
+        let mut sink = |value: LlamaProgress| progress.push(value.message);
+        let mut event = LlamaModelEvent { model: "m".to_owned(), event: "model_status".to_owned(), data: Some(serde_json::json!({ "status": "loaded" })) };
+        apply_load_event(&event, "m", &mut loaded, &mut error, &mut sink);
+        assert!(loaded);
+        event.data = Some(serde_json::json!({ "status": "unloaded" }));
+        apply_load_event(&event, "m", &mut loaded, &mut error, &mut sink);
+        assert_eq!(error.as_deref(), Some("Model failed to load"));
+        let other = LlamaModelEvent { model: "other".to_owned(), event: "model_status".to_owned(), data: Some(serde_json::json!({ "status": "loaded" })) };
+        let (mut ignored, mut none) = (false, None);
+        apply_load_event(&other, "m", &mut ignored, &mut none, &mut sink);
+        assert!(!ignored);
+    }
+
+    #[test]
+    fn download_event_records_finish_failure_and_progress() {
+        let (mut finished, mut failure, mut saw) = (false, None, false);
+        let mut progress = Vec::new();
+        let mut sink = |value: LlamaProgress| progress.push(value);
+        apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_progress".to_owned(), data: Some(serde_json::json!({ "a": { "done": 1, "total": 4 } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
+        assert!(saw);
+        assert_eq!(progress[0].ratio, Some(0.25));
+        apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_failed".to_owned(), data: Some(serde_json::json!({ "error": { "message": "boom" } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
+        assert_eq!(failure.as_deref(), Some("boom"));
+        apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_finished".to_owned(), data: None }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
+        assert!(finished);
     }
 }

@@ -5,5 +5,6 @@ pub mod client;
 pub mod huggingface;
 pub mod index;
 pub mod provider;
+pub mod ui;
 
 pub use index::{LlamaExtension, llama};

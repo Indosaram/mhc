@@ -95,11 +95,17 @@ fn quant_grammar(token: &str) -> bool {
 }
 
 fn shard_suffix_stripped(stem: &str) -> String {
-    let Some(index) = stem.rfind('-') else { return stem.to_owned(); };
-    let tail = &stem[index + 1..];
-    let parts: Vec<&str> = tail.split("-of-").collect();
-    if parts.len() == 2 && parts[0].len() == 5 && parts[1].len() == 5 && parts.iter().all(|part| part.chars().all(|c| c.is_ascii_digit())) {
-        stem[..index].to_owned()
+    let bytes = stem.as_bytes();
+    let Some(dash) = stem.rfind("-of-") else { return stem.to_owned(); };
+    let left_start = dash.checked_sub(5).filter(|start| *start > 0 && bytes[*start - 1] == b'-');
+    let right_end = dash + 4 + 5;
+    let Some(left_start) = left_start else { return stem.to_owned(); };
+    let all_digits = |slice: &[u8]| !slice.is_empty() && slice.iter().all(u8::is_ascii_digit);
+    if right_end <= bytes.len()
+        && all_digits(&bytes[left_start..dash])
+        && all_digits(&bytes[dash + 4..right_end])
+    {
+        stem[..left_start - 1].to_owned()
     } else {
         stem.to_owned()
     }
@@ -122,30 +128,36 @@ impl HuggingFaceClient {
         }
     }
 
-    async fn request(&self, path: &str, signal: Option<&AbortSignal>) -> Result<Value, String> {
-        let mut request = self.http.get(format!("{}{}", self.base_url, path)).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
-        if let Some(token) = &self.token { request = request.header("authorization", format!("Bearer {token}")); }
-        let send = request.send();
-        let response = match signal {
-            Some(signal) => tokio::select! { biased; _ = signal.cancelled() => return Err("Cancelled".to_owned()), result = send => result.map_err(|error| format!("Hugging Face request failed: {error}"))? },
-            None => send.await.map_err(|error| format!("Hugging Face request failed: {error}"))?,
-        };
-        let status = response.status();
-        let retry_after = response.headers().get("retry-after").and_then(|value| value.to_str().ok()).map(str::to_owned);
-        let ratelimit = response.headers().get("ratelimit").and_then(|value| value.to_str().ok()).map(str::to_owned);
-        let payload: Value = response.json().await.unwrap_or(Value::Null);
-        if !status.is_success() {
-            let fallback = format!("Hugging Face returned HTTP {}", status.as_u16());
-            if status.as_u16() == 429 {
-                let delay = retry_after.and_then(|value| value.parse().ok()).or_else(|| parse_rate_limit_delay(ratelimit.as_deref()));
-                return Err(match delay {
-                    Some(delay) => format!("Hugging Face rate limit reached; retry in {delay}s"),
-                    None => "Hugging Face rate limit reached".to_owned(),
-                });
+    fn request(&self, path: &str, signal: Option<&AbortSignal>) -> futures_util::future::BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let mut request = self.http.get(format!("{}{}", self.base_url, path)).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
+            if let Some(token) = &self.token { request = request.header("authorization", format!("Bearer {token}")); }
+            let response = tokio::select! {
+                biased;
+                _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+                result = request.send() => result.map_err(|error| format!("Hugging Face request failed: {error}"))?,
+            };
+            let status = response.status();
+            let retry_after = response.headers().get("retry-after").and_then(|value| value.to_str().ok()).map(str::to_owned);
+            let ratelimit = response.headers().get("ratelimit").and_then(|value| value.to_str().ok()).map(str::to_owned);
+            let payload = tokio::select! {
+                biased;
+                _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+                result = response.json::<Value>() => result.unwrap_or(Value::Null),
+            };
+            if !status.is_success() {
+                let fallback = format!("Hugging Face returned HTTP {}", status.as_u16());
+                if status.as_u16() == 429 {
+                    let delay = retry_after.and_then(|value| value.parse().ok()).or_else(|| parse_rate_limit_delay(ratelimit.as_deref()));
+                    return Err(match delay {
+                        Some(delay) => format!("Hugging Face rate limit reached; retry in {delay}s"),
+                        None => "Hugging Face rate limit reached".to_owned(),
+                    });
+                }
+                return Err(payload_error(&payload, &fallback));
             }
-            return Err(payload_error(&payload, &fallback));
-        }
-        Ok(payload)
+            Ok(payload)
+        })
     }
 
     pub async fn search(&self, query: &str, signal: Option<&AbortSignal>) -> Result<Vec<HuggingFaceModel>, String> {
@@ -211,6 +223,13 @@ fn urlencode(value: &str) -> String {
     encoded
 }
 
+async fn signal_cancelled(signal: Option<&AbortSignal>) {
+    match signal {
+        Some(signal) => signal.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +238,7 @@ mod tests {
     fn quantization_tokens_match_the_pinned_pattern() {
         assert_eq!(quantization_of("Model-Q4_K_M.gguf").as_deref(), Some("Q4_K_M"));
         assert_eq!(quantization_of("Model-00001-of-00002-Q4_K_M.gguf").as_deref(), Some("Q4_K_M"));
+        assert_eq!(quantization_of("Model-00001-of-00002-BF16.gguf").as_deref(), Some("BF16"));
         assert_eq!(quantization_of("Model-BF16.gguf").as_deref(), Some("BF16"));
         assert_eq!(quantization_of("Model-IQ4_XS.gguf").as_deref(), Some("IQ4_XS"));
         assert_eq!(quantization_of("Model-MXFP4.gguf").as_deref(), Some("MXFP4"));

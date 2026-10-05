@@ -5,7 +5,7 @@ use std::sync::Arc;
 use maho_ai::model::ModelCompat;
 use maho_ai::types::{InputModality, ModelCost};
 use maho_ext_api::{ExtensionFuture, ProviderConfig, ProviderModelConfig, ProviderRefresh};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::client::{LlamaClient, LlamaModelInfo, llama_inference_url, normalize_llama_server_url};
 
@@ -39,6 +39,17 @@ async fn router_autoload_enabled(client: &LlamaClient, catalog: &[LlamaModelInfo
     client.props(None).await.ok().and_then(|props| props.models_autoload) == Some(true)
 }
 
+fn llama_compat() -> ModelCompat {
+    let mut compat = Map::new();
+    compat.insert("supportsStore".to_owned(), Value::Bool(false));
+    compat.insert("supportsDeveloperRole".to_owned(), Value::Bool(false));
+    compat.insert("supportsReasoningEffort".to_owned(), Value::Bool(false));
+    compat.insert("supportsUsageInStreaming".to_owned(), Value::Bool(true));
+    compat.insert("supportsStrictMode".to_owned(), Value::Bool(false));
+    compat.insert("maxTokensField".to_owned(), Value::String("max_tokens".to_owned()));
+    ModelCompat(compat)
+}
+
 fn to_provider_model_config(model: &LlamaModelInfo, server_url: &str) -> ProviderModelConfig {
     let reported = model.meta.as_ref().and_then(|meta| meta.n_ctx.or(meta.n_ctx_train));
     let context_window = reported.filter(|value| *value > 0).unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -62,7 +73,7 @@ fn to_provider_model_config(model: &LlamaModelInfo, server_url: &str) -> Provide
         max_tokens: context_window,
         headers: None,
         extra_body: None,
-        compat: Some(ModelCompat { supports_store: Some(false), supports_developer_role: Some(false), supports_reasoning_effort: Some(false), supports_usage_in_streaming: Some(true), supports_strict_mode: Some(false), max_tokens_field: Some("max_tokens".to_owned()), ..Default::default() }),
+        compat: Some(llama_compat()),
     }
 }
 
