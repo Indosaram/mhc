@@ -453,7 +453,7 @@ mod tests {
         );
         let context = fake_command_context(FakeContextOptions::default());
 
-        let resolved = resolve_sleeptime_settings(&settings, TEST_IDENTITY).expect("resolved");
+        let actual = resolve_sleeptime_settings(&settings, TEST_IDENTITY).expect("resolved");
         let response = handle_sleeptime(&fake.deps, &context.ctx, "").await;
 
         let expected = ResolvedSleeptimeSettings {
@@ -483,7 +483,7 @@ mod tests {
             },
             soul: ResolvedSoul { edit_notice: resolved(false, true) },
         };
-        assert_eq!(resolved, expected);
+        assert_eq!(actual, expected);
         for line in [
             "Reflection: off [agent override]",
             "On compaction: off [agent override]",

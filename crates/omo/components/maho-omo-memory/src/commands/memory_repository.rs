@@ -135,6 +135,7 @@ pub fn register_memory_repository_command(api: &mut ExtensionApi, deps: Arc<Memo
 mod tests {
     use super::*;
     use crate::commands::test_support::*;
+    use crate::commands::types::MemoryCommandIdentity;
     use memory_core::sync::CONFIG_KEY;
 
     const CREDENTIALED_URL: &str = "https://user:s3cr3t-token@127.0.0.1:1/memory.git";

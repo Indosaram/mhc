@@ -149,7 +149,7 @@ pub async fn handle_people(
     let card_body = read_person_file(deps, &identity, &node.path);
 
     if let Some(question) = question {
-        return ask_about_person(deps, ctx, node, &question, limits, card_body.as_deref(), &observations, &graph).await;
+        return ask_about_person(deps, ctx, node, &question, limits, card_body.as_deref(), &observations).await;
     }
 
     respond(
@@ -172,7 +172,6 @@ async fn ask_about_person(
     limits: PeopleLimits,
     card_body: Option<&str>,
     observations: &[ObservationGroup],
-    _graph: &PalacePeople,
 ) -> CommandResponse {
     let evidence = PeopleAskEvidence {
         card: parse_people_card_lines(card_body, limits),

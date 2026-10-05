@@ -13,9 +13,7 @@ use super::types::{
 };
 
 fn parse_conversation_ids(value: Option<&super::args::FlagValue>) -> Option<Vec<String>> {
-    let Some(value) = value else {
-        return None;
-    };
+    let value = value?;
     let raw = value.as_str()?;
     let ids: Vec<String> = raw
         .split(',')
