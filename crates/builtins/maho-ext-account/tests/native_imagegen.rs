@@ -1,5 +1,5 @@
 #[path="native_account/support.rs"]
-mod support;
+pub mod support;
 #[path="native_account/native_state.rs"]
 mod native_state;
 use maho_ext_api::*;

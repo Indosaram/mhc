@@ -1,5 +1,5 @@
 #[path="native_account/support.rs"]
-mod support;
+pub mod support;
 use maho_ext_api::*;
 use maho_ai::types::{Context,SimpleStreamOptions,AssistantMessageEvent,DoneReason};
 use maho_ai::utils::event_stream::AssistantMessageEventStream;

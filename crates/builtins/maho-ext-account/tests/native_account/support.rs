@@ -3,7 +3,7 @@ use maho_ext_api::{CredentialAccountSource, CredentialAccountSummary, ExtensionF
 use std::sync::Arc;
 
 pub struct SyntheticRegistry { pub storage: Arc<tokio::sync::Mutex<AuthStorage>>, pub repository: Arc<CredentialSlotRepository> }
-fn environment(name: &str) -> Option<String> {
+pub fn environment(name: &str) -> Option<String> {
     (name == "ANTHROPIC_API_KEY").then(|| "synthetic-env-secret".into())
 }
 impl ModelRegistry for SyntheticRegistry {
@@ -43,8 +43,8 @@ impl ModelRegistry for SyntheticRegistry {
             tokio::task::spawn_blocking(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
                 runtime.block_on(async {
-                    let mut storage = storage.lock().await;
-                    credential_accounts::pin_credential_account(&mut storage, &provider, name.as_deref(), &environment, &repository, 0).await
+                    let storage = storage.lock().await;
+                    credential_accounts::pin_credential_account(&storage, &provider, name.as_deref(), &environment, &repository, 0).await
                 })
             }).await.map_err(|error| ExtensionFailure::new(error.to_string()))??;
             Ok(())
@@ -59,8 +59,8 @@ impl ModelRegistry for SyntheticRegistry {
             tokio::task::spawn_blocking(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
                 runtime.block_on(async {
-                    let mut storage = storage.lock().await;
-                    credential_accounts::remove_credential_account(&mut storage, &provider, &name, &environment, &repository, 0).await
+                    let storage = storage.lock().await;
+                    credential_accounts::remove_credential_account(&storage, &provider, &name, &environment, &repository, 0).await
                 })
             }).await.map_err(|error| ExtensionFailure::new(error.to_string()))??;
             Ok(())
@@ -68,8 +68,8 @@ impl ModelRegistry for SyntheticRegistry {
     }
     fn rename_credential_account<'a>(&'a self, provider: &'a str, name: &'a str, display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            let mut storage = self.storage.lock().await;
-            credential_accounts::rename_credential_account(&mut storage, provider, name, display_name).await?;
+            let storage = self.storage.lock().await;
+            credential_accounts::rename_credential_account(&storage, provider, name, display_name).await?;
             Ok(())
         })
     }
