@@ -15,6 +15,16 @@ impl Component for RenderedMode {
     fn invalidate(&mut self) {}
 }
 
+/// A leaf component that renders a line buffer the render loop refreshes each frame. The fullscreen
+/// chat viewport mounts two: the transcript document (inside its follow-end scroll view) and the
+/// fixed input dock (pinned below it), so the dock stays visible once the document exceeds the
+/// terminal height (senpi `chat-viewport.ts` `follow: "end"`).
+struct LinesBuffer(Rc<RefCell<Vec<String>>>);
+impl Component for LinesBuffer {
+    fn render(&mut self, _width: usize) -> Vec<String> { self.0.borrow().clone() }
+    fn invalidate(&mut self) {}
+}
+
 /// senpi `main.ts`: join the shared session host before the interactive runtime is mounted, using
 /// the policy in `core/shared-host-policy.ts`.
 pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession, parsed: &super::args::Args) -> Option<SharedHostMount> {
@@ -58,8 +68,30 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
         show_hardware_cursor: true, bottom_shortcut: String::new(),
     }, theme);
+    // senpi mounts the fullscreen render root as the chat viewport (interactive-mode.ts
+    // `mountInteractiveTui` -> `setLayoutRoot(this.fullscreenLayoutRoot)`), whose transcript scroll
+    // view follows the end (chat-viewport.ts `follow: "end"`). Mounting the flat `mode.render()`
+    // line list instead discards that scroll view, so the alternate screen lays the document out
+    // top-anchored and the input dock falls below the fold once the document exceeds the terminal
+    // height. The two `LinesBuffer`s reproduce the split: the loop fills the document and dock
+    // buffers separately, the transcript follows the end, and the dock stays pinned.
+    let fullscreen = parsed.tui_mode.as_deref() == Some("fullscreen");
+    let document_lines = Rc::new(RefCell::new(Vec::<String>::new()));
+    let dock_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let rendered = Rc::new(RefCell::new(RenderedMode(Vec::new())));
-    let component: Rc<RefCell<dyn Component>> = rendered.clone();
+    let component: Rc<RefCell<dyn Component>> = if fullscreen {
+        let empty = || Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("", 0, 0))) as Rc<RefCell<dyn Component>>;
+        let viewport = maho_interactive::chat_viewport::create_chat_viewport(maho_interactive::chat_viewport::ChatViewportOptions {
+            document: Rc::new(RefCell::new(LinesBuffer(document_lines.clone()))),
+            editor: Rc::new(RefCell::new(LinesBuffer(dock_lines.clone()))),
+            pending_messages: empty(), status: empty(), footer: empty(),
+            hook_status: None, widgets_above: None, widgets_below: None,
+            scrollbar: None, scrollbar_track_style: None, scrollbar_thumb_style: None,
+        });
+        viewport.root
+    } else {
+        rendered.clone()
+    };
     screen.set_render_root(component.clone());
     screen.base_mut().set_focus(Some(component));
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -88,7 +120,13 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let chunks = std::mem::take(&mut *input.borrow_mut());
             for chunk in chunks { mode.handle_runtime_input(&chunk, now).await?; }
             mode.pump_turn().await;
-            rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+            if fullscreen {
+                let (document, dock) = mode.render_split(usize::from(terminal.columns()));
+                *document_lines.borrow_mut() = document;
+                *dock_lines.borrow_mut() = dock;
+            } else {
+                rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
+            }
             screen.base_mut().request_render(false, now);
             screen.do_render(&mut terminal);
             terminal.pump(16).map_err(|error| error.to_string())?;

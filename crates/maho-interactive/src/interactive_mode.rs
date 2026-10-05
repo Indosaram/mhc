@@ -2734,11 +2734,9 @@ fn to_extension_response(response: crate::components::ask_user_question_state::Q
 
 impl Component for InteractiveMode {
     fn render(&mut self, width: usize) -> Vec<String> {
-        self.drain_events();
-        self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
-        let mut lines=self.render_document(width);
-        lines.extend(self.render_dock(width));
-        lines
+        let (mut document, dock) = self.render_split(width);
+        document.extend(dock);
+        document
     }
     fn handle_input(&mut self, data: &str) {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_millis();
@@ -2759,6 +2757,15 @@ impl Component for InteractiveMode {
 }
 
 impl InteractiveMode {
+    /// The fullscreen render root's two halves, as separate line vectors: the transcript document
+    /// and the fixed input dock. senpi's fullscreen chat viewport (`chat-viewport.ts`) places the
+    /// document in a follow-end scroll view and pins the dock; the flat `render()` concatenation is
+    /// only correct for the main-screen path, where the whole list scrolls together.
+    pub fn render_split(&mut self, width: usize) -> (Vec<String>, Vec<String>) {
+        self.drain_events();
+        self.tick(self.clock.elapsed().as_secs_f64() * 1000.0);
+        (self.render_document(width), self.render_dock(width))
+    }
     pub(crate) fn render_document(&mut self,width:usize)->Vec<String> {
         let mut lines = self.header_container.render(width);
         lines.extend(self.chat.render(width));

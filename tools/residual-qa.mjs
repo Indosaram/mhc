@@ -238,6 +238,19 @@ function processGroupGone(pid) {
 	}
 }
 
+/** Await the process group actually being gone, bounded. The group LEADER exiting (the awaited
+ * `server.exited`/`proc.exited`) does not guarantee every group member has been reaped yet, so an
+ * immediate `processGroupGone` races the kernel and reports a false leak. This still PROVES the
+ * group is gone — every member must stop answering signal 0 — it only stops checking too early. */
+async function waitForGroupGone(pid, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		if (processGroupGone(pid)) return true;
+		if (Date.now() >= deadline) return false;
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+	}
+}
+
 async function renderGrid(ansiPath, cols, rows) {
 	const { Terminal } = await import(XTERM);
 	const vt = new Terminal({ cols, rows, allowProposedApi: true, scrollback: 0 });
@@ -578,7 +591,7 @@ async function scenarioMini(ctx) {
 		}
 		await Promise.race([Promise.all([serverOut, serverErr]), new Promise((r) => setTimeout(r, 2_000))]);
 		loop.stop(true);
-		const groupGone = !server || processGroupGone(server.pid);
+		const groupGone = !server || (await waitForGroupGone(server.pid));
 		rmSync(home, { recursive: true, force: true });
 		cleanupOk = groupGone && !existsSync(home);
 		if (!groupGone) detail = `${detail} leaked-group=${server?.pid}`;
@@ -797,7 +810,7 @@ async function scenarioServer(ctx) {
 		}
 		await Promise.race([stderrText, new Promise((r) => setTimeout(r, 2_000))]);
 		if (loopback) loopback.stop(true);
-		const groupGone = !proc || processGroupGone(proc.pid);
+		const groupGone = !proc || (await waitForGroupGone(proc.pid));
 		rmSync(home, { recursive: true, force: true });
 		cleanupOk = groupGone && !existsSync(home);
 	}
@@ -947,7 +960,7 @@ async function scenarioRegistry(ctx) {
 		ok = providerListed && rpcPrompted && rpcExit === 0;
 		detail = `providerListed=${providerListed} rpcPrompted=${rpcPrompted} rpcExit=${rpcExit}`;
 	} finally {
-		const groupGone = !rpcProc || processGroupGone(rpcProc.pid);
+		const groupGone = !rpcProc || (await waitForGroupGone(rpcProc.pid));
 		rmSync(home, { recursive: true, force: true });
 		cleanupOk = groupGone && !existsSync(home);
 	}
