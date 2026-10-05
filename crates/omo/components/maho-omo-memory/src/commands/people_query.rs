@@ -2,7 +2,7 @@
 //! then a bounded "did you mean" list.
 //! Port of `components/memory/commands/people-query.ts` at pin 77f3067f1.
 
-use crate::palace::PalacePeopleNode;
+use crate::palace::people::PalacePeopleNode;
 
 const MAX_CLOSE_SLUGS: usize = 5;
 const MIN_SHARED_PREFIX: usize = 3;

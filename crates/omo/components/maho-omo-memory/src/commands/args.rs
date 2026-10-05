@@ -79,7 +79,7 @@ pub fn parse_command_args_full(args: &str, options: ParseCommandArgsOptions<'_>)
         if !booleans.contains(&body) && next.is_some_and(|next| !next.starts_with("--")) {
             flags.insert(
                 body.to_owned(),
-                FlagValue::Value(next.unwrap_or_default().to_owned()),
+                FlagValue::Value(next.copied().unwrap_or_default().to_owned()),
             );
             index += 2;
             continue;

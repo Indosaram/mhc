@@ -39,7 +39,7 @@ fn mirror_for<'a>(
     }
 }
 
-fn memfs_status(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse> {
+fn memfs_status<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -104,7 +104,7 @@ fn memfs_status(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandRespon
     })
 }
 
-fn memfs_init(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse> {
+fn memfs_init<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         if has_git_repo(input.identity) {
             let head = open_repo(input.deps, input.identity).ok().and_then(|repo| repo.head().ok().flatten());
@@ -139,7 +139,7 @@ fn memfs_init(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse
     })
 }
 
-fn memfs_sync(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse> {
+fn memfs_sync<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -167,7 +167,7 @@ fn memfs_sync(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse
     })
 }
 
-fn memfs_repair(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse> {
+fn memfs_repair<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         let repo = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,
@@ -197,7 +197,7 @@ fn memfs_repair(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandRespon
     })
 }
 
-fn memfs_reset(input: &MemfsSubcommandInput<'_>) -> BoxFuture<'_, CommandResponse> {
+fn memfs_reset<'a>(input: &'a MemfsSubcommandInput<'a>) -> BoxFuture<'a, CommandResponse> {
     Box::pin(async move {
         let existing = match require_existing_repo(input.deps, input.identity) {
             Ok(repo) => repo,

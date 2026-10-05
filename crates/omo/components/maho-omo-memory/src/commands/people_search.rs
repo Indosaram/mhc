@@ -9,7 +9,7 @@ use memory_core::search::{
     searchable_text,
 };
 
-use crate::palace::PalacePeopleNode;
+use crate::palace::people::PalacePeopleNode;
 
 use super::types::{CommandContext, MemoryCommandDeps};
 

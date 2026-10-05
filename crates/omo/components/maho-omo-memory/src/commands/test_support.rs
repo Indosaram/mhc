@@ -493,6 +493,7 @@ pub fn fake_deps(
         resolve_context,
         resolve_identity,
         settings,
+        bust_prompt_cache,
         config_path,
         full_config: Some(Arc::new(|| Ok(serde_json::json!({})))),
         actions: actions.clone(),

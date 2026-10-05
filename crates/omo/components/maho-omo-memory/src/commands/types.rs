@@ -263,6 +263,9 @@ pub struct MemoryCommandDeps {
     pub resolve_identity: Option<Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>>,
     /// Resolved memory settings for the bound identity.
     pub settings: Arc<dyn Fn() -> Result<serde_json::Value, String> + Send + Sync>,
+    /// Prompt-assembly cache seam (`bustPromptCache`): busting makes the next
+    /// agent run recompile the memory block from HEAD.
+    pub bust_prompt_cache: Arc<dyn Fn() + Send + Sync>,
     /// Path of the omo config file users edit to change memory settings.
     pub config_path: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// Full resolved config; `/people --ask` needs it to resolve the quick model category.

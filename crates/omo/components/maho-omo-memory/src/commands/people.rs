@@ -2,12 +2,12 @@
 //! dialectic-lite queries over the people records.
 //! Port of `components/memory/commands/people.ts` at pin 77f3067f1.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use maho_ext_api::ExtensionApi;
 use memory_core::people::format::{ObservationGroup, PeopleLimits};
 
-use crate::palace::{PalacePeople, PalacePeopleNode, collect_people};
+use crate::palace::people::{PalacePeople, PalacePeopleNode, collect_people};
 use crate::model_registry_resolver::NativeMemoryModelRegistry;
 
 use super::args::{ParseCommandArgsOptions, parse_command_args_full};
@@ -39,7 +39,7 @@ pub fn derive_people_graph(
 ) -> Result<PalacePeople, String> {
     let repo = open_repo(deps, identity)?;
     let head = repo.head().map_err(|error| error.to_string())?;
-    let options = crate::palace::PalacePeopleOptions { enabled: true, limits };
+    let options = crate::palace::people::PalacePeopleOptions { enabled: true, limits };
     resolve_people_graph(
         collect_people(&repo, head.as_deref(), &options).map_err(|error| error.to_string()),
     )
