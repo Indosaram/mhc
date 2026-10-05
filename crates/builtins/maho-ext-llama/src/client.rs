@@ -497,11 +497,12 @@ mod tests {
     #[test]
     fn download_event_records_finish_failure_and_progress() {
         let (mut finished, mut failure, mut saw) = (false, None, false);
-        let progress = std::cell::RefCell::new(Vec::new());
-        let mut sink = |value: LlamaProgress| progress.borrow_mut().push(value);
+        let progress = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_progress = progress.clone();
+        let mut sink = move |value: LlamaProgress| sink_progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(value);
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_progress".to_owned(), data: Some(serde_json::json!({ "a": { "done": 1, "total": 4 } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
         assert!(saw);
-        assert_eq!(progress.borrow()[0].ratio, Some(0.25));
+        assert_eq!(progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[0].ratio, Some(0.25));
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_failed".to_owned(), data: Some(serde_json::json!({ "error": { "message": "boom" } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
         assert_eq!(failure.as_deref(), Some("boom"));
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_finished".to_owned(), data: None }, "m", &mut finished, &mut failure, &mut saw, &mut sink);

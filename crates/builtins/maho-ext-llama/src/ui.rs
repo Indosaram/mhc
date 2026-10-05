@@ -32,7 +32,7 @@ pub type UiFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T>
 
 #[derive(Clone)]
 pub enum LlamaManagerAction {
-    Model(LlamaModelInfo),
+    Model(Box<LlamaModelInfo>),
     Download,
     Close,
 }
@@ -185,8 +185,16 @@ enum Screen {
     Empty,
     List { server_url: String, models: Vec<LlamaModelInfo>, selected: usize, reply: Option<oneshot::Sender<LlamaManagerAction>> },
     Select { title: String, options: Vec<String>, selected: usize, reply: Option<oneshot::Sender<Option<String>>> },
-    Search { input: Input, query: String, results: Vec<HuggingFaceModel>, status: String, cache: BTreeMap<String, Vec<HuggingFaceModel>>, search: Option<SearchFn>, reply: Option<oneshot::Sender<Option<String>>> },
+    Search { input: Box<Input>, query: String, results: Vec<HuggingFaceModel>, status: String, cache: BTreeMap<String, Vec<HuggingFaceModel>>, search: Option<SearchFn>, reply: Option<oneshot::Sender<Option<String>>> },
     Progress { state: ProgressState, reply: Option<oneshot::Sender<()>> },
+}
+
+/// The channel endpoints a `LlamaView` drives — the UI-request inbox plus the search
+/// request/response pair — grouped so the constructor stays within the argument limit.
+struct LlamaViewChannels {
+    rx: mpsc::UnboundedReceiver<UiRequest>,
+    search_tx: mpsc::UnboundedSender<SearchOutcome>,
+    search_rx: mpsc::UnboundedReceiver<SearchOutcome>,
 }
 
 pub struct LlamaView {
@@ -203,7 +211,8 @@ pub struct LlamaView {
 }
 
 impl LlamaView {
-    fn new(theme: Theme, render_request: Rc<dyn Fn()>, ui: Arc<dyn ExtensionUi>, closed: Arc<tokio::sync::Notify>, rx: mpsc::UnboundedReceiver<UiRequest>, search_tx: mpsc::UnboundedSender<SearchOutcome>, search_rx: mpsc::UnboundedReceiver<SearchOutcome>, done: CustomUiDone) -> Self {
+    fn new(theme: Theme, render_request: Rc<dyn Fn()>, ui: Arc<dyn ExtensionUi>, closed: Arc<tokio::sync::Notify>, channels: LlamaViewChannels, done: CustomUiDone) -> Self {
+        let LlamaViewChannels { rx, search_tx, search_rx } = channels;
         Self { theme, render_request, ui, closed, rx, search_tx, search_rx, done, screen: Screen::Empty, finished: false }
     }
 
@@ -212,7 +221,7 @@ impl LlamaView {
             match request {
                 UiRequest::ShowModels { server_url, models, reply } => self.screen = Screen::List { server_url, models, selected: 0, reply: Some(reply) },
                 UiRequest::Select { title, options, reply } => self.screen = Screen::Select { title, options, selected: 0, reply: Some(reply) },
-                UiRequest::SearchModels { search, reply } => self.screen = Screen::Search { input: Input::new(InputOptions::default()), query: String::new(), results: Vec::new(), status: "Type at least 2 characters".to_owned(), cache: BTreeMap::new(), search: Some(search), reply: Some(reply) },
+                UiRequest::SearchModels { search, reply } => self.screen = Screen::Search { input: Box::new(Input::new(InputOptions::default())), query: String::new(), results: Vec::new(), status: "Type at least 2 characters".to_owned(), cache: BTreeMap::new(), search: Some(search), reply: Some(reply) },
                 UiRequest::Progress { state, reply } => self.screen = Screen::Progress { state, reply: Some(reply) },
                 UiRequest::UpdateProgress { state } => if let Screen::Progress { state: current, .. } = &mut self.screen { *current = state; },
                 UiRequest::ShowStatus { title, message } => self.screen = Screen::Select { title: format!("{title}\n\n{message}"), options: Vec::new(), selected: 0, reply: None },
@@ -229,13 +238,6 @@ impl LlamaView {
             }
         }
         (self.render_request)();
-    }
-
-    fn finish(&mut self) {
-        if !self.finished {
-            self.finished = true;
-            (self.done)(JsonValue::Null);
-        }
     }
 
     fn finish_and_wake(&mut self) {
@@ -304,7 +306,7 @@ impl LlamaView {
         if keys.matches(data, "tui.select.up") { *selected = if *selected == 0 { count - 1 } else { *selected - 1 }; }
         else if keys.matches(data, "tui.select.down") { *selected = if *selected == count - 1 { 0 } else { *selected + 1 }; }
         else if keys.matches(data, "tui.select.confirm") {
-            let value = if *selected == models.len() { LlamaManagerAction::Download } else { LlamaManagerAction::Model(models[*selected].clone()) };
+            let value = if *selected == models.len() { LlamaManagerAction::Download } else { LlamaManagerAction::Model(Box::new(models[*selected].clone())) };
             if let Some(reply) = reply.take() { let _ = reply.send(value); }
         } else if keys.matches(data, "tui.select.cancel") && let Some(reply) = reply.take() { let _ = reply.send(LlamaManagerAction::Close); }
     }
@@ -416,7 +418,7 @@ pub async fn show_llama_ui(ctx: ExtensionContext, options: ShowLlamaOptions) -> 
         let (Some(rx), Some(search_rx)) = (rx, search_rx) else {
             return Box::pin(async { Ok(Box::new(EmptyView) as Box<dyn Component>) });
         };
-        let view = LlamaView::new(theme.clone(), render_request, factory_ui.clone(), closed.clone(), rx, search_tx.clone(), search_rx, done);
+        let view = LlamaView::new(theme.clone(), render_request, factory_ui.clone(), closed.clone(), LlamaViewChannels { rx, search_tx: search_tx.clone(), search_rx }, done);
         if let Some(flow) = flow.lock().unwrap_or_else(|error| error.into_inner()).take() {
             let ui: Arc<dyn LlamaUi> = Arc::new(ChannelUi { tx: tx.clone(), ui: ui_host.clone(), closed: closed.clone() });
             let tx = tx.clone();
@@ -451,13 +453,16 @@ impl Component for EmptyView {
     fn render(&mut self, _width: usize) -> Vec<String> { Vec::new() }
 }
 
+/// The pinned `run` callback: drives the operation and reports progress through a `Send` sink.
+pub type RunFn<T> = Box<dyn FnOnce(AbortSignal, Box<dyn FnMut(LlamaProgress) + Send>) -> UiFuture<'static, Result<T, String>> + Send>;
+
 pub struct RunProgressOptions<T> {
     pub title: String,
     pub model: String,
     pub initial_message: String,
     pub cancel_title: String,
     pub cancel_message: String,
-    pub run: Box<dyn FnOnce(AbortSignal, Box<dyn FnMut(LlamaProgress) + Send>) -> UiFuture<'static, Result<T, String>> + Send>,
+    pub run: RunFn<T>,
     pub cancel: Box<dyn FnOnce() -> UiFuture<'static, ()> + Send>,
 }
 
@@ -725,9 +730,7 @@ mod tests {
             render_request,
             ui,
             Arc::new(tokio::sync::Notify::new()),
-            rx,
-            search_tx,
-            search_rx,
+            LlamaViewChannels { rx, search_tx, search_rx },
             done,
         );
         tx.send(UiRequest::Finish).expect("finish");
