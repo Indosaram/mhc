@@ -158,9 +158,8 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
         cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
     });
     manager.set_progress_callback(Some(std::sync::Arc::new(|event| {
-        if event.event_type == maho_core::package_manager::ProgressEventType::Start {
-            if let Some(message) = event.message { maho_core::output_guard::maho_write_stdout(&format!("{message}\n")); }
-        }
+        if event.event_type == maho_core::package_manager::ProgressEventType::Start
+            && let Some(message) = event.message { maho_core::output_guard::maho_write_stdout(&format!("{message}\n")); }
     })));
     execute_package_command(&options, &mut manager).await
 }

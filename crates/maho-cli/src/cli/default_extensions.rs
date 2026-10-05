@@ -15,7 +15,7 @@ pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyn
     }).collect()
 }
 
-pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>) -> Vec<NativeAsyncExtensionFactory> {
+pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     let mut assembled = factories(widget_sender, parent.clone());
     let env = std::env::vars().collect();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -33,7 +33,7 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
     assembled
 }
 
-pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>) -> Vec<NativeAsyncExtensionFactory> {
+pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
     let mcp_gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> = Arc::new(std::sync::Mutex::new(None));
     let tool_search_gate = mcp_gate.clone();
@@ -239,7 +239,7 @@ impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
             let mut resize = super::super::utils::image_resize_core::ImageResizeOptions::default();
             if let Some(max_bytes) = max_bytes { resize.max_bytes = max_bytes as f64; }
             let resized = super::super::utils::image_process::process_image(&bytes, mime,
-                super::super::utils::image_process::ProcessImageOptions { auto_resize_images: Some(true), resize_options: Some(resize) }).await.map_err(|error| error)?;
+                super::super::utils::image_process::ProcessImageOptions { auto_resize_images: Some(true), resize_options: Some(resize) }).await?;
             Ok(Some(maho_codemode::tool::image_resize::ResizedImage { data: resized.data, mime_type: resized.mime_type, dimension_note: resized.hints.join("\n") }))
         })
     }

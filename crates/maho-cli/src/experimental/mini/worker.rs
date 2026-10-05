@@ -24,7 +24,7 @@ use maho_core::model_resolver::{find_initial_model, InitialModelOptions};
 use maho_core::model_runtime::{CreateModelRuntimeOptions, ModelRuntime};
 use serde_json::Value;
 
-use super::lane_service::{LaneService, LaneServiceOptions, SessionIdentity};
+use super::lane_service::{LaneEventPublisher, LaneService, LaneServiceOptions, SessionIdentity};
 use super::models_service::ModelsService;
 use super::runtime::ModelRuntimeHandle;
 use super::shared::protocol::{LaneEvent, ModelRef, ModelsEvent, WorkerDescription, LANE, MODELS, WORKER};
@@ -350,6 +350,14 @@ pub fn model_runtime_options(agent_dir: &str) -> CreateModelRuntimeOptions {
 }
 
 pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), String> {
+    // The pinned worker imports the coding-agent core, whose provider APIs register as a side effect;
+    // in this port that registration is explicit. Without it the composed `openai-completions`
+    // provider cannot resolve an API implementation (`maho_ai::compat::stream_simple` ->
+    // `api_registry::NoProvider`), so it yields an error stream: the run settles as `Failed` while
+    // `LaneService::run` reports `ok: true`, no provider request is issued, and no transcript entry
+    // is produced (the residual-qa `mini` failure). Register once per worker process, matching the
+    // normal CLI path (`cli::runtime::run`).
+    crate::cli::setup::register_builtin_apis();
     let context = BACKGROUND_CONTEXT.clone();
     let cwd = options.cwd.clone();
     let runtime = ModelRuntime::create(model_runtime_options(&maho_core::config::get_agent_dir())).await;
@@ -388,7 +396,7 @@ pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), Str
     };
     let models_service = Arc::new(ModelsService::new(runtime.clone(), publish_models).await);
 
-    let publish_lane: Arc<dyn Fn(&str, &str, &maho_agent::harness::events::HarnessEvent) + Send + Sync> = {
+    let publish_lane: LaneEventPublisher = {
         let peer = peer.clone();
         Arc::new(move |subscription_id: &str, to: &str, event: &maho_agent::harness::events::HarnessEvent| {
             let payload = LaneEvent { subscription_id: subscription_id.to_owned(), event: serde_json::Value::from(event) };

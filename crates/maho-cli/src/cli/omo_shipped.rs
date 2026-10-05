@@ -1,6 +1,6 @@
 //! Port of the host half of senpi `omo-senpi/src/extension/index.ts` composition.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maho_ext_api::ExtensionActions;
@@ -28,7 +28,7 @@ pub struct TaskInputs {
     pub ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps,
 }
 
-pub fn component_options(cwd: &PathBuf, env: &std::collections::BTreeMap<String, String>) -> maho_omo::OmoComponentOptions {
+pub fn component_options(cwd: &Path, env: &std::collections::BTreeMap<String, String>) -> maho_omo::OmoComponentOptions {
     maho_omo::OmoComponentOptions {
         skills_root: maho_omo::builtin_skills_root(),
         state_dir: cwd.join(".maho"),
@@ -42,11 +42,11 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
-    pub fn new(cwd: &PathBuf, env: std::collections::BTreeMap<String, String>, config: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>) -> Self {
+    pub fn new(cwd: &Path, env: std::collections::BTreeMap<String, String>, config: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>) -> Self {
         let component = MemoryComponent::new(MemoryComponentOptions {
             env,
             load_config: config,
-            cwd: cwd.clone(),
+            cwd: cwd.to_path_buf(),
             now: Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64),
             disabled: Arc::new(|| false),
         });

@@ -208,6 +208,12 @@ impl MiniView {
     }
 }
 
+impl Default for MiniView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Component for MiniView {
     fn render(&mut self, width: usize) -> Vec<String> {
         let mut lines = Vec::new();
@@ -271,7 +277,8 @@ pub async fn run_view(client: &AttachedSession, _cwd: &str) -> Result<(), String
         if view.borrow().should_exit() {
             break Ok(());
         }
-        if let Some(text) = view.borrow().take_submission() {
+        let submission = view.borrow().take_submission();
+        if let Some(text) = submission {
             let outcome = if text.starts_with('/') {
                 client.compact().await
             } else {
