@@ -13,7 +13,7 @@
 // Task 19 invokes this once, inside a monitor, and reads the resulting evidence with
 // `tools/verify-session2-residual.mjs`.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,8 +21,14 @@ const TEMPLATE_PATH = ".omo/evidence/residual-source/task-17/requirements-manife
 const REPO_TOOLS = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_SCHEMA = "session2-residual-package-manifest/v1";
 const COMMAND_SCHEMA = "session2-residual-command-manifest/v1";
+const BUILD_PROVENANCE_SCHEMA = "session2-residual-build-provenance/v1";
+const BUILD_PROVENANCE = "build-provenance.json";
 const RUN_IDENTITY = "run-identity.json";
 const SOURCE_IDENTITY = "source-identity.json";
+// The workspace build command whose success gates every binary-dependent command, and the commands
+// that consume the built `$BIN`/staged artifact (they must never run against a stale binary).
+const BUILD_COMMAND_RE = /build --workspace/;
+const BINARY_DEPENDENT_RES = [/package-native\.mjs/, /run-qa\.sh/, /residual-qa\.mjs/];
 
 function usage(message) {
 	console.error(`run-session2-residual-gate: ${message}`);
@@ -34,6 +40,41 @@ function usage(message) {
 
 function sha256(data) {
 	return createHash("sha256").update(data).digest("hex");
+}
+
+/** The pre-run state of `$BIN`. A binary whose sha256 is unchanged and whose mtime predates the run
+ *  was NOT produced by this gate and must never satisfy a binary-dependent command. */
+function binBaseline(binary) {
+	const abs = resolve(binary);
+	if (!existsSync(abs)) return { existed: false, sha256: null, mtime_ms: null };
+	return { existed: true, sha256: sha256(readFileSync(abs)), mtime_ms: statSync(abs).mtimeMs };
+}
+
+/** Bind the FRESH build output to the candidate. `produced` is true only when the build command
+ *  exited 0 AND the binary exists, was written after the run started, and differs from the pre-run
+ *  baseline (i.e. it is not a stale artifact). */
+function buildProvenance(binary, sha, buildExit, baseline, runStartedAtMs) {
+	const abs = resolve(binary);
+	let binarySha = null;
+	let mtimeMs = null;
+	if (existsSync(abs)) {
+		binarySha = sha256(readFileSync(abs));
+		mtimeMs = statSync(abs).mtimeMs;
+	}
+	const produced = buildExit === 0 && binarySha !== null && mtimeMs !== null && mtimeMs >= runStartedAtMs && binarySha !== baseline.sha256;
+	return {
+		schema: BUILD_PROVENANCE_SCHEMA,
+		sha,
+		binary: abs,
+		produced,
+		build_command: "cargo4 build --workspace --bins",
+		build_exit_code: buildExit,
+		binary_sha256: binarySha,
+		binary_mtime_ms: mtimeMs,
+		baseline,
+		run_started_at_ms: runStartedAtMs,
+		captured_at: new Date().toISOString(),
+	};
 }
 
 function parseArgs(argv) {
@@ -278,8 +319,9 @@ async function main() {
 		process.exit(6);
 	}
 
+	const runStartedAtMs = Date.now();
 	mkdirSync(evidence, { recursive: true });
-	writeFileSync(join(evidence, RUN_IDENTITY), JSON.stringify({ schema: "session2-residual-run-identity/v1", sha, started_at: new Date().toISOString(), runner: "tools/run-session2-residual-gate.mjs" }, null, 2) + "\n");
+	writeFileSync(join(evidence, RUN_IDENTITY), JSON.stringify({ schema: "session2-residual-run-identity/v1", sha, started_at: new Date(runStartedAtMs).toISOString(), started_at_ms: runStartedAtMs, runner: "tools/run-session2-residual-gate.mjs" }, null, 2) + "\n");
 	writeFileSync(join(evidence, SOURCE_IDENTITY), JSON.stringify(identity, null, 2) + "\n");
 
 	// Freeze + bind BEFORE running anything, so the verifier's inputs exist even if a command fails.
@@ -304,14 +346,56 @@ async function main() {
 	writeCommands();
 
 	let failed = 0;
+	// The pre-run `$BIN` state; a stale binary (unchanged sha256, mtime before the run) must never
+	// satisfy a binary-dependent command. The build command's success gates those commands.
+	const baseline = binBaseline(args.binary);
+	const buildIndex = commands.findIndex((entry) => BUILD_COMMAND_RE.test(entry.template));
+	const isBinaryDependent = (template) => BINARY_DEPENDENT_RES.some((re) => re.test(template));
+	let buildExit = null;
+	let buildFailed = false;
+	let provenance = null;
 	for (let i = 0; i < commands.length; i++) {
 		const entry = commands[i];
+		// A binary-dependent command must not run against a stale artifact after a failed build:
+		// record it BLOCKED (a FAILURE, never a skip-green) and keep going for the full inventory.
+		if (buildFailed && isBinaryDependent(entry.template)) {
+			const message = `BLOCKED: not executed — the workspace build (command ${buildIndex + 1}) failed (exit ${buildExit}); running this against a pre-existing binary would accept a STALE artifact.\n`;
+			const bytes = Buffer.from(message);
+			writeFileSync(join(evidence, entry.log), bytes);
+			Object.assign(entry, {
+				started_at: new Date().toISOString(),
+				ended_at: new Date().toISOString(),
+				duration_ms: 0,
+				exit_code: 125,
+				blocked: true,
+				stdout_bytes: 0,
+				stderr_bytes: bytes.length,
+				log_sha256: sha256(bytes),
+			});
+			failed += 1;
+			console.log(`[gate ${i + 1}/${commands.length}] BLOCKED (build failed): ${entry.command}`);
+			writeCommands();
+			continue;
+		}
 		console.log(`[gate ${i + 1}/${commands.length}] ${entry.command}`);
 		const result = await runCommand(entry.command, env, join(evidence, entry.log), repo);
 		Object.assign(entry, result);
 		console.log(`[gate ${i + 1}/${commands.length}] exit=${result.exit_code} log=${entry.log}`);
+		if (i === buildIndex) {
+			buildExit = result.exit_code;
+			buildFailed = result.exit_code !== 0;
+			// Bind the (successful or failed) build output to the candidate BEFORE any QA consumes it.
+			provenance = buildProvenance(args.binary, sha, buildExit, baseline, runStartedAtMs);
+			writeFileSync(join(evidence, BUILD_PROVENANCE), JSON.stringify(provenance, null, 2) + "\n");
+		}
 		if (result.exit_code !== 0) failed += 1;
 		writeCommands();
+	}
+
+	// Fail the gate if the build reported success but the binary was NOT produced by this run.
+	if (buildExit === 0 && provenance && !provenance.produced) {
+		console.error("run-session2-residual-gate: build reported success but $BIN was not produced by this run (stale/absent binary); failing.");
+		failed += 1;
 	}
 
 	console.log(`run-session2-residual-gate: ${commands.length} commands, ${failed} failed`);
@@ -336,7 +420,7 @@ async function main() {
 	console.log(`run-session2-residual-gate: final verifier audit exit=${finalAudit.exit_code}`);
 	if (finalAudit.exit_code !== 0) failed += 1;
 
-	writeFileSync(join(evidence, "gate-complete.json"), JSON.stringify({ schema: "session2-residual-gate-complete/v1", sha, failed, commands: commands.length, final_audit_exit: finalAudit.exit_code }, null, 2) + "\n");
+	writeFileSync(join(evidence, "gate-complete.json"), JSON.stringify({ schema: "session2-residual-gate-complete/v1", sha, failed, commands: commands.length, final_audit_exit: finalAudit.exit_code, build_exit_code: buildExit, build_produced: provenance ? provenance.produced : null }, null, 2) + "\n");
 	process.exit(failed === 0 ? 0 : 1);
 }
 

@@ -17,3 +17,5 @@ Each file is a real input the verifier must REJECT. They are consumed by
 | `server-row-unlinked-triple.json` | a server row citing a triple not linked into `execution_coverage.required_tests` | server-row triple integration (no parallel unverified list) |
 | `server-row-uncovered-behavior.json` | a non-empty `server_row_manifest.uncovered_behavior` | uncovered behavior blocks success |
 | `server-row-mcp-wrong-package.json` | server row 25 typing the cross-crate MCP test as `maho-server` | row-25 cross-crate triple must be typed `maho-ext-mcp` |
+| `command-manifest-stale-binary-after-failed-build.json` | a command manifest where the workspace build failed (exit 101) yet a binary-dependent QA command (`package-native`/`run-qa`/`residual-qa`) still claims exit 0 | stale-binary acceptance: no binary-dependent command may pass after a failed build |
+| `build-provenance-stale-mtime.json` | a build provenance whose `binary_mtime_ms` predates `run_started_at_ms` (and whose hash equals the pre-run baseline) | fresh-build provenance: the binary must have been produced by this run |

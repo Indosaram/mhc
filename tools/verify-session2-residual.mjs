@@ -28,12 +28,21 @@ export const QA_SCHEMA = "session2-residual-qa/v1";
 export const PNG_SCHEMA = "session2-residual-png/v1";
 export const PACKAGE_SCHEMA = "session2-residual-package-manifest/v1";
 export const COMMAND_SCHEMA = "session2-residual-command-manifest/v1";
+export const BUILD_PROVENANCE_SCHEMA = "session2-residual-build-provenance/v1";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const RUN_IDENTITY = "run-identity.json";
 const SOURCE_IDENTITY = "source-identity.json";
 const SOURCE_IDENTITY_END = "source-identity-end.json";
+// The gate binds the SUCCESSFUL fresh build's output (path + sha256 + mtime + pre-run baseline) to
+// the candidate, so a binary-dependent QA command can never be satisfied by a stale pre-existing
+// `$BIN` when the workspace build failed or was skipped.
+const BUILD_PROVENANCE = "build-provenance.json";
+const BUILD_COMMAND_RE = /build --workspace/;
+// Commands that consume the built `$BIN`/staged artifact: they must never run/be accepted against a
+// stale binary after a failed build (recorded BLOCKED/UNRUN, not skip-green).
+const BINARY_DEPENDENT_RES = [/package-native\.mjs/, /run-qa\.sh/, /residual-qa\.mjs/];
 // The causal TUI fields every case must prove (own prompt, gated stream, steer, abort, resize).
 const TUI_REQUIRED_FIELDS = [
 	"onboarding_pre_completed",
@@ -324,6 +333,7 @@ export function validateCommandManifest(evidenceDir, sha, manifest, report, fina
 			if (!SHA256_HEX.test(String(entry.log_sha256 ?? ""))) report.fail(`final audit: command has no 64-hex log_sha256: ${entry.template}`);
 		}
 	}
+	return frozen;
 }
 
 export function validateSourceIdentity(evidenceDir, repo, sha, report, final = false) {
@@ -438,16 +448,90 @@ function logHasCompilerError(path) {
 	return /^\s*error(\[[A-Z0-9]+\])?:/m.test(text);
 }
 
-export function validateClippy(evidenceDir, report) {
+export function validateClippy(evidenceDir, report, exitCode = null) {
 	const path = join(evidenceDir, "clippy.log");
-	if (!existsSync(path)) report.fail(`clippy log missing: ${path}`);
-	else if (logHasCompilerError(path)) report.fail("clippy log contains compiler errors despite a zero exit code");
+	if (!existsSync(path)) {
+		report.fail(`clippy log missing: ${path}`);
+		return;
+	}
+	// The "errors despite a zero exit" guard is ONLY meaningful for a GREEN command. When the
+	// command itself exited nonzero, its error text is expected and the nonzero-exit failure is the
+	// honest signal: a resolver/compile error must NOT be misreported as "despite a zero exit code".
+	if (exitCode === 0 && logHasCompilerError(path)) report.fail("clippy log contains compiler errors despite a zero exit code");
 }
 
-export function validateBuild(evidenceDir, report) {
+export function validateBuild(evidenceDir, report, exitCode = null) {
 	const path = join(evidenceDir, "build.log");
-	if (!existsSync(path)) report.fail(`build log missing: ${path}`);
-	else if (logHasCompilerError(path)) report.fail("build log contains compiler errors despite a zero exit code");
+	if (!existsSync(path)) {
+		report.fail(`build log missing: ${path}`);
+		return;
+	}
+	if (exitCode === 0 && logHasCompilerError(path)) report.fail("build log contains compiler errors despite a zero exit code");
+}
+
+/** Bind the successful FRESH build's output to the candidate, and refuse to accept a stale binary.
+ *  When the workspace build is green, `build-provenance.json` must record the produced binary
+ *  (path + sha256 + mtime after run start, distinct from the pre-run baseline) and the staged
+ *  `$E/install/mhc` + QA summary must be that exact artifact. When the build FAILED, no
+ *  binary-dependent command may pass (that would be a stale-binary acceptance). */
+export function validateBuildProvenance(evidenceDir, sha, commandManifest, report) {
+	const commands = commandManifest?.commands ?? [];
+	const buildEntry = commands.find((c) => BUILD_COMMAND_RE.test(String(c.template)));
+	const buildExit = buildEntry ? buildEntry.exit_code : null;
+	const path = join(evidenceDir, BUILD_PROVENANCE);
+	if (!existsSync(path)) {
+		report.fail(`build provenance missing: ${BUILD_PROVENANCE} (the build output is not bound to this candidate)`);
+		return;
+	}
+	let prov;
+	try {
+		prov = readJson(path);
+	} catch (error) {
+		report.fail(`build provenance is not valid JSON: ${error.message}`);
+		return;
+	}
+	if (prov.schema !== BUILD_PROVENANCE_SCHEMA) report.fail(`build provenance schema "${prov.schema}" != "${BUILD_PROVENANCE_SCHEMA}"`);
+	if (prov.sha !== sha) report.fail(`build provenance sha ${prov.sha} != gate SHA ${sha}`);
+	if (buildExit !== null && buildExit !== undefined && prov.build_exit_code !== buildExit) {
+		report.fail(`build provenance build_exit_code ${prov.build_exit_code} != command-manifest build exit ${buildExit}`);
+	}
+	const binaryDependent = commands.filter((c) => BINARY_DEPENDENT_RES.some((re) => re.test(String(c.template))));
+	if (buildExit === 0) {
+		if (prov.produced !== true) report.fail("build provenance does not mark the binary as produced by this run");
+		if (prov.build_exit_code !== 0) report.fail(`build provenance build_exit_code ${prov.build_exit_code} != 0 despite a green build`);
+		if (!SHA256_HEX.test(String(prov.binary_sha256 ?? ""))) report.fail("build provenance binary_sha256 is not a 64-hex hash");
+		if (typeof prov.binary_mtime_ms !== "number" || typeof prov.run_started_at_ms !== "number") {
+			report.fail("build provenance lacks numeric binary_mtime_ms/run_started_at_ms freshness stamps");
+		} else if (prov.binary_mtime_ms < prov.run_started_at_ms) {
+			report.fail("build provenance binary predates the run (STALE binary; not produced by this gate)");
+		}
+		if (prov.baseline && prov.baseline.existed === true && prov.baseline.sha256 === prov.binary_sha256) {
+			report.fail("build provenance binary is byte-identical to the pre-run baseline (STALE binary accepted)");
+		}
+		if (commandManifest?.binary && prov.binary && resolve(String(prov.binary)) !== resolve(String(commandManifest.binary))) {
+			report.fail(`build provenance binary ${prov.binary} != command-manifest BIN ${commandManifest.binary}`);
+		}
+		const staged = join(evidenceDir, "install", "mhc");
+		if (existsSync(staged) && SHA256_HEX.test(String(prov.binary_sha256 ?? "")) && sha256(readFileSync(staged)) !== prov.binary_sha256) {
+			report.fail("staged $E/install/mhc is not the freshly built binary (build provenance hash mismatch)");
+		}
+		const qaSummary = join(evidenceDir, "qa", "residual-qa.json");
+		if (existsSync(qaSummary) && SHA256_HEX.test(String(prov.binary_sha256 ?? ""))) {
+			try {
+				const summary = readJson(qaSummary);
+				if (SHA256_HEX.test(String(summary.binary_sha256 ?? "")) && summary.binary_sha256 !== prov.binary_sha256) {
+					report.fail("QA summary binary_sha256 is not the freshly built binary (build provenance mismatch)");
+				}
+			} catch {
+				// validateQa reports the malformed summary; do not duplicate here.
+			}
+		}
+	} else {
+		if (prov.produced === true) report.fail("build provenance claims a produced binary despite a failed build");
+		for (const entry of binaryDependent.filter((c) => c.exit_code === 0)) {
+			report.fail(`binary-dependent command passed after a failed build (stale binary accepted): ${entry.template}`);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -896,10 +980,15 @@ export function verify({ repo, evidenceDir, sha, final = false }) {
 	if (manifest) {
 		validateSourceIdentity(evidenceDir, repo, sha, report, final);
 		validatePackageManifest(evidenceDir, repo, sha, manifest, report);
-		validateCommandManifest(evidenceDir, sha, manifest, report, final);
+		const commandManifest = validateCommandManifest(evidenceDir, sha, manifest, report, final);
+		const exitFor = (re) => {
+			const entry = (commandManifest?.commands ?? []).find((c) => re.test(String(c.template)));
+			return entry ? entry.exit_code : null;
+		};
+		validateBuildProvenance(evidenceDir, sha, commandManifest, report);
 		validateNextest(evidenceDir, repo, manifest, report);
-		validateClippy(evidenceDir, report);
-		validateBuild(evidenceDir, report);
+		validateClippy(evidenceDir, report, exitFor(/clippy --workspace/));
+		validateBuild(evidenceDir, report, exitFor(/build --workspace/));
 		validateParity(evidenceDir, repo, report);
 		validateQa(evidenceDir, sha, manifest, report);
 		validateUnresolved(manifest, report);
@@ -1101,6 +1190,28 @@ function buildValidFixture(root, sha) {
 	for (const name of REQUIRED_SCENARIOS) qaScenarios[name] = { status: "pass", cleanup_ok: true, artifacts: [`scenario-${name}.log`] };
 	for (const name of REQUIRED_SCENARIOS) put(join(evidence, `qa/scenario-${name}.log`), `${name} pass\n`);
 	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, binary_sha256: stagedHash, scenarios: qaScenarios }, null, 2));
+	// The successful-build provenance the gate runner binds to the candidate (valid by default).
+	const runStartedAtMs = 1_700_000_000_000;
+	put(
+		join(evidence, BUILD_PROVENANCE),
+		JSON.stringify(
+			{
+				schema: BUILD_PROVENANCE_SCHEMA,
+				sha,
+				binary: "/fixture/cargo-target/debug/mhc",
+				produced: true,
+				build_command: "cargo4 build --workspace --bins",
+				build_exit_code: 0,
+				binary_sha256: stagedHash,
+				binary_mtime_ms: runStartedAtMs + 5_000,
+				baseline: { existed: true, sha256: "d".repeat(64), mtime_ms: runStartedAtMs - 600_000 },
+				run_started_at_ms: runStartedAtMs,
+				captured_at: new Date(runStartedAtMs + 6_000).toISOString(),
+			},
+			null,
+			2,
+		),
+	);
 	// The mandatory TUI matrix: every geometry x mode.
 	for (const geometry of TUI_GEOMETRIES) {
 		for (const mode of TUI_MODES) {
@@ -1141,7 +1252,7 @@ function mutate(fn) {
 		if (base.problems.length !== 0) {
 			return { ok: false, detail: `valid fixture unexpectedly failed: ${base.problems.join("; ")}` };
 		}
-		const target = fn({ repo, evidence, sha, read: readFileSync, write: writeFileSync, join, readJson });
+		const target = fn({ repo, evidence, sha, read: readFileSync, write: writeFileSync, join, readJson }) ?? {};
 		const mutated = verify({ repo, evidenceDir: evidence, sha: target.sha ?? sha });
 		return { ok: mutated.problems.length > 0, detail: mutated.problems.join("; ") };
 	} finally {
@@ -1477,6 +1588,50 @@ export function selfTest() {
 		const row25 = (parsed.server_row_manifest?.rows ?? []).find((row) => row.id === 25);
 		const mcp = (row25?.required_tests ?? []).filter((e) => String(e.test ?? "").includes("session_start_attach_publishes_live_mcp_status"));
 		return { ok: mcp.length > 0 && mcp.some((e) => e.package !== "maho-ext-mcp"), detail: `mcp=${JSON.stringify(mcp)}` };
+	})());
+
+	// ---- stale-binary / build-provenance acceptance (B2) ----
+	check("stale binary accepted after a failed build rejected", mutate(({ evidence, read, write, join }) => {
+		const c = JSON.parse(read(join(evidence, "command-manifest.json"), "utf8"));
+		c.commands.find((e) => BUILD_COMMAND_RE.test(String(e.template))).exit_code = 101;
+		// a binary-dependent command (run-qa/residual-qa) still claims success -> stale acceptance
+		write(join(evidence, "command-manifest.json"), JSON.stringify(c));
+	}));
+	check("build provenance with a stale binary mtime rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, BUILD_PROVENANCE);
+		const prov = JSON.parse(read(p, "utf8"));
+		prov.binary_mtime_ms = prov.run_started_at_ms - 1;
+		write(p, JSON.stringify(prov));
+	}));
+	check("build provenance hash not matching the staged binary rejected", mutate(({ evidence, write, join }) => {
+		write(join(evidence, "install/mhc"), "#!/bin/sh\nTAMPERED stale binary\n");
+	}));
+	check("missing build provenance rejected", mutate(({ evidence, join }) => {
+		rmSync(join(evidence, BUILD_PROVENANCE), { force: true });
+	}));
+	check("produced binary claimed after a failed build rejected", mutate(({ evidence, read, write, join }) => {
+		const c = JSON.parse(read(join(evidence, "command-manifest.json"), "utf8"));
+		for (const e of c.commands) if (BUILD_COMMAND_RE.test(String(e.template)) || BINARY_DEPENDENT_RES.some((re) => re.test(String(e.template)))) e.exit_code = 101;
+		write(join(evidence, "command-manifest.json"), JSON.stringify(c));
+		const p = join(evidence, BUILD_PROVENANCE);
+		const prov = JSON.parse(read(p, "utf8"));
+		prov.build_exit_code = 101;
+		prov.produced = true;
+		write(p, JSON.stringify(prov));
+	}));
+	check("on-disk fixture: stale binary accepted after failed build rejected", (() => {
+		const path = join(FIXTURES, "command-manifest-stale-binary-after-failed-build.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const commands = readJson(path).commands ?? [];
+		const build = commands.find((e) => BUILD_COMMAND_RE.test(String(e.template)));
+		const passed = commands.filter((e) => BINARY_DEPENDENT_RES.some((re) => re.test(String(e.template))) && e.exit_code === 0);
+		return { ok: build?.exit_code !== 0 && passed.length > 0, detail: `build_exit=${build?.exit_code} passed_after=${passed.length}` };
+	})());
+	check("on-disk fixture: build provenance stale mtime rejected", (() => {
+		const path = join(FIXTURES, "build-provenance-stale-mtime.json");
+		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
+		const prov = readJson(path);
+		return { ok: typeof prov.binary_mtime_ms === "number" && typeof prov.run_started_at_ms === "number" && prov.binary_mtime_ms < prov.run_started_at_ms, detail: `mtime=${prov.binary_mtime_ms} run=${prov.run_started_at_ms}` };
 	})());
 
 	const failed = results.filter((r) => !r.ok);

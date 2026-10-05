@@ -1,0 +1,38 @@
+{
+  "schema": "session2-residual-command-manifest/v1",
+  "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "cargo": "/home/indo/T9-Mac/maho-code-lanes/cargo4",
+  "binary": "/home/indo/T9-Mac/cargo-target/verify-21d-final/debug/mhc",
+  "commands": [
+    {
+      "template": "cargo4 nextest run --workspace --no-fail-fast",
+      "command": "/cargo4 nextest run --workspace --no-fail-fast",
+      "log": "nextest.log",
+      "exit_code": 101
+    },
+    {
+      "template": "cargo4 build --workspace --bins",
+      "command": "/cargo4 build --workspace --bins",
+      "log": "build.log",
+      "exit_code": 101
+    },
+    {
+      "template": "bun tools/package-native.mjs --binary \"$BIN\" --output \"$E/install\"",
+      "command": "bun tools/package-native.mjs --binary \"$BIN\" --output \"$E/install\"",
+      "log": "package-native.log",
+      "exit_code": 0
+    },
+    {
+      "template": "bash .omo/evidence/session2-residual/harness-v2/run-qa.sh \"$BIN\" \"$SHA\"",
+      "command": "bash .omo/evidence/session2-residual/harness-v2/run-qa.sh \"$BIN\" \"$SHA\"",
+      "log": "run-qa.log",
+      "exit_code": 0
+    },
+    {
+      "template": "bun tools/residual-qa.mjs --binary \"$BIN\" --installed \"$E/install/mhc\" --scenario all --evidence \"$E\"",
+      "command": "bun tools/residual-qa.mjs --binary \"$BIN\" --installed \"$E/install/mhc\" --scenario all --evidence \"$E\"",
+      "log": "residual-qa.log",
+      "exit_code": 0
+    }
+  ]
+}

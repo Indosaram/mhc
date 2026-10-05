@@ -1,0 +1,17 @@
+{
+  "schema": "session2-residual-build-provenance/v1",
+  "sha": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+  "binary": "/home/indo/T9-Mac/cargo-target/verify-21d-final/debug/mhc",
+  "produced": true,
+  "build_command": "cargo4 build --workspace --bins",
+  "build_exit_code": 0,
+  "binary_sha256": "5349b8156dd2dd502efc7eb1beb6e167356d18ac98a40b2bc73a1c93d80b8756",
+  "binary_mtime_ms": 1759596406000,
+  "baseline": {
+    "existed": true,
+    "sha256": "5349b8156dd2dd502efc7eb1beb6e167356d18ac98a40b2bc73a1c93d80b8756",
+    "mtime_ms": 1759596406000
+  },
+  "run_started_at_ms": 1759596750000,
+  "captured_at": "2026-10-05T01:32:31.000Z"
+}
