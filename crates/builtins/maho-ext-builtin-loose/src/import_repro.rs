@@ -83,8 +83,9 @@ pub fn rewrite_session_cwd(raw:&str,source:&str,target:&str)->String {
 use maho_ext_api::*;
 use std::sync::Arc;
 pub type FetchText=Arc<dyn Fn(String)->ExtensionFuture<'static,String>+Send+Sync>;
+pub type SessionDirProvider=Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>;
 pub struct ImportRepro{
-    pub session_dir:Arc<dyn Fn(&ExtensionContext)->Result<PathBuf,ExtensionFailure>+Send+Sync>,
+    pub session_dir:SessionDirProvider,
     pub fetch:FetchText,
 }
 pub fn github_fetch()->FetchText{

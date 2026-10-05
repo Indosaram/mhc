@@ -36,7 +36,7 @@ pub fn stale_goal_todo_reminder(goal:Option<&Goal>)->Option<String> {
     #[test] fn latest_native_branch_state_gates_completion_and_terminal_tasks_do_not() {
         let entry=|tasks|maho_ext_api::SessionEntry { id:"e".into(),parent_id:None,timestamp:"0".into(),kind:"custom".into(),data:serde_json::json!({"customType":"senpi.todo-state","data":{"schema":"v2","phases":[{"name":"Work","tasks":tasks}]}}) };
         let open=entry(serde_json::json!([{"content":"pending","status":"pending"},{"content":"running","status":"in_progress"},{"content":"done","status":"completed"},{"content":"dropped","status":"abandoned"}]));
-        assert_eq!(open_todo_task_contents(&[open.clone()]),["pending","running"]);
+        assert_eq!(open_todo_task_contents(std::slice::from_ref(&open)),["pending","running"]);
         assert!(open_todo_task_contents(&[open,entry(serde_json::json!([]))]).is_empty());
     }
     #[test] fn only_valid_add_operations_emit_goal_reminder() {

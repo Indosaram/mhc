@@ -7,9 +7,11 @@ struct Active {id:u64,controller:maho_ai::utils::abort::AbortController,settled:
 struct State {next:u64,active:Option<Active>}
 fn dismiss(state:&Mutex<State>,ctx:&ExtensionContext,abort:bool){
     let active=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.take();
-    if let Some(active)=active{if abort{active.controller.abort(None);}if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
+    if let Some(active)=active{if abort{active.controller.abort(None);}
+        if let Some(unsubscribe)=active.unsubscribe{unsubscribe();}ctx.ui.set_widget("btw",None,Default::default());}
 }
-pub struct Btw{pub thinking_level:Arc<dyn Fn(&ExtensionContext)->Result<Option<maho_ai::types::ThinkingLevel>,ExtensionFailure>+Send+Sync>}
+pub type ThinkingLevelReader=Arc<dyn Fn(&ExtensionContext)->Result<Option<maho_ai::types::ThinkingLevel>,ExtensionFailure>+Send+Sync>;
+pub struct Btw{pub thinking_level:ThinkingLevelReader}
 impl Default for Btw {
     fn default() -> Self { Self { thinking_level: Arc::new(|ctx: &ExtensionContext| ctx.current_thinking_level()) } }
 }
@@ -62,7 +64,8 @@ impl Extension for Btw{
                 if let Some(controller)=controller{controller.abort(None);}
             }
             let current=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_ref().is_some_and(|active|active.id==id);
-            if current{match outcome{Ok(reply)=>{if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}if ctx.mode!=ExtensionMode::Tui||!ctx.has_ui{ctx.ui.notify(&reply,NotificationType::Info);}else{ctx.ui.set_widget("btw",Some(panel::widget(question,&reply,true)),Default::default());}},Err(error)=>{
+            if current{match outcome{Ok(reply)=>{if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}
+                if ctx.mode!=ExtensionMode::Tui||!ctx.has_ui{ctx.ui.notify(&reply,NotificationType::Info);}else{ctx.ui.set_widget("btw",Some(panel::widget(question,&reply,true)),Default::default());}},Err(error)=>{
                 if let Some(active)=state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.as_mut(){active.settled=true;}
                 if ctx.mode==ExtensionMode::Tui&&ctx.has_ui{ctx.ui.set_widget("btw",Some(panel::error_widget(question,&error.message)),Default::default());}else{ctx.ui.notify(&format!("/btw failed: {}",error.message),NotificationType::Error);}
             }}}

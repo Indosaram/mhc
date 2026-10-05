@@ -7,10 +7,13 @@ pub fn help_markdown(commands:Vec<maho_ext_api::SlashCommandInfo>)->String{
     maho_interactive::help_content::build_help_markdown(&commands)
 }
 pub type HelpDisplay=Arc<dyn Fn(ExtensionContext,String)->ExtensionFuture<'static,()>+Send+Sync>;
+pub type HelpRowsReader=Arc<dyn Fn(&dyn maho_ext_api::ExtensionTuiHost)->std::rc::Rc<dyn Fn()->usize>+Send+Sync>;
+pub type HelpRenderer=Arc<dyn Fn(&dyn maho_ext_api::ExtensionTuiHost)->std::rc::Rc<dyn Fn()>+Send+Sync>;
+pub type HelpThemeMapper=Arc<dyn Fn(&maho_ext_api::Theme)->Result<maho_interactive::theme::Theme,maho_ext_api::ExtensionFailure>+Send+Sync>;
 pub struct HelpUiBindings{
-    pub rows:Arc<dyn Fn(&dyn maho_ext_api::ExtensionTuiHost)->std::rc::Rc<dyn Fn()->usize>+Send+Sync>,
-    pub render:Arc<dyn Fn(&dyn maho_ext_api::ExtensionTuiHost)->std::rc::Rc<dyn Fn()>+Send+Sync>,
-    pub theme:Arc<dyn Fn(&maho_ext_api::Theme)->Result<maho_interactive::theme::Theme,maho_ext_api::ExtensionFailure>+Send+Sync>,
+    pub rows:HelpRowsReader,
+    pub render:HelpRenderer,
+    pub theme:HelpThemeMapper,
 }
 pub fn native_display(bindings:HelpUiBindings)->HelpDisplay{
     let bindings=Arc::new(bindings);

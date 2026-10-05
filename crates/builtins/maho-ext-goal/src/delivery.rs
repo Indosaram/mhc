@@ -83,12 +83,10 @@ impl GoalDelivery {
                     let Some(ctx)=context else { return; };
                     if owner.context.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_none_or(|active|active.session_manager.session_id()!=ctx.session_manager.session_id()) { return; }
                     let result=async {
-                        if event==crate::store_changed_event::GOAL_STORE_CHANGED_EVENT&&crate::store_changed_event::is_goal_store_changed_event(&data) {
-                            if let Some(goal)=owner.runtime.store_changed_with_context(&crate::store_changed_event::GoalStoreChangedEvent { thread_id:data["threadId"].as_str().unwrap_or("").into(),ctx:Some(ctx.clone()) }).await? { owner.queue(&ctx,&goal,GoalContinuationPath::SessionStart).await?; }
-                        }
+                        if event==crate::store_changed_event::GOAL_STORE_CHANGED_EVENT&&crate::store_changed_event::is_goal_store_changed_event(&data) && let Some(goal)=owner.runtime.store_changed_with_context(&crate::store_changed_event::GoalStoreChangedEvent { thread_id:data["threadId"].as_str().unwrap_or("").into(),ctx:Some(ctx.clone()) }).await? { owner.queue(&ctx,&goal,GoalContinuationPath::SessionStart).await?; }
                         owner.reconcile(&ctx).await
                     }.await;
-                    if let Err(error)=result { if !crate::stale_context::is_stale_extension_context_error(&error) { ctx.ui.notify(&error.message,maho_ext_api::NotificationType::Error); } }
+                    if let Err(error)=result && !crate::stale_context::is_stale_extension_context_error(&error) { ctx.ui.notify(&error.message,maho_ext_api::NotificationType::Error); }
                 });
             })));
         }
@@ -109,7 +107,7 @@ impl GoalDelivery {
                     }
                 }
             },
-            ExtensionEvent::AgentStart=>{ if self.pending.swap(false,Ordering::AcqRel) { self.runtime.monitor.lock().map_err(failure)?.note_continuation_started(); } },
+            ExtensionEvent::AgentStart if self.pending.swap(false,Ordering::AcqRel) => { self.runtime.monitor.lock().map_err(failure)?.note_continuation_started(); },
             ExtensionEvent::AgentEnd { messages,aborted,abort_source,will_retry }=>{
                 let ended=maho_core::agent_abort_provenance::AgentEndEvent { messages:messages.clone(),aborted:aborted.unwrap_or(false),abort_source:*abort_source,will_retry:will_retry.unwrap_or(false) };
                 if crate::agent_end_continuation::goal_agent_end_route(goal,&ended)==crate::agent_end_continuation::GoalAgentEndRoute::AgentEnd&&should_queue_goal_continuation_after_agent_end(goal,ctx.has_pending_messages()?,messages)&&let Some(goal)=goal.filter(|goal|goal.status==GoalStatus::Active) {
@@ -130,7 +128,7 @@ impl GoalDelivery {
                 let recovery=self.runtime.monitor.lock().map_err(failure)?.take_settled_recovery();
                 if let Some((path,recovery))=recovery { self.queue(ctx,&recovery.goal,path).await?; }
             },
-            ExtensionEvent::InputDisposition { disposition,.. } if matches!(disposition,maho_ext_api::InputDisposition::Started|maho_ext_api::InputDisposition::Queued)=>{ self.pending.store(false,Ordering::Release); },
+            ExtensionEvent::InputDisposition { disposition: maho_ext_api::InputDisposition::Started|maho_ext_api::InputDisposition::Queued,.. }=>{ self.pending.store(false,Ordering::Release); },
             ExtensionEvent::SessionAbort=>{ self.pending.store(false,Ordering::Release); },
             ExtensionEvent::SessionShutdown(_)=>{
                 self.pending.store(false,Ordering::Release); self.subscriptions.lock().map_err(failure)?.clear(); *self.context.lock().map_err(failure)?=None;
