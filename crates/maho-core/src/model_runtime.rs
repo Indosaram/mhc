@@ -198,7 +198,7 @@ impl ModelRuntime {
     /// Pinned `ModelRuntime.login` (`model-runtime.ts:996-1000`): run the provider's OAuth or
     /// api-key login flow and persist the returned credential through the shared store.
     pub async fn login(&self, provider_id: &str, auth_type: maho_ai::auth::types::AuthType, interaction: std::sync::Arc<dyn maho_ai::auth::types::AuthInteraction>) -> Result<maho_ai::auth::types::Credential, ModelsError> {
-        use maho_ai::auth::types::{ApiKeyCredential, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, ProviderAuthInteraction};
+        use maho_ai::auth::types::{ApiKeyCredential, AuthPrompt, AuthPromptKind, Credential, ProviderAuthInteraction};
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(interaction.signal());
         signal.throw_if_aborted().map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
