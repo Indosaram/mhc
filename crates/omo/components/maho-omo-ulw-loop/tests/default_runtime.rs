@@ -1,4 +1,4 @@
-mod support;
+pub mod support;
 
 use maho_ext_api::*;
 use maho_omo_ulw_loop::index::UlwLoopComponent;

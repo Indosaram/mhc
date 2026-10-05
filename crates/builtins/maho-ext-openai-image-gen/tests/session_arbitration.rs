@@ -1,5 +1,5 @@
 #[path = "../../maho-ext-imagegen/tests/support.rs"]
-mod imagegen_support;
+pub mod imagegen_support;
 
 use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope};
 use maho_ext_api::*;
@@ -10,6 +10,28 @@ use maho_test_support::faux_session::{FauxSession, NativeSession};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+// `imagegen_support::FixtureRegistry` is a foreign crate's type, so this crate cannot implement
+// `ImageGenAuthRegistry` for it (orphan rule). Mirror its credential fields in a local fixture.
+struct AuthFixture {
+    stored_api_key: bool,
+    provider_api_key: Option<String>,
+    provider_headers: Option<std::collections::BTreeMap<String, Option<String>>>,
+    models: Vec<Model>,
+}
+
+impl maho_ext_imagegen::auth::ImageGenAuthRegistry for AuthFixture {
+    fn stored_openai_is_api_key(&self) -> bool { self.stored_api_key }
+    fn get_all(&self) -> Vec<Model> { self.models.clone() }
+    fn get_provider_auth(&self, _: &str) -> maho_ext_imagegen::auth::AuthFuture<'_> {
+        let key = self.provider_api_key.clone();
+        let headers = self.provider_headers.clone().unwrap_or_default();
+        Box::pin(async move { Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials { api_key: Some(api_key), headers })) })
+    }
+    fn get_api_key_and_headers<'a>(&'a self, _: &'a Model) -> maho_ext_imagegen::auth::AuthFuture<'a> {
+        self.get_provider_auth("")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Creds {
     None,
@@ -17,7 +39,7 @@ enum Creds {
     Native,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Behavior {
     Bypass,
     MissingConfig,
@@ -81,9 +103,9 @@ fn model(kind: ModelKind) -> maho_ai::types::Model {
 
 fn registry(creds: Creds) -> Arc<dyn ImageGenAuthRegistry> {
     match creds {
-        Creds::None => Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() }),
-        Creds::Gateway => Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] }),
-        Creds::Native => Arc::new(imagegen_support::FixtureRegistry { stored_api_key: true, provider_api_key: Some("sk-native-test-key".into()), provider_headers: None, models: Vec::new() }),
+        Creds::None => Arc::new(AuthFixture { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() }),
+        Creds::Gateway => Arc::new(AuthFixture { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] }),
+        Creds::Native => Arc::new(AuthFixture { stored_api_key: true, provider_api_key: Some("sk-native-test-key".into()), provider_headers: None, models: Vec::new() }),
     }
 }
 
@@ -192,7 +214,7 @@ fn credentials_without_native_are_live() {
 #[test]
 fn gate_discriminates_official_from_proxied() {
     use maho_ext_openai_image_gen::gate::{supports_native_image_generation, NativeImageGenModel};
-    let model = |provider: &'static str, api: &'static str, base_url: &'static str, compat: Option<&'static Value>| NativeImageGenModel { id: "gpt-5.5", provider, api, base_url, compat };
+    let model = |provider: &'static str, api: &'static str, base_url: &'static str, compat: Option<&Value>| NativeImageGenModel { id: "gpt-5.5", provider, api, base_url, compat };
     let compat_on = json!({"supportsImageGeneration": true});
     let compat_off = json!({"supportsImageGeneration": false});
     assert!(supports_native_image_generation(Some(&model("openai", "openai-responses", "https://api.openai.com/v1", None))));
