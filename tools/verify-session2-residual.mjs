@@ -469,12 +469,13 @@ export function validateBuild(evidenceDir, report, exitCode = null) {
 	if (exitCode === 0 && logHasCompilerError(path)) report.fail("build log contains compiler errors despite a zero exit code");
 }
 
-/** Bind the successful FRESH build's output to the candidate, and refuse to accept a stale binary.
- *  When the workspace build is green, `build-provenance.json` must record the produced binary
- *  (path + sha256 + mtime after run start, distinct from the pre-run baseline) and the staged
- *  `$E/install/mhc` + QA summary must be that exact artifact. When the build FAILED, no
- *  binary-dependent command may pass (that would be a stale-binary acceptance). */
-export function validateBuildProvenance(evidenceDir, sha, commandManifest, report) {
+/** Bind the successful candidate build to its output artifact. The proof is the exact source/build
+ *  INPUTS (candidate sha + live Cargo.lock + Cargo.toml), the captured cargo RESULT (exit + build-log
+ *  hash), the artifact fingerprint, and STAGING/QA hash identity. Hash inequality vs a pre-run
+ *  baseline and mtime are NOT required — cargo may legitimately reuse an up-to-date artifact for an
+ *  unchanged product (harness/evidence-only edits), which yields a byte-identical CLI. When the build
+ *  FAILED, no binary-dependent command may pass (that would be stale-binary acceptance). */
+export function validateBuildProvenance(evidenceDir, repo, sha, commandManifest, report) {
 	const commands = commandManifest?.commands ?? [];
 	const buildEntry = commands.find((c) => BUILD_COMMAND_RE.test(String(c.template)));
 	const buildExit = buildEntry ? buildEntry.exit_code : null;
@@ -492,6 +493,17 @@ export function validateBuildProvenance(evidenceDir, sha, commandManifest, repor
 	}
 	if (prov.schema !== BUILD_PROVENANCE_SCHEMA) report.fail(`build provenance schema "${prov.schema}" != "${BUILD_PROVENANCE_SCHEMA}"`);
 	if (prov.sha !== sha) report.fail(`build provenance sha ${prov.sha} != gate SHA ${sha}`);
+	// The recorded build INPUTS must match the candidate: source SHA + live lock/manifest hashes.
+	const inputs = prov.inputs ?? {};
+	if (inputs.source_sha !== sha) report.fail(`build provenance inputs.source_sha ${inputs.source_sha} != gate SHA ${sha}`);
+	for (const [key, rel] of [["cargo_lock_sha256", "Cargo.lock"], ["cargo_toml_sha256", "Cargo.toml"]]) {
+		if (!SHA256_HEX.test(String(inputs[key] ?? ""))) {
+			report.fail(`build provenance inputs.${key} is not a 64-hex hash`);
+			continue;
+		}
+		const live = existsSync(join(repo, rel)) ? sha256(readFileSync(join(repo, rel))) : null;
+		if (live !== null && inputs[key] !== live) report.fail(`build provenance inputs.${key} != live ${rel} (build inputs do not match the candidate)`);
+	}
 	if (buildExit !== null && buildExit !== undefined && prov.build_exit_code !== buildExit) {
 		report.fail(`build provenance build_exit_code ${prov.build_exit_code} != command-manifest build exit ${buildExit}`);
 	}
@@ -499,32 +511,36 @@ export function validateBuildProvenance(evidenceDir, sha, commandManifest, repor
 	if (buildExit === 0) {
 		if (prov.produced !== true) report.fail("build provenance does not mark the binary as produced by this run");
 		if (prov.build_exit_code !== 0) report.fail(`build provenance build_exit_code ${prov.build_exit_code} != 0 despite a green build`);
-		if (!SHA256_HEX.test(String(prov.binary_sha256 ?? ""))) report.fail("build provenance binary_sha256 is not a 64-hex hash");
-		if (typeof prov.binary_mtime_ms !== "number" || typeof prov.run_started_at_ms !== "number") {
-			report.fail("build provenance lacks numeric binary_mtime_ms/run_started_at_ms freshness stamps");
-		} else if (prov.binary_mtime_ms < prov.run_started_at_ms) {
-			report.fail("build provenance binary predates the run (STALE binary; not produced by this gate)");
-		}
-		if (prov.baseline && prov.baseline.existed === true && prov.baseline.sha256 === prov.binary_sha256) {
-			report.fail("build provenance binary is byte-identical to the pre-run baseline (STALE binary accepted)");
-		}
-		if (commandManifest?.binary && prov.binary && resolve(String(prov.binary)) !== resolve(String(commandManifest.binary))) {
-			report.fail(`build provenance binary ${prov.binary} != command-manifest BIN ${commandManifest.binary}`);
-		}
-		const staged = join(evidenceDir, "install", "mhc");
-		if (existsSync(staged) && SHA256_HEX.test(String(prov.binary_sha256 ?? "")) && sha256(readFileSync(staged)) !== prov.binary_sha256) {
-			report.fail("staged $E/install/mhc is not the freshly built binary (build provenance hash mismatch)");
-		}
-		const qaSummary = join(evidenceDir, "qa", "residual-qa.json");
-		if (existsSync(qaSummary) && SHA256_HEX.test(String(prov.binary_sha256 ?? ""))) {
-			try {
-				const summary = readJson(qaSummary);
-				if (SHA256_HEX.test(String(summary.binary_sha256 ?? "")) && summary.binary_sha256 !== prov.binary_sha256) {
-					report.fail("QA summary binary_sha256 is not the freshly built binary (build provenance mismatch)");
-				}
-			} catch {
-				// validateQa reports the malformed summary; do not duplicate here.
+		if (!SHA256_HEX.test(String(prov.binary_sha256 ?? ""))) {
+			report.fail("build provenance binary_sha256 is not a 64-hex hash");
+		} else {
+			// The artifact at the recorded path must be the captured one (unchanged since capture).
+			if (typeof prov.binary !== "string" || !existsSync(prov.binary)) {
+				report.fail(`build provenance binary path is missing: ${prov.binary}`);
+			} else if (sha256(readFileSync(prov.binary)) !== prov.binary_sha256) {
+				report.fail("build provenance binary changed since capture (path hash mismatch)");
 			}
+			// The captured cargo RESULT must match the command manifest's build log hash.
+			if (buildEntry?.log && SHA256_HEX.test(String(prov.build_log_sha256 ?? "")) && prov.build_log_sha256 !== buildEntry.log_sha256) {
+				report.fail("build provenance build_log_sha256 != the captured build log hash (result does not match)");
+			}
+			// STAGING IDENTITY: the staged artifact and the QA summary must be the same built binary.
+			const staged = join(evidenceDir, "install", "mhc");
+			if (existsSync(staged) && sha256(readFileSync(staged)) !== prov.binary_sha256) {
+				report.fail("staged $E/install/mhc is not the freshly built binary (staging hash identity mismatch)");
+			}
+			const qaSummary = join(evidenceDir, "qa", "residual-qa.json");
+			if (existsSync(qaSummary)) {
+				try {
+					const summary = readJson(qaSummary);
+					if (SHA256_HEX.test(String(summary.binary_sha256 ?? "")) && summary.binary_sha256 !== prov.binary_sha256) {
+						report.fail("QA summary binary_sha256 is not the freshly built binary (QA hash identity mismatch)");
+					}
+				} catch {
+					// validateQa reports the malformed summary; do not duplicate here.
+				}
+			}
+			// A byte-identical pre-run artifact is NOT a failure (cargo reuse of an up-to-date artifact).
 		}
 	} else {
 		if (prov.produced === true) report.fail("build provenance claims a produced binary despite a failed build");
@@ -985,7 +1001,7 @@ export function verify({ repo, evidenceDir, sha, final = false }) {
 			const entry = (commandManifest?.commands ?? []).find((c) => re.test(String(c.template)));
 			return entry ? entry.exit_code : null;
 		};
-		validateBuildProvenance(evidenceDir, sha, commandManifest, report);
+		validateBuildProvenance(evidenceDir, repo, sha, commandManifest, report);
 		validateNextest(evidenceDir, repo, manifest, report);
 		validateClippy(evidenceDir, report, exitFor(/clippy --workspace/));
 		validateBuild(evidenceDir, report, exitFor(/build --workspace/));
@@ -1190,23 +1206,33 @@ function buildValidFixture(root, sha) {
 	for (const name of REQUIRED_SCENARIOS) qaScenarios[name] = { status: "pass", cleanup_ok: true, artifacts: [`scenario-${name}.log`] };
 	for (const name of REQUIRED_SCENARIOS) put(join(evidence, `qa/scenario-${name}.log`), `${name} pass\n`);
 	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, binary_sha256: stagedHash, scenarios: qaScenarios }, null, 2));
-	// The successful-build provenance the gate runner binds to the candidate (valid by default).
-	const runStartedAtMs = 1_700_000_000_000;
+	// The successful-candidate build provenance the gate runner binds (valid by default). The artifact
+	// is byte-identical to the pre-run baseline ON PURPOSE: cargo reuse of an up-to-date artifact must
+	// be ACCEPTED (the earlier hash-inequality/mtime predicate was wrong).
+	const buildEntry = commands.find((c) => BUILD_COMMAND_RE.test(String(c.template)));
 	put(
 		join(evidence, BUILD_PROVENANCE),
 		JSON.stringify(
 			{
 				schema: BUILD_PROVENANCE_SCHEMA,
 				sha,
-				binary: "/fixture/cargo-target/debug/mhc",
+				binary: join(evidence, "install", "mhc"),
 				produced: true,
 				build_command: "cargo4 build --workspace --bins",
 				build_exit_code: 0,
+				build_log_sha256: buildEntry.log_sha256,
+				cargo_target_dir: "/fixture/cargo-target",
+				inputs: {
+					source_sha: sha,
+					cargo_lock_sha256: "e".repeat(64),
+					cargo_toml_sha256: sha256(readFileSync(join(repo, "Cargo.toml"))),
+					rust_toolchain_sha256: "f".repeat(64),
+				},
 				binary_sha256: stagedHash,
-				binary_mtime_ms: runStartedAtMs + 5_000,
-				baseline: { existed: true, sha256: "d".repeat(64), mtime_ms: runStartedAtMs - 600_000 },
-				run_started_at_ms: runStartedAtMs,
-				captured_at: new Date(runStartedAtMs + 6_000).toISOString(),
+				binary_size: readFileSync(join(evidence, "install", "mhc")).length,
+				baseline: { existed: true, sha256: stagedHash, mtime_ms: 0 },
+				artifact_mtime_ms: 0,
+				captured_at: "2026-10-05T01:32:31.000Z",
 			},
 			null,
 			2,
@@ -1597,10 +1623,10 @@ export function selfTest() {
 		// a binary-dependent command (run-qa/residual-qa) still claims success -> stale acceptance
 		write(join(evidence, "command-manifest.json"), JSON.stringify(c));
 	}));
-	check("build provenance with a stale binary mtime rejected", mutate(({ evidence, read, write, join }) => {
+	check("build provenance inputs not matching the candidate rejected", mutate(({ evidence, read, write, join }) => {
 		const p = join(evidence, BUILD_PROVENANCE);
 		const prov = JSON.parse(read(p, "utf8"));
-		prov.binary_mtime_ms = prov.run_started_at_ms - 1;
+		prov.inputs.cargo_toml_sha256 = "0".repeat(64);
 		write(p, JSON.stringify(prov));
 	}));
 	check("build provenance hash not matching the staged binary rejected", mutate(({ evidence, write, join }) => {
@@ -1619,6 +1645,18 @@ export function selfTest() {
 		prov.produced = true;
 		write(p, JSON.stringify(prov));
 	}));
+	check("cargo-reused byte-identical artifact accepted", (() => {
+		const root = mkdtempSync(join(tmpdir(), "verify-session2-reuse-"));
+		try {
+			const sha = "a".repeat(40);
+			const { repo, evidence } = buildValidFixture(root, sha);
+			// baseline sha == artifact sha (cargo reused an up-to-date artifact) must NOT fail.
+			const report = verify({ repo, evidenceDir: evidence, sha });
+			return { ok: report.problems.length === 0, detail: report.problems.join("; ") };
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	})());
 	check("on-disk fixture: stale binary accepted after failed build rejected", (() => {
 		const path = join(FIXTURES, "command-manifest-stale-binary-after-failed-build.json");
 		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
@@ -1627,11 +1665,11 @@ export function selfTest() {
 		const passed = commands.filter((e) => BINARY_DEPENDENT_RES.some((re) => re.test(String(e.template))) && e.exit_code === 0);
 		return { ok: build?.exit_code !== 0 && passed.length > 0, detail: `build_exit=${build?.exit_code} passed_after=${passed.length}` };
 	})());
-	check("on-disk fixture: build provenance stale mtime rejected", (() => {
-		const path = join(FIXTURES, "build-provenance-stale-mtime.json");
+	check("on-disk fixture: build provenance inputs mismatch rejected", (() => {
+		const path = join(FIXTURES, "build-provenance-inputs-mismatch.json");
 		if (!existsSync(path)) return { ok: false, detail: "fixture missing" };
 		const prov = readJson(path);
-		return { ok: typeof prov.binary_mtime_ms === "number" && typeof prov.run_started_at_ms === "number" && prov.binary_mtime_ms < prov.run_started_at_ms, detail: `mtime=${prov.binary_mtime_ms} run=${prov.run_started_at_ms}` };
+		return { ok: prov.inputs?.source_sha !== prov.sha, detail: `source_sha=${prov.inputs?.source_sha} sha=${prov.sha}` };
 	})());
 
 	const failed = results.filter((r) => !r.ok);

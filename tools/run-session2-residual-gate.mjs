@@ -42,37 +42,56 @@ function sha256(data) {
 	return createHash("sha256").update(data).digest("hex");
 }
 
-/** The pre-run state of `$BIN`. A binary whose sha256 is unchanged and whose mtime predates the run
- *  was NOT produced by this gate and must never satisfy a binary-dependent command. */
+/** The pre-run state of `$BIN`. Recorded as INFORMATIONAL provenance only — a byte-identical
+ *  artifact is NOT by itself a stale-binary signal (cargo legitimately reuses an up-to-date
+ *  artifact for an unchanged product with harness/evidence-only edits). */
 function binBaseline(binary) {
 	const abs = resolve(binary);
 	if (!existsSync(abs)) return { existed: false, sha256: null, mtime_ms: null };
 	return { existed: true, sha256: sha256(readFileSync(abs)), mtime_ms: statSync(abs).mtimeMs };
 }
 
-/** Bind the FRESH build output to the candidate. `produced` is true only when the build command
- *  exited 0 AND the binary exists, was written after the run started, and differs from the pre-run
- *  baseline (i.e. it is not a stale artifact). */
-function buildProvenance(binary, sha, buildExit, baseline, runStartedAtMs) {
+/** Bind the SUCCESSFUL candidate build to its output artifact WITHOUT requiring the artifact to be
+ *  new or changed. The proof is the exact source/build INPUTS (candidate sha + Cargo.lock +
+ *  Cargo.toml + rust-toolchain), the captured cargo RESULT (exit + build-log hash), the artifact
+ *  fingerprint, and — verified by the verifier — staging/QA hash identity. Hash inequality and
+ *  mtime are NOT proof and are recorded as informational provenance only; requiring them would
+ *  falsely reject a legitimate cargo reuse of an up-to-date artifact. */
+function buildProvenance(repo, binary, sha, buildExit, buildLogPath, cargoTargetDir, baseline) {
 	const abs = resolve(binary);
 	let binarySha = null;
+	let binarySize = null;
 	let mtimeMs = null;
 	if (existsSync(abs)) {
-		binarySha = sha256(readFileSync(abs));
+		const bytes = readFileSync(abs);
+		binarySha = sha256(bytes);
+		binarySize = bytes.length;
 		mtimeMs = statSync(abs).mtimeMs;
 	}
-	const produced = buildExit === 0 && binarySha !== null && mtimeMs !== null && mtimeMs >= runStartedAtMs && binarySha !== baseline.sha256;
+	const readHash = (rel) => {
+		const p = join(repo, rel);
+		return existsSync(p) ? sha256(readFileSync(p)) : null;
+	};
+	const buildLogSha = buildLogPath && existsSync(buildLogPath) ? sha256(readFileSync(buildLogPath)) : null;
 	return {
 		schema: BUILD_PROVENANCE_SCHEMA,
 		sha,
 		binary: abs,
-		produced,
+		produced: buildExit === 0 && binarySha !== null,
 		build_command: "cargo4 build --workspace --bins",
 		build_exit_code: buildExit,
+		build_log_sha256: buildLogSha,
+		cargo_target_dir: cargoTargetDir,
+		inputs: {
+			source_sha: sha,
+			cargo_lock_sha256: readHash("Cargo.lock"),
+			cargo_toml_sha256: readHash("Cargo.toml"),
+			rust_toolchain_sha256: readHash("rust-toolchain.toml"),
+		},
 		binary_sha256: binarySha,
-		binary_mtime_ms: mtimeMs,
-		baseline,
-		run_started_at_ms: runStartedAtMs,
+		binary_size: binarySize,
+		baseline: { existed: baseline.existed, sha256: baseline.sha256, mtime_ms: baseline.mtime_ms },
+		artifact_mtime_ms: mtimeMs,
 		captured_at: new Date().toISOString(),
 	};
 }
@@ -385,7 +404,7 @@ async function main() {
 			buildExit = result.exit_code;
 			buildFailed = result.exit_code !== 0;
 			// Bind the (successful or failed) build output to the candidate BEFORE any QA consumes it.
-			provenance = buildProvenance(args.binary, sha, buildExit, baseline, runStartedAtMs);
+			provenance = buildProvenance(repo, args.binary, sha, buildExit, join(evidence, entry.log), process.env.CARGO_TARGET_DIR ?? null, baseline);
 			writeFileSync(join(evidence, BUILD_PROVENANCE), JSON.stringify(provenance, null, 2) + "\n");
 		}
 		if (result.exit_code !== 0) failed += 1;
