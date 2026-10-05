@@ -545,9 +545,11 @@ impl SettingsManager {
     /// reload; project settings stay excluded (`projectTrusted: false`).
     pub fn in_memory(global_settings: Settings, project_trusted: bool) -> SettingsManager {
         let storage = InMemorySettingsStorage::default();
-        if let Ok(content) = serde_json::to_string(&global_settings) {
-            let _ = storage.with_lock(SettingsScope::Global, &mut |_| Some(content));
-        }
+        // `with_lock` takes `&mut dyn FnMut` and may call the update closure more than once (a lost
+        // write race re-runs it), so the closure must yield the seeded content on every call instead
+        // of moving a captured `String` out of itself (E0507). Serialize per call from a borrow,
+        // matching the pinned `inMemory` closure `() => JSON.stringify(initialSettings, null, 2)`.
+        let _ = storage.with_lock(SettingsScope::Global, &mut |_| serde_json::to_string(&global_settings).ok());
         SettingsManager::from_storage(Box::new(storage), project_trusted)
     }
 
