@@ -133,3 +133,37 @@ async fn nested_request_settlement_records_usage_and_clears_intent() {
     assert_eq!(pending.pending.usage_ids, vec!["usage"]);
     assert_eq!(lane.session.get_stats(&drive.context).await.unwrap().usage.input, 9);
 }
+
+#[test]
+fn hook_structural_results_deserialize_camel_case_payloads() {
+    use maho_agent::harness::compaction::branch_summarization::BranchSummaryResult;
+    use maho_agent::harness::compaction::compaction::CompactResult;
+
+    let compaction: CompactResult = serde_json::from_value(serde_json::json!({
+        "summary": "compacted",
+        "tokensBefore": 42,
+        "retainedTail": [],
+    }))
+    .unwrap();
+    assert_eq!(compaction.summary, "compacted");
+    assert_eq!(compaction.tokens_before, 42);
+    assert!(compaction.retained_tail.is_empty());
+    assert!(compaction.usage.is_none());
+    assert!(compaction.details.is_none());
+
+    let branch: BranchSummaryResult = serde_json::from_value(serde_json::json!({
+        "summary": "branched",
+        "readFiles": ["a"],
+        "modifiedFiles": ["b"],
+    }))
+    .unwrap();
+    assert_eq!(branch.summary, "branched");
+    assert_eq!(branch.read_files, vec!["a".to_string()]);
+    assert_eq!(branch.modified_files, vec!["b".to_string()]);
+    assert!(branch.usage.is_none());
+
+    let serialized = serde_json::to_value(&compaction).unwrap();
+    assert_eq!(serialized["tokensBefore"], serde_json::json!(42));
+    assert!(serialized.get("usage").is_none());
+    assert!(serialized.get("details").is_none());
+}

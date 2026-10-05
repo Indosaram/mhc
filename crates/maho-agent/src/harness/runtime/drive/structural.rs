@@ -220,15 +220,15 @@ use crate::harness::runtime::drive::retry::{now_ms, retry_not_before_now, wait_u
 use crate::harness::runtime::drive::terminal::{operation_cleanup_writes, operation_result_record};
 use crate::harness::runtime::lane::{ContinueOperationResult as LaneContinue, Lane, OperationCommand};
 use crate::harness::runtime::transcript::{committed_entry_events, read_bounded_entries};
-use crate::harness::runtime::types::{Drive, ProcedureResult, RuntimeDriveLane, StructuralPreparation};
+use crate::harness::runtime::types::{Drive, LanePatch, ProcedureResult, RuntimeDriveLane, StructuralPreparation};
 use crate::harness::session::commit::{insert_entry, insert_usage};
 use crate::harness::session::types::{
-    Control, EntryKind, InboxItemKind, LaneConfiguration, LanePatch, NewEntry, NewUsageRow, OperationError,
+    Continuation, Control, EntryKind, InboxItemKind, LaneConfiguration, NewEntry, NewUsageRow, OperationError,
     OperationScope, OperationState, PendingEntry, SessionReader, SummaryContext, SummaryDecidingOperation,
     SummaryEffectPendingOperation, SummaryGenerationReady, SummaryGenerationRetryWait, SummaryReadyOperation,
     SummaryRetryWaitOperation, TerminalStatus, UsageRow, Write,
 };
-use crate::harness::session::values::{branch_tip, delete_value, entry_label, pending_entry, set_value};
+use crate::harness::session::values::{branch_tip, delete_value, entry_label, operation_preparation, pending_entry, set_value};
 use crate::harness::types::AgentHarnessStreamOptions;
 
 /// Pinned `summaryKind` decoded back from a durable preparation envelope.
@@ -398,6 +398,7 @@ async fn publish_structural_ready(
     _deciding: &SummaryDecidingOperation,
 ) -> Result<ProcedureResult, SessionError> {
     let this = lane.clone();
+    let lane_for_closure = this.clone();
     let result_entry_id = (lane.session.id_generator())(None);
     let published = this
         .continue_operation(
@@ -412,7 +413,7 @@ async fn publish_structural_ready(
                         ready: SummaryGenerationReady {
                             scope: crate::harness::session::types::SummaryGenerationScope {
                                 task: deciding.task.clone(),
-                                summary_context: summary_context(&this, &result_entry_id, state.configuration.clone()),
+                                summary_context: summary_context(&lane_for_closure, &result_entry_id, state.configuration.clone()),
                             },
                             next_attempt: 1,
                         },
@@ -542,6 +543,7 @@ async fn publish_structural_outcome(
         _ => None,
     };
     let this = lane.clone();
+    let lane_for_closure = this.clone();
     let drive_context = drive.context.clone();
     let operation_id = drive.operation_id.clone();
     let lane_name = lane.name.clone();
@@ -554,7 +556,7 @@ async fn publish_structural_outcome(
                 let drive_context = drive_context.clone();
                 let operation_id = operation_id.clone();
                 let lane_name = lane_name.clone();
-                let lane_ref = this.clone();
+                let lane_ref = lane_for_closure.clone();
                 Box::pin(async move {
                     let task = summary_task_of(&current)
                         .ok_or_else(|| session_invariant_error("Structural outcome requires a summary task"))?
@@ -562,6 +564,7 @@ async fn publish_structural_outcome(
                     let expected = summary_kind(&task);
                     let is_compaction_result = matches!(&*outcome, StructuralOutcome::Compaction { .. });
                     let is_branch_result = matches!(&*outcome, StructuralOutcome::BranchSummary { .. });
+                    let is_declined = matches!(&*outcome, StructuralOutcome::Declined);
                     if is_compaction_result || is_branch_result {
                         let actual = if is_compaction_result { "compaction" } else { "branch_summary" };
                         if actual != expected {
@@ -649,7 +652,6 @@ async fn publish_structural_outcome(
                             if is_branch_result {
                                 return Err(session_invariant_error("Run compaction boundary received a branch summary"));
                             }
-                            let is_declined = matches!(&*outcome, StructuralOutcome::Declined);
                             if is_compaction_result || (is_declined && task.reason == Some(crate::harness::session::types::SummaryTaskReason::Threshold)) {
                                 let Some(terminal_tip) = terminal_tip_id.clone() else { return Err(session_invariant_error("Run compaction has no Branch tip")); };
                                 let continuation = resume_after.continuation;
@@ -674,7 +676,7 @@ async fn publish_structural_outcome(
                                 return Ok(OperationCommand::Commit {
                                     decision: crate::harness::runtime::lane::CommitDecision {
                                         writes,
-                                        materialize: Arc::new(|_| ProcedureResult::Continue),
+                                        materialize: Arc::new(|_| StructuralPublication::Procedure(ProcedureResult::Continue)),
                                         events: Some(Arc::new(move |commit| {
                                             let mut events = if is_compaction_result {
                                                 (events_arc)(commit)
@@ -699,7 +701,7 @@ async fn publish_structural_outcome(
                             let end = HarnessEvent::new(HarnessEventPayload::RunEnd(RunEndPayload { run_id: id.clone(), from_tip_id: meta.source_tip_id.clone(), tip_id: Some(tip), ended_at: record.ended_at, status: "failed".into(), error: Some(error) }), Some(name.clone()));
                             let compaction_end = HarnessEvent::new(HarnessEventPayload::CompactionEnd { run_id: id.clone(), reason, ended_at: record.ended_at, status: if is_declined { "declined".into() } else { "failed".into() }, entry_id: None }, Some(name.clone()));
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: None, materialize: Arc::new(move |_| ProcedureResult::Settled { outcome: outcome_record.clone() }), events: Some(Arc::new(move |_| vec![compaction_end.clone(), end.clone()])) }) });
+                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: None, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![compaction_end.clone(), end.clone()])) }) });
                         }
                         ResultBoundary::Finish => {
                             if is_branch_result {
@@ -717,7 +719,7 @@ async fn publish_structural_outcome(
                             let events_arc = events.clone();
                             let lane_patch = if is_compaction_result { Some(LanePatch { tip_id: Some(terminal_tip_id.clone()), inbox: None, configuration: None }) } else { None };
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| ProcedureResult::Settled { outcome: outcome_record.clone() }), events: Some(Arc::new(move |commit| (events_arc)(commit))) }) });
+                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |commit| (events_arc)(commit))) }) });
                         }
                         ResultBoundary::CommitNavigation { .. } => {
                             if is_compaction_result {
@@ -735,7 +737,7 @@ async fn publish_structural_outcome(
                             let status_text = if is_branch_result { "completed" } else if is_declined { "declined" } else { "failed" };
                             let lane_patch = if is_branch_result { Some(LanePatch { tip_id: Some(terminal_tip_id.clone()), inbox: None, configuration: None }) } else { None };
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| ProcedureResult::Settled { outcome: outcome_record.clone() }), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::NavigationEnd(crate::harness::events::NavigationEndPayload { run_id: id.clone(), from_tip_id: from_tip.clone(), tip_id: tip.clone(), ended_at, status: status_text.into(), error: None }), Some(name.clone()))])) }) });
+                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::NavigationEnd(crate::harness::events::NavigationEndPayload { run_id: id.clone(), from_tip_id: from_tip.clone(), tip_id: tip.clone(), ended_at, status: status_text.into(), error: None }), Some(name.clone()))])) }) });
                         }
                     }
                 })
@@ -1168,7 +1170,7 @@ pub async fn run_structural(
         OperationState::SummaryReady(ready) => run_structural_generation(lane, drive, &ready).await,
         OperationState::SummaryEffectPending(effect) => recover_structural_generation(lane, drive, &effect).await,
         OperationState::SummaryRetryWait(retry) => run_structural_retry_wait(lane, drive, &retry).await,
-        OperationState::NavigationReadyToCommit(_) => commit_navigation(lane.as_ref(), drive),
+        OperationState::NavigationReadyToCommit(_) => commit_navigation(lane.as_ref(), drive).await,
         _ => Err(session_invariant_error("Structural execution requires a structural operation")),
     }
 }

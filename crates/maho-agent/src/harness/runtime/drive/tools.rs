@@ -531,7 +531,8 @@ async fn perform_tool_invocation<TContext: Clone + Send + Sync + 'static>(
     };
     active.store(false, Ordering::SeqCst);
     progress.seal();
-    if let Some(delivery) = latest.lock().unwrap_or_else(|error| error.into_inner()).take() {
+    let delivery = latest.lock().unwrap_or_else(|error| error.into_inner()).take();
+    if let Some(delivery) = delivery {
         delivery.await;
     }
     progress.drain().await?;
