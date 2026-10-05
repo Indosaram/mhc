@@ -1421,7 +1421,8 @@ async fn mounted_host_publishes_authoritative_remote_history_without_local_fallb
         fn dispose(&self) -> SessionFuture<'_, ()> { Box::pin(async {}) }
     }
 
-    fn host() -> (Arc<HistoryHost>, HistorySender, Arc<Mutex<Option<u64>>>, Arc<Mutex<Option<SessionEventListener>>>) {
+    type HostParts = (Arc<HistoryHost>, HistorySender, Arc<Mutex<Option<u64>>>, Arc<Mutex<Option<SessionEventListener>>>);
+    fn host() -> HostParts {
         let host = Arc::new(HistoryHost { listener: Arc::new(Mutex::new(None)), generation: Arc::new(Mutex::new(None)), sender: Arc::new(Mutex::new(None)) });
         (host.clone(), host.sender.clone(), host.generation.clone(), host.listener.clone())
     }

@@ -42,6 +42,12 @@ pub struct BtwRegistry {
     pub blocked: bool,
 }
 
+impl Default for BtwRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BtwRegistry {
     pub fn new() -> Self {
         let (entered, _receiver) = tokio::sync::watch::channel(None);
@@ -184,7 +190,7 @@ pub fn context(mode: ExtensionMode, has_ui: bool, registry: Arc<BtwRegistry>, ui
         is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false),
         get_system_prompt_fn: Arc::new(|| "base".into()),
-        get_system_prompt_options_fn: Arc::new(|| BuildSystemPromptOptions::default()),
+        get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default),
         registered_mcp_servers: Vec::new(),
         update_tool_hook_status: None,
         idle_coordinator: None,

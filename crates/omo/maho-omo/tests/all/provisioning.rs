@@ -9,9 +9,11 @@ use maho_omo::{
     DAG_SDK_ROOT_ENV, ProvisioningOptions, TOOLKIT_BIN_ENV, path_delimiter, provision_dag_sdk_root, provision_toolkit_path,
 };
 
+type AppliedLog = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
 struct Fixture {
     dir: tempfile::TempDir,
-    applied: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    applied: AppliedLog,
 }
 
 impl Default for Fixture {
