@@ -33,7 +33,7 @@ struct Harness {
 impl Harness {
     async fn call(&mut self, request: Value) -> Value {
         let id = request["id"].clone();
-        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.unwrap();
+        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.expect("request dispatch succeeds");
         loop {
             let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
             if message.get("id").is_some_and(|value| *value == id) { return message; }
@@ -48,18 +48,18 @@ impl Harness {
     fn write_source(&self, id: &str) -> std::path::PathBuf {
         let path = self.session_dir.join(format!("2020-01-01T00-00-00-000Z_{id}.jsonl"));
         let records = [json!({"type":"session","id":id,"version":3,"cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}),json!({"type":"message","id":"u","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":"hello"}}),json!({"type":"message","id":"a","parentId":"u","timestamp":"2020-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"persisted"}]}})];
-        std::fs::write(&path,records.map(|record|record.to_string()).join("\n")).unwrap();
+        std::fs::write(&path,records.map(|record|record.to_string()).join("\n")).expect("write source session file");
         path
     }
 }
 async fn harness() -> Harness {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().expect("temp dir");
     let session_dir = directory.path().join("sessions");
-    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::create_dir_all(&session_dir).expect("create session dir");
     let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(session_dir.display().to_string()),Some(factory())).await;
     let (send,receive) = tokio::sync::mpsc::unbounded_channel();
-    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).expect("connection stays open");Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.expect("initialize succeeds");
     Harness { runtime, receive, notifications:VecDeque::new(), session_dir, _directory:directory }
 }
 

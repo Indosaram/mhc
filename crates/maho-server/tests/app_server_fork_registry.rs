@@ -2,7 +2,7 @@ use maho_server::app_server::thread_registry::{fork_from_session_file, fork_sess
 use serde_json::json;
 
 fn write_source(path: &std::path::Path, records: &[serde_json::Value]) {
-    std::fs::write(path, records.iter().map(|record| record.to_string()).collect::<Vec<_>>().join("\n")).unwrap();
+    std::fs::write(path, records.iter().map(|record| record.to_string()).collect::<Vec<_>>().join("\n")).expect("write source records");
 }
 
 #[test]

@@ -29,7 +29,7 @@ async fn account_methods_validate_inputs_and_preserve_correlated_errors() {
 async fn account_read_uses_native_stored_credentials() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("auth.json");
-    let mut storage = maho_core::auth_storage::AuthStorage::create(&path.to_string_lossy());
+    let storage = maho_core::auth_storage::AuthStorage::create(&path.to_string_lossy());
     storage.set("anthropic", Some(json!({"type":"api_key","key":"faux-test-only"}))).unwrap();
     let mut registry = MethodRegistry::default();
     register_account_methods(&mut registry, directory.path().to_string_lossy().into_owned());

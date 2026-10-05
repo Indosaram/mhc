@@ -33,7 +33,7 @@ fn session(directory: &std::path::Path) -> AgentSession {
     let stream: maho_agent::types::StreamFn = Arc::new(|_, _, _| maho_ai::types::AssistantMessageEventStream::assistant());
     AgentSession::new(AgentSessionConfig {
         agent: maho_agent::Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream), ..Default::default() }),
-        session_manager: SessionManager::create("/workspace", Some(directory.to_str().unwrap()), None),
+        session_manager: SessionManager::create("/workspace", Some(directory.to_str().expect("temp dir path is valid UTF-8")), None),
         settings_manager: SettingsManager::from_storage(Box::<InMemorySettingsStorage>::default(), false),
         cwd: "/workspace".into(),
         agent_dir: Some(directory.display().to_string()),
@@ -55,7 +55,7 @@ fn session(directory: &std::path::Path) -> AgentSession {
         session_start_event: None,
         auto_title_sessions: Some(false),
     })
-    .unwrap()
+    .expect("AgentSession::new succeeds")
 }
 
 #[tokio::test]

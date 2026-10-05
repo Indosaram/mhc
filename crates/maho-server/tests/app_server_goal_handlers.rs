@@ -33,7 +33,7 @@ struct Harness {
 impl Harness {
     async fn call(&mut self, request: Value) -> Value {
         let id = request["id"].clone();
-        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.unwrap();
+        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.expect("request dispatch succeeds");
         loop {
             let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
             if message.get("id").is_some_and(|value| *value == id) { return message; }
@@ -49,7 +49,7 @@ impl Harness {
         let response = self.call(json!({"id":2,"method":"thread/start","params":{}})).await;
         assert_eq!(self.recorded_before_response(),0,"response must precede thread/started");
         assert_eq!(self.notification().await["method"],"thread/started");
-        response["result"]["thread"]["id"].as_str().unwrap().to_owned()
+        response["result"]["thread"]["id"].as_str().expect("thread id present").to_owned()
     }
     async fn call_notifying(&mut self, request: Value, method: &str) -> (Value, Value) {
         let response = self.call(request).await;
@@ -60,11 +60,11 @@ impl Harness {
     }
 }
 async fn harness() -> Harness {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir().expect("temp dir");
     let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(factory())).await;
     let (send,receive) = tokio::sync::mpsc::unbounded_channel();
-    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).expect("connection stays open");Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.expect("initialize succeeds");
     Harness { runtime, receive, notifications:VecDeque::new(), _directory:directory }
 }
 
@@ -212,18 +212,18 @@ struct ProbeHarness {
 }
 impl ProbeHarness {
     async fn new() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().expect("temp dir");
         let sessions=Arc::new(Mutex::new(std::collections::BTreeMap::new()));
         let captured=Arc::new(Mutex::new(Vec::new()));
         let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(probe_factory(sessions.clone(),captured.clone()))).await;
         let (send,receive) = tokio::sync::mpsc::unbounded_channel();
-        runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-        runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+        runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).expect("connection stays open");Box::pin(async {Ok(())})}));
+        runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.expect("initialize succeeds");
         Self { runtime, receive, sessions, captured, _directory:directory }
     }
     async fn call(&mut self, request: Value) -> Value {
         let id = request["id"].clone();
-        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.unwrap();
+        self.runtime.core.read().await.receive("qa", classify_incoming(request)).await.expect("request dispatch succeeds");
         loop {
             let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("response within deadline").expect("connection stays open");
             if message.get("id").is_some_and(|value| *value == id) { return message; }
@@ -233,11 +233,11 @@ impl ProbeHarness {
     async fn await_anchor(&self, anchor: &Arc<tokio::sync::Notify>) { tokio::time::timeout(std::time::Duration::from_secs(5), anchor.notified()).await.expect("post-rebind inventory anchor within deadline"); }
     fn session(&self, id: &str) -> maho_core::agent_session::AgentSession { self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).cloned().expect("factory captured the session") }
     async fn probe_write(&self, id: &str, value: &str) {
-        let disposition = self.session(id).prompt(&format!("/probe_ui_write {value}"), maho_core::agent_session::PromptOptions::default()).await.unwrap();
+        let disposition = self.session(id).prompt(&format!("/probe_ui_write {value}"), maho_core::agent_session::PromptOptions::default()).await.expect("probe write handled");
         assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
     }
     async fn probe_read(&self, id: &str) -> String {
-        let disposition = self.session(id).prompt("/probe_ui_read", maho_core::agent_session::PromptOptions::default()).await.unwrap();
+        let disposition = self.session(id).prompt("/probe_ui_read", maho_core::agent_session::PromptOptions::default()).await.expect("probe read handled");
         assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Handled);
         self.captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).last().cloned().expect("probe recorded a read")
     }
