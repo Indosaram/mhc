@@ -3,6 +3,29 @@ use maho_tui::components::text::Text;
 use maho_ai::utils::js::number_to_string;
 use super::{types::*,tool::SearchParams,native::provider_name,search::provider_entry_label};
 
+pub fn registered_renderers() -> maho_ext_api::ToolRenderers<(), serde_json::Value> {
+    use maho_interactive::theme::{ColorMode, theme_json::{ThemeJson, ColorValue}};
+    let theme = |theme: &maho_ext_api::Theme| Theme::from_json(ThemeJson {
+        name: theme.name.clone().unwrap_or_default(),
+        vars: theme.vars.iter().map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect(),
+        colors: theme.colors.iter().chain(&theme.backgrounds).map(|(key, value)| (key.clone(), ColorValue::Text(value.clone()))).collect(),
+        export_colors: Default::default(),
+    }, ColorMode::Truecolor).unwrap_or_else(|error| std::panic::panic_any(error));
+    maho_ext_api::ToolRenderers {
+        render_call: Some(std::sync::Arc::new(move |args, colors, _| {
+            let params = SearchParams { query: args["query"].as_str().unwrap_or("").into(),
+                allowed_domains: args.get("allowed_domains").map(|value| serde_json::from_value(value.clone()).unwrap_or_else(|error| std::panic::panic_any(error))),
+                blocked_domains: args.get("blocked_domains").map(|value| serde_json::from_value(value.clone()).unwrap_or_else(|error| std::panic::panic_any(error))) };
+            Box::new(render_search_call(&params, &theme(colors)))
+        })),
+        render_result: Some(std::sync::Arc::new(move |result, options, colors, _| {
+            let details = if result.details.is_null() { None } else { Some(serde_json::from_value(result.details.clone()).unwrap_or_else(|error| std::panic::panic_any(error))) };
+            let text = result.content.iter().find_map(|block| match block { maho_ext_api::ContentBlock::Text(text) => Some(text.text.as_str()), _ => None });
+            Box::new(render_search_result(text, details.as_ref(), &RenderResultOptions { expanded: options.expanded, is_partial: options.is_partial }, &theme(colors)))
+        })),
+    }
+}
+
 fn shorten(value:&str,max:usize)->String{
     let units=value.encode_utf16().collect::<Vec<_>>();
     if units.len()<=max{return value.into();}

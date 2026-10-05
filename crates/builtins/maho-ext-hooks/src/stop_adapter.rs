@@ -46,9 +46,10 @@ fn stop_diagnostic(source:&crate::types::HookSourceMetadata,code:&str,path:&str,
 fn stop_output_details(output:&serde_json::Map<String,Value>,stdout:&str)->(Vec<String>,Vec<(String,String)>) {
     let raw=serde_json::from_str::<Value>(stdout.trim()).ok();
     let specific=raw.as_ref().and_then(|value|value.get("hookSpecificOutput")).and_then(Value::as_object);
+    let nested_context=specific.is_some_and(|value|value.contains_key("additionalContext"));
     let mut fields=vec![];
     for key in ["decision","reason","additionalContext","continue","stopReason","suppressOutput","systemMessage"] {
-        if output.contains_key(key) {fields.push(if key=="additionalContext"&&specific.is_some_and(|value|value.contains_key(key)) {"stdout.hookSpecificOutput.additionalContext".to_owned()} else {format!("stdout.{key}")});}
+        if output.contains_key(key)||(key=="additionalContext"&&nested_context) {fields.push(if key=="additionalContext"&&nested_context {"stdout.hookSpecificOutput.additionalContext".to_owned()} else {format!("stdout.{key}")});}
     }
     let mut unsupported=vec![];
     for (key,message) in [("systemMessage","Stop does not support systemMessage."),("suppressOutput","Stop does not support suppressOutput."),("stopReason","Stop output stopReason is diagnostic-only."),("updatedInput","Stop does not support updatedInput."),("updatedToolOutput","Stop does not support updatedToolOutput.")] {
@@ -75,6 +76,12 @@ mod output_tests {
         assert_eq!(fields,["stdout.decision","stdout.hookSpecificOutput.additionalContext","stdout.systemMessage","stdout.updatedInput","stdout.hookSpecificOutput.updatedToolOutput"]);
         assert_eq!(diagnostics,vec![("stdout.systemMessage".to_owned(),"Stop does not support systemMessage.".to_owned()),("stdout.updatedInput".to_owned(),"Stop does not support updatedInput.".to_owned()),("stdout.hookSpecificOutput.updatedToolOutput".to_owned(),"Stop does not support hookSpecificOutput.updatedToolOutput.".to_owned())]);
     }
+    #[test]
+    fn nonblocking_output_records_fields_without_unsupported_diagnostics() {
+        let raw=r#"{"reason":"gate","hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"ctx"}}"#;
+        let (fields,diagnostics)=stop_output_details(serde_json::from_str::<Value>(raw).unwrap().as_object().unwrap(),raw);
+        assert_eq!(fields,["stdout.reason","stdout.hookSpecificOutput.additionalContext"]);assert!(diagnostics.is_empty());
+    }
 }
 #[derive(Default)]
 pub struct StopTurnTracker {active_turn_key:Option<String>,turn_index:usize}
@@ -89,4 +96,5 @@ pub fn build_stop_hook_input(messages:&[Value],cwd:&str,session_id:&str,transcri
     input
 }
 #[cfg(test)]
-mod tests {use super::*;#[test] fn turn_key_is_stable_until_reset() {let mut tracker=StopTurnTracker::default();assert_eq!(tracker.turn_key(Some("leaf"),"s"),"0:leaf");assert_eq!(tracker.turn_key(Some("next"),"s"),"0:leaf");tracker.reset();assert_eq!(tracker.turn_key(None,"s"),"1:s");}#[test] fn last_assistant_only() {let input=build_stop_hook_input(&[json!({"role":"assistant","stopReason":"stop"}),json!({"role":"user","stopReason":"ignored"})],"/repo","s",None);assert_eq!(input["stopReason"],"stop");assert!(input.get("transcript_path").is_none());}}
+mod tests {use super::*;#[test] fn turn_key_is_stable_until_reset() {let mut tracker=StopTurnTracker::default();assert_eq!(tracker.turn_key(Some("leaf"),"s"),"0:leaf");assert_eq!(tracker.turn_key(Some("next"),"s"),"0:leaf");tracker.reset();assert_eq!(tracker.turn_key(None,"s"),"1:s");}#[test] fn last_assistant_only() {let input=build_stop_hook_input(&[json!({"role":"assistant","stopReason":"stop"}),json!({"role":"user","stopReason":"ignored"})],"/repo","s",None);assert_eq!(input["stopReason"],"stop");assert!(input.get("transcript_path").is_none());}
+#[test] fn stop_input_carries_event_naming_and_transcript() {let input=build_stop_hook_input(&[json!({"role":"assistant","stopReason":"stop"})],"/repo","s",Some("/t.jsonl"));assert_eq!(input["event"],"Stop");assert_eq!(input["hook_event_name"],"Stop");assert_eq!(input["cwd"],"/repo");assert_eq!(input["transcript_path"],"/t.jsonl");}}

@@ -100,3 +100,56 @@ pub enum ModelsEvent {
     Prompt { #[serde(rename = "requestId")] request_id: String, request: AuthPromptRequest },
     Notice { notice: AuthNotice },
 }
+/// The login half of `ModelsEvent`, for whatever drives the dialog.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuthEventPayload {
+    Prompt { #[serde(rename = "requestId")] request_id: String, request: AuthPromptRequest },
+    Notice { notice: AuthNotice },
+}
+impl AuthEventPayload {
+    /// `undefined` when the event is `Models` state, which is not part of the login half.
+    pub fn from_models_event(event: &ModelsEvent) -> Option<Self> {
+        match event {
+            ModelsEvent::State { .. } => None,
+            ModelsEvent::Prompt { request_id, request } => Some(Self::Prompt { request_id: request_id.clone(), request: request.clone() }),
+            ModelsEvent::Notice { notice } => Some(Self::Notice { notice: notice.clone() }),
+        }
+    }
+}
+/// Everything the `Models` service publishes, as it travels: state and the login half.
+impl From<ModelsEvent> for serde_json::Value {
+    fn from(event: ModelsEvent) -> Self {
+        serde_json::to_value(event).expect("ModelsEvent serializes")
+    }
+}
+/// One presentation's subscription: a `lane.watch()` in the worker, named so its events can be filtered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneSubscription {
+    pub subscription_id: String,
+    pub snapshot: SessionSnapshot,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    pub cwd: String,
+    pub session_path: String,
+    /// Carries the lane configuration, queues, and stats: no side-channel replication.
+    pub lane: serde_json::Value,
+    pub models: ModelsState,
+}
+/// Lane events are addressed to the subscription whose watch produced them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneEvent {
+    pub subscription_id: String,
+    pub event: serde_json::Value,
+}
+/// Durable session identity the worker describes to the server without naming lane methods.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerDescription {
+    pub session_id: String,
+}

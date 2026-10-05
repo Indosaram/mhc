@@ -216,6 +216,10 @@ pub trait Provider: Send + Sync {
     fn headers(&self) -> Option<&ProviderHeaders> {
         None
     }
+    /// Provider-owned retry policy; omission selects the shipped default profile.
+    fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
+        None
+    }
     fn get_models(&self) -> Vec<Model>;
     fn supports_refresh(&self) -> bool {
         false
@@ -240,6 +244,21 @@ pub trait Provider: Send + Sync {
         _options: Option<crate::types::DeferredFetchOptions>,
     ) -> Option<AssistantMessageEventStream> {
         None
+    }
+    /// `cancelDeferred(model, handle, options)`: the provider-level operation future. The default
+    /// is the pinned unsupported error (`Provider.cancelDeferred` undefined), never a no-op
+    /// success; `supports_cancel_deferred()` is the model-free capability probe
+    /// (`streams.some((entry) => entry.cancelDeferred !== undefined)`).
+    fn cancel_deferred<'a>(
+        &'a self,
+        _model: &'a Model,
+        _handle: &'a DeferredHandle,
+        _options: Option<crate::types::DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("API cannot cancel deferred responses".to_owned()) })
+    }
+    fn supports_cancel_deferred(&self) -> bool {
+        false
     }
 }
 
@@ -271,6 +290,7 @@ struct CreatedProvider {
     input: CreateProviderOptions,
     name: String,
     dynamic_models: Arc<RwLock<Vec<Model>>>,
+    retry_policy: Option<crate::utils::retry_profile::types::RetryPolicyProfile>,
 }
 
 impl CreatedProvider {
@@ -301,6 +321,10 @@ impl Provider for CreatedProvider {
 
     fn headers(&self) -> Option<&ProviderHeaders> {
         self.input.headers.as_ref()
+    }
+
+    fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
+        self.retry_policy.as_ref()
     }
 
     fn get_models(&self) -> Vec<Model> {
@@ -395,11 +419,44 @@ impl Provider for CreatedProvider {
         }
         streams.fetch_deferred(model, handle, options)
     }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        match &self.input.api {
+            ProviderApi::Single(streams) => streams.supports_cancel_deferred(),
+            ProviderApi::ByApi(by_api) => by_api.values().any(|streams| streams.supports_cancel_deferred()),
+        }
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<crate::types::DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        let provider_id = self.input.id.clone();
+        let api = model.api.clone();
+        match self.api_for(model).cloned() {
+            // Pinned `createProvider`: a model whose api has no entry yields
+            // `Provider {id} cannot cancel deferred responses for "{api}"`.
+            None => Box::pin(async move {
+                Err(format!("Provider {provider_id} cannot cancel deferred responses for \"{api}\""))
+            }),
+            Some(streams) => Box::pin(async move { streams.cancel_deferred(model, handle, options).await }),
+        }
+    }
 }
 
 pub fn create_provider(input: CreateProviderOptions) -> Arc<dyn Provider> {
+    create_provider_with_retry_policy(input, None)
+}
+
+/// Additive constructor preserving existing provider-option struct literals.
+pub fn create_provider_with_retry_policy(
+    input: CreateProviderOptions,
+    retry_policy: Option<crate::utils::retry_profile::types::RetryPolicyProfile>,
+) -> Arc<dyn Provider> {
     let name = input.name.clone().unwrap_or_else(|| input.id.clone());
-    Arc::new(CreatedProvider { input, name, dynamic_models: Arc::new(RwLock::new(Vec::new())) })
+    Arc::new(CreatedProvider { input, name, dynamic_models: Arc::new(RwLock::new(Vec::new())), retry_policy })
 }
 
 #[derive(Clone, Default)]
@@ -855,6 +912,28 @@ impl Models {
                 )
             })
         })
+    }
+
+    /// Pinned `Models.cancelDeferred(model, handle, options)`: resolve the provider, throw
+    /// `Provider {id} does not support deferred responses` when it exposes no cancellation, then
+    /// resolve auth (`applyAuth`) and forward the request model/options to the provider. The error
+    /// is the pinned message string; `cancelDeferredBestEffort` swallows it.
+    pub async fn cancel_deferred(
+        &self,
+        model: &Model,
+        handle: &DeferredHandle,
+        options: Option<crate::types::DeferredCancelOptions>,
+    ) -> Result<(), String> {
+        let provider = self.require_provider(model).map_err(|error| error.message)?;
+        if !provider.supports_cancel_deferred() {
+            return Err(format!("Provider {} does not support deferred responses", model.provider));
+        }
+        let request = options.unwrap_or_default();
+        let (provider, request_model, request_options) = self
+            .apply_auth(model, &request, &ModelsRequestTransforms::default())
+            .await
+            .map_err(|error| error.message)?;
+        provider.cancel_deferred(&request_model, handle, Some(request_options)).await
     }
 }
 

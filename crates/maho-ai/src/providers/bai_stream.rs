@@ -1,8 +1,8 @@
 //! Port of senpi packages/ai/src/providers/bai-stream.ts.
 
 use crate::types::{
-    AssistantMessageEventStream, Context, Model, ProviderRequestMetadata, ProviderStreams, SimpleStreamOptions,
-    StreamOptions,
+    AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, Model, ProviderRequestMetadata,
+    ProviderStreams, SimpleStreamOptions, StreamOptions,
 };
 use crate::utils::tool_schema_compat::normalize_tool_parameters_for_openai_compat;
 use serde_json::Value;
@@ -37,14 +37,19 @@ pub fn normalize_bai_responses_payload(payload: Value) -> Value {
 }
 
 fn with_bai_responses_payload(options: StreamOptions) -> StreamOptions {
-    let upstream = options.request.on_payload.clone();
-    let hook: crate::types::OnPayload = Arc::new(
-        move |payload: &Value, model: &Model, request: Option<&ProviderRequestMetadata>| {
-            let transformed = upstream.as_ref().and_then(|upstream| upstream(payload, model, request));
-            Some(normalize_bai_responses_payload(transformed.unwrap_or_else(|| payload.clone())))
+    let upstream = options.request.clone();
+    let hook: crate::types::AsyncOnPayload = Arc::new(
+        move |payload: Value, model: Model, request: Option<ProviderRequestMetadata>| {
+            let upstream = upstream.clone();
+            Box::pin(async move {
+                let transformed = upstream.apply_payload_hook(&payload, &model, request.as_ref()).await?;
+                Ok(Some(normalize_bai_responses_payload(transformed.unwrap_or(payload))))
+            })
         },
     );
-    StreamOptions { request: crate::types::ProviderRequestOptions { on_payload: Some(hook), ..options.request }, ..options }
+    StreamOptions { request: crate::types::ProviderRequestOptions {
+        on_payload: None, async_on_payload: Some(hook), ..options.request
+    }, ..options }
 }
 
 struct BaiResponsesStreams {
@@ -78,6 +83,19 @@ impl ProviderStreams for BaiResponsesStreams {
 
     fn supports_deferred(&self) -> bool {
         self.inner.supports_deferred()
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a crate::types::DeferredHandle,
+        options: Option<DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        self.inner.cancel_deferred(model, handle, options)
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        self.inner.supports_cancel_deferred()
     }
 }
 

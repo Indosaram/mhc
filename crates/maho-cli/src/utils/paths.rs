@@ -49,8 +49,8 @@ pub fn mark_path_ignored_by_cloud_sync(path: &str) {
 pub fn get_file_revision(path: &str) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(path).ok()?;
-    let mtime = metadata.mtime() as i128 * 1_000_000_000 + metadata.mtime_nsec() as i128;
-    let ctime = metadata.ctime() as i128 * 1_000_000_000 + metadata.ctime_nsec() as i128;
+    let mtime = i128::from(metadata.mtime()) * 1_000_000_000 + i128::from(metadata.mtime_nsec());
+    let ctime = i128::from(metadata.ctime()) * 1_000_000_000 + i128::from(metadata.ctime_nsec());
     Some(format!("{}:{}:{}:{mtime}:{ctime}", metadata.dev(), metadata.ino(), metadata.len()))
 }
 fn resolve_without_open(input: &str) -> (String, Option<std::io::Error>) {

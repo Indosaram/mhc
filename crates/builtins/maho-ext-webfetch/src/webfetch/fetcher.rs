@@ -27,7 +27,7 @@ pub const fn build_accept_header(format:WebfetchFormat)-> &'static str {
         WebfetchFormat::Html=>"text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1",
     }
 }
-fn transport_error(error:reqwest::Error)->WebfetchError { WebfetchError::Abort(error.to_string()) }
+fn transport_error(error:reqwest::Error)->WebfetchError { WebfetchError::Transport(error.to_string()) }
 pub fn parse_content_length(value:&str)->Option<usize> {
     let value=value.trim_start_matches(|character:char|matches!(character,'\u{0009}'..='\u{000d}'|'\u{0020}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}'));
     let (negative,digits)=if let Some(rest)=value.strip_prefix('-') { (true,rest) } else { (false,value.strip_prefix('+').unwrap_or(value)) };
@@ -53,6 +53,7 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
                 .header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
                 .send().await.map_err(transport_error)?;
             let status=response.status();
+            let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").to_owned(),|reason|reason.as_bytes().iter().map(|byte|char::from(*byte)).collect());
             let location=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty());
             if matches!(status.as_u16(),301|302|303|307|308) && redirect<20 && let Some(location)=location {
                 let next=url::Url::parse(&current).and_then(|base|base.join(location)).map_err(|e|WebfetchError::InvalidUrl(e.to_string()))?;
@@ -68,11 +69,11 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
             let mut stream=response.bytes_stream(); let mut body=vec![];
             while let Some(chunk)=stream.next().await {
                 let chunk=chunk.map_err(transport_error)?;
-                if body.len()+chunk.len()>MAX_RESPONSE_SIZE_BYTES { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
+                if chunk.len()>MAX_RESPONSE_SIZE_BYTES-body.len() { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
                 body.extend_from_slice(&chunk);
                 if let Some(progress)=options.on_progress { progress(body.len(),length)?; }
             }
-            return Ok(FetchResult{url:current,status:status.as_u16(),status_text:status.canonical_reason().unwrap_or("").into(),content_type,bytes:body.len(),truncated:body.len()==MAX_RESPONSE_SIZE_BYTES,body});
+            return Ok(FetchResult{url:current,status:status.as_u16(),status_text,content_type,bytes:body.len(),truncated:body.len()==MAX_RESPONSE_SIZE_BYTES,body});
         }
         Err(WebfetchError::Abort("Redirect resolution aborted".into()))
     };

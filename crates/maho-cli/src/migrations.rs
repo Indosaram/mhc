@@ -4,9 +4,13 @@ use serde_json::{Map, Value};
 pub struct MigrationResult { pub migrated_auth_providers: Vec<String>, pub deprecation_warnings: Vec<String> }
 pub fn run_migrations(cwd: &Path, home: &Path, agent: &Path) -> std::io::Result<MigrationResult> {
     if maho_core::config::config_flat_layout() {
-        crate::brand_dir_migration::migrate_engine_state_to_brand_dir(
+        let migration = crate::brand_dir_migration::migrate_engine_state_to_brand_dir(
             &home.join(".senpi/agent"), &home.join(maho_core::config::config_dir_name()),
         )?;
+        if migration.migrated && !migration.copied.is_empty() {
+            crate::cli::stdout_guard::write_line(&format!("\x1b[32mCopied existing settings from {} to {}\x1b[39m\n", migration.from.display(), migration.to.display()));
+            crate::cli::stdout_guard::write_line("\x1b[2mThe original directory is untouched; the two installs keep separate state from now on.\x1b[22m\n");
+        }
     }
     let migrated_auth_providers = migrate_auth_to_auth_json(agent)?;
     let completed = crate::migrations_state::read_completed_scan_migrations(agent);
@@ -16,6 +20,30 @@ pub fn run_migrations(cwd: &Path, home: &Path, agent: &Path) -> std::io::Result<
     let deprecation_warnings = crate::extension_system_migration::migrate_extension_system(cwd, agent);
     if completed.len() != crate::migrations_state::SCAN_MIGRATIONS.len() { crate::migrations_state::write_completed_scan_migrations(&crate::migrations_state::SCAN_MIGRATIONS, agent)?; }
     Ok(MigrationResult { migrated_auth_providers, deprecation_warnings })
+}
+
+pub fn show_deprecation_warnings(warnings: &[String]) -> std::io::Result<()> {
+    use std::io::Write;
+    if warnings.is_empty() { return Ok(()); }
+    for warning in warnings { println!("\x1b[33mWarning: {warning}\x1b[39m"); }
+    println!("\x1b[33m\nMove your extensions to the extensions/ directory.\x1b[39m");
+    println!("\x1b[33mMigration guide: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration\x1b[39m");
+    println!("\x1b[33mDocumentation: https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md\x1b[39m");
+    println!("\x1b[2m\nPress any key to continue...\x1b[22m");
+    std::io::stdout().flush()?;
+    crossterm::terminal::enable_raw_mode()?;
+    let result = loop {
+        match crossterm::event::read() {
+            Ok(crossterm::event::Event::Key(key)) if key.kind != crossterm::event::KeyEventKind::Release => break Ok(()),
+            Ok(_) => {},
+            Err(error) => break Err(error),
+        }
+    };
+    let restored = crossterm::terminal::disable_raw_mode();
+    result?;
+    restored?;
+    println!();
+    Ok(())
 }
 
 fn read_json(path: &Path) -> Option<Value> { let text = fs::read_to_string(path).ok()?; serde_json::from_str(maho_core::text::strip_bom(&text)).ok() }
@@ -41,7 +69,7 @@ pub fn migrate_sessions_from_agent_root(agent: &Path) -> std::io::Result<()> {
 }
 pub fn migrate_tools_to_bin(agent: &Path) -> std::io::Result<()> {
     let mut moved = false; for binary in ["fd", "rg", "fd.exe", "rg.exe"] { let old = agent.join("tools").join(binary); if !old.exists() { continue; } let target = agent.join("bin").join(binary); fs::create_dir_all(agent.join("bin"))?; if target.exists() { fs::remove_file(old)?; } else { fs::rename(old, target)?; moved = true; } }
-    if moved { println!("Migrated managed binaries tools/ → bin/"); } Ok(())
+    if moved { crate::cli::stdout_guard::write_line("Migrated managed binaries tools/ → bin/\n"); } Ok(())
 }
 pub fn migrate_keybindings_config_file(agent: &Path) -> std::io::Result<()> {
     let path = agent.join("keybindings.json"); let Some(Value::Object(raw)) = read_json(&path) else { return Ok(()); }; let result = maho_core::keybindings::migrate_keybindings_config(&raw); if result.migrated { write_json(&path, &Value::Object(result.config), true)?; } Ok(())

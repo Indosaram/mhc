@@ -2,6 +2,9 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 use crate::host_protocol_info::{HostProtocolInfo,parse_host_protocol_info};
 pub const DEFAULT_PROBE_TIMEOUT_MS:u64=10000;
+pub struct ProbeHostOptions<'a>{pub socket:&'a str,pub timeout_ms:Option<u64>}
+/// The running host's identity, or `None` when nothing is serving the endpoint.
+pub async fn probe_host(options:ProbeHostOptions<'_>)->Option<HostProtocolInfo>{probe_protocol_info(options.socket,options.timeout_ms.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS)).await}
 const PROBE_REQUEST_ID:&str="ensure-host-probe";
 #[derive(Default)]pub struct ProbeOutcome{pub connected:bool,pub answer:Option<Value>}
 pub fn read_answer(text:&str)->Option<Value>{let parsed:Value=serde_json::from_str(text).ok()?;if parsed["id"]!=PROBE_REQUEST_ID||parsed["success"]!=true{return None;}Some(parsed.get("data").filter(|value|!value.is_null()).cloned().unwrap_or_else(||serde_json::json!({})))}

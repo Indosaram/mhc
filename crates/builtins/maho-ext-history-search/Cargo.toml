@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 maho-tui = { path = "../../maho-tui" }
 maho-interactive = { path = "../../maho-interactive" }
+maho-ext-api = { path = "../../maho-ext-api" }
+tokio = { workspace = true, features = ["rt"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = "=0.4.43"

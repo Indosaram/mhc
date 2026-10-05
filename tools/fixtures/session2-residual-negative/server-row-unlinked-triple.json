@@ -1,0 +1,15 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: a server row cites a (package, target, test) triple that is NOT linked into execution_coverage.required_tests, so it is a parallel unverified list. The verifier MUST reject it.",
+  "execution_coverage": {
+    "required_tests": [
+      { "package": "maho-cli", "target": "mini_worker", "test": "unwatch_and_close_release_watch_subscriptions", "requirement": "G7" }
+    ]
+  },
+  "server_row_manifest": {
+    "rows": [
+      { "id": 44, "ts": "session-router.ts", "module": "session_router.rs", "status": "done", "required_tests": [{ "package": "maho-server", "target": "server_router", "test": "concurrent_clients_share_one_session_open" }] }
+    ],
+    "uncovered_behavior": []
+  }
+}

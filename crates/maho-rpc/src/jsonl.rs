@@ -109,10 +109,85 @@ impl JsonlLineReader {
     }
 }
 
+/// Handle for the reader task `attach_jsonl_line_reader` spawns. Dropping it stops reading.
+pub struct JsonlLineReaderTask { task: tokio::task::JoinHandle<()> }
+
+impl JsonlLineReaderTask {
+    /// Stop the reader without waiting for the stream to end (senpi's returned detach function).
+    pub fn detach(self) { self.task.abort(); }
+}
+
+/// Attach an LF-only JSONL reader to an async stream, mirroring senpi's `attachJsonlLineReader`.
+///
+/// `on_line` runs for every framed record as soon as its `\n` arrives (a trailing `\r` is dropped);
+/// `on_oversized` fires once when a record exceeds `max_line_length` UTF-16 code units and its
+/// remainder is discarded up to the next `\n`. A zero limit is rejected, exactly like the TS guard.
+pub fn attach_jsonl_line_reader<R, F, O>(
+    stream: R,
+    mut on_line: F,
+    max_line_length: usize,
+    mut on_oversized: O,
+) -> Result<JsonlLineReaderTask, InvalidLineLimit>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    F: FnMut(String) + Send + 'static,
+    O: FnMut() + Send + 'static,
+{
+    let mut reader = JsonlLineReader::new(max_line_length)?;
+    let task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stream = stream;
+        let mut chunk = [0u8; 8192];
+        while let Ok(count) = stream.read(&mut chunk).await {
+            if count == 0 { break; }
+            for record in reader.push(&chunk[..count]) {
+                match record { LineRecord::Line(line) => on_line(line), LineRecord::Oversized => on_oversized() }
+            }
+        }
+        for record in reader.finish() {
+            match record { LineRecord::Line(line) => on_line(line), LineRecord::Oversized => on_oversized() }
+        }
+    });
+    Ok(JsonlLineReaderTask { task })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[tokio::test]
+    async fn attached_reader_frames_lf_lines_and_discards_an_oversized_record() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, host) = tokio::io::duplex(64);
+        let (lines_tx, mut lines_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (oversized_tx, mut oversized_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _handle = attach_jsonl_line_reader(host, move |line| { let _ = lines_tx.send(line); }, 4, move || { let _ = oversized_tx.send(()); }).unwrap();
+        client.write_all(b"ab\ncd\r\nefghij\nkl\n").await.unwrap();
+        client.shutdown().await.unwrap();
+        drop(client);
+        let mut lines = Vec::new();
+        while let Some(line) = lines_rx.recv().await { lines.push(line); }
+        assert_eq!(lines, vec!["ab".to_string(), "cd".into(), "kl".into()]);
+        assert_eq!(oversized_rx.try_recv(), Ok(()));
+        assert!(oversized_rx.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn attached_reader_flushes_an_unterminated_record_at_eof() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, host) = tokio::io::duplex(64);
+        let (lines_tx, mut lines_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _handle = attach_jsonl_line_reader(host, move |line| { let _ = lines_tx.send(line); }, MAX_RPC_LINE_CHARACTERS, || {}).unwrap();
+        client.write_all(b"{\r").await.unwrap();
+        drop(client);
+        assert_eq!(lines_rx.recv().await, Some("{".into()));
+        assert_eq!(lines_rx.recv().await, None);
+    }
+    #[test]
+    fn attached_reader_rejects_a_zero_limit() {
+        let (client, host) = tokio::io::duplex(8);
+        assert!(attach_jsonl_line_reader(host, |_| {}, 0, || {}).is_err());
+        drop(client);
+    }
     #[test]
     fn serializes_unicode_separators() {
         let line = serialize_json_line(&json!({"text":"a\u{2028}b\u{2029}c"})).unwrap();

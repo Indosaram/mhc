@@ -74,6 +74,38 @@ fn run_started(generation: u64) -> DagRunEventPayload {
     DagRunEventPayload::RunStarted { generation }
 }
 
+#[test]
+fn removing_one_commit_observer_preserves_the_other() {
+    let root = tempfile::tempdir().expect("root");
+    let store = Arc::new(create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store"));
+    let first = subscribe_dag_journal(&store, &run_id(), Arc::new(|_| {}));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let second = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+    first();
+    let journal = create_dag_journal(DagJournalOptions { store:store.clone(), run_id:run_id(), initial_checkpoint:initial_checkpoint(), apply_event:Arc::new(apply_event), subscriber_ring:None, now:Some(Arc::new(|| 1)) }).expect("journal");
+    journal.append(run_started(1)).expect("append");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    second();
+}
+
+#[test]
+fn checkpoint_observer_runs_only_after_successful_persistence() {
+    let root = tempfile::tempdir().expect("root");
+    let store = Arc::new(create_dag_file_store(&DagStoreConfig::new(root.path()), DagStoreOptions::default()).expect("store"));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone(); let reads = Arc::downgrade(&store);
+    store.set_checkpoint_listener(Some(Arc::new(move || {
+        assert!(reads.upgrade().expect("store").read_checkpoint::<TestCheckpoint>(&run_id()).expect("read").is_some());
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    })));
+    store.write_checkpoint(&run_id(), &initial_checkpoint()).expect("write");
+    store.set_checkpoint_hook(Arc::new(|_| Err(DagStoreError::Message("write denied".into()))));
+    assert!(store.write_checkpoint(&run_id(), &initial_checkpoint()).is_err());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    store.set_checkpoint_listener(None);
+}
+
 // Bounded wait replacing the TS `deferred()` promise pattern: fails loudly instead of hanging.
 fn recv_within<T>(rx: &mpsc::Receiver<T>, what: &str) -> T {
     rx.recv_timeout(Duration::from_secs(5))

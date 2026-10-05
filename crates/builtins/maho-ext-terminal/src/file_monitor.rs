@@ -1,6 +1,58 @@
 use std::path::{Path,PathBuf};
 use crate::{terminal_manifest_model::{FileEvent,TerminalManifestCheckpoint},monitor_registry::MonitorEvent};
 
+/// Symlink hop budget for `realpath_without_open` (upstream `MAX_SYMLINK_HOPS`).
+const MAX_SYMLINK_HOPS:usize=40;
+
+/// Resolves symlinks without open(2)-ing a component (upstream `resolveWithoutOpen` /
+/// `realpathWithoutOpen`). Components are processed SEQUENTIALLY from one queue - `.`, `..` and
+/// normal parts alike - so `/tmp/a/../b` resolves to `/tmp/b`, never `/tmp/a/b`, and a relative
+/// symlink target is spliced in at the front of the queue before its own `..` is applied. This uses
+/// `symlink_metadata`/`read_link` instead of `std::fs::canonicalize`, which opens every component it
+/// resolves (an execute-only directory fails with EACCES, and resolving can block on an autofs
+/// trigger). Not opening is not the same as never mounting; the walker only avoids the open-based
+/// resolution path. A component that cannot be lstat'd (or a hop overflow) is kept verbatim from
+/// that point on, so a not-yet-created tail still lands where its symlinked parent points.
+#[cfg(unix)]
+pub fn realpath_without_open(input:&Path)->PathBuf {
+    use std::path::Component;
+    fn join(base:&Path,parts:impl Iterator<Item=std::ffi::OsString>)->PathBuf {let mut path=base.to_path_buf();for part in parts {path.push(part);}path}
+    let absolute=if input.is_absolute() {input.to_path_buf()} else {std::env::current_dir().unwrap_or_default().join(input)};
+    let mut root=PathBuf::new();
+    let mut pending:std::collections::VecDeque<std::ffi::OsString>=std::collections::VecDeque::new();
+    for component in absolute.components() {
+        match component {
+            Component::RootDir|Component::Prefix(_)=>{root.push(component.as_os_str());},
+            Component::CurDir=>pending.push_back(".".into()),
+            Component::ParentDir=>pending.push_back("..".into()),
+            Component::Normal(part)=>pending.push_back(part.to_os_string()),
+        }
+    }
+    let mut resolved:Vec<std::ffi::OsString>=Vec::new();
+    let mut hops=0usize;
+    while let Some(part)=pending.pop_front() {
+        if part=="." {continue;}
+        if part==".." {resolved.pop();continue;}
+        let candidate=join(&root,resolved.iter().cloned()).join(&part);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink()=>{
+                hops+=1;
+                if hops>MAX_SYMLINK_HOPS {return join(&candidate,pending.into_iter());}
+                match std::fs::read_link(&candidate) {
+                    Ok(link)=>{
+                        if link.is_absolute() {resolved.clear();root=link.components().find_map(|component|matches!(component,Component::RootDir|Component::Prefix(_)).then(||component.as_os_str().to_owned())).map(PathBuf::from).unwrap_or_default();}
+                        let link_parts=link.components().filter_map(|component|match component {Component::Normal(part)=>Some(part.to_os_string()),Component::CurDir=>Some(".".into()),Component::ParentDir=>Some("..".into()),_=>None}).collect::<Vec<_>>();
+                        for item in link_parts.into_iter().rev() {pending.push_front(item);}
+                    },
+                    Err(_)=>return join(&candidate,pending.into_iter()),
+                }
+            },
+            _=>resolved.push(part),
+        }
+    }
+    join(&root,resolved.into_iter())
+}
+
 pub struct FileMonitor {
     pub id:String,
     pub description:String,
@@ -18,15 +70,22 @@ impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
         let raw_parent=path.parent().ok_or_else(||std::io::Error::other("file has no parent"))?;
-        let parent=std::fs::canonicalize(raw_parent).map_err(|error|std::io::Error::other(format!("Cannot access parent directory {}: {error}",raw_parent.display())))?;
+        // Identity is derived without open(2), with the same walker the permission parser used, so
+        // the two sides agree byte-for-byte and neither can block on a wedged mount.
+        let parent=realpath_without_open(raw_parent);
         if approved_parent.is_some_and(|approved|approved!=parent) {return Err(std::io::Error::other(format!("Cannot watch file: parent directory changed during permission approval: {}",raw_parent.display())));}
+        // Target identity: the resolved target must be exactly the approved parent plus the watched
+        // basename, so a symlink or a swap during approval is refused instead of silently watched.
+        let resolved_target=realpath_without_open(&path);
+        let expected_parent=approved_parent.unwrap_or(&parent);
+        if resolved_target!=expected_parent.join(path.file_name().unwrap_or_default()) {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
         let checkpoint=crate::durable_file::file_checkpoint(&path)?;
         Ok(Self {id,description,path,parent,event,identity:(checkpoint.dev,checkpoint.ino),checkpoint,paused:false,settled:false,reservation:None})
     }
     pub fn reserve_capacity(&mut self,reservation:crate::manager::CapacityReservation) {if !self.settled {self.reservation=Some(reservation);}}
     pub fn check(&mut self)->std::io::Result<Vec<MonitorEvent>> {
         if self.paused||self.settled {return Ok(vec![]);}
-        let parent=std::fs::canonicalize(self.path.parent().expect("registered file parent"))?;
+        let parent=realpath_without_open(self.path.parent().expect("registered file parent"));
         if parent!=self.parent {return Err(std::io::Error::other(format!("watcher error: monitored parent changed: {}",self.path.parent().expect("registered file parent").display())));}
         let current=crate::durable_file::file_checkpoint_with_identity(&self.path,Some(self.identity))?;
         let changed=match self.event {
@@ -86,5 +145,45 @@ mod tests {
         let dir=tempfile::tempdir()?;let path=dir.path().join("watched");
         assert!(FileMonitor::register("watch_1".to_owned(),"approval".to_owned(),&path,FileEvent::Create,Some(Path::new("/not-approved"))).is_err());
         std::os::unix::fs::symlink("missing",&path)?;assert!(FileMonitor::register("watch_1".to_owned(),"symlink".to_owned(),&path,FileEvent::Create,None).is_err());Ok(())
+    }
+    #[test]
+    fn realpath_without_open_resolves_symlinked_parents_and_keeps_missing_tails_verbatim() {
+        let dir=tempfile::tempdir().unwrap();let real=dir.path().join("real");std::fs::create_dir(&real).unwrap();let link=dir.path().join("link");std::os::unix::fs::symlink(&real,&link).unwrap();
+        assert_eq!(realpath_without_open(&link),std::fs::canonicalize(&real).unwrap());
+        let missing=link.join("not-created-yet");
+        assert_eq!(realpath_without_open(&missing),std::fs::canonicalize(&real).unwrap().join("not-created-yet"));
+    }
+    #[test]
+    fn dot_dot_is_applied_after_the_queued_parts_that_precede_it() {
+        let dir=tempfile::tempdir().unwrap();let a=dir.path().join("a");std::fs::create_dir(&a).unwrap();
+        let expected=dir.path().join("b");
+        assert_eq!(realpath_without_open(&a.join("..").join("b")),expected,"a/../b must resolve to b, not a/b");
+        // `..` pops the already-resolved prefix, so `a/../../a` escapes the temp dir into its parent
+        // (upstream `resolveWithoutOpen` applies each `..` to the resolved stack, never lexically).
+        assert_eq!(realpath_without_open(&a.join("..").join("..").join(a.file_name().unwrap())),dir.path().parent().unwrap().join("a"));
+    }
+    #[test]
+    fn a_relative_symlink_target_is_spliced_before_its_own_dot_dot() {
+        let dir=tempfile::tempdir().unwrap();let foo=dir.path().join("foo");std::fs::create_dir(&foo).unwrap();
+        let link=dir.path().join("link");std::os::unix::fs::symlink("foo/../bar",&link).unwrap();
+        assert_eq!(realpath_without_open(&link),dir.path().join("bar"));
+    }
+    #[test]
+    fn a_parent_retargeted_after_approval_is_refused_with_the_approval_reason()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let first=dir.path().join("first");let second=dir.path().join("second");std::fs::create_dir(&first)?;std::fs::create_dir(&second)?;
+        let approved=std::fs::canonicalize(&first)?;
+        let parent=dir.path().join("parent");std::os::unix::fs::symlink(&second,&parent)?;
+        let error=FileMonitor::register("watch_1".to_owned(),"retarget".to_owned(),&parent.join("file"),FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
+        assert!(error.contains("parent directory changed during permission approval"),"{error}");Ok(())
+    }
+    #[test]
+    fn a_target_whose_identity_changed_is_refused()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let real=dir.path().join("real");std::fs::create_dir(&real)?;let approved=std::fs::canonicalize(&real)?;
+        let elsewhere=dir.path().join("elsewhere");std::fs::write(&elsewhere,b"x")?;
+        // The watched target sits under the approved parent but is a symlink out to `elsewhere`, so
+        // its resolved identity is not the approved parent plus basename.
+        let target=real.join("target");std::os::unix::fs::symlink(&elsewhere,&target)?;
+        let error=FileMonitor::register("watch_1".to_owned(),"identity".to_owned(),&target,FileEvent::Create,Some(&approved)).err().expect("register must fail").to_string();
+        assert!(error.contains("target identity changed"),"{error}");Ok(())
     }
 }

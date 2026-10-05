@@ -17,3 +17,4 @@ pub mod preview;
 pub mod tool;
 pub mod streaming_render;
 pub mod index;
+pub mod render;

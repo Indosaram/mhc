@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt, future::Future, path::{Path, PathBuf}, pin
 pub use maho_agent::types::{AgentEvent, AgentMessage};
 pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
-pub use maho_ai::{model::Model, types::{JsonValue, ThinkingLevel, Usage, ImageContent}};
+pub use maho_ai::{model::Model, types::{JsonValue, ModelThinkingLevel, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
 pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
 pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
@@ -128,6 +128,53 @@ impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
         self.context.last_component = Some(component);
         Some(lines)
     }
+}
+
+/// Object-safe, `Send+Sync` view over a registered typed renderer set. The generic parameters are
+/// erased at registration time so a host can render any card by tool name with JSON args and no
+/// type parameters.
+pub trait ErasedToolRenderers: Send + Sync {
+    fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>>;
+    fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>>;
+}
+struct TypedErasedToolRenderers<TState, TArgs> {
+    renderers: Arc<ToolRenderers<TState, TArgs>>,
+    state: Mutex<Option<TState>>,
+    cwd: PathBuf,
+}
+fn erased_render_context<TState, TArgs>(args: TArgs, state: TState, cwd: PathBuf) -> ToolRenderContext<TState, TArgs> {
+    ToolRenderContext { args, tool_call_id: String::new(), invalidate: std::rc::Rc::new(|| {}), last_component: None, state, cwd,
+        execution_started: false, args_complete: true, is_partial: false, expanded: false, show_images: false,
+        image_protocol: None, is_error: false, has_result: None, spinner_frame: None }
+}
+impl<TState, TArgs> ErasedToolRenderers for TypedErasedToolRenderers<TState, TArgs>
+where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static {
+    fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_call.as_ref()?;
+        let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
+        let mut component = renderer(&typed, theme, &mut context);
+        let lines = component.render(width);
+        *state = Some(context.state);
+        Some(lines)
+    }
+    fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let renderer = self.renderers.render_result.as_ref()?;
+        let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
+        let options = ToolRenderResultOptions { expanded: context.expanded, is_partial: context.is_partial };
+        let mut component = renderer(result, options, theme, &mut context);
+        let lines = component.render(width);
+        *state = Some(context.state);
+        Some(lines)
+    }
+}
+/// Erases the generic parameters of a typed renderer set into a `Send+Sync` handle.
+pub fn erase_tool_renderers<TState, TArgs>(renderers: Arc<ToolRenderers<TState, TArgs>>, cwd: PathBuf) -> Arc<dyn ErasedToolRenderers>
+where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static {
+    Arc::new(TypedErasedToolRenderers { renderers, state: Mutex::new(None), cwd })
 }
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
@@ -287,6 +334,20 @@ pub struct ResourcesDiscoverResult { pub skill_paths: Vec<ResourceDiscoverEntry>
 pub struct DiscoveredResources { pub skill_paths: Vec<DiscoveredResourceEntry>, pub prompt_paths: Vec<DiscoveredResourceEntry>, pub theme_paths: Vec<DiscoveredResourceEntry>, pub hook_paths: Vec<DiscoveredResourceEntry> }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Theme { pub name: Option<String>, pub colors: BTreeMap<String, String>, pub backgrounds: BTreeMap<String, String>, pub vars: BTreeMap<String, String> }
+impl Theme {
+    /// senpi's guest `Theme.fg(color, text)`: prefix the text with the named color's exported ANSI
+    /// prefix and reset the foreground after it.
+    pub fn fg(&self, color: &str, text: &str) -> String {
+        let prefix = self.colors.get(color).map(String::as_str).unwrap_or("\u{1b}[39m");
+        format!("{prefix}{text}\u{1b}[39m")
+    }
+    /// senpi's guest `Theme.bg(color, text)`: prefix the text with the named background's exported
+    /// ANSI prefix and reset the background after it.
+    pub fn bg(&self, color: &str, text: &str) -> String {
+        let prefix = self.backgrounds.get(color).map(String::as_str).unwrap_or("\u{1b}[49m");
+        format!("{prefix}{text}\u{1b}[49m")
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ScopedModel { pub model: Model, pub thinking_level: Option<ThinkingLevel>, pub service_tier: Option<ServiceTier> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,12 +367,33 @@ pub struct CredentialAccountSummary {
 }
 
 /// Host implementations adapt their owning registry, without an ext-api -> core edge.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRequestAuth {
+    pub auth: maho_ai::models::ProviderAuthResult,
+    pub extra_body: Option<serde_json::Map<String, JsonValue>>,
+    pub upstream_model_id: Option<String>,
+    pub service_tier: Option<maho_ai::types::ServiceTierPreference>,
+    pub env: Option<maho_ai::types::ProviderEnv>,
+}
+
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
+    fn get_provider_auth<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async { Err(ExtensionFailure::new("Provider auth is not supported by this model registry")) })
+    }
+    fn get_stored_credential_type(&self, _provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
+        Err(ExtensionFailure::new("Stored credential metadata is not supported by this model registry"))
+    }
+    fn stream_simple(&self, _model: &Model, _context: &maho_ai::types::Context, _options: Option<maho_ai::types::SimpleStreamOptions>) -> Result<maho_ai::utils::event_stream::AssistantMessageEventStream, ExtensionFailure> {
+        Err(ExtensionFailure::new("Configured streaming is not supported by this model registry"))
+    }
+    fn get_api_key_and_headers<'a>(&'a self, _model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        Box::pin(async { Err(ExtensionFailure::new("Model request auth is not supported by this model registry")) })
+    }
     fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
     }
@@ -324,10 +406,18 @@ pub trait ModelRegistry: Send + Sync {
     fn rename_credential_account<'a>(&'a self, _provider: &'a str, _name: &'a str, _display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account renaming is not supported by this model registry")) })
     }
+    /// Pinned `ModelRegistry.refresh` (`core/model-registry.ts`): reload the provider catalog and
+    /// refresh the selected providers' models, returning the pinned `ModelsRefreshResult` (aborted
+    /// flag plus per-provider errors) rather than rejecting. The llama.cpp `/llama` flow refreshes
+    /// its provider catalog after every server interaction.
+    fn refresh<'a>(&'a self, _options: maho_ai::models::ModelsRefreshOptions) -> ExtensionFuture<'a, maho_ai::models::ModelsRefreshResult> {
+        Box::pin(async { Err(ExtensionFailure::new("Model catalog refresh is not supported by this model registry")) })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionEntry { pub id: String, pub parent_id: Option<String>, pub timestamp: String, pub kind: String, pub data: JsonValue }
 pub trait SessionManager: ToolSessionManager {
+    fn get_session_dir(&self) -> Option<PathBuf> { None }
     fn get_entries(&self) -> Vec<SessionEntry>;
     fn get_branch(&self) -> Vec<SessionEntry>;
     fn get_leaf_id(&self) -> Option<String>;
@@ -402,6 +492,12 @@ pub trait ExtensionKernelTools: Send + Sync {
 }
 pub trait ExtensionContextActions: Send + Sync {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { Ok(()) }
+    fn set_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue, _parent: &Path) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission attachment is not supported by this extension context"))
+    }
+    fn take_approved_monitor_parent(&self, _tool_call_id: &str, _input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        Err(ExtensionFailure::new("Monitor admission identity is not supported by this extension context"))
+    }
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.get_service_tier() }
@@ -470,8 +566,19 @@ pub struct QuestionAnswer { pub selected: Vec<String>, pub text: Option<String> 
 pub struct QuestionResponse { pub status: QuestionStatus, pub answers: BTreeMap<String, QuestionAnswer>, pub comment: Option<String>, pub unanswered: Vec<String>, pub auto_resolved_after_ms: Option<u64> }
 #[derive(Clone, Debug, Default)]
 pub struct QuestionDraft { pub answers: Option<BTreeMap<String, QuestionAnswer>>, pub comment: Option<String> }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum QuestionDelivery { #[default] ToolResult, UserMessage }
 #[derive(Clone, Default)]
-pub struct QuestionOptions { pub dialog: ExtensionUiDialogOptions, pub on_progress: Option<Arc<dyn Fn(QuestionDraft) + Send + Sync>> }
+pub struct QuestionOptions {
+    pub dialog: ExtensionUiDialogOptions,
+    pub on_progress: Option<Arc<dyn Fn(QuestionDraft) + Send + Sync>>,
+    pub deliver: QuestionDelivery,
+    /// Fixed wall-clock hard cap, captured when the pending timer is created.
+    pub hard_deadline_at_ms: Option<u64>,
+    /// Authoritative live wall-clock idle deadline; UI countdowns are display-only.
+    pub get_deadline_at_ms: Option<Arc<dyn Fn() -> u64 + Send + Sync>>,
+    pub initial_draft: Option<QuestionDraft>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeInfo { pub name: String, pub path: Option<PathBuf> }
 #[derive(Clone, Debug)]
@@ -570,6 +677,11 @@ pub trait ExtensionUi: Send + Sync {
     fn set_theme(&self, theme: ThemeSelection) -> Result<SetThemeResult, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Theme selection is not available"))?.set_theme(theme)) }
     fn get_tools_expanded(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.get_tools_expanded()) }
     fn set_tools_expanded(&self, expanded: bool) -> Result<(), ExtensionFailure> { self.actions().ok_or_else(|| ExtensionFailure::new("Tool expansion is not available"))?.set_tools_expanded(expanded); Ok(()) }
+    /// Send-safe repaint request. Extension workers (async HTTP backends on non-UI threads) hold an
+    /// `Arc<dyn ExtensionUi>` and cannot capture the non-`Send` `ExtensionTuiHost`; this is the
+    /// capability-gated seam for them. A context with no repaint path returns an error rather than
+    /// silently pretending the frame was scheduled.
+    fn request_render(&self) -> Result<(), ExtensionFailure> { Err(ExtensionFailure::new("Repaint requests are not available")) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, opts: ExtensionUiDialogOptions) -> UiFuture<'a, bool>;
     fn input<'a>(&'a self, title: &'a str, placeholder: Option<&'a str>, opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>>;
@@ -585,6 +697,42 @@ pub trait ExtensionUi: Send + Sync {
     fn custom(&self, factory: ComponentFactory, options: CustomUiOptions) -> ExtensionFuture<'_, JsonValue>;
     fn theme(&self) -> Theme;
 }
+
+/// One queued idle-edge injection (upstream `IdleInjection`, idle-injection-coordinator.ts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleInjectionSource { TaskCompletion, TeamMessage, TeamLiveness, BoulderContinuation, UlwContinuation, DagRun }
+/// `onFlushed` callback: runs once per injection after a successful delivery.
+pub type IdleInjectionCallback = Arc<dyn Fn() + Send + Sync>;
+/// `onDeliveryFailed` callback: receives the delivery error message.
+pub type IdleInjectionFailureCallback = Arc<dyn Fn(&str) + Send + Sync>;
+#[derive(Clone)]
+pub struct IdleInjection {
+    pub key: String, pub source: IdleInjectionSource, pub custom_type: Option<String>,
+    pub content: String, pub display: Option<bool>, pub details: Option<JsonValue>,
+    pub on_flushed: Option<IdleInjectionCallback>, pub on_delivery_failed: Option<IdleInjectionFailureCallback>,
+}
+/// The single idle-edge injection queue. The concrete implementation lives in the composition
+/// (`crates/omo/maho-omo`, todo 47); ext-api defines only the contract so `ExtensionContext` can
+/// carry it without depending on that crate. `None` means "no coordinator" and every consumer
+/// falls back to a direct send, matching upstream's optional `ComponentContext.idleCoordinator`.
+pub trait IdleInjectionCoordinator: Send + Sync {
+    fn enqueue(&self, injection: IdleInjection);
+    fn schedule_flush(&self);
+    fn flush_soon(&self);
+    fn flush_on_idle(&self) -> usize;
+    fn pending_count(&self) -> usize;
+    fn remove(&self, key: &str) -> bool;
+}
+/// Structured component logger (upstream `ComponentLogger`, omo-senpi extension/types.ts:40).
+pub trait ComponentLogger: Send + Sync {
+    fn info(&self, message: &str, details: Option<&JsonValue>);
+    fn warn(&self, message: &str, details: Option<&JsonValue>);
+    fn error(&self, message: &str, details: Option<&JsonValue>);
+}
+/// Host-provided deferred scheduler (upstream `setTimeout(0)`): the host decides how the deferred
+/// task is scheduled and ordered. A `tokio::spawn`/`yield_now` is not by itself asserted equivalent
+/// to a JS macrotask; the concrete host (todo 47) must establish the ordering.
+pub type DeferredMacrotask = Arc<dyn Fn(Box<dyn FnOnce() + Send + 'static>) + Send + Sync>;
 
 /// Context actions are live host callbacks rather than frozen snapshots.
 #[derive(Clone)]
@@ -602,6 +750,16 @@ pub struct ExtensionContext {
     pub get_system_prompt_options_fn: Arc<dyn Fn() -> BuildSystemPromptOptions + Send + Sync>,
     pub registered_mcp_servers: Vec<RegisteredMcpServerDeclaration>,
     pub update_tool_hook_status: Option<ToolHookStatusUpdater>,
+    /// Idle-edge injection arbiter (todo 47). `None` = no coordinator; consumers send directly.
+    pub idle_coordinator: Option<Arc<dyn IdleInjectionCoordinator>>,
+    /// Structured component logger (todo 47). `None` = only `ctx.ui.notify`/`eprintln!` fallbacks.
+    pub logger: Option<Arc<dyn ComponentLogger>>,
+    /// Host deferred-macrotask scheduler (todo 47). `None` = no host macrotask entry point.
+    pub defer_macrotask: Option<DeferredMacrotask>,
+    /// Per-invocation compaction feedback signal, the port of upstream `createContext`'s
+    /// `compactionSignal` closure variable: created fresh for every context so a signal begun in one
+    /// context is never inherited by another. `ctx.session_manager` stays a shared adapter.
+    pub compaction_signal: Arc<Mutex<Option<AbortSignal>>>,
 }
 impl ExtensionContext {
     fn assert_active_or_panic(&self) {
@@ -611,6 +769,29 @@ impl ExtensionContext {
     pub fn actions(&self) -> Result<&dyn ExtensionContextActions, ExtensionFailure> {
         let actions = self.session_manager.extension_context_actions().ok_or_else(|| ExtensionFailure::new("Extension context actions are not bound"))?;
         actions.assert_active()?; Ok(actions)
+    }
+    pub fn current_model(&self) -> Result<Option<Model>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_model() }, None => self.model.clone() })
+    }
+    pub fn current_service_tier(&self) -> Result<Option<ServiceTier>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_service_tier() }, None => self.service_tier })
+    }
+    pub fn current_effective_service_tier(&self) -> Result<Option<ServiceTier>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_effective_service_tier() }, None => self.effective_service_tier.or(self.service_tier) })
+    }
+    pub fn current_steering_signal(&self) -> Result<Option<AbortSignal>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_steering_signal() }, None => self.steering_signal.clone() })
+    }
+    pub fn current_thinking_level(&self) -> Result<Option<ThinkingLevel>, ExtensionFailure> {
+        Ok(match self.session_manager.extension_context_actions() { Some(actions) => { actions.assert_active()?; actions.get_thinking_level() }, None => self.thinking_level })
+    }
+    pub fn current_model_registry(&self) -> Result<Arc<dyn ModelRegistry>, ExtensionFailure> {
+        if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
+        Ok(Arc::clone(&self.model_registry))
+    }
+    pub fn current_ui(&self) -> Result<Arc<dyn ExtensionUi>, ExtensionFailure> {
+        if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
+        Ok(Arc::clone(&self.ui))
     }
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
@@ -638,17 +819,34 @@ impl ExtensionContext {
         self.actions()?;
         Ok(result)
     }
-    pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> { Ok(self.actions()?.begin_compaction(options)) }
-    pub fn update_compaction(&self, options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.update_compaction(options); Ok(()) }
-    pub fn end_compaction(&self, options: EndCompactionOptions) -> Result<(), ExtensionFailure> { self.actions()?.end_compaction(options); Ok(()) }
+    pub fn begin_compaction(&self, options: BeginCompactionOptions) -> Result<Option<AbortSignal>, ExtensionFailure> {
+        let signal = self.actions()?.begin_compaction(options);
+        *self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = signal.clone();
+        Ok(signal)
+    }
+    pub fn update_compaction(&self, mut options: UpdateCompactionOptions) -> Result<(), ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions()?.update_compaction(options); Ok(())
+    }
+    pub fn end_compaction(&self, mut options: EndCompactionOptions) -> Result<(), ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+        self.actions()?.end_compaction(options); Ok(())
+    }
     pub fn get_message_revision(&self) -> Result<u64, ExtensionFailure> { Ok(self.actions()?.get_message_revision()) }
-    pub async fn apply_compaction(&self, result: CompactionResult, options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+    pub async fn apply_compaction(&self, result: CompactionResult, mut options: ApplyCompactionOptions) -> Result<ApplyCompactionResult, ExtensionFailure> {
+        options.signal = options.signal.or_else(|| self.compaction_signal.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         let result = self.actions()?.apply_compaction(result, options).await?;
         self.actions()?;
         Ok(result)
     }
     pub fn get_loaded_hook_sources(&self) -> Result<LoadedHookSources, ExtensionFailure> { Ok(self.actions()?.get_loaded_hook_sources()) }
     pub fn kernel_tools(&self) -> Result<Option<&dyn ExtensionKernelTools>, ExtensionFailure> { Ok(self.actions()?.kernel_tools()) }
+    pub fn set_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue, parent: &Path) -> Result<(), ExtensionFailure> {
+        self.actions()?.set_approved_monitor_parent(tool_call_id, input, parent)
+    }
+    pub fn take_approved_monitor_parent(&self, tool_call_id: &str, input: &JsonValue) -> Result<Option<PathBuf>, ExtensionFailure> {
+        self.actions()?.take_approved_monitor_parent(tool_call_id, input)
+    }
     pub fn is_idle(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_idle_fn)(), ExtensionContextActions::is_idle) }
     pub async fn wait_for_idle(&self) { self.assert_active_or_panic(); (self.wait_for_idle_fn)().await; self.assert_active_or_panic(); }
     pub fn is_project_trusted(&self) -> bool { self.assert_active_or_panic(); self.session_manager.extension_context_actions().map_or_else(|| (self.is_project_trusted_fn)(), ExtensionContextActions::is_project_trusted) }
@@ -666,6 +864,13 @@ impl ToolContext for ExtensionContext {
     fn thinking_level(&self) -> Option<ThinkingLevel> { self.assert_active_or_panic(); self.thinking_level }
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
+    fn get_steering_signal(&self) -> Option<AbortSignal> { self.current_steering_signal().ok().flatten() }
+    fn take_approved_monitor_parent(
+        &self, tool_call_id: &str, input: &JsonValue,
+    ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {
+        ExtensionContext::take_approved_monitor_parent(self, tool_call_id, input)
+            .map_err(|error| maho_tools::definition::ToolError::Message(error.message))
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1070,13 +1275,60 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn set_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure>;
     fn set_session_model(&self, model: Model) -> ExtensionFuture<'_, bool>;
     fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure>;
+    /// Off-aware session level: the effective level INCLUDING `off`.
+    ///
+    /// `ThinkingLevel` (provider effort) cannot express `off`, so a host that must implement
+    /// `/reasoning off` reads and writes `ModelThinkingLevel` here instead of guessing
+    /// `Off -> Minimal`. Defaults fail explicitly so existing implementors stay source-compatible.
+    fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
+    /// Set the session level and persist it as the model's durable thinking level.
+    fn set_model_thinking_level(&self, _level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
+    /// Set the session level only, leaving the durable model level untouched.
+    fn set_session_model_thinking_level(&self, _level: ModelThinkingLevel) -> Result<(), ExtensionFailure> {
+        Err(ExtensionFailure::new("Model thinking level is not supported by this session"))
+    }
     fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure>;
     fn exec<'a>(&'a self, command: &'a str, args: &'a [String], cwd: &'a Path, options: ExecOptions) -> ExtensionFuture<'a, ExecResult>;
 }
 
+/// Typed companion to the upstream `config-watch:register` in-process protocol.
+/// The JSON event bus cannot carry a callable, so in-process registrations carry
+/// their `validate` callback here and are delivered to typed listeners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfigWatchTargetKind { File, Dir }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigWatchTargetSpec { pub path: PathBuf, pub kind: ConfigWatchTargetKind, pub filter_globs: Vec<String> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigWatchValidation { Ok, Rejected { errors: Vec<String> } }
+pub type ConfigWatchValidator = Arc<dyn Fn(&[PathBuf]) -> ConfigWatchValidation + Send + Sync>;
+#[derive(Clone)]
+pub struct RegisteredConfigWatch { pub id: String, pub display_name: String, pub targets: Vec<ConfigWatchTargetSpec>, pub validate: ConfigWatchValidator }
+/// Typed delivery listener: receives the owning extension path plus each registration.
+pub type ConfigWatchRegistrationListener = Arc<dyn Fn(&str, &RegisteredConfigWatch) + Send + Sync>;
+/// Upstream wire channel for the JSON (callable-free) registration payload.
+pub const CONFIG_WATCH_REGISTER_CHANNEL: &str = "config-watch:register";
+/// Serializes a typed registration into the upstream `config-watch:register` wire shape.
+pub fn config_watch_registration_json(registration: &RegisteredConfigWatch) -> JsonValue {
+    let targets: Vec<JsonValue> = registration.targets.iter().map(|target| JsonValue::Object([
+        (String::from("path"), JsonValue::String(target.path.to_string_lossy().into_owned())),
+        (String::from("kind"), JsonValue::String((match target.kind { ConfigWatchTargetKind::File => "file", ConfigWatchTargetKind::Dir => "dir" }).into())),
+        (String::from("filterGlobs"), JsonValue::Array(target.filter_globs.iter().cloned().map(JsonValue::String).collect())),
+    ].into_iter().collect())).collect();
+    JsonValue::Object([
+        (String::from("id"), JsonValue::String(registration.id.clone())),
+        (String::from("displayName"), JsonValue::String(registration.display_name.clone())),
+        (String::from("targets"), JsonValue::Array(targets)),
+    ].into_iter().collect())
+}
+
 pub type BusHandler = Arc<dyn Fn(&JsonValue) + Send + Sync>;
+type NativeBusHandler = Arc<dyn Fn(&(dyn std::any::Any + Send + Sync)) + Send + Sync>;
 #[derive(Clone, Default)]
-struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>> }
+struct BusState { next_id: u64, handlers: BTreeMap<String, Vec<(u64, BusHandler)>>, native_handlers: BTreeMap<String, Vec<(u64, NativeBusHandler)>>, config_watches: Vec<(u64, String, RegisteredConfigWatch)> }
 #[derive(Clone, Default)]
 pub struct EventBus { state: Arc<Mutex<BusState>>, registration_stale: Arc<std::sync::atomic::AtomicBool>, runtime: Option<ExtensionRuntime>, registration_subscriptions: Arc<Mutex<Vec<u64>>> }
 pub struct BusSubscription { state: Arc<Mutex<BusState>>, channel: String, id: u64 }
@@ -1084,6 +1336,7 @@ impl Drop for BusSubscription {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handlers) = state.handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
+        if let Some(handlers) = state.native_handlers.get_mut(&self.channel) { handlers.retain(|(id, _)| *id != self.id); }
     }
 }
 impl EventBus {
@@ -1098,9 +1351,10 @@ impl EventBus {
     pub fn invalidate_registration(&self) {
         self.registration_stale.store(true, std::sync::atomic::Ordering::Release);
         let owned = std::mem::take(&mut *self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        for handlers in self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.values_mut() {
-            handlers.retain(|(id, _)| !owned.contains(id));
-        }
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for handlers in state.handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
+        for handlers in state.native_handlers.values_mut() { handlers.retain(|(id, _)| !owned.contains(id)); }
+        state.config_watches.retain(|(id, _, _)| !owned.contains(id));
     }
     pub fn registration_checkpoint(&self) -> EventBusCheckpoint {
         EventBusCheckpoint(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
@@ -1121,14 +1375,54 @@ impl EventBus {
     }
     pub fn emit(&self, channel: &str, data: &JsonValue) {
         self.assert_active_or_panic();
+        if channel == "config-watch:unregister" && let Some(id) = data.get("id").and_then(JsonValue::as_str) {
+            self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).config_watches.retain(|(_, _, registration)| registration.id != id);
+        }
         let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.get(channel).cloned().unwrap_or_default();
         for (_, handler) in handlers {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
         }
     }
+    /// Subscribe to native payloads without serializing contexts or callback objects.
+    pub fn on_native<T: Send + Sync + 'static>(&self, channel: &str, handler: Arc<dyn Fn(&T) + Send + Sync>) -> BusSubscription {
+        self.assert_active_or_panic();
+        let erased: NativeBusHandler = Arc::new(move |data| { if let Some(data) = data.downcast_ref::<T>() { handler(data); } });
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let id = state.next_id; state.next_id = state.next_id.wrapping_add(1);
+        state.native_handlers.entry(channel.into()).or_default().push((id, erased));
+        self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+        BusSubscription { state: Arc::clone(&self.state), channel: channel.into(), id }
+    }
+    /// Publish the same borrowed native object to every matching subscriber.
+    pub fn emit_native<T: Send + Sync + 'static>(&self, channel: &str, data: &T) {
+        self.assert_active_or_panic();
+        let handlers = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).native_handlers.get(channel).cloned().unwrap_or_default();
+        for (_, handler) in handlers {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))).is_err() { eprintln!("Event handler error ({channel}): native handler panicked"); }
+        }
+    }
+    /// Retain callable registrations in the same checkpointed, scoped bus state.
+    pub fn publish_config_watch(&self, path: &str, registration: RegisteredConfigWatch) {
+        self.assert_active_or_panic();
+        {
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let id = state.next_id;
+            state.next_id = state.next_id.wrapping_add(1);
+            state.config_watches.retain(|(_, owner, existing)| owner != path || existing.id != registration.id);
+            state.config_watches.push((id, path.into(), registration.clone()));
+            self.registration_subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(id);
+        }
+        self.emit_native(CONFIG_WATCH_REGISTER_CHANNEL, &(path.to_owned(), registration.clone()));
+        self.emit(CONFIG_WATCH_REGISTER_CHANNEL, &config_watch_registration_json(&registration));
+    }
+    pub fn config_watch_registrations(&self) -> Vec<(String, RegisteredConfigWatch)> {
+        self.assert_active_or_panic();
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).config_watches.iter().map(|(_, path, registration)| (path.clone(), registration.clone())).collect()
+    }
     pub fn clear(&self) {
         if self.registration_stale.load(std::sync::atomic::Ordering::Acquire) { return; }
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handlers.clear();
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.handlers.clear(); state.native_handlers.clear(); state.config_watches.clear();
     }
 }
 pub struct EventBusCheckpoint(BusState);
@@ -1147,13 +1441,15 @@ pub struct LoadedExtension {
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
     pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
     pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
+    pub erased_tool_renderers: BTreeMap<String, Arc<dyn ErasedToolRenderers>>,
+    pub config_watch_registrations: Vec<RegisteredConfigWatch>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new() }
     }
 }
 #[derive(Clone, Default)]
@@ -1177,6 +1473,7 @@ struct RuntimeState {
     live_entry_renderers: BTreeMap<String, LiveEntryRenderers>,
     live_filesystem_policies: BTreeMap<String, Vec<FilesystemPolicy>>,
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
+    live_erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>,
     extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
@@ -1232,6 +1529,11 @@ impl ExtensionRuntime {
         self.assert_active()?;
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone().ok_or_else(|| ExtensionFailure::new("Extension session actions are unavailable during registration"))
     }
+    pub fn message_actions(&self) -> Result<Arc<dyn ExtensionActions>, ExtensionFailure> {
+        self.assert_active()?;
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone()
+            .ok_or_else(|| ExtensionFailure::new("Extension message actions are unavailable during registration"))
+    }
     fn assert_active_or_panic(&self) {
         if let Err(error) = self.assert_active() { std::panic::panic_any(error); }
     }
@@ -1251,7 +1553,7 @@ impl ExtensionRuntime {
         state.live_shortcuts.clear();
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
-        state.live_tools.clear(); state.live_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.live_tools.clear(); state.live_tool_renderers.clear(); state.live_erased_tool_renderers.clear(); state.extension_tool_executors.clear();
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
@@ -1321,6 +1623,9 @@ impl ExtensionRuntime {
     }
     pub fn live_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn std::any::Any + Send + Sync>>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
+    }
+    pub fn live_erased_tool_renderer(&self, path: &str, name: &str) -> Option<Option<Arc<dyn ErasedToolRenderers>>> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_erased_tool_renderers.get(path).map(|renderers| renderers.get(name).cloned())
     }
     pub fn extension_tool_executor(&self, path: &str, name: &str) -> Option<ExtensionToolExecutor> {
         let execute = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.get(&(path.into(), name.into())).cloned()?;
@@ -1507,10 +1812,12 @@ impl ExtensionApi {
             })
         }))
     }
-    pub fn register_tool_with_renderers<TState: 'static, TArgs: Clone + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
+    pub fn register_tool_with_renderers<TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static>(&mut self, definition: ToolDefinition, renderers: ToolRenderers<TState, TArgs>) -> Result<(), ExtensionFailure> {
         let name = definition.name.clone();
         self.try_register_tool(definition)?;
-        self.registered.tool_renderers.insert(name, Arc::new(renderers));
+        let renderers = Arc::new(renderers);
+        self.registered.erased_tool_renderers.insert(name.clone(), erase_tool_renderers(Arc::clone(&renderers), self.cwd.clone()));
+        self.registered.tool_renderers.insert(name, renderers);
         self.publish_tools();
         Ok(())
     }
@@ -1530,6 +1837,7 @@ impl ExtensionApi {
         else { self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extension_tool_executors.remove(&key); }
         drop(pending);
         self.registered.tool_renderers.remove(&definition.name);
+        self.registered.erased_tool_renderers.remove(&definition.name);
         let tool = RegisteredTool { definition, source_info };
         if let Some(existing) = self.registered.tools.iter_mut().find(|t| t.definition.name == tool.definition.name) { *existing = tool.clone(); } else { self.registered.tools.push(tool.clone()); }
         let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
@@ -1542,6 +1850,7 @@ impl ExtensionApi {
             let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
+            state.live_erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
         }
     }
     pub fn register_command(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandHandler) {
@@ -1564,10 +1873,28 @@ impl ExtensionApi {
         self.registered.command_argument_completions.insert(name.into(), completions);
         self.publish_commands();
     }
+    /// Registers a command carrying BOTH a command-context handler and argument completions in one
+    /// call: `register_command_with_context` and `register_command_with_completions` each clear the
+    /// other half via `register_command`, so this installs both without clearing either.
+    pub fn register_command_with_context_and_completions(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler, completions: CommandArgumentCompletions) {
+        self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
+        self.registered.command_context_handlers.insert(name.into(), handler);
+        self.registered.command_argument_completions.insert(name.into(), completions);
+        self.publish_commands();
+    }
     pub fn register_command_with_context(&mut self, name: &str, description: Option<String>, argument_hint: Option<String>, handler: CommandContextHandler) {
         self.register_command(name, description, argument_hint, Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure::new("Command requires a command-capable context")) })));
         self.registered.command_context_handlers.insert(name.into(), handler);
         self.publish_commands();
+    }
+    pub fn register_config_watch(&mut self, registration: RegisteredConfigWatch) {
+        self.runtime.assert_active_or_panic();
+        if let Some(existing) = self.registered.config_watch_registrations.iter_mut().find(|existing| existing.id == registration.id) { *existing = registration.clone(); }
+        else { self.registered.config_watch_registrations.push(registration.clone()); }
+        self.events.publish_config_watch(&self.registered.identity.path, registration);
+    }
+    pub fn on_config_watch_registration(&self, listener: ConfigWatchRegistrationListener) -> BusSubscription {
+        self.events.on_native::<(String, RegisteredConfigWatch)>(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |(path, registration)| listener(path, registration)))
     }
     pub fn register_flag(&mut self, name: &str, kind: FlagType, description: Option<String>) {
         self.runtime.assert_active_or_panic();
@@ -1666,6 +1993,9 @@ impl ExtensionApi {
         Ok(result)
     }
     pub fn set_session_thinking_level(&self, level: ThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_thinking_level(level) }
+    pub fn get_model_thinking_level(&self) -> Result<ModelThinkingLevel, ExtensionFailure> { self.runtime.session_actions()?.get_model_thinking_level() }
+    pub fn set_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_model_thinking_level(level) }
+    pub fn set_session_model_thinking_level(&self, level: ModelThinkingLevel) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_model_thinking_level(level) }
     pub fn set_session_fast_mode(&self, enabled: bool) -> Result<(), ExtensionFailure> { self.runtime.session_actions()?.set_session_fast_mode(enabled) }
     pub async fn execute_tool(&self, name: &str, params: JsonValue, options: ExecuteToolOptions) -> Result<maho_agent::types::AgentToolResult, ExecuteToolError> {
         let actions = self.runtime.session_actions().map_err(|error| ExecuteToolError { code: ExecuteToolErrorCode::Blocked, tool_name: name.into(), message: error.message, active_tools: Vec::new() })?;

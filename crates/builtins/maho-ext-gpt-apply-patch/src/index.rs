@@ -2,7 +2,7 @@ pub use crate::apply::{apply_patch,apply_patch_detailed,write_file_atomic_with_o
 pub use crate::recovery::build_partial_failure_text;
 pub use crate::constants::{APPLY_PATCH_FREEFORM_DESCRIPTION,APPLY_PATCH_LARK_GRAMMAR,CODEX_APPLY_PATCH_DESCRIPTION,apply_patch_json_description,apply_patch_params};
 pub use crate::errors::ApplyPatchError;
-pub use crate::extension::{get_apply_patch_wire_mode,is_openai_gpt_model};
+pub use crate::extension::{get_apply_patch_wire_mode,is_openai_gpt_model,register_apply_patch_extension,ApplyPatchExtension};
 pub use crate::parser::parse_patch;
 pub use crate::preview_format::{clear_apply_patch_render_state,display_path,format_in_flight_call_text,format_patch_preview,get_apply_patch_render_state,truncate_preview,ApplyPatchRenderState,PATCH_PREVIEW_MAX_CHARS,PATCH_PREVIEW_MAX_LINES};
 pub use crate::seek_sequence::seek_sequence;

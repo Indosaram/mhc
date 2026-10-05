@@ -1,0 +1,51 @@
+{
+  "pin": "12ad906f0b29e949ebbd1f89d8f85789578aa6e6",
+  "source_sha256": "9214ae92d3b4040546bf92dcea71fb20ef1851c5cdf9faf144dbf7863d0bdbc8",
+  "lock_sha256": "a74f985371c8f9a3fa2e0d60287fc3dbbafd5ba8347d0b784b1d2ae08cd33267",
+  "locked": {
+    "version": "4.0.5",
+    "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.5.tgz",
+    "integrity": "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==",
+    "license": "MIT",
+    "engines": {
+      "node": ">=12"
+    },
+    "funding": {
+      "url": "https://github.com/sponsors/jonschlinkert"
+    }
+  },
+  "hashes": [
+    {
+      "file": "lib/constants.js",
+      "sha256": "c28f952d2758261fe5428a121add485cc25b03e0193633f649de903dc0e5e222"
+    },
+    {
+      "file": "index.js",
+      "sha256": "02ae26406508e28f9ba0865be16cf77f0b33de6c4d4d49c212c4176df1d5625a"
+    },
+    {
+      "file": "lib/parse.js",
+      "sha256": "73211a8ba85ce257b827abd8960e52c9750385b3fd18e8ef1080b114d774eb23"
+    },
+    {
+      "file": "lib/picomatch.js",
+      "sha256": "fdd249d7ffff853f3bb1c77eafc8baa1a437bea85a94c35877b83c6a40d9ca94"
+    },
+    {
+      "file": "posix.js",
+      "sha256": "5695ff5dfcd5a338a40630bd506056f2950bcb08fe1cc068519cbbfe60add480"
+    },
+    {
+      "file": "lib/scan.js",
+      "sha256": "227fcc994a477ea95c5a0435d32783566334c6bd0dcc4a103029735ad8c9c535"
+    },
+    {
+      "file": "lib/utils.js",
+      "sha256": "f04604f70cd1a3f6ace80b84766468674ff38b4bb83818d2ef1d81fc6355f935"
+    },
+    {
+      "file": "package.json",
+      "sha256": "fb7766f5f9c724e13e075760a95d16f87cdb327143d153a913135fde267ec615"
+    }
+  ]
+}

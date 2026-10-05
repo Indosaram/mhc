@@ -19,3 +19,5 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 tempfile.workspace = true
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }

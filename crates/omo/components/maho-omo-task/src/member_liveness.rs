@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use senpi_task::{state::{TaskRecord, TaskStatus, ResidencyState}, team::{liveness_ownership::parse_team_member_task_identity, messaging::session_marker_index::{SessionMarkerIndex, create_incremental_session_marker_index}}};
 pub const TEAM_MEMBER_LIVENESS_MESSAGE_TYPE: &str = "senpi-task.team-member-liveness";
 const PREFIX: &str = "team-member-liveness:";
-pub type LivenessDelivery = Arc<dyn Fn(&str, CustomMessage) -> Result<(), String> + Send + Sync>;
+pub type LivenessDelivery = Arc<dyn Fn(&str, CustomMessage, senpi_task::completion::DeliveryCallbacks) -> Result<(), String> + Send + Sync>;
 pub type RecordCallback = Arc<dyn Fn(&TaskRecord) + Send + Sync>;
 pub struct TeamMemberLivenessDeps {
     pub deliver: LivenessDelivery,
@@ -62,7 +62,11 @@ impl TeamMemberLivenessNotifier {
         let key = format!("{PREFIX}{}:{}", record.task_id, record.notification.run_epoch);
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if !state.delivered.insert(key.clone()) { return; } state.pending.insert(key.clone(), record.clone()); drop(state);
         let content = liveness_content(&details); details["deliveryKey"] = json!(key);
-        if let Err(error) = (self.deps.deliver)(&key, CustomMessage { custom_type: TEAM_MEMBER_LIVENESS_MESSAGE_TYPE.into(), content: vec![ToolContent::text(content)], display: false, details: Some(details) }) { self.fail_delivery(&key, record, error); }
+        let weak = Arc::downgrade(self); let failed_key = key.clone(); let failed_record = record.clone();
+        let callbacks = senpi_task::completion::DeliveryCallbacks::new(move |result| {
+            if let Err(error) = result && let Some(notifier) = weak.upgrade() { notifier.fail_delivery(&failed_key, &failed_record, error.message); }
+        });
+        if let Err(error) = (self.deps.deliver)(&key, CustomMessage { custom_type: TEAM_MEMBER_LIVENESS_MESSAGE_TYPE.into(), content: vec![ToolContent::text(content)], display: false, details: Some(details) }, callbacks.clone()) { callbacks.failed(senpi_task::host::HostError { message: error }); }
     }
     pub fn fail_delivery(self: &Arc<Self>, key: &str, record: &TaskRecord, error: String) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); if !state.pending.contains_key(key) { return; } state.pending.remove(key); state.delivered.remove(key);

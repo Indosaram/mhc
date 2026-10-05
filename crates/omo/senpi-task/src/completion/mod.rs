@@ -13,7 +13,7 @@ pub use notifier::{CompletionNotifier, create_completion_notifier};
 pub use routing::{route_completion, should_notify_status};
 pub use types::{
     COMPLETION_CUSTOM_TYPE, CompletionDetails, CompletionNotifierDeps, CompletionNotifierStore,
-    CompletionRequest, CompletionRetrySchedule, DeliveredDecision, FlushInput, FlushResult,
+    CompletionRequest, CompletionRetrySchedule, DeliveredDecision, DeliveryCallbacks, DeliveryState, FlushInput, FlushResult,
     NotifyResult, ParentNotifier, ParentNotifierMessage, ParentState,
     ReconcileUnnotifiedNotificationsInput, RoutingDecision, ScheduledCancel, ScheduledTask,
     SkipReason, TransitionReason,

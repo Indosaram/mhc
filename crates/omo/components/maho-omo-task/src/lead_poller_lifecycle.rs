@@ -22,7 +22,7 @@ impl LeadInjectionSink for LeadMessageSink {
             match (self.parent_state)() { ParentState::Streaming=>coordinator.schedule_flush(),ParentState::Idle=>coordinator.flush_soon(),ParentState::Compacting|ParentState::SessionSwitching|ParentState::SessionShutdown=>{} }
         } else {
             let sent=self.actions.send_message(maho_ext_api::CustomMessage { custom_type:"senpi-task:team-message".into(),content:vec![maho_ext_api::ToolContent::text(&injection.content)],display:false,details:None },maho_ext_api::SendMessageOptions { trigger_turn:true,deliver_as:Some(maho_ext_api::DeliverAs::Steer) });
-            match sent { Ok(())=>{ if let Some(flushed)=injection.on_flushed.take() { flushed(); } },Err(error)=>(self.on_error)(error) }
+            match sent { Ok(())=>{ if let Some(flushed)=injection.on_flushed.take() { flushed(); } },Err(error)=>{ if let Some(failed)=injection.on_delivery_failed.take() { failed(&error.to_string()); } (self.on_error)(error); } }
         }
     }
 }
@@ -64,8 +64,12 @@ impl LeadPollerLifecycle {
         Ok(owned)
     }
     pub fn tick(&self) -> Result<(), String> {
-        if self.stopped.load(Ordering::SeqCst) || (self.deps.session_file)().is_none() { return Ok(()); }
-        let owned = self.synchronize()?; if (self.deps.session_file)().is_none() || transition((self.deps.parent_state)()) { return Ok(()); }
+        if self.stopped.load(Ordering::SeqCst) { return Ok(()); }
+        // senpi's `synchronizeOwnedPollers` calls `listTeams` before its session-file gate, so a
+        // session-start tick reconciles owned teams even before a session file exists; only poller
+        // creation and the poll itself wait for one (see the `synchronize` gate below).
+        let owned = self.synchronize()?;
+        if (self.deps.session_file)().is_none() || transition((self.deps.parent_state)()) { return Ok(()); }
         for team in owned { if let Some(poller) = self.resolve_lead_poller(&team.team_run_id) { poller.poll_once(None).map_err(|error| error.to_string())?; } } Ok(())
     }
     pub fn resolve_lead_poller(&self, run: &str) -> Option<Arc<dyn LeadPoller + Send + Sync>> {

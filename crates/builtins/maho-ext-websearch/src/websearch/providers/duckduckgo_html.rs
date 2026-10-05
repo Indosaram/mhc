@@ -3,8 +3,8 @@ use regex::Regex;
 use serde_json::Value;
 use super::shared::{BuildContext,BuiltSearchRequest,SearchResultItem,append_domain_filters,result};
 use crate::websearch::provider_endpoints::{provider_url,SearchProvider};
-static LINKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
-static SNIPPETS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
+static LINKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a(?-u:\b)[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
+static SNIPPETS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a(?-u:\b)[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#).expect("literal pattern"));
 static TAGS:LazyLock<Regex>=LazyLock::new(||Regex::new(r"<[^>]*>").expect("literal pattern"));
 static SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\x09-\x0d\x20\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+").expect("literal pattern"));
 fn html_decode(value:&str)->String { value.replace("&amp;","&").replace("&quot;","\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">") }

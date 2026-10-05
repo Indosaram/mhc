@@ -1,7 +1,7 @@
 use std::{future::Future,pin::Pin,sync::{Arc,Mutex},time::Duration};
 use serde_json::{Value,json};
 use tokio::task::JoinHandle;
-use futures::FutureExt;
+use futures::{FutureExt,StreamExt};
 use crate::{errors::McpError,log::{McpLogger,redact_mcp_log_text}};
 pub type ErrorNotify=Arc<dyn Fn(String,McpError)->Pin<Box<dyn Future<Output=Result<(),McpError>>+Send>>+Send+Sync>;
 pub type ErrorLogger=Arc<dyn Fn(&str,&Value)->Result<(),String>+Send+Sync>;
@@ -54,3 +54,31 @@ where F:FnMut()->Fut+Send+'static,Fut:Future<Output=Result<(),McpError>>+Send+'s
     })
 }
 pub async fn safe_delay(delay:Duration) {tokio::time::sleep(delay).await;}
+
+pub fn safe_on<T,F,Fut>(mut events:tokio::sync::broadcast::Receiver<T>,scope:String,mut listener:F,sink:McpAsyncErrorSink)->JoinHandle<()>
+where T:Clone+Send+'static,F:FnMut(T)->Fut+Send+'static,Fut:Future<Output=Result<(),McpError>>+Send+'static {
+    tokio::spawn(async move {
+        let mut callbacks=futures::stream::FuturesUnordered::new();
+        let mut closed=false;
+        loop {
+            tokio::select! {
+                event=events.recv(),if !closed=>match event {
+                    Ok(event)=>{
+                        let callback=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||listener(event)));
+                        let scope=scope.clone();let sink=sink.clone();
+                        callbacks.push(async move {
+                            match callback {
+                                Ok(callback)=>wrap_async(&scope,callback,&sink).await,
+                                Err(payload)=>report_mcp_async_error(&scope,panic_error(payload),&sink).await,
+                            }
+                        });
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>(),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed)=>closed=true,
+                },
+                _=callbacks.next(),if !callbacks.is_empty()=>(),
+                else=>return,
+                }
+        }
+    })
+}

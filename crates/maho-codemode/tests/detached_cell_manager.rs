@@ -7,6 +7,26 @@ fn input(language: EvalLanguage) -> EvalToolInput {
 }
 
 #[tokio::test]
+async fn timestamp_ties_and_detach_callbacks_preserve_distinct_insertion_orders() {
+    let statuses=Arc::new(Mutex::new(Vec::new()));let target=statuses.clone();
+    let mut manager=EvalDetachedCellManager::new(DetachedCellManagerOptions {now:Arc::new(||100.0),max_detached_cells:64,on_status_change:Some(Arc::new(move |entries|target.lock().unwrap().push(entries.into_iter().map(|entry|entry.cell_id).collect::<Vec<_>>()))),..Default::default()});
+    let ids=(0..32).map(|index|format!("cell-{index:02}")).collect::<Vec<_>>();
+    let mut cells=Vec::new();
+    for id in &ids {
+        let cell=manager.create(id.clone(),input(EvalLanguage::Py)).unwrap();
+        manager.bind_kernel(&cell,Arc::new(||AgentToolResult::text("")),Arc::new(||(None,vec![])));
+        cells.push(cell);
+    }
+    let live=manager.live_cells(None,None).into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>();
+    for cell in cells.iter().rev() {assert!(manager.detach(cell));}
+    let status=statuses.lock().unwrap().last().unwrap().clone();
+    for cell in &cells {manager.cancel_without_interrupt(cell);}
+    manager.flush_notifications().await.unwrap();
+    assert_eq!(live,ids);
+    assert_eq!(status,ids.into_iter().rev().collect::<Vec<_>>());
+}
+
+#[tokio::test]
 async fn settlement_removes_live_cell_and_notifies_once() {
     let notifications = Arc::new(Mutex::new(Vec::new()));
     let target = notifications.clone();

@@ -73,6 +73,7 @@ impl AgentSettledDelivery {
     }
 
     pub fn begin(&mut self, user_abort_generation: u64) {
+        self.cancel();
         self.generation = Some(user_abort_generation);
         self.actions.clear();
         self.turn_claims.clear();
@@ -103,6 +104,9 @@ impl AgentSettledDelivery {
                 turn_claims: std::mem::take(&mut self.turn_claims),
             }
         } else {
+            for claim in &self.turn_claims {
+                claim.resolve(DeferredTurnDisposition::FinishedWithoutStart);
+            }
             DeferredAgentSettledBatch::default()
         };
         self.generation = None;
@@ -159,13 +163,44 @@ mod tests {
         assert!(batch.turn_claims.is_empty());
     }
 
-    #[test]
-    fn cancelling_resolves_pending_turn_claims() {
+    #[tokio::test]
+    async fn cancelling_resolves_pending_turn_claims() {
         let mut delivery = AgentSettledDelivery::new();
         delivery.begin(1);
-        delivery.defer_trigger_turn(|_claim| {});
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counter = ran.clone();
+        assert!(delivery.defer_trigger_turn(move |_| { counter.fetch_add(1, Ordering::SeqCst); }));
+        let claim = delivery.turn_claims[0].clone();
         delivery.cancel();
+        claim.resolve(DeferredTurnDisposition::Started);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition()).await
+            .expect("bounded cancellation disposition"), Some(DeferredTurnDisposition::FinishedWithoutStart));
         assert!(delivery.generation.is_none());
+        let batch = delivery.finish(1);
+        assert!(batch.actions.is_empty());
+        assert!(batch.turn_claims.is_empty());
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn replacement_and_mismatched_finish_settle_claims_without_late_start() {
+        for replacement in [false, true] {
+            let mut delivery = AgentSettledDelivery::new();
+            delivery.begin(1);
+            let ran = Arc::new(AtomicUsize::new(0));
+            let counter = ran.clone();
+            assert!(delivery.defer_trigger_turn(move |_| { counter.fetch_add(1, Ordering::SeqCst); }));
+            let claim = delivery.turn_claims[0].clone();
+            if replacement { delivery.begin(2); }
+            let batch = delivery.finish(2);
+            assert!(batch.actions.is_empty());
+            delivery.cancel();
+            delivery.cancel();
+            claim.resolve(DeferredTurnDisposition::Started);
+            assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), claim.disposition()).await
+                .expect("bounded retirement"), Some(DeferredTurnDisposition::FinishedWithoutStart));
+            assert_eq!(ran.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[tokio::test]

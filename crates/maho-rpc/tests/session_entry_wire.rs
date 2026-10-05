@@ -39,5 +39,10 @@ async fn entries_export_and_cleanup_use_the_real_session() {
     assert!(!path.exists());
     let response: Value = serde_json::from_str(&handle_input_line(&session, "{\"type\":\"get_fast_mode\"}").await.unwrap().unwrap()).unwrap();
     assert_eq!(response["data"], json!({"enabled":false,"serviceTier":null}));
+    let response:Value=serde_json::from_str(&handle_input_line(&session,"{\"type\":\"reload\",\"id\":\"reload-request\"}").await.unwrap().unwrap()).unwrap();
+    assert_eq!(response["id"],"reload-request");
+    assert_eq!(response["command"],"reload");
+    assert_eq!(response["success"],true);
+    assert_eq!(response["data"],json!({"cancelled":false}));
     session.dispose().await;
 }

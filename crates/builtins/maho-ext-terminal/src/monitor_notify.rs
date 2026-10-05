@@ -9,6 +9,9 @@ pub struct MonitorNotifier {sender:tokio::sync::mpsc::UnboundedSender<NotifierAc
 enum NotifierAction {Event(MonitorEvent),Activity,Resume(Vec<String>)}
 impl MonitorNotifier {
     pub fn new(settings:crate::settings::MonitorDeliverySettings,send:impl Fn(MonitorInjection)+Send+'static)->Self {
+        Self::with_delivery_guard(settings,||true,send)
+    }
+    pub fn with_delivery_guard(settings:crate::settings::MonitorDeliverySettings,available:impl Fn()->bool+Send+'static,send:impl Fn(MonitorInjection)+Send+'static)->Self {
         let settings=resolve_delivery_settings(&settings);
         let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
         let task=tokio::spawn(async move {
@@ -17,6 +20,7 @@ impl MonitorNotifier {
             loop {
                 let action=if let Some(due)=deadline {
                     tokio::select! {action=receiver.recv()=>action,_=tokio::time::sleep_until(due)=>{
+                        if !available() {queue=MonitorDeliveryQueue::default();deadline=None;continue;}
                         let now=epoch.elapsed().as_secs_f64()*1000.0;
                         if let Some(injection)=queue.flush(now,&settings) {send(injection);}
                         deadline=queue.next_rate_limit(now,&settings).map(|delay|tokio::time::Instant::now()+std::time::Duration::from_secs_f64(delay/1000.0));
@@ -24,7 +28,7 @@ impl MonitorNotifier {
                     }}
                 } else {receiver.recv().await};
                 match action {
-                    Some(NotifierAction::Event(event))=>{queue.notify(event,&settings);let due=tokio::time::Instant::now()+std::time::Duration::from_secs_f64(settings.coalesce_window_ms/1000.0);deadline=Some(deadline.map_or(due,|old:tokio::time::Instant|old.min(due)));},
+                    Some(NotifierAction::Event(event))=>{if !available() {continue;}queue.notify(event,&settings);let due=tokio::time::Instant::now()+std::time::Duration::from_secs_f64(settings.coalesce_window_ms/1000.0);deadline=Some(deadline.map_or(due,|old:tokio::time::Instant|old.min(due)));},
                     Some(NotifierAction::Activity)=>queue.note_activity(),Some(NotifierAction::Resume(ids))=>queue.resume(&ids),None=>return,
                 }
             }
@@ -117,6 +121,17 @@ pub fn build_monitor_message(events:&[MonitorEvent],overflow_count:usize,pause_n
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(start_paused=true)]
+    async fn delivery_disabled_before_flush_discards_queue_and_recovers() {
+        use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+        let available=Arc::new(AtomicBool::new(true));let guard=available.clone();
+        let (checks,mut checked)=tokio::sync::mpsc::unbounded_channel();let (sender,mut receiver)=tokio::sync::mpsc::unbounded_channel();
+        let notifier=MonitorNotifier::with_delivery_guard(crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor,move || {let value=guard.load(Ordering::SeqCst);checks.send(value).unwrap();value},move |injection| {sender.send(injection).unwrap();});
+        notifier.notify_event(line("discarded")).unwrap();assert_eq!(checked.recv().await,Some(true));available.store(false,Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;assert_eq!(checked.recv().await,Some(false));assert!(receiver.try_recv().is_err());
+        available.store(true,Ordering::SeqCst);notifier.notify_event(line("recovered")).unwrap();assert_eq!(checked.recv().await,Some(true));tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let injection=receiver.recv().await.unwrap();assert!(injection.content.contains("recovered"));assert!(!injection.content.contains("discarded"));drop(notifier);
+    }
     #[tokio::test]
     async fn scheduled_delivery_wakes_through_exact_injection_signal() {
         let mut settings=crate::settings::TERMINAL_SETTINGS_DEFAULTS.monitor;settings.coalesce_window_ms=1.0;

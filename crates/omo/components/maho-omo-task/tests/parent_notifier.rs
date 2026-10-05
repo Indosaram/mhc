@@ -11,7 +11,7 @@ impl ExtensionActions for Actions {
 }
 #[derive(Default)] struct Coordinator { calls:Mutex<Vec<String>>,messages:Mutex<Vec<ParentNotifierMessage>> }
 impl CompletionCoordinator for Coordinator {
-    fn enqueue(&self,key:&str,source:&str,message:&ParentNotifierMessage)->Result<(),HostError> { assert_eq!(key,"task-completion"); assert_eq!(source,"task-completion"); self.messages.lock().expect("messages").push(message.clone()); self.calls.lock().expect("calls").push("enqueue".into()); Ok(()) }
+    fn enqueue(&self,key:&str,source:&str,message:&ParentNotifierMessage,_callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { assert_eq!(key,"task-completion"); assert_eq!(source,"task-completion"); self.messages.lock().expect("messages").push(message.clone()); self.calls.lock().expect("calls").push("enqueue".into()); Ok(()) }
     fn schedule_flush(&self) { self.calls.lock().expect("calls").push("schedule".into()); }
     fn flush_soon(&self) { self.calls.lock().expect("calls").push("soon".into()); }
 }
@@ -22,8 +22,28 @@ fn message()->ParentNotifierMessage { ParentNotifierMessage { custom_type:"senpi
 #[test] fn structured_completion_ids_form_stable_coordinator_key_and_preserve_details() {
     #[derive(Default)] struct Capture(Mutex<Vec<(String,ParentNotifierMessage)>>);
     impl CompletionCoordinator for Capture {
-        fn enqueue(&self,key:&str,source:&str,message:&ParentNotifierMessage)->Result<(),HostError> { assert_eq!(source,"task-completion"); self.0.lock().expect("captured").push((key.into(),message.clone())); Ok(()) }
+        fn enqueue(&self,key:&str,source:&str,message:&ParentNotifierMessage,_callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { assert_eq!(source,"task-completion"); self.0.lock().expect("captured").push((key.into(),message.clone())); Ok(()) }
         fn schedule_flush(&self) {} fn flush_soon(&self) {}
     }
     let actions=Arc::new(Actions::default()); let coordinator=Arc::new(Capture::default()); let notifier=TaskParentNotifier { actions:actions.clone(),coordinator:Some(coordinator.clone()),is_streaming:Arc::new(|| true) }; let mut message=message(); message.details=["st_first","st_second"].into_iter().map(|id| senpi_task::completion::CompletionDetails { task_id:id.into(),name:id.into(),status:senpi_task::state::TaskStatus::Completed,category:None,agent_type:None,model:"faux/faux".into(),requested_model:None,fallback_models:None,resolved_model:None,duration_ms:1000,tokens:None,run_stats:None,final_response:"finished".into(),final_response_file:None,continuation_hint:"continue".into() }).collect(); notifier.enqueue(&message).expect("enqueue"); let captured=coordinator.0.lock().expect("captured"); assert_eq!(captured.len(),1); assert_eq!(captured[0].0,"task-completion:st_first,st_second"); assert_eq!(captured[0].1,message); assert!(actions.0.lock().expect("messages").is_empty());
+}
+#[test] fn direct_and_coordinated_delivery_settle_the_callback_exactly_once() {
+    use senpi_task::completion::{DeliveryCallbacks,DeliveryState};
+    let actions=Arc::new(Actions::default());
+    let direct=TaskParentNotifier { actions:actions.clone(),coordinator:None,is_streaming:Arc::new(|| false) };
+    let callbacks=DeliveryCallbacks::new(|_| {});
+    direct.enqueue_with_callbacks(&message(),callbacks.clone()).expect("direct enqueue"); assert_eq!(callbacks.state(),DeliveryState::Delivered);
+    callbacks.failed(HostError { message:"late rejection".into() }); assert_eq!(callbacks.state(),DeliveryState::Delivered);
+    #[derive(Default)] struct Settling(Mutex<Vec<String>>);
+    impl CompletionCoordinator for Settling {
+        fn enqueue(&self,_:&str,_:&str,_:&ParentNotifierMessage,callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { self.0.lock().expect("calls").push("enqueue".into()); callbacks.delivered(); Ok(()) }
+        fn schedule_flush(&self) {} fn flush_soon(&self) {}
+    }
+    let coordinator=Arc::new(Settling::default()); let forwarded=DeliveryCallbacks::new(|_| {});
+    // A fresh collector: the direct delivery above already steered into `actions`, so only a
+    // collector used solely by the coordinated notifier can prove it takes no direct action.
+    let coordinated_actions=Arc::new(Actions::default());
+    let notifier=TaskParentNotifier { actions:coordinated_actions.clone(),coordinator:Some(coordinator.clone()),is_streaming:Arc::new(|| true) };
+    notifier.enqueue_with_callbacks(&message(),forwarded.clone()).expect("coordinated enqueue"); assert_eq!(forwarded.state(),DeliveryState::Delivered);
+    assert_eq!(*coordinator.0.lock().expect("calls"),["enqueue".to_string()]); assert!(coordinated_actions.0.lock().expect("messages").is_empty(),"coordinated delivery must not steer directly");
 }

@@ -66,6 +66,14 @@ pub fn load_terminal_settings(global: Option<&Value>, project: Option<&Value>) -
     resolve_terminal_settings(Some(&Value::Object(merged)))
 }
 
+pub fn load_session_settings(ctx:&maho_ext_api::types::ExtensionContext)->Result<(ResolvedTerminalSettings,Option<String>),maho_ext_api::types::ExtensionFailure> {
+    let home=std::env::var("HOME").map_err(|error|maho_ext_api::types::ExtensionFailure::new(error.to_string()))?;
+    let settings=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&home,ctx.is_project_trusted());
+    let terminal=load_terminal_settings(settings.get_global().get("terminal"),settings.get_project().get("terminal"));
+    let shell=settings.get().get("shellPath").and_then(Value::as_str).map(str::to_owned);
+    Ok((terminal,shell))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

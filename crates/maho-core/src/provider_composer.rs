@@ -125,6 +125,10 @@ struct ComposedProvider { id: String, name: String, models: Vec<Model>, base: Op
 impl Provider for ComposedProvider {
     fn id(&self) -> &str { &self.id }
     fn name(&self) -> &str { &self.name }
+    fn retry_policy(&self) -> Option<&maho_ai::utils::retry_profile::types::RetryPolicyProfile> {
+        self.extension.as_ref().and_then(|extension| extension.retry_policy.as_ref())
+            .or_else(|| self.base.as_ref().and_then(|base| base.retry_policy()))
+    }
     fn get_models(&self) -> Vec<Model> {
         if self.supports_refresh() {
             let mut extension=self.extension.clone();
@@ -153,6 +157,10 @@ impl Provider for ComposedProvider {
         })
     }
     fn fetch_deferred(&self,model:&Model,handle:&maho_ai::types::DeferredHandle,options:Option<maho_ai::types::DeferredFetchOptions>)->Option<AssistantMessageEventStream> {self.base.as_ref().and_then(|p|p.fetch_deferred(model,handle,options))}
+    fn supports_cancel_deferred(&self)->bool {self.base.as_ref().is_some_and(|p|p.supports_cancel_deferred())}
+    fn cancel_deferred<'a>(&'a self,model:&'a Model,handle:&'a maho_ai::types::DeferredHandle,options:Option<maho_ai::types::DeferredCancelOptions>)->maho_ai::types::BoxFuture<'a,Result<(),String>> {
+        match &self.base { Some(base)=>base.cancel_deferred(model,handle,options), None=>Box::pin(async {Err("API cannot cancel deferred responses".to_owned())}) }
+    }
 }
 
 pub fn compose_model_provider(id: &str, base: Option<Arc<dyn Provider>>, config: &ModelConfig, extension: Option<&ProviderConfigInput>) -> Result<Arc<dyn Provider>, String> {
@@ -199,5 +207,54 @@ mod tests {
         let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol"}],"modelOverrides":{"sol":{"maxTokens":42}}}}}"#, "memory");
         let extension = ModelsJsonProvider { api: Some("openai-completions".into()), base_url: Some("http://localhost/v1".into()), models: Some(vec![ModelsJsonModel {id:"sol".into(),max_tokens:Some(100.0),..Default::default()}]), ..Default::default() };
         assert_eq!(compose_models("proxy", &[], config.get_provider("proxy"), Some(&extension.into())).expect("compose")[0].max_tokens, 42);
+    }
+
+    struct CancelRecordingProvider {
+        supports: bool,
+        seen: std::sync::Mutex<Option<(maho_ai::types::DeferredHandle, Option<maho_ai::types::DeferredCancelOptions>)>>,
+    }
+    impl Provider for CancelRecordingProvider {
+        fn id(&self) -> &str { "recording" }
+        fn name(&self) -> &str { "recording" }
+        fn get_models(&self) -> Vec<Model> { Vec::new() }
+        fn stream(&self, _model: &Model, _context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream { maho_ai::utils::event_stream::create_assistant_message_event_stream() }
+        fn stream_simple(&self, _model: &Model, _context: &Context, _options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream { maho_ai::utils::event_stream::create_assistant_message_event_stream() }
+        fn supports_cancel_deferred(&self) -> bool { self.supports }
+        fn cancel_deferred<'a>(&'a self, _model: &'a Model, handle: &'a maho_ai::types::DeferredHandle, options: Option<maho_ai::types::DeferredCancelOptions>) -> maho_ai::types::BoxFuture<'a, Result<(), String>> {
+            *self.seen.lock().expect("seen") = Some((handle.clone(), options.clone()));
+            let supports = self.supports;
+            Box::pin(async move { if supports { Ok(()) } else { Err("API cannot cancel deferred responses".to_owned()) } })
+        }
+    }
+    fn composed(base: Option<Arc<dyn Provider>>) -> ComposedProvider {
+        ComposedProvider { id: "proxy".into(), name: "proxy".into(), models: Vec::new(), base, config: None, extension: None, refreshed: Arc::new(std::sync::RwLock::new(None)) }
+    }
+    fn test_model() -> Model {
+        serde_json::from_value(serde_json::json!({
+            "id": "sol", "name": "sol", "api": "openai-completions", "provider": "proxy", "baseUrl": "http://localhost/v1",
+            "reasoning": false, "input": [], "contextWindow": 128000, "maxTokens": 4096,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        })).expect("model")
+    }
+
+    #[tokio::test]
+    async fn composed_provider_forwards_cancellation_and_preserves_unsupported() {
+        let base = Arc::new(CancelRecordingProvider { supports: true, seen: Default::default() });
+        let provider = composed(Some(base.clone()));
+        assert!(provider.supports_cancel_deferred());
+        let model = test_model();
+        let handle = maho_ai::types::DeferredHandle { provider: "proxy".into(), model_id: "sol".into(), api: "openai-completions".into(), id: "handle".into(), expires_at: None, poll_after_ms: None, data: None };
+        let options = maho_ai::types::DeferredCancelOptions { api_key: Some("resolved-key".into()), ..Default::default() };
+        provider.cancel_deferred(&model, &handle, Some(options.clone())).await.expect("forwards to the base provider");
+        let (seen_handle, seen_options) = base.seen.lock().expect("seen").clone().expect("recorded");
+        assert_eq!(seen_handle.id, "handle");
+        assert_eq!(seen_options.and_then(|options| options.api_key).as_deref(), Some("resolved-key"));
+
+        let unsupported = composed(None);
+        assert!(!unsupported.supports_cancel_deferred());
+        assert_eq!(unsupported.cancel_deferred(&model, &handle, None).await.unwrap_err(), "API cannot cancel deferred responses");
+
+        let incapable_base = Arc::new(CancelRecordingProvider { supports: false, seen: Default::default() });
+        assert!(!composed(Some(incapable_base)).supports_cancel_deferred());
     }
 }

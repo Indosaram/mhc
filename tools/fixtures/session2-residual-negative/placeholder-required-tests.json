@@ -1,0 +1,26 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: three prose placeholders that masqueraded as exact test identifiers before the task-17 correction. The verifier MUST reject each as a non-identifier.",
+  "execution_coverage": {
+    "required_tests": [
+      {
+        "package": "maho-cli",
+        "target": "startup",
+        "test": "tests/startup.rs theme matrix (custom/missing/invalid/registered + pinned fallback)",
+        "requirement": "G2"
+      },
+      {
+        "package": "maho-cli",
+        "target": "startup_loading_indicator",
+        "test": "tests/startup_loading_indicator.rs (frame/erase/diagnostic/frame order + inert indicator)",
+        "requirement": "G2"
+      },
+      {
+        "package": "maho-omo-config-watch",
+        "target": "index",
+        "test": "tests/index.rs (9 ported index.test.ts cases)",
+        "requirement": "G10"
+      }
+    ]
+  }
+}

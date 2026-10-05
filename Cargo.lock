@@ -15,6 +15,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aead"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
+dependencies = [
+ "crypto-common",
+ "generic-array",
+]
+
+[[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
+name = "aes-gcm"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
+dependencies = [
+ "aead",
+ "aes",
+ "cipher",
+ "ctr",
+ "ghash",
+ "subtle",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -179,6 +214,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "base64ct"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -314,6 +355,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -337,6 +388,12 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "const-oid"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
 name = "conv"
@@ -455,6 +512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -505,10 +563,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
+name = "curve25519-dalek"
+version = "4.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "curve25519-dalek-derive",
+ "digest",
+ "fiat-crypto",
+ "rustc_version",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "curve25519-dalek-derive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "custom_derive"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
+
+[[package]]
+name = "data-encoding"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+
+[[package]]
+name = "der"
+version = "0.7.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
+dependencies = [
+ "const-oid",
+ "zeroize",
+]
 
 [[package]]
 name = "deranged"
@@ -563,6 +673,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -683,6 +794,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -776,6 +911,12 @@ checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
 ]
+
+[[package]]
+name = "fiat-crypto"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "filedescriptor"
@@ -1038,6 +1179,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
+dependencies = [
+ "opaque-debug",
+ "polyval",
+]
+
+[[package]]
 name = "gif"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1146,6 +1297,18 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "heck"
@@ -1158,6 +1321,24 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "html-escape"
@@ -1610,6 +1791,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1888,6 +2078,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -1972,13 +2163,73 @@ dependencies = [
 name = "maho-cli"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "base64 0.22.1",
+ "crossterm",
  "maho-agent",
  "maho-ai",
+ "maho-codemode",
  "maho-core",
+ "maho-ext-account",
+ "maho-ext-anthropic-bash",
+ "maho-ext-anthropic-subscription",
+ "maho-ext-anthropic-web-search",
  "maho-ext-api",
+ "maho-ext-ask-user",
+ "maho-ext-bash-timeout",
+ "maho-ext-btw",
+ "maho-ext-cache-keepalive",
+ "maho-ext-compaction",
+ "maho-ext-config-reload",
+ "maho-ext-cursor-cli-oauth",
+ "maho-ext-ferryx-agent-state",
+ "maho-ext-goal",
+ "maho-ext-gpt-apply-patch",
+ "maho-ext-help",
+ "maho-ext-herdr",
+ "maho-ext-herdr-agent-state",
+ "maho-ext-history-search",
+ "maho-ext-hooks",
+ "maho-ext-host",
+ "maho-ext-imagegen",
+ "maho-ext-llama",
+ "maho-ext-look-at",
+ "maho-ext-loop",
+ "maho-ext-loop-guard",
+ "maho-ext-mcp",
+ "maho-ext-model-fallback",
+ "maho-ext-nested-agents-md",
+ "maho-ext-omo-zcode-oauth",
+ "maho-ext-openai-image-gen",
+ "maho-ext-openai-web-search",
+ "maho-ext-orca-agent-status",
+ "maho-ext-orca-titlebar-spinner",
+ "maho-ext-permission-system",
+ "maho-ext-pi-ast-grep",
+ "maho-ext-pi-nested-agents-md",
+ "maho-ext-pi-webfetch",
+ "maho-ext-prompt-preset",
+ "maho-ext-recommended-models",
+ "maho-ext-rules",
+ "maho-ext-terminal",
+ "maho-ext-todotools",
+ "maho-ext-tool-pair-guard",
+ "maho-ext-tool-search",
+ "maho-ext-ttsr",
+ "maho-ext-video-in",
+ "maho-ext-webfetch",
+ "maho-ext-websearch",
  "maho-interactive",
+ "maho-memory-core",
+ "maho-omo",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-omo-memory",
+ "maho-omo-task",
  "maho-rpc",
+ "maho-senpi-task",
+ "maho-server",
  "maho-tools",
  "maho-tui",
  "nix",
@@ -2057,7 +2308,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "fancy-regex",
  "futures",
+ "globset",
  "hex",
  "ignore",
  "indexmap",
@@ -2065,9 +2318,12 @@ dependencies = [
  "maho-ai",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-permission-system",
+ "maho-ext-recommended-models",
  "maho-tools",
  "maho-tui",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2094,6 +2350,20 @@ dependencies = [
 [[package]]
 name = "maho-ext-account"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-btw",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "maho-ext-imagegen",
+ "maho-ext-openai-image-gen",
+ "maho-ext-reasoning",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-anthropic-bash"
@@ -2106,13 +2376,34 @@ dependencies = [
 [[package]]
 name = "maho-ext-anthropic-subscription"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "maho-test-support",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "maho-ext-anthropic-web-search"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
+ "tokio",
  "url",
 ]
 
@@ -2132,8 +2423,15 @@ dependencies = [
 name = "maho-ext-ask-user"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-tui",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2150,6 +2448,14 @@ name = "maho-ext-btw"
 version = "0.0.0"
 dependencies = [
  "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-compaction",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
+ "maho-tui",
+ "serde_json",
  "tokio",
 ]
 
@@ -2159,9 +2465,17 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-gpt-apply-patch",
+ "maho-ext-host",
+ "maho-tui",
+ "percent-encoding",
+ "regex",
+ "reqwest 0.12.28",
  "serde_json",
  "tokio",
 ]
@@ -2170,7 +2484,14 @@ dependencies = [
 name = "maho-ext-cache-keepalive"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
  "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-tui",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2198,10 +2519,44 @@ dependencies = [
 [[package]]
 name = "maho-ext-config-reload"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "notify",
+ "regex",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-cursor-cli-oauth"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-anthropic-subscription",
+ "maho-ext-api",
+ "maho-ext-builtin-loose",
+ "maho-ext-host",
+ "maho-test-support",
+ "nix",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-ferryx-agent-state"
@@ -2209,22 +2564,51 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
  "socket2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
 name = "maho-ext-goal"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "icu_collator",
+ "jiff",
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-ext-todotools",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-ext-gpt-apply-patch"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2260,6 +2644,7 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "rand 0.9.3",
  "serde_json",
  "socket2",
@@ -2272,11 +2657,13 @@ name = "maho-ext-history-search"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "maho-ext-api",
  "maho-interactive",
  "maho-tui",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2288,6 +2675,9 @@ dependencies = [
  "futures",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-ask-user",
+ "maho-ext-host",
+ "maho-test-support",
  "maho-tools",
  "nix",
  "serde",
@@ -2321,8 +2711,26 @@ dependencies = [
  "base64 0.22.1",
  "libc",
  "maho-ai",
+ "maho-ext-api",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "maho-ext-llama"
+version = "0.0.0"
+dependencies = [
+ "futures-util",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-interactive",
+ "maho-tui",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2331,9 +2739,14 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
+ "icu_collator",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2344,10 +2757,37 @@ dependencies = [
 [[package]]
 name = "maho-ext-loop"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "indexmap",
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-loop-guard"
 version = "0.0.0"
+dependencies = [
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-mcp"
@@ -2360,10 +2800,13 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "globset",
+ "icu_collator",
+ "maho-agent",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-ext-tool-search",
  "maho-test-support",
  "regex",
  "reqwest 0.12.28",
@@ -2390,19 +2833,51 @@ dependencies = [
 [[package]]
 name = "maho-ext-nested-agents-md"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-omo-zcode-oauth"
 version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hkdf",
+ "hmac",
+ "iana-time-zone",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "rand 0.9.3",
+ "regex",
+ "reqwest 0.12.28",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-ext-openai-image-gen"
 version = "0.0.0"
 dependencies = [
+ "maho-agent",
  "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
  "maho-ext-imagegen",
+ "maho-test-support",
  "serde_json",
  "tempfile",
+ "tokio",
  "url",
 ]
 
@@ -2411,7 +2886,9 @@ name = "maho-ext-openai-web-search"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "serde_json",
+ "tokio",
  "url",
 ]
 
@@ -2452,6 +2929,7 @@ dependencies = [
  "maho-ext-gpt-apply-patch",
  "maho-ext-host",
  "maho-test-support",
+ "maho-tools",
  "serde",
  "serde_json",
  "tempfile",
@@ -2464,6 +2942,7 @@ name = "maho-ext-pi-ast-grep"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-tui",
  "nix",
  "regex",
  "reqwest 0.12.28",
@@ -2520,6 +2999,7 @@ dependencies = [
  "fancy-regex",
  "globset",
  "icu_collator",
+ "icu_locale_core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-interactive",
@@ -2534,8 +3014,9 @@ dependencies = [
 name = "maho-ext-pi-webfetch"
 version = "0.0.0"
 dependencies = [
- "dom_query 0.27.0",
+ "dom_query 0.28.0",
  "dom_smoothie",
+ "html5ever 0.39.0",
  "hyper",
  "maho-agent",
  "maho-ai",
@@ -2556,8 +3037,10 @@ name = "maho-ext-pi-websearch"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "maho-agent",
  "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-interactive",
  "maho-tui",
  "regex",
@@ -2574,6 +3057,15 @@ dependencies = [
 [[package]]
 name = "maho-ext-prompt-preset"
 version = "0.0.0"
+dependencies = [
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "regex",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-quiet-model-profile"
@@ -2585,6 +3077,10 @@ version = "0.0.0"
 dependencies = [
  "maho-ai",
  "maho-core",
+ "maho-ext-api",
+ "maho-tui",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2599,10 +3095,32 @@ dependencies = [
 [[package]]
 name = "maho-ext-rule-activation"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "maho-tui",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-rules"
 version = "0.0.0"
+dependencies = [
+ "fancy-regex",
+ "globset",
+ "icu_collator",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-ext-rule-activation",
+ "maho-test-support",
+ "maho-tui",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-terminal"
@@ -2613,8 +3131,11 @@ dependencies = [
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-pty",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "nix",
  "regex",
  "serde",
@@ -2623,6 +3144,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "vt100",
 ]
 
 [[package]]
@@ -2630,7 +3152,10 @@ name = "maho-ext-todotools"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "serde",
  "serde_json",
@@ -2651,23 +3176,49 @@ dependencies = [
 name = "maho-ext-tool-search"
 version = "0.0.0"
 dependencies = [
+ "icu_collator",
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
 name = "maho-ext-ttsr"
 version = "0.0.0"
+dependencies = [
+ "dirs",
+ "globset",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "regress",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-ext-video-in"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "maho-agent",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
  "maho-tools",
  "serde",
  "serde_json",
@@ -2682,11 +3233,16 @@ dependencies = [
  "dom_query 0.27.0",
  "futures",
  "html5ever 0.38.0",
+ "hyper",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
  "maho-tools",
+ "maho-tui",
  "regex",
  "reqwest 0.13.2",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -2696,8 +3252,13 @@ dependencies = [
 name = "maho-ext-websearch"
 version = "0.0.0"
 dependencies = [
+ "maho-ai",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-interactive",
+ "maho-test-support",
  "maho-tools",
+ "maho-tui",
  "regex",
  "reqwest 0.13.2",
  "serde_json",
@@ -2726,15 +3287,20 @@ dependencies = [
 name = "maho-interactive"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
+ "icu_collator",
  "maho-agent",
  "maho-ai",
  "maho-core",
  "maho-ext-api",
+ "maho-ext-ask-user",
+ "maho-rpc",
  "maho-test-support",
  "maho-tools",
  "maho-tui",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2817,6 +3383,31 @@ dependencies = [
 [[package]]
 name = "maho-omo"
 version = "0.0.0"
+dependencies = [
+ "indexmap",
+ "maho-ext-api",
+ "maho-omo-ast-grep",
+ "maho-omo-comment-checker",
+ "maho-omo-config-startup",
+ "maho-omo-config-watch",
+ "maho-omo-fallback-architect",
+ "maho-omo-init-deep-advisor",
+ "maho-omo-lsp",
+ "maho-omo-mass-ulw",
+ "maho-omo-memory",
+ "maho-omo-native-badge",
+ "maho-omo-onboarding",
+ "maho-omo-start-work-continuation",
+ "maho-omo-task",
+ "maho-omo-telemetry",
+ "maho-omo-todo-fanout-reminder",
+ "maho-omo-ultrawork",
+ "maho-omo-ulw-loop",
+ "maho-senpi-task",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-agent-home"
@@ -2827,12 +3418,25 @@ name = "maho-omo-ast-grep"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
 name = "maho-omo-comment-checker"
 version = "0.0.0"
+dependencies = [
+ "maho-comment-checker-core",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-config-core"
@@ -2848,24 +3452,67 @@ dependencies = [
 [[package]]
 name = "maho-omo-config-resolution"
 version = "0.0.0"
+dependencies = [
+ "maho-omo-config-core",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "maho-omo-config-startup"
 version = "0.0.0"
+dependencies = [
+ "maho-config-migration",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-config-watch"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-omo-agent-home",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-fallback-architect"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-senpi-task",
+ "maho-test-support",
+ "maho-tui",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-init-deep-advisor"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-onboarding",
+ "maho-omo-telemetry",
+ "maho-test-support",
  "serde",
  "serde_json",
  "sha2",
@@ -2878,8 +3525,10 @@ name = "maho-omo-lsp"
 version = "0.0.0"
 dependencies = [
  "maho-ext-api",
+ "maho-ext-host",
  "maho-lsp-core",
  "maho-lsp-daemon",
+ "maho-test-support",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2889,22 +3538,74 @@ dependencies = [
 [[package]]
 name = "maho-omo-mass-ulw"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-memory"
 version = "0.0.0"
+dependencies = [
+ "chrono",
+ "maho-ai",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-memory-core",
+ "maho-omo-config-core",
+ "maho-rpc",
+ "maho-senpi-task",
+ "maho-test-support",
+ "maho-tools",
+ "nix",
+ "notify",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-native-badge"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-onboarding"
 version = "0.0.0"
+dependencies = [
+ "jiff",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "maho-omo-start-work-continuation"
 version = "0.0.0"
+dependencies = [
+ "maho-boulder-state",
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-task"
@@ -2912,6 +3613,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "maho-ext-api",
+ "maho-omo-lsp",
  "maho-senpi-task",
  "maho-team-core",
  "maho-tui",
@@ -2929,9 +3631,17 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "futures",
+ "indexmap",
+ "maho-ai",
+ "maho-core",
  "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-config-core",
+ "maho-omo-config-resolution",
+ "maho-omo-ultrawork",
  "maho-senpi-task",
  "maho-telemetry-core",
+ "maho-test-support",
  "serde_json",
  "sha2",
  "tempfile",
@@ -2941,14 +3651,38 @@ dependencies = [
 [[package]]
 name = "maho-omo-todo-fanout-reminder"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-ultrawork",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-ultrawork"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-test-support",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "maho-omo-ulw-loop"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-ext-host",
+ "maho-omo-start-work-continuation",
+ "maho-test-support",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "maho-pty"
@@ -2963,6 +3697,7 @@ name = "maho-rpc"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "futures",
  "getrandom 0.3.4",
  "maho-agent",
  "maho-ai",
@@ -3010,6 +3745,38 @@ dependencies = [
 [[package]]
 name = "maho-server"
 version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "httparse",
+ "ignore",
+ "indexmap",
+ "maho-agent",
+ "maho-ai",
+ "maho-core",
+ "maho-ext-api",
+ "maho-ext-ask-user",
+ "maho-ext-goal",
+ "maho-ext-host",
+ "maho-ext-mcp",
+ "maho-interactive",
+ "maho-rpc",
+ "maho-test-support",
+ "maho-tui",
+ "rand 0.9.3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "maho-team-core"
@@ -3432,6 +4199,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "opaque-debug"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3655,6 +4428,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "pkcs8"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
+dependencies = [
+ "der",
+ "spki",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3697,6 +4480,18 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
+]
+
+[[package]]
+name = "polyval"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1fe60d06143b2430aa532c94cfe9e29783047f06c0d7fd359a9a51b729fa25"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "opaque-debug",
+ "universal-hash",
 ]
 
 [[package]]
@@ -4011,6 +4806,9 @@ name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+dependencies = [
+ "getrandom 0.2.17",
+]
 
 [[package]]
 name = "rand_core"
@@ -4124,6 +4922,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "regress"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32eef8b209c3c1c15dbad02c1f30f9539f00dc7253e0cbcdaae442a50a09d7c1"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4227,6 +5034,7 @@ dependencies = [
  "bitflags 2.13.1",
  "fallible-iterator",
  "fallible-streaming-iterator",
+ "hashlink",
  "libsqlite3-sys",
  "smallvec",
 ]
@@ -4634,6 +5442,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "simba"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4690,6 +5507,16 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "spki"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
+dependencies = [
+ "base64ct",
+ "der",
 ]
 
 [[package]]
@@ -4985,6 +5812,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d25a406cddcc431a75d3d9afc6a7c0f7428d4891dd973e4d54c56b46127bf857"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5138,6 +5977,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b3e06c9b9d80ed6b745c7159c40b311ad2916abb34a49e9be2653b90db0d8dd"
 
 [[package]]
+name = "tungstenite"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8628dcc84e5a09eb3d8423d6cb682965dea9133204e8fb3efee74c2a0c259442"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.9.3",
+ "sha1",
+ "thiserror 2.0.18",
+ "utf-8",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5183,6 +6039,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "universal-hash"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
+dependencies = [
+ "crypto-common",
+ "subtle",
+]
+
+[[package]]
 name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5205,6 +6071,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf16_iter"

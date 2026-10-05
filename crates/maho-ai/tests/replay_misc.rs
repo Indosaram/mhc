@@ -179,6 +179,25 @@ impl serde_json::ser::Formatter for JsNumberFormatter {
         self.write_f64(writer, f64::from(value))
     }
 
+    /// `serde_json`'s `arbitrary_precision` feature stores every number as its literal text and
+    /// re-emits it through `write_number_str` rather than through [`Self::write_f64`]. That feature
+    /// is enabled for the whole build graph as soon as any crate in it asks for it (the canonical
+    /// gate set does, via `maho-ext-websearch`), so an integral `f64` - every `Usage.cost` field -
+    /// reaches this method as `"0.0"`. JS `JSON.stringify`, which the pinned
+    /// `tools/golden/ai-replay.mjs` uses, prints that same number as `0`, so apply the identical
+    /// integer rule here to keep both serde_json number paths byte-identical to the recorded bytes.
+    fn write_number_str<W>(&mut self, writer: &mut W, value: &str) -> std::io::Result<()>
+    where
+        W: ?Sized + std::io::Write,
+    {
+        match value.parse::<f64>() {
+            Ok(number) if number.is_finite() && number.fract() == 0.0 && number.abs() < 1e15 => {
+                write!(writer, "{}", number as i64)
+            }
+            _ => self.inner.write_number_str(writer, value),
+        }
+    }
+
     delegate_value!(write_bool, value: bool);
     delegate_value!(write_i8, value: i8);
     delegate_value!(write_i16, value: i16);
@@ -190,7 +209,6 @@ impl serde_json::ser::Formatter for JsNumberFormatter {
     delegate_value!(write_u32, value: u32);
     delegate_value!(write_u64, value: u64);
     delegate_value!(write_u128, value: u128);
-    delegate_value!(write_number_str, value: &str);
     delegate_value!(write_string_fragment, fragment: &str);
     delegate_value!(write_byte_array, value: &[u8]);
     delegate_value!(write_char_escape, char_escape: serde_json::ser::CharEscape);

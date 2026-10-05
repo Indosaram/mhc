@@ -63,6 +63,7 @@ pub mod session_teardown;
 pub mod session_worker_client;
 pub mod session_worker;
 pub mod session_binding;
+pub mod session_event_decode;
 pub mod worker_session_registry;
 pub mod host_runner;
 pub mod host_ensure;

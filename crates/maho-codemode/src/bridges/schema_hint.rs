@@ -42,7 +42,10 @@ fn object_lines(schema: &Value, indent: usize, depth: usize) -> Vec<String> {
         let optional = if required.contains(&name.as_str()) { "" } else { "?" };
         let mut description = type_label(value);
         if let Some(text) = value["description"].as_str().and_then(|text| text.split('\n').next()).map(str::trim).filter(|text| !text.is_empty()) {
-            let truncated = if text.encode_utf16().count() > 80 { format!("{}…", text.chars().take(80).collect::<String>()) } else { text.into() };
+            let truncated = if text.encode_utf16().count() > 80 {
+                let units = text.encode_utf16().take(80).collect::<Vec<_>>();
+                format!("{}…", String::from_utf16_lossy(&units))
+            } else { text.into() };
             description.push_str(&format!(" — {truncated}"));
         }
         lines.push(format!("{pad}{name}{optional}: {description}"));

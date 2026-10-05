@@ -1,0 +1,23 @@
+[
+  {
+    "name": "multiple-tables-and-siblings",
+    "html": "<p>before</p><table>first loose<tr><td>first cell</td></tr>first tail</table><p>between</p><table>second loose<tr><td>second cell</td></tr>second tail</table><p>after</p>",
+    "url": "https://example.org/page",
+    "markdown": "before\n\nfirst cell\n\nfirst loosefirst tail\n\nbetween\n\nsecond cell\n\nsecond loosesecond tail\n\nafter",
+    "text": "before\n\nfirst cell\nfirst loosefirst tail\nbetween\n\nsecond cell\nsecond loosesecond tail\nafter"
+  },
+  {
+    "name": "nested-table-foster",
+    "html": "<table>outer loose<tr><td>outer cell<table>inner loose<tr><td>inner cell</td></tr>inner tail</table>end cell</td></tr>outer tail</table>",
+    "url": "https://example.org/page",
+    "markdown": "outer cellinner looseinner tail\n\ninner cell\n\nend cell",
+    "text": "outer cellinner looseinner tail\ninner cell\nend cell"
+  },
+  {
+    "name": "table-adjacent-text",
+    "html": "prefix<table>first<tr><td>cell</td></tr>last</table>suffix<div>end</div>",
+    "url": "https://example.org/page",
+    "markdown": "prefixfirstlast\n\ncell\n\nsuffix\n\nend",
+    "text": "prefixfirstlast\ncell\nsuffix\nend"
+  }
+]

@@ -89,6 +89,31 @@ fn given_a_member_with_a_task_summary_when_spawned_then_the_manager_start_spec_c
     let captured = manager.captured();
     assert_eq!(captured.len(), 1);
     assert_eq!(captured[0].category.as_deref(), Some("quick"));
-    assert!(format!("{:?}", spec.members[0]).contains("Investigate the failing test"));
+    assert_eq!(captured[0].task_summary.as_deref(), Some("Investigate the failing test"));
+    assert!(captured[0].run_in_background);
     assert!(result.get(&spec.members[0].name).is_some());
+}
+
+#[test]
+fn member_launch_extras_survive_the_manager_adapter() {
+    let root = tempfile::tempdir().expect("worktree root");
+    let cwd = root.path().join("member").to_string_lossy().into_owned();
+    let spec = normalize_senpi_team_spec(&json!({"members":[{"name":"worker","kind":"category","category":"quick","worktreePath":cwd,"task_summary":"Repair parser"}]}), "demo", None).expect("spec");
+    let manager = CapturingManager::new();
+    let result = spawn_team_members(&SpawnMembersInput {
+        spec:&spec, team_run_id:"run-1", manager:&manager, lead_session_id:"lead", spawn_depth:1,
+        max_parallel:1, deadline_at:10, now:&|| 1,
+        member_extension:Some(crate::team::runtime_types::SpawnMemberExtensionConfig {
+            entry_path:"member-extension".into(), inherited_extensions:Some(vec!["inherited".into(),"member-extension".into()]), team_config:"{\"team\":1}".into(),
+        }),
+    });
+    assert!(result.failure.is_none());
+    let captured = manager.captured();
+    let launch = crate::manager::types::ManagerStartSpec::from(&captured[0]);
+    assert_eq!(launch.task_summary.as_deref(), Some("Repair parser"));
+    assert_eq!(launch.cwd.as_deref(), Some(cwd.as_str()));
+    assert_eq!(launch.extensions, Some(vec!["member-extension".into(),"inherited".into()]));
+    assert_eq!(launch.member_env, Some([("SENPI_TASK_MEMBER".into(),"run-1::worker".into()),("SENPI_TASK_TEAM_CONFIG".into(),"{\"team\":1}".into())].into()));
+    assert!(launch.run_in_background);
+    assert_eq!(launch.root_session_id.as_deref(), Some("lead"));
 }

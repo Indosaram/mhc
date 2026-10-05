@@ -92,6 +92,7 @@ pub mod package_identity;
 pub mod pi_manifest;
 pub mod project_trust;
 pub mod prompt_cache_budget;
+pub mod provider_account_events;
 pub mod provider_attribution;
 pub mod provider_concurrency;
 pub mod provider_display_names;
@@ -132,7 +133,6 @@ pub mod tool_call_display_name;
 pub mod usage_totals;
 pub mod export_html;
 
-
 pub use auth_storage::{AuthStorage, CredentialKind, ReadOnlyAuthStorage, read_stored_credential};
 pub use brand::{BRAND_ENV_VAR, BrandProfile, brand_profile, env_value, parse_brand_profile};
 pub use config::{app_command, app_name, app_title, config_dir_name, get_agent_dir, get_sessions_dir};
@@ -165,6 +165,10 @@ pub use prompt_templates::{
     LoadPromptTemplatesOptions, PromptTemplate, PromptTemplateExpansion, expand_prompt_template,
     expand_prompt_template_with_metadata, load_prompt_templates, parse_command_args, substitute_args,
 };
+pub use provider_account_events::{
+    ProviderAccountEvent, ProviderAccountEvents, emit_provider_account_failover,
+    emit_provider_accounts_changed, provider_account_events, subscribe_provider_account_events,
+};
 pub use source_info::{
     SourceInfo, SourceOrigin, SourceScope, SyntheticSourceInfoOptions, create_source_info,
     create_synthetic_source_info,
@@ -184,3 +188,18 @@ pub use skill_discovery::{SkillDiscoveryMode, collect_auto_skill_entries, collec
 pub use system_prompt::{BuildSystemPromptOptions, ContextFile, build_system_prompt, get_eval_only_grep_guideline};
 pub use settings_manager::{Settings, SettingsManager, SettingsScope, parse_settings_json};
 pub use trust_manager::{ProjectTrustDecision, ProjectTrustStore, ProjectTrustUpdate};
+
+/// Test-only helpers shared by maho-core's unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// A temp root created outside the real HOME so the ancestor walks that read project
+    /// context files, the nearest parent config dir and project trust never escape into the
+    /// developer's home directory. `tempfile`'s default honours `TMPDIR`, which a verification
+    /// harness may point inside HOME; anchoring on `/tmp` keeps every ancestor marker-free.
+    pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("maho-core-isolated-")
+            .tempdir_in("/tmp")
+            .expect("isolated temp root under /tmp")
+    }
+}

@@ -46,12 +46,9 @@ pub fn create_speculative_compaction_snapshot(
     let expected_revision = context.get_message_revision()?;
     let branch_entries = branch_values(context);
     let context_window = context.get_context_usage()?.map_or(model.context_window, |usage| usage.context_window);
-    let live_settings = context.get_compaction_settings()?;
-    let mut settings = maho_core::compaction::settings::default_compaction_settings();
-    settings.enabled = live_settings.enabled;
-    settings.reserve_tokens = i64::try_from(live_settings.reserve_tokens).expect("reserve tokens fit native compaction settings");
+    let mut settings = crate::extension_wiring::live_settings(context)?;
     settings.keep_recent_tokens = crate::policy::compute_effective_keep_recent_tokens(
-        live_settings.keep_recent_tokens as f64, context_window as f64,
+        settings.keep_recent_tokens as f64, context_window as f64,
         crate::policy::compute_effective_threshold(context_window as f64, None), 0.05,
     ) as i64;
     let Some(preparation) = maho_core::compaction::compaction::prepare_compaction(&branch_entries, &settings, false, false) else { return Ok(None); };

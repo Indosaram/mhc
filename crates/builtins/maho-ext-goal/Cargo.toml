@@ -5,5 +5,30 @@ edition.workspace = true
 publish.workspace = true
 license = "MIT"
 
+[dependencies]
+dirs = "=6.0.0"
+icu_collator = "=2.3.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+thiserror = "=2.0.18"
+uuid = { version = "=1.20.0", features = ["v4"] }
+maho-core = { path = "../../maho-core" }
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-ext-host = { path = "../../maho-ext-host" }
+maho-ext-todotools = { path = "../maho-ext-todotools" }
+maho-tui = { path = "../../maho-tui" }
+maho-agent = { path = "../../maho-agent" }
+maho-ai = { path = "../../maho-ai" }
+regex = "=1.12.3"
+sha2 = "=0.10.9"
+chrono = { version = "=0.4.43", default-features = false, features = ["alloc"] }
+jiff = "=0.2.23"
+tokio = { version = "=1.52.3", features = ["rt", "macros", "time"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+maho-test-support = { path = "../../maho-test-support", features = ["sdk"] }
+tokio = { version = "=1.52.3", features = ["test-util", "sync"] }
+
 [lints]
 workspace = true

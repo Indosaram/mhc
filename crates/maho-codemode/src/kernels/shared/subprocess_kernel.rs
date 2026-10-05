@@ -19,16 +19,25 @@ pub struct SubprocessKernel {
     commands: mpsc::UnboundedSender<Command>,
     snapshot: Arc<Mutex<QueueSnapshot>>,
     pid: Arc<Mutex<Option<u32>>>,
+    actor: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    shutdown: maho_ai::utils::abort::AbortController,
 }
 
 impl SubprocessKernel {
     pub async fn start(options: SubprocessKernelOptions) -> Result<Self, ProcessError> {
-        let process = spawn_process(&options).await?;
+        Self::start_with_signal(options,&maho_ai::utils::abort::AbortController::new().signal()).await
+    }
+    pub async fn start_with_signal(options: SubprocessKernelOptions,signal:&maho_ai::utils::abort::AbortSignal) -> Result<Self, ProcessError> {
+        let process = spawn_process_with_signal(&options,signal).await?;
+        let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
+        let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
+        if signal.aborted() {shutdown.abort(signal.reason());}
         let pid = Arc::new(Mutex::new(process.pid()));
         let snapshot = Arc::new(Mutex::new((None, vec![])));
         let (commands, receiver) = mpsc::unbounded_channel();
-        tokio::spawn(run_actor(options, process, receiver, snapshot.clone(), pid.clone()));
-        Ok(Self { commands, snapshot, pid })
+        let owner=signal.clone();let actor_signal=shutdown.signal();let actor_snapshot=snapshot.clone();let actor_pid=pid.clone();
+        let actor=tokio::spawn(async move {run_actor(options, process, receiver, actor_snapshot, actor_pid,actor_signal).await;owner.remove_abort_listener(listener);});
+        Ok(Self { commands, snapshot, pid,shutdown,actor:tokio::sync::Mutex::new(Some(actor)) })
     }
 
     pub fn pid(&self) -> Option<u32> { *self.pid.lock().expect("kernel pid lock") }
@@ -83,18 +92,39 @@ impl SubprocessKernel {
     }
 
     pub async fn close(&self) -> Result<(), ProcessError> {
+        self.shutdown.abort(None);
         let (response, receiver) = oneshot::channel();
-        if self.commands.send(Command::Close(response)).is_err() { return Ok(()); }
-        receiver.await.map_err(|_| ProcessError::Closed)?.map_err(ProcessError::Startup)
+        let result=if self.commands.send(Command::Close(response)).is_err() {Ok(())} else {match receiver.await {Ok(result)=>result.map_err(ProcessError::Startup),Err(_)=>Err(ProcessError::Closed)}};
+        if let Some(actor)=self.actor.lock().await.take() {actor.await.map_err(|error|ProcessError::Startup(error.to_string()))?;}
+        result
     }
 }
 
-async fn spawn_process(options: &SubprocessKernelOptions) -> Result<SubprocessProcess, ProcessError> {
+impl Drop for SubprocessKernel {
+    fn drop(&mut self) {self.shutdown.abort(None);}
+}
+
+async fn spawn_process_with_signal(options: &SubprocessKernelOptions, signal:&maho_ai::utils::abort::AbortSignal) -> Result<SubprocessProcess, ProcessError> {
+    let options=options.clone();let owner=signal.clone();
+    let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
+    let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
+    if signal.aborted() {shutdown.abort(signal.reason());}
+    let (mut sender,receiver)=oneshot::channel();
+    tokio::spawn(async move {
+        let signal=shutdown.signal();
+        let result={let startup=spawn_owned_process(&options,&signal);tokio::pin!(startup);tokio::select! {result=&mut startup=>result,()=sender.closed()=>{shutdown.abort(None);startup.await}}};
+        owner.remove_abort_listener(listener);
+        if let Err(Ok(mut process))=sender.send(result) {let _=process.terminate("TERM",Duration::from_millis(1500)).await;}
+    });
+    receiver.await.map_err(|_|ProcessError::Closed)?
+}
+async fn spawn_owned_process(options: &SubprocessKernelOptions, signal:&maho_ai::utils::abort::AbortSignal) -> Result<SubprocessProcess, ProcessError> {
+    if signal.aborted() {return Err(ProcessError::Startup("Kernel startup was cancelled".into()));}
     let inherited = std::env::vars().collect();
     let env = options.env.clone().unwrap_or_else(|| apply_session_environment(&inherited, options.session_env.as_ref()));
     let mut process = SubprocessProcess::spawn(&options.command, &options.args, &options.cwd, &env)?;
-    process.send(&json!({"type":"init","sessionId":options.session_id,"connection":options.connection})).await?;
-    let ready = tokio::time::timeout(Duration::from_secs(5), async {
+    if let Err(error)=process.send(&json!({"type":"init","sessionId":options.session_id,"connection":options.connection})).await {process.terminate("TERM",Duration::from_millis(1500)).await?;return Err(error);}
+    let startup = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let message = process.next_message().await?;
             if let Some(callback) = &options.on_message { callback(&message); }
@@ -104,7 +134,11 @@ async fn spawn_process(options: &SubprocessKernelOptions) -> Result<SubprocessPr
                 _ => {}
             }
         }
-    }).await;
+    });
+    let ready=tokio::select! {
+        ()=signal.cancelled()=>Ok(Err(ProcessError::Startup("Kernel startup was cancelled".into()))),
+        ready=startup=>ready,
+    };
     match ready {
         Ok(Ok(())) => Ok(process),
         result => {
@@ -114,13 +148,13 @@ async fn spawn_process(options: &SubprocessKernelOptions) -> Result<SubprocessPr
     }
 }
 
-async fn replace_process(options: &SubprocessKernelOptions, process: &mut SubprocessProcess, signal: &str, grace: Duration) -> Result<(), ProcessError> {
+async fn replace_process(options: &SubprocessKernelOptions, process: &mut SubprocessProcess, signal: &str, grace: Duration,shutdown:&maho_ai::utils::abort::AbortSignal) -> Result<(), ProcessError> {
     process.terminate(signal, grace).await?;
-    *process = spawn_process(options).await?;
+    *process = spawn_process_with_signal(options,shutdown).await?;
     Ok(())
 }
 
-async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>) {
+async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProcess, mut commands: mpsc::UnboundedReceiver<Command>, snapshot: Arc<Mutex<QueueSnapshot>>, pid: Arc<Mutex<Option<u32>>>,shutdown:maho_ai::utils::abort::AbortSignal) {
     let mut runs = SubprocessRunQueue::default();
     let origin = tokio::time::Instant::now();
     let now = || origin.elapsed().as_secs_f64() * 1000.0;
@@ -159,7 +193,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                         settle_pending_run(&mut run, result);
                         runs.clear_tool_calls(); deadline = None;
                         let signal = if cfg!(windows) { "TERM" } else { "INT" };
-                        let result = replace_process(&options, &mut process, signal, Duration::from_secs(5)).await.map_err(|error| error.to_string());
+                        let result = replace_process(&options, &mut process, signal, Duration::from_secs(5),&shutdown).await.map_err(|error| error.to_string());
                         failure = result.as_ref().err().cloned();
                         let _ = response.send(result.map(|()| false));
                     } else { runs.settle_all(&format!("Cell interrupted: {reason}"), now()); let _ = response.send(Ok(true)); }
@@ -170,7 +204,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                 Some(Command::Reset(response)) if failure.is_some() => { let _ = response.send(Err(ProcessError::Closed.to_string())); }
                 Some(Command::Reset(response)) => {
                     runs.settle_all("Kernel reset", now()); runs.clear_tool_calls(); deadline = None;
-                    let result = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500)).await.map_err(|error| error.to_string());
+                    let result = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500),&shutdown).await.map_err(|error| error.to_string());
                     failure = result.as_ref().err().cloned(); let _ = response.send(result);
                 }
                 Some(Command::Close(response)) => {
@@ -198,7 +232,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
             () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending::<()>().await } }, if deadline.is_some() => {
                 if let Some(mut run) = runs.release_active() {
                     let result = timeout_result(&run, run.input.timeout_ms.unwrap_or(0));
-                    let replacement = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500)).await;
+                    let replacement = replace_process(&options, &mut process, "TERM", Duration::from_millis(1500),&shutdown).await;
                     settle_pending_run(&mut run, result);
                     failure = replacement.err().map(|error| error.to_string());
                 }
@@ -208,4 +242,25 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
     }
     *snapshot.lock().expect("kernel queue lock") = (None, vec![]);
     *pid.lock().expect("kernel pid lock") = None;
+}
+
+#[cfg(test)]
+mod startup_ownership_tests {
+    use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropped_shared_startup_retires_after_started_event() {
+        use tokio::io::AsyncReadExt;
+        let root=tempfile::tempdir().unwrap();let socket=root.path().join("startup.sock");
+        let listener=tokio::net::UnixListener::bind(&socket).unwrap();
+        let code=format!("import socket,signal\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall(b'STARTED')\nwhile True: signal.pause()\n",serde_json::to_string(&socket.to_string_lossy()).unwrap());
+        let options=SubprocessKernelOptions {command:"python3".into(),args:vec!["-c".into(),code],cwd:root.path().into(),env:None,session_env:None,session_id:"shared-drop".into(),connection:crate::bridge::protocol::BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},on_message:None};
+        let signal=maho_ai::utils::abort::AbortController::new().signal();
+        let mut startup=Box::pin(spawn_process_with_signal(&options,&signal));
+        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=listener.accept()=>stream.unwrap().0,result=&mut startup=>panic!("silent startup settled: {}",result.err().unwrap())}}).await;
+        drop(startup);
+        let mut stream=accepted.unwrap();let mut bytes=Vec::new();
+        tokio::time::timeout(Duration::from_secs(5),stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
+        assert_eq!(bytes,b"STARTED");
+    }
 }

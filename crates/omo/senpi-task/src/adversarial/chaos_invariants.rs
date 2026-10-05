@@ -89,7 +89,7 @@ impl ChaosNotifier {
 }
 
 impl ParentNotifier for ChaosNotifier {
-    fn enqueue(&self, message: &ParentNotifierMessage) -> Result<(), crate::host::HostError> {
+    fn enqueue_with_callbacks(&self, message: &ParentNotifierMessage, callbacks: crate::completion::DeliveryCallbacks) -> Result<(), crate::host::HostError> {
         let tagged: Vec<(String, i64)> = message
             .details
             .iter()
@@ -115,6 +115,8 @@ impl ParentNotifier for ChaosNotifier {
             let key = format!("{task_id}:{epoch}");
             *observations.enqueue_by_epoch.entry(key).or_insert(0) += 1;
         }
+        drop(observations);
+        callbacks.delivered();
         Ok(())
     }
 }

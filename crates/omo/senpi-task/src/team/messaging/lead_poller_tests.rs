@@ -127,6 +127,22 @@ fn injection_count(harness: &Harness) -> usize {
     harness.injections.lock().expect("injections lock").len()
 }
 
+#[test]
+fn rejected_wake_restores_unread_reservation_and_allows_redelivery() {
+    let harness = create_harness(false);
+    let value = message("66666666-6666-4666-8666-666666666666", "ready");
+    seed(&harness, &value);
+    let lead_poller = poller(&harness);
+    lead_poller.poll_once(None).expect("poll");
+    let callback = harness.injections.lock().expect("injections")[0].on_delivery_failed.take().expect("failure callback");
+    callback("wake rejected");
+    assert!(harness.inbox_dir.join(format!("{}.json", value.message_id)).exists());
+    assert!(!harness.inbox_dir.join(format!(".delivering-{}.json", value.message_id)).exists());
+    assert!(!processed_path(&harness, &value).exists());
+    lead_poller.poll_once(None).expect("redelivery");
+    assert_eq!(injection_count(&harness), 2);
+}
+
 fn exists(path: &Path) -> bool {
     path.exists()
 }

@@ -81,6 +81,11 @@ impl StartupLoadingIndicator {
     pub async fn during_prompt<T>(&mut self, prompt: impl std::future::Future<Output = T>) -> T {
         self.pause(); let result = prompt.await; self.resume(); result
     }
+    /// senpi `pauseIndicatorDuringPrompts`: another writer must not land inside the unterminated
+    /// frame, so the frame is erased first and redrawn once the write finished.
+    pub fn during_surface_write<T>(&mut self, write: impl FnOnce() -> T) -> T {
+        self.pause(); let result = write(); self.resume(); result
+    }
 }
 impl Drop for StartupLoadingIndicator { fn drop(&mut self) { self.stop(); } }
 pub fn should_show_startup_loading_indicator(mode: AppMode, stdout_is_tty: bool, help_requested: bool) -> bool { mode == AppMode::Interactive && stdout_is_tty && !help_requested }

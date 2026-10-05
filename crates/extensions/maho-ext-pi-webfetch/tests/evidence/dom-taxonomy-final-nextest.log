@@ -1,0 +1,99 @@
+status: completed exit_code: 0
+   Compiling maho-ext-pi-webfetch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-webfetch)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.43s
+────────────
+ Nextest run ID e640d85b-862b-402e-bd71-bf25896f5695 with nextest profile: default
+    Starting 89 tests across 8 binaries
+        PASS [   0.006s] ( 1/89) maho-ext-pi-webfetch::content out_of_range_codepoint_is_empty
+        PASS [   0.006s] ( 2/89) maho-ext-pi-webfetch::content named_entities_decode_without_double_decoding
+        PASS [   0.007s] ( 3/89) maho-ext-pi-webfetch::content explicit_article_preserves_noisy_root_and_only_removes_descendants
+        PASS [   0.007s] ( 4/89) maho-ext-pi-webfetch::content html_fragment_dom_decodes_full_named_entities
+        PASS [   0.007s] ( 5/89) maho-ext-pi-webfetch::content explicit_article_threshold_counts_utf16
+        PASS [   0.007s] ( 6/89) maho-ext-pi-webfetch::content explicit_article_selector_priority_and_noise_removal
+        PASS [   0.008s] ( 7/89) maho-ext-pi-webfetch::content html_fragment_dom_removes_noise_and_separates_blocks
+        PASS [   0.009s] ( 8/89) maho-ext-pi-webfetch::content malformed_entities_remain_literal
+        PASS [   0.009s] ( 9/89) maho-ext-pi-webfetch::content numeric_entities_decode_unicode
+        PASS [   0.010s] (10/89) maho-ext-pi-webfetch::content markdown_normalizes_cr_without_collapsing_inline_spacing
+        PASS [   0.011s] (11/89) maho-ext-pi-webfetch::content pinned_explicit_selector_priority_noise_and_short_candidate_match
+        PASS [   0.006s] (12/89) maho-ext-pi-webfetch::content turndown_attributes_and_link_destinations_preserve_source_escaping
+        PASS [   0.006s] (13/89) maho-ext-pi-webfetch::content turndown_escaping_is_ordered_and_anchored
+        PASS [   0.008s] (14/89) maho-ext-pi-webfetch::content plain_text_collapses_horizontal_whitespace_and_preserves_cr
+        PASS [   0.007s] (15/89) maho-ext-pi-webfetch::content turndown_links_and_images_escape_attributes_without_reescaping_content
+        PASS [   0.007s] (16/89) maho-ext-pi-webfetch::content turndown_join_takes_maximum_boundary_newlines_capped_at_two
+        PASS [   0.008s] (17/89) maho-ext-pi-webfetch::content turndown_inline_code_uses_shortest_absent_backtick_run
+        PASS [   0.007s] (18/89) maho-ext-pi-webfetch::content turndown_whitespace_crosses_inline_nodes_but_preserves_pre_and_void_spaces
+        PASS [   0.007s] (19/89) maho-ext-pi-webfetch::discard_body discard_drains_small_body
+        PASS [   0.005s] (20/89) maho-ext-pi-webfetch::errors source_error_class_names_are_preserved
+        PASS [   0.009s] (21/89) maho-ext-pi-webfetch::discard_body discard_declared_body_above_dump_limit
+        PASS [   0.008s] (22/89) maho-ext-pi-webfetch::fetcher abort_after_headers_cancels_body_read
+        PASS [   0.007s] (23/89) maho-ext-pi-webfetch::fetcher content_type_preserves_latin1_header_bytes
+        PASS [   0.010s] (24/89) maho-ext-pi-webfetch::discard_body discard_swallows_midstream_failure
+        PASS [   0.022s] (25/89) maho-ext-pi-webfetch::content markdown_traversal_matches_source_generated_fixtures
+        PASS [   0.008s] (26/89) maho-ext-pi-webfetch::fetcher custom_status_reason_preserved
+        PASS [   0.007s] (27/89) maho-ext-pi-webfetch::fetcher plain_http_surface
+        PASS [   0.010s] (28/89) maho-ext-pi-webfetch::fetcher oversized_header_disposal_disconnects_without_body
+        PASS [   0.010s] (29/89) maho-ext-pi-webfetch::fetcher invalid_scheme
+        PASS [   0.012s] (30/89) maho-ext-pi-webfetch::fetcher declared_oversize_rejected_before_body
+        PASS [   0.014s] (31/89) maho-ext-pi-webfetch::fetcher malformed_transport_errors_preserve_pinned_undici_taxonomy
+        PASS [   0.011s] (32/89) maho-ext-pi-webfetch::fetcher redirect_declared_body_above_discard_limit_does_not_wait
+        PASS [   0.011s] (33/89) maho-ext-pi-webfetch::fetcher repeated_content_type_headers_are_joined
+        PASS [   0.012s] (34/89) maho-ext-pi-webfetch::fetcher repeated_location_headers_join_before_resolution
+        PASS [   0.019s] (35/89) maho-ext-pi-webfetch::fetcher exact_network_limit_marks_truncated
+        PASS [   0.008s] (36/89) maho-ext-pi-webfetch::fetcher unreachable_url_error
+        PASS [   0.008s] (37/89) maho-ext-pi-webfetch::output_cap format_parameter_matches_source_for_unknown_values
+        PASS [   0.008s] (38/89) maho-ext-pi-webfetch::fetcher timeout_bounds
+        PASS [   0.006s] (39/89) maho-ext-pi-webfetch::output_cap partial_codepoint_keeps_preceding_replacement_character
+        PASS [   0.005s] (40/89) maho-ext-pi-webfetch::output_cap small_body_verbatim
+        PASS [   0.009s] (41/89) maho-ext-pi-webfetch::output_cap huge_single_line_preserves_head
+        PASS [   0.010s] (42/89) maho-ext-pi-webfetch::output_cap multiline_keeps_whole_lines
+        PASS [   0.007s] (43/89) maho-ext-pi-webfetch::registered extension_default_enabled
+        PASS [   0.008s] (44/89) maho-ext-pi-webfetch::output_cap utf8_prefix_preserved
+        PASS [   0.023s] (45/89) maho-ext-pi-webfetch::fetcher redirect_limit_returns_twentieth_redirect_response_and_releases_port
+        PASS [   0.040s] (46/89) maho-ext-pi-webfetch::content pinned_malformed_dom_and_utf16_article_threshold_match
+        PASS [   0.009s] (47/89) maho-ext-pi-webfetch::registered extension_disabled_no_registration
+        PASS [   0.007s] (48/89) maho-ext-pi-webfetch::registered extension_falsy_values
+        PASS [   0.009s] (49/89) maho-ext-pi-webfetch::registered extension_factory_registers_executor_and_renderers
+        PASS [   0.008s] (50/89) maho-ext-pi-webfetch::registered extension_lifecycle_clears_ui_only_interactively
+        PASS [   0.007s] (51/89) maho-ext-pi-webfetch::registered extension_truthy_values
+        PASS [   0.007s] (52/89) maho-ext-pi-webfetch::registered extension_metadata_schema
+        PASS [   0.006s] (53/89) maho-ext-pi-webfetch::registered extension_unknown_enabled
+        PASS [   0.008s] (54/89) maho-ext-pi-webfetch::registered registered_closed_socket_message
+        PASS [   0.008s] (55/89) maho-ext-pi-webfetch::registered registered_cancellation_after_headers_normalizes_reason
+        PASS [   0.007s] (56/89) maho-ext-pi-webfetch::registered registered_custom_abort_reason
+        PASS [   0.010s] (57/89) maho-ext-pi-webfetch::registered registered_cancellation_before_headers
+        PASS [   0.013s] (58/89) maho-ext-pi-webfetch::registered registered_article_without_explicit_wrapper
+        PASS [   0.015s] (59/89) maho-ext-pi-webfetch::registered registered_cloudflare_no_retry
+        PASS [   0.011s] (60/89) maho-ext-pi-webfetch::registered registered_explicit_article_title
+        PASS [   0.035s] (61/89) maho-ext-pi-webfetch::fetcher streamed_oversize_rejected
+        PASS [   0.007s] (62/89) maho-ext-pi-webfetch::registered registered_invalid_url
+        PASS [   0.009s] (63/89) maho-ext-pi-webfetch::registered registered_http_error_is_content
+        PASS [   0.015s] (64/89) maho-ext-pi-webfetch::registered registered_entity_decoding_one_layer
+        PASS [   0.009s] (65/89) maho-ext-pi-webfetch::registered registered_markdown_passthrough
+        PASS [   0.011s] (66/89) maho-ext-pi-webfetch::registered registered_markdown_conversion
+        PASS [   0.011s] (67/89) maho-ext-pi-webfetch::registered registered_multiline_cap
+        PASS [   0.009s] (68/89) maho-ext-pi-webfetch::registered registered_network_refused_message
+        PASS [   0.009s] (69/89) maho-ext-pi-webfetch::registered registered_oversized_header
+        PASS [   0.009s] (70/89) maho-ext-pi-webfetch::registered registered_plain_passthrough
+        PASS [   0.009s] (71/89) maho-ext-pi-webfetch::registered registered_preaborted
+        PASS [   0.007s] (72/89) maho-ext-pi-webfetch::registered registered_raw_html
+        PASS [   0.008s] (73/89) maho-ext-pi-webfetch::registered registered_progress_and_metadata
+        PASS [   0.009s] (74/89) maho-ext-pi-webfetch::registered registered_single_line_utf8_cap
+        PASS [   0.008s] (75/89) maho-ext-pi-webfetch::registered registered_small_output_preserved
+        PASS [   0.011s] (76/89) maho-ext-pi-webfetch::registered registered_text_article_without_explicit_wrapper
+        PASS [   0.009s] (77/89) maho-ext-pi-webfetch::registered registered_tistory_text_title_and_linebreaks
+        PASS [   0.033s] (78/89) maho-ext-pi-webfetch::registered registered_exact_response_limit
+        PASS [   0.012s] (79/89) maho-ext-pi-webfetch::registered registered_text_conversion
+        PASS [   0.007s] (80/89) maho-ext-pi-webfetch::renderers call_renderer_uses_params
+        PASS [   0.019s] (81/89) maho-ext-pi-webfetch::registered registered_redirect_limit_and_body
+        PASS [   0.009s] (82/89) maho-ext-pi-webfetch::registered registered_utf8_bom_matches_text_decoder
+        PASS [   0.006s] (83/89) maho-ext-pi-webfetch::renderers progress_renderer_reads_details
+        PASS [   0.007s] (84/89) maho-ext-pi-webfetch::renderers final_renderer_preview_and_expansion
+        PASS [   0.029s] (85/89) maho-ext-pi-webfetch::registered registered_streamed_oversize
+        PASS [   0.049s] (86/89) maho-ext-pi-webfetch::registered registered_pinned_content_differential
+        PASS [   1.013s] (87/89) maho-ext-pi-webfetch::fetcher redirect_waits_for_small_body_discard
+        PASS [   1.009s] (88/89) maho-ext-pi-webfetch::registered registered_body_timeout_normalizes_abort
+        PASS [   1.008s] (89/89) maho-ext-pi-webfetch::registered registered_timeout_disconnects
+────────────
+     Summary [   1.083s] 89 tests run: 89 passed, 0 skipped
+
+LANE39_ALIGNED_DOM_EXIT=0

@@ -30,9 +30,9 @@ use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outc
 use crate::manager::respawn::{RespawnInput, respawn_managed_task};
 use crate::manager::transcript_log::subscribe_transcript_log;
 use crate::manager::types::{
-    Clock, ListScope, ListedTask, ManagedRunner, ManagedRunnerError, ManagedStartSpec,
-    ManagerStartSpec, NoopDestruction, OwnedStartResult, ResolvedChildPlan, RpcRespawnRunner,
-    SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
+    Clock, FallibleAdmit, ListScope, ListedTask, ManagedRunner, ManagedRunnerError,
+    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, ResolvedChildPlan,
+    RpcRespawnRunner, SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::run_stats::{RunStatsTracker, create_run_stats_tracker};
 use crate::runners::RunnerFailureKind;
@@ -128,6 +128,7 @@ struct Inner {
     now: Clock,
     destruction: Arc<dyn DestructionPort>,
     admit: Option<crate::manager::types::AdmitResident>,
+    fallible_admit: Option<FallibleAdmit>,
     trusted_respawn_launch: Option<crate::manager::types::TrustedRespawnLaunchResolver>,
     host_pid: i64,
     rpc_respawn_runner: Arc<dyn RpcRespawnRunner>,
@@ -254,6 +255,7 @@ impl TaskManager {
                 now,
                 destruction,
                 admit: options.admit,
+                fallible_admit: options.fallible_admit,
                 trusted_respawn_launch: options.trusted_respawn_launch,
                 host_pid: options
                     .host_pid
@@ -300,7 +302,7 @@ impl TaskManager {
             Ok(plan) => plan,
             Err(error) => return StartResult::PlanUnresolved(*error),
         };
-        if let Some(rejected) = self.admission_rejection(spec) {
+        if let Some(rejected) = self.admission_rejection(spec, &plan) {
             return rejected;
         }
         self.inner.start_resolved(spec, &plan, None)
@@ -311,7 +313,7 @@ impl TaskManager {
             Ok(plan) => plan,
             Err(error) => return OwnedStartResult::NotStarted(StartResult::PlanUnresolved(*error)),
         };
-        if let Some(rejected) = self.admission_rejection(spec) {
+        if let Some(rejected) = self.admission_rejection(spec, &plan) {
             return OwnedStartResult::NotStarted(rejected);
         }
         let lock_path = match owner_lock_path(self.inner.store.state_dir(), owner) {
@@ -337,9 +339,21 @@ impl TaskManager {
         })
     }
 
-    fn admission_rejection(&self, spec: &ManagerStartSpec) -> Option<StartResult> {
-        let admit = self.inner.admit.as_ref()?;
-        match admit(&spec.parent_session_id) {
+    fn admission_rejection(&self, spec: &ManagerStartSpec, plan: &ResolvedChildPlan) -> Option<StartResult> {
+        let admission = if let Some(admit) = &self.inner.fallible_admit {
+            match admit(&spec.parent_session_id) {
+                Ok(admission) => admission,
+                Err(error) => return Some(StartResult::StartFailed(StartFailure {
+                    task_id: String::new(), name: spec.name.clone().unwrap_or_default(),
+                    category: spec.category.clone().or(plan.category.clone()),
+                    subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                    execution_mode: spec.execution_mode.unwrap_or_default(), model: plan.model.clone(),
+                    resolved_model: plan.resolved_model.clone(), run_in_background: spec.run_in_background,
+                    error_message: error.to_string(),
+                })),
+            }
+        } else { (self.inner.admit.as_ref()?)(&spec.parent_session_id) };
+        match admission {
             SpawnAdmission::Rejected { message } => {
                 Some(StartResult::ResidencyDenied { reason: message })
             }

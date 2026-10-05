@@ -1,5 +1,5 @@
 use maho_ext_api::*;
-use std::{io::{BufRead, Read, Write}, path::Path, sync::{Arc, mpsc}, time::Duration};
+use std::{io::{BufRead, Read, Write}, path::Path, sync::Arc, time::Duration};
 
 struct Session;
 impl ToolSessionManager for Session {
@@ -44,14 +44,14 @@ fn context() -> ExtensionContext {
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
         is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})), is_project_trusted_fn: Arc::new(|| true),
         is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(String::new),
-        get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None }
+        get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port: u16 = std::env::var("ORCA_AGENT_HOOK_PORT")?.parse()?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
-    let (sender, receiver) = mpsc::channel();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let server = std::thread::spawn(move || -> std::io::Result<()> {
         for _ in 0..4 {
             let (mut stream, _) = listener.accept()?;
@@ -77,11 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }),
         ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: "faux prompt".into(), images: None, system_prompt: String::new(), system_prompt_options: Default::default() }),
         ExtensionEvent::AgentStart,
-        ExtensionEvent::AgentSettled,
+        if std::env::var("ORCA_QA_LEGACY_END").ok().as_deref() == Some("1") { ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: None, will_retry: None, abort_source: None } } else { ExtensionEvent::AgentSettled },
     ];
     for event in events {
         runner.emit(event).await?;
-        let body = receiver.recv_timeout(Duration::from_secs(3))?;
+        let body = tokio::time::timeout(Duration::from_secs(3),receiver.recv()).await?.ok_or("capture channel closed")?;
         println!("{}", String::from_utf8(body)?);
     }
     if !runner.errors.is_empty() { return Err("extension handler failed".into()); }

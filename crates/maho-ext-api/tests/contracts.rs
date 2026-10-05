@@ -80,6 +80,30 @@ fn stale_legacy_registration_throws_without_mutating_extension() {
 fn api(runtime: ExtensionRuntime) -> ExtensionApi {
     ExtensionApi::new(LoadedExtension::new("test", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime)
 }
+#[test]
+fn callable_watch_replay_live_refresh_rollback_and_invalidation_share_bus_state() {
+    let events = EventBus::default();
+    let scope = events.registration_scope();
+    let registration = RegisteredConfigWatch { id: "omo".into(), display_name: "config".into(), targets: vec![], validate: Arc::new(|_| ConfigWatchValidation::Rejected { errors: vec!["sticky".into()] }) };
+    scope.publish_config_watch("owner", registration.clone());
+    let retained = events.config_watch_registrations();
+    assert_eq!((retained[0].1.validate)(&[]), ConfigWatchValidation::Rejected { errors: vec!["sticky".into()] });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&seen);
+    let _subscription = events.on_native::<(String, RegisteredConfigWatch)>(CONFIG_WATCH_REGISTER_CHANNEL, Arc::new(move |(path, registration)| observed.lock().unwrap().push((path.clone(), (registration.validate)(&[])))));
+    scope.publish_config_watch("owner", registration);
+    assert_eq!(events.config_watch_registrations().len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    let checkpoint = events.registration_checkpoint();
+    let failed = events.registration_scope();
+    failed.publish_config_watch("failed", RegisteredConfigWatch { id: "failed".into(), display_name: "failed".into(), targets: vec![], validate: Arc::new(|_| ConfigWatchValidation::Ok) });
+    events.rollback_registration(checkpoint);
+    failed.invalidate_registration();
+    assert_eq!(events.config_watch_registrations().len(), 1);
+    scope.invalidate_registration();
+    assert!(events.config_watch_registrations().is_empty());
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scope.publish_config_watch("late", retained[0].1.clone()))).is_err());
+}
 
 #[test]
 fn extension_tool_executor_is_published_only_after_factory_commit() {
@@ -413,4 +437,30 @@ fn invalid_registration_bus_cannot_emit_subscribe_or_clear_shared_handlers() {
     failed.clear();
     events.emit("shared", &JsonValue::Null);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A UI context that implements only the required surface and takes every default, so it exercises
+/// the `ExtensionUi::request_render` default rather than an override.
+struct DefaultUi;
+impl ExtensionUi for DefaultUi {
+    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
+    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, _: Option<ComponentFactory>) {}
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String { String::new() }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err(ExtensionFailure::new("custom UI is not available")) }) }
+    fn theme(&self) -> Theme { Theme::default() }
+}
+
+#[test]
+fn extension_ui_default_request_render_reports_unavailable_capability() {
+    let failure = DefaultUi.request_render().expect_err("a context with no repaint path must not report success");
+    assert!(!failure.message.is_empty(), "the unavailable reason must be carried on the failure");
 }

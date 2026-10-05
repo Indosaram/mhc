@@ -16,6 +16,100 @@ impl DrainDeadline{
 pub struct SocketEventQueueOverflowError{pub queued_bytes:usize,pub incoming_bytes:usize,pub max_queue_bytes:usize,pub incoming_preview:String}
 pub struct QueueEntry{pub line:String,pub key:Option<String>,pub demoted_line:Option<String>,pub on_written:Option<Box<dyn FnOnce()+Send>>}
 pub struct SocketEventQueue{queue:VecDeque<QueueEntry>,queued_bytes:usize,max_queue_bytes:usize,closed:bool}
+pub struct SocketEventSinkActor{
+    queue:std::sync::Arc<std::sync::Mutex<SocketEventQueue>>,
+    changed:std::sync::Arc<tokio::sync::Notify>,
+    completion:tokio::sync::watch::Receiver<Result<bool,String>>,
+    completion_tx:tokio::sync::watch::Sender<Result<bool,String>>,
+}
+impl SocketEventSinkActor{
+    pub fn new<W>(mut writer:W,max_queue_bytes:usize,stall_ms:u64,blocked:std::sync::Arc<std::sync::Mutex<crate::loop_blocked_time::LoopBlockedTime>>,on_failure:impl Fn(String)+Send+'static)->Self
+    where W:tokio::io::AsyncWrite+Unpin+Send+'static{
+        use tokio::io::AsyncWriteExt;
+        let queue=std::sync::Arc::new(std::sync::Mutex::new(SocketEventQueue::new(max_queue_bytes)));
+        let changed=std::sync::Arc::new(tokio::sync::Notify::new());
+        let (completion_tx,completion)=tokio::sync::watch::channel(Ok(true));
+        let pending=queue.clone();let wake=changed.clone();
+        let state=completion_tx.clone();
+        tokio::spawn(async move{
+            loop{
+                let notified=wake.notified();
+                let (entry,closed)={let mut queue=pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let entry=queue.next_write();let healthy=completion_tx.borrow().is_ok();if healthy{let _=completion_tx.send_replace(Ok(entry.is_none()));}(entry,queue.closed)};
+                let Some(mut entry)=entry else{if closed{
+                    let failure=completion_tx.borrow().clone().err();
+                    if let Some(error)=failure{
+                        on_failure(error);
+                        let _=tokio::time::timeout(std::time::Duration::from_millis(crate::socket_sink::SOCKET_CUT_GRACE_MS),async{writer.write_all(OVERFLOW_NOTICE.as_bytes()).await?;writer.shutdown().await}).await;
+                    }
+                    return;
+                }notified.await;continue;};
+                if entry.line.is_empty(){if let Some(written)=entry.on_written.take(){written();}continue;}
+                let mut deadline=DrainDeadline::new(stall_ms,&blocked.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                let mut offset=0;
+                let timer=tokio::time::sleep(std::time::Duration::from_millis(stall_ms));tokio::pin!(timer);
+                let mut notice=STALL_NOTICE;
+                let outcome=loop{
+                    tokio::select!{
+                        result=writer.write(&entry.line.as_bytes()[offset..])=>match result{
+                            Ok(0)=>break Err("RPC socket write returned zero".to_owned()),
+                            Ok(count)=>{offset+=count;if offset==entry.line.len(){break Ok(());}},
+                            Err(error)=>break Err(error.to_string()),
+                        },
+                        ()=wake.notified()=>{
+                            if pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).closed{
+                                notice=OVERFLOW_NOTICE;
+                                let failure=completion_tx.borrow().clone().err();
+                                if let Some(error)=failure{break Err(error);}
+                                let _=completion_tx.send_replace(Ok(true));
+                                return;
+                            }
+                        },
+                        ()=&mut timer=>{
+                            let bytes=pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_bytes()+entry.line.len();
+                            match deadline.on_deadline(&blocked.lock().unwrap_or_else(std::sync::PoisonError::into_inner),bytes){Ok(ms)=>timer.as_mut().reset(tokio::time::Instant::now()+std::time::Duration::from_secs_f64(ms/1000.)),Err(error)=>break Err(error.to_string())}
+                        }
+                    }
+                };
+                if let Err(error)=outcome{
+                    pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).close();
+                    let _=completion_tx.send_replace(Err(error.clone()));on_failure(error);
+                    let _=tokio::time::timeout(std::time::Duration::from_millis(crate::socket_sink::SOCKET_CUT_GRACE_MS),async{
+                        writer.write_all(&entry.line.as_bytes()[offset..]).await?;
+                        writer.write_all(notice.as_bytes()).await?;
+                        writer.shutdown().await
+                    }).await;
+                    return;
+                }
+                if let Some(written)=entry.on_written.take(){written();}
+            }
+        });
+        Self{queue,changed,completion,completion_tx:state}
+    }
+    pub fn enqueue(&self,entry:QueueEntry)->Result<(),SocketEventQueueOverflowError>{
+        let mut queue=self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if queue.closed{return Ok(());}
+        if let Err(error)=queue.enqueue(entry){
+            let _=self.completion_tx.send_replace(Err(error.to_string()));
+            self.changed.notify_one();return Err(error);
+        }
+        let _=self.completion_tx.send_replace(Ok(false));
+        self.changed.notify_one();Ok(())
+    }
+    pub async fn flush(&mut self)->Result<(),String>{
+        loop{
+            let empty=self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_bytes()==0;
+            let state=self.completion.borrow_and_update().clone()?;
+            if empty&&state{return Ok(());}
+            self.completion.changed().await.map_err(|_|"Socket drain actor closed".to_owned())?;
+        }
+    }
+    pub fn failure(&self)->Option<String>{self.completion.borrow().clone().err()}
+    pub fn close(&self){
+        if self.failure().is_some(){return;}
+        self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).close();self.changed.notify_one();
+    }
+}
+impl Drop for SocketEventSinkActor{fn drop(&mut self){self.close();}}
 impl Default for SocketEventQueue{fn default()->Self{Self::new(DEFAULT_QUEUE_BYTES)}}
 impl SocketEventQueue{
     pub fn new(max_queue_bytes:usize)->Self{Self{queue:VecDeque::new(),queued_bytes:0,max_queue_bytes,closed:false}}

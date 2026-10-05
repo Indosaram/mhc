@@ -58,9 +58,11 @@ impl std::fmt::Display for BranchSummaryError {
 impl std::error::Error for BranchSummaryError {}
 
 /// Generated branch summary data ready to be persisted as a branch-summary entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchSummaryResult {
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,

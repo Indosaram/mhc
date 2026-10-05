@@ -11,7 +11,7 @@ use tokio::sync::{Notify, oneshot};
 
 use crate::harness::context::Context;
 use crate::harness::session::types::{Entry, JsonValue, OperationError, UsageRow};
-use crate::types::AgentMessage;
+use crate::types::{AgentMessage, AgentToolResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaneQueuedItem {
@@ -78,7 +78,7 @@ pub enum HarnessEventPayload {
     MessageUpdate { run_id: String, message: AgentMessage, event: Box<maho_ai::types::AssistantMessageEvent>, frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame> },
     MessageEnd { run_id: Option<String>, message: AgentMessage, entry_id: Option<String> },
     ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
-    ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
+    ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, partial_result: AgentToolResult },
     ToolEnd { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, is_error: bool, terminate: bool },
     EntryAdded { entry: Box<Entry> },
     QueueUpdate { queues: Vec<LaneQueuedItem> },
@@ -252,6 +252,228 @@ impl HarnessEvent {
 
     pub fn fault(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self::new(HarnessEventPayload::Fault { code: code.into(), message: message.into() }, None)
+    }
+}
+
+/// Wire form of a harness event.
+///
+/// Pinned senpi publishes `HarnessEvent` objects over the mini RPC and the presentation folds them
+/// with `reduceLaneSnapshot`; the reducer consumes a JSON value carrying a `type` discriminant and
+/// camelCase fields (pinned `runtime/reducer.ts`). This is the single production serializer for
+/// that boundary: consumers convert with `JsonValue::from(&event)` instead of re-deriving the shape.
+pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
+    let mut object = serde_json::Map::new();
+    object.insert("type".into(), JsonValue::String(event.payload.event_type().into()));
+    wire_insert_optional(&mut object, "lane", event.lane.as_ref().map(|lane| JsonValue::String(lane.clone())));
+    wire_insert_optional(&mut object, "recovery", event.recovery.map(JsonValue::Bool));
+    match &event.payload {
+        HarnessEventPayload::RunStart { run_id, started_at } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("startedAt".into(), serde_json::json!(started_at));
+        }
+        HarnessEventPayload::RunResume { run_id } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+        }
+        HarnessEventPayload::RunSuspend { run_id, deferred, poll } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("deferred".into(), wire_value_of(deferred));
+            object.insert("poll".into(), serde_json::json!(poll));
+        }
+        HarnessEventPayload::OperationAbort { operation_id, steer, follow_up } => {
+            object.insert("operationId".into(), serde_json::json!(operation_id));
+            object.insert("steer".into(), wire_value_of(steer));
+            object.insert("followUp".into(), wire_value_of(follow_up));
+        }
+        HarnessEventPayload::RunEnd(payload) => {
+            if let JsonValue::Object(fields) = wire_run_end(payload) { object.extend(fields); }
+        }
+        HarnessEventPayload::Fault { code, message } => {
+            object.insert("code".into(), serde_json::json!(code));
+            object.insert("message".into(), serde_json::json!(message));
+        }
+        HarnessEventPayload::HandlerError(payload) => {
+            if let JsonValue::Object(fields) = wire_handler_error(payload) { object.extend(fields); }
+        }
+        HarnessEventPayload::TurnStart { run_id, turn_id } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+        }
+        HarnessEventPayload::TurnEnd { run_id, turn_id, message, tool_results } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+            object.insert("message".into(), wire_value_of(message.as_ref()));
+            object.insert("toolResults".into(), wire_value_of(tool_results));
+        }
+        HarnessEventPayload::RetryScheduled { run_id, step, attempt, max_attempts, delay_ms, not_before, error_message } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("step".into(), serde_json::json!(step));
+            object.insert("attempt".into(), serde_json::json!(attempt));
+            object.insert("maxAttempts".into(), serde_json::json!(max_attempts));
+            object.insert("delayMs".into(), serde_json::json!(delay_ms));
+            object.insert("notBefore".into(), serde_json::json!(not_before));
+            object.insert("errorMessage".into(), serde_json::json!(error_message));
+        }
+        HarnessEventPayload::RetryStart { run_id, step, attempt } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("step".into(), serde_json::json!(step));
+            object.insert("attempt".into(), serde_json::json!(attempt));
+        }
+        HarnessEventPayload::RetryEnd { run_id, step, attempt, success, final_error } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("step".into(), serde_json::json!(step));
+            object.insert("attempt".into(), serde_json::json!(attempt));
+            object.insert("success".into(), serde_json::json!(success));
+            wire_insert_optional(&mut object, "finalError", final_error.as_ref().map(|value| serde_json::json!(value)));
+        }
+        HarnessEventPayload::MessageStart { run_id, message } => {
+            wire_insert_optional(&mut object, "runId", run_id.as_ref().map(|id| serde_json::json!(id)));
+            object.insert("message".into(), wire_value_of(message));
+        }
+        HarnessEventPayload::MessageUpdate { run_id, message, event: update, frame } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("message".into(), wire_value_of(message));
+            object.insert("event".into(), wire_value_of(update.as_ref()));
+            wire_insert_optional(&mut object, "frame", frame.as_ref().map(wire_value_of));
+        }
+        HarnessEventPayload::MessageEnd { run_id, message, entry_id } => {
+            wire_insert_optional(&mut object, "runId", run_id.as_ref().map(|id| serde_json::json!(id)));
+            object.insert("message".into(), wire_value_of(message));
+            wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
+        }
+        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+            object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
+            object.insert("toolName".into(), serde_json::json!(tool_name));
+        }
+        HarnessEventPayload::ToolUpdate { run_id, turn_id, tool_call_id, tool_name, partial_result } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+            object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
+            object.insert("toolName".into(), serde_json::json!(tool_name));
+            object.insert("partialResult".into(), wire_value_of(partial_result));
+        }
+        HarnessEventPayload::ToolEnd { run_id, turn_id, tool_call_id, tool_name, is_error, terminate } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("turnId".into(), serde_json::json!(turn_id));
+            object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
+            object.insert("toolName".into(), serde_json::json!(tool_name));
+            object.insert("isError".into(), serde_json::json!(is_error));
+            object.insert("terminate".into(), serde_json::json!(terminate));
+        }
+        HarnessEventPayload::EntryAdded { entry } => {
+            object.insert("entry".into(), wire_value_of(entry.as_ref()));
+        }
+        HarnessEventPayload::QueueUpdate { queues } => {
+            object.insert("queues".into(), JsonValue::Array(queues.iter().map(wire_queued_item).collect()));
+        }
+        HarnessEventPayload::ValueUpdate { value, name, target_id, label } => {
+            object.insert("value".into(), serde_json::json!(value));
+            wire_insert_optional(&mut object, "name", name.as_ref().map(|value| serde_json::json!(value)));
+            wire_insert_optional(&mut object, "targetId", target_id.as_ref().map(|value| serde_json::json!(value)));
+            wire_insert_optional(&mut object, "label", label.as_ref().map(|value| serde_json::json!(value)));
+        }
+        HarnessEventPayload::ConfigUpdate { property, value, previous } => {
+            object.insert("property".into(), serde_json::json!(property));
+            object.insert("value".into(), value.clone());
+            object.insert("previous".into(), previous.clone());
+        }
+        HarnessEventPayload::CompactionStart { run_id, reason, started_at } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("reason".into(), serde_json::json!(reason));
+            object.insert("startedAt".into(), serde_json::json!(started_at));
+        }
+        HarnessEventPayload::CompactionEnd { run_id, reason, ended_at, status, entry_id } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            object.insert("reason".into(), serde_json::json!(reason));
+            object.insert("endedAt".into(), serde_json::json!(ended_at));
+            object.insert("status".into(), serde_json::json!(status));
+            wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
+        }
+        HarnessEventPayload::NavigationStart { run_id, target_id, started_at } => {
+            object.insert("runId".into(), serde_json::json!(run_id));
+            wire_insert_optional(&mut object, "targetId", target_id.as_ref().map(|id| serde_json::json!(id)));
+            object.insert("startedAt".into(), serde_json::json!(started_at));
+        }
+        HarnessEventPayload::NavigationEnd(payload) => {
+            if let JsonValue::Object(fields) = wire_navigation_end(payload) { object.extend(fields); }
+        }
+        HarnessEventPayload::LaneCreated { at } => {
+            wire_insert_optional(&mut object, "at", at.as_ref().map(|id| serde_json::json!(id)));
+        }
+        HarnessEventPayload::Usage { lane, row, totals } => {
+            object.insert("lane".into(), serde_json::json!(lane));
+            object.insert("row".into(), wire_value_of(row));
+            object.insert("totals".into(), wire_value_of(totals));
+        }
+    }
+    JsonValue::Object(object)
+}
+
+fn wire_value_of<T: serde::Serialize>(value: &T) -> JsonValue {
+    serde_json::to_value(value).unwrap_or(JsonValue::Null)
+}
+
+fn wire_insert_optional(object: &mut serde_json::Map<String, JsonValue>, key: &str, value: Option<JsonValue>) {
+    if let Some(value) = value
+        && !value.is_null()
+    {
+        object.insert(key.to_owned(), value);
+    }
+}
+
+fn wire_run_end(payload: &RunEndPayload) -> JsonValue {
+    let mut object = serde_json::Map::new();
+    object.insert("runId".into(), serde_json::json!(payload.run_id));
+    wire_insert_optional(&mut object, "fromTipId", payload.from_tip_id.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(&mut object, "tipId", payload.tip_id.as_ref().map(|value| serde_json::json!(value)));
+    object.insert("endedAt".into(), serde_json::json!(payload.ended_at));
+    object.insert("status".into(), serde_json::json!(payload.status));
+    wire_insert_optional(&mut object, "error", payload.error.as_ref().map(wire_value_of));
+    JsonValue::Object(object)
+}
+
+fn wire_navigation_end(payload: &NavigationEndPayload) -> JsonValue {
+    let mut object = serde_json::Map::new();
+    object.insert("runId".into(), serde_json::json!(payload.run_id));
+    wire_insert_optional(&mut object, "fromTipId", payload.from_tip_id.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(&mut object, "tipId", payload.tip_id.as_ref().map(|value| serde_json::json!(value)));
+    object.insert("endedAt".into(), serde_json::json!(payload.ended_at));
+    object.insert("status".into(), serde_json::json!(payload.status));
+    wire_insert_optional(&mut object, "error", payload.error.as_ref().map(wire_value_of));
+    JsonValue::Object(object)
+}
+
+fn wire_handler_error(payload: &HandlerErrorPayload) -> JsonValue {
+    let mut object = serde_json::Map::new();
+    object.insert("error".into(), serde_json::json!(payload.error));
+    wire_insert_optional(&mut object, "stack", payload.stack.as_ref().map(|value| serde_json::json!(value)));
+    object.insert("kind".into(), serde_json::json!(payload.kind));
+    wire_insert_optional(&mut object, "hook", payload.hook.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(&mut object, "event", payload.event.as_ref().map(|value| serde_json::json!(value)));
+    JsonValue::Object(object)
+}
+
+fn wire_queued_item(item: &LaneQueuedItem) -> JsonValue {
+    let mut object = serde_json::Map::new();
+    object.insert("entryId".into(), serde_json::json!(item.entry_id));
+    object.insert("kind".into(), serde_json::json!(item.kind));
+    object.insert("type".into(), serde_json::json!(item.item_type));
+    wire_insert_optional(&mut object, "message", item.message.as_ref().map(wire_value_of));
+    wire_insert_optional(&mut object, "customType", item.custom_type.as_ref().map(|value| serde_json::json!(value)));
+    wire_insert_optional(&mut object, "data", item.data.clone());
+    JsonValue::Object(object)
+}
+
+impl From<&HarnessEvent> for JsonValue {
+    fn from(event: &HarnessEvent) -> Self {
+        event_to_value(event)
+    }
+}
+
+impl From<HarnessEvent> for JsonValue {
+    fn from(event: HarnessEvent) -> Self {
+        event_to_value(&event)
     }
 }
 
@@ -838,5 +1060,97 @@ async fn deliver_watcher<T: Clone + Send + Sync + 'static>(
                 .catch_unwind()
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn run_start_carries_type_lane_and_camelcase_fields() {
+        let event = HarnessEvent::new(
+            HarnessEventPayload::RunStart { run_id: "op".into(), started_at: 7 },
+            Some("main".into()),
+        );
+        assert_eq!(
+            event_to_value(&event),
+            json!({"type": "run_start", "lane": "main", "runId": "op", "startedAt": 7})
+        );
+        assert_eq!(JsonValue::from(&event), event_to_value(&event));
+        assert_eq!(JsonValue::from(event.clone()), event_to_value(&event));
+    }
+
+    #[test]
+    fn run_end_reduces_to_the_pinned_record_shape() {
+        let event = HarnessEvent::new(
+            HarnessEventPayload::RunEnd(RunEndPayload {
+                run_id: "op".into(),
+                from_tip_id: Some("before".into()),
+                tip_id: Some("after".into()),
+                ended_at: 9,
+                status: "completed".into(),
+                error: None,
+            }),
+            Some("main".into()),
+        );
+        assert_eq!(
+            event_to_value(&event),
+            json!({"type": "run_end", "lane": "main", "runId": "op", "fromTipId": "before", "tipId": "after", "endedAt": 9, "status": "completed"})
+        );
+    }
+
+    #[test]
+    fn optional_fields_are_omitted_when_absent() {
+        let event = HarnessEvent::new(
+            HarnessEventPayload::MessageStart { run_id: None, message: crate::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("hi".into()), timestamp: 1 })) },
+            None,
+        );
+        let value = event_to_value(&event);
+        assert!(value.get("lane").is_none());
+        assert!(value.get("runId").is_none());
+        assert_eq!(value["type"], json!("message_start"));
+    }
+
+    #[test]
+    fn queue_update_serializes_lane_queued_items() {
+        let event = HarnessEvent::new(
+            HarnessEventPayload::QueueUpdate {
+                queues: vec![LaneQueuedItem {
+                    entry_id: "entry".into(),
+                    kind: "steer".into(),
+                    item_type: "message".into(),
+                    message: None,
+                    custom_type: None,
+                    data: None,
+                }],
+            },
+            Some("main".into()),
+        );
+        assert_eq!(
+            event_to_value(&event),
+            json!({"type": "queue_update", "lane": "main", "queues": [{"entryId": "entry", "kind": "steer", "type": "message"}]})
+        );
+    }
+
+    #[test]
+    fn tool_update_carries_the_partial_result() {
+        let partial_result = crate::types::AgentToolResult::text("partial");
+        let event = HarnessEvent::new(
+            HarnessEventPayload::ToolUpdate {
+                run_id: "op".into(),
+                turn_id: "turn".into(),
+                tool_call_id: "call".into(),
+                tool_name: "bash".into(),
+                partial_result: partial_result.clone(),
+            },
+            Some("main".into()),
+        );
+        let value = event_to_value(&event);
+        assert_eq!(value["type"], json!("tool_update"));
+        assert_eq!(value["toolCallId"], json!("call"));
+        assert_eq!(value["partialResult"], serde_json::to_value(&partial_result).expect("partial result wire"));
+        assert_eq!(value["partialResult"]["content"][0]["text"], json!("partial"));
     }
 }

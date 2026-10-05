@@ -9,6 +9,18 @@ pub struct MemorySample {pub pressure_change:Option<bool>,pub critical_change:Op
 pub struct HostMemorySampler {warn_mb:u64,refuse_mb:u64,pressure:bool,critical:bool,idle_reported:bool,last_logged_at:Option<u64>}
 fn positive_integer(value:Option<&String>)->Option<u64>{let text=value?.trim();if text.is_empty()||!text.bytes().all(|c|c.is_ascii_digit()){return None;}text.parse().ok().filter(|value|*value>0)}
 impl HostMemorySampler{
+    pub async fn run_until_stopped(&mut self,mut read:impl FnMut()->(u64,u64,u64),mut publish:impl FnMut(MemorySample),mut stopped:tokio::sync::watch::Receiver<bool>){
+        let period=std::time::Duration::from_millis(HOST_MEMORY_SAMPLE_MS);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{
+            if *stopped.borrow(){return;}
+            tokio::select!{
+                changed=stopped.changed()=>{if changed.is_err(){return;}},
+                _=timer.tick()=>{let(rss,sessions,now)=read();publish(self.sample(rss,sessions,now));}
+            }
+        }
+    }
     pub async fn run(&mut self,mut read:impl FnMut()->(u64,u64,u64),mut publish:impl FnMut(MemorySample)){
         let period=std::time::Duration::from_millis(HOST_MEMORY_SAMPLE_MS);
         let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);

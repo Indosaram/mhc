@@ -20,7 +20,8 @@ pub fn shareable(config:&McpServerConfig,cwd:Option<&str>)->bool {
 fn stable_json(value:&Value)->String {
     match value {
         Value::Object(map)=>{
-            let mut keys=map.keys().collect::<Vec<_>>();keys.sort();
+            let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+            let mut keys=map.keys().collect::<Vec<_>>();keys.sort_by(|left,right|collator.compare(left,right));
             format!("{{{}}}",keys.into_iter().map(|key|format!("{}:{}",json!(key),stable_json(&map[key]))).collect::<Vec<_>>().join(","))
         }
         Value::Array(values)=>format!("[{}]",values.iter().map(stable_json).collect::<Vec<_>>().join(",")),

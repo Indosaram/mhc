@@ -1,0 +1,260 @@
+status: completed exit_code: 0
+   Compiling maho-ext-api v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-ext-host)
+   Compiling maho-core v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-core)
+   Compiling maho-interactive v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/maho-interactive)
+   Compiling maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 04s
+────────────
+ Nextest run ID 3d61ef6d-6c2d-4f68-8916-384f31fb235b with nextest profile: default
+    Starting 246 tests across 16 binaries
+        PASS [   0.006s] (  1/246) maho-ext-pi-rules::cache clear_preserves_cwd
+        PASS [   0.006s] (  2/246) maho-ext-pi-rules::cache changed_hash_marked
+        PASS [   0.006s] (  3/246) maho-ext-pi-rules::cache first_dynamic_true
+        PASS [   0.006s] (  4/246) maho-ext-pi-rules::cache dynamic_lookup
+        PASS [   0.008s] (  5/246) maho-ext-pi-rules::cache dynamic_key_deterministic
+        PASS [   0.009s] (  6/246) maho-ext-pi-rules::cache clear_removes_entries
+        PASS [   0.009s] (  7/246) maho-ext-pi-rules::cache different_target_marked
+        PASS [   0.009s] (  8/246) maho-ext-pi-rules::cache different_paths_marked
+        PASS [   0.005s] (  9/246) maho-ext-pi-rules::cache repeated_dynamic_false
+        PASS [   0.010s] ( 10/246) maho-ext-pi-rules rules::project_root::tests::stat_failure_after_canonicalization_returns_none
+        PASS [   0.011s] ( 11/246) maho-ext-pi-rules::cache first_static_mark_true
+        PASS [   0.011s] ( 12/246) maho-ext-pi-rules::cache cwd_set_on_creation
+        PASS [   0.005s] ( 13/246) maho-ext-pi-rules::cache static_key_includes_cwd
+        PASS [   0.012s] ( 14/246) maho-ext-pi-rules::cache fresh_state_empty
+        PASS [   0.007s] ( 15/246) maho-ext-pi-rules::cache static_key_deterministic
+        PASS [   0.007s] ( 16/246) maho-ext-pi-rules::cache repeated_static_false
+        PASS [   0.005s] ( 17/246) maho-ext-pi-rules::config environment_child
+        PASS [   0.007s] ( 18/246) maho-ext-pi-rules::cache static_lookup
+        PASS [   0.006s] ( 19/246) maho-ext-pi-rules::config empty_env_defaults
+        PASS [   0.005s] ( 20/246) maho-ext-pi-rules::config invalid_numbers_keep_defaults
+        PASS [   0.009s] ( 21/246) maho-ext-pi-rules::config ecmascript_environment_whitespace
+        PASS [   0.008s] ( 22/246) maho-ext-pi-rules::config nontruthy_disabled
+        PASS [   0.009s] ( 23/246) maho-ext-pi-rules::config result_budget_override
+        PASS [   0.009s] ( 24/246) maho-ext-pi-rules::config process_env_is_read_in_isolated_child
+        PASS [   0.009s] ( 25/246) maho-ext-pi-rules::config malformed_numbers_keep_defaults
+        PASS [   0.006s] ( 26/246) maho-ext-pi-rules::engine always_apply
+        PASS [   0.007s] ( 27/246) maho-ext-pi-rules::dynamic_border border_calls_color_with_width_and_no_cached_output
+        PASS [   0.006s] ( 28/246) maho-ext-pi-rules::engine cached_content_rechecks_membership_for_each_project_root
+        PASS [   0.009s] ( 29/246) maho-ext-pi-rules::engine cached_malformed_content_replays_diagnostic_per_target
+        PASS [   0.012s] ( 30/246) maho-ext-pi-rules::config rule_budget_override
+        PASS [   0.012s] ( 31/246) maho-ext-pi-rules::config whitespace_trimmed
+        PASS [   0.013s] ( 32/246) maho-ext-pi-rules::config truthy_disabled
+        PASS [   0.007s] ( 33/246) maho-ext-pi-rules::engine defaults
+        PASS [   0.009s] ( 34/246) maho-ext-pi-rules::engine content_hash_includes_frontmatter
+        PASS [   0.011s] ( 35/246) maho-ext-pi-rules::engine disabled_static
+        PASS [   0.015s] ( 36/246) maho-ext-pi-rules::engine directory_root_reused
+        PASS [   0.011s] ( 37/246) maho-ext-pi-rules::engine dynamic_format_delegate
+        PASS [   0.009s] ( 38/246) maho-ext-pi-rules::engine dynamic_mark_twice
+        PASS [   0.013s] ( 39/246) maho-ext-pi-rules::engine dynamic_always
+        PASS [   0.006s] ( 40/246) maho-ext-pi-rules::engine dynamic_root_first_wins
+        PASS [   0.016s] ( 41/246) maho-ext-pi-rules::engine dynamic_glob_miss
+        PASS [   0.024s] ( 42/246) maho-ext-pi-rules::engine changed_frontmatter_rechecks
+        PASS [   0.021s] ( 43/246) maho-ext-pi-rules::engine duplicate_targets_avoid_work
+        PASS [   0.018s] ( 44/246) maho-ext-pi-rules::engine dynamic_glob
+        PASS [   0.024s] ( 45/246) maho-ext-pi-rules::engine directory_discovery_reused
+        PASS [   0.010s] ( 46/246) maho-ext-pi-rules::engine escapes_root_before_read
+        PASS [   0.008s] ( 47/246) maho-ext-pi-rules::engine fingerprint_change_invalidates
+        PASS [   0.007s] ( 48/246) maho-ext-pi-rules::engine fingerprint_current_after_commit
+        PASS [   0.011s] ( 49/246) maho-ext-pi-rules::engine dynamic_static
+        PASS [   0.011s] ( 50/246) maho-ext-pi-rules::engine early_return_clears_state
+        PASS [   0.019s] ( 51/246) maho-ext-pi-rules::engine dynamic_multiple_targets_dedup
+        PASS [   0.006s] ( 52/246) maho-ext-pi-rules::engine malformed_warns_and_continues
+        PASS [   0.007s] ( 53/246) maho-ext-pi-rules::engine reset_clears_fingerprints
+        PASS [   0.008s] ( 54/246) maho-ext-pi-rules::engine reset_injection_state
+        PASS [   0.013s] ( 55/246) maho-ext-pi-rules::engine glob_only_not_static
+        PASS [   0.006s] ( 56/246) maho-ext-pi-rules::engine single_file
+        PASS [   0.007s] ( 57/246) maho-ext-pi-rules::engine sorted_dynamic_rules
+        PASS [   0.038s] ( 58/246) maho-ext-pi-rules::engine changed_body_rechecks
+        PASS [   0.012s] ( 59/246) maho-ext-pi-rules::engine no_targets_no_dynamic
+        PASS [   0.013s] ( 60/246) maho-ext-pi-rules::engine nested_single_not_deduped
+        PASS [   0.013s] ( 61/246) maho-ext-pi-rules::engine off_static
+        PASS [   0.017s] ( 62/246) maho-ext-pi-rules::engine nested_project_root_from_target
+        PASS [   0.008s] ( 63/246) maho-ext-pi-rules::engine static_load_caches_canonical_root_across_rule_reads
+        PASS [   0.015s] ( 64/246) maho-ext-pi-rules::engine root_first_wins
+        PASS [   0.007s] ( 65/246) maho-ext-pi-rules::engine static_mark_twice
+        PASS [   0.007s] ( 66/246) maho-ext-pi-rules::engine static_mark_visible
+        PASS [   0.008s] ( 67/246) maho-ext-pi-rules::engine static_mode_no_dynamic
+        PASS [   0.011s] ( 68/246) maho-ext-pi-rules::engine static_format_delegate
+        PASS [   0.017s] ( 69/246) maho-ext-pi-rules::engine shared_discovery_cache
+        PASS [   0.006s] ( 70/246) maho-ext-pi-rules::engine unreadable_warns_and_continues
+        PASS [   0.010s] ( 71/246) maho-ext-pi-rules::engine symlink_project_containment
+        PASS [   0.007s] ( 72/246) maho-ext-pi-rules::finder agents_single
+        PASS [   0.007s] ( 73/246) maho-ext-pi-rules::finder all_root_single_files
+        PASS [   0.009s] ( 74/246) maho-ext-pi-rules::finder above_root_excluded
+        PASS [   0.006s] ( 75/246) maho-ext-pi-rules::finder disabled_cursor
+        PASS [   0.008s] ( 76/246) maho-ext-pi-rules::finder copilot_single
+        PASS [   0.006s] ( 77/246) maho-ext-pi-rules::finder dotdot_named_child_uses_root_only
+        PASS [   0.010s] ( 78/246) maho-ext-pi-rules::finder closest_directory
+        PASS [   0.006s] ( 79/246) maho-ext-pi-rules::finder github_instructions
+        PASS [   0.010s] ( 80/246) maho-ext-pi-rules::finder cursor_mdc
+        PASS [   0.006s] ( 81/246) maho-ext-pi-rules::finder home_omo
+        PASS [   0.005s] ( 82/246) maho-ext-pi-rules::finder null_root_skip_home
+        PASS [   0.011s] ( 83/246) maho-ext-pi-rules::finder each_ancestor
+        PASS [   0.008s] ( 84/246) maho-ext-pi-rules::finder home_first_single_wins
+        PASS [   0.007s] ( 85/246) maho-ext-pi-rules::finder home_opencode
+        PASS [   0.007s] ( 86/246) maho-ext-pi-rules::finder nested_distances
+        PASS [   0.006s] ( 87/246) maho-ext-pi-rules::finder skip_home
+        PASS [   0.006s] ( 88/246) maho-ext-pi-rules::formatter dynamic_append_separator
+        PASS [   0.007s] ( 89/246) maho-ext-pi-rules::formatter dynamic_empty
+        PASS [   0.005s] ( 90/246) maho-ext-pi-rules::formatter dynamic_target_header
+        PASS [   0.009s] ( 91/246) maho-ext-pi-rules::finder symlink_realpath
+        PASS [   0.007s] ( 92/246) maho-ext-pi-rules::formatter dynamic_notice_present
+        PASS [   0.007s] ( 93/246) maho-ext-pi-rules::formatter dynamic_framing_in_budget
+        PASS [   0.029s] ( 94/246) maho-ext-pi-rules::engine unchanged_match_reused
+        PASS [   0.018s] ( 95/246) maho-ext-pi-rules::finder null_root_home_claude
+        PASS [   0.008s] ( 96/246) maho-ext-pi-rules::formatter later_rules_excluded
+        PASS [   0.006s] ( 97/246) maho-ext-pi-rules::formatter static_body
+        PASS [   0.007s] ( 98/246) maho-ext-pi-rules::formatter static_empty
+        PASS [   0.018s] ( 99/246) maho-ext-pi-rules::finder project_core
+        PASS [   0.011s] (100/246) maho-ext-pi-rules::formatter multiline_body_preserved
+        PASS [   0.006s] (101/246) maho-ext-pi-rules::formatter static_per_rule_cap
+        PASS [   0.009s] (102/246) maho-ext-pi-rules::formatter static_append_separator
+        PASS [   0.018s] (103/246) maho-ext-pi-rules::formatter dynamic_source_headers
+        PASS [   0.007s] (104/246) maho-ext-pi-rules::formatter static_source_path
+        PASS [   0.014s] (105/246) maho-ext-pi-rules::formatter static_framing_in_budget
+        PASS [   0.009s] (106/246) maho-ext-pi-rules::index hook_discovers_only_its_injected_home_rules
+        PASS [   0.012s] (107/246) maho-ext-pi-rules::formatter static_separator
+        PASS [   0.019s] (108/246) maho-ext-pi-rules::formatter static_header
+        PASS [   0.017s] (109/246) maho-ext-pi-rules::index registered_rules_command_completes_source_prefixes
+        PASS [   0.017s] (110/246) maho-ext-pi-rules::index session_scan_entries_follow_current_runtime_binding_and_disabled_start
+        PASS [   0.013s] (111/246) maho-ext-pi-rules::matcher always_apply
+        PASS [   0.013s] (112/246) maho-ext-pi-rules::matcher apply_to_alias
+        PASS [   0.021s] (113/246) maho-ext-pi-rules::index registers_four_injection_hooks_and_presence_flags
+        PASS [   0.018s] (114/246) maho-ext-pi-rules::index static_hook_is_immutable_deduplicated_and_session_resettable
+        PASS [   0.027s] (115/246) maho-ext-pi-rules::index dynamic_hook_preserves_content_and_deduplicates_target_fingerprint
+        PASS [   0.020s] (116/246) maho-ext-pi-rules::matcher aliases_merged
+        PASS [   0.061s] (117/246) maho-ext-pi-rules::engine target_paths_separate_matches
+        PASS [   0.020s] (118/246) maho-ext-pi-rules::matcher basename_pattern
+        PASS [   0.014s] (119/246) maho-ext-pi-rules::matcher character_brace_ranges_match_source
+        PASS [   0.010s] (120/246) maho-ext-pi-rules::matcher empty_patterns
+        PASS [   0.037s] (121/246) maho-ext-pi-rules::index dynamic_hook_reinjects_changed_rule_without_cross_session_state
+        PASS [   0.016s] (122/246) maho-ext-pi-rules::matcher deterministic_hash
+        PASS [   0.016s] (123/246) maho-ext-pi-rules::matcher duplicate_patterns
+        PASS [   0.017s] (124/246) maho-ext-pi-rules::matcher empty_brace_alternative_matches_empty_suffix
+        PASS [   0.019s] (125/246) maho-ext-pi-rules::matcher empty_hash
+        PASS [   0.016s] (126/246) maho-ext-pi-rules::matcher invalid_empty_patterns_retain_source_exception
+        PASS [   0.012s] (127/246) maho-ext-pi-rules::matcher paths_alias
+        PASS [   0.015s] (128/246) maho-ext-pi-rules::matcher malformed_and_single_alternative_braces_are_literal
+        PASS [   0.026s] (129/246) maho-ext-pi-rules::matcher false_always_glob
+        PASS [   0.021s] (130/246) maho-ext-pi-rules::matcher oversized_patterns_retain_source_exception
+        PASS [   0.032s] (131/246) maho-ext-pi-rules::matcher excluded_file
+        PASS [   0.040s] (132/246) maho-ext-pi-rules::matcher compiled_once
+        PASS [   0.011s] (133/246) maho-ext-pi-rules::matcher single_file
+        PASS [   0.006s] (134/246) maho-ext-pi-rules::ordering alphabetical_paths
+        PASS [   0.005s] (135/246) maho-ext-pi-rules::ordering earlier_comparison_negative
+        PASS [   0.014s] (136/246) maho-ext-pi-rules::matcher unclosed_character_class_matches_literal
+        PASS [   0.008s] (137/246) maho-ext-pi-rules::ordering copilot_before_agents
+        PASS [   0.037s] (138/246) maho-ext-pi-rules::matcher first_matching_positive
+        PASS [   0.009s] (139/246) maho-ext-pi-rules::ordering closest_distance_first
+        PASS [   0.010s] (140/246) maho-ext-pi-rules::ordering equal_candidates_are_stable
+        PASS [   0.011s] (141/246) maho-ext-pi-rules::ordering empty_input
+        PASS [   0.008s] (142/246) maho-ext-pi-rules::ordering identical_comparison_equal
+        PASS [   0.023s] (143/246) maho-ext-pi-rules::matcher windows_path_normalized
+        PASS [   0.008s] (144/246) maho-ext-pi-rules::ordering input_is_not_mutated
+        PASS [   0.012s] (145/246) maho-ext-pi-rules::ordering home_sources_ordered
+        PASS [   0.042s] (146/246) maho-ext-pi-rules::matcher only_negative
+        PASS [   0.013s] (147/246) maho-ext-pi-rules::ordering global_never_precedes_local_by_distance
+        PASS [   0.005s] (148/246) maho-ext-pi-rules::ordering local_before_global
+        PASS [   0.006s] (149/246) maho-ext-pi-rules::ordering root_single_file_order
+        PASS [   0.031s] (150/246) maho-ext-pi-rules::matcher single_pattern
+        PASS [   0.007s] (151/246) maho-ext-pi-rules::parser aliases_deduplicate_in_order
+        PASS [   0.006s] (152/246) maho-ext-pi-rules::parser apply_to_alias
+        PASS [   0.010s] (153/246) maho-ext-pi-rules::ordering omo_before_claude
+        PASS [   0.007s] (154/246) maho-ext-pi-rules::parser body_markers_preserved
+        PASS [   0.008s] (155/246) maho-ext-pi-rules::parser always_true
+        PASS [   0.009s] (156/246) maho-ext-pi-rules::parser always_false
+        PASS [   0.012s] (157/246) maho-ext-pi-rules::ordering unknown_source_last
+        PASS [   0.008s] (158/246) maho-ext-pi-rules::parser closing_delimiter_removes_only_one_carriage_return
+        PASS [   0.007s] (159/246) maho-ext-pi-rules::parser comma_list
+        PASS [   0.009s] (160/246) maho-ext-pi-rules::parser bom_removed
+        PASS [   0.005s] (161/246) maho-ext-pi-rules::parser inline_array
+        PASS [   0.005s] (162/246) maho-ext-pi-rules::parser frontmatter_only
+        PASS [   0.007s] (163/246) maho-ext-pi-rules::parser comments_removed
+        PASS [   0.009s] (164/246) maho-ext-pi-rules::parser crlf_preserved
+        PASS [   0.006s] (165/246) maho-ext-pi-rules::parser malformed_is_salvaged
+        PASS [   0.010s] (166/246) maho-ext-pi-rules::parser empty_frontmatter
+        PASS [   0.008s] (167/246) maho-ext-pi-rules::parser missing_close_is_salvaged
+        PASS [   0.007s] (168/246) maho-ext-pi-rules::parser multiline_array
+        PASS [   0.009s] (169/246) maho-ext-pi-rules::parser json_quoted
+        PASS [   0.011s] (170/246) maho-ext-pi-rules::parser javascript_whitespace_preserves_next_line_and_trims_bom
+        PASS [   0.008s] (171/246) maho-ext-pi-rules::parser scalar_empty_glob_is_preserved
+        PASS [   0.011s] (172/246) maho-ext-pi-rules::parser no_frontmatter
+        PASS [   0.012s] (173/246) maho-ext-pi-rules::parser paths_alias
+        PASS [   0.007s] (174/246) maho-ext-pi-rules::parser unquoted_description
+        PASS [   0.007s] (175/246) maho-ext-pi-rules::project_root custom_marker
+        PASS [   0.011s] (176/246) maho-ext-pi-rules::parser single_glob
+        PASS [   0.009s] (177/246) maho-ext-pi-rules::parser unknown_fields_ignored
+        PASS [   0.006s] (178/246) maho-ext-pi-rules::project_root dangling_path
+        PASS [   0.010s] (179/246) maho-ext-pi-rules::parser valid_frontmatter
+        PASS [   0.013s] (180/246) maho-ext-pi-rules::parser unicode_body
+        PASS [   0.005s] (181/246) maho-ext-pi-rules::project_root git_marker
+        PASS [   0.009s] (182/246) maho-ext-pi-rules::project_root file_start
+        PASS [   0.006s] (183/246) maho-ext-pi-rules::project_root go_marker
+        PASS [   0.008s] (184/246) maho-ext-pi-rules::project_root git_file_submodule
+        PASS [   0.006s] (185/246) maho-ext-pi-rules::project_root nearest_nested_marker
+        PASS [   0.008s] (186/246) maho-ext-pi-rules::project_root multiple_markers_same_root
+        PASS [   0.075s] (187/246) maho-ext-pi-rules::matcher pinned_nested_brace_and_class_boundaries_match
+        PASS [   0.007s] (188/246) maho-ext-pi-rules::project_root missing_path
+        PASS [   0.005s] (189/246) maho-ext-pi-rules::project_root symlink_resolves_project
+        PASS [   0.008s] (190/246) maho-ext-pi-rules::project_root package_marker
+        PASS [   0.009s] (191/246) maho-ext-pi-rules::project_root no_markers
+        PASS [   0.007s] (192/246) maho-ext-pi-rules::project_root venv_directory
+        PASS [   0.006s] (193/246) maho-ext-pi-rules::rules_banner rule_diagnostics_match_absolute_or_relative_path
+        PASS [   0.007s] (194/246) maho-ext-pi-rules::scanner cycle_terminates
+        PASS [   0.008s] (195/246) maho-ext-pi-rules::scanner accepted_extensions
+        PASS [   0.007s] (196/246) maho-ext-pi-rules::scanner excludes_build_dist
+        PASS [   0.009s] (197/246) maho-ext-pi-rules::rules_banner empty_banner_borders_follow_width
+        PASS [   0.010s] (198/246) maho-ext-pi-rules::rules_banner unmatched_rule_uses_success_indicator
+        PASS [   0.009s] (199/246) maho-ext-pi-rules::scanner empty_directory
+        PASS [   0.010s] (200/246) maho-ext-pi-rules::scanner deterministic_sort
+        PASS [   0.009s] (201/246) maho-ext-pi-rules::scanner excludes_git
+        PASS [   0.008s] (202/246) maho-ext-pi-rules::scanner file_root
+        PASS [   0.010s] (203/246) maho-ext-pi-rules::scanner external_symlink
+        PASS [   0.006s] (204/246) maho-ext-pi-rules::scanner nested_rules
+        PASS [   0.012s] (205/246) maho-ext-pi-rules::scanner excludes_node_modules
+        PASS [   0.007s] (206/246) maho-ext-pi-rules::scanner max_depth
+        PASS [   0.006s] (207/246) maho-ext-pi-rules::scanner one_markdown
+        PASS [   0.009s] (208/246) maho-ext-pi-rules::scanner includes_hidden_directory
+        PASS [   0.007s] (209/246) maho-ext-pi-rules::scanner nonexistent_root
+        PASS [   0.006s] (210/246) maho-ext-pi-rules::scanner same_real_path_has_two_entries
+        PASS [   0.010s] (211/246) maho-ext-pi-rules::scanner locale_order_keeps_case_and_accent_secondary
+        PASS [   0.006s] (212/246) maho-ext-pi-rules::tool_paths bash_ignored
+        PASS [   0.005s] (213/246) maho-ext-pi-rules::tool_paths edit_details
+        PASS [   0.006s] (214/246) maho-ext-pi-rules::tool_paths custom_ignored
+        PASS [   0.006s] (215/246) maho-ext-pi-rules::tool_paths bash_not_tracked
+        PASS [   0.008s] (216/246) maho-ext-pi-rules::tool_paths edit_tracked
+        PASS [   0.007s] (217/246) maho-ext-pi-rules::tool_paths grep_ignored
+        PASS [   0.008s] (218/246) maho-ext-pi-rules::tool_paths error_ignored
+        PASS [   0.010s] (219/246) maho-ext-pi-rules::scanner symlink_inside
+        PASS [   0.005s] (220/246) maho-ext-pi-rules::tool_paths missing_details
+        PASS [   0.006s] (221/246) maho-ext-pi-rules::tool_paths ls_ignored
+        PASS [   0.005s] (222/246) maho-ext-pi-rules::tool_paths no_write_input
+        PASS [   0.013s] (223/246) maho-ext-pi-rules::scanner unrelated_extensions
+        PASS [   0.011s] (224/246) maho-ext-pi-rules::tool_paths find_ignored
+        PASS [   0.009s] (225/246) maho-ext-pi-rules::tool_paths no_filepath
+        PASS [   0.007s] (226/246) maho-ext-pi-rules::tool_paths read_details
+        PASS [   0.007s] (227/246) maho-ext-pi-rules::truncator budget_keeps_all_fitting_rules
+        PASS [   0.009s] (228/246) maho-ext-pi-rules::tool_paths write_tracked
+        PASS [   0.010s] (229/246) maho-ext-pi-rules::tool_paths write_input
+        PASS [   0.010s] (230/246) maho-ext-pi-rules::tool_paths read_tracked
+        PASS [   0.011s] (231/246) maho-ext-pi-rules::tool_paths relative_read
+        PASS [   0.008s] (232/246) maho-ext-pi-rules::truncator empty_body_stays_empty
+        PASS [   0.010s] (233/246) maho-ext-pi-rules::truncator custom_path_is_substituted
+        PASS [   0.011s] (234/246) maho-ext-pi-rules::truncator budget_truncates_first_rule
+        PASS [   0.010s] (235/246) maho-ext-pi-rules::truncator equal_body_is_unchanged
+        PASS [   0.010s] (236/246) maho-ext-pi-rules::truncator empty_rules_produce_empty_result
+        PASS [   0.006s] (237/246) maho-ext-pi-rules::truncator notice_can_exceed_rule_budget
+        PASS [   0.007s] (238/246) maho-ext-pi-rules::truncator exact_budget_does_not_truncate
+        PASS [   0.006s] (239/246) maho-ext-pi-rules::truncator original_length_survives_truncation
+        PASS [   0.007s] (240/246) maho-ext-pi-rules::truncator longer_body_fits_budget
+        PASS [   0.007s] (241/246) maho-ext-pi-rules::truncator exhausted_budget_excludes_later_rules
+        PASS [   0.005s] (242/246) maho-ext-pi-rules::truncator small_prefix_is_preserved
+        PASS [   0.007s] (243/246) maho-ext-pi-rules::truncator shorter_body_is_unchanged
+        PASS [   0.005s] (244/246) maho-ext-pi-rules::truncator surrogate_pair_is_not_split
+        PASS [   0.383s] (245/246) maho-ext-pi-rules::matcher cache_bounded
+        PASS [  35.082s] (246/246) maho-ext-pi-rules::matcher matcher_matches_generated_extglob_and_malformed_matrix
+────────────
+     Summary [  35.210s] 246 tests run: 246 passed, 0 skipped
+
+LANE39_MATCHER_BOUNDARY_EXIT=0

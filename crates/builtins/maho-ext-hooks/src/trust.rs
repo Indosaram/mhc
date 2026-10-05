@@ -183,4 +183,17 @@ mod tests {
         let mut hook=handler();assert_eq!(hook_trust_storage_scope(&hook,false),None);assert_eq!(hook_trust_storage_scope(&hook,true),Some(HookTrustStorageScope::Project));
         hook.source.scope=HookSourceScope::Global;assert_eq!(hook_trust_storage_scope(&hook,false),Some(HookTrustStorageScope::Global));
     }
+
+    #[test]
+    fn trusted_entry_round_trips_through_file_storage() -> std::io::Result<()> {
+        let dir=tempfile::tempdir()?;
+        let hook=handler();
+        let storage=crate::trust_storage::FileHookStateStorage::new(dir.path(),dir.path());
+        let entry=create_hook_trust_entry(&hook,"linux","fixed").map_err(std::io::Error::other)?;
+        storage.update(HookTrustStorageScope::Project,|mut state| {state.hooks.insert(hook_trust_id(&hook),entry.clone());state})?;
+        let state=storage.read(HookTrustStorageScope::Project)?;
+        assert!(is_command_hook_trusted(&hook,&state,"linux").map_err(std::io::Error::other)?);
+        assert!(!is_command_hook_trusted(&hook,&storage.read(HookTrustStorageScope::Global)?,"linux").map_err(std::io::Error::other)?);
+        Ok(())
+    }
 }

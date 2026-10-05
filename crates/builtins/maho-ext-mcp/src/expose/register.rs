@@ -7,7 +7,8 @@ use super::schema_compat::{McpToolNameEntry,build_mcp_tool_names,convert_json_sc
 pub struct McpNamedCatalogEntry {pub entry:McpToolCatalogEntry,pub name:String}
 static NEXT_PROGRESS_TOKEN:AtomicU64=AtomicU64::new(0);
 pub fn map_mcp_catalog_names(entries:&[McpToolCatalogEntry])->Vec<McpNamedCatalogEntry> {
-    let mut entries=entries.to_vec();entries.sort_by(|left,right|left.server.cmp(&right.server).then(left.tool.cmp(&right.tool)));
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+    let mut entries=entries.to_vec();entries.sort_by(|left,right|collator.compare(&left.server,&right.server).then_with(||collator.compare(&left.tool,&right.tool)));
     let names=build_mcp_tool_names(&entries.iter().map(|entry|McpToolNameEntry {server_name:entry.server.clone(),tool_name:entry.tool.clone()}).collect::<Vec<_>>(),None);
     entries.into_iter().zip(names).map(|(entry,name)|McpNamedCatalogEntry {entry,name}).collect()
 }
@@ -23,12 +24,19 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 call.signal.check()?;
                 let params=if call.params.is_object(){call.params}else{json!({})};
                 let operation=||async {
-                if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
-                if let Some(ensure_fresh)=&entry.ensure_fresh {ensure_fresh().await?;}
+                if let Some(ensure_fresh)=&entry.ensure_fresh && let Err(error)=ensure_fresh().await {
+                    return Err(entry.runtime.as_ref().map(|runtime|&runtime.connection).or(entry.connection.as_ref()).and_then(|connection|crate::health::mark_mcp_connection_needs_auth(connection,&error)).unwrap_or(error));
+                }
                 let client=if let Some(runtime)=&entry.runtime {
                     runtime.health.ensure_connection(&runtime.connection).await?;
+                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
                     runtime.connection.client()?
-                }else{entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?};
+                }else{
+                    if let Some(ensure_connected)=&entry.ensure_connected {ensure_connected().await?;}
+                    match &entry.connection {Some(connection)=>connection.client()?,None=>entry.client.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,"MCP catalog entry has no connection"))?}
+                };
+                let send=||async {
+                let client=if let Some(runtime)=&entry.runtime {runtime.connection.client()?}else if let Some(connection)=&entry.connection {connection.client()?}else{client.clone()};
                 let token=format!("native:{}:{}:{}:{}",entry.server,entry.tool,call.id,NEXT_PROGRESS_TOKEN.fetch_add(1,Ordering::Relaxed));
                 let mut notifications=client.notifications.subscribe();
                 let mut notifications_open=true;
@@ -47,8 +55,10 @@ pub fn build_mcp_tool_definitions(entries:&[McpToolCatalogEntry],agent_dir:PathB
                 }};
                 Ok::<_,crate::errors::McpError>(result)
                 };
+                if let Some(runtime)=&entry.runtime {crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,send).await}else{send().await}
+                };
                 let result=if let Some(runtime)=&entry.runtime {
-                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,||crate::health::with_mcp_retriable_failed_send_retry(&runtime.connection,operation))).await
+                    runtime.lifecycle.run_call(crate::health::with_mcp_session_expiry_retry(&runtime.connection,operation)).await
                 }else{operation().await}.map_err(|error|ToolError::Message(format!("ToolExecError: {error}")))?;
                 mapped_guarded_result(&entry,&result,entry.agent_dir.as_deref().unwrap_or(&agent_dir),entry.artifacts.as_ref().unwrap_or(&artifacts),entry.output_guard.as_ref().or(output_guard.as_ref()))
             })

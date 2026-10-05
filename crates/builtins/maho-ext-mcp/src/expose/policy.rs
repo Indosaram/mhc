@@ -7,7 +7,8 @@ pub trait CatalogIdentity {fn server(&self)->&str;fn tool(&self)->&str;}
 pub fn compute_mcp_exposure_policy<T:CatalogIdentity+Clone>(entries:&[T],config:&McpServerConfig,settings:&McpSettings)->McpExposurePolicyResult<T> {
     let matches = |patterns:&Option<Vec<String>>,tool:&str| patterns.as_ref().is_some_and(|p|p.iter().any(|pattern|safe_match(pattern,tool)));
     let mut filtered:Vec<T> = entries.iter().filter(|e| (config.include_tools.as_ref().is_none_or(Vec::is_empty) || matches(&config.include_tools,e.tool())) && !matches(&config.exclude_tools,e.tool())).cloned().collect();
-    filtered.sort_by(|a,b|a.server().cmp(b.server()).then_with(||a.tool().cmp(b.tool())));
+    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).expect("compiled collation data is available");
+    filtered.sort_by(|a,b|collator.compare(a.server(),b.server()).then_with(||collator.compare(a.tool(),b.tool())));
     if filtered.is_empty() {return McpExposurePolicyResult {active_entries:Vec::new(),registered_entries:Vec::new(),filtered_entries:filtered,mode:Exposure::Direct,reason:ExposureReason::Explicit,warnings:vec![format!("MCP server {} has 0 exposed tools after includeTools/excludeTools filters.",entries.first().map_or("<unknown>",CatalogIdentity::server))]};}
     let (mode,reason) = if config.direct_tools == Some(DirectTools::All(true)) {(Exposure::Direct,ExposureReason::DirectTools)} else {match config.exposure.unwrap_or(Exposure::Auto) {
         Exposure::Direct=>(Exposure::Direct,ExposureReason::Explicit),Exposure::Search=>(Exposure::Search,ExposureReason::Explicit),Exposure::Proxy=>(Exposure::Proxy,ExposureReason::Explicit),
@@ -20,7 +21,18 @@ pub fn compute_mcp_exposure_policy<T:CatalogIdentity+Clone>(entries:&[T],config:
 pub fn matches_mcp_tool_pattern(pattern:&str,tool:&str)->bool {
     let mut pattern=pattern;let mut negate=false;
     while pattern.starts_with('!') && !pattern.starts_with("!("){negate = !negate;pattern=&pattern[1..];}
-    let matched=match globset::GlobBuilder::new(pattern).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool) || pattern==tool,Err(_)=>pattern==tool};
+    let mut translated=String::new();let mut escaped=false;let mut in_class=false;
+    for character in pattern.chars() {
+        if escaped {translated.push(character);escaped=false;continue;}
+        match character {
+            '\\'=>{translated.push(character);escaped=true;}
+            '['=>{translated.push(character);in_class=true;}
+            ']'=>{translated.push(character);in_class=false;}
+            '?' if !in_class=>translated.push_str("[!/]"),
+            _=>translated.push(character),
+        }
+    }
+    let matched=match globset::GlobBuilder::new(&translated).literal_separator(false).build() {Ok(glob)=>glob.compile_matcher().is_match(tool) || pattern==tool,Err(_)=>pattern==tool};
     matched!=negate
 }
 fn safe_match(pattern:&str,tool:&str)->bool {matches_mcp_tool_pattern(pattern,tool)}

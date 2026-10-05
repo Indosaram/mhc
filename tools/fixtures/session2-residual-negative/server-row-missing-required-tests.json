@@ -1,0 +1,15 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: an accepted (non-approved-exclusion) server row cites no exact required_tests, so its behavior is unenforced. The verifier MUST reject it.",
+  "execution_coverage": {
+    "required_tests": [
+      { "package": "maho-cli", "target": "mini_worker", "test": "unwatch_and_close_release_watch_subscriptions", "requirement": "G7" }
+    ]
+  },
+  "server_row_manifest": {
+    "rows": [
+      { "id": 4, "ts": "daemon/probe.ts", "module": "daemon_probe.rs", "status": "stale-with-test", "required_tests": [] }
+    ],
+    "uncovered_behavior": []
+  }
+}

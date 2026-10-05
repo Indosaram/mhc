@@ -10,8 +10,49 @@ pub async fn download_archive(url: &str, archive: &Path) -> Result<(), Box<dyn s
     Ok(())
 }
 pub fn extract_zip_archive(archive: &Path, destination: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    std::fs::create_dir_all(destination)?;
+    let destination = destination.canonicalize()?;
     let mut archive = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
-    archive.extract(destination)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name().replace('\\', "/");
+        if name.starts_with('/') || (name.as_bytes().get(1) == Some(&b':') && name.as_bytes()[0].is_ascii_alphabetic()) {
+            return Err(std::io::Error::other(format!("absolute path: {name}")).into());
+        }
+        if name.split('/').any(|part| part == "..") {
+            return Err(std::io::Error::other(format!("invalid relative path: {name}")).into());
+        }
+        if name.starts_with("__MACOSX/") { continue; }
+        let output = destination.join(&name);
+        let parent = output.parent().ok_or_else(|| std::io::Error::other("archive entry has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let canonical_parent = parent.canonicalize()?;
+        if !canonical_parent.starts_with(&destination) {
+            return Err(std::io::Error::other(format!("Out of bound path \"{}\" found while processing file {name}", canonical_parent.display())).into());
+        }
+        let entry_mode = entry.unix_mode().unwrap_or(0);
+        let directory = entry.is_dir() || entry_mode & 0o170000 == 0o040000;
+        let mode = if entry_mode == 0 { if directory { 0o755 } else { 0o644 } } else { entry_mode };
+        if directory {
+            #[cfg(unix)]
+            { use std::os::unix::fs::DirBuilderExt; std::fs::DirBuilder::new().recursive(true).mode(mode & 0o777).create(&output)?; }
+            #[cfg(not(unix))]
+            std::fs::create_dir_all(&output)?;
+        } else if mode & 0o170000 == 0o120000 {
+            let mut target = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut target)?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, &output)?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(target, &output)?;
+        } else {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            { use std::os::unix::fs::OpenOptionsExt; options.mode(mode & 0o777); }
+            std::io::copy(&mut entry, &mut options.open(&output)?)?;
+        }
+    }
     Ok(())
 }
 pub fn cleanup_archive(archive: &Path) -> std::io::Result<()> {
@@ -68,5 +109,57 @@ mod tests {
         ensure_executable(&destination.join("sg")).expect("mark executable");
         cleanup_archive(&path).expect("remove archive");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn traversal_is_rejected_with_reference_error() {
+        use std::io::Write;
+        for name in ["../escaped", "/absolute", "C:/absolute"] {
+            let fixture = tempfile::tempdir().expect("archive fixture");
+            let path = fixture.path().join("archive.zip");
+            let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"data").unwrap();
+            writer.finish().unwrap();
+            let error = extract_zip_archive(&path, &fixture.path().join("output")).unwrap_err();
+            let prefix = if name.starts_with("..") { "invalid relative path" } else { "absolute path" };
+            assert_eq!(error.to_string(), format!("{prefix}: {name}"));
+            assert!(!fixture.path().join("escaped").exists());
+        }
+    }
+
+    #[test]
+    fn macos_metadata_is_omitted_and_backslashes_are_normalized() {
+        use std::io::Write;
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("archive.zip");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for name in ["__MACOSX/metadata", "bin\\sg"] {
+            writer.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            writer.write_all(b"data").unwrap();
+        }
+        writer.finish().unwrap();
+        let output = fixture.path().join("output");
+        extract_zip_archive(&path, &output).unwrap();
+        assert!(!output.join("__MACOSX").exists());
+        assert_eq!(std::fs::read(output.join("bin/sg")).unwrap(), b"data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_parent_escape_is_rejected() {
+        use std::io::Write;
+        let fixture = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("archive.zip");
+        let output = fixture.path().join("output");
+        std::fs::create_dir(&output).unwrap();
+        std::os::unix::fs::symlink(outside.path(), output.join("link")).unwrap();
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer.start_file("link/escaped", zip::write::SimpleFileOptions::default()).unwrap();
+        writer.write_all(b"data").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(extract_zip_archive(&path, &output).unwrap_err().to_string(), format!("Out of bound path \"{}\" found while processing file link/escaped", outside.path().display()));
+        assert!(!outside.path().join("escaped").exists());
     }
 }

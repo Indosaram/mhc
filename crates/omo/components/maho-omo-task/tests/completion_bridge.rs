@@ -1,7 +1,7 @@
 use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
 use maho_omo_task::completion_bridge::{CompletionObservingStore,CompletionBridgeDeps,create_completion_observing_store};
 use senpi_task::{completion::{ParentNotifier,ParentNotifierMessage,ParentState,CompletionNotifierDeps,create_completion_notifier},host::HostError,store::{TaskRecordStore,StateDirConfig},state::{TaskRecord,TaskRecordInput,TaskTransition,TaskStatus,create_task_record}};
-struct Parent(Arc<AtomicUsize>); impl ParentNotifier for Parent { fn enqueue(&self,_:&ParentNotifierMessage)->Result<(),HostError> { self.0.fetch_add(1,Ordering::SeqCst); Ok(()) } }
+struct Parent(Arc<AtomicUsize>); impl ParentNotifier for Parent { fn enqueue_with_callbacks(&self,_:&ParentNotifierMessage,callbacks:senpi_task::completion::DeliveryCallbacks)->Result<(),HostError> { self.0.fetch_add(1,Ordering::SeqCst); callbacks.delivered(); Ok(()) } }
 fn fixture(background:bool)->(tempfile::TempDir,CompletionObservingStore,TaskRecord,Arc<AtomicUsize>,Arc<AtomicUsize>) {
     let root=tempfile::tempdir().expect("root"); let backing=TaskRecordStore::new(&StateDirConfig { project_dir:root.path().into(),task_state_dir:None }); let delivered=Arc::new(AtomicUsize::new(0)); let terminal=Arc::new(AtomicUsize::new(0));
     let mut record=create_task_record(TaskRecordInput::default(),Some(1)).expect("record"); record.status=TaskStatus::Running; backing.save(&record).expect("save"); let notifier=create_completion_notifier(CompletionNotifierDeps::new(Arc::new(Parent(delivered.clone())),Arc::new(backing.clone()))); let observed=terminal.clone();

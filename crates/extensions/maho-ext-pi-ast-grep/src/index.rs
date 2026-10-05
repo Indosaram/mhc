@@ -16,8 +16,9 @@ impl Extension for AstGrep {
         let offline = matches!(std::env::var("PI_OFFLINE").ok().as_deref(), Some("1" | "true"));
         let resolver = Arc::new(BinaryResolver::new(source.clone(), cache.clone(), path.clone(), platform_key.clone(), offline));
         let version = resolver.version.clone();
-        api.register_tool(tool_with_resolver(false, Arc::clone(&resolver)));
-        api.register_tool(tool_with_resolver(true, resolver));
+        for replace in [false,true] {
+            if let Err(error) = api.register_tool_with_renderers(tool_with_resolver(replace,Arc::clone(&resolver)),crate::render::renderers(replace)) { eprintln!("pi-ast-grep: {error}"); }
+        }
         api.register_command("ast-grep", Some("Show ast-grep binary path, version, and cache directory".into()), None, Arc::new(move |args, ctx| {
             let cache = cache.clone();
             let platform_key = platform_key.clone();

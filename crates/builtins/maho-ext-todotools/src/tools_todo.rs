@@ -7,7 +7,34 @@ pub trait TodoAccessors:Send+Sync {
     fn sync_widget(&self,ctx:&dyn maho_tools::definition::ToolContext,completed:&[crate::todo_types::TodoCompletionTransition])->Result<(),maho_ext_api::ExtensionFailure>;
 }
 pub fn register_todo_tool(api:&mut maho_ext_api::ExtensionApi,actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>) {
-    api.register_tool(create_todo_tool(actions,accessors));
+    if let Err(error)=api.register_tool_with_renderers(create_todo_tool(actions,accessors),renderers()) {std::panic::panic_any(error);}
+}
+pub fn renderers()->maho_ext_api::ToolRenderers<(),serde_json::Value> {
+    use maho_interactive::theme::ThemeColor;
+    use maho_tui::components::text::Text;
+    use std::sync::Arc;
+    maho_ext_api::ToolRenderers {
+        render_call:Some(Arc::new(|args,source,_|{let theme=crate::todo_widget_component::theme(source);let label=render_raw_call_label(args).unwrap_or_else(|error|std::panic::panic_any(error));Box::new(Text::with_padding(theme.fg(ThemeColor::ToolTitle,&theme.bold(&label)),0,0))})),
+        render_result:Some(Arc::new(|result,options,source,ctx|{
+            let theme=crate::todo_widget_component::theme(source);
+            let fallback=result.content.iter().filter_map(|block|match block {maho_ext_api::ContentBlock::Text(text)=>Some(text.text.as_str()),_=>None}).collect::<Vec<_>>().join("\n");
+            if ctx.is_error{return Box::new(Text::with_padding(theme.fg(ThemeColor::ToolOutput,&fallback),0,0));}
+            let phases:Vec<crate::todo_types::TodoPhase>=result.details.get("phases").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error))).unwrap_or_default();
+            let completed:Vec<crate::todo_types::TodoCompletionTransition>=result.details.get("completedTasks").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error))).unwrap_or_default();
+            let operation=result.details.get("op").map(|value|serde_json::from_value(value.clone()).unwrap_or_else(|error|std::panic::panic_any(error)));
+            let visible:Vec<_>=phases.into_iter().filter(|phase|!phase.tasks.is_empty()).collect();
+            let touched=if options.expanded||visible.len()==1{None}else{compute_touched_phases(&ctx.args,operation,&visible,&completed)};
+            let mut rows=vec![];
+            for (index,phase) in visible.iter().enumerate(){
+                let heading=format!("{}. {}",phase_roman_numeral(index+1),crate::todo_format::sanitize_todo_text(&phase.name));
+                if touched.as_ref().is_some_and(|set|!set.contains(&phase.name)){let closed=phase.tasks.iter().filter(|task|matches!(task.status,crate::todo_types::TodoStatus::Completed|crate::todo_types::TodoStatus::Abandoned)).count();rows.push(theme.fg(ThemeColor::Dim,&format!("{heading} — {closed}/{} done",phase.tasks.len())));continue;}
+                rows.push(theme.fg(ThemeColor::Accent,&theme.bold(&heading)));
+                rows.extend(phase.tasks.iter().map(|task|format!("  {}",crate::todo_widget_component::format_task(task,&theme,completed.iter().any(|transition|transition.phase==phase.name&&transition.content==task.content),ctx.spinner_frame.and_then(|frame|i64::try_from(frame).ok())))));
+            }
+            let text=if !rows.is_empty(){rows.join("\n")}else if !fallback.is_empty(){fallback}else{"Todo list is empty.".into()};
+            Box::new(Text::with_padding(text,0,0))
+        })),
+    }
 }
 pub fn create_todo_tool(actions:std::sync::Arc<dyn maho_ext_api::ExtensionActions>,accessors:std::sync::Arc<dyn TodoAccessors>)->maho_tools::definition::ToolDefinition {
     use maho_tools::definition::{ToolDefinition,ToolError,ToolResult,ToolContent,ToolExecutionMode};
@@ -87,6 +114,19 @@ pub fn render_call_label(params:&TodoOpEntry)->String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_result_renderer_collapses_untouched_phases_and_expands_them() {
+        use maho_ext_api::{AgentToolResult,ToolRenderContext,ToolRendererSession};
+        for width in [40,80,120] {
+            let context=ToolRenderContext {args:serde_json::json!({"op":"done","task":"Finished"}),tool_call_id:"todo-render".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:Default::default(),execution_started:false,args_complete:true,is_partial:false,expanded:false,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:Some(8)};
+            let mut slots=ToolRendererSession {renderers:std::sync::Arc::new(renderers()),context}.into_slots();let theme=maho_ext_api::Theme::default();let mut states=vec![slots.render_call(&theme,width).unwrap()];
+            let mut result=AgentToolResult::text("");result.details=serde_json::json!({"op":"done","phases":[{"name":"Delivery","tasks":[{"content":"Finished","status":"completed"},{"content":"Active","status":"in_progress"}]},{"name":"Future","tasks":[{"content":"Hidden future task","status":"pending"}]}],"completedTasks":[{"phase":"Delivery","content":"Finished"}]});
+            states.push(slots.render_result(&result,&theme,width).unwrap());assert!(!states.last().unwrap().join("\n").contains("Hidden future task"));
+            slots.session.context.expanded=true;states.push(slots.render_result(&result,&theme,width).unwrap());assert!(states.last().unwrap().join("\n").contains("Hidden future task"));
+            for lines in &states {assert!(lines.iter().all(|line|maho_tui::utils::visible_width(line)<=width));}
+            println!("TODO_RENDER_JSON={}",serde_json::json!({"width":width,"states":states}));
+        }
+    }
     #[derive(Default)]
     struct ExecutionFixture { phases:std::sync::Mutex<Vec<crate::todo_types::TodoPhase>>,events:std::sync::Mutex<Vec<&'static str>>,entries:std::sync::Mutex<Vec<serde_json::Value>>,fail_append:bool }
     impl TodoAccessors for ExecutionFixture {
@@ -115,14 +155,14 @@ mod tests {
         fn has_configured_auth(&self,_model:&maho_ext_api::Model)->bool {false}
         fn get_api_key_for_provider<'a>(&'a self,_provider:&'a str)->maho_ext_api::ExtensionFuture<'a,Option<String>> {panic!("commands do not read credentials")}
     }
-    #[derive(Default)] struct CommandUi(std::sync::Mutex<Vec<maho_ext_api::NotificationType>>);
+    #[derive(Default)] struct CommandUi(std::sync::Mutex<Vec<maho_ext_api::NotificationType>>,std::sync::Mutex<Vec<(String,Option<maho_ext_api::WidgetContent>)>>);
     impl maho_ext_api::ExtensionUi for CommandUi {
         fn select<'a>(&'a self,_title:&'a str,_options:&'a [String],_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {panic!("not used")}
         fn confirm<'a>(&'a self,_title:&'a str,_message:&'a str,_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,bool> {panic!("not used")}
         fn input<'a>(&'a self,_title:&'a str,_placeholder:Option<&'a str>,_opts:maho_ext_api::ExtensionUiDialogOptions)->maho_ext_api::UiFuture<'a,Option<String>> {panic!("not used")}
         fn notify(&self,_message:&str,kind:maho_ext_api::NotificationType) {self.0.lock().unwrap().push(kind);}
         fn set_status(&self,_key:&str,_text:Option<&str>) {panic!("not used")}
-        fn set_widget(&self,_key:&str,_content:Option<maho_ext_api::WidgetContent>,_options:maho_ext_api::ExtensionWidgetOptions) {panic!("accessor owns widget")}
+        fn set_widget(&self,key:&str,content:Option<maho_ext_api::WidgetContent>,_options:maho_ext_api::ExtensionWidgetOptions) {self.1.lock().unwrap().push((key.into(),content));}
         fn set_header(&self,_factory:Option<maho_ext_api::ComponentFactory>) {panic!("not used")}
         fn set_footer(&self,_factory:Option<maho_ext_api::ComponentFactory>) {panic!("not used")}
         fn set_title(&self,_title:&str) {panic!("not used")}
@@ -133,7 +173,7 @@ mod tests {
         fn theme(&self)->maho_ext_api::Theme {panic!("not used")}
     }
     fn command_context(ui:std::sync::Arc<CommandUi>,cwd:std::path::PathBuf)->maho_ext_api::ExtensionContext {
-        maho_ext_api::ExtensionContext{ui,mode:Default::default(),has_ui:true,cwd,agent_dir:Default::default(),session_manager:std::sync::Arc::new(Context{persisted:true}),model_registry:std::sync::Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:vec![],goal_store_file:None,loaded_extension_paths:vec![],signal:None,steering_signal:None,is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async {})),is_project_trusted_fn:std::sync::Arc::new(||true),is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(String::new),get_system_prompt_options_fn:std::sync::Arc::new(Default::default),registered_mcp_servers:vec![],update_tool_hook_status:None}
+        maho_ext_api::ExtensionContext{ui,mode:Default::default(),has_ui:true,cwd,agent_dir:Default::default(),session_manager:std::sync::Arc::new(Context{persisted:true}),model_registry:std::sync::Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:vec![],goal_store_file:None,loaded_extension_paths:vec![],signal:None,steering_signal:None,is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async {})),is_project_trusted_fn:std::sync::Arc::new(||true),is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(String::new),get_system_prompt_options_fn:std::sync::Arc::new(Default::default),registered_mcp_servers:vec![],update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default()}
     }
     #[tokio::test] async fn registered_command_executes_mutations_copy_and_file_roundtrip() {
         let fixture=std::sync::Arc::new(ExecutionFixture::default()); let copied=std::sync::Arc::new(std::sync::Mutex::new(vec![])); let captured=copied.clone();
@@ -149,6 +189,31 @@ mod tests {
         let count=fixture.entries.lock().unwrap().len(); handler("start missing",&ctx).await.unwrap(); assert_eq!(fixture.entries.lock().unwrap().len(),count);
         assert_eq!(*ui.0.lock().unwrap().last().unwrap(),maho_ext_api::NotificationType::Error);
         assert_eq!(fixture.events.lock().unwrap().iter().filter(|event|**event=="message").count(),3);
+    }
+    #[tokio::test] async fn native_factory_captures_ui_mounts_component_and_clears_on_shutdown() {
+        let fixture=std::sync::Arc::new(ExecutionFixture::default());
+        let ui=std::sync::Arc::new(CommandUi::default());
+        let ctx=command_context(ui.clone(),Default::default());
+        let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("todotools",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        maho_ext_api::Extension::register(&crate::index::NativeTodotoolsExtension {actions:fixture,copy_markdown:std::sync::Arc::new(|_|Box::pin(async {panic!("not used")})),widget_sender:tokio::sync::mpsc::unbounded_channel().0},&mut api);
+        let mut tree=maho_ext_api::ExtensionEvent::SessionTree{new_leaf_id:None,old_leaf_id:None,summary_entry:None,from_extension:None};
+        for handler in &api.registered.handlers[&maho_ext_api::EventKind::SessionTree] {handler(&mut tree,&ctx).await.unwrap();}
+        assert!(ui.1.lock().unwrap()[0].1.is_none());
+        (api.registered.commands[0].handler)("append \"Native widget task\"",&ctx).await.unwrap();
+        {
+            let widgets=ui.1.lock().unwrap();
+            let (key,content)=widgets.last().unwrap();
+            assert_eq!(key,"todo-sidebar");
+            let Some(maho_ext_api::WidgetContent::Component(factory))=content else {panic!("expected native component")};
+            let mut component=factory(&Default::default());
+            let rendered=component.render(40).join("\n");
+            assert!(rendered.contains("Native widget task"),"mounted widget: {rendered:?}");
+        }
+        let mut shutdown=maho_ext_api::ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {reason:maho_ext_api::SessionReason::Quit,target_session_file:None,signal:None});
+        (api.registered.handlers[&maho_ext_api::EventKind::SessionShutdown][0])(&mut shutdown,&ctx).await.unwrap();
+        let widgets=ui.1.lock().unwrap();
+        assert_eq!(widgets.last().unwrap().0,"todo-sidebar");
+        assert!(widgets.last().unwrap().1.is_none());
     }
     impl maho_ext_api::ToolSessionManager for Context {
         fn session_id(&self)->&str { "test" }
@@ -253,4 +318,28 @@ mod tests {
     }
     #[test] fn roman_numerals_cover_subtractive_pairs() { assert_eq!(phase_roman_numeral(0),""); assert_eq!(phase_roman_numeral(1994),"MCMXCIV"); assert_eq!(phase_roman_numeral(49),"XLIX"); }
     #[test] fn phased_init_counts_each_task() { let params=TodoOpEntry{op:TodoOperation::Init,list:Some(vec![crate::todo_types::TodoPhaseInput{phase:"One".into(),items:vec!["a".into(),"b".into()]}]),task:None,phase:None,items:Some(vec!["ignored".into()])}; assert_eq!(count_init_items(&params),(1,2)); assert_eq!(render_call_label(&params),"todo init (1 phase, 2 tasks)"); }
+}
+
+#[cfg(test)]
+mod exported_prefix_tests {
+    use super::*;
+    use maho_ext_api::{ToolRenderContext,ToolRendererSession,AgentToolResult};
+    use maho_interactive::theme::{Theme,ThemeColor,ThemeBg,theme::ColorMode};
+    use serde_json::json;
+    #[test]
+    fn callbacks_preserve_current_exported_prefix_bytes() {
+        for mode in [ColorMode::Color256,ColorMode::Truecolor] {
+            let native=Theme::builtin("dark",mode).unwrap();
+            let exported=maho_ext_api::Theme {name:Some(native.name.clone()),colors:ThemeColor::ALL.iter().map(|color|(color.key().into(),native.get_fg_ansi(*color))).collect(),backgrounds:ThemeBg::ALL.iter().map(|bg|(bg.key().into(),native.get_bg_ansi(*bg))).collect(),vars:Default::default()};
+            let context=ToolRenderContext {args:json!({"op":"view"}),tool_call_id:"prefix-proof".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:Default::default(),execution_started:false,args_complete:true,is_partial:false,expanded:true,show_images:false,image_protocol:None,is_error:false,has_result:None,spinner_frame:None};
+            let mut slots=ToolRendererSession {renderers:std::sync::Arc::new(renderers()),context}.into_slots();
+            let call=slots.render_call(&exported,80).unwrap().join("
+");
+            assert!(call.contains(&native.get_fg_ansi(ThemeColor::ToolTitle)));
+            let result=slots.render_result(&AgentToolResult::text("native output"),&exported,80).unwrap().join("
+");
+            for output in [&call,&result] {assert!(!output.is_empty());if mode==ColorMode::Color256 {assert!(!output.contains("\x1b[38;2;"));assert!(!output.contains("\x1b[48;2;"));}}
+            println!("CONSUMER_PREFIX_JSON={}",json!({"consumer":"maho-ext-todotools/src/tools_todo.rs","mode":format!("{mode:?}"),"call":call,"result":result}));
+        }
+    }
 }

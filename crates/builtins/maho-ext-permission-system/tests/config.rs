@@ -44,4 +44,8 @@ fn disabled_cases(){for (tools,rules,expected) in [
     (vec!["read_file","write_file","edit_file"],vec![rule("*write*","*",Action::Deny)],vec!["write_file"]),
     (vec!["read","write"],vec![rule("write","*",Action::Allow),rule("read","*",Action::Ask)],vec![]),
     (vec!["read","write"],vec![rule("write","*.txt",Action::Deny)],vec![]),
+    (vec!["bash"],vec![rule("bash","*",Action::Deny),rule("bash","echo *",Action::Allow)],vec![]),
+    (vec!["bash","edit","read"],vec![rule("bash","*",Action::Deny),rule("edit","*",Action::Deny),rule("read","*",Action::Deny)],vec!["bash","edit","read"]),
+    (vec!["bash","edit","read"],vec![rule("*","*",Action::Deny)],vec!["bash","edit","read"]),
+    (vec!["bash","edit","read"],vec![rule("*","*",Action::Deny),rule("read","*",Action::Allow)],vec!["bash","edit"]),
 ]{assert_eq!(disabled(&tools.iter().map(|tool|(*tool).into()).collect::<Vec<_>>(),&rules),expected.iter().map(|tool|(*tool).into()).collect());}}

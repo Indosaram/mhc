@@ -17,6 +17,12 @@ fn picomatch_negation_and_literal_character_classes_match_pinned_behavior() {
     assert!(matches_mcp_tool_pattern("[abc]","[abc]"));assert!(matches_mcp_tool_pattern("[abc]","a"));assert!(!matches_mcp_tool_pattern("[abc]","d"));
 }
 #[test]
+fn picomatch_question_mark_does_not_cross_slash_but_bash_star_does() {
+    assert!(matches_mcp_tool_pattern("a?","aX"));
+    assert!(!matches_mcp_tool_pattern("a?","a/"));
+    assert!(matches_mcp_tool_pattern("a*","a/x"));
+}
+#[test]
 fn threshold_boundary_selects_search_at_eleven() {
     assert_eq!(compute_mcp_exposure_policy(&entries(10),&McpServerConfig::default(),&default_settings()).mode,Exposure::Direct);
     assert_eq!(compute_mcp_exposure_policy(&entries(11),&McpServerConfig::default(),&default_settings()).mode,Exposure::Search);
@@ -26,6 +32,12 @@ fn direct_tools_in_search_are_sorted() {
     let config = McpServerConfig {exposure:Some(Exposure::Search),direct_tools:Some(DirectTools::Patterns(vec!["tool_12".into(),"tool_2".into(),"tool_1".into()])),..Default::default()};
     let result = compute_mcp_exposure_policy(&entries(12),&config,&default_settings());
     assert_eq!(result.active_entries,vec![Entry("tool_1".into()),Entry("tool_12".into()),Entry("tool_2".into())]);
+}
+#[test]
+fn policy_catalog_order_matches_locale_compare_for_case_and_accents() {
+    let catalog=["Z","z","a","A","é","e","_x","x"].map(|name|Entry(name.into()));
+    let result=compute_mcp_exposure_policy(&catalog,&McpServerConfig::default(),&default_settings());
+    assert_eq!(result.active_entries.iter().map(|entry|entry.0.as_str()).collect::<Vec<_>>(),vec!["_x","a","A","e","é","x","z","Z"]);
 }
 #[test]
 fn large_catalog_has_no_default_active_tools() {

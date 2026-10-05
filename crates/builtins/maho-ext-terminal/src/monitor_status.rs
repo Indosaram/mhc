@@ -40,6 +40,14 @@ pub fn format_monitor_status(snapshot:&[MonitorSnapshotEntry],now_ms:f64)->Optio
     let description=if snapshot.len()==1 {truncate_end(&snapshot[0].description,budget)} else {pack_descriptions(&snapshot.iter().map(|e|e.description.as_str()).collect::<Vec<_>>(),budget)};
     Some(head+&description+&suffix)
 }
+/// Upstream `registerTerminalExtension`'s status ticker render: a plain status passes through
+/// unless the session is a TUI, where it is wrapped as `theme.bg("selectedBg", theme.fg("text", status))`
+/// via the shared guest `Theme::{fg,bg}` methods.
+pub fn render_monitor_status(mode:&str,theme:&maho_ext_api::types::Theme,status:Option<&str>)->Option<String> {
+    let status=status?;
+    if mode!="tui" {return Some(status.to_owned());}
+    Some(theme.bg("selectedBg",&theme.fg("text",status)))
+}
 
 #[cfg(test)]
 mod tests {
@@ -57,4 +65,13 @@ mod tests {
     #[test] fn durable_days_left_quiet() {let mut durable=entry("deploy errors");durable.expires_at=Some(433_000_000.0);assert_eq!(format_monitor_status(&[durable],1_000_000.0).as_deref(),Some("\u{25c9} watching deploy errors (0s)"));}
     #[test] fn ephemeral_no_expiry() {assert_eq!(format_monitor_status(&[entry("deploy errors")],1_000_000.0).as_deref(),Some("\u{25c9} watching deploy errors (0s)"));}
     #[test] fn paused_marker_survives_truncation() {let mut a=entry("a");a.paused=true;let mut b=entry("b");b.paused=true;assert_eq!(format_monitor_status(&[a,b],1_060_000.0).as_deref(),Some("\u{25c9} watching 2: a, b (1m, muted)"));}
+    #[test] fn status_is_plain_outside_tui_and_themed_inside_it() {
+        use maho_ext_api::types::Theme;
+        let theme=Theme {colors:[("text".to_owned(),"\x1b[38;2;1;2;3m".to_owned())].into(),backgrounds:[("selectedBg".to_owned(),"\x1b[48;2;4;5;6m".to_owned())].into(),..Default::default()};
+        assert_eq!(render_monitor_status("print",&theme,Some("\u{25c9} watching x (1s)")).as_deref(),Some("\u{25c9} watching x (1s)"));
+        assert_eq!(render_monitor_status("tui",&theme,Some("watch")).as_deref(),Some("\x1b[48;2;4;5;6m\x1b[38;2;1;2;3mwatch\x1b[39m\x1b[49m"));
+        assert_eq!(render_monitor_status("tui",&theme,None),None);
+        let unthemed=Theme::default();
+        assert_eq!(render_monitor_status("tui",&unthemed,Some("watch")).as_deref(),Some("\x1b[49m\x1b[39mwatch\x1b[39m\x1b[49m"));
+    }
 }

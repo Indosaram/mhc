@@ -1,0 +1,91 @@
+use std::collections::BTreeMap;
+use crate::{rule_condition::compile_rule_condition,scope::{has_reachable_scope,matches_path_globs,matches_scope},types::*};
+pub struct TtsrMatchContext { pub source:TtsrStreamSource,pub stream_key:String,pub tool_name:Option<String>,pub file_paths:Option<Vec<String>> }
+struct Entry { rule:TtsrRule,conditions:Vec<regress::Regex>,matching_globs:Vec<String>,matching_scope:TtsrScope }
+pub type TtsrCompileCondition=std::sync::Arc<dyn Fn(&str)->Option<regress::Regex>+Send+Sync>;
+pub struct TtsrManager { settings:TtsrSettings,compile_condition:TtsrCompileCondition,rules:Vec<Entry>,injection_records:Vec<(String,u64)>,buffers:BTreeMap<String,Vec<u16>>,max_condition_length:usize,message_count:u64,can_match_text:bool,can_match_thinking:bool }
+impl TtsrManager {
+    pub fn new(settings:TtsrSettings)->Self { Self::with_compiler(settings,std::sync::Arc::new(|pattern|compile_rule_condition(pattern).regex)) }
+    pub fn with_compiler(settings:TtsrSettings,compile_condition:TtsrCompileCondition)->Self { Self { settings,compile_condition,rules:vec![],injection_records:vec![],buffers:BTreeMap::new(),max_condition_length:0,message_count:0,can_match_text:false,can_match_thinking:false } }
+    pub fn add_rule(&mut self,rule:TtsrRule)->bool {
+        if !self.settings.enabled || self.settings.disabled_rules.contains(&rule.name) || self.rules.iter().any(|entry|entry.rule.name==rule.name) { return false; }
+        let mut conditions=Vec::new();
+        for pattern in &rule.condition {
+            if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); }
+            else { eprintln!("TTSR condition has invalid regex pattern, skipping condition {{ ruleName: {:?}, pattern: {:?} }}",rule.name,pattern); }
+        }
+        if conditions.is_empty() { eprintln!("TTSR rule has no valid condition, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
+        if !has_reachable_scope(&rule.scope) { eprintln!("TTSR scope excludes all streams, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
+        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match crate::scope::glob_compilation_error(glob) { None=>true,Some(error)=>{ eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); false } }).cloned().collect();
+        let mut matching_scope=rule.scope.clone();
+        for tool in &mut matching_scope.tool_scopes {
+            if let Some(glob)=tool.path_glob.as_ref() && let Some(error)=crate::scope::glob_compilation_error(glob) { eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); tool.path_glob=None; }
+        }
+        self.can_match_text|=rule.scope.allow_text; self.can_match_thinking|=rule.scope.allow_thinking;
+        self.rules.push(Entry { rule,conditions,matching_globs,matching_scope }); true
+    }
+    pub fn check_delta(&mut self,delta:&str,context:&TtsrMatchContext)->Vec<TtsrRule> {
+        if (context.source==TtsrStreamSource::Text && !self.can_match_text) || (context.source==TtsrStreamSource::Thinking && !self.can_match_thinking) { return vec![]; }
+        let source=match context.source { TtsrStreamSource::Text=>"text",TtsrStreamSource::Thinking=>"thinking",TtsrStreamSource::Tool=>"tool" };
+        let cap=1024.max(self.max_condition_length.saturating_mul(4));
+        let buffer=self.buffers.entry(format!("{source}:{}",context.stream_key)).or_default(); buffer.extend(delta.encode_utf16());
+        if buffer.len()>cap { buffer.drain(..buffer.len()-cap); }
+        if !self.settings.enabled { return vec![]; }
+        self.rules.iter().filter(|entry| {
+            let eligible=self.injection_records.iter().find(|(name,_)|name==&entry.rule.name).is_none_or(|(_,last)|self.settings.repeat_mode!=RepeatMode::Once && self.message_count.saturating_sub(*last)>=self.settings.repeat_gap);
+            eligible && matches_scope(&entry.matching_scope,context.source,context.tool_name.as_deref(),context.file_paths.as_deref()) && matches_path_globs(&entry.matching_globs,context.file_paths.as_deref()) && entry.conditions.iter().any(|condition|condition.find_from_ucs2(buffer,0).next().is_some())
+        }).map(|entry|entry.rule.clone()).collect()
+    }
+    pub fn stream_buffer_lengths(&self)->BTreeMap<String,usize> { self.buffers.iter().map(|(key,value)|(key.clone(),value.len())).collect() }
+    fn record(&mut self,name:&str,at:u64) { if let Some((_,last))=self.injection_records.iter_mut().find(|(key,_)|key==name) { *last=at; } else { self.injection_records.push((name.into(),at)); } }
+    pub fn mark_injected(&mut self,rules:&[TtsrRule]) { for rule in rules { self.mark_injected_by_names(std::slice::from_ref(&rule.name)); } }
+    pub fn mark_injected_by_names(&mut self,names:&[String]) { for name in names { let name=maho_ai::utils::js::trim(name); if !name.is_empty() { self.record(name,self.message_count); } } }
+    pub fn injected_rule_names(&self)->Vec<String> { self.injection_records.iter().map(|(name,_)|name.clone()).collect() }
+    pub fn restore_injected(&mut self,names:&[String]) { for name in names { self.record(name,0); } }
+    pub fn reset_buffers(&mut self) { self.buffers.clear(); }
+    pub fn has_rules(&self)->bool { self.settings.enabled && !self.rules.is_empty() }
+    pub fn rules(&self)->Vec<TtsrRule> { self.rules.iter().map(|entry|entry.rule.clone()).collect() }
+    pub fn increment_message_count(&mut self) { self.message_count+=1; }
+    pub fn message_count(&self)->u64 { self.message_count }
+    pub fn settings(&self)->&TtsrSettings { &self.settings }
+}
+#[cfg(test)]
+#[path="manager_parity_tests.rs"]
+mod parity_tests;
+#[cfg(test)] mod tests {
+    use super::*;
+    #[test] fn truncated_stream_tail_matches_surrogate_code_unit_without_replacement() {
+        let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(rule("surrogate",r"^\uDE00")));
+        assert_eq!(manager.check_delta(&format!("😀{}","x".repeat(1023)),&context("a"))[0].name,"surrogate");
+        assert_eq!(manager.stream_buffer_lengths()["text:a"],1024);
+    }
+    fn rule(name:&str,condition:&str)->TtsrRule { TtsrRule { name:name.into(),path:None,content:String::new(),description:None,globs:None,condition:vec![condition.into()],scope:crate::scope::parse_scope(&[]),interrupt_mode:TtsrInterruptMode::Always,source:RuleSource::Project } }
+    fn context(key:&str)->TtsrMatchContext { TtsrMatchContext { source:TtsrStreamSource::Text,stream_key:key.into(),tool_name:None,file_paths:None } }
+    #[test] fn delta_matches_across_chunks_and_preserves_rule_order() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.add_rule(rule("second","needle")); manager.add_rule(rule("first","needle")); assert!(manager.check_delta("nee",&context("a")).is_empty()); let names=manager.check_delta("dle",&context("a")).into_iter().map(|rule|rule.name).collect::<Vec<_>>(); assert_eq!(names,["second","first"]); }
+    #[test] fn streams_are_isolated() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.add_rule(rule("test","needle")); manager.check_delta("nee",&context("a")); let result=manager.check_delta("dle",&context("b")); assert!(result.is_empty()); }
+    #[test] fn once_injection_suppresses_future_matches() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.add_rule(rule("test","x")); manager.mark_injected_by_names(&["test".into()]); manager.increment_message_count(); let result=manager.check_delta("x",&context("a")); assert!(result.is_empty()); }
+    #[test] fn repeat_gap_uses_message_count() { let mut manager=TtsrManager::new(TtsrSettings { repeat_mode:RepeatMode::AfterGap,repeat_gap:2,..Default::default() }); manager.add_rule(rule("test","x")); manager.mark_injected_by_names(&["test".into()]); manager.increment_message_count(); assert!(manager.check_delta("x",&context("a")).is_empty()); manager.increment_message_count(); let result=manager.check_delta("x",&context("a")); assert_eq!(result.len(),1); }
+    #[test] fn buffers_are_bounded_and_reset() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.add_rule(rule("test","x")); manager.check_delta(&"x".repeat(10000),&context("a")); assert_eq!(manager.stream_buffer_lengths()["text:a"],1024); manager.reset_buffers(); assert!(manager.stream_buffer_lengths().is_empty()); }
+    #[test] fn invalid_and_disabled_rules_are_not_added() { let mut manager=TtsrManager::new(TtsrSettings { disabled_rules:vec!["disabled".into()],..Default::default() }); assert!(!manager.add_rule(rule("disabled","x"))); assert!(!manager.add_rule(rule("invalid","("))); assert!(!manager.has_rules()); }
+    #[test] fn restore_preserves_injection_name_order_and_empty_names() { let mut manager=TtsrManager::new(TtsrSettings::default()); manager.restore_injected(&["b".into(),"".into(),"a".into()]); manager.mark_injected_by_names(&["b".into()]); assert_eq!(manager.injected_rule_names(),["b","","a"]); }
+    #[test] fn injected_compiler_controls_admission_and_matching() {
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new())); let capture=seen.clone();
+        let mut manager=TtsrManager::with_compiler(TtsrSettings::default(),std::sync::Arc::new(move |pattern| { capture.lock().unwrap().push(pattern.to_owned()); if pattern=="reject" { None } else { Some(regress::Regex::new("replacement").unwrap()) } }));
+        assert!(!manager.add_rule(rule("rejected","reject"))); assert!(manager.add_rule(rule("accepted","original")));
+        assert!(manager.check_delta("original",&context("a")).is_empty()); assert_eq!(manager.check_delta("replacement",&context("b"))[0].name,"accepted"); assert_eq!(*seen.lock().unwrap(),["reject","original"]);
+    }
+    #[test] fn injected_rule_names_trim_ecmascript_bom() { let mut manager=TtsrManager::new(Default::default()); manager.mark_injected_by_names(&["\u{feff}test\u{feff}".into()]); assert_eq!(manager.injected_rule_names(),["test"]); }
+    #[test] fn invalid_glob_compilation_does_not_mutate_public_rule() {
+        let mut original=rule("test","x"); original.globs=Some(vec!["".into()]); original.scope=TtsrScope { allow_text:false,allow_thinking:false,tool_scopes:vec![TtsrToolScope { tool_name:"edit".into(),path_glob:Some("".into()) }] };
+        let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(original.clone())); assert_eq!(manager.rules(),[original.clone()]);
+        let context=TtsrMatchContext { source:TtsrStreamSource::Tool,stream_key:"edit".into(),tool_name:Some("edit".into()),file_paths:None };
+        assert_eq!(manager.check_delta("x",&context),[original]);
+    }
+    #[test] fn unclosed_class_is_a_valid_literal_path_constraint() {
+        let mut original=rule("literal","x"); original.globs=Some(vec!["[".into()]);
+        let mut manager=TtsrManager::new(Default::default()); assert!(manager.add_rule(original.clone()));
+        assert!(manager.check_delta("x",&context("missing-path")).is_empty());
+        let mut matched=context("literal-path"); matched.file_paths=Some(vec!["src/[".into()]);
+        assert_eq!(manager.check_delta("x",&matched),[original]);
+    }
+}

@@ -73,6 +73,25 @@ pub struct TeamMemberStartSpec {
     pub model: Option<String>,
     pub category: Option<String>,
     pub subagent_type: Option<String>,
+    pub task_summary: Option<String>,
+    pub cwd: Option<String>,
+    pub extensions: Option<Vec<String>>,
+    pub member_env: Option<std::collections::BTreeMap<String, String>>,
+    pub run_in_background: bool,
+}
+
+impl From<&TeamMemberStartSpec> for crate::manager::types::ManagerStartSpec {
+    fn from(spec: &TeamMemberStartSpec) -> Self {
+        Self {
+            name: spec.name.clone(), description: spec.description.clone(), prompt: spec.prompt.clone(),
+            parent_session_id: spec.parent_session_id.clone(), root_session_id: spec.root_session_id.clone(),
+            depth: spec.depth, execution_mode: spec.execution_mode, model: spec.model.clone(),
+            category: spec.category.clone(), subagent_type: spec.subagent_type.clone(),
+            task_summary: spec.task_summary.clone(), cwd: spec.cwd.clone(), extensions: spec.extensions.clone(),
+            member_env: spec.member_env.clone(), run_in_background: spec.run_in_background,
+            ..Self::default()
+        }
+    }
 }
 
 /// The narrow task-record view the team runtime reads through the manager port.

@@ -192,7 +192,7 @@ def completion(prompt, model: "default", system: nil, schema: nil, **kwargs)
   options = { "model" => model }.merge(kwargs.transform_keys(&:to_s))
   options["system"] = system unless system.nil?
   options["schema"] = schema unless schema.nil?
-  result = __senpi_bridge_request("/completion", { "prompt" => prompt.to_s, "opts" => options })
+  result = __senpi_bridge_request("/completion", { "prompt" => prompt.to_s, "opts" => options, "cellId" => $__senpi_current_cell })
   return result unless result.is_a?(Hash)
   return result["value"] if result.key?("value")
 

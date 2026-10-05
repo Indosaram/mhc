@@ -4,7 +4,7 @@ use regex::Regex;
 
 pub fn sanitize_todo_text(text: &str) -> String {
     static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x{009c}))|[\x1b\x{009b}][\[\]()#;?]*(?:\d{1,4}(?:[;:]\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]"
+        r"(?:\x1b\][\s\S]*?(?:\x07|\x1b\\|\x{009c}))|[\x1b\x{009b}][\[\]()#;?]*(?:[0-9]{1,4}(?:[;:][0-9]{0,4})*)?[0-9A-PR-TZcf-nq-uy=><~]"
     ).unwrap_or_else(|error| panic!("invalid static ANSI expression: {error}")));
     let stripped = ANSI.replace_all(text, "");
     let cleaned: String = stripped.chars().map(|c| {
@@ -74,6 +74,15 @@ mod tests {
     }
     #[test] fn strips_osc_hyperlink_but_retains_label() {
         assert_eq!(sanitize_todo_text("\x1b]8;;https://example.org\x07label\x1b]8;;\x1b\\"), "label");
+    }
+    #[test] fn source_whitespace_and_control_codepoint_matrix() {
+        for codepoint in 0..=0x10ffff {
+            let Some(character)=char::from_u32(codepoint) else {continue;};
+            let source_space=matches!(character,'\u{0000}'..='\u{0020}'|'\u{007f}'..='\u{009f}'|'\u{00a0}'|'\u{1680}'|'\u{2000}'..='\u{200a}'|'\u{2028}'|'\u{2029}'|'\u{202f}'|'\u{205f}'|'\u{3000}'|'\u{feff}');
+            if matches!(character,'\u{001b}'|'\u{009b}') {continue;}
+            let input=format!("a{character}z");
+            assert_eq!(sanitize_todo_text(&input),if source_space{"a z".into()}else{input},"U+{codepoint:04X}");
+        }
     }
     #[test] fn result_counts_only_open_tasks() {
         let p = vec![TodoPhase { name:"Tasks".into(), tasks:vec![TodoItem {content:"Done".into(),status:TodoStatus::Completed},TodoItem {content:"Work".into(),status:TodoStatus::Pending}] }];

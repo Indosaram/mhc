@@ -1,0 +1,3 @@
+   Starting 1 test across 1 binary
+        PASS [   0.001s] (   1/1) maho-cli::mini_worker unwatch_and_close_release_watch_subscriptions
+   Summary [   0.010s] 1 test run: 1 passed, 0 failed, 0 skipped

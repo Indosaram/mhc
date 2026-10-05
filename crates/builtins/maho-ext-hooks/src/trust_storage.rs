@@ -18,7 +18,7 @@ impl FileHookStateStorage {
     pub fn new(agent_dir:&Path,cwd:&Path)->Self {Self {global_path:agent_dir.join("hooks-state.json"),project_path:cwd.join(".maho/hooks-state.json")}}
     fn path(&self,scope:HookTrustStorageScope)->&Path {match scope {HookTrustStorageScope::Global=>&self.global_path,HookTrustStorageScope::Project=>&self.project_path}}
     pub async fn read_async(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
-        match tokio::fs::read_to_string(self.path(scope)).await {Ok(text)=>Ok(read_hook_trust_state_json(Some(&text))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}
+        match tokio::fs::read(self.path(scope)).await {Ok(bytes)=>Ok(read_hook_trust_state_json(Some(&String::from_utf8_lossy(&bytes)))),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(empty_hook_trust_state()),Err(error)=>Err(error)}
     }
     pub fn read(&self,scope:HookTrustStorageScope)->std::io::Result<HookTrustState> {
         let path=self.path(scope);let text=read_snapshot(path)?;
@@ -43,21 +43,65 @@ impl FileHookStateStorage {
             {use std::os::unix::fs::PermissionsExt;file.as_file().set_permissions(std::fs::Permissions::from_mode(mode))?;}
             let mut serialized_state=next.clone();serialized_state.version=1;
             let mut serialized=serde_json::to_string_pretty(&serialized_state).map_err(std::io::Error::other)?;serialized.push('\n');file.write_all(serialized.as_bytes())?;
-            file.persist(path).map_err(|error|error.error)?;Ok(next)
+            if let Err(error)=file.persist(path) {
+                let publication=error.error;
+                if let Err(cleanup)=error.file.close() {return Err(std::io::Error::other(format!("Failed to publish and clean up hook trust state snapshot: {publication}; {cleanup}")));}
+                return Err(publication);
+            }Ok(next)
         })();release_result(lease,result)
     }
 }
 
-fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read_to_string(path) {Ok(text)=>Ok(Some(text)),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
-struct DirectoryLease {path:PathBuf,held:bool}
+fn read_snapshot(path:&Path)->std::io::Result<Option<String>> {match std::fs::read(path) {Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error)}}
+struct DirectoryLease {path:PathBuf,held:bool,heartbeat:Option<std::thread::JoinHandle<()>>,state:std::sync::Arc<(std::sync::Mutex<LeaseState>,std::sync::Condvar)>}
+struct LeaseState {released:bool,modified:std::time::SystemTime,compromised:Option<String>,second_precision:bool,last_update:std::time::Instant}
+fn refresh_lease(path:&Path,state:&mut LeaseState)->std::io::Result<()> {
+    if std::fs::metadata(path)?.modified()?!=state.modified {return Err(std::io::Error::other("ECOMPROMISED: hook state lock modification time changed"));}
+    let now=std::time::SystemTime::now();
+    let modified=if state.second_precision {let elapsed=now.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?;std::time::UNIX_EPOCH+std::time::Duration::from_secs(elapsed.as_secs()+u64::from(elapsed.subsec_nanos()>0))}else {now};
+    let file=std::fs::File::open(path)?;file.set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    state.modified=file.metadata()?.modified()?;state.last_update=std::time::Instant::now();Ok(())
+}
 impl DirectoryLease {
     fn acquire(path:&Path)->std::io::Result<Self> {
         std::fs::create_dir_all(path.parent().ok_or_else(||std::io::Error::other("hook state path has no parent"))?)?;
         let path=PathBuf::from(format!("{}.lock",path.display()));
         retry_lock(||acquire_directory(&path,true),||std::thread::sleep(std::time::Duration::from_millis(20)))?;
-        Ok(Self {path,held:true})
+        let probe_result=(|| {
+            let file=std::fs::File::open(&path)?;
+            let millis=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.as_millis();
+            let probe=std::time::UNIX_EPOCH+std::time::Duration::from_millis(u64::try_from(millis.div_ceil(1000)*1000+5).map_err(std::io::Error::other)?);
+            file.set_times(std::fs::FileTimes::new().set_modified(probe))?;file.metadata()?.modified()
+        })();
+        let modified=match probe_result {Ok(modified)=>modified,Err(error)=>{let _cleanup=std::fs::remove_dir(&path);return Err(error);}};
+        let second_precision=modified.duration_since(std::time::UNIX_EPOCH).map_err(std::io::Error::other)?.subsec_nanos()==0;
+        let state=std::sync::Arc::new((std::sync::Mutex::new(LeaseState {released:false,modified,compromised:None,second_precision,last_update:std::time::Instant::now()}),std::sync::Condvar::new()));
+        let progress=state.clone();let lock_path=path.clone();
+        let heartbeat=std::thread::spawn(move || {
+            let (state,wake)=&*progress;let mut state=state.lock().expect("hook lease state");
+            let mut delay=std::time::Duration::from_secs(5);
+            while !state.released {
+                let (next,timeout)=wake.wait_timeout_while(state,delay,|state|!state.released).expect("hook lease heartbeat");state=next;
+                if state.released {break;}
+                if timeout.timed_out() {match refresh_lease(&lock_path,&mut state) {
+                    Ok(())=>delay=std::time::Duration::from_secs(5),
+                    Err(error) if error.kind()!=std::io::ErrorKind::NotFound&&!error.to_string().starts_with("ECOMPROMISED:")&&state.last_update.elapsed()<=std::time::Duration::from_secs(10)=>delay=std::time::Duration::from_secs(1),
+                    Err(error)=>{state.compromised=Some(format!("ECOMPROMISED: {error}"));break;}
+                }}
+            }
+        });
+        Ok(Self {path,held:true,heartbeat:Some(heartbeat),state})
     }
-    fn release(mut self)->std::io::Result<()> {std::fs::remove_dir(&self.path)?;self.held=false;Ok(())}
+    fn stop_heartbeat(&mut self)->std::io::Result<()> {
+        {let (state,wake)=&*self.state;state.lock().map_err(|_|std::io::Error::other("hook lease state poisoned"))?.released=true;wake.notify_all();}
+        if let Some(thread)=self.heartbeat.take() {thread.join().map_err(|_|std::io::Error::other("hook lease heartbeat panicked"))?;}Ok(())
+    }
+    fn release(mut self)->std::io::Result<()> {
+        self.stop_heartbeat()?;self.held=false;
+        let state=self.state.0.lock().map_err(|_|std::io::Error::other("hook lease state poisoned"))?;
+        if let Some(error)=&state.compromised {return Err(std::io::Error::other(error.clone()));}
+        match std::fs::remove_dir(&self.path) {Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}
+    }
 }
 fn retry_lock(mut acquire:impl FnMut()->std::io::Result<()>,mut delay:impl FnMut())->std::io::Result<()> {
     for attempt in 1..=10 {match acquire() {Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists&&attempt<10=>delay(),result=>return result}}
@@ -74,7 +118,10 @@ fn acquire_directory(path:&Path,check_stale:bool)->std::io::Result<()> {
         },result=>result,
     }
 }
-impl Drop for DirectoryLease {fn drop(&mut self) {if self.held && let Err(error)=std::fs::remove_dir(&self.path) {eprintln!("hook state lock release failed: {error}");}}}
+impl Drop for DirectoryLease {fn drop(&mut self) {
+    if let Err(error)=self.stop_heartbeat() {eprintln!("hook state heartbeat release failed: {error}");}
+    if self.held&&self.state.0.lock().is_ok_and(|state|state.compromised.is_none())&&let Err(error)=std::fs::remove_dir(&self.path)&&error.kind()!=std::io::ErrorKind::NotFound {eprintln!("hook state lock release failed: {error}");}
+}}
 fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::Result<T> {
     match (result,lease.release()) {(Ok(value),Ok(()))=>Ok(value),(Err(error),Ok(()))=>Err(error),(Ok(_),Err(error))=>Err(error),(Err(operation),Err(release))=>Err(std::io::Error::other(format!("Hook state operation and lock release both failed: {operation}; {release}")))}
 }
@@ -82,6 +129,20 @@ fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn malformed_utf8_snapshot_authorizes_nothing_and_can_be_replaced()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let storage=FileHookStateStorage::new(dir.path(),dir.path());std::fs::write(storage.path(HookTrustStorageScope::Global),[0xff])?;
+        assert!(storage.read(HookTrustStorageScope::Global)?.hooks.is_empty());assert!(storage.read_async(HookTrustStorageScope::Global).await?.hooks.is_empty());
+        let next=storage.update(HookTrustStorageScope::Global,|state|state)?;assert_eq!(next,empty_hook_trust_state());assert_eq!(storage.read(HookTrustStorageScope::Global)?,next);Ok(())
+    }
+    #[test]
+    fn heartbeat_refreshes_and_detects_changed_lock_without_removing_it()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let lease=DirectoryLease::acquire(&dir.path().join("state"))?;
+        {let mut state=lease.state.0.lock().unwrap();refresh_lease(&lease.path,&mut state)?;assert_eq!(state.modified,std::fs::metadata(&lease.path)?.modified()?);
+            std::fs::File::open(&lease.path)?.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))?;
+            let error=refresh_lease(&lease.path,&mut state).unwrap_err();state.compromised=Some(error.to_string());}
+        assert!(lease.release().unwrap_err().to_string().contains("ECOMPROMISED"));assert!(dir.path().join("state.lock").exists());Ok(())
+    }
     #[test]
     fn operation_error_survives_successful_release_and_combines_with_release_failure()->std::io::Result<()> {
         let dir=tempfile::tempdir()?;let path=dir.path().join("state");let lease=DirectoryLease::acquire(&path)?;

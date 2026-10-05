@@ -2593,7 +2593,7 @@ struct GrpcRequestOutput {
     model_details: ModelDetails,
 }
 
-fn build_grpc_request(
+async fn build_grpc_request(
     model: &Model,
     context: &Context,
     options: Option<&CursorAgentOptions>,
@@ -2714,8 +2714,8 @@ fn build_grpc_request(
     if let Some(custom_system_prompt) = options.and_then(|options| options.custom_system_prompt.clone()) {
         run_request.custom_system_prompt = Some(custom_system_prompt);
     }
-    if let Some(on_payload) = options.and_then(|options| options.base.request.on_payload.as_ref()) {
-        let _ = on_payload(&run_request_payload(&run_request), model, None);
+    if let Some(options) = options {
+        let _ = options.base.request.apply_payload_hook(&run_request_payload(&run_request), model, None).await?;
     }
 
     let client_message = AgentClientMessage {
@@ -4612,6 +4612,7 @@ async fn run_attempt(ctx: &mut AttemptContext<'_>) -> Result<AttemptOutcome, Str
             pinned_model_details: ctx.pinned.model_details.clone(),
         },
     )
+    .await
     .map_err(|message| StreamFailure { message, retryable: None })?;
     if ctx.pinned.requested_model.is_none() {
         ctx.pinned.requested_model = Some(request_output.requested_model.clone());
@@ -5580,8 +5581,8 @@ mod tests {
         assert!(requested.parameters.is_empty());
     }
 
-    #[test]
-    fn builds_the_run_request_with_a_user_message_action() {
+    #[tokio::test]
+    async fn builds_the_run_request_with_a_user_message_action() {
         let model = model("gpt-5.5-medium", None);
         let context = Context {
             system_prompt: Some("Be terse.".to_owned()),
@@ -5604,6 +5605,7 @@ mod tests {
                 pinned_model_details: None,
             },
         )
+        .await
         .expect("request");
         let message = AgentClientMessage::decode(output.request_bytes.as_slice()).expect("decode");
         let Some(agent_client_message::Message::RunRequest(request)) = message.message else {
@@ -5622,8 +5624,8 @@ mod tests {
         assert!(output.requested_model.parameters.is_empty());
     }
 
-    #[test]
-    fn builds_a_resume_action_when_the_prompt_forces_one() {
+    #[tokio::test]
+    async fn builds_a_resume_action_when_the_prompt_forces_one() {
         let model = model("gpt-5.5-medium", None);
         let context = Context {
             system_prompt: None,
@@ -5646,6 +5648,7 @@ mod tests {
                 pinned_model_details: None,
             },
         )
+        .await
         .expect("request");
         let message = AgentClientMessage::decode(output.request_bytes.as_slice()).expect("decode");
         let Some(agent_client_message::Message::RunRequest(request)) = message.message else {

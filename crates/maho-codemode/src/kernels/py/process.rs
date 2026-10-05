@@ -21,7 +21,7 @@ pub fn split_command(command_line: &str) -> Result<(String, Vec<String>), &'stat
 pub fn default_spawn(options: &KernelSpawnOptions) -> Result<Child, std::io::Error> {
     let mut command = Command::new(&options.command);
     command.args(&options.args).current_dir(&options.cwd).env_clear().envs(&options.env)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0).env("SENPI_PY_KERNEL_PARENT_PID", std::process::id().to_string());
     command.spawn()

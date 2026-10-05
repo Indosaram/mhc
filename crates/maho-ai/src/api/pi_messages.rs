@@ -613,8 +613,8 @@ async fn drive(
         },
     });
 
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(next) = on_payload(&payload, model, None)
+    if let Some(next) = options.request.apply_payload_hook(&payload, model, None)
+        .await.map_err(PiMessagesError::Message)?
     {
         payload = next;
     }
@@ -649,15 +649,13 @@ async fn drive(
     }
     .map_err(|error| PiMessagesError::Message(error.to_string()))?;
 
-    if let Some(on_response) = &options.request.on_response {
-        on_response(
+    options.request.apply_response_hook(
             &crate::types::ProviderResponse {
                 status: response.status().as_u16(),
                 headers: headers_to_record(response.headers()),
             },
             model,
-        );
-    }
+        ).await.map_err(PiMessagesError::Message)?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();

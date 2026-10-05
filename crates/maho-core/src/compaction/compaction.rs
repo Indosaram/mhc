@@ -881,6 +881,25 @@ mod tests {
     }
 
     #[test]
+    fn failed_turns_preserve_original_anchor_indices_and_exclude_orphan_results() {
+        for reason in ["error", "aborted"] {
+            let anchor = assistant_text("anchor");
+            let messages = vec![user("first"),
+                json!({ "role": "assistant", "stopReason": reason, "usage": usage(100, 100, 200),
+                    "content": [{ "type": "toolCall", "id": "failed", "name": "read", "arguments": {} }] }),
+                anchor.clone(),
+                json!({ "role": "toolResult", "toolCallId": "failed", "content": [{ "type": "text", "text": "x".repeat(4000) }] }),
+                user("next")];
+            let estimate = estimate_context_tokens(&messages);
+            let baseline = estimate_context_tokens(&[user("first"), anchor, user("next")]);
+            assert_eq!(estimate.last_usage_index, Some(2));
+            assert_eq!(estimate.usage_tokens, baseline.usage_tokens);
+            assert_eq!(estimate.trailing_tokens, baseline.trailing_tokens);
+            assert_eq!(estimate.tokens, baseline.tokens);
+        }
+    }
+
+    #[test]
     fn an_image_block_estimates_at_a_fixed_cost() {
         let message = json!({ "role": "user", "content": [{ "type": "image", "data": "x", "mimeType": "image/png" }] });
         assert_eq!(estimate_tokens(&message), (ESTIMATED_IMAGE_CHARS as u64).div_ceil(4));
@@ -974,6 +993,24 @@ mod tests {
     }
 
     #[test]
+    fn custom_message_budget_and_overflow_after_last_cut_point_keep_valid_boundaries() {
+        let entries = vec![message_entry("a", None, user("hi")),
+            message_entry("b", Some("a"), assistant_text("hello")),
+            json!({ "id": "custom", "parentId": "b", "type": "custom_message", "customType": "fixture",
+                "content": "x".repeat(4000), "display": true, "timestamp": "2026-01-01T00:00:00.000Z" }),
+            message_entry("c", Some("custom"), assistant_text("ok"))];
+        for (budget, index, split, turn) in [(1, 3, true, 2), (2, 2, false, -1)] {
+            let cut = find_cut_point(&entries, 0, entries.len(), budget);
+            assert_eq!((cut.first_kept_entry_index, cut.is_split_turn, cut.turn_start_index), (index, split, turn));
+        }
+        let entries = vec![message_entry("a", None, user("hi")),
+            message_entry("b", Some("a"), assistant_text("hello")),
+            message_entry("result", Some("b"), json!({ "role": "toolResult", "toolCallId": "call",
+                "content": [{ "type": "text", "text": "x".repeat(8000) }] }))];
+        assert_eq!(find_cut_point(&entries, 0, entries.len(), 100).first_kept_entry_index, 1);
+    }
+
+    #[test]
     fn an_empty_cut_point_range_keeps_everything() {
         let entries = vec![json!({ "id": "a", "type": "label", "targetId": "a" })];
         let cut = find_cut_point(&entries, 0, 1, 1);
@@ -1053,6 +1090,37 @@ mod tests {
         let entries = vec![message_entry("a", None, user("one"))];
         let settings = crate::compaction::settings::default_compaction_settings();
         assert!(prepare_compaction(&entries, &settings, false, false).is_none());
+    }
+
+    #[test]
+    fn preparation_does_not_repeat_a_summary_when_the_retained_window_still_fits() {
+        let entries = vec![
+            message_entry("a", None, user("old")),
+            message_entry("b", Some("a"), user("retained")),
+            message_entry("c", Some("b"), assistant_text("retained response")),
+            json!({ "id": "summary", "parentId": "c", "type": "compaction", "summary": "digest",
+                "firstKeptEntryId": "b", "tokensBefore": 100, "timestamp": "2026-01-01T00:00:00.000Z" }),
+            message_entry("d", Some("summary"), user("new")),
+        ];
+        let settings = crate::compaction::settings::default_compaction_settings();
+        assert!(prepare_compaction(&entries, &settings, false, false).is_none());
+    }
+
+    #[test]
+    fn source_prefix_keeps_older_summary_after_the_latest_summary_without_duplicating_it() {
+        let entries = vec![
+            message_entry("a", None, user("first")),
+            json!({ "id": "old", "parentId": "a", "type": "compaction", "summary": "older",
+                "firstKeptEntryId": "a", "tokensBefore": 100, "timestamp": "2026-01-01T00:00:00.000Z" }),
+            message_entry("b", Some("old"), user("second")),
+            json!({ "id": "latest", "parentId": "b", "type": "compaction", "summary": "newer",
+                "firstKeptEntryId": "a", "tokensBefore": 100, "timestamp": "2026-01-01T00:00:00.000Z" }),
+        ];
+        let messages = collect_source_messages(&entries, 0, entries.len(), Some(3));
+        let summaries = messages.iter().filter(|message| message.get("role").and_then(Value::as_str) == Some("compactionSummary"))
+            .map(|message| message.get("summary").and_then(Value::as_str)).collect::<Vec<_>>();
+        assert_eq!(summaries, [Some("newer"), Some("older")]);
+        assert_eq!(messages.last(), Some(&user("second")));
     }
 
     #[test]

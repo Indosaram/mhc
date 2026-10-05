@@ -9,6 +9,17 @@ pub trait NativeModelRegistry:Send+Sync{
     fn get_api_key_and_headers<'a>(&'a self,model:&'a NativeModelInfo)->NativeAuthFuture<'a>;
     fn get_available(&self)->Option<Vec<NativeModelInfo>>{None}
 }
+pub struct ContextModelRegistry(pub std::sync::Arc<dyn maho_ext_api::ModelRegistry>);
+impl NativeModelRegistry for ContextModelRegistry {
+    fn get_api_key_and_headers<'a>(&'a self,model:&'a NativeModelInfo)->NativeAuthFuture<'a>{Box::pin(async move{
+        let Some(model)=self.0.find(&model.provider,&model.id)else{return Ok(NativeAuthResult::Failure{error:"Model is unavailable".into()});};
+        match self.0.get_api_key_and_headers(&model).await {
+            Ok(result)=>Ok(NativeAuthResult::Success{api_key:result.auth.api_key,headers:result.auth.headers.map(|headers|headers.into_iter().filter_map(|(key,value)|value.map(|value|(key,value))).collect())}),
+            Err(error)=>Ok(NativeAuthResult::Failure{error:error.to_string()}),
+        }
+    })}
+    fn get_available(&self)->Option<Vec<NativeModelInfo>>{Some(self.0.get_available().into_iter().map(|model|NativeModelInfo{provider:model.provider,id:model.id,base_url:model.base_url}).collect())}
+}
 fn native_mapping(model:&NativeModelInfo)->Option<(SearchProvider,&'static str)>{
     match model.provider.as_str(){
         "openai" if ["gpt-4o","gpt-4.1","gpt-5"].iter().any(|prefix|model.id.starts_with(prefix))&&!model.id.contains("codex")=>Some((SearchProvider::Openai,"responses")),

@@ -107,7 +107,7 @@ fn format_result(result: &AgentToolResult, structured: bool, handle: bool) -> Re
     if let Some(isolation) = isolation { value["details"] = json!({"isolation":isolation}); }
     if handle {
         let id = result.details["task_id"].as_str().filter(|id| id.strip_prefix("st_").is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))));
-        let epoch = result.details["run_epoch"].as_u64();
+        let epoch = result.details.get("run_epoch").filter(|epoch|crate::bridge::protocol::integer(epoch,0));
         if result.is_error == Some(true) || result.details["isError"] == true || result.details.get("error").is_some() || id.is_none() || epoch.is_none() { return Err(AgentBridgeError::InvalidHandle); }
         if let (Some(id), Some(epoch)) = (id, epoch) { value["id"] = json!(id); value["handle"] = json!(format!("agent://{id}")); value["run_epoch"] = json!(epoch); }
     } else {

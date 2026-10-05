@@ -81,7 +81,8 @@ impl ToolSearchService {
     }
     fn refresh_extension_docs(&mut self)->Result<(),ExtensionFailure> {
         let mut docs:Vec<_>=self.actions.get_all_tools()?.into_iter().filter(|tool|tool.exposure==ToolExposure::Search && tool.allow_lazy_activation).filter_map(extension_document).collect();
-        docs.sort_by(|a,b|a.name.cmp(&b.name));
+        let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|std::panic::panic_any(error));
+        docs.sort_by(|a,b|collator.compare(&a.name,&b.name));
         if docs==self.extension_docs { return Ok(()); }
         self.extension_docs=docs; self.registry_generation+=1; self.sync_tool_search_lifecycle()
     }
@@ -123,7 +124,7 @@ mod tests {
     }
     #[test] fn lifecycle_hooks_register_without_eager_tool_registration() {
         let mut api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("tool-search",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
-        crate::index::register_session_hooks(&mut api,Arc::new(std::sync::Mutex::new(service())));
+        crate::index::register_session_hooks(&mut api,Arc::new(tokio::sync::Mutex::new(service())));
         assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::SessionStart].len(),1);
         assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::Context].len(),1);
         assert!(api.registered.tools.is_empty());
@@ -140,7 +141,7 @@ mod tests {
     }
     #[test] fn empty_catalog_search_has_no_matches() { assert!(service().search("files",10,&Bm25SearchOptions::default()).unwrap().is_empty()); }
     #[test] fn native_executor_returns_machine_details_for_empty_catalog() {
-        let tool=crate::tool::create_tool_search_tool(Arc::new(std::sync::Mutex::new(service())));
+        let tool=crate::tool::create_tool_search_tool(Arc::new(tokio::sync::Mutex::new(service())));
         let mut future=(tool.execute)(maho_tools::definition::ToolCall{id:"test",params:serde_json::json!({"query":"files"}),signal:Default::default(),on_update:None,context:None});
         let waker=std::task::Waker::noop(); let mut context=std::task::Context::from_waker(waker);
         let std::task::Poll::Ready(result)=future.as_mut().poll(&mut context) else { panic!("synchronous catalog search must settle without external IO") };

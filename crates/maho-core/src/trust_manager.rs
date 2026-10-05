@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn detects_trust_requiring_project_resources() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::test_support::isolated_tempdir();
         let home = tmp.path().to_string_lossy().into_owned();
         let cwd = tmp.path().join("project");
         std::fs::create_dir_all(&cwd).expect("mkdir");

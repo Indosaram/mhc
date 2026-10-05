@@ -1,6 +1,25 @@
 use maho_ext_pi_websearch::websearch::{renderers::*,tool::SearchParams,types::*};
 use maho_interactive::theme::{ColorMode,Theme,theme_json::{ColorValue,ThemeJson}};
 use maho_tui::tui::Component;
+#[test]
+fn registered_renderer_preserves_typed_details_and_live_theme_colors() {
+    use maho_ext_api::{ToolRendererSession, ToolRenderContext, ToolRenderResultOptions, AgentToolResult};
+    use std::{rc::Rc, sync::Arc};
+    let renderers = Arc::new(registered_renderers());
+    let mut context = ToolRenderContext { args: serde_json::json!({"query":"manual docs"}), tool_call_id: "qa".into(),
+        invalidate: Rc::new(|| {}), last_component: None, state: (), cwd: "/fixture".into(),
+        execution_started: false, args_complete: true, is_partial: false, expanded: false, show_images: false,
+        image_protocol: None, is_error: false, has_result: None, spinner_frame: None };
+    let colors = ["toolTitle", "accent", "muted", "dim", "error", "success", "warning"].into_iter().map(|key| (key.into(), "#123456".into())).collect();
+    let palette = maho_ext_api::Theme { colors, ..Default::default() };
+    let mut call = (renderers.render_call.as_ref().expect("call"))(&context.args.clone(), &palette, &mut context);
+    assert!(call.render(80)[0].contains("\x1b[38;2;18;52;86m"));
+    let mut error = AgentToolResult::text("do not parse this text");
+    error.details = serde_json::json!({"phase":"error","query":"manual docs","error":"typed sentinel"});
+    let mut result = (renderers.render_result.as_ref().expect("result"))(&error, ToolRenderResultOptions::default(), &palette, &mut context);
+    assert!(result.render(80)[0].contains("typed sentinel"));
+    let _session = ToolRendererSession { renderers, context };
+}
 #[test]fn progress_numeric_label_uses_javascript_infinity(){let theme=theme();let progress=SearchRenderDetails::Progress(SearchProgressDetails{phase:SearchingPhase::Searching,query:"q".into(),provider_labels:Vec::new(),max_results:f64::INFINITY,current_provider:None,attempts:None,route_labels:None,strategy:None,allowed_domains:None,blocked_domains:None});let mut text=render_search_result(None,Some(&progress),&RenderResultOptions{expanded:false,is_partial:true},&theme);assert!(text.render(200)[0].contains("Infinity"));}
 fn theme()->Theme{let colors=[("toolTitle",6),("accent",6),("muted",7),("dim",8),("error",1),("success",2),("warning",3)].into_iter().map(|(key,value)|(key.into(),ColorValue::Index(value))).collect();Theme::from_json(ThemeJson{name:"fixture".into(),vars:Default::default(),colors,export_colors:Default::default()},ColorMode::Truecolor).expect("theme")}
 #[test]fn native_call_has_zero_padding_and_allowed_filter_precedence(){let theme=theme();let mut call=render_search_call(&SearchParams{query:"q".into(),allowed_domains:Some(Vec::new()),blocked_domains:Some(vec!["example.org".into()])},&theme);let lines=call.render(200);assert_eq!(lines.len(),1);assert!(lines[0].starts_with("\u{1b}[38;5;6m\u{1b}[1m"));assert!(!lines[0].contains("domains:"));}

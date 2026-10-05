@@ -3,21 +3,31 @@ use super::{oauth_provider::{McpOAuthProvider,OAuthTokens,ProviderError,Credenti
 use serde_json::Value;
 use sha2::{Digest,Sha256};
 use base64::{Engine,engine::general_purpose::URL_SAFE_NO_PAD};
-#[derive(Debug,thiserror::Error)]
+// Arc-wrapped payloads keep the error cloneable for the cross-caller refresh
+// single-flight (oauth-refresh.ts shares one in-flight promise with every caller).
+#[derive(Debug,Clone,thiserror::Error)]
 pub enum OAuthRequestError {
-    #[error(transparent)] Http(#[from] reqwest::Error),
-    #[error(transparent)] Store(#[from] super::token_store::TokenStoreError),
-    #[error(transparent)] Provider(#[from] ProviderError),
+    #[error(transparent)] Http(std::sync::Arc<reqwest::Error>),
+    #[error(transparent)] Store(std::sync::Arc<super::token_store::TokenStoreError>),
+    #[error(transparent)] Provider(std::sync::Arc<ProviderError>),
     #[error(transparent)] Flow(Box<OAuthFlowError>),
     #[error("{0}")] Invalid(String),
     #[error(transparent)] Url(#[from] url::ParseError),
-    #[error(transparent)] Json(#[from] serde_json::Error),
+    #[error(transparent)] Json(std::sync::Arc<serde_json::Error>),
 }
+impl From<reqwest::Error> for OAuthRequestError {fn from(error:reqwest::Error)->Self {Self::Http(std::sync::Arc::new(error))}}
+impl From<super::token_store::TokenStoreError> for OAuthRequestError {fn from(error:super::token_store::TokenStoreError)->Self {Self::Store(std::sync::Arc::new(error))}}
+impl From<ProviderError> for OAuthRequestError {fn from(error:ProviderError)->Self {Self::Provider(std::sync::Arc::new(error))}}
+impl From<serde_json::Error> for OAuthRequestError {fn from(error:serde_json::Error)->Self {Self::Json(std::sync::Arc::new(error))}}
 #[derive(Clone,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct OAuthServerInfo {pub authorization_server_url:String,pub authorization_server_metadata:Value,pub resource_metadata:Value}
 pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
     if let Some(cached)=provider.discovery_state()? {return Ok(serde_json::from_value(cached)?);}
+    let info=discover_uncached(provider,client).await?;
+    provider.save_discovery_state(serde_json::to_value(&info)?)?;Ok(info)
+}
+pub(crate) async fn discover_uncached(provider:&McpOAuthProvider,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
     let resource=url::Url::parse(&provider.store.server_url)?;
     let mut metadata_url=resource.clone();metadata_url.set_path(&format!("/.well-known/oauth-protected-resource{}",resource.path()));metadata_url.set_query(None);
     let mut metadata=Value::Null;
@@ -37,8 +47,7 @@ pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Resul
         if response.status().is_client_error(){continue;}
         authorization=response.error_for_status()?.json::<Value>().await?;break;
     }
-    let info=OAuthServerInfo {authorization_server_url:issuer.into(),authorization_server_metadata:authorization,resource_metadata:metadata};
-    provider.save_discovery_state(serde_json::to_value(&info)?)?;Ok(info)
+    Ok(OAuthServerInfo {authorization_server_url:issuer.into(),authorization_server_metadata:authorization,resource_metadata:metadata})
 }
 pub struct BeginAuthResult {pub authorized:bool,pub authorization_url:Option<url::Url>}
 pub async fn begin_authorization(provider:&mut McpOAuthProvider,client:&reqwest::Client)->Result<BeginAuthResult,OAuthRequestError> {

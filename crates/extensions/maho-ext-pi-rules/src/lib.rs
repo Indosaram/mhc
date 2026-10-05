@@ -2,6 +2,10 @@
 pub mod config;
 pub mod commands;
 pub mod index;
+pub struct RulesExtension;
+impl maho_ext_api::Extension for RulesExtension{
+    fn register(&self,api:&mut maho_ext_api::ExtensionApi){index::register_rule_injection_hooks(api);}
+}
 pub mod ui {
     pub mod dynamic_border;
     pub mod rules_banner;

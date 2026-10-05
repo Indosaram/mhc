@@ -1,0 +1,31 @@
+import { readFile } from 'node:fs/promises';
+const pin='12ad906f0b29e949ebbd1f89d8f85789578aa6e6';
+const response=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-rules/${pin}/src/rules/matcher.ts`);
+if(!response.ok)throw new Error(`Source ${response.status}`);
+const sourceText=await response.text();
+const source=new Bun.Transpiler({loader:'ts'}).transformSync(sourceText);
+const root=process.env.PI_RULES_SRC??'/home/indo/.omo/agent/git/github.com/code-yeongyu/pi-rules';
+const lockResponse=await fetch(`https://raw.githubusercontent.com/code-yeongyu/pi-rules/${pin}/package-lock.json`);
+if(!lockResponse.ok)throw new Error(`Lock ${lockResponse.status}`);
+const lockText=await lockResponse.text();const locked=JSON.parse(lockText).packages['node_modules/picomatch'];
+const archiveResponse=await fetch(locked.resolved);
+if(!archiveResponse.ok)throw new Error(`Archive ${archiveResponse.status}`);
+const bytes=await archiveResponse.arrayBuffer();
+if('sha512-'+new Bun.CryptoHasher('sha512').update(bytes).digest('base64')!==locked.integrity)throw new Error('Locked archive integrity mismatch');
+const files=await new Bun.Archive(bytes).files();const hashes=[];
+for(const [name,file] of files){
+    const relative=name.slice('package/'.length);
+    if(!relative.endsWith('.js')&&relative!=='package.json')continue;
+    const installed=await readFile(`${root}/node_modules/picomatch/${relative}`);
+    const sha256=new Bun.CryptoHasher('sha256').update(installed).digest('hex');
+    if(sha256!==new Bun.CryptoHasher('sha256').update(await file.arrayBuffer()).digest('hex'))throw new Error(`Dependency mismatch ${relative}`);
+    hashes.push({file:relative,sha256});
+}
+console.log(JSON.stringify({pin,source_sha256:new Bun.CryptoHasher('sha256').update(sourceText).digest('hex'),lock_sha256:new Bun.CryptoHasher('sha256').update(lockText).digest('hex'),locked,hashes}));
+const cases=JSON.parse(await readFile(new URL('../fixtures/pinned-range-punct.json',import.meta.url),'utf8'));
+const inputs=cases.map(({pattern,path})=>({pattern,path}));
+const script=source+`\nconst inputs=${JSON.stringify(inputs)};console.log(JSON.stringify(inputs.map(({pattern,path})=>({pattern,path,...matchRule({frontmatter:{globs:pattern},isSingleFile:false,pathBases:{projectRelative:path,basename:path}})}))));`;
+const child=Bun.spawn(['node','--input-type=module','-e',script],{cwd:root,stdout:'pipe',stderr:'inherit'});
+const output=await new Response(child.stdout).text();const exit=await child.exited;
+if(exit!==0||JSON.stringify(JSON.parse(output))!==JSON.stringify(cases))throw new Error('Source corpus mismatch');
+console.log(`PASS pin=${pin} cases=${cases.length} child_exit=${exit}`);

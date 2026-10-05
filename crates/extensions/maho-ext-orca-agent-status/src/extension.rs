@@ -121,6 +121,17 @@ fn update_metadata(metadata: &Mutex<Map<String, Value>>, ctx: &ExtensionContext)
     *metadata.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = values;
 }
 
+#[derive(Default)]
+struct AgentEndState { reported: bool, settled_supported: bool, generation: u64 }
+impl AgentEndState {
+    fn start(&mut self) { self.reported = false; self.generation = self.generation.wrapping_add(1); }
+    fn report(&mut self) -> bool {
+        if self.reported { return false; }
+        self.reported = true;
+        true
+    }
+}
+
 pub struct OrcaAgentStatus;
 impl Extension for OrcaAgentStatus {
     fn register(&self, api: &mut ExtensionApi) {
@@ -130,21 +141,33 @@ impl Extension for OrcaAgentStatus {
         let names = std::env::args().chain(std::env::var("_").ok()).collect::<Vec<_>>();
         let omp = crate::is_omp_runtime(&names.iter().map(String::as_str).collect::<Vec<_>>());
         let delivery = Arc::new(Delivery::new(Arc::clone(&metadata), omp));
-        let end_reported = Arc::new(Mutex::new(false));
-        for kind in [EventKind::SessionStart, EventKind::BeforeAgentStart, EventKind::AgentStart, EventKind::ToolExecutionStart, EventKind::ToolCall, EventKind::ToolExecutionEnd, EventKind::MessageEnd, EventKind::AgentSettled] {
+        let end_reported = Arc::new(Mutex::new(AgentEndState::default()));
+        let pending_end = Arc::new(Mutex::new(None::<tokio::task::JoinHandle<()>>));
+        let shutdown_pending = Arc::clone(&pending_end);
+        api.on(EventKind::SessionShutdown, Arc::new(move |_, _| {
+            if let Some(task) = shutdown_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { task.abort(); }
+            Box::pin(async { Ok(EventResult::None) })
+        }));
+        for kind in [EventKind::SessionStart, EventKind::BeforeAgentStart, EventKind::AgentStart, EventKind::ToolExecutionStart, EventKind::ToolCall, EventKind::ToolExecutionEnd, EventKind::MessageEnd, EventKind::AgentEnd, EventKind::AgentSettled] {
             let metadata = Arc::clone(&metadata);
             let delivery = Arc::clone(&delivery);
             let end_reported = Arc::clone(&end_reported);
+            let pending_end = Arc::clone(&pending_end);
             api.on(kind, Arc::new(move |event, ctx| {
                 let metadata = Arc::clone(&metadata);
                 let delivery = Arc::clone(&delivery);
                 let end_reported = Arc::clone(&end_reported);
+                let pending_end = Arc::clone(&pending_end);
                 Box::pin(async move {
                     let mut extra = Map::new();
                     let name = match event {
                         ExtensionEvent::SessionStart(start) => { update_metadata(&metadata, ctx); if start.reason == SessionReason::Reload { return Ok(EventResult::None); } "session_start" }
                         ExtensionEvent::BeforeAgentStart(start) => { extra.insert("prompt".into(), json!(start.prompt)); "before_agent_start" }
-                        ExtensionEvent::AgentStart => { *end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false; "agent_start" }
+                        ExtensionEvent::AgentStart => {
+                            if let Some(task) = pending_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { task.abort(); }
+                            end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner).start();
+                            "agent_start"
+                        }
                         ExtensionEvent::ToolExecutionStart { tool_name, args, .. } => { extra.insert("tool_name".into(), json!(tool_name)); extra.insert("tool_input".into(), args.clone()); "tool_execution_start" }
                         ExtensionEvent::ToolCall(call) => { extra.insert("tool_name".into(), json!(call.tool_name)); extra.insert("tool_input".into(), call.input.clone()); "tool_call" }
                         ExtensionEvent::ToolExecutionEnd { tool_name, .. } => { extra.insert("tool_name".into(), json!(tool_name)); "tool_execution_end" }
@@ -155,7 +178,44 @@ impl Extension for OrcaAgentStatus {
                             if text.is_empty() { return Ok(EventResult::None); }
                             extra.insert("role".into(), json!("assistant")); extra.insert("text".into(), json!(text)); "message_end"
                         }
-                        ExtensionEvent::AgentSettled => { let mut reported = end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner); if *reported { return Ok(EventResult::None); } *reported = true; "agent_end" }
+                        ExtensionEvent::AgentEnd { .. } => {
+                            let generation = {
+                                let mut state = end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if state.settled_supported { return Ok(EventResult::None); }
+                                state.generation = state.generation.wrapping_add(1);
+                                state.generation
+                            };
+                            let mut snapshot = Map::new();
+                            let id = ctx.session_manager.session_id();
+                            if omp && !id.is_empty() && ctx.session_manager.session_file().is_some_and(|path| !path.as_os_str().is_empty()) { snapshot.insert("session_id".into(), json!(id)); }
+                            let context = ctx.clone();
+                            let mut pending = pending_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if let Some(task) = pending.take() { task.abort(); }
+                            *pending = Some(tokio::spawn(async move {
+                                tokio::task::yield_now().await;
+                                let mut delay = 25;
+                                loop {
+                                    {
+                                        let mut state = end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        if state.generation != generation || state.settled_supported || state.reported { return; }
+                                        if context.is_idle() {
+                                            if state.report() { delivery.post("agent_end", Map::new(), snapshot); }
+                                            return;
+                                        }
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                                    delay = (delay * 2).min(250);
+                                }
+                            }));
+                            return Ok(EventResult::None);
+                        }
+                        ExtensionEvent::AgentSettled => {
+                            if let Some(task) = pending_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { task.abort(); }
+                            let mut state = end_reported.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            state.settled_supported = true;
+                            if !state.report() { return Ok(EventResult::None); }
+                            "agent_end"
+                        }
                         _ => return Ok(EventResult::None),
                     };
                     let mut snapshot = Map::new();
@@ -174,6 +234,17 @@ impl Extension for OrcaAgentStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_is_reported_once_per_turn() {
+        let mut state = AgentEndState::default();
+        state.start();
+        assert!(state.report());
+        assert!(!state.report());
+        let generation = state.generation;
+        state.start();
+        assert_ne!(state.generation, generation);
+        assert!(state.report());
+    }
     #[test]
     fn endpoint_cache_refreshes_after_size_change() {
         let fixture = tempfile::tempdir().expect("create endpoint fixture");

@@ -78,18 +78,19 @@ pub trait ResourceScopeGroupFormat {
 }
 
 pub fn format_resource_scope_groups(groups: &[ResourceScopeGroups], format: &impl ResourceScopeGroupFormat, theme: &Theme) -> String {
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
     let mut lines = Vec::new();
     for group in groups {
         lines.push(format!("  {}", theme.fg(ThemeColor::Accent, group.scope.as_str())));
         let mut paths: Vec<_> = group.paths.iter().collect();
-        paths.sort_by(|a, b| a.path.cmp(&b.path));
+        paths.sort_by(|a, b| collator.compare(&a.path, &b.path));
         for item in paths { lines.push(theme.fg(ThemeColor::Dim, &format!("    {}", format.format_path(item)))); }
         let mut packages: Vec<_> = group.packages.iter().collect();
-        packages.sort_by(|a, b| a.0.cmp(&b.0));
+        packages.sort_by(|a, b| collator.compare(&a.0, &b.0));
         for (source, items) in packages {
             lines.push(format!("    {}", theme.fg(ThemeColor::MdLink, source)));
             let mut paths: Vec<_> = items.iter().collect();
-            paths.sort_by(|a, b| a.path.cmp(&b.path));
+            paths.sort_by(|a, b| collator.compare(&a.path, &b.path));
             for item in paths { lines.push(theme.fg(ThemeColor::Dim, &format!("      {}", format.format_package_path(item, source)))); }
         }
     }

@@ -2,6 +2,21 @@ use serde_json::Value;
 use std::collections::HashSet;
 use crate::{schema::{AskUserVariant,to_canonical,DEFAULT_ASK_USER_TIMEOUT_MS},format::parse_ask_user_answer_frame};
 pub struct DanglingQuestion{pub tool_call_id:String,pub variant:AskUserVariant,pub args:Value}
+pub const ASK_USER_RESUMED_ENTRY: &str = "ask-user:resumed";
+pub(crate) async fn resume_dangling_questions(sender:std::sync::Arc<maho_ext_api::ExtensionApi>,ctx:&maho_ext_api::ExtensionContext)->Result<(),maho_ext_api::ExtensionFailure>{
+    let entries=ctx.session_manager.get_branch().into_iter().map(|entry|{
+        entry.data
+    }).collect::<Vec<_>>();
+    let mut pending=crate::registry::get_pending_questions(ctx.session_manager.session_id()).into_iter().map(|entry|entry.request.request_id.clone()).collect::<HashSet<_>>();
+    let timeout=(ctx.get_ask_user_settings()?.timeout_minutes*60_000.0) as u64;
+    for dangling in find_dangling_questions(&entries){
+        if !pending.insert(dangling.tool_call_id.clone()){continue;}
+        sender.append_entry(ASK_USER_RESUMED_ENTRY,Some(serde_json::json!({"toolCallId":dangling.tool_call_id})))?;
+        let request=to_canonical(dangling.variant,&dangling.args,dangling.tool_call_id.clone(),Some(timeout)).unwrap_or_else(|_|maho_ext_api::QuestionRequest{request_id:dangling.tool_call_id,questions:vec![],wait_for_answer:false,timeout_ms:timeout});
+        crate::tool::start_question(sender.clone(),ctx.clone(),request,None,std::sync::Arc::new(std::sync::Mutex::new(crate::tool::AskUserState::default())),dangling.variant,true).await?;
+    }
+    Ok(())
+}
 pub fn find_dangling_questions(entries:&[Value])->Vec<DanglingQuestion>{
     let mut results=HashSet::new();let mut accepted=HashSet::new();let mut resumed=HashSet::new();let mut settled=HashSet::new();
     for entry in entries{

@@ -126,6 +126,8 @@ pub struct BridgeHttpCompletionRequest {
     pub prompt: String,
     pub opts: Option<Value>,
     pub signal: AbortSignal,
+    pub cell_id: Option<String>,
+    pub context: Option<crate::tool::eval_tool_options::EvalInvocationContext>,
 }
 
 pub type BridgeHttpFuture<T> = Pin<Box<dyn Future<Output = Result<T, Value>> + Send>>;
@@ -186,7 +188,7 @@ pub async fn dispatch_bridge_http_request(method: &str, url: &str, authorization
         (options.on_call)(BridgeHttpCallRequest{call_id:call_id.into(),tool_name:tool_name.into(),args:args.clone(),signal}).await
     } else {
         let Some(prompt)=body["prompt"].as_str() else {return (200,Some(transport_error("invalid_request","Bridge completion request was invalid")));};
-        (options.on_completion)(BridgeHttpCompletionRequest{prompt:prompt.into(),opts:body.get("opts").cloned(),signal}).await
+        (options.on_completion)(BridgeHttpCompletionRequest{prompt:prompt.into(),opts:body.get("opts").cloned(),signal,cell_id:body["cellId"].as_str().map(str::to_owned),context:None}).await
     };
     (200,Some(match result {Ok(value)=>json!({"ok":true,"value":value}),Err(error)=>json!({"ok":false,"error":error})}))
 }

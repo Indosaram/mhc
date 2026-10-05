@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -12,8 +12,8 @@ use super::notification::{
 use super::routing::{route_completion, should_notify_status};
 use super::types::{
     CompletionDetails, CompletionNotifierDeps, CompletionNotifierStore, CompletionRequest,
-    CompletionRetrySchedule, DeliveredDecision, FlushInput, FlushResult, NotifyResult,
-    ParentNotifier, ParentNotifierMessage, ParentState, ReconcileUnnotifiedNotificationsInput,
+    CompletionRetrySchedule, DeliveredDecision, DeliveryCallbacks, DeliveryState, FlushInput, FlushResult, NotifyResult,
+    ParentNotifierMessage, ParentState, ReconcileUnnotifiedNotificationsInput,
     RoutingDecision, ScheduledCancel, ScheduledTask, SkipReason,
 };
 use crate::host::HostError;
@@ -34,6 +34,7 @@ struct BufferedEntry {
 
 #[derive(Default)]
 struct NotifierState {
+    pending: HashSet<String>,
     buffered: HashMap<String, Vec<BufferedEntry>>,
     scheduled_retries: HashMap<String, ScheduledCancel>,
     scheduled_retry_counts: HashMap<String, u32>,
@@ -84,6 +85,9 @@ impl CompletionNotifier {
         if record.notification.notified_epoch >= record.notification.run_epoch {
             return Ok(NotifyResult::Skipped(SkipReason::AlreadyNotified));
         }
+        if self.inner.lock().pending.contains(&format!("{}:{}", record.task_id, record.notification.run_epoch)) {
+            return Ok(NotifyResult::Skipped(SkipReason::DeliveryPending));
+        }
         let details = self.inner.build_details(&record, request.tokens);
         Inner::deliver_record(&self.inner, &record, details, request.parent_state)
     }
@@ -104,18 +108,13 @@ impl CompletionNotifier {
             entries.iter().map(|entry| entry.details.clone()).collect();
         let mut message = build_completion_message(&details);
         message.trigger_turn = Some(true);
-        if let Err(error) = deliver_with_retry(self.inner.deps.notifier.as_ref(), &message) {
-            for entry in &entries {
-                if store.load(&entry.task_id)?.is_some() {
-                    record_failure(store, &entry.task_id, entry.epoch, &error)?;
-                }
-            }
-            return Ok(FlushResult::Failed(entries.len()));
-        }
-        for entry in &entries {
-            persist_notified(store, &entry.task_id, entry.epoch)?;
-        }
-        Ok(FlushResult::Flushed(entries.len()))
+        let count = entries.len();
+        let state = Inner::deliver_entries(&self.inner, &message, entries, Some(input.session_id.clone()))?;
+        Ok(match state {
+            DeliveryState::Pending => FlushResult::Pending(count),
+            DeliveryState::Delivered => FlushResult::Flushed(count),
+            DeliveryState::Failed => FlushResult::Failed(count),
+        })
     }
 
     pub fn buffered_count(&self, session_id: &str) -> usize {
@@ -150,6 +149,7 @@ impl CompletionNotifier {
             if self
                 .inner
                 .has_buffered(&record.parent_session_id, &record.task_id, epoch)
+                || self.inner.lock().pending.contains(&format!("{}:{epoch}", record.task_id))
             {
                 continue;
             }
@@ -290,17 +290,10 @@ impl Inner {
             this.finish_retry_chain(&entry);
             return Ok(());
         }
+        if !this.lock().pending.insert(retry_key(&entry)) { return Ok(()); }
         let message = build_delivery_message(std::slice::from_ref(&entry.details));
-        match deliver_with_retry(this.deps.notifier.as_ref(), &message) {
-            Ok(()) => {
-                this.finish_retry_chain(&entry);
-                persist_notified(this.deps.store.as_ref(), &fresh.task_id, entry.epoch)
-            }
-            Err(_) => {
-                Self::schedule_retry(this, entry);
-                Ok(())
-            }
-        }
+        Self::deliver_entries(this, &message, vec![entry], None)?;
+        Ok(())
     }
 
     fn deliver_record(
@@ -324,23 +317,69 @@ impl Inner {
             RoutingDecision::DeliverStreaming => DeliveredDecision::DeliverStreaming,
         };
         let message = build_delivery_message(std::slice::from_ref(&entry.details));
-        match deliver_with_retry(this.deps.notifier.as_ref(), &message) {
-            Ok(()) => {
-                this.finish_retry_chain(&entry);
-                persist_notified(this.deps.store.as_ref(), &record.task_id, entry.epoch)?;
-                Ok(NotifyResult::Delivered(delivered))
-            }
-            Err(error) => {
-                record_failure(
-                    this.deps.store.as_ref(),
-                    &record.task_id,
-                    entry.epoch,
-                    &error,
-                )?;
-                Self::schedule_retry(this, entry);
-                Ok(NotifyResult::Failed)
+        if !this.lock().pending.insert(retry_key(&entry)) {
+            return Ok(NotifyResult::Skipped(SkipReason::DeliveryPending));
+        }
+        Ok(match Self::deliver_entries(this, &message, vec![entry], None)? {
+            DeliveryState::Pending => NotifyResult::Pending(delivered),
+            DeliveryState::Delivered => NotifyResult::Delivered(delivered),
+            DeliveryState::Failed => NotifyResult::Failed,
+        })
+    }
+
+    fn deliver_entries(this: &Arc<Self>, message: &ParentNotifierMessage, entries: Vec<BufferedEntry>, buffered_session: Option<String>) -> Result<DeliveryState, StoreError> {
+        {
+            let mut state = this.lock();
+            for entry in &entries { state.pending.insert(retry_key(entry)); }
+        }
+        let bookkeeping_error = Arc::new(Mutex::new(None));
+        let mut final_state = DeliveryState::Failed;
+        for attempt in 0..2 {
+            let inner = Arc::clone(this);
+            let entries = entries.clone();
+            let buffered_session = buffered_session.clone();
+            let errors = Arc::clone(&bookkeeping_error);
+            let callbacks = DeliveryCallbacks::new(move |result| {
+                let outcome = (|| -> Result<(), StoreError> {
+                    for entry in &entries {
+                        match &result {
+                            Ok(()) => {
+                                persist_notified(inner.deps.store.as_ref(), &entry.task_id, entry.epoch)?;
+                                inner.finish_retry_chain(entry);
+                                inner.lock().pending.remove(&retry_key(entry));
+                            }
+                            Err(error) => {
+                                if let Some(session) = &buffered_session {
+                                    inner.push_buffered(session, entry.clone());
+                                }
+                                inner.lock().pending.remove(&retry_key(entry));
+                                if inner.deps.store.load(&entry.task_id)?.is_some() {
+                                    record_failure(inner.deps.store.as_ref(), &entry.task_id, entry.epoch, error)?;
+                                }
+                                if buffered_session.is_none() {
+                                    Self::schedule_retry(&inner, entry.clone());
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = outcome {
+                    utils::logger::log("senpi-task completion settlement failed", Some(&json!({ "error": error.to_string() })));
+                    *errors.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                }
+            });
+            match this.deps.notifier.enqueue_with_callbacks(message, callbacks.clone()) {
+                Ok(()) => { final_state = callbacks.state(); break; }
+                Err(error) => {
+                    if callbacks.state() != DeliveryState::Pending { final_state = callbacks.state(); break; }
+                    if attempt == 1 { callbacks.failed(error); } else { callbacks.rejected(); }
+                }
             }
         }
+        let error = bookkeeping_error.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(error) = error { return Err(error); }
+        Ok(final_state)
     }
 }
 
@@ -394,15 +433,6 @@ fn retry_key(entry: &BufferedEntry) -> String {
     format!("{}:{}", entry.task_id, entry.epoch)
 }
 
-fn deliver_with_retry(
-    notifier: &dyn ParentNotifier,
-    message: &ParentNotifierMessage,
-) -> Result<(), HostError> {
-    notifier
-        .enqueue(message)
-        .or_else(|_| notifier.enqueue(message))
-}
-
 // Epoch-only bookkeeping through a conditional mutate: the locked re-read keeps every other field,
 // so a concurrent residency/host_pid claim is never clobbered by a stale whole-record replace.
 fn persist_notified(
@@ -412,7 +442,7 @@ fn persist_notified(
 ) -> Result<(), StoreError> {
     store.mutate(task_id, &mut |fresh| {
         let mut next = fresh.clone();
-        if fresh.notification.notified_epoch < epoch {
+        if fresh.notification.run_epoch == epoch && fresh.notification.notified_epoch < epoch {
             next.notification.notified_epoch = epoch;
         }
         next
@@ -435,7 +465,7 @@ fn record_failure(
     )?;
     store.mutate(task_id, &mut |fresh| {
         let mut next = fresh.clone();
-        if fresh.notification.notified_epoch < epoch
+        if fresh.notification.run_epoch == epoch && fresh.notification.notified_epoch < epoch
             && fresh.notification.notification_failed_epoch != Some(epoch)
         {
             next.notification.notification_failed_epoch = Some(epoch);

@@ -293,7 +293,7 @@ pub fn is_retryable_assistant_error(message: &AssistantMessage) -> bool {
 }
 
 static PROVIDER_STREAM_STALL_ERROR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    RegexBuilder::new(r"^(?:Idle timeout waiting for provider stream after \d+ms|Provider stream start timed out after \d+ms(?: \([^)]*\))?|WebSocket liveness timeout after \d+ms \(\d+ pings unanswered\)|Provider stream stalled after the last output item: response\.completed timed out after \d+ms)$")
+    RegexBuilder::new(r"^(?:Idle timeout waiting for provider stream after [0-9]+ms|Provider stream start timed out after [0-9]+ms(?: \([^)]*\))?|WebSocket liveness timeout after [0-9]+ms \([0-9]+ pings unanswered\)|Provider stream stalled after the last output item: response\.completed timed out after [0-9]+ms)$")
         .case_insensitive(true)
         .build()
         .unwrap_or_else(|e| panic!("stall pattern: {e}"))
@@ -737,6 +737,9 @@ mod tests {
             "Provider stream start timed out after 90000ms (raise streamStartTimeoutMs \u{2014} retry.provider.streamStartTimeoutMs in senpi settings; 0 disables)"
         )));
         assert!(!is_provider_stream_stall_error(&error_message("Request timed out.")));
+        assert!(!is_provider_stream_stall_error(&error_message(
+            "Idle timeout waiting for provider stream after \u{0663}\u{0660}\u{0660}ms"
+        )), "pinned JavaScript digit classes accept ASCII digits only");
         let aborted = faux(FauxOptions {
             stop_reason: StopReason::Aborted,
             error_message: Some("Idle timeout waiting for provider stream after 300000ms".into()),

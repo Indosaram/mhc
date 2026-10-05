@@ -156,6 +156,16 @@ fn events_of(store: &DagFileStore) -> Vec<DagRunEvent> {
         .events
 }
 
+#[test]
+fn stopped_admission_never_launches_or_completes_a_run() {
+    let fixture = fixture(definition(vec![node("only", &[])]), 1);
+    fixture.scheduler.stop_admission();
+    let record = fixture.scheduler.run().expect("stopped scheduler");
+    assert_eq!(record.status, DagRunStatus::Pending);
+    assert_eq!(fixture.runner.started_count(), 0);
+    assert!(events_of(&fixture.store).is_empty());
+}
+
 /// The task id the scheduler attached to a node, read from the durable run checkpoint.
 ///
 /// The TypeScript fixture's fake manager returns the node id as the task id; the Rust port runs the

@@ -82,7 +82,7 @@ pub struct CompactEndpointOptions<'a> {
     pub origin: Value,
 }
 
-pub async fn run_openai_compact_endpoint_compaction(options: CompactEndpointOptions<'_>, emit: &dyn Fn(Value)) -> Result<Option<CompactionResult>, String> {
+pub async fn run_openai_compact_endpoint_compaction(options: CompactEndpointOptions<'_>, emit: &(dyn Fn(Value) + Sync)) -> Result<Option<CompactionResult>, String> {
     let event = |action: &str, fields: Value| {
         let mut event = json!({"version":1,"action":action,"route":"builtin.compaction.openai_remote","requestId":options.request_id,"modelId":options.model.id,"transport":"compact-endpoint"});
         if let Some(fields) = fields.as_object() { for (key, value) in fields { event[key] = value.clone(); } }

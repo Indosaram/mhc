@@ -1,1 +1,25 @@
-
+//! Cursor CLI OAuth transport helpers.
+pub mod accounts;
+pub mod extension;
+pub use extension::CursorCliExtension;
+pub mod account_command;
+pub mod affinity;
+pub mod environment;
+pub mod guardrails;
+pub mod home_store;
+pub mod models_probe;
+pub mod models;
+pub mod catalog_refresh;
+pub mod oauth_login;
+pub mod native_bootstrap;
+pub mod failover;
+pub mod diagnostics;
+pub mod stream;
+pub mod errors;
+pub mod executable;
+pub mod spawn_args;
+pub mod spawn_model;
+pub mod settings;
+pub mod session_router;
+pub mod stream_parser;
+pub mod transport;

@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn a_symlinked_config_dir_is_not_a_match() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp = crate::test_support::isolated_tempdir();
         let home = tmp.path().join("home");
         let project = tmp.path().join("proj");
         let nested = project.join("a");

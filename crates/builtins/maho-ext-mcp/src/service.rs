@@ -8,14 +8,59 @@ pub enum McpServiceError {
     #[error(transparent)] Detach(#[from] crate::host_registry::RegistryDetachError),
     #[error(transparent)] Connection(#[from] crate::errors::McpError),
     #[error(transparent)] OAuth(#[from] crate::auth::oauth::OAuthRequestError),
+    #[error(transparent)] Artifact(#[from] std::io::Error),
+    #[error(transparent)] Extension(#[from] maho_ext_api::ExtensionFailure),
 }
-pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>}
+/// Native equivalent of upstream's MCP-owned `nativeToolSearch` gate. The resolved
+/// `settings.nativeToolSearch` lives behind the service's async mutex, but the shared
+/// tool-search adapter asks for it synchronously (`isMcpNativeToolSearchEnabled`), so
+/// every resolved config publishes the setting into this shared atomic. The host takes
+/// the handle off the service and binds it into the tool-search adapter it owns
+/// (upstream `installMcpNativeToolSearchGate`).
+#[derive(Clone,Debug,Default)]
+pub struct McpNativeToolSearchGate {state:Arc<std::sync::atomic::AtomicU8>}
+impl McpNativeToolSearchGate {
+    const UNSET:u8=0;
+    const DISABLED:u8=1;
+    const AUTO:u8=2;
+    const ENABLED:u8=3;
+    /// Publish the resolved `settings.nativeToolSearch` (`auto | true | false | undefined`).
+    pub fn publish(&self,setting:Option<&crate::config_schema::NativeToolSearch>) {
+        use crate::config_schema::NativeToolSearch;
+        let state=match setting {None=>Self::UNSET,Some(NativeToolSearch::Enabled(false))=>Self::DISABLED,Some(NativeToolSearch::Enabled(true))=>Self::ENABLED,Some(NativeToolSearch::Auto(_))=>Self::AUTO};
+        self.state.store(state,std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Upstream `isMcpNativeToolSearchEnabled`: `setting === true || setting === "auto"`.
+    pub fn enabled(&self)->bool {matches!(self.state.load(std::sync::atomic::Ordering::SeqCst),Self::AUTO|Self::ENABLED)}
+}
+/// Registration seam bound by the host so `attach_session` (upstream
+/// `attachSession`), skill attach and the deferred startup-race connects
+/// (upstream `raceMcpStartupConnect`) all register tools through the same
+/// registrar and shared tool-search service.
+#[derive(Clone)]
+pub struct McpRegistrationInputs {
+    pub registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,
+    pub tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>,
+}
+pub struct McpService {pub registry:Arc<HostMcpRegistry>,pub config:Option<ResolvedMcpConfig>,pub connections:BTreeMap<String,McpSessionConnection>,owner:u64,agent_dir:Option<PathBuf>,session_cwd:Option<PathBuf>,session_env:BTreeMap<String,String>,deferred:crate::startup_race::McpDeferredAttach,pending_auth:BTreeMap<String,crate::auth::oauth_provider::McpOAuthProvider>,elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,output_artifacts:Arc<crate::guard::output_guard::McpOutputArtifacts>,registration:Option<crate::expose::session::McpSessionRegistration>,tier_b_registry:crate::expose::tier_b::McpTierBRegistry,native_tool_search_gate:McpNativeToolSearchGate,self_weak:Option<std::sync::Weak<tokio::sync::Mutex<McpService>>>,registration_inputs:Option<McpRegistrationInputs>}
 impl McpService {
-    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None}}
+    pub fn new(registry:Arc<HostMcpRegistry>,owner:u64)->Self {Self {registry,config:None,connections:BTreeMap::new(),owner,agent_dir:None,session_cwd:None,session_env:BTreeMap::new(),deferred:Default::default(),pending_auth:BTreeMap::new(),elicitation_ui:None,output_artifacts:Arc::new(Default::default()),registration:None,tier_b_registry:Default::default(),native_tool_search_gate:McpNativeToolSearchGate::default(),self_weak:None,registration_inputs:None}}
     pub fn set_elicitation_ui(&mut self,ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>){self.elicitation_ui=ui;}
+    /// Bind the service's own handle so a deferred startup-race connect can
+    /// re-register tools after the attach deadline without holding the session lock.
+    pub fn bind_self(&mut self,weak:std::sync::Weak<tokio::sync::Mutex<McpService>>){self.self_weak=Some(weak);}
+    /// Bind the registrar + shared tool-search service used by every registration
+    /// trigger (`attach_session`, skill attach, deferred startup connects).
+    pub fn bind_registration(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>){self.registration_inputs=Some(McpRegistrationInputs {registrar,tool_search});}
     pub async fn attach_session(&mut self,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>,project_trusted:bool,declarations:&[maho_ext_api::RegisteredMcpServerDeclaration])->Result<(),McpServiceError> {
         let mut config=load_mcp_config(LoadMcpConfigOptions {cwd,agent_dir,env,project_trusted})?;
         crate::config::merge_extension_mcp_servers(&mut config,declarations)?;
+        self.sync_from_config(config,cwd,agent_dir,env).await?;
+        // Upstream `attachSession` registers tools once per attach when a `pi` is
+        // supplied; the host binds that seam with `bind_registration`.
+        self.register_bound_session_tools().await
+    }
+    async fn sync_from_config(&mut self,config:ResolvedMcpConfig,cwd:&Path,agent_dir:&Path,env:&BTreeMap<String,String>)->Result<(),McpServiceError> {
         let existing=self.connections.keys().cloned().collect::<Vec<_>>();
         for name in existing {
             let entry=self.connections[&name].entry.lock().await;
@@ -27,30 +72,157 @@ impl McpService {
             let (Some(server_config),Some(hash))=(&server.config,&server.config_hash) else{continue;};
             let key=crate::sharing_policy::shared_mcp_key(name,server_config,Some(env),&agent_dir.to_string_lossy(),&cwd.to_string_lossy());
             let connection=create_shared_mcp_session_connection(SessionConnectionOptions {registry:&self.registry,owner:self.owner,key:&key,name,config_hash:hash,config:server_config.clone(),agent_dir,env:Some(env.clone())},&cwd.to_string_lossy())?;
-            connection.entry.lock().await.connection.set_elicitation_ui(self.elicitation_ui.clone());
+            {
+                let mut entry=connection.entry.lock().await;
+                entry.connection.set_elicitation_ui(self.elicitation_ui.clone());
+                entry.artifacts=Some(self.output_artifacts.clone());
+            }
             let cache=crate::catalog_cache::read_mcp_catalog_cache(agent_dir);
-            if let Some(cached)=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64){connection.entry.lock().await.cached_catalog=Some(cached.clone());}
-            if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) {
+            let cached_catalog=crate::catalog_cache::get_valid_cached_server(&cache,name,hash,chrono::Utc::now().timestamp_millis() as f64);
+            if let Some(cached)=&cached_catalog {connection.entry.lock().await.cached_catalog=Some((*cached).clone());}
+            // Upstream races every startup connect bounded by the race deadline
+            // (`shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`): a cold
+            // lazy server with no cached catalog also races so its catalog lands and the
+            // deferred registration below publishes its tools. A cached lazy server needs
+            // no startup connect: its tools come from the cache and it connects on demand.
+            if crate::startup_race::should_race_mcp_startup(server_config.lifecycle.unwrap_or(crate::config_schema::Lifecycle::Lazy)) || cached_catalog.is_none() {
                 let entry=connection.entry.clone();let server_config=server_config.clone();let shared=connection.shared.clone();
+                let self_weak=self.self_weak.clone();let registration_inputs=self.registration_inputs.clone();
                 let timeout=crate::startup_race::resolve_mcp_startup_timeout_ms(server_config.startup_timeout_ms,env.get(crate::startup_race::MCP_STARTUP_TIMEOUT_ENV).map(String::as_str));
                 let (sender,mut settled)=tokio::sync::watch::channel(false);
-                self.deferred.track(async move {let mut entry=entry.lock().await;
+                self.deferred.track(async move {
+                    {let mut entry=entry.lock().await;
                     if let Some(shared)=shared {if let Ok(catalog)=shared.catalog().await{entry.cached_catalog=Some(catalog);entry.cache_refreshed_after_connect=true;}}
-                    else{crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await;}
+                    else if let Err(error)=crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,&server_config).await {
+                        let _=entry.logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("warning",&error.to_string(),None,None);
+                    }}
+                    // A cold/lazy server whose connect outran the attach deadline lands
+                    // its catalog here; re-register so its tools reach the next turn,
+                    // matching upstream `raceMcpStartupConnect` registering through the
+                    // captured `pi`. The connect task holds no other lock when the
+                    // registration task takes the session lock, so `settled` is not gated.
+                    if let (Some(weak),Some(inputs))=(self_weak,registration_inputs) && let Some(service)=weak.upgrade() {
+                        tokio::spawn(async move {
+                            let mut service=service.lock().await;
+                            let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
+                            let _=service.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await;
+                        });
+                    }
                     sender.send_replace(true);
                 });
                 let _=tokio::time::timeout(std::time::Duration::from_secs_f64(timeout/1000.0),async {while !*settled.borrow(){if settled.changed().await.is_err(){break;}}}).await;
             }
             self.connections.insert(name.clone(),connection);
+            self.wire_list_changed(name).await;
         }
-        self.agent_dir=Some(agent_dir.into());self.config=Some(config);Ok(())
+        self.agent_dir=Some(agent_dir.into());self.session_cwd=Some(cwd.into());self.session_env=env.clone();self.config=Some(config);
+        self.native_tool_search_gate.publish(self.config.as_ref().and_then(|config|config.settings.native_tool_search.as_ref()));
+        Ok(())
     }
+    pub async fn attach_skill_mcp_servers(&mut self,declared:&crate::skills::SkillMcpDeclarations)->Result<Vec<String>,McpServiceError> {
+        let (Some(mut config),Some(cwd),Some(agent_dir))=(self.config.clone(),self.session_cwd.clone(),self.agent_dir.clone()) else{return Ok(Vec::new());};
+        let mut warnings=Vec::new();let mut changed=false;
+        for (name,decl) in &declared.servers {
+            let existing=config.servers.get(name);
+            if let Some(existing)=existing.filter(|server|server.source!=crate::config_schema::McpServerSource::Skill) {
+                warnings.push(format!("MCP server '{name}' from skill {} collides with the {} config; system config wins.",decl.source_path.display(),existing.source));continue;
+            }
+            let raw=serde_json::from_value(decl.raw.clone()).map_err(|error|McpConfigValidationError(error.to_string()))?;
+            let resolved=crate::config::resolve_skill_mcp_server(name,raw,&decl.source_path)?;
+            if existing.is_some_and(|existing|existing.config_hash==resolved.config_hash){continue;}
+            config.servers.insert(name.clone(),resolved);changed=true;
+        }
+        if changed {let env=self.session_env.clone();self.sync_from_config(config,&cwd,&agent_dir,&env).await?;self.register_bound_session_tools().await?;}
+        Ok(warnings)
+    }
+    async fn register_bound_session_tools(&mut self)->Result<(),McpServiceError> {
+        let Some(inputs)=self.registration_inputs.clone() else {return Ok(());};
+        let mut tool_search=match &inputs.tool_search {Some(tool_search)=>Some(tool_search.lock().await),None=>None};
+        self.register_session_tools(inputs.registrar.clone(),tool_search.as_deref_mut()).await
+    }
+    /// Upstream `#wireListChanged`: coalesce the connection's tools-changed signal and
+    /// re-register through the bound seam. The tools subscription is driven by a task
+    /// that upgrades the service's `Weak` self-handle, so it never holds the session lock.
+    async fn wire_list_changed(&self,name:&str) {
+        let Some(connection)=self.connections.get(name) else {return;};
+        let entry_handle=connection.entry.clone();
+        let server_connection=entry_handle.lock().await.connection.clone();
+        let coalescer=Arc::new(crate::notifications::McpListChangeCoalescer::new(None,None));
+        let mut changes=server_connection.on_tools_changed();
+        let coalescer_tools=coalescer.clone();let weak=self.self_weak.clone();let name_owned=name.to_owned();
+        let task=tokio::spawn(async move {
+            loop {
+                match changes.recv().await {
+                    Ok(_)=>{let weak=weak.clone();let name=name_owned.clone();coalescer_tools.notify(move ||async move {
+                        if let Some(service)=weak.as_ref().and_then(|weak|weak.upgrade()) {
+                            let mut service=service.lock().await;
+                            let _=service.handle_server_tools_changed(&name).await;
+                        }
+                    });}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>continue,
+                    Err(_)=>return,
+                }
+            }
+        });
+        let mut entry=entry_handle.lock().await;
+        entry.list_changed_tasks.push(task);
+        entry.list_changed_coalescer=Some(coalescer);
+    }
+    /// Upstream `#handleServerToolsChanged`: re-list the server, tombstone removed tools
+    /// (added tools enter INACTIVE via `register_tools_preserving_active_set_with`), then
+    /// re-register. Public so the coalescer wiring and tests share one entry point.
+    pub async fn handle_server_tools_changed(&mut self,name:&str)->Result<(),McpServiceError> {
+        let Some(config)=self.config.clone() else {return Ok(());};
+        let Some(connection)=self.connections.get(name) else {return Ok(());};
+        let entry_handle=connection.entry.clone();let shared=connection.shared.clone();
+        let Some(server)=config.servers.get(name).and_then(|server|server.config.as_ref()).cloned() else {return Ok(());};
+        if entry_handle.lock().await.connection.state()!=crate::connection::ServerConnectionState::Connected {return Ok(());}
+        if let Some(shared)=&shared {
+            let catalog=shared.catalog().await?;
+            entry_handle.lock().await.cached_catalog=Some(catalog);
+        }
+        let client=entry_handle.lock().await.connection.client()?;
+        let timeout=std::time::Duration::from_secs_f64(server.request_timeout_ms.unwrap_or(30000.0)/1000.0);
+        let catalog=crate::catalog::collect_tool_catalog(name,client,timeout).await?;
+        let new_names:Vec<String>=crate::expose::register::map_mcp_catalog_names(&catalog).into_iter().map(|named|named.name).collect();
+        let previous=entry_handle.lock().await.known_tool_names.clone();
+        let diff=crate::notifications::diff_mcp_tool_names(previous.as_deref().unwrap_or(&new_names),&new_names);
+        if let Some(inputs)=self.registration_inputs.clone() {
+            for removed in &diff.removed {let _=inputs.registrar.register_tool(crate::notifications::build_mcp_tombstone_definition(removed,name));}
+        }
+        self.register_bound_session_tools().await?;
+        let mut entry=entry_handle.lock().await;
+        entry.known_tool_names=Some(new_names);
+        entry.last_list_changed_delta=Some(crate::notifications::format_mcp_list_changed_delta(&diff));
+        Ok(())
+    }
+    pub async fn register_session_tools(&mut self,registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>,tool_search:Option<&mut maho_ext_tool_search::service::ToolSearchService>)->Result<(),McpServiceError> {
+        let Some(config)=self.config.clone() else {return Ok(());};
+        let entries=self.connections.values().map(|connection|connection.entry.clone()).collect::<Vec<_>>();
+        let refresh_active_set_when_empty=!self.tier_b_registry.managed_names.is_empty();
+        self.registration=crate::service_register::register_mcp_service_direct_tools(registrar,&config,&entries,tool_search,&mut self.tier_b_registry,refresh_active_set_when_empty).await?;
+        if let Some(registration)=&self.registration {
+            for error in &registration.wiring_errors {self.report_registration_error(error);}
+        }
+        Ok(())
+    }
+    fn report_registration_error(&self,message:&str) {
+        if let Some(agent_dir)=&self.agent_dir && let Ok(mut logger)=crate::log::McpLogger::new("service",agent_dir,None) {let _=logger.log("error",message,None,None);}
+        eprintln!("MCP registration: {message}");
+    }
+    pub fn registration(&self)->Option<&crate::expose::session::McpSessionRegistration> {self.registration.as_ref()}
+    /// Resolved `settings.nativeToolSearch` (`auto | true | false | undefined`), the port of
+    /// upstream `getNativeToolSearchSetting`.
+    pub fn native_tool_search_setting(&self)->Option<crate::config_schema::NativeToolSearch> {self.config.as_ref().and_then(|config|config.settings.native_tool_search.clone())}
+    /// Shared gate handle the host binds into the shared tool-search adapter. Cloning keeps
+    /// every holder observing later session attachments, exactly like the upstream module gate.
+    pub fn native_tool_search_gate(&self)->McpNativeToolSearchGate {self.native_tool_search_gate.clone()}
     pub async fn connect_server(&self,name:&str)->Result<(),McpServiceError> {
         if !self.connections.contains_key(name){return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Connect,format!("Unknown MCP server: {name}")).into());}
         if let (Some(connection),Some(config))=(self.connections.get(name),self.config.as_ref().and_then(|config|config.servers.get(name)).and_then(|server|server.config.as_ref())) {
             let mut entry=connection.entry.lock().await;
             if let Some(shared)=&connection.shared {entry.cached_catalog=Some(shared.catalog().await?);entry.cache_refreshed_after_connect=true;return Ok(());}
-            crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,config).await;
+            crate::startup_race::connect_and_refresh_mcp_catalog(&mut entry,config).await?;
             if let Some(error)=entry.connection.last_error(){return Err(error.into());}
         }
         Ok(())
@@ -134,7 +306,10 @@ impl McpService {
     }
     pub async fn dispose(&mut self)->Result<(),McpServiceError> {
         let connections=std::mem::take(&mut self.connections);
-        for connection in connections.values(){dispose_entry_connection(connection,&self.registry,self.owner).await?;}
-        self.config=None;self.agent_dir=None;self.deferred.clear();self.pending_auth.clear();Ok(())
+        for connection in connections.values(){
+            dispose_entry_connection(connection,&self.registry,self.owner).await?;
+        }
+        self.output_artifacts.cleanup()?;
+        self.config=None;self.agent_dir=None;self.session_cwd=None;self.session_env.clear();self.deferred.clear();self.pending_auth.clear();self.registration=None;self.tier_b_registry=Default::default();self.native_tool_search_gate.publish(None);self.registration_inputs=None;self.self_weak=None;Ok(())
     }
 }

@@ -29,7 +29,7 @@ pub use jsonl::{
     JsonlStorageOptions,
 };
 pub use fork_policy::{ForkCurrentStatePlan, project_fork_current_state_write, select_branch_fork};
-pub use memory::{MemorySessionRepo, MemorySessionRepoOptions, MemoryStorage, MemoryStorageOptions};
+pub use memory::{MemorySessionFacade, MemorySessionRepo, MemorySessionRepoOptions, MemoryStorage, MemoryStorageOptions};
 pub use mutation_line::MutationLine;
 pub use testing::{GatingStorage, InstrumentedStorage, StorageDecorator};
 pub use session::{

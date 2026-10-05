@@ -7,6 +7,18 @@ pub fn discovered_native_entry_id(provider:SearchProvider,route_key:&str)->Strin
 }
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct NativeModelInfo { pub provider:String,pub id:String,pub base_url:String,pub api:Option<String> }
+pub fn model_info(model:&maho_ext_api::Model)->NativeModelInfo {NativeModelInfo{provider:model.provider.clone(),id:model.id.clone(),base_url:model.base_url.clone(),api:Some(model.api.clone())}}
+pub async fn config_with_native_routes(mut config:super::types::WebsearchConfig,model:Option<&maho_ext_api::Model>,registry:Option<&std::sync::Arc<dyn maho_ext_api::ModelRegistry>>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<super::types::WebsearchConfig,maho_tools::definition::ToolError> {
+    if !config.auto{return Ok(config);}
+    if let Some(signal)=signal{signal.check()?;}
+    let Some(registry)=registry else{return Ok(config)};
+    let mut models=registry.get_available();if let Some(model)=model{models.insert(0,model.clone());}
+    let available=models.iter().map(model_info).collect::<Vec<_>>();let active=model.map(model_info);
+    let auth=|info:NativeModelInfo|{let registry=registry.clone();let model=models.iter().find(|model|model_info(model)==info).cloned();async move {match model {Some(model)=>registry.get_api_key_and_headers(&model).await.ok().and_then(|auth|auth.auth.api_key),None=>None}}};
+    let mut entries=build_native_entries(active.as_ref(),Some(&available),Some(&auth),signal).await?;
+    if !entries.is_empty(){entries.extend(config.providers);config.providers=entries;}
+    Ok(config)
+}
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct NativeProviderMapping { pub provider:SearchProvider,pub resource:&'static str,pub route_label:Option<String>,pub endpoint_path:Option<&'static str> }
 pub async fn build_native_entry<F,Fut>(model:Option<&NativeModelInfo>,auth:Option<&F>,id:Option<&str>,signal:Option<&maho_tools::definition::AbortSignal>)->Result<Option<super::types::SearchProviderEntry>,maho_tools::definition::ToolError>

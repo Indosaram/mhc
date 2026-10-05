@@ -73,6 +73,7 @@ fn parse_yaml(yaml: &str) -> Result<RuleFrontmatter, String> {
 
 fn parse_string(value: &str) -> Result<String, String> {
     if value.starts_with('"') { return serde_json::from_str::<String>(value).map_err(|_| "Invalid JSON-quoted string".into()); }
+    if value=="'" {return Ok(String::new());}
     if value.starts_with('\'') {
         return value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')).map(str::to_owned).ok_or_else(|| "Unclosed quoted value".into());
     }

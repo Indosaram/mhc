@@ -3,6 +3,24 @@ use serde_json::json;
 use maho_codemode::{tool::{eval_tool_options::*,types::*,image_resize::*,detached_cell_manager::*,run_eval_cell::run_eval_cell},kernels::py::{kernel::PythonKernel,kernel_contract::PythonKernelStartOptions},bridge::protocol::BridgeConnectionConfig};
 
 struct Manager(Arc<PythonKernel>);
+struct StartedPython(Arc<PythonKernel>,tokio::sync::mpsc::UnboundedSender<()>);
+impl EvalKernel for StartedPython {
+    fn run(&self,mut input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
+        let original=input.on_started.take();let sender=self.1.clone();
+        input.on_started=Some(Arc::new(move ||{if let Some(started)=&original {started();}let _=sender.send(());}));
+        EvalKernel::run(self.0.as_ref(),input)
+    }
+    fn interrupt<'a>(&'a self,reason:&'a str,id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {EvalKernel::interrupt(self.0.as_ref(),reason,id)}
+    fn cancel_queued<'a>(&'a self,id:&'a str,reason:&'a str)->EvalKernelFuture<'a,bool> {EvalKernel::cancel_queued(self.0.as_ref(),id,reason)}
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.0.queue_snapshot()}
+    fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {EvalKernel::deliver_tool_reply(self.0.as_ref(),message)}
+    fn reset(&self)->EvalKernelFuture<'_,()> {EvalKernel::reset(self.0.as_ref())}
+    fn close(&self)->EvalKernelFuture<'_,()> {EvalKernel::close(self.0.as_ref())}
+}
+struct StartedPythonManager(Arc<StartedPython>);
+impl EvalKernelManager for StartedPythonManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
+}
 impl EvalKernelManager for Manager {
     fn get_kernel(&self,language:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
         Box::pin(async move {assert_eq!(language,EvalLanguage::Py);Ok(self.0.clone() as Arc<dyn EvalKernel>)})
@@ -10,6 +28,20 @@ impl EvalKernelManager for Manager {
 }
 struct JsManager(Arc<maho_codemode::kernels::js::context_manager::JavaScriptKernel>);
 struct AcquiringManager(tokio::sync::mpsc::UnboundedSender<()>);
+struct RejectingManager;
+impl EvalKernelManager for RejectingManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Err("acquisition rejected".into())})}
+}
+
+#[tokio::test]
+async fn acquisition_failure_emits_one_machine_settlement_event() {
+    let (kernel,mut options)=fixture().await;
+    kernel.close().await.unwrap();
+    let events=Arc::new(Mutex::new(Vec::new()));let recorded=events.clone();
+    let options_mut=Arc::get_mut(&mut options).unwrap();options_mut.kernel_manager=Arc::new(RejectingManager);options_mut.on_cell_settled=Some(Arc::new(move |event|recorded.lock().unwrap().push(event)));
+    assert!(run_eval_cell(options,invocation("acquire-failure","unused")).await.is_err());
+    let events=events.lock().unwrap();assert_eq!(events.len(),1);assert_eq!(events[0]["cellId"],"acquire-failure");assert_eq!(events[0]["ok"],false);
+}
 impl EvalKernelManager for AcquiringManager {
     fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {
         Box::pin(async {self.0.send(()).expect("acquisition event receiver");std::future::pending().await})
@@ -27,16 +59,138 @@ struct Executor;
 impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
     fn execute_tool<'a>(&'a self,_:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {Box::pin(async {panic!("text-only eval must not call host tools")})}
 }
+struct TranscriptExecutor(Mutex<Vec<(String,serde_json::Value)>>);
+struct SchemaExecutor(std::sync::atomic::AtomicUsize);
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for SchemaExecutor {
+    fn execute_tool<'a>(&'a self,name:&'a str,_:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        self.0.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {Err(maho_ext_api::ExecuteToolError {code:maho_ext_api::ExecuteToolErrorCode::InvalidParams,tool_name:name.into(),message:"invalid params".into(),active_tools:vec![]})})
+    }
+}
+
+#[tokio::test]
+async fn real_js_callable_schema_lookup_and_failure_enrichment() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"schema-callable",4,None).await.unwrap());
+    let executor=Arc::new(SchemaExecutor(std::sync::atomic::AtomicUsize::new(0)));
+    let schema=json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}});
+    let catalog_schema=schema.clone();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:Some(Arc::new(move ||Ok(vec![maho_codemode::bridges::schema_bridge::EvalSchemaToolInfo {name:"fixture_read".into(),description:None,parameters:Some(catalog_schema.clone())}]))),complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let tool=maho_codemode::tool::eval_tool::create_eval_tool(options).unwrap();
+    let lookup=(tool.execute)(maho_tools::definition::ToolCall {id:"schema-lookup",params:json!({"language":"js","code":"var expected = await tool_schema('fixture_read'); expected.parameters.required[0]","summary":"schema lookup"}),signal:Default::default(),on_update:None,context:None}).await;
+    let lookup_calls=executor.0.load(std::sync::atomic::Ordering::SeqCst);
+    let enrichment=(tool.execute)(maho_tools::definition::ToolCall {id:"schema-enrichment",params:json!({"language":"js","code":"try { await tool.fixture_read({}); } catch (error) { console.log(error.message.includes('Expected parameters:') && error.message.includes('path: string')); }","summary":"schema failure"}),signal:Default::default(),on_update:None,context:None}).await;
+    kernel.close().await.unwrap();
+    assert!(kernel.pid().is_none());eprintln!("cleanup: schema callable worker closed; pid None");
+    assert_eq!(lookup_calls,0,"tool_schema cannot invoke the host executor");
+    let lookup=lookup.unwrap();
+    assert!(lookup.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("path"))));
+    let enrichment=enrichment.unwrap();
+    assert!(enrichment.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("true"))));
+    assert_eq!(executor.0.load(std::sync::atomic::Ordering::SeqCst),1);
+}
+
+impl maho_codemode::bridges::output_bridge::OutputExecuteTool for TranscriptExecutor {
+    fn is_tool_available(&self,name:&str)->Option<bool> {Some(name=="named_output")}
+    fn execute_tool<'a>(&'a self,name:&'a str,args:serde_json::Value,_:maho_ext_api::ExecuteToolOptions)->maho_ext_api::ExecuteToolFuture<'a> {
+        Box::pin(async move {
+            self.0.lock().expect("transcript calls").push((name.into(),args.clone()));
+            let target=args.get("task_id").or_else(||args.get("name")).and_then(serde_json::Value::as_str).expect("output target");
+            Ok(maho_ext_api::AgentToolResult::text(format!("TRANSCRIPT:{target}:{}\nsecond\nthird",args["mode"].as_str().expect("transcript mode"))))
+        })
+    }
+}
+
+#[tokio::test]
+async fn real_js_callable_output_returns_configured_transcript() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"output-callable",4,None).await.unwrap());
+    let executor=Arc::new(TranscriptExecutor(Mutex::new(vec![])));
+    let mut settings=maho_codemode::config::settings::CodemodeSettings::default();settings.task_tools.output="named_output".into();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:executor.clone(),list_tools:None,complete:None,settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let tool=maho_codemode::tool::eval_tool::create_eval_tool(options).unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),(tool.execute)(maho_tools::definition::ToolCall {id:"output-cell",params:json!({"language":"js","code":"await output('st_123')","summary":"transcript proof","on_timeout":"error"}),signal:Default::default(),on_update:None,context:None})).await;
+    kernel.close().await.unwrap();
+    let result=result.unwrap().unwrap();
+    assert_ne!(result.details.as_ref().unwrap()["isError"],true,"{result:?}");
+    assert!(result.details.as_ref().unwrap()["cells"][0]["output"].as_str().unwrap().contains("TRANSCRIPT:st_123:full"));
+    assert_eq!(*executor.0.lock().unwrap(),vec![("named_output".into(),json!({"task_id":"st_123","mode":"full"}))]);
+    assert_eq!(kernel.pid(),None);
+}
 async fn fixture()->(Arc<PythonKernel>,Arc<CreateEvalToolOptions>) {
-    let kernel=Arc::new(PythonKernel::start(PythonKernelStartOptions {interpreter_path:"python3".into(),session_id:"eval-chain".into(),cwd:env!("CARGO_MANIFEST_DIR").into(),connection:BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:None,on_message:None}).await.expect("Python fixture startup"));
+    fixture_with_messages(None).await
+}
+async fn fixture_with_messages(on_message:Option<maho_codemode::kernels::shared::subprocess_run::KernelMessageCallback>)->(Arc<PythonKernel>,Arc<CreateEvalToolOptions>) {
+    let kernel=Arc::new(PythonKernel::start(PythonKernelStartOptions {interpreter_path:"python3".into(),session_id:"eval-chain".into(),cwd:env!("CARGO_MANIFEST_DIR").into(),connection:BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:None,on_message}).await.expect("Python fixture startup"));
     let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
     (kernel,options)
 }
 fn invocation(id:&str,code:&str)->EvalCellInvocation {
-    EvalCellInvocation {cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into()}
+    EvalCellInvocation {steering_signal:None,cell_id:id.into(),input:EvalToolInput {language:EvalLanguage::Py,code:code.into(),summary:"compute a value".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
+}
+
+#[tokio::test]
+async fn real_python_deadline_reports_preserved_state_and_cleans_worker() {
+    let (ready,mut started)=tokio::sync::mpsc::unbounded_channel();
+    let (kernel,mut options)=fixture().await;
+    let initialized=run_eval_cell(options.clone(),invocation("timeout-init","retained_timeout_value = 41")).await;
+    Arc::get_mut(&mut options).unwrap().kernel_manager=Arc::new(StartedPythonManager(Arc::new(StartedPython(kernel.clone(),ready))));
+    let mut call=invocation("timeout-state","print('TIMEOUT_READY',flush=True)\nwhile True: pass");
+    let caller=maho_ai::utils::abort::AbortController::new();
+    call.signal=caller.signal();
+    let trigger=async {let ready=tokio::time::timeout(std::time::Duration::from_secs(5),started.recv()).await;caller.abort(Some(maho_ai::utils::abort::AbortReason::new("TimeoutError","test deadline")));ready};
+    let (timed,ready)=tokio::join!(tokio::time::timeout(std::time::Duration::from_secs(8),run_eval_cell(options.clone(),call)),trigger);
+    let retained=run_eval_cell(options.clone(),invocation("timeout-after","retained_timeout_value + 1")).await;
+    kernel.close().await.unwrap();
+    eprintln!("cleanup: timeout-state Python worker closed");
+    ready.unwrap().unwrap();
+    initialized.unwrap();
+    let timed=timed.unwrap().unwrap();
+    assert_eq!(timed.details["isError"],true);
+    let retained=retained.unwrap();
+    assert_eq!(retained.details["isError"],serde_json::Value::Null);
+    assert!(retained.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.trim()=="42")));
+    let snapshot=options.cell_manager.lock().unwrap().peek("timeout-state").unwrap();
+    assert_eq!(snapshot.state_retained,Some(true));
 }
 
 struct FinalFrameKernel;
+
+#[tokio::test]
+async fn interactive_steering_detaches_real_started_cell() {
+    let (kernel,mut options)=fixture().await;
+    Arc::get_mut(&mut options).unwrap().settings.cell_timeout_seconds=30.0;
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    Arc::get_mut(&mut options).unwrap().kernel_manager=Arc::new(StartedPythonManager(Arc::new(StartedPython(kernel.clone(),started))));
+    let steering=maho_ext_api::AbortSignal::default();
+    let mut call=invocation("steering","while True: pass");call.mode="interactive".into();call.input.on_timeout=Some(TimeoutBehavior::Detach);call.steering_signal=Some(steering.clone());
+    let trigger=async {events.recv().await.unwrap();steering.abort();};
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),async {tokio::join!(run_eval_cell(options.clone(),call),trigger)}).await;
+    let stopped=EvalDetachedCellManager::stop(&options.cell_manager,"steering","test cleanup").await;
+    kernel.close().await.unwrap();
+    assert_eq!(result.unwrap().0.unwrap().details["cells"][0]["status"],"detached");
+    assert!(stopped.is_ok());
+}
+
+#[tokio::test]
+async fn real_js_deadline_reports_restarted_state_and_recovery() {
+    let kernel=Arc::new(maho_codemode::kernels::js::context_manager::JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"timeout-js",4,None).await.unwrap());
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(JsManager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let mut call=invocation("timeout-js-state","globalThis.timeoutMarker=41; console.log('TIMEOUT_READY'); while(true) {}");
+    call.input.language=EvalLanguage::Js;
+    let caller=maho_ai::utils::abort::AbortController::new();call.signal=caller.signal();
+    let (ready,mut started)=tokio::sync::mpsc::unbounded_channel();
+    call.on_update=Some(Arc::new(move |result|{if result.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.contains("TIMEOUT_READY"))) {let _=ready.send(());}}));
+    let trigger=async {tokio::time::timeout(std::time::Duration::from_secs(5),started.recv()).await.unwrap().unwrap();caller.abort(Some(maho_ai::utils::abort::AbortReason::new("TimeoutError","test deadline")));};
+    let (timed,())=tokio::join!(tokio::time::timeout(std::time::Duration::from_secs(8),run_eval_cell(options.clone(),call)),trigger);
+    let mut next=invocation("timeout-js-after","typeof timeoutMarker");next.input.language=EvalLanguage::Js;
+    let recovered=run_eval_cell(options.clone(),next).await;
+    kernel.close().await.unwrap();assert!(kernel.pid().is_none());
+    eprintln!("cleanup: timeout-state JS worker closed; pid None");
+    let timed=timed.unwrap().unwrap();
+    assert_eq!(timed.details["isError"],true);
+    let recovered=recovered.unwrap();
+    assert!(recovered.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.contains("undefined"))));
+    assert_eq!(options.cell_manager.lock().unwrap().peek("timeout-js-state").unwrap().state_retained,Some(false));
+}
 impl EvalKernel for FinalFrameKernel {
     fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {Box::pin(async move {
         if let Some(started)=input.on_started {started();}
@@ -51,6 +205,32 @@ impl EvalKernel for FinalFrameKernel {
     fn close(&self)->EvalKernelFuture<'_,()> {Box::pin(async {Ok(())})}
 }
 struct FinalFrameManager;
+struct FailedInterruptKernel(tokio::sync::mpsc::UnboundedSender<()>);
+impl EvalKernel for FailedInterruptKernel {
+    fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {Box::pin(async move {input.on_started.ok_or("missing start callback")?();self.0.send(()).map_err(|error|error.to_string())?;std::future::pending().await})}
+    fn interrupt<'a>(&'a self,_:&'a str,_:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {Box::pin(async {Err("interrupt transport failed".into())})}
+    fn cancel_queued<'a>(&'a self,id:&'a str,reason:&'a str)->EvalKernelFuture<'a,bool> {FinalFrameKernel.cancel_queued(id,reason)}
+    fn queue_snapshot(&self)->(Option<String>,Vec<String>) {(None,vec![])}
+    fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {FinalFrameKernel.deliver_tool_reply(message)}
+    fn reset(&self)->EvalKernelFuture<'_,()> {FinalFrameKernel.reset()}
+    fn close(&self)->EvalKernelFuture<'_,()> {FinalFrameKernel.close()}
+}
+struct FailedInterruptManager(Arc<FailedInterruptKernel>);
+impl EvalKernelManager for FailedInterruptManager {
+    fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(self.0.clone() as Arc<dyn EvalKernel>)})}
+}
+
+#[tokio::test(start_paused=true)]
+async fn timeout_interrupt_error_does_not_claim_retained_state() {
+    let (started,mut events)=tokio::sync::mpsc::unbounded_channel();
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(FailedInterruptManager(Arc::new(FailedInterruptKernel(started)))),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let caller=maho_ai::utils::abort::AbortController::new();
+    let mut call=invocation("failed-interrupt","unused");call.signal=caller.signal();
+    let trigger=async {events.recv().await.unwrap();caller.abort(Some(maho_ai::utils::abort::AbortReason::new("TimeoutError","test deadline")));};
+    let (result,())=tokio::join!(run_eval_cell(options.clone(),call),trigger);
+    assert_eq!(result.unwrap().details["isError"],true);
+    assert_eq!(options.cell_manager.lock().unwrap().peek("failed-interrupt").unwrap().state_retained,None);
+}
 impl EvalKernelManager for FinalFrameManager {
     fn get_kernel(&self,_:EvalLanguage)->EvalKernelFuture<'_,Arc<dyn EvalKernel>> {Box::pin(async {Ok(Arc::new(FinalFrameKernel) as Arc<dyn EvalKernel>)})}
 }

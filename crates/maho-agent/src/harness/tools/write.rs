@@ -17,7 +17,7 @@ pub struct WriteToolInput {
 }
 pub fn create_write_tool<T: HasExecutionToolContext>() -> AgentHarnessTool<T> {
     AgentHarnessTool {
-        label: "write".into(), prepare_arguments: None,
+        label: "write".into(), prepare_arguments: None, replay: None,
         tool: Tool { name: "write".into(), description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.".into(), parameters: json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to write (relative or absolute)"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}), freeform: None, constrained_sampling: None },
         execute: Arc::new(|_, input, _, turn: T, _, context| Box::pin(async move {
             let input: WriteToolInput = serde_json::from_value(input).map_err(|e| e.to_string())?;

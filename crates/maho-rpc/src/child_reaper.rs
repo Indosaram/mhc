@@ -41,6 +41,30 @@ impl<S:ChildReaperSyscalls> ChildReaper<S> {
         Some(format!("child reaper: reaped={} waiting={} top={top}",reaped.len(),waiting.len()))
     }
 }
+/// Handle for the armed reaper task. Dropping or calling `stop` clears the tick.
+pub struct ChildReaperHandle { task:tokio::task::JoinHandle<()> }
+impl ChildReaperHandle { pub fn stop(self) { self.task.abort(); } }
+/// The reaper built from resolved syscalls and window (senpi `createChildReaper`).
+pub fn create_child_reaper(syscalls:crate::child_reaper_syscalls::LinuxChildReaperSyscalls,min_waitable_ms:u64)->ChildReaper<crate::child_reaper_syscalls::LinuxChildReaperSyscalls>{ChildReaper::new(syscalls,min_waitable_ms)}
+/// Arms the reaper on the host loop. `None` when disabled, or the platform exposes no
+/// syscalls (the caller logs the unavailability). Mirrors senpi's `startHostChildReaper`.
+pub fn start_host_child_reaper(env:&HashMap<String,String>,platform:&str,mut log:impl FnMut(String)+Send+'static)->Option<ChildReaperHandle>{
+    let config=resolve_child_reaper_config(env);
+    if !config.enabled{return None;}
+    let Some(syscalls)=crate::child_reaper_syscalls::load_child_reaper_syscalls(platform)else{
+        log(format!("child reaper unavailable under {platform}: children orphaned by a terminated worker thread stay as zombies until this host exits"));
+        return None;
+    };
+    let mut reaper=create_child_reaper(syscalls,config.min_waitable_ms);
+    let tick_ms=config.tick_ms;
+    let task=tokio::spawn(async move{
+        let period=std::time::Duration::from_millis(tick_ms);
+        let mut timer=tokio::time::interval_at(tokio::time::Instant::now()+period,period);
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop{timer.tick().await;let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|elapsed|elapsed.as_millis() as u64);if let Some(message)=reaper.tick(now){log(message);}}
+    });
+    Some(ChildReaperHandle{task})
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,4 +79,5 @@ mod tests {
     #[test] fn never_reaps_live_child(){let mut r=ChildReaper::new(Fake{children:vec![(77,"bash".into(),false)],reaped:vec![]},5000);r.tick(0);r.tick(60000);assert!(r.syscalls.reaped.is_empty());assert!(r.waiting_pids().is_empty());}
     #[test] fn warning_is_rate_limited_and_top_three_are_stable(){let mut children=Vec::new();for i in 0..6{children.push((100+i,"sleep".into(),true));}for i in 0..4{children.push((200+i,"rg".into(),true));}children.push((300,"git".into(),true));children.push((301,"curl".into(),true));let mut r=ChildReaper::new(Fake{children,reaped:vec![]},5000);let warning=r.tick(0).unwrap();assert!(warning.contains("waiting=12"));assert!(!warning.contains("curl"));assert!(r.tick(1000).is_none());}
     #[test] fn optout_and_default_window(){assert!(!resolve_child_reaper_config(&HashMap::from([(CHILD_REAPER_ENV.into(),"0".into())])).enabled);let config=resolve_child_reaper_config(&HashMap::new());assert!(config.enabled);assert_eq!(config.tick_ms,1000);assert_eq!(config.min_waitable_ms,30000);}
+    #[test] fn start_reports_unavailable_platforms_and_honors_optout(){let messages=std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));let sink=std::sync::Arc::clone(&messages);assert!(start_host_child_reaper(&HashMap::new(),"win32",move |message|sink.lock().unwrap().push(message)).is_none());let recorded=messages.lock().unwrap();assert_eq!(recorded.len(),1);assert!(recorded[0].contains("child reaper unavailable"));assert!(start_host_child_reaper(&HashMap::from([(CHILD_REAPER_ENV.into(),"0".into())]),"linux",|_|{}).is_none());}
 }

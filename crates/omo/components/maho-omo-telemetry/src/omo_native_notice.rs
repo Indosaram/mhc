@@ -13,7 +13,14 @@ pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:teleme
     api.on(maho_ext_api::EventKind::SessionStart,Arc::new(move |_,ctx| {
         let product=crate::product_identity::create_omo_native_product_config();
         if enabled(&ctx.cwd) && telemetry_core::is_telemetry_client_enabled(&telemetry_core::TelemetryClientEnabledInput::for_product(Some(&env),&product)) {
-            match claim_notice(&state_dir) {Ok(true)=>ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info),Ok(false)=>{},Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: {error}");}}}
+            match claim_notice(&state_dir) {
+                Ok(true)=>{
+                    let notification=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info)));
+                    if notification.is_err() && !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: notification UI failed");}
+                },
+                Ok(false)=>{},
+                Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: {error}");}}
+            }
         }
         Box::pin(async {Ok(maho_ext_api::EventResult::None)})
     }));
@@ -31,4 +38,29 @@ mod tests {
     #[test] fn blocked_directory_reports_error() {let t=tempfile::tempdir().unwrap();let file=t.path().join("blocked");std::fs::write(&file,"").unwrap();assert!(claim_notice(&file).is_err());}
     #[test] fn stale_marker_suppresses() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("notice-shown"),"shown\n").unwrap();assert!(!claim_notice(t.path()).unwrap());}
     #[test] fn simultaneous_claim_only_one() {let t=tempfile::tempdir().unwrap();let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));let results=std::thread::scope(|scope|{let mut workers=Vec::new();for _ in 0..2 {let barrier=std::sync::Arc::clone(&barrier);let path=t.path();workers.push(scope.spawn(move ||{barrier.wait();claim_notice(path).unwrap()}));}workers.into_iter().map(|w|w.join().unwrap()).collect::<Vec<_>>()});assert_eq!(results.into_iter().filter(|claimed|*claimed).count(),1);}
+    #[tokio::test]
+    async fn failed_notification_keeps_marker_and_does_not_retry() {
+        use crate::telemetry_test_support::*;
+        let temp=tempfile::tempdir().unwrap();
+        let mut api=api();
+        register_omo_native_notice(&mut api,env(temp.path()),temp.path().join("notice"),std::sync::Arc::new(|_|true));
+        let (ctx,attempts)=context_with_failing_notifications(temp.path(),"failure");
+        dispatch(&api,start(),&ctx).await;
+        dispatch(&api,start(),&ctx).await;
+        assert_eq!(attempts.lock().unwrap().len(),1);
+        assert!(temp.path().join("notice/notice-shown").is_file());
+    }
+    #[tokio::test]
+    async fn unconfigured_key_does_not_claim_notice() {
+        use crate::telemetry_test_support::*;
+        let temp=tempfile::tempdir().unwrap();
+        let mut api=api();
+        let mut env=env(temp.path());
+        env.insert("POSTHOG_API_KEY".into(),telemetry_core::UNCONFIGURED_POSTHOG_API_KEY.into());
+        register_omo_native_notice(&mut api,env,temp.path().join("notice"),std::sync::Arc::new(|_|true));
+        let (ctx,notifications)=context_with_notifications(temp.path(),"unconfigured");
+        dispatch(&api,start(),&ctx).await;
+        assert!(notifications.lock().unwrap().is_empty());
+        assert!(!temp.path().join("notice").exists());
+    }
 }

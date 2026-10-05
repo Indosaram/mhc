@@ -2,6 +2,29 @@ use serde::{Deserialize,Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Stable machine-matchable error codes carried in response `error` fields (rpc-types.ts).
+pub const RPC_ERROR_UNKNOWN_SESSION:&str="unknown_session";
+pub const RPC_ERROR_SESSION_CLOSING:&str="session_closing";
+pub const RPC_ERROR_SESSION_PATH_IN_USE:&str="session_path_in_use";
+pub const RPC_ERROR_SESSION_RESERVATION_LIMIT:&str="session_reservation_limit";
+pub const RPC_ERROR_MISSING_SESSION_ID:&str="missing_session_id";
+pub const RPC_ERROR_MULTI_SESSION_DISABLED:&str="multi_session_disabled";
+pub const RPC_ERROR_INVALID_PATH:&str="invalid_path";
+pub const RPC_ERROR_OPEN_FAILED:&str="open_failed";
+pub const RPC_ERROR_MEDIA_NOT_FOUND:&str="media_not_found";
+pub const RPC_ERROR_INVALID_SESSION_CONTEXT:&str="invalid_session_context";
+pub const RPC_ERROR_INVALID_SESSION_KIND:&str="invalid_session_kind";
+pub const RPC_ERROR_INVALID_LAUNCH_PROFILE:&str="invalid_launch_profile";
+pub const RPC_ERROR_INVALID_SESSION_ID:&str="invalid_session_id";
+pub const RPC_ERROR_SESSION_ID_IN_USE:&str="session_id_in_use";
+pub const RPC_ERROR_HOST_MEMORY_PRESSURE:&str="host_memory_pressure";
+pub const RPC_ERROR_STREAMING:&str="streaming";
+pub const RPC_ERROR_ENTRY_NOT_FOUND:&str="not_found";
+pub const RPC_ERROR_NOT_ASSISTANT:&str="not_assistant";
+pub const RPC_ERROR_NOT_USER:&str="not_user";
+pub const RPC_ERROR_EMPTY_TEXT:&str="empty";
+pub const RPC_ERROR_STALE_LEAF:&str="stale_leaf";
+
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct RpcCommand {

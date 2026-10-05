@@ -1,0 +1,1 @@
+pub fn last_assistant_message(messages: &[maho_agent::types::AgentMessage]) -> Option<&maho_ai::types::AssistantMessage> { messages.iter().rev().find_map(maho_agent::types::AgentMessage::as_assistant) }

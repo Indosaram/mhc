@@ -16,11 +16,19 @@ fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    let memory_role = argv.first().map(String::as_str);
+    if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let args: &[String] = if memory_role == Some("--memory-supervisor") { &argv[1..] } else { &argv };
+        return runtime.block_on(maho_omo_memory::worker::memory_run_supervisor::run_entry(args, &executable, &[], memory_terminal_gate));
+    }
     use maho_cli::experimental::process::{parse_internal_process_role, InternalProcessRole, INTERNAL_PROCESS_ENV};
     if let Some(role) = parse_internal_process_role(std::env::var(INTERNAL_PROCESS_ENV).ok().as_deref())? {
         return match role {
             InternalProcessRole::Coordinator => run_coordinator_entry(&argv),
-            InternalProcessRole::Server | InternalProcessRole::SessionWorker => Err("Experimental server and session-worker entrypoints require excluded chord runtime (D-M5)".to_owned()),
+            InternalProcessRole::Server => run_mini_server_entry(&argv),
+            InternalProcessRole::SessionWorker => run_mini_worker_entry(&argv),
         };
     }
     if maho_cli::cli::auth_command::is_auth_command_help(&argv) {
@@ -36,7 +44,7 @@ fn run() -> Result<(), String> {
             match arg.as_str() {
                 "--from" => from = PathBuf::from(args.next().ok_or("--from requires a directory")?),
                 "--force" => force = true,
-                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>] [--force]"); return Ok(()); }
+                "--help" | "-h" => { println!("Usage: mhc import-omo [--from <directory>] [--force]\nUse --force to overwrite existing destination entries."); return Ok(()); }
                 _ => return Err(format!("Unknown import option: {arg}")),
             }
         }
@@ -57,7 +65,8 @@ fn run() -> Result<(), String> {
         if let Some(argument) = command.invalid_argument { return Err(format!("Unexpected package argument: {argument}")); }
         if let Some(option) = command.missing_option_value { return Err(format!("{option} requires a value")); }
         if let Some(conflict) = command.conflicting_options { return Err(conflict); }
-        return Err("Resource-package execution blocked: maho-core DefaultPackageManager API request (todo 19); native self-update replaced by mhc import-omo".to_owned());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command));
     }
     match argv.first().map(String::as_str) {
         Some("host") => {
@@ -66,10 +75,39 @@ fn run() -> Result<(), String> {
             if code != 0 { std::process::exit(code); }
             return Ok(());
         }
-        Some("app-server") => return Err("App-server execution blocked by unmerged todo 37 (maho-server)".to_owned()),
+        Some("app-server") => {
+            let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&maho_core::config::current_env());
+            let parsed = maho_cli::cli::args::parse_args(&argv[1..], grok)?;
+            let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+            let agent_dir = maho_core::config::get_agent_dir();
+            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(
+                &parsed,
+                &cwd.to_string_lossy(),
+                &agent_dir,
+                maho_core::project_trust::AppMode::AppServer,
+            );
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            let code = runtime.block_on(maho_cli::cli::app_server::run_app_server_with_signals(
+                &argv,
+                config,
+                env!("CARGO_PKG_VERSION"),
+                parsed.session_dir.clone(),
+                &executable,
+                &[],
+            ))?;
+            if code != 0 { std::process::exit(code); }
+            return Ok(());
+        }
         Some("config") => {
-            if maho_cli::package_manager_cli::parse_config_command(&argv)?.is_some_and(|options| options.help) { return output(maho_cli::package_manager_cli::config_command_help()); }
-            return Err("Config TUI execution blocked by unmerged todo 35 and DefaultPackageManager API request (todo 19)".to_owned());
+            let options = maho_cli::package_manager_cli::parse_config_command(&argv)?.ok_or("Missing config command")?;
+            if options.help { return output(maho_cli::package_manager_cli::config_command_help()); }
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+            return runtime.block_on(maho_cli::package_manager_cli::run_config_command(options));
+        }
+        Some("mini") => {
+            let options = maho_cli::experimental::mini::entry::parse_tui_args(&argv[1..])?;
+            return maho_cli::experimental::mini::entry::run_tui_entry(options);
         }
         _ => {},
     }
@@ -87,11 +125,31 @@ fn run() -> Result<(), String> {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let loaded = maho_cli::cli::extension_registry::load_native_extensions(&cwd, Default::default());
+        let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));
+        loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
+        let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
+        for error in &loaded.errors { eprintln!("{}: {}", error.extension_path, error.error); }
         if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-    runtime.block_on(maho_cli::cli::runtime::run(parsed))
+    runtime.block_on(maho_cli::cli::runtime::run(parsed, &argv))
+}
+fn memory_terminal_gate(directory: &std::path::Path, operation: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+    let record = memory_core::locks::create_lock_record("reflection-finalize", Default::default()).map_err(|error| error.to_string())?;
+    let path = directory.join("terminalization.lock");
+    loop {
+        match memory_core::locks::acquire_lock(&path, &record, &memory_core::locks::AcquireLockOptions { wait_timeout_ms: Some(60_000), ..Default::default() }) {
+            Ok(()) => break,
+            Err(memory_core::locks::AcquireLockError::Contention(_)) => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let result = operation();
+    memory_core::locks::release_lock(&path, &record).map_err(|error| error.to_string())?;
+    result
 }
 #[cfg(unix)]
 fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {
@@ -109,3 +167,21 @@ fn run_coordinator_entry(argv: &[String]) -> Result<(), String> {
 }
 #[cfg(not(unix))]
 fn run_coordinator_entry(_argv: &[String]) -> Result<(), String> { Err("Coordinator named-pipe transport has not been ported on this platform".to_owned()) }
+#[cfg(unix)]
+fn run_mini_server_entry(argv: &[String]) -> Result<(), String> {
+    use maho_cli::experimental::mini::{entry::{parse_server_args, run_server_entry}, server::process_worker_factory};
+    let options = parse_server_args(argv)?;
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let spawn = process_worker_factory(executable, Vec::new(), options.sessions_root.clone());
+    run_server_entry(options, &cwd.to_string_lossy(), spawn)
+}
+#[cfg(not(unix))]
+fn run_mini_server_entry(_argv: &[String]) -> Result<(), String> { Err("The mini session server requires the Unix socket transport".to_owned()) }
+#[cfg(unix)]
+fn run_mini_worker_entry(argv: &[String]) -> Result<(), String> {
+    use maho_cli::experimental::mini::entry::{parse_worker_args, run_worker_entry};
+    run_worker_entry(parse_worker_args(argv)?)
+}
+#[cfg(not(unix))]
+fn run_mini_worker_entry(_argv: &[String]) -> Result<(), String> { Err("The mini session worker requires the Unix socket transport".to_owned()) }

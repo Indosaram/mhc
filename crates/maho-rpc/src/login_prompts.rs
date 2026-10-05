@@ -1,5 +1,13 @@
 use maho_ai::{compat::extension_oauth_types::{OAuthPrompt,OAuthSelectPrompt},utils::abort::{AbortSignal,ListenerId}};
 use maho_ext_api::{ExtensionUi,ExtensionUiDialogOptions,ExtensionFailure};
+/// The two OAuth prompt callbacks the RPC connection installs (senpi
+/// `createRpcLoginPromptCallbacks`): one login-wide signal releases both dialogs.
+pub struct RpcLoginPromptCallbacks{login:AbortSignal}
+impl RpcLoginPromptCallbacks{
+    pub fn new(login:AbortSignal)->Self{Self{login}}
+    pub async fn on_prompt(&self,ui:&dyn ExtensionUi,prompt:OAuthPrompt)->Result<String,ExtensionFailure>{on_prompt(ui,&self.login,prompt).await}
+    pub async fn on_select(&self,ui:&dyn ExtensionUi,prompt:OAuthSelectPrompt)->Result<Option<String>,ExtensionFailure>{on_select(ui,&self.login,prompt).await}
+}
 struct DialogSignal{signal:maho_ext_api::AbortSignal,listeners:Vec<(AbortSignal,ListenerId)>}
 impl DialogSignal{
     fn new(login:&AbortSignal,prompt:Option<&AbortSignal>)->Self{

@@ -33,9 +33,25 @@ async fn load_path_input(ctx:&LookAtImageInputContext<'_>,input:&str)->Result<(L
     finalize_input(bytes,label,mime_type_from_name(&path.to_string_lossy()).map(String::from),ctx.auto_resize)
 }
 pub async fn load_look_at_inputs(ctx:&LookAtImageInputContext<'_>,paths:&[String],base64_inputs:&[String])->Result<Vec<LoadedLookAtInput>,String> {
+    load_look_at_inputs_with_processor(ctx,paths,base64_inputs,None).await
+}
+pub struct ProcessImageOptions {pub auto_resize_images:bool}
+pub struct ProcessedImage {pub data:String,pub mime_type:String,pub hints:Vec<String>}
+pub type ImageProcessor=std::sync::Arc<dyn Fn(Vec<u8>,String,ProcessImageOptions)->maho_ext_api::ExtensionFuture<'static,ProcessedImage>+Send+Sync>;
+pub async fn load_look_at_inputs_with_processor(ctx:&LookAtImageInputContext<'_>,paths:&[String],base64_inputs:&[String],processor:Option<&ImageProcessor>)->Result<Vec<LoadedLookAtInput>,String> {
     if ctx.block_images { return Err("Error: Image inputs are blocked by settings.".into()); }
-    let paths=paths.iter().map(|path|load_path_input(ctx,path));
-    let data=base64_inputs.iter().map(|input|async move { let (data,mime)=parse_base64(input); finalize_input(decode_base64(&data)?,"base64 input".into(),mime,ctx.auto_resize) });
+    let raw_ctx=LookAtImageInputContext{cwd:ctx.cwd,branch:ctx.branch,auto_resize:false,block_images:ctx.block_images};
+    let process=|loaded:Result<(LoadedLookAtInput,usize),String>|async move {
+        let (mut input,size)=loaded?;
+        if ctx.auto_resize&&input.mime_type.starts_with("image/") {
+            let processor=processor.ok_or_else(||"Image processing requires the source-equivalent processImage binding".to_owned())?;
+            let processed=processor(decode_base64(&input.data)?,input.mime_type.clone(),ProcessImageOptions{auto_resize_images:true}).await.map_err(|error|format!("Error: Could not process image {}: {error}",input.label))?;
+            input.data=processed.data;input.mime_type=processed.mime_type;
+        }
+        Ok::<_,String>((input,size))
+    };
+    let paths=paths.iter().map(|path|async {process(load_path_input(&raw_ctx,path).await).await});
+    let data=base64_inputs.iter().map(|input|async { let (data,mime)=parse_base64(input); process(finalize_input(decode_base64(&data)?,"base64 input".into(),mime,false)).await });
     let (paths,data)=futures::try_join!(futures::future::try_join_all(paths),futures::future::try_join_all(data))?;
     let loaded:Vec<_>=paths.into_iter().chain(data).collect(); validate_aggregate_bytes(&loaded.iter().map(|(_,size)|*size).collect::<Vec<_>>())?;
     Ok(loaded.into_iter().map(|(input,_)|input).collect())

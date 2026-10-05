@@ -2,8 +2,8 @@ use std::{collections::BTreeMap,sync::LazyLock};
 use serde_json::{Map,Value};
 use regex::Regex;
 use super::{shared::*,super::{types::*,provider_endpoints::provider_url}};
-static LINKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#).expect("constant link regex"));
-static SNIPPETS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a\b[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#).expect("constant snippet regex"));
+static LINKS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a(?-u:\b)[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#).expect("constant link regex"));
+static SNIPPETS:LazyLock<Regex>=LazyLock::new(||Regex::new(r#"<a(?-u:\b)[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)</a>"#).expect("constant snippet regex"));
 static TAGS:LazyLock<Regex>=LazyLock::new(||Regex::new("<[^>]*>").expect("constant tag regex"));
 static SPACE:LazyLock<Regex>=LazyLock::new(||Regex::new(r"[\x09-\x0d\x20\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]+").expect("constant ECMAScript whitespace regex"));
 fn html_decode(value:&str)->String{value.replace("&amp;","&").replace("&quot;","\"").replace("&#39;","'").replace("&lt;","<").replace("&gt;",">")}

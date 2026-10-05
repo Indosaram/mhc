@@ -12,6 +12,11 @@ impl Extension for CatalogExtension {
             let retained = retained.clone();
             let events = events.clone();
             Box::pin(async move {
+                let input = JsonValue::Object(Default::default());
+                if context.set_approved_monitor_parent("unsupported", &input, std::path::Path::new("/synthetic")).is_ok()
+                    || context.take_approved_monitor_parent("unsupported", &input).is_ok() {
+                    return Err(ExtensionFailure::new("Legacy core must explicitly reject unsupported monitor identity"));
+                }
                 let mut api = retained.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 api.register_mcp_server("native", McpServerDeclaration { command: Some("catalog-v2".into()), ..Default::default() });
                 api.register_command("catalog", None, None, Arc::new(move |args, context| {

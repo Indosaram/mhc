@@ -6,7 +6,7 @@ use crate::{idle::{IdleCompactionDecision, should_warm_at_idle}, policy::{self, 
 pub struct CompactionGeometry { pub reserve_tokens: f64, pub threshold_tokens: f64, pub lead_tokens: f64 }
 pub fn resolve_compaction_geometry(context_window: f64, settings: &CompactionSettings, last_yield: Option<CompactionYield>) -> CompactionGeometry {
     let threshold_tokens = context_window * policy::compute_effective_threshold(context_window, last_yield);
-    CompactionGeometry { reserve_tokens: policy::resolve_effective_reserve_tokens(context_window, settings.reserve_tokens as f64, settings.ideal.reserve_scaling_enabled), threshold_tokens, lead_tokens: resolve_speculation_lead_tokens(threshold_tokens, settings.ideal.speculative_lead_tokens.map(|lead| lead as f64)) }
+    CompactionGeometry { reserve_tokens: policy::resolve_effective_reserve_tokens(context_window, settings.reserve_tokens as f64, settings.ideal.reserve_scaling_enabled), threshold_tokens, lead_tokens: resolve_speculation_lead_tokens(threshold_tokens, settings.ideal.speculative_lead_tokens) }
 }
 pub fn should_defer_grace_band(tokens: f64, geometry: CompactionGeometry, context_window: f64, in_flight: bool, enabled: Option<bool>) -> bool {
     in_flight && enabled != Some(false) && is_within_grace_band(tokens, geometry.threshold_tokens, geometry.lead_tokens, context_window, geometry.reserve_tokens)

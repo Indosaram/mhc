@@ -158,10 +158,92 @@ pub fn summarization_max_duration_ms(estimated_input_tokens: f64, override_ms: O
 /// The signal type the watchdog observes.
 pub type WatchdogSignal = AbortSignal;
 
+/// Drain provider events and settle the final result under the same deadlines.
+pub async fn consume_stream_with_idle_timeout(
+    stream: &maho_ai::types::AssistantMessageEventStream,
+    idle_timeout_ms: u64,
+    max_duration_ms: Option<u64>,
+    signal: Option<&WatchdogSignal>,
+    abort: impl Fn(),
+) -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
+    use maho_ai::utils::event_stream::StreamError;
+    use std::time::Duration;
+    let deadline = max_duration_ms.map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
+    let mut settling = signal.is_some_and(AbortSignal::aborted);
+    loop {
+        let is_settling = settling;
+        let read = async {
+            if is_settling { stream.result().await.map(|message| (Some(message), true)) }
+            else { stream.next().await.map(|event| (None, event.is_none())) }
+        };
+        tokio::pin!(read);
+        let idle = tokio::time::sleep(Duration::from_millis(idle_timeout_ms));
+        tokio::pin!(idle);
+        let duration = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(duration);
+        let cancelled = async {
+            if !is_settling {
+                match signal {
+                    Some(signal) => signal.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } else { std::future::pending::<()>().await; }
+        };
+        tokio::pin!(cancelled);
+        tokio::select! {
+            biased;
+            result = &mut read => {
+                let (message, ended) = result?;
+                if let Some(message) = message { return Ok(message); }
+                settling = ended;
+            }
+            () = &mut cancelled => { settling = true; }
+            () = &mut duration => {
+                abort();
+                return Err(StreamError::new(StreamDurationBudgetError::new(max_duration_ms.unwrap_or_default() as i64).to_string()));
+            }
+            () = &mut idle => {
+                abort();
+                return Err(StreamError::new(StreamIdleTimeoutError::new(idle_timeout_ms as i64).to_string()));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[tokio::test]
+    async fn stalled_and_unsettled_streams_abort_under_watchdogs() {
+        for (ended, idle, duration) in [(false, 0, None), (true, 0, None), (false, 1000, Some(0))] {
+            let stream = maho_ai::types::AssistantMessageEventStream::assistant();
+            if ended { stream.end(None); }
+            let aborted = std::sync::atomic::AtomicBool::new(false);
+            let result = consume_stream_with_idle_timeout(&stream, idle, duration, None,
+                || aborted.store(true, Ordering::SeqCst)).await;
+            assert!(result.is_err());
+            assert!(aborted.load(Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_abort_settles_ready_terminal_without_watchdog_abort() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        controller.abort(None);
+        let stream = maho_ai::types::AssistantMessageEventStream::assistant();
+        let message = maho_ai::providers::faux::faux_assistant_message("settled", Default::default());
+        stream.end(Some(message.clone()));
+        let result = consume_stream_with_idle_timeout(&stream, 0, Some(0), Some(&controller.signal()),
+            || panic!("ready settlement must win")).await.expect("settled result");
+        assert_eq!(result, message);
+    }
 
     #[test]
     fn the_error_texts_match_the_pinned_source() {

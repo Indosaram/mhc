@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod api_registry;
+pub mod apply_patch_wire;
 pub mod auth;
 pub mod bedrock_provider;
 pub mod bun_oauth;

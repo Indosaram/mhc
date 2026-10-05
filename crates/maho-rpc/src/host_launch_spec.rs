@@ -4,7 +4,7 @@ use serde_json::Value;
 #[error("{reason}: {detail}")]
 pub struct HostLaunchSpecError {pub reason:&'static str,pub detail:String}
 fn refusal(reason:&'static str,detail:impl Into<String>)->HostLaunchSpecError{HostLaunchSpecError{reason,detail:detail.into()}}
-#[derive(Debug,Default,PartialEq)]
+#[derive(Debug,Clone,Default,PartialEq)]
 pub struct HostLifecyclePolicyInput {pub idle_exit_ms:Option<f64>,pub cold_start:Option<String>}
 #[derive(Debug,PartialEq)]
 pub struct HostLaunchSpec {pub session_runtime:String,pub extensions:Vec<String>,pub tunables:HostLifecyclePolicyInput,pub env:BTreeMap<String,String>}

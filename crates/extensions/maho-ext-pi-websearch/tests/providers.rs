@@ -1,5 +1,7 @@
 use maho_ext_pi_websearch::websearch::{providers::*,types::*};
 use serde_json::{Value,json};
+#[test]fn pinned_exa_response_boundaries(){let cases:Value=serde_json::from_str(include_str!("fixtures/pinned-exa-response-boundaries.json")).unwrap();for (index,case) in cases.as_array().unwrap().iter().enumerate(){assert_eq!(js_numbers(normalized(SearchProvider::Exa,case["input"].clone())),case["output"],"case {index}");}}
+#[test]fn duckduckgo_ascii_word_boundary_matches_source(){let html="<aé class=\"result__a\" href=\"https://example.com/a\">Boundary</a><aé class=\"result__snippet\">Excerpt</a>";assert_eq!(normalized(SearchProvider::DuckduckgoHtml,json!({"html":html})),json!([{"title":"Boundary","url":"https://example.com/a","snippet":"Excerpt"}]));}
 fn config(value:Value)->SearchProviderConfig{serde_json::from_value(value).expect("provider fixture")}
 fn request(query:&str,max:f64)->SearchRequest{SearchRequest{query:query.into(),max_results:max,allowed_domains:None,blocked_domains:None}}
 fn body(config:Value,request:SearchRequest)->Value{js_numbers(json!(build_search_request(&self::config(config),&request).expect("valid endpoint").body.expect("POST body")))}

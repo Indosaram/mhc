@@ -32,6 +32,17 @@ impl Config {
             stream.set_write_timeout(Some(timeout))?;
             return stream.write_all(payload.as_bytes());
         }
+        #[cfg(windows)]
+        if let Some(path) = &self.socket {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            return runtime.block_on(async {
+                use tokio::io::AsyncWriteExt;
+                tokio::time::timeout(timeout, async {
+                    let mut stream = tokio::net::windows::named_pipe::ClientOptions::new().open(path)?;
+                    stream.write_all(payload.as_bytes()).await
+                }).await.map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Ferryx request timed out"))?
+            });
+        }
         Err(std::io::Error::other("Ferryx socket unavailable"))
     }
 }

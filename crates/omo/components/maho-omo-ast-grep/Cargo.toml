@@ -13,3 +13,7 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
+maho-ext-host = { path = "../../../maho-ext-host" }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "time"] }

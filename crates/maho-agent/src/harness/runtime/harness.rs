@@ -2,42 +2,88 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::lane::{Lane, encoded};
-use super::types::LaneState;
+use super::types::{Config, LaneState};
+use crate::harness::agent_harness::AgentHarnessOptions;
 use crate::harness::context::Context;
 use crate::harness::events::{HarnessEvent, HarnessEventBus, HarnessEventPayload};
+use crate::harness::hooks::{HookErrorReporter, HookRegistry};
 use crate::harness::session::session::{SessionError, SessionErrorKind, session_invariant_error};
-use crate::harness::session::types::{LaneConfiguration, Operation, Session, Write};
+use crate::harness::session::types::{Control, LaneConfiguration, LaneModelRef, Operation, OperationIntentKind, Session, Write};
 use crate::harness::session::values::*;
+use crate::harness::types::AgentHarnessTool;
 
-#[derive(Clone)]
-pub struct RuntimeConfig {
-    pub resources: crate::harness::types::AgentHarnessResources,
-    pub stream_options: crate::harness::types::AgentHarnessStreamOptions,
-    pub retry_policy: maho_ai::utils::retry::RetryPolicy,
-    pub compaction: crate::harness::compaction::compaction::CompactionSettings,
-    pub steering_mode: crate::types::QueueMode,
-    pub follow_up_mode: crate::types::QueueMode,
+/// Project one typed harness tool onto the context-free `Config<()>` snapshot.
+///
+/// `drive/generation.rs` (and `execution/assistant.rs`) read `Config.tools` only for the
+/// provider-facing `Tool` definition (`name`/`description`/`parameters`) — the pinned
+/// `config.tools.map((tool) => tool.tool)` — never `execute`. Since the real typed tools live on
+/// `Harness<TContext>`/`Lane.tool_runner`, the context-free snapshot carries an erased clone with
+/// the identical definition; its `execute` is never invoked (the typed runner is).
+fn erase_tool_context<TContext>(tool: &Arc<AgentHarnessTool<TContext>>) -> Arc<AgentHarnessTool<()>> {
+    Arc::new(AgentHarnessTool {
+        label: tool.label.clone(),
+        prepare_arguments: tool.prepare_arguments.clone(),
+        replay: tool.replay,
+        tool: tool.tool.clone(),
+        execute: Arc::new(|_, _, _, _, _, _| {
+            Box::pin(async { Err("Tool definition has no typed execution context".to_owned()) })
+        }),
+    })
 }
 
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self { resources: Default::default(), stream_options: Default::default(), retry_policy: crate::harness::config::default_retry_policy(), compaction: crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS, steering_mode: crate::types::QueueMode::All, follow_up_mode: crate::types::QueueMode::All }
+/// Pinned `DEFAULT_RETRY_POLICY`/`DEFAULT_COMPACTION_SETTINGS`-backed process-local drive config.
+pub fn default_drive_config() -> Config<()> {
+    Config {
+        tools: Vec::new(),
+        resources: Default::default(),
+        stream_options: Default::default(),
+        retry_policy: crate::harness::config::default_retry_policy(),
+        compaction: crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS,
+        steering_mode: crate::types::QueueMode::All,
+        follow_up_mode: crate::types::QueueMode::All,
+        tool_execution: crate::harness::session::types::ToolExecutionMode::Parallel,
+        tool_context: None,
+        system_prompt: None,
+        to_provider_messages: Arc::new(|messages, _context| {
+            Box::pin(async move { crate::harness::messages::convert_to_llm(messages) })
+        }),
+        entry_projectors: Default::default(),
     }
 }
 
-pub struct Harness {
+fn noop_hook_reporter() -> HookErrorReporter {
+    Arc::new(|_, _, _, _| Box::pin(async {}))
+}
+
+pub struct Harness<TContext = ()> {
     pub session: Arc<dyn Session>,
     pub events: HarnessEventBus,
     pub models: maho_ai::models::Models,
+    pub hooks: Arc<HookRegistry>,
     pub lanes_by_name: Mutex<BTreeMap<String, Arc<Lane>>>,
+    /// The typed built-in tools handed to every lane (pinned `Config.tools`).
+    tools: Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>,
+    /// The pinned `toolContext` handed to every tool invocation.
+    tool_context: Option<TContext>,
     seed: LaneConfiguration,
     closed_error: Mutex<Option<SessionError>>,
     close_lock: tokio::sync::Mutex<()>,
-    config: Arc<Mutex<RuntimeConfig>>,
+    config: Arc<Mutex<Config<()>>>,
     session_closed: Mutex<bool>,
 }
 
-impl Harness {
+/// One lane operation left open by a previous worker, mirroring pinned `OpenOperation`
+/// (`agent-harness.ts:211-217`). `aborting` is set when the durable control is `cancel_requested`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenOperation {
+    pub lane: String,
+    pub operation_id: String,
+    pub kind: OperationIntentKind,
+    pub started_at: i64,
+    pub aborting: bool,
+}
+
+impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
     fn assert_open(&self) -> Result<(), SessionError> {
         match self
             .closed_error
@@ -170,9 +216,12 @@ impl Harness {
                 },
                 self.events.clone(),
             );
-            lane.config = self.config.clone();
+            lane.drive_config = self.config.clone();
             lane.models = self.models.clone();
+            lane.hooks = self.hooks.clone();
+            lane.tool_runner = Arc::new(super::tools::ToolRunner::new(self.tools.clone(), self.tool_context.clone()));
             let lane = Arc::new(lane);
+            lane.install_self();
             self.lanes_by_name
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -206,6 +255,27 @@ impl Harness {
             .iter()
             .map(|(name, lane)| (name.clone(), lane.state()))
             .collect())
+    }
+
+    /// Every loaded lane's active operation, matching pinned `createAgentHarness`'s `open` list so a
+    /// worker can re-drive recoveries after its services are reachable.
+    pub fn open_operations(&self) -> Result<Vec<OpenOperation>, SessionError> {
+        self.assert_open()?;
+        let lanes = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner());
+        let mut open = Vec::new();
+        for (name, lane) in lanes.iter() {
+            let state = lane.state();
+            let Some(operation) = state.operation else { continue; };
+            let aborting = matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. });
+            open.push(OpenOperation {
+                lane: name.clone(),
+                operation_id: operation.meta.operation_id,
+                kind: operation.meta.intent.kind(),
+                started_at: operation.meta.started_at,
+                aborting,
+            });
+        }
+        Ok(open)
     }
 
     pub async fn get_name(&self, context: &Context) -> Result<Option<String>, SessionError> {
@@ -303,6 +373,7 @@ impl Harness {
         {
             lane.seal(error.clone());
         }
+        self.hooks.close(error.to_string());
         self.events.close(error.to_string());
         let lanes: Vec<_> = self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner()).values().cloned().collect();
         for lane in lanes { lane.finish_idle_callback().await; }
@@ -321,6 +392,7 @@ impl Harness {
         for lane in self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner()).values() { lane.seal(error.clone()); }
         let delivery = self.events.begin_emit_batch(vec![HarnessEvent::new(HarnessEventPayload::Fault { code: "harness_fault".into(), message: "AgentHarness storage or invariant fault".into() }, None)], context.clone());
         drop(delivery);
+        self.hooks.close(error.to_string());
         self.events.close(error.to_string());
         error
     }
@@ -347,7 +419,7 @@ impl Harness {
     pub fn get_follow_up_mode(&self) -> Result<crate::types::QueueMode, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).follow_up_mode) }
 
     async fn set_config<F>(&self, update: F, context: &Context) -> Result<(), SessionError>
-    where F: FnOnce(&mut RuntimeConfig) -> Result<HarnessEventPayload, SessionError> {
+    where F: FnOnce(&mut Config<()>) -> Result<HarnessEventPayload, SessionError> {
         self.assert_open()?;
         let event = { let mut config = self.config.lock().unwrap_or_else(|error| error.into_inner()); update(&mut config)? };
         self.events.emit(HarnessEvent::new(event, None), context.clone()).await;
@@ -371,6 +443,19 @@ impl Harness {
     pub async fn set_follow_up_mode(&self, value: crate::types::QueueMode, context: &Context) -> Result<(), SessionError> {
         self.set_config(move |config| { let previous = encoded(&config.follow_up_mode)?; config.follow_up_mode = value; Ok(HarnessEventPayload::ConfigUpdate { property: "followUpMode".into(), previous, value: encoded(&value)? }) }, context).await
     }
+
+    /// Pinned `Harness.buildLane`: attach the session, models, hooks, typed tools and shared
+    /// config to a lane.
+    fn build_lane(&self, name: &str, state: LaneState) -> Arc<Lane> {
+        let mut lane = Lane::new(name.to_owned(), self.session.clone(), state, self.events.clone());
+        lane.drive_config = self.config.clone();
+        lane.models = self.models.clone();
+        lane.hooks = self.hooks.clone();
+        lane.tool_runner = Arc::new(super::tools::ToolRunner::new(self.tools.clone(), self.tool_context.clone()));
+        let lane = Arc::new(lane);
+        lane.install_self();
+        lane
+    }
 }
 
 pub async fn create_agent_harness(
@@ -382,11 +467,14 @@ pub async fn create_agent_harness(
         session,
         events: HarnessEventBus::new(),
         models: maho_ai::models::create_models(None),
+        hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
         lanes_by_name: Mutex::new(BTreeMap::new()),
+        tools: Vec::new(),
+        tool_context: None,
         seed,
         closed_error: Mutex::new(None),
         close_lock: tokio::sync::Mutex::new(()),
-        config: Arc::new(Mutex::new(RuntimeConfig::default())),
+        config: Arc::new(Mutex::new(default_drive_config())),
         session_closed: Mutex::new(false),
     };
     let configurations = harness
@@ -411,4 +499,81 @@ fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json
     let mut value = serde_json::json!({ "enabled": policy.enabled, "maxRetries": policy.max_retries, "baseDelayMs": policy.base_delay_ms });
     if let Some(delay) = policy.max_agent_delay_ms { value["maxAgentDelayMs"] = serde_json::json!(delay); }
     value
+}
+
+/// Pinned `createAgentHarness(options, context)`: attach the durable harness to one open session,
+/// installing the full process-local `Config` (tools, resources, stream options, retry, compaction,
+/// queue modes, tool execution, system prompt) and restoring every durable lane.
+pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + 'static>(
+    options: AgentHarnessOptions<TContext>,
+    context: &Context,
+) -> Result<(Harness<TContext>, Vec<OpenOperation>), SessionError> {
+    crate::harness::config::validate_tool_names(&options.tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>())
+        .map_err(session_invariant_error)?;
+    crate::harness::config::validate_retry_policy(&options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy))
+        .map_err(session_invariant_error)?;
+    crate::harness::config::validate_compaction_settings(&options.compaction.unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS))
+        .map_err(session_invariant_error)?;
+    let seed = LaneConfiguration {
+        model: LaneModelRef { provider: options.model.provider.clone(), model_id: options.model.id.clone() },
+        thinking_level: options.thinking_level.unwrap_or(maho_ai::types::ModelThinkingLevel::Off),
+        active_tool_names: options
+            .active_tool_names
+            .clone()
+            .unwrap_or_else(|| options.tools.iter().map(|tool| tool.name().to_owned()).collect()),
+    };
+    // The typed tools and `toolContext` live on the `Harness<TContext>` and are handed to each
+    // lane's `ToolRunner`. The context-free drive config carries only the provider-facing tool
+    // definitions (`drive/generation.rs` reads `config.tools` for `tool.tool`, never `execute`).
+    let config = Config {
+        tools: options.tools.iter().map(erase_tool_context).collect(),
+        resources: options.resources.clone().unwrap_or_default(),
+        stream_options: options.stream_options.clone().unwrap_or_default(),
+        retry_policy: options.retry.clone().unwrap_or_else(crate::harness::config::default_retry_policy),
+        compaction: options.compaction.unwrap_or(crate::harness::compaction::compaction::DEFAULT_COMPACTION_SETTINGS),
+        steering_mode: options.steering_mode.unwrap_or(crate::types::QueueMode::All),
+        follow_up_mode: options.follow_up_mode.unwrap_or(crate::types::QueueMode::All),
+        tool_execution: options.tool_execution.unwrap_or(crate::harness::session::types::ToolExecutionMode::Parallel),
+        tool_context: None,
+        system_prompt: options.system_prompt.clone(),
+        to_provider_messages: Arc::new(|messages, _context| {
+            Box::pin(async move { crate::harness::messages::convert_to_llm(messages) })
+        }),
+        entry_projectors: Default::default(),
+    };
+    let harness = Harness {
+        session: options.session.clone(),
+        events: HarnessEventBus::new(),
+        models: options.models.clone(),
+        hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
+        lanes_by_name: Mutex::new(BTreeMap::new()),
+        tools: options.tools.clone(),
+        tool_context: options.tool_context.clone(),
+        seed,
+        closed_error: Mutex::new(None),
+        close_lock: tokio::sync::Mutex::new(()),
+        config: Arc::new(Mutex::new(config)),
+        session_closed: Mutex::new(false),
+    };
+    let restored = crate::harness::runtime::restore::restore_session(options.session.as_ref(), context).await?;
+    let open: Vec<OpenOperation> = restored
+        .iter()
+        .filter_map(|(lane, state)| {
+            state.operation.as_ref().map(|operation| OpenOperation {
+                lane: lane.clone(),
+                operation_id: operation.meta.operation_id.clone(),
+                kind: operation.meta.intent.kind(),
+                started_at: operation.meta.started_at,
+                aborting: matches!(operation.state.operation_scope_of().control, Control::CancelRequested { .. }),
+            })
+        })
+        .collect();
+    {
+        let mut lanes = harness.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner());
+        for (name, state) in restored {
+            let lane = harness.build_lane(&name, state);
+            lanes.insert(name, lane);
+        }
+    }
+    Ok((harness, open))
 }

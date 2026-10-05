@@ -832,8 +832,8 @@ async fn drive(
     };
 
     let mut payload = build_chat_payload(model, context, &transformed_messages, options);
-    if let Some(on_payload) = &options.request.on_payload
-        && let Some(next) = on_payload(&payload, model, None)
+    if let Some(next) = options.request.apply_payload_hook(&payload, model, None)
+        .await.map_err(MistralError::Message)?
     {
         payload = next;
     }
@@ -851,15 +851,13 @@ async fn drive(
         .map_err(|_| MistralError::Message("Request was aborted".into()))?
         .map_err(|error| MistralError::Message(error.to_string()))?;
 
-    if let Some(on_response) = &options.request.on_response {
-        on_response(
+    options.request.apply_response_hook(
             &crate::types::ProviderResponse {
                 status: response.status().as_u16(),
                 headers: headers_to_record(response.headers()),
             },
             model,
-        );
-    }
+        ).await.map_err(MistralError::Message)?;
 
     if !response.status().is_success() {
         let status_code = response.status().as_u16();

@@ -14,7 +14,7 @@ fn entry(raw:&Value)->Option<SearchProviderEntry> {
     config.search_context_size=match string(raw,"searchContextSize").as_deref() { Some("low")=>Some(SearchContextSize::Low),Some("medium")=>Some(SearchContextSize::Medium),Some("high")=>Some(SearchContextSize::High),_=>None };
     config.allowed_domains=strings(raw,"allowedDomains"); config.blocked_domains=strings(raw,"blockedDomains"); config.timeout_ms=number(raw,"timeoutMs");
     if let Some(location)=raw.get("userLocation").filter(|location|location.is_object()) { let mut object=Map::new(); for key in ["country","region","city","timezone"] { if let Some(value)=string(location,key) { object.insert(key.into(),Value::String(value)); } } if !object.is_empty() { config.user_location=Some(Value::Object(object)); } }
-    Some(SearchProviderEntry{config,priority:number(raw,"priority"),weight:number(raw,"weight")})
+    Some(SearchProviderEntry{config,priority:number(raw,"priority").filter(|value|*value!=0.),weight:number(raw,"weight").filter(|value|*value!=0.)})
 }
 pub fn config_from_object(raw:&Value)->Option<WebsearchConfig> {
     raw.as_object()?;

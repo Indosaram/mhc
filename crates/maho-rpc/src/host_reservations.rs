@@ -24,9 +24,37 @@ impl SessionPathReservations{
     }
     pub fn set_attached(&self,session_path:&str,attached:bool,mut report:impl FnMut(String)){if self.held.contains(session_path)&&let Err(error)=self.publish(session_path,attached){report(format!("session path reservation for {session_path} could not be updated ({error})"));}}
 }
+/// A path-reservation set with its failure reporter bound once (senpi's factory shape).
+pub struct BoundPathReservations{inner:SessionPathReservations,report:Box<dyn FnMut(String)+Send>}
+impl BoundPathReservations{
+    pub fn claim(&mut self,session_path:&str,attached:bool)->Option<SessionPathOwner>{let report=&mut self.report;self.inner.claim(session_path,attached,report)}
+    pub fn release(&mut self,session_path:&str){let report=&mut self.report;self.inner.release(session_path,report);}
+    pub fn set_attached(&mut self,session_path:&str,attached:bool){let report=&mut self.report;self.inner.set_attached(session_path,attached,report);}
+}
+/// This endpoint's daemon directory: the claims live in it, and the pointer they are read
+/// against lives there too (senpi `createSessionPathReservations`).
+pub fn create_session_path_reservations(daemon_dir:&Path,instance_id:String,pid:Option<u32>,on_failure:impl FnMut(String)+Send+'static)->BoundPathReservations{
+    BoundPathReservations{inner:SessionPathReservations::new(daemon_dir,instance_id,pid.unwrap_or_else(std::process::id)),report:Box::new(on_failure)}
+}
+/// The claims a shared host publishes, or nothing when it serves no socket and no daemon
+/// directory was told through the environment (senpi `createEndpointReservations`).
+pub fn create_endpoint_reservations(agent_dir:&Path,socket:Option<&str>,instance_id:String,on_failure:impl FnMut(String)+Send+'static)->Option<BoundPathReservations>{
+    let told=std::env::var(crate::host_daemon_paths::HOST_DAEMON_DIR_ENV).ok();
+    let dir=endpoint_reservations_dir(agent_dir,socket,told.as_deref())?;
+    Some(create_session_path_reservations(&dir,instance_id,None,on_failure))
+}
+/// The daemon directory endpoint claims live in, or none when nothing tells this process where to
+/// publish them (senpi `createEndpointReservations`): a told directory wins, else the socket's own
+/// directory, else there is no endpoint to share. Split from the environment read so the decision is
+/// deterministic in tests instead of depending on the ambient `SENPI_RPC_HOST_DAEMON_DIR`.
+fn endpoint_reservations_dir(agent_dir:&Path,socket:Option<&str>,told:Option<&str>)->Option<PathBuf>{
+    match told.filter(|value|!value.trim().is_empty()){Some(dir)=>Some(PathBuf::from(dir)),None=>socket.map(|socket|crate::host_daemon_paths::create_host_daemon_paths(socket,agent_dir).dir)}
+}
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn bound_reservations_claim_republish_and_release_through_the_reporter(){let temp=tempfile::tempdir().unwrap();let failures=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let recorder=failures.clone();let mut reservations=create_session_path_reservations(temp.path(),"one".into(),None,move|message|recorder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(message));assert!(reservations.claim("/session",true).is_none());let dir=temp.path().join("reservations");assert_eq!(read_session_path_claims(&dir).len(),1);reservations.set_attached("/session",false);assert_eq!(read_session_path_claims(&dir)[0].owner.attached,Some(false));reservations.release("/session");assert!(read_session_path_claims(&dir).is_empty());assert!(failures.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());}
+    #[test]fn endpoint_reservations_need_a_socket_or_a_daemon_directory(){let temp=tempfile::tempdir().unwrap();assert!(endpoint_reservations_dir(temp.path(),None,None).is_none());assert!(endpoint_reservations_dir(temp.path(),None,Some("   ")).is_none());assert!(endpoint_reservations_dir(temp.path(),Some("/tmp/rpc.sock"),None).is_some());assert_eq!(endpoint_reservations_dir(temp.path(),None,Some("/told")),Some(PathBuf::from("/told")));let bound=create_endpoint_reservations(temp.path(),Some("/tmp/rpc.sock"),"one".into(),|_|{});assert!(bound.is_some());}
     #[test]fn claims_republish_and_release(){let temp=tempfile::tempdir().unwrap();let mut reservations=SessionPathReservations::new(temp.path(),"one".into(),std::process::id());assert!(reservations.claim("/session",true,|error|panic!("{error}")).is_none());let dir=temp.path().join("reservations");assert_eq!(read_session_path_claims(&dir).len(),1);reservations.set_attached("/session",false,|error|panic!("{error}"));assert_eq!(read_session_path_claims(&dir)[0].owner.attached,Some(false));reservations.release("/session",|error|panic!("{error}"));assert!(read_session_path_claims(&dir).is_empty());}
     #[test]fn superseded_detached_claim_is_reclaimable_but_current_stands(){let temp=tempfile::tempdir().unwrap();let pointer=temp.path().join("host.pid");let owner=SessionPathOwner{instance_id:"one".into(),pid:std::process::id(),process_start_time:read_process_start_time(std::process::id()),session_path:"/session".into(),attached:Some(false),current:None};assert!(standing_owner(owner.clone(),&pointer).is_none());fs::write(&pointer,r#"{"instance_id":"one"}"#).unwrap();assert_eq!(standing_owner(owner.clone(),&pointer).unwrap().current,Some(true));let mut recycled=owner;recycled.process_start_time=Some("not-current".into());assert!(!claim_owner_is_live(&recycled));}
 }

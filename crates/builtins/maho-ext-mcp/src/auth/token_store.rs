@@ -24,7 +24,7 @@ pub fn hash_server_url(url: &str) -> String { format!("{:x}",Sha256::digest(url)
 #[derive(Clone)]
 pub struct McpTokenStore { pub server_name: String, pub server_url: String, agent_dir: PathBuf, hash: String,pub lock_retries:usize,pub disable_lock:bool }
 impl McpTokenStore {
-    pub fn new(agent_dir: &Path, server_name: &str, server_url: &str) -> Self { Self { server_name: server_name.into(),server_url: server_url.into(),agent_dir: agent_dir.into(),hash: hash_server_url(server_url),lock_retries:10,disable_lock:false } }
+    pub fn new(agent_dir: &Path, server_name: &str, server_url: &str) -> Self { Self { server_name: server_name.into(),server_url: server_url.into(),agent_dir: agent_dir.into(),hash: hash_server_url(server_url),lock_retries:50,disable_lock:false } }
     pub fn root_dir(&self) -> PathBuf { self.agent_dir.join("mcp-auth") }
     pub fn dir(&self) -> PathBuf { self.root_dir().join(&self.hash) }
     pub fn tokens_path(&self) -> PathBuf { self.dir().join("tokens.json") }

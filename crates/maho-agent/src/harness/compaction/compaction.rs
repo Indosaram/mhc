@@ -135,12 +135,15 @@ fn get_message_from_entry_for_compaction(entry: &Entry) -> Option<AgentMessage> 
 }
 
 /// Generated compaction data ready to be persisted as a compaction entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactResult {
     pub summary: String,
     pub tokens_before: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     pub retained_tail: Vec<AgentMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<JsonValue>,
 }
 

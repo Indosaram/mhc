@@ -1,0 +1,17 @@
+{
+  "schema": "session2-residual-requirements-manifest/v1",
+  "note": "Negative fixture: server_row_manifest.uncovered_behavior is non-empty (a declared behavior gap). Its presence MUST reject success until the gap is resolved.",
+  "execution_coverage": {
+    "required_tests": [
+      { "package": "maho-cli", "target": "mini_worker", "test": "unwatch_and_close_release_watch_subscriptions", "requirement": "G7" }
+    ]
+  },
+  "server_row_manifest": {
+    "rows": [
+      { "id": 10, "ts": "runtime.ts", "module": "runtime.rs", "status": "source-complete", "required_tests": [{ "package": "maho-cli", "target": "mini_worker", "test": "unwatch_and_close_release_watch_subscriptions" }] }
+    ],
+    "uncovered_behavior": [
+      { "id": "UB-1", "rows": [10, 12, 13], "owner": "task-16", "detail": "runtime-level MCP inventory + extension UI rebind have no executed proof" }
+    ]
+  }
+}

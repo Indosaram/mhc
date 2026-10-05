@@ -27,9 +27,14 @@ serde_yaml = "=0.9.34"
 ignore = "=0.4.33"
 async-trait = "=0.1.92"
 anyhow = "=1.0.104"
+globset = "=0.4.20"
+fancy-regex = "=0.16.2"
+semver = "=1.0.27"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
+maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 
 [lints]
 workspace = true

@@ -1,0 +1,5 @@
+status: completed exit_code: 0
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-webfetch)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.98s
+
+LANE39_FETCH_SELECTOR_CLIPPY_EXIT=0

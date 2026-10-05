@@ -18,7 +18,7 @@ pub struct HostError {
 /// `find` answers from the whole catalog. Implementations return raw JSON because the host
 /// shape is untrusted: callers parse it with [`parse_registry_model`], which rejects malformed
 /// entries and any entry carrying secret-like fields.
-pub trait SenpiModelRegistry {
+pub trait SenpiModelRegistry: Send + Sync {
     /// The available model list; any non-array value is treated as a malformed container.
     fn get_available(&self) -> Result<Value, HostError>;
     /// The catalog entry for `provider`/`model_id`, when one exists.

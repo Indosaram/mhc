@@ -64,8 +64,24 @@ pub fn load_hook_config_sources(options:&HookConfigLoaderOptions,mut read_text_f
 }
 
 pub fn load_hook_config_files(options:&HookConfigLoaderOptions)->ParsedHookConfig {
-    load_hook_config_sources(options,|path|match std::fs::read_to_string(path) {
-        Ok(text)=>Ok(Some(text)),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error),
+    load_hook_config_sources(options,|path|match std::fs::read(path) {
+        Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error),
+    })
+}
+
+pub async fn load_hook_config_sources_async(options:&HookConfigLoaderOptions)->ParsedHookConfig {
+    let reads=create_source_candidates(options).into_iter().filter_map(|candidate|match candidate.content {
+        SourceContent::Inline(_)=>None,
+        SourceContent::File=>Some(async move {
+            let path=candidate.source.source_path;
+            let result=match tokio::fs::read(&path).await {
+                Ok(bytes)=>Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(error)=>Err(error),
+            };(path,result)
+        }),
+    });
+    let files=futures::future::join_all(reads).await.into_iter().collect::<std::collections::BTreeMap<_,_>>();
+    load_hook_config_sources(options,|path|match files.get(path) {
+        Some(Ok(text))=>Ok(text.clone()),Some(Err(error))=>Err(std::io::Error::new(error.kind(),error.to_string())),None=>Ok(None),
     })
 }
 
@@ -76,8 +92,28 @@ fn source_error(source:&HookSourceMetadata,message:String)->ParsedHookConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn sync_and_async_files_decode_invalid_utf8_with_replacement()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let path=dir.path().join("hooks.json");
+        let mut bytes=b"{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo ".to_vec();bytes.push(0xff);bytes.extend_from_slice(b"\"}]}]}}");std::fs::write(&path,bytes)?;
+        let options=HookConfigLoaderOptions {global_hooks_path:Some(path.to_string_lossy().into_owned()),project_hooks_path:Some(dir.path().join("absent").to_string_lossy().into_owned()),..Default::default()};
+        let sync=load_hook_config_files(&options);let asynchronous=load_hook_config_sources_async(&options).await;
+        assert!(sync.diagnostics.is_empty());assert!(asynchronous.diagnostics.is_empty());assert_eq!(sync.executable_handlers.len(),1);assert_eq!(sync.executable_handlers[0].config.command,"echo \u{fffd}");assert_eq!(asynchronous.executable_handlers,sync.executable_handlers);Ok(())
+    }
     use std::collections::BTreeMap;
     fn hooks(command:&str,event:&str)->Value {json!({event:[{"matcher":"*","hooks":[{"type":"command","command":command}]}]})}
+
+    #[tokio::test]
+    async fn asynchronous_files_preserve_order_and_neighbor_diagnostics()->std::io::Result<()> {
+        let dir=tempfile::tempdir()?;let global=dir.path().join("global.json");let project=dir.path().join("project.json");let runtime=dir.path().join("runtime.json");
+        std::fs::write(&global,json!({"hooks":hooks("global","PreToolUse")}).to_string())?;
+        std::fs::write(&project,"{")?;
+        std::fs::write(&runtime,json!({"hooks":hooks("runtime","SessionStart")}).to_string())?;
+        let options=HookConfigLoaderOptions {global_hooks_path:Some(global.to_string_lossy().into_owned()),project_hooks_path:Some(project.to_string_lossy().into_owned()),runtime_hook_source_paths:vec![runtime.to_string_lossy().into_owned()],..Default::default()};
+        let parsed=load_hook_config_sources_async(&options).await;
+        assert_eq!(parsed.executable_handlers.iter().map(|handler|handler.config.command.as_str()).collect::<Vec<_>>(),["global","runtime"]);
+        assert_eq!(parsed.diagnostics.iter().map(|diagnostic|diagnostic.code.as_str()).collect::<Vec<_>>(),["invalid_root","unsupported_event"]);Ok(())
+    }
 
     #[test]
     fn canonical_source_order_is_stable() {

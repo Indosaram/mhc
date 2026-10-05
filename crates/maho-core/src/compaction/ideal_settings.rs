@@ -1,13 +1,13 @@
 //! Port of senpi `packages/coding-agent/src/core/compaction/ideal-compaction-settings.ts`.
 
 /// `IdealCompactionSettings`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct IdealCompactionSettings {
     pub grace_band_enabled: Option<bool>,
     pub tool_admission_enabled: Option<bool>,
     pub reminder_enabled: Option<bool>,
     pub reserve_scaling_enabled: Option<bool>,
-    pub speculative_lead_tokens: Option<i64>,
+    pub speculative_lead_tokens: Option<f64>,
 }
 
 /// `DEFAULT_IDEAL_COMPACTION_SETTINGS`.

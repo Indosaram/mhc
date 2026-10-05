@@ -51,6 +51,17 @@ fn nested_numeric_and_text_signals_classify_retry() {
     assert!(!is_retriable_mcp_error(&json!({"message":"1503 bad input"})));
 }
 #[test]
+fn numeric_status_strings_accept_javascript_radix_notation() {
+    for status in ["0x1f7","0o767","0b111110111"] {assert!(is_retriable_mcp_error(&json!({"status":status})));}
+    assert!(is_mcp_session_expired_error(&json!({"statusCode":"0x194"})));
+    assert!(!is_retriable_mcp_error(&json!({"status":"+0x1f7"})));
+}
+#[test]
+fn status_text_uses_ascii_javascript_word_boundaries() {
+    assert!(is_retriable_mcp_error(&json!({"message":"é503é"})));
+    assert!(!is_retriable_mcp_error(&json!({"message":"_503_"})));
+}
+#[test]
 fn session_expiry_classification_distinguishes_protocol_errors() {
     assert!(is_mcp_session_expired_error(&json!({"code":-32000,"message":"Session missing"})));
     assert!(!is_mcp_session_expired_error(&json!({"code":-32000,"message":"Bad input"})));

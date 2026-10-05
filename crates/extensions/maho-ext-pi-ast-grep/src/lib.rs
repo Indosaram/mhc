@@ -10,5 +10,6 @@ pub mod downloader;
 pub mod binary_downloader;
 pub mod errors;
 pub mod process_timeout;
+pub mod render;
 mod index;
 pub use index::AstGrep;

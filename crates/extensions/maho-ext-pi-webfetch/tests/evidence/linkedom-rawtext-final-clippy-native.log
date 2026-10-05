@@ -1,0 +1,43 @@
+status: completed exit_code: 0
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-webfetch)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.62s
+
+LANE39_RAW_FINAL_CLIPPY_EXIT=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running `/home/indo/T9-Mac/.cargo-target/maho-code/lane-39/debug/examples/fetch_qa`
+PASS actual-pin-linkedom "foster-text-elements" markdown; cleanup=joined task, port 127.0.0.1:42785 released
+PASS actual-pin-linkedom "foster-text-elements" text; cleanup=joined task, port 127.0.0.1:36583 released
+PASS actual-pin-linkedom "multiple-tables" markdown; cleanup=joined task, port 127.0.0.1:41691 released
+PASS actual-pin-linkedom "multiple-tables" text; cleanup=joined task, port 127.0.0.1:45455 released
+PASS actual-pin-linkedom "nested-tables" markdown; cleanup=joined task, port 127.0.0.1:36321 released
+PASS actual-pin-linkedom "nested-tables" text; cleanup=joined task, port 127.0.0.1:34857 released
+PASS actual-pin-linkedom "sibling-insertion" markdown; cleanup=joined task, port 127.0.0.1:39627 released
+PASS actual-pin-linkedom "sibling-insertion" text; cleanup=joined task, port 127.0.0.1:36497 released
+PASS actual-pin-linkedom "explicit-table" markdown; cleanup=joined task, port 127.0.0.1:42451 released
+PASS actual-pin-linkedom "explicit-table" text; cleanup=joined task, port 127.0.0.1:39529 released
+invoke webfetch url=http://127.0.0.1:41461/markdown format=markdown
+PASS markdown details={"url":"http://127.0.0.1:41461/markdown","finalUrl":"http://127.0.0.1:41461/markdown","format":"markdown","status":200,"statusText":"OK","contentType":"text/html","bytes":48,"timeoutSeconds":30,"converted":true,"truncated":false,"outputTruncated":false,"outputBytes":24,"outputTotalBytes":24} text="## Hello\n\nAlpha **Beta**"
+cleanup: joined fixture task; port 127.0.0.1:41461 released
+invoke webfetch url=http://127.0.0.1:45331/text format=text
+PASS text details={"url":"http://127.0.0.1:45331/text","finalUrl":"http://127.0.0.1:45331/text","format":"text","status":200,"statusText":"OK","contentType":"text/html","bytes":34,"timeoutSeconds":30,"converted":true,"truncated":false,"outputTruncated":false,"outputBytes":17,"outputTotalBytes":17} text="Hello\n\nAlpha\nBeta"
+cleanup: joined fixture task; port 127.0.0.1:45331 released
+invoke webfetch url=http://127.0.0.1:43253/html format=html
+PASS html details={"url":"http://127.0.0.1:43253/html","finalUrl":"http://127.0.0.1:43253/html","format":"html","status":200,"statusText":"OK","contentType":"text/html","bytes":10,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":10,"outputTotalBytes":10} text="<p>raw</p>"
+cleanup: joined fixture task; port 127.0.0.1:43253 released
+invoke webfetch url=http://127.0.0.1:42989/error format=text
+PASS error details={"url":"http://127.0.0.1:42989/error","finalUrl":"http://127.0.0.1:42989/error","format":"text","status":404,"statusText":"Not Found","contentType":"text/plain","bytes":7,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":7,"outputTotalBytes":7} text="missing"
+cleanup: joined fixture task; port 127.0.0.1:42989 released
+invoke webfetch url=http://127.0.0.1:40023/bom format=text
+PASS bom details={"url":"http://127.0.0.1:40023/bom","finalUrl":"http://127.0.0.1:40023/bom","format":"text","status":200,"statusText":"OK","contentType":"text/plain","bytes":8,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":5,"outputTotalBytes":5} text="ready"
+cleanup: joined fixture task; port 127.0.0.1:40023 released
+invoke webfetch url=http://127.0.0.1:32913/oversized format=text
+PASS oversized details={} text="Response too large (exceeds 5MB limit)"
+cleanup: joined fixture task; port 127.0.0.1:32913 released
+PASS cancellation invocation=webfetch(http://127.0.0.1:1, pre-aborted reason=qa cancellation); cleanup=no socket created
+PASS invalid URL; cleanup=no socket created
+PASS body timeout; cleanup=joined fixture task, port 127.0.0.1:38849 released
+PASS redirect invocation=webfetch(http://127.0.0.1:41689/start,text) finalUrl="http://127.0.0.1:41689/final"; cleanup=joined task, port released
+PASS output-cap invocation=webfetch(http://127.0.0.1:44695/cap,text) details={"url":"http://127.0.0.1:44695/cap","finalUrl":"http://127.0.0.1:44695/cap","format":"text","status":200,"statusText":"OK","contentType":"","bytes":80000,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":true,"outputBytes":51200,"outputTotalBytes":80000}; cleanup=joined task, port released
+PASS output-cap invocation=webfetch(http://127.0.0.1:35787/cap,text) details={"url":"http://127.0.0.1:35787/cap","finalUrl":"http://127.0.0.1:35787/cap","format":"text","status":200,"statusText":"OK","contentType":"","bytes":120000,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":true,"outputBytes":51191,"outputTotalBytes":120000}; cleanup=joined task, port released
+
+LANE39_RAW_FINAL_NATIVE_EXIT=0

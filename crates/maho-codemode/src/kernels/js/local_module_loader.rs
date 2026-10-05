@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::{Path, PathBuf, Component}};
+use std::path::{Path, PathBuf, Component};
 use serde_json::{Value, json};
 use crate::bridge::{protocol::BridgeConnectionConfig, reserved::*};
 use super::rewrite_imports::rewrite_imports;
@@ -7,7 +7,7 @@ pub const PREPARED_CELL_PREFIX: &str = "/*senpi:prepared-cell*/";
 
 pub struct LocalModuleLoaderOptions {
     pub cwd: PathBuf,
-    pub local_roots: Option<HashMap<String, String>>,
+    pub local_roots: Option<crate::bridge::protocol::LocalRoots>,
     pub artifacts_dir: Option<PathBuf>,
 }
 
@@ -27,7 +27,7 @@ fn directory_url(directory: &Path) -> Result<String, std::io::Error> {
 pub fn runtime_context(options: &LocalModuleLoaderOptions) -> Result<Value, std::io::Error> {
     let mut roots = serde_json::Map::new();
     if let Some(local_roots) = &options.local_roots {
-        for (scheme, root) in local_roots { roots.insert(scheme.to_lowercase(), json!(directory_url(Path::new(root))?)); }
+        for (scheme, root) in &local_roots.0 { roots.insert(scheme.to_lowercase(), json!(directory_url(Path::new(root))?)); }
     }
     if let Some(artifacts) = &options.artifacts_dir && !roots.contains_key("local") { roots.insert("local".into(), json!(directory_url(&artifacts.join("local"))?)); }
     Ok(json!({"cwdUrl":directory_url(&options.cwd)?, "localRootUrls":roots,

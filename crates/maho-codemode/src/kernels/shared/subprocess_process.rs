@@ -94,12 +94,22 @@ impl SubprocessProcess {
     }
     pub async fn terminate(&mut self, initial_signal: &str, escalation: Duration) -> Result<(), ProcessError> {
         self.retire();
-        if self.child.try_wait()?.is_some() { return Ok(()); }
+        let pid=self.child.id();
+        if self.child.try_wait()?.is_some() {self.sweep_group(pid).await;self.join_readers().await;return Ok(());}
         self.signal(initial_signal).await?;
-        if let Ok(status) = tokio::time::timeout(escalation, self.child.wait()).await { status?; return Ok(()); }
+        if let Ok(status) = tokio::time::timeout(escalation, self.child.wait()).await {status?;self.sweep_group(pid).await;self.join_readers().await;return Ok(());}
         self.signal("KILL").await?;
         tokio::time::timeout(Duration::from_millis(500), self.child.wait()).await.map_err(|_| ProcessError::Retirement)??;
+        self.sweep_group(pid).await;
+        self.join_readers().await;
         Ok(())
+    }
+    async fn join_readers(&mut self) {for reader in self.readers.drain(..) {let _=reader.await;}}
+    async fn sweep_group(&self,pid:Option<u32>) {
+        #[cfg(unix)]
+        if let Some(pid)=pid {let _=tokio::process::Command::new("kill").args(["-KILL","--",&format!("-{pid}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().await;}
+        #[cfg(not(unix))]
+        let _=pid;
     }
     pub async fn shutdown(&mut self, frame: Option<&Value>) -> Result<(), ProcessError> {
         if let Some(frame) = frame { let _ = self.send(frame).await; }

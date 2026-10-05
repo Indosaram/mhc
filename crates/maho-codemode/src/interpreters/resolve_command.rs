@@ -25,7 +25,18 @@ pub fn resolve_command_path(command: &str, env: &HashMap<String, String>, cwd: &
     };
     if command.contains('/') || (windows && command.contains('\\')) {
         let path = Path::new(command);
-        return executable(if path.is_absolute() { path.into() } else { cwd.join(path) });
+        let absolute = if path.is_absolute() { path.into() } else {
+            let mut resolved = PathBuf::new();
+            for component in cwd.join(path).components() {
+                match component {
+                    std::path::Component::CurDir => {},
+                    std::path::Component::ParentDir => { resolved.pop(); },
+                    component => resolved.push(component.as_os_str()),
+                }
+            }
+            resolved
+        };
+        return executable(absolute);
     }
     let path = env.get("PATH").or_else(|| env.get("Path"))?;
     for directory in path.split(if cfg!(windows) { ';' } else { ':' }).filter(|s| !s.is_empty()) {

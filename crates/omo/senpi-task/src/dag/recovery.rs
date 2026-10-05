@@ -64,9 +64,9 @@ pub enum DagRecoveryOutcome {
 pub struct RecoverableRecord {
     #[serde(flatten)]
     pub record: DagRunRecordV1,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub lease_holder_pid: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub previous_lease_holder_pid: Option<i64>,
 }
 
@@ -137,8 +137,11 @@ pub fn create_dag_recovery(options: DagRecoveryOptions) -> DagRecovery {
 }
 
 impl DagRecovery {
-    pub fn pause_runs_for_shutdown(&self, parent_session_id: &str) -> Vec<DagRunId> {
+    pub fn try_pause_runs_for_shutdown(&self, parent_session_id: &str) -> Result<Vec<DagRunId>, crate::dag::store::DagStoreError> {
         pause_runs_for_shutdown(&self.context, parent_session_id)
+    }
+    pub fn pause_runs_for_shutdown(&self, parent_session_id: &str) -> Vec<DagRunId> {
+        self.try_pause_runs_for_shutdown(parent_session_id).expect("DAG shutdown pause persisted")
     }
 
     pub fn resume_paused_runs(&self, parent_session_id: &str) -> Vec<DagRecoveryOutcome> {
@@ -146,7 +149,7 @@ impl DagRecovery {
     }
 }
 
-fn pause_runs_for_shutdown(context: &RecoveryContext, parent_session_id: &str) -> Vec<DagRunId> {
+fn pause_runs_for_shutdown(context: &RecoveryContext, parent_session_id: &str) -> Result<Vec<DagRunId>, crate::dag::store::DagStoreError> {
     let mut paused = Vec::new();
     for observed in list_run_records(&context.store) {
         if observed.record.parent_session_id != parent_session_id
@@ -158,16 +161,16 @@ fn pause_runs_for_shutdown(context: &RecoveryContext, parent_session_id: &str) -
             stop_admission(&observed.record.run_id);
         }
         let journal = recovery_journal(context, observed.clone(), None);
-        let _ = journal.append(DagRunEventPayload::RunPaused {
+        journal.append(DagRunEventPayload::RunPaused {
             reason: Some("session_shutdown".to_string()),
-        });
+        })?;
         let run_id = observed.record.run_id.clone();
-        let _ = context.store.with_run_lock(&run_id, || {
-            let Ok(Some(fresh)) = context.store.read_checkpoint::<RecoverableRecord>(&run_id) else {
-                return;
+        context.store.with_run_lock(&run_id, || -> Result<(), crate::dag::store::DagStoreError> {
+            let Some(fresh) = context.store.read_checkpoint::<RecoverableRecord>(&run_id)? else {
+                return Ok(());
             };
             if fresh.record.status != DagRunStatus::Paused {
-                return;
+                return Ok(());
             }
             let previous_lease_holder_pid = fresh.lease_holder_pid.or(Some(context.host_pid));
             let released = RecoverableRecord {
@@ -175,11 +178,11 @@ fn pause_runs_for_shutdown(context: &RecoveryContext, parent_session_id: &str) -
                 previous_lease_holder_pid,
                 ..fresh
             };
-            let _ = context.store.write_checkpoint(&run_id, &released);
-        });
+            context.store.write_checkpoint(&run_id, &released)
+        })??;
         paused.push(run_id);
     }
-    paused
+    Ok(paused)
 }
 
 fn resume_paused_runs(context: &RecoveryContext, parent_session_id: &str) -> Vec<DagRecoveryOutcome> {

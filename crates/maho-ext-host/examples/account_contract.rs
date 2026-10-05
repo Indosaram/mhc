@@ -41,8 +41,8 @@ impl ModelRegistry for SyntheticRegistry {
             tokio::task::spawn_blocking(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
                 runtime.block_on(async {
-                    let mut storage = storage.lock().await;
-                    credential_accounts::pin_credential_account(&mut storage, &provider, name.as_deref(), &|_| None, &repository, 0).await
+                    let storage = storage.lock().await;
+                    credential_accounts::pin_credential_account(&storage, &provider, name.as_deref(), &|_| None, &repository, 0).await
                 })
             }).await.map_err(|error| ExtensionFailure::new(error.to_string()))??;
             Ok(())
@@ -57,8 +57,8 @@ impl ModelRegistry for SyntheticRegistry {
             tokio::task::spawn_blocking(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
                 runtime.block_on(async {
-                    let mut storage = storage.lock().await;
-                    credential_accounts::remove_credential_account(&mut storage, &provider, &name, &|_| None, &repository, 0).await
+                    let storage = storage.lock().await;
+                    credential_accounts::remove_credential_account(&storage, &provider, &name, &|_| None, &repository, 0).await
                 })
             }).await.map_err(|error| ExtensionFailure::new(error.to_string()))??;
             Ok(())
@@ -66,8 +66,8 @@ impl ModelRegistry for SyntheticRegistry {
     }
     fn rename_credential_account<'a>(&'a self, provider: &'a str, name: &'a str, display_name: Option<&'a str>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            let mut storage = self.storage.lock().await;
-            credential_accounts::rename_credential_account(&mut storage, provider, name, display_name).await?;
+            let storage = self.storage.lock().await;
+            credential_accounts::rename_credential_account(&storage, provider, name, display_name).await?;
             Ok(())
         })
     }
@@ -77,7 +77,7 @@ impl ModelRegistry for SyntheticRegistry {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let auth_path = directory.path().join("auth.json");
-    let mut storage = AuthStorage::create(&auth_path.to_string_lossy());
+    let storage = AuthStorage::create(&auth_path.to_string_lossy());
     storage.set("synthetic", Some(json!({"type":"api_key", "key":"synthetic-secret", "accounts":[
         {"name":"first", "key":"synthetic-secret", "source":"login"},
         {"name":"second", "key":"synthetic-secret", "source":"import"}

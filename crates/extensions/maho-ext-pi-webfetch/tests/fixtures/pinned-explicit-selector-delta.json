@@ -1,0 +1,23 @@
+[
+  {
+    "name": "explicit-selector-order",
+    "html": "<html><title>Document</title><body><div class=\"entry-content\">Second candidate is longer than thirty characters.</div><div class=\"article_view\">First selected article is longer than thirty characters.</div></body></html>",
+    "url": "https://example.org/base/page",
+    "markdown": "# Document\n\nFirst selected article is longer than thirty characters.",
+    "text": "Document\n\nFirst selected article is longer than thirty characters."
+  },
+  {
+    "name": "explicit-noise",
+    "html": "<html><title>Title</title><body><article class=\"post-content\"><p>Useful content longer than thirty characters survives extraction.</p><aside>noise</aside><div class=\"related\">related noise</div><h2>Section</h2><p>Trailing text</p></article></body></html>",
+    "url": "https://example.org/base/page",
+    "markdown": "Useful content longer than thirty characters survives extraction.\n\n## Section\n\nTrailing text",
+    "text": "Useful content longer than thirty characters survives extraction.\n\nSection\n\nTrailing text"
+  },
+  {
+    "name": "explicit-short-skip",
+    "html": "<html><title>Title</title><body><div class=\"article_view\">short</div><main class=\"entry-content\">The second explicit candidate has enough text to be selected.</main></body></html>",
+    "url": "https://example.org/base/page",
+    "markdown": "# Title\n\nThe second explicit candidate has enough text to be selected.",
+    "text": "Title\n\nThe second explicit candidate has enough text to be selected."
+  }
+]

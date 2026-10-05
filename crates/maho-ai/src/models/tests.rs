@@ -190,6 +190,27 @@ fn test_provider(id: &str, models: Vec<Model>, fetch: Option<FetchModels>) -> Ar
     })
 }
 
+#[test]
+fn provider_collection_retains_declared_retry_policy() {
+    let profile = crate::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone();
+    let provider = create_provider_with_retry_policy(CreateProviderOptions {
+        id: "retry-profile-test".into(),
+        name: None,
+        base_url: None,
+        headers: None,
+        models: Vec::new(),
+        fetch_models: None,
+        restore_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(EchoStreams { calls: AtomicUsize::new(0) })),
+    }, Some(profile));
+    let models = create_models(None);
+    models.set_provider(provider);
+    let retained = models.get_provider("retry-profile-test").expect("registered provider");
+    assert_eq!(retained.retry_policy().expect("declared policy").turn.max_retries, 9);
+    assert!(test_provider("default-profile-test", Vec::new(), None).retry_policy().is_none());
+}
+
 fn with_provider(model: &Model, provider: &str) -> Model {
     let mut model = model.clone();
     model.provider = provider.into();
@@ -2095,4 +2116,91 @@ fn supports_a_hole_between_high_and_max() {
     model.thinking_level_map = Some([(L::Xhigh, None), (L::Max, Some("max".to_owned()))].into_iter().collect());
     assert_eq!(get_supported_thinking_levels(&model), levels(&["off", "minimal", "low", "medium", "high", "max"]), "{title}");
     assert_eq!(clamp_thinking_level(&model, L::Xhigh), L::Max, "{title}");
+}
+
+/// The `(model, handle, options)` triples a recording provider was asked to cancel.
+type CancelCalls = Arc<Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>>;
+
+/// A provider streams that records the `(model, handle, options)` it was asked to cancel, so the
+/// `Models.cancelDeferred` dispatch (provider resolution + `applyAuth` + forward) is observable.
+struct CancelRecorder {
+    calls: CancelCalls,
+}
+
+impl ProviderStreams for CancelRecorder {
+    fn stream(&self, model: &Model, _context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream {
+        let stream = AssistantMessageEventStream::assistant();
+        let mut message = crate::utils::lazy::setup_error_message(model, "");
+        message.stop_reason = StopReason::Stop;
+        message.error_message = None;
+        stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message: message.clone() });
+        stream
+    }
+
+    fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+        self.stream(model, context, options.map(|options| options.stream))
+    }
+
+    fn cancel_deferred<'a>(
+        &'a self,
+        model: &'a Model,
+        handle: &'a DeferredHandle,
+        options: Option<crate::types::DeferredCancelOptions>,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        let recorded = (model.clone(), handle.clone(), options);
+        Box::pin(async move {
+            self.calls.lock().expect("cancel calls").push(recorded);
+            Ok(())
+        })
+    }
+
+    fn supports_cancel_deferred(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_providers() {
+    let title = "Models.cancelDeferred resolves the provider and rejects unknown or incapable providers";
+    let base = builtin("anthropic", "");
+    let model = with_provider(&base, "cancel-target");
+    let handle = DeferredHandle {
+        provider: "cancel-target".into(),
+        model_id: model.id.clone(),
+        api: model.api.clone(),
+        id: "h".into(),
+        expires_at: None,
+        poll_after_ms: None,
+        data: None,
+    };
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let models = create_models(Some(CreateModelsOptions { models_store: None, auth: Some(ambient_auth()) }));
+    models.set_provider(create_provider(CreateProviderOptions {
+        id: "cancel-target".into(),
+        name: None,
+        base_url: None,
+        headers: None,
+        models: vec![model.clone()],
+        fetch_models: None,
+        restore_models: None,
+        filter_models: None,
+        api: ProviderApi::Single(Arc::new(CancelRecorder { calls: calls.clone() })),
+    }));
+
+    models.cancel_deferred(&model, &handle, None).await.expect("cancel forwards");
+    {
+        let calls = calls.lock().expect("cancel calls");
+        assert_eq!(calls.len(), 1, "{title}");
+        assert_eq!(calls[0].1.id, "h", "{title}");
+    }
+
+    let unknown = with_provider(&base, "nobody");
+    let error = models.cancel_deferred(&unknown, &handle, None).await.expect_err("unknown provider");
+    assert_eq!(error, "Unknown provider: nobody", "{title}");
+
+    let incapable = with_provider(&base, "cancel-less");
+    models.set_provider(plain_provider("cancel-less", vec![incapable.clone()]));
+    let error = models.cancel_deferred(&incapable, &handle, None).await.expect_err("unsupported capability");
+    assert_eq!(error, "Provider cancel-less does not support deferred responses", "{title}");
 }

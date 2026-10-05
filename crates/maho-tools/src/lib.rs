@@ -21,5 +21,5 @@ pub mod tool_definition_wrapper;
 pub mod truncate;
 pub mod unified_diff;
 pub mod write;
-pub use definition::{ToolContext, ToolDefinition};
+pub use definition::{ToolContext, ToolDefinition, ToolError};
 pub use filesystem_policy::{FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};

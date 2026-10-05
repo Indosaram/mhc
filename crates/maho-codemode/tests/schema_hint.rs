@@ -35,3 +35,12 @@ fn array_items_show_nested_required_fields() {
     assert!(rendered.contains("steps: array<object>"));
     assert!(rendered.contains("    tool: string"));
 }
+
+#[test]
+fn description_truncation_counts_utf16_units() {
+    let description = "😀".repeat(41);
+    let rendered = render_schema_hint("t", &json!({"properties":{"value":{"type":"string","description":description}}})).unwrap();
+    let description = rendered.split(" — ").nth(1).unwrap();
+    assert_eq!(description.encode_utf16().count(), 81);
+    assert_eq!(description.chars().filter(|character| *character == '😀').count(), 40);
+}

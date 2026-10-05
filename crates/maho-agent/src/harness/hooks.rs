@@ -80,6 +80,7 @@ pub struct HookInvocation {
     pub usage: Option<Usage>,
     pub target_id: Option<String>,
     pub preparation: Option<Value>,
+    pub custom_instructions: Option<String>,
 }
 
 impl HookInvocation {
@@ -107,6 +108,7 @@ impl HookInvocation {
             usage: None,
             target_id: None,
             preparation: None,
+            custom_instructions: None,
         }
     }
 }

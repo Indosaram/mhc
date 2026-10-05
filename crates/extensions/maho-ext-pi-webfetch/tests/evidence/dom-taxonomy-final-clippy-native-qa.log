@@ -1,0 +1,33 @@
+status: completed exit_code: 0
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-webfetch)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.65s
+
+LANE39_DOM_FINAL_CLIPPY_EXIT=0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running `/home/indo/T9-Mac/.cargo-target/maho-code/lane-39/debug/examples/fetch_qa`
+invoke webfetch url=http://127.0.0.1:40147/markdown format=markdown
+PASS markdown details={"url":"http://127.0.0.1:40147/markdown","finalUrl":"http://127.0.0.1:40147/markdown","format":"markdown","status":200,"statusText":"OK","contentType":"text/html","bytes":48,"timeoutSeconds":30,"converted":true,"truncated":false,"outputTruncated":false,"outputBytes":24,"outputTotalBytes":24} text="## Hello\n\nAlpha **Beta**"
+cleanup: joined fixture task; port 127.0.0.1:40147 released
+invoke webfetch url=http://127.0.0.1:37537/text format=text
+PASS text details={"url":"http://127.0.0.1:37537/text","finalUrl":"http://127.0.0.1:37537/text","format":"text","status":200,"statusText":"OK","contentType":"text/html","bytes":34,"timeoutSeconds":30,"converted":true,"truncated":false,"outputTruncated":false,"outputBytes":17,"outputTotalBytes":17} text="Hello\n\nAlpha\nBeta"
+cleanup: joined fixture task; port 127.0.0.1:37537 released
+invoke webfetch url=http://127.0.0.1:44207/html format=html
+PASS html details={"url":"http://127.0.0.1:44207/html","finalUrl":"http://127.0.0.1:44207/html","format":"html","status":200,"statusText":"OK","contentType":"text/html","bytes":10,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":10,"outputTotalBytes":10} text="<p>raw</p>"
+cleanup: joined fixture task; port 127.0.0.1:44207 released
+invoke webfetch url=http://127.0.0.1:42719/error format=text
+PASS error details={"url":"http://127.0.0.1:42719/error","finalUrl":"http://127.0.0.1:42719/error","format":"text","status":404,"statusText":"Not Found","contentType":"text/plain","bytes":7,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":7,"outputTotalBytes":7} text="missing"
+cleanup: joined fixture task; port 127.0.0.1:42719 released
+invoke webfetch url=http://127.0.0.1:40179/bom format=text
+PASS bom details={"url":"http://127.0.0.1:40179/bom","finalUrl":"http://127.0.0.1:40179/bom","format":"text","status":200,"statusText":"OK","contentType":"text/plain","bytes":8,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":false,"outputBytes":5,"outputTotalBytes":5} text="ready"
+cleanup: joined fixture task; port 127.0.0.1:40179 released
+invoke webfetch url=http://127.0.0.1:41833/oversized format=text
+PASS oversized details={} text="Response too large (exceeds 5MB limit)"
+cleanup: joined fixture task; port 127.0.0.1:41833 released
+PASS cancellation invocation=webfetch(http://127.0.0.1:1, pre-aborted reason=qa cancellation); cleanup=no socket created
+PASS invalid URL; cleanup=no socket created
+PASS body timeout; cleanup=joined fixture task, port 127.0.0.1:42963 released
+PASS redirect invocation=webfetch(http://127.0.0.1:42301/start,text) finalUrl="http://127.0.0.1:42301/final"; cleanup=joined task, port released
+PASS output-cap invocation=webfetch(http://127.0.0.1:36665/cap,text) details={"url":"http://127.0.0.1:36665/cap","finalUrl":"http://127.0.0.1:36665/cap","format":"text","status":200,"statusText":"OK","contentType":"","bytes":80000,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":true,"outputBytes":51200,"outputTotalBytes":80000}; cleanup=joined task, port released
+PASS output-cap invocation=webfetch(http://127.0.0.1:43429/cap,text) details={"url":"http://127.0.0.1:43429/cap","finalUrl":"http://127.0.0.1:43429/cap","format":"text","status":200,"statusText":"OK","contentType":"","bytes":120000,"timeoutSeconds":30,"converted":false,"truncated":false,"outputTruncated":true,"outputBytes":51191,"outputTotalBytes":120000}; cleanup=joined task, port released
+
+LANE39_DOM_FINAL_QA_EXIT=0

@@ -21,11 +21,14 @@ enum ClientTransport {
     Stdio {input:tokio::sync::Mutex<ChildStdin>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
     Http {client:reqwest::Client,url:url::Url,headers:BTreeMap<String,String>,session:tokio::sync::RwLock<Option<String>>},
 }
-fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool)->Option<String> {
+fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool,first_line:&mut bool)->Option<String> {
     if *skip_lf && !buffer.is_empty(){if buffer[0]==b'\n'{buffer.remove(0);}*skip_lf=false;}
     let end=buffer.iter().position(|byte|matches!(*byte,b'\n'|b'\r'))?;
     *skip_lf=buffer[end]==b'\r';
-    let line=buffer.drain(..=end).collect::<Vec<_>>();Some(String::from_utf8_lossy(&line[..line.len()-1]).into_owned())
+    let line=buffer.drain(..=end).collect::<Vec<_>>();
+    let mut line=String::from_utf8_lossy(&line[..line.len()-1]).into_owned();
+    if std::mem::take(first_line) && line.starts_with('\u{feff}') {line.remove(0);}
+    Some(line)
 }
 fn failure(server:&str,kind:McpErrorKind,message:impl Into<String>,phase:&str)->McpError {
     let mut error=McpError::new(kind,message);error.server_name=Some(server.into());error.phase=Some(phase.into());error
@@ -131,13 +134,18 @@ impl McpClient {
             let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;
             return self.http_reply(reply,value.get("id"));
         }
-        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;
+        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
         while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))? {
             buffer.extend_from_slice(&chunk);
-            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf) {
+            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
-                if line.is_empty() && !data.is_empty() {
-                    let event=serde_json::from_str::<Value>(&data).map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;data.clear();
+                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
+                if line=="event" {event_type.clear();}
+                if line.is_empty() {
+                    let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
+                    if !is_message || data.is_empty(){data.clear();continue;}
+                    let parsed=serde_json::from_str::<Value>(&data);data.clear();
+                    let event=match parsed {Ok(event)=>event,Err(error)=>{eprintln!("MCP {} SSE message parse failed: {error}",self.server);continue;}};
                     if event.get("id")==value.get("id") && event.get("method").is_none(){return self.http_reply(event,value.get("id"));}
                     let _=self.notifications.send(event);
                 }
@@ -182,15 +190,18 @@ impl McpClient {
                     Ok(response) if response.status()==reqwest::StatusCode::METHOD_NOT_ALLOWED=>return,
                     Ok(mut response) if response.status().is_success()=>{
                         failed_attempts=0;
-                        let mut buffer=Vec::new();let mut data=String::new();let mut skip_lf=false;
+                        let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
                         while let Ok(Some(chunk))=response.chunk().await {
                             buffer.extend_from_slice(&chunk);
-                            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf) {
+                            while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}
+                                if let Some(kind)=line.strip_prefix("event:"){event_type=kind.strip_prefix(' ').unwrap_or(kind).into();}
+                                if line=="event" {event_type.clear();}
                                 if let Some(id)=line.strip_prefix("id:"){last_event_id=Some(id.trim_start_matches(' ').to_owned());}
                                 if let Some(retry)=line.strip_prefix("retry:").and_then(|retry|retry.trim().parse::<u64>().ok()){retry_ms=retry;}
-                                if line.is_empty() && !data.is_empty() {
-                                    if let Ok(value)=serde_json::from_str::<Value>(&data){let _=notifications.send(value);}data.clear();
+                                if line.is_empty() {
+                                    if (event_type.is_empty() || event_type=="message") && !data.is_empty() && let Ok(value)=serde_json::from_str::<Value>(&data){let _=notifications.send(value);}
+                                    data.clear();event_type.clear();
                                 }
                             }
                         }
@@ -225,9 +236,13 @@ impl McpClient {
         };
         let _=input.lock().await.shutdown().await;
         let mut child=child.lock().await;
-        match tokio::time::timeout(Duration::from_millis(100),child.wait()).await {
+        match tokio::time::timeout(Duration::from_secs(2),child.wait()).await {
             Ok(result)=>{result.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
-            Err(_)=>{let _=child.start_kill();child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
+            Err(_)=>{
+                if let Some(pid)=child.id(){let _=Command::new("/usr/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
+                if tokio::time::timeout(Duration::from_secs(2),child.wait()).await.is_err(){let _=child.start_kill();}
+                child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;
+            }
         }
         Ok(())
     }

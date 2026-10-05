@@ -16,7 +16,14 @@ fn scan_directory(path:&Path, depth:usize, max_depth:usize, excluded:&[&str], vi
     if !visited.insert(real) {return;}
     let Ok(entries)=std::fs::read_dir(path) else {return;};
     let Ok(mut entries)=entries.collect::<Result<Vec<_>,_>>() else {return;};
-    let collator=icu_collator::Collator::try_new(Default::default(),Default::default()).unwrap_or_else(|error|unreachable!("compiled default collation data: {error}"));
+    static PREFERENCES:std::sync::OnceLock<icu_collator::CollatorPreferences>=std::sync::OnceLock::new();
+    let preferences=PREFERENCES.get_or_init(||{
+        let configured=["LC_ALL","LC_MESSAGES","LANG"].into_iter().find_map(|key|std::env::var(key).ok()).unwrap_or_else(||"en-US".into());
+        let language=configured.split(['.','@']).next().unwrap_or("");
+        let language=if language=="C"||language=="POSIX"{"en-US".into()}else{language.replace('_',"-")};
+        language.parse::<icu_locale_core::Locale>().map(Into::into).unwrap_or_default()
+    });
+    let collator=icu_collator::Collator::try_new(*preferences,Default::default()).unwrap_or_else(|error|unreachable!("compiled collation data: {error}"));
     entries.sort_by(|left,right|collator.compare(&left.file_name().to_string_lossy(),&right.file_name().to_string_lossy()));
     for entry in entries {
         let path=entry.path(); let name=entry.file_name(); let name=name.to_string_lossy();

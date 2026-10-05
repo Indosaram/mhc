@@ -2,7 +2,7 @@ pub const HOOKS_USAGE:&str="Usage: /hooks [list|diagnostics|trust <id>|disable <
 pub const HOOK_SUBCOMMANDS:[&str;6]=["list","diagnostics","trust","disable","enable","reload"];
 pub fn register_hooks_command(api:&mut maho_ext_api::types::ExtensionApi) {
     use maho_ext_api::types::{ExtensionFailure,NotificationType};use std::sync::Arc;
-    api.register_command_with_context("hooks",Some("Inspect loaded builtin hook sources and diagnostics.".to_owned()),None,Arc::new(|args,ctx|Box::pin(async move {
+    api.register_command_with_context_and_completions("hooks",Some("Inspect loaded builtin hook sources and diagnostics.".to_owned()),None,Arc::new(|args,ctx|Box::pin(async move {
         let command=parse_hooks_command(args);
         if command==HookCommand::Usage {ctx.ui.notify(HOOKS_USAGE,NotificationType::Error);return Ok(());}
         if command==HookCommand::Reload {ctx.reload().await?;let state=crate::index::refresh_state(ctx)?;ctx.ui.notify(&format!("Reloaded hooks.\n{}",format_hook_status(&state).map_err(|error|ExtensionFailure::new(error.to_string()))?),NotificationType::Info);return Ok(());}
@@ -21,7 +21,7 @@ pub fn register_hooks_command(api:&mut maho_ext_api::types::ExtensionApi) {
                 let past=match action {HookCommand::Trust(_)=>"Trusted",HookCommand::Disable(_)=>"Disabled",_=>"Enabled"};ctx.ui.notify(&format!("{past} hook: {id}"),NotificationType::Info);
             },_=>{},
         }Ok(())
-    })));
+    })),Arc::new(|prefix| {let prefix=prefix.to_owned();Box::pin(async move {Ok(hook_argument_completions(&prefix).map(|items|items.into_iter().map(|(value,label)|maho_ext_api::types::AutocompleteItem {value:value.to_owned(),label:label.to_owned(),description:None}).collect()))})}));
 }
 fn sanitize_display_text(value:&str)->String {
     let mut text=value.to_owned();

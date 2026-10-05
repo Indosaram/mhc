@@ -1,0 +1,14 @@
+{
+  "schema": "session2-residual-command-manifest/v1",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "commands": [
+    {
+      "template": "cargo4 nextest run --workspace --no-fail-fast",
+      "command": "/cargo4 nextest run --workspace --no-fail-fast",
+      "exit_code": 0,
+      "log": "nextest.log",
+      "log_sha256": "not-a-64-hex-hash"
+    }
+  ],
+  "note": "Negative fixture: a completed gate command with a malformed log_sha256. The verifier MUST reject a non-64-hex hash."
+}

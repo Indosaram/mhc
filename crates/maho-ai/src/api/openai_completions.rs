@@ -1960,8 +1960,9 @@ async fn run_stream_inner(
 
     let mut params = build_params(model, context, options, &compat, cache_retention, &grammar_properties)
         .map_err(OpenAiCompletionsError::protocol)?;
-    if let Some(on_payload) = request.and_then(|request| request.on_payload.as_ref())
-        && let Some(next) = on_payload(&Value::Object(params.clone()), model, None)
+    if let Some(request) = request
+        && let Some(next) = request.apply_payload_hook(&Value::Object(params.clone()), model, None)
+            .await.map_err(OpenAiCompletionsError::protocol)?
             && let Some(object) = next.as_object() {
                 params = object.clone();
             }
@@ -1969,7 +1970,7 @@ async fn run_stream_inner(
 
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
     let timeout_ms = request.and_then(|request| request.timeout_ms);
-    let on_response = request.and_then(|request| request.on_response.clone());
+    let response_options = request.cloned();
     let retry_options = ProviderRetryOptions {
         max_retries: request.and_then(|request| request.max_retries),
         max_retry_delay_ms: request.and_then(|request| request.max_retry_delay_ms),
@@ -1989,15 +1990,15 @@ async fn run_stream_inner(
                 let headers = headers.clone();
                 let params = params.clone();
                 let model = model.clone();
-                let on_response = on_response.clone();
+                let response_options = response_options.clone();
                 let signal = retry_signal.clone();
                 async move {
                     let response = create_request(&transport, &url, &headers, &params, timeout_ms, signal).await?;
-                    if let Some(on_response) = on_response {
-                        on_response(
+                    if let Some(options) = response_options {
+                        options.apply_response_hook(
                             &crate::types::ProviderResponse { status: response.status, headers: response.headers.clone() },
                             &model,
-                        );
+                        ).await.map_err(OpenAiCompletionsError::protocol)?;
                     }
                     Ok((response.stream, (response.status, response.headers)))
                 }

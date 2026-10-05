@@ -1,0 +1,34 @@
+status: exited_100 exit_code: 100
+   Compiling maho-ext-pi-rules v0.0.0 (/home/indo/T9-Mac/maho-code-lanes/resume-webfetch/crates/extensions/maho-ext-pi-rules)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.97s
+────────────
+ Nextest run ID 47f2dcac-909d-485e-9b80-cff8637b6514 with nextest profile: default
+    Starting 1 test across 16 binaries (247 tests skipped)
+        FAIL [   0.005s] (1/1) maho-ext-pi-rules::parser one_quote_scalar_is_source_empty_string
+  stdout ───
+
+    running 1 test
+    test one_quote_scalar_is_source_empty_string ... FAILED
+
+    failures:
+
+    failures:
+        one_quote_scalar_is_source_empty_string
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'one_quote_scalar_is_source_empty_string' (232017) panicked at crates/extensions/maho-ext-pi-rules/tests/parser.rs:11:5:
+    assertion `left == right` failed
+      left: RuleFrontmatter { description: None, globs: None, paths: None, apply_to: None, always_apply: None }
+     right: RuleFrontmatter { description: Some(""), globs: None, paths: None, apply_to: None, always_apply: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure:
+────────────
+     Summary [   0.007s] 1 test run: 0 passed, 1 failed, 247 skipped
+        FAIL [   0.005s] (1/1) maho-ext-pi-rules::parser one_quote_scalar_is_source_empty_string
+error: test run failed
+
+QUOTE_REPRO_EXIT=100

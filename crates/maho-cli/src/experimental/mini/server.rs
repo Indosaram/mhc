@@ -18,6 +18,43 @@ pub struct SpawnedWorker { pub peer: Arc<RpcPeer>, pub stop: Box<dyn Fn() + Send
 #[cfg(unix)]
 pub type SpawnWorker = Arc<dyn Fn(Option<String>, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SpawnedWorker, String>> + Send>> + Send + Sync>;
 #[cfg(unix)]
+pub fn process_worker_factory(executable: PathBuf, prefix_args: Vec<String>, sessions_root: String) -> SpawnWorker {
+    Arc::new(move |session_id, cwd| {
+        let executable = executable.clone();
+        let prefix_args = prefix_args.clone();
+        let sessions_root = sessions_root.clone();
+        Box::pin(async move {
+            let mut command = tokio::process::Command::new(executable);
+            command.args(prefix_args).arg(sessions_root).arg(cwd);
+            if let Some(id) = session_id { command.arg(id); }
+            // The worker boots `mhc <sessionsRoot> <cwd> [sessionId]`; the role env var is what makes
+            // the binary dispatch it to the session-worker entry (pinned `worker/entry.ts`).
+            command.env(crate::experimental::process::INTERNAL_PROCESS_ENV, "session-worker");
+            let mut child = command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::inherit()).kill_on_drop(true).spawn().map_err(|error| error.to_string())?;
+            let input = child.stdout.take().ok_or("Worker stdout is not piped")?;
+            let output = child.stdin.take().ok_or("Worker stdin is not piped")?;
+            let peer = Arc::new(create_peer(input, output, PeerOptions::default()));
+            let stop = maho_ai::utils::abort::AbortController::new();
+            let closed = stop.clone();
+            peer.on_close(move || closed.abort(None));
+            let signal = stop.signal();
+            let closed_peer = Arc::downgrade(&peer);
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = child.wait() => {},
+                    _ = signal.cancelled() => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                    }
+                }
+                if let Some(peer) = closed_peer.upgrade() { peer.close(); }
+            });
+            Ok(SpawnedWorker { peer, stop: Box::new(move || stop.abort(None)) })
+        })
+    })
+}
+#[cfg(unix)]
 struct Route { id: String, worker: SpawnedWorker, subscribers: Mutex<HashMap<String, Weak<RpcPeer>>> }
 #[cfg(unix)]
 struct ServerState {
@@ -42,8 +79,13 @@ async fn spawn_route(state: &Arc<ServerState>, session_id: Option<String>, cwd: 
     let worker = (state.spawn)(session_id, cwd).await?;
     let unsupported: Handler = Arc::new(|_, _| Box::pin(async { Err("Only presentations attach to sessions".to_owned()) }));
     worker.peer.provide(SESSIONS, HashMap::from([("list".to_owned(), sessions_list(state)), ("attach".to_owned(), unsupported)]));
-    let described = worker.peer.call_with(CallOptions { timeout_ms: Some(30_000), ..Default::default() }, "worker.describe", vec![]).await?;
-    let id = described["sessionId"].as_str().ok_or("Worker description requires sessionId")?.to_owned();
+    let described = match worker.peer.call_with(CallOptions { timeout_ms: Some(30_000), ..Default::default() }, "worker.describe", vec![]).await {
+        Ok(described) => described,
+        Err(error) => { (worker.stop)(); worker.peer.close(); return Err(error); }
+    };
+    let Some(id) = described["sessionId"].as_str().map(str::to_owned) else {
+        (worker.stop)(); worker.peer.close(); return Err("Worker description requires sessionId".to_owned());
+    };
     let route = Arc::new(Route { id: id.clone(), worker, subscribers: Mutex::new(HashMap::new()) });
     let weak_route = Arc::downgrade(&route);
     route.worker.peer.on_event(move |service, payload, to| {

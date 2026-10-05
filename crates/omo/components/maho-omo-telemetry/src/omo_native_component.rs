@@ -10,6 +10,23 @@ pub struct OmoNativeTelemetryComponent {
     subscriptions:Mutex<Vec<BusSubscription>>,
 }
 impl OmoNativeTelemetryComponent {pub fn new(options:SenpiTelemetryOptions,skills_root:PathBuf,is_config_enabled:ConfigEnabled)->Self {Self {options,skills_root,is_config_enabled,clock:Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0),subscriptions:Mutex::default()}}}
+impl OmoNativeTelemetryComponent {
+    pub fn with_default_config(options:SenpiTelemetryOptions,skills_root:PathBuf)->Self {
+        let env=options.env.clone().unwrap_or_else(||std::env::vars().collect());
+        let diagnostics=options.diagnostics.clone();
+        let enabled=Arc::new(move |cwd:&std::path::Path| {
+            let loaded=maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {
+                cwd:Some(cwd.to_string_lossy().into_owned()),env:Some(env.iter().map(|(k,v)|(k.clone(),v.clone())).collect()),..Default::default()
+            });
+            if !loaded.diagnostics.is_empty() {
+                if let Some(diagnostics)=&diagnostics {diagnostics(&telemetry_core::TelemetryDiagnosticInput {event:telemetry_core::TelemetryDiagnosticEvent::TelemetryCaptureFailed,source:"omo-native-session".into(),error:Some(telemetry_core::TelemetryError::new(format!("{:?}",loaded.diagnostics))),error_kind:Some(telemetry_core::TelemetryDiagnosticErrorKind::Error)});}
+                return false;
+            }
+            omo_config_core::is_omo_telemetry_enabled(&loaded.config)
+        });
+        Self::new(options,skills_root,enabled)
+    }
+}
 impl Extension for OmoNativeTelemetryComponent {
     fn register(&self,api:&mut ExtensionApi) {
         if api.runtime.get_flag("omo-senpi-telemetry-disabled")==Some(maho_ext_api::FlagValue::Boolean(true)) {return;}
@@ -19,11 +36,16 @@ impl Extension for OmoNativeTelemetryComponent {
         let shared:Arc<Mutex<Option<telemetry_core::EventTelemetryClient>>>=Arc::default();
         let client=Arc::clone(&shared);
         let capture:SummaryCapture=Arc::new(move |name,properties| {if let Some(client)=client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() && let Some(properties)=properties.as_object() {client.capture_event(name,properties);}});
-        let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id|hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()}));
+        let identity_client=Arc::clone(&shared);
+        let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id| {
+            if identity_client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {return String::new();}
+            hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()})
+        });
         let registry=Arc::new(Mutex::new(ParallelTelemetryRegistry::default()));
         let now=Arc::clone(&self.clock);
         let subscription=register_omo_native_parallel_summary(api,registry,now,Arc::clone(&hash),Arc::clone(&capture));
         self.subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
+        crate::omo_native_prompt::register_omo_native_prompt_telemetry(api,Arc::clone(&hash),Arc::clone(&capture));
         let options=self.options.clone();let enabled=Arc::clone(&self.is_config_enabled);let client=Arc::clone(&shared);
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let result=if enabled(&ctx.cwd) && let ExtensionEvent::SessionStart(event)=event {
             let reason=match event.reason {SessionReason::Startup=>"startup",SessionReason::Reload=>"reload",SessionReason::New=>"new",SessionReason::Resume=>"resume",SessionReason::Fork=>"fork",SessionReason::Quit=>"startup"};
@@ -41,6 +63,35 @@ mod tests {
     struct Recorder(Arc<Mutex<Vec<TelemetryCaptureMessage>>>);
     impl TelemetryTransport for Recorder {fn capture(&self,m:&TelemetryCaptureMessage)->Result<(),TelemetryError> {self.0.lock().unwrap().push(m.clone());Ok(())}fn flush(&self)->Option<BoxFuture<'_,Result<(),TelemetryError>>> {None}fn shutdown(&self)->BoxFuture<'_,Result<(),TelemetryError>> {Box::pin(async {Ok(())})}}
     fn component(home:&std::path::Path)->(OmoNativeTelemetryComponent,Arc<Mutex<Vec<TelemetryCaptureMessage>>>) {std::fs::write(home.join("models.json"),"{\"providers\":{}}").unwrap();std::fs::write(home.join("settings.json"),"{}").unwrap();let messages=Arc::new(Mutex::new(Vec::new()));let captured=Arc::clone(&messages);let options=SenpiTelemetryOptions {env:Some(env(home)),state_dir:Some(home.join("native")),transport_factory:Some(Arc::new(move |_,_|Ok(Box::new(Recorder(Arc::clone(&captured)))))),..Default::default()};{let mut component=OmoNativeTelemetryComponent::new(options,home.join("skills"),Arc::new(|_|true));let clock=std::sync::atomic::AtomicU64::new(1000);component.clock=Arc::new(move || f64::from(u32::try_from(clock.fetch_add(1,std::sync::atomic::Ordering::SeqCst)).unwrap()));(component,messages)}}
+    #[test] fn default_config_uses_owner_resolver_and_reports_invalid_config() {
+        let t=tempfile::tempdir().unwrap();std::fs::create_dir(t.path().join(".maho")).unwrap();let config=t.path().join(".maho/omo.json");
+        let diagnostics=Arc::new(Mutex::new(Vec::new()));let observed=Arc::clone(&diagnostics);
+        let options=SenpiTelemetryOptions {env:Some(telemetry_core::TelemetryEnv::from([("HOME".into(),t.path().to_string_lossy().into_owned())])),diagnostics:Some(Arc::new(move |d|observed.lock().unwrap().push(d.clone()))),..Default::default()};
+        let component=OmoNativeTelemetryComponent::with_default_config(options,t.path().join("skills"));
+        assert!((component.is_config_enabled)(t.path()));std::fs::write(&config,"{\"telemetry\":{\"enabled\":false}}").unwrap();assert!(!(component.is_config_enabled)(t.path()));
+        std::fs::write(&config,"{bad").unwrap();assert!(!(component.is_config_enabled)(t.path()));let diagnostics=diagnostics.lock().unwrap();assert_eq!(diagnostics.len(),1);assert_eq!(diagnostics[0].event,TelemetryDiagnosticEvent::TelemetryCaptureFailed);assert_eq!(diagnostics[0].source,"omo-native-session");
+    }
+    #[tokio::test] async fn public_session_shutdown_flushes_pending_prompt_before_disposal() {
+        let t=tempfile::tempdir().unwrap();let (component,messages)=component(t.path());
+        let provider=maho_ai::providers::faux::faux_provider(Default::default());let model=provider.get_model(Some("faux-1")).unwrap();let cwd=t.path().to_string_lossy().into_owned();
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("Hello from the faux provider.",Default::default()).into()]);
+        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {models_path:Some(t.path().join("models.json")),auth_path:Some(t.path().join("auth.json")),providers:Some(vec![provider.provider.clone()]),..Default::default()});
+        let session=maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {cwd:Some(cwd.clone()),agent_dir:Some(cwd.clone()),model:Some(model),model_runtime:Some(runtime),session_manager:Some(maho_core::session_manager::SessionManager::in_memory(&cwd,None,None)),settings_manager:Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false)),auto_title_sessions:Some(false),..Default::default()}).await.unwrap().session;
+        let loaded=maho_ext_host::loader::load_extensions(vec![maho_ext_host::loader::NativeExtensionFactory {path:"<todo-46-shutdown>".into(),source_info:maho_ext_api::SourceInfo::default(),extension:Box::new(component)}],t.path(),Default::default());
+        let mut runner=maho_ext_host::ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context(t.path(),&session.session_id()));let input_runner=runner.clone();
+        session.set_extension_runner(runner.clone()).await;session.bind_extensions(maho_core::agent_session::ExtensionBindings {mode:Some(maho_ext_api::ExtensionMode::Print),..Default::default()}).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5),session.prompt("Say hello.",Default::default())).await.unwrap().unwrap();
+        // Current core emits input but no input_disposition. Both inputs remain
+        // pending until explicit shutdown; do not invent a Started event here.
+        assert!(!messages.lock().unwrap().iter().any(|m|m.event=="prompt_submitted"));
+        runner=input_runner;runner.emit(ExtensionEvent::Input(maho_ext_api::InputEvent {input_id:"pending-real-session".into(),text:"ulw resume later".into(),source:maho_ext_api::InputSource::Interactive,images:None,streaming_behavior:None})).await.unwrap();
+        for id in ["overlap-a","overlap-b"] {runner.emit(ExtensionEvent::ToolExecutionStart {tool_call_id:id.into(),tool_name:"bash".into(),args:serde_json::json!({})}).await.unwrap();}
+        for id in ["overlap-a","overlap-b"] {runner.emit(ExtensionEvent::ToolExecutionEnd {tool_call_id:id.into(),tool_name:"bash".into(),result:serde_json::json!(1),is_error:false}).await.unwrap();}
+        tokio::time::timeout(std::time::Duration::from_secs(2),session.emit_session_shutdown(SessionReason::Quit)).await.unwrap();
+        {let messages=messages.lock().unwrap();assert!(messages.iter().any(|m|m.event=="session_started"));assert!(messages.iter().any(|m|m.event=="turn_completed"));let prompts=messages.iter().filter(|m|m.event=="prompt_submitted").collect::<Vec<_>>();assert_eq!(prompts.len(),2);assert!(prompts.iter().all(|m|m.properties["queue_mode"]=="other" && m.properties["is_turn_start"]==false));assert_eq!(prompts[0].properties["keyword_variant"],"none");assert_eq!(prompts[1].properties["keyword_variant"],"ulw");assert_eq!(messages.iter().filter(|m|m.event=="parallelism_summary").count(),1);}
+        session.emit_session_shutdown(SessionReason::Quit).await;session.dispose().await;
+        assert_eq!(messages.lock().unwrap().iter().filter(|m|m.event=="prompt_submitted").count(),2);
+    }
     fn start()->ExtensionEvent {ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None})}
     fn shutdown()->ExtensionEvent {ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent {reason:SessionReason::Quit,target_session_file:None,signal:None})}
     #[tokio::test] async fn corrupt_inventory_reports_once_omits_defaults() {let t=tempfile::tempdir().unwrap();let (mut component,messages)=component(t.path());std::fs::write(t.path().join("models.json"),"{not json").unwrap();std::fs::write(t.path().join("settings.json"),"{\"defaultProvider\":\"anthropic\",\"defaultModel\":\"claude-sonnet-5\"}").unwrap();let diagnostics=Arc::new(Mutex::new(Vec::new()));let observed=Arc::clone(&diagnostics);component.options.inventory_diagnostics=Some(Arc::new(move |d|observed.lock().unwrap().push((d.event,d.source))));let mut api=api();component.register(&mut api);let ctx=context(t.path(),"corrupt");dispatch(&api,start(),&ctx).await;dispatch(&api,shutdown(),&ctx).await;let messages=messages.lock().unwrap();let p=&messages.iter().find(|m|m.event=="session_started").unwrap().properties;assert_eq!(p["provider_count"],0);assert_eq!(p["model_count"],0);assert!(!p.contains_key("default_provider"));assert!(!p.contains_key("default_model"));assert_eq!(*diagnostics.lock().unwrap(),vec![("omo_native_inventory_read_failed","omo-native-session")]);}

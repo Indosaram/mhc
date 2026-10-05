@@ -25,7 +25,7 @@ pub fn parse_task_cancel(value: &Value) -> Result<TaskCancelInput, String> {
 pub fn parse_task_output(value: &Value) -> Result<TaskOutputInput, String> {
     let task_id = required_id(value, "task_id")?;
     let mode = match value.get("mode") { None => None, Some(Value::String(mode)) if mode == "status" => Some(TaskOutputMode::Status), Some(Value::String(mode)) if mode == "tail" => Some(TaskOutputMode::Tail), Some(Value::String(mode)) if mode == "full" => Some(TaskOutputMode::Full), Some(_) => return Err("mode must be status, tail, or full.".into()) };
-    let tail_lines = match value.get("tail_lines") { None => None, Some(value) => { let number = value.as_u64().filter(|number| *number > 0).ok_or("tail_lines must be a positive integer.")?; if number > 1000 { return Err("tail_lines must be at most 1000.".into()) } Some(usize::try_from(number).map_err(|error| error.to_string())?) } };
+    let tail_lines = match value.get("tail_lines") { None => None, Some(value) => { let number = value.as_f64().filter(|number| number.is_finite() && number.fract() == 0.0 && *number >= 1.0).ok_or("tail_lines must be a positive integer.")?; if number > 1000.0 { return Err("tail_lines must be at most 1000.".into()) } Some(number as usize) } };
     Ok(TaskOutputInput { task_id: Some(task_id.into()), mode, tail_lines, ..TaskOutputInput::default() })
 }
 

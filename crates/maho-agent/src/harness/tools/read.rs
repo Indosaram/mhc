@@ -73,6 +73,7 @@ pub fn create_read_tool<T: HasExecutionToolContext>(
     AgentHarnessTool {
         label: "read".into(),
         prepare_arguments: None,
+        replay: None,
         tool: Tool {
             name: "read".into(),
             description: format!(

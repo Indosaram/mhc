@@ -1,0 +1,40 @@
+use super::{errors::ServerError, types::{ByteConnection, ServerFuture}};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+
+pub struct AcceptedConnection {
+    pub connection: Arc<dyn ByteConnection>,
+    pub inbound: mpsc::Receiver<Result<Vec<u8>, ServerError>>,
+}
+pub type ByteConnectionAcceptor = Arc<dyn Fn(AcceptedConnection) -> ServerFuture<'static, ()> + Send + Sync>;
+pub trait ServerListener: Send + Sync {
+    fn start(&self, accept: ByteConnectionAcceptor) -> ServerFuture<'_, ()>;
+    fn close(&self) -> ServerFuture<'_, ()>;
+}
+pub struct ServerListeners {
+    listeners: Vec<Arc<dyn ServerListener>>,
+}
+impl ServerListeners {
+    pub fn new(listeners: Vec<Arc<dyn ServerListener>>) -> Self { Self { listeners } }
+    pub async fn start(&self, server: Arc<super::Server>, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<(), ServerError> {
+        let accept = Arc::new(move |accepted: AcceptedConnection| {
+            let server = server.clone(); let shutdown = shutdown.clone();
+            Box::pin(async move { server.serve(accepted.connection, accepted.inbound, shutdown).await }) as ServerFuture<'static, ()>
+        });
+        for (index, listener) in self.listeners.iter().enumerate() {
+            if let Err(error) = listener.start(accept.clone()).await {
+                // Roll back only the already-started listeners (pinned `startInternal`); the owning
+                // Server closes its own state in `Server::start`.
+                let mut errors = vec![error.message];
+                for result in futures_util::future::join_all(self.listeners[..index].iter().map(|started|started.close())).await { if let Err(error) = result { errors.push(error.message); } }
+                return Err(ServerError::new("internal_error", &errors.join("; ")));
+            }
+        }
+        Ok(())
+    }
+    pub async fn close(&self) -> Result<(), ServerError> {
+        let mut errors = Vec::new();
+        for result in futures_util::future::join_all(self.listeners.iter().map(|listener|listener.close())).await { if let Err(error) = result { errors.push(error.message); } }
+        if errors.is_empty() { Ok(()) } else { Err(ServerError::new("internal_error", &errors.join("; "))) }
+    }
+}

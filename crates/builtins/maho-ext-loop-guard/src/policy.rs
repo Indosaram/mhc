@@ -1,0 +1,10 @@
+pub const TRACK_WINDOW: usize = 64;
+pub const IDENTICAL_RUN_THRESHOLD: usize = 3;
+pub const IDENTICAL_BLOCK_NOTICE_THRESHOLD: usize = 2;
+pub const IDENTICAL_HARD_STOP_BLOCK_THRESHOLD: usize = 3;
+pub const SIMILAR_RUN_THRESHOLD: usize = 5;
+pub const SIMILARITY_THRESHOLD: f64 = 0.85;
+pub const CYCLE_MIN_PERIOD: usize = 2;
+pub const CYCLE_MAX_PERIOD: usize = 6;
+pub const CYCLE_REPETITION_THRESHOLD: usize = 3;
+pub const ESCALATION_FACTOR: usize = 2;

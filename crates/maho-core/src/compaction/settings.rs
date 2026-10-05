@@ -10,11 +10,11 @@ pub struct CompactionSettings {
     pub keep_recent_tokens: i64,
     pub speculative_enabled: Option<bool>,
     pub speculative_fraction: Option<f64>,
-    pub speculative_cooldown_ms: Option<i64>,
+    pub speculative_cooldown_ms: Option<f64>,
     pub restoration_enabled: Option<bool>,
-    pub restoration_max_items: Option<i64>,
-    pub restoration_max_tokens_per_item: Option<i64>,
-    pub restoration_max_total_tokens: Option<i64>,
+    pub restoration_max_items: Option<f64>,
+    pub restoration_max_tokens_per_item: Option<f64>,
+    pub restoration_max_total_tokens: Option<f64>,
     pub restoration_context_ratio: Option<f64>,
     pub idle_compaction_enabled: Option<bool>,
     pub summarization_max_duration_ms: Option<f64>,
@@ -29,11 +29,11 @@ pub fn default_compaction_settings() -> CompactionSettings {
         keep_recent_tokens: 20000,
         speculative_enabled: Some(true),
         speculative_fraction: Some(0.75),
-        speculative_cooldown_ms: Some(30000),
+        speculative_cooldown_ms: Some(30000.0),
         restoration_enabled: Some(true),
-        restoration_max_items: Some(10),
-        restoration_max_tokens_per_item: Some(5000),
-        restoration_max_total_tokens: Some(50_000),
+        restoration_max_items: Some(10.0),
+        restoration_max_tokens_per_item: Some(5000.0),
+        restoration_max_total_tokens: Some(50_000.0),
         restoration_context_ratio: Some(0.15),
         idle_compaction_enabled: Some(true),
         summarization_max_duration_ms: None,
@@ -53,10 +53,10 @@ mod tests {
         assert_eq!(settings.keep_recent_tokens, 20000);
         assert_eq!(settings.speculative_enabled, Some(true));
         assert_eq!(settings.speculative_fraction, Some(0.75));
-        assert_eq!(settings.speculative_cooldown_ms, Some(30000));
-        assert_eq!(settings.restoration_max_items, Some(10));
-        assert_eq!(settings.restoration_max_tokens_per_item, Some(5000));
-        assert_eq!(settings.restoration_max_total_tokens, Some(50_000));
+        assert_eq!(settings.speculative_cooldown_ms, Some(30000.0));
+        assert_eq!(settings.restoration_max_items, Some(10.0));
+        assert_eq!(settings.restoration_max_tokens_per_item, Some(5000.0));
+        assert_eq!(settings.restoration_max_total_tokens, Some(50_000.0));
         assert_eq!(settings.restoration_context_ratio, Some(0.15));
         assert_eq!(settings.idle_compaction_enabled, Some(true));
         assert_eq!(settings.ideal, default_ideal_compaction_settings());

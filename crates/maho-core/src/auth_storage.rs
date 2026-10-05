@@ -351,9 +351,10 @@ impl ReadOnlyAuthStorage {
 pub struct AuthStorage {
     storage: AuthStorageBackend,
     auth_path: Option<String>,
-    data: AuthStorageData,
+    data: std::sync::Mutex<AuthStorageData>,
     runtime_overrides: HashMap<String, String>,
-    errors: Vec<String>,
+    errors: std::sync::Mutex<Vec<String>>,
+    pub(crate) account_mutation: tokio::sync::Mutex<()>,
 }
 
 enum AuthStorageBackend {
@@ -367,9 +368,10 @@ impl AuthStorage {
         let mut storage = Self {
             storage: AuthStorageBackend::File(FileAuthStorageBackend::new(&normalized)),
             auth_path: Some(normalized),
-            data: AuthStorageData::new(),
+            data: std::sync::Mutex::new(AuthStorageData::new()),
             runtime_overrides: HashMap::new(),
-            errors: Vec::new(),
+            errors: std::sync::Mutex::new(Vec::new()),
+            account_mutation: tokio::sync::Mutex::new(()),
         };
         storage.reload();
         storage
@@ -385,9 +387,10 @@ impl AuthStorage {
         let mut storage = Self {
             storage: AuthStorageBackend::InMemory(backend),
             auth_path: None,
-            data: AuthStorageData::new(),
+            data: std::sync::Mutex::new(AuthStorageData::new()),
             runtime_overrides: HashMap::new(),
-            errors: Vec::new(),
+            errors: std::sync::Mutex::new(Vec::new()),
+            account_mutation: tokio::sync::Mutex::new(()),
         };
         storage.reload();
         storage
@@ -397,8 +400,8 @@ impl AuthStorage {
         self.auth_path.as_deref()
     }
 
-    pub fn errors(&self) -> &[String] {
-        &self.errors
+    pub fn errors(&self) -> Vec<String> {
+        self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     fn parse_storage_content(content: Option<&str>) -> Result<(AuthStorageData, bool, bool), String> {
@@ -430,9 +433,9 @@ impl AuthStorage {
         };
         match result {
             Ok((data, _, _)) => {
-                self.data = data;
+                *self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data;
             }
-            Err(error) => self.errors.push(error),
+            Err(error) => self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error),
         }
     }
 
@@ -445,7 +448,7 @@ impl AuthStorage {
     }
 
     pub fn get(&self, provider: &str) -> Option<Value> {
-        read_by_provider_id(&self.data, provider)
+        read_by_provider_id(&self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner), provider)
     }
 
     pub fn get_provider_env(&self, provider: &str) -> Option<HashMap<String, String>> {
@@ -472,13 +475,15 @@ impl AuthStorage {
 
     pub fn list(&self) -> Vec<(String, CredentialKind)> {
         self.data
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|(provider_id, credential)| credential_kind(credential).map(|kind| (provider_id.clone(), kind)))
             .collect()
     }
 
     /// Stores a credential for a provider; a None value deletes the entry.
-    pub fn set(&mut self, provider_id: &str, credential: Option<Value>) -> Result<(), String> {
+    pub fn set(&self, provider_id: &str, credential: Option<Value>) -> Result<(), String> {
+        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let provider_id = provider_id.to_owned();
         let credential = credential.clone();
         let outcome: Result<AuthStorageData, String> = match &self.storage {
@@ -509,17 +514,17 @@ impl AuthStorage {
         };
         match outcome {
             Ok(data) => {
-                self.data = data;
+                *cached = data;
                 Ok(())
             }
             Err(error) => {
-                self.errors.push(error.clone());
+                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
                 Err(error)
             }
         }
     }
 
-    pub fn delete(&mut self, provider_id: &str) -> Result<(), String> {
+    pub fn delete(&self, provider_id: &str) -> Result<(), String> {
         self.set(provider_id, None)
     }
 
@@ -535,7 +540,7 @@ impl AuthStorage {
     }
 
     pub fn set_cached(&mut self, provider_id: &str, credential: Value) {
-        self.data.insert(provider_id.to_owned(), credential);
+        self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(provider_id.to_owned(), credential);
     }
 
     /// Records the file revision the in-memory snapshot was read from.
@@ -762,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_config_key_is_resolved_at_read_time() {
-        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.set("anthropic", Some(api_key("!echo resolved-key"))).expect("set");
         assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("resolved-key"));
         crate::resolve_config_value::clear_config_value_cache();
