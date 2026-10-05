@@ -335,10 +335,24 @@ pub struct SessionWorkerOptions {
     pub session_id: Option<String>,
 }
 
+/// The pinned worker builds `ModelRuntime.create()` with no explicit paths, which resolves the agent
+/// dir's `models.json`/`auth.json` (senpi `core/model-runtime.ts`: `join(getAgentDir(),
+/// "models.json")`). In this port `CreateModelRuntimeOptions::default()` means *no* models path
+/// (`ModelConfig::load_sync(None)` is the empty default), so the agent paths are passed explicitly,
+/// matching the sibling `cli/runtime.rs` call site. Without them the worker loads no provider,
+/// resolves no initial model, and exits before serving `worker.describe`.
+pub fn model_runtime_options(agent_dir: &str) -> CreateModelRuntimeOptions {
+    CreateModelRuntimeOptions {
+        models_path: Some(std::path::Path::new(agent_dir).join("models.json")),
+        auth_path: Some(std::path::Path::new(agent_dir).join("auth.json")),
+        ..Default::default()
+    }
+}
+
 pub async fn run_session_worker(options: SessionWorkerOptions) -> Result<(), String> {
     let context = BACKGROUND_CONTEXT.clone();
     let cwd = options.cwd.clone();
-    let runtime = ModelRuntime::create(CreateModelRuntimeOptions::default()).await;
+    let runtime = ModelRuntime::create(model_runtime_options(&maho_core::config::get_agent_dir())).await;
     let initial = find_initial_model(
         InitialModelOptions {
             cli_provider: None,

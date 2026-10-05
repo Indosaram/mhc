@@ -167,3 +167,37 @@ async fn open_operations_reports_an_admitted_operation() {
     assert_eq!(open[0].lane, "main");
     assert!(!open[0].aborting);
 }
+
+#[tokio::test]
+async fn worker_model_runtime_resolves_the_initial_model_from_the_agent_models_json() {
+    use maho_cli::experimental::mini::worker::model_runtime_options;
+    use maho_core::model_resolver::{find_initial_model, InitialModelOptions};
+    // Regression: the worker must load the agent dir's models.json. With
+    // `CreateModelRuntimeOptions::default()` (no models path) the runtime loads no provider, the
+    // worker resolves no initial model, exits before serving `worker.describe`, and the server
+    // reports that to the presentation as "Connection closed".
+    let directory = tempfile::tempdir().unwrap();
+    let agent = directory.path().join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(
+        agent.join("models.json"),
+        serde_json::json!({ "providers": { "offline": {
+            "api": "openai-completions",
+            "baseUrl": "http://127.0.0.1:9/v1",
+            "apiKey": "offline-fixture",
+            "models": [{ "id": "offline", "reasoning": false, "input": ["text"], "contextWindow": 128000, "maxTokens": 4096 }],
+        } } })
+        .to_string(),
+    )
+    .unwrap();
+    let runtime = ModelRuntime::create(model_runtime_options(&agent.to_string_lossy())).await;
+    let initial = find_initial_model(
+        InitialModelOptions { cli_provider: None, cli_model: None, scoped_models: &[], is_continuing: false, default_provider: None, default_model_id: None, model_thinking_levels: None },
+        &runtime,
+    )
+    .await
+    .unwrap();
+    let model = initial.parsed.model.expect("the agent models.json provider must resolve an initial model");
+    assert_eq!(model.provider, "offline");
+    assert_eq!(model.id, "offline");
+}
