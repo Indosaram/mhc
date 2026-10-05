@@ -2121,7 +2121,7 @@ fn supports_a_hole_between_high_and_max() {
 /// A provider streams that records the `(model, handle, options)` it was asked to cancel, so the
 /// `Models.cancelDeferred` dispatch (provider resolution + `applyAuth` + forward) is observable.
 struct CancelRecorder {
-    calls: Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>,
+    calls: Arc<Mutex<Vec<(Model, DeferredHandle, Option<crate::types::DeferredCancelOptions>)>>>,
 }
 
 impl ProviderStreams for CancelRecorder {
