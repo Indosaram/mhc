@@ -60,7 +60,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     }, theme);
     let rendered = Rc::new(RefCell::new(RenderedMode(Vec::new())));
     let component: Rc<RefCell<dyn Component>> = rendered.clone();
-    screen.base_mut().add_child(component.clone());
+    screen.set_render_root(component.clone());
     screen.base_mut().set_focus(Some(component));
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
