@@ -17,16 +17,16 @@ pub struct ServerListeners {
 impl ServerListeners {
     pub fn new(listeners: Vec<Arc<dyn ServerListener>>) -> Self { Self { listeners } }
     pub async fn start(&self, server: Arc<super::Server>, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<(), ServerError> {
-        let startup_server = server.clone();
         let accept = Arc::new(move |accepted: AcceptedConnection| {
             let server = server.clone(); let shutdown = shutdown.clone();
             Box::pin(async move { server.serve(accepted.connection, accepted.inbound, shutdown).await }) as ServerFuture<'static, ()>
         });
         for (index, listener) in self.listeners.iter().enumerate() {
             if let Err(error) = listener.start(accept.clone()).await {
+                // Roll back only the already-started listeners (pinned `startInternal`); the owning
+                // Server closes its own state in `Server::start`.
                 let mut errors = vec![error.message];
                 for result in futures_util::future::join_all(self.listeners[..index].iter().map(|started|started.close())).await { if let Err(error) = result { errors.push(error.message); } }
-                if let Err(error) = startup_server.close().await { errors.push(error.message); }
                 return Err(ServerError::new("internal_error", &errors.join("; ")));
             }
         }
