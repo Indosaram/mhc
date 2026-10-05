@@ -123,3 +123,22 @@ async fn invalid_status_transition_leaves_persisted_goal_unchanged() {
     assert_eq!(read["result"]["goal"]["objective"],"Finish");
     harness.runtime.dispose().await;
 }
+
+/// UB1 causal regression: the runtime registers a per-thread MCP wire-status inventory holder on
+/// `thread/start` (post-response, via `bind_mcp_wire_status` -> `register_thread`), observable through
+/// the registry completion signal taken BEFORE the trigger (no sleep/poll).
+#[tokio::test]
+async fn runtime_registers_a_per_thread_mcp_inventory_on_thread_start() {
+    let mut harness = harness().await;
+    let registration = harness.runtime.mcp_inventory.lock().await.ready_signal();
+    let thread = harness.start_thread().await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), registration.notified())
+        .await
+        .expect("per-thread MCP inventory registration within deadline");
+    let inventory = harness.runtime.mcp_inventory.lock().await;
+    assert!(inventory.registration_count() >= 1, "the runtime must register a per-thread MCP inventory holder on thread start");
+    assert!(inventory.resolve(Some(&thread)).is_some(), "the started thread must resolve to its registered holder");
+    assert!(inventory.resolve(None).is_some(), "the process-global holder remains available");
+    drop(inventory);
+    harness.runtime.dispose().await;
+}

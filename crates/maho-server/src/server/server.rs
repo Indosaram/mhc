@@ -1,5 +1,6 @@
 use super::{
     errors::ServerError,
+    listener::{ServerListener, ServerListeners},
     session_router::{Attachment, SessionRouter},
     types::*,
 };
@@ -25,6 +26,10 @@ use tokio::{
     task::JoinSet,
 };
 
+/// Observer invoked with every internal server error (pinned `ServerOptions.onError`). The default
+/// `Server::new` has no observer and falls back to stderr diagnostics.
+pub type ServerErrorObserver = Arc<dyn Fn(ServerError) + Send + Sync>;
+
 pub struct Server {
     pub server_id: String,
     host: Arc<dyn ServerHost>,
@@ -32,6 +37,10 @@ pub struct Server {
     max_frame_length: u32,
     handshake_timeout: Duration,
     closing: AtomicBool,
+    listeners: Vec<Arc<dyn ServerListener>>,
+    on_error: Option<ServerErrorObserver>,
+    started: AtomicBool,
+    listener_shutdown: Mutex<Option<watch::Sender<bool>>>,
 }
 impl Server {
     pub fn new(
@@ -39,6 +48,18 @@ impl Server {
         server_id: String,
         max_frame_length: Option<u32>,
         handshake_timeout: Option<Duration>,
+    ) -> Result<Arc<Self>, ServerError> {
+        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None)
+    }
+    /// Pinned `ServerOptions` construction: the server owns its listener set and error observer
+    /// (`listeners`/`onError`), exactly like the pinned `new Server(host, options)`.
+    pub fn with_options(
+        host: Arc<dyn ServerHost>,
+        server_id: String,
+        max_frame_length: Option<u32>,
+        handshake_timeout: Option<Duration>,
+        listeners: Vec<Arc<dyn ServerListener>>,
+        on_error: Option<ServerErrorObserver>,
     ) -> Result<Arc<Self>, ServerError> {
         if !is_server_id(&server_id) {
             return Err(ServerError::new(
@@ -69,11 +90,53 @@ impl Server {
             max_frame_length,
             handshake_timeout,
             closing: AtomicBool::new(false),
+            listeners,
+            on_error,
+            started: AtomicBool::new(false),
+            listener_shutdown: Mutex::new(None),
         }))
+    }
+    /// Report one internal server error to the pinned `onError` observer, falling back to stderr
+    /// when no observer is configured.
+    pub(crate) fn report_error(&self, error: &ServerError) {
+        match &self.on_error {
+            Some(observer) => observer(error.clone()),
+            None => eprintln!("{}", error.message),
+        }
+    }
+    /// Pinned `Server.start()`: start the owned listeners, rolling back every already-started
+    /// listener and the server state when any listener fails to start.
+    pub async fn start(self: &Arc<Self>) -> Result<(), ServerError> {
+        if self.started.swap(true, Ordering::SeqCst) {
+            return Err(ServerError::new("internal_error", "Server is already started"));
+        }
+        let (shutdown, signal) = watch::channel(false);
+        *self.listener_shutdown.lock().await = Some(shutdown);
+        match ServerListeners::new(self.listeners.clone()).start(self.clone(), signal).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Pinned `startInternal` catch: mark closing, then close the server state; the
+                // started listeners were already rolled back by `ServerListeners::start`.
+                self.closing.store(true, Ordering::SeqCst);
+                self.started.store(false, Ordering::SeqCst);
+                *self.listener_shutdown.lock().await = None;
+                match self.router.close().await {
+                    Ok(()) => Err(error),
+                    Err(close) => Err(ServerError::new("internal_error", &format!("{}; {}", error.message, close.message))),
+                }
+            }
+        }
     }
     pub async fn close(&self) -> Result<(), ServerError> {
         self.closing.store(true, Ordering::SeqCst);
-        self.router.close().await
+        if let Some(shutdown) = self.listener_shutdown.lock().await.take() {
+            shutdown.send_replace(true);
+        }
+        let router = self.router.close().await;
+        // Close the owned listeners, attempting every one and aggregating failures (pinned
+        // `closeInternal`); an empty listener set is a no-op for the `Server::new` callers.
+        let listeners = ServerListeners::new(self.listeners.clone()).close().await;
+        router.and(listeners)
     }
     pub fn max_frame_length(&self) -> u32 {
         self.max_frame_length
@@ -151,13 +214,13 @@ impl Server {
             .await {
                 Ok(services)=>services,
                 Err(error)=>{
-                    if let Err(release)=presentation.detach_session().await {eprintln!("{}",release.message);}
+                    if let Err(release)=presentation.detach_session().await {self.report_error(&ServerError::new("internal_error",&release.message));}
                     let final_frame=encode_server_message(
                         &json!({"type":"hello_error","error":{"code":error.code,"message":error.message}}),
                         self.max_frame_length,
                     );
-                    if let Err(encode)=&final_frame {eprintln!("{encode}");}
-                    if let Err(close)=connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {eprintln!("{}",close.message);}
+                    if let Err(encode)=&final_frame {self.report_error(&ServerError::new("internal_error",&encode.to_string()));}
+                    if let Err(close)=connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {self.report_error(&ServerError::new("internal_error",&close.message));}
                     return Err(error);
                 },
             };
@@ -172,11 +235,11 @@ impl Server {
         let subscriptions = Arc::new(Mutex::new(std::collections::BTreeSet::<String>::new()));
         let mut pending = remaining;
         let result=async {
-            send(
+            if let Err(error)=send(
                 &connection,
                 &json!({"type":"hello","version":PROTOCOL_VERSION,"serverId":self.server_id}),
                 self.max_frame_length,
-            ).await?;
+            ).await { self.report_error(&error); return Err(error); }
             loop {
                 for message in pending.drain(..) {
                     match message["type"].as_str() {
@@ -278,8 +341,8 @@ impl Server {
         while let Some(request) = requests.join_next().await {
             match request {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("{}", error.message),
-                Err(error) => eprintln!("{error}"),
+                Ok(Err(error)) => self.report_error(&error),
+                Err(error) => self.report_error(&ServerError::new("internal_error", &error.to_string())),
             }
         }
         let release = presentation.detach_session().await;

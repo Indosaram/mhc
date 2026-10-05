@@ -86,3 +86,60 @@ async fn typed_goal_event_observes_owning_thread_context_and_gates_on_active_sta
 
     session.dispose().await;
 }
+
+/// UB2 causal regression: the pinned `GoalDelivery::subscribe` handler is wired to the session bus,
+/// so a `goal_store_changed` publication on the bound extension runner's bus reaches the real
+/// native `GoalExtension` consumer, which re-reads the store and queues a continuation through the
+/// host (observed by the exact queued custom-message event, not by polling).
+#[tokio::test]
+async fn session_bus_store_changed_event_reaches_the_bound_goal_delivery_and_queues_a_continuation() {
+    use maho_agent::types::CustomAgentMessage;
+    use maho_core::agent_session::ExtensionBindings;
+    use maho_ext_api::{AgentEvent, AgentMessage, AgentSessionEvent};
+    use maho_ext_goal::{GoalExtension, GOAL_STORE_CHANGED_EVENT};
+
+    let directory = tempfile::tempdir().unwrap();
+    let session = session(directory.path());
+    let thread_id = session.session_id();
+    let base_dir = directory.path().join("goal");
+    let store_ref = GoalStoreRef { base_dir: base_dir.clone(), thread_id: thread_id.clone() };
+    let extension_ref = store_ref.clone();
+    let reference = Arc::new(move |_ctx: &maho_ext_api::ExtensionContext| extension_ref.clone());
+
+    // Subscribe to the session event stream BEFORE triggering, so the queued continuation is
+    // observed by exact event with a bounded timeout instead of a sleep/poll loop.
+    let queued = Arc::new(tokio::sync::Notify::new());
+    let queued_signal = queued.clone();
+    let _subscription = session.subscribe(Arc::new(move |event| {
+        if let AgentSessionEvent::Agent(AgentEvent::MessageStart { message }) = event
+            && let AgentMessage::Custom(CustomAgentMessage::Custom(custom)) = message
+            && custom.custom_type == "goal-continuation"
+        {
+            queued_signal.notify_one();
+        }
+    }));
+
+    let context = session.extension_context(Arc::new(HeadlessUi));
+    session
+        .set_extension_runner(maho_ext_host::ExtensionRunner::from_static(
+            vec![Box::new(GoalExtension::new(reference))],
+            context,
+        ))
+        .await;
+    // SessionStart binds the goal delivery subscription on the runner bus.
+    session.bind_extensions(ExtensionBindings::default()).await;
+
+    // Create the active goal AFTER SessionStart so the start path itself does not queue.
+    create_goal(&store_ref, "work", None, 0).await.unwrap();
+
+    // Emit exactly as the app-server goal handler does: the JSON bus event (which the delivery
+    // consumer subscribes to) plus the typed event.
+    session.emit_extension_event(GOAL_STORE_CHANGED_EVENT, &serde_json::json!({"threadId": thread_id}));
+    session.emit_extension_event_typed(GOAL_STORE_CHANGED_EVENT, &GoalStoreChangedEvent { thread_id: thread_id.clone(), ctx: None });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), queued.notified())
+        .await
+        .expect("the bound goal delivery queues a continuation when the session publishes goal_store_changed");
+
+    session.dispose().await;
+}

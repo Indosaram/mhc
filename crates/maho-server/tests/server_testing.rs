@@ -135,3 +135,52 @@ async fn client_failure_rejects_only_registered_waiters_and_later_receive_resolv
     assert_eq!(second.await.unwrap()["type"],"hello");
     let closed=client.next(|message|message["type"]=="response");client.mark_closed();assert!(closed.await.is_err());
 }
+
+#[tokio::test]
+async fn native_server_aggregates_owned_listeners_and_reports_errors_to_the_observer() {
+    use maho_server::server::listener::ServerListener;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    struct Host;
+    struct Services;
+    struct Connection;
+    impl ServerHost for Host {
+        fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+        fn resolve_session<'a>(&'a self,_:&'a str)->ServerFuture<'a,serde_json::Value> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+        fn open_session(&self,_:serde_json::Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {Box::pin(async {Err(ServerError::session_not_found(None))})}
+    }
+    impl RoutedServerServiceHost for Host {
+        fn attach_client(&self,_:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {Box::pin(async {Ok(Arc::new(Services) as Arc<dyn RoutedServerServiceAttachment>)})}
+    }
+    impl RoutedServerServiceAttachment for Services {
+        fn invoke_service<'a>(&'a self,_:serde_json::Value,_:Publisher,_:Context)->ServerFuture<'a,Option<serde_json::Value>> {Box::pin(async {Ok(None)})}
+        fn release(&self)->ServerFuture<'_,()> {Box::pin(async {Ok(())})}
+    }
+    impl ByteConnection for Connection {
+        fn closed(&self)->bool {false}
+        fn send<'a>(&'a self,_:&'a [u8])->ServerFuture<'a,()> {Box::pin(async {Err(ServerError::new("internal_error","hello send failed"))})}
+        fn close<'a>(&'a self,_:Option<&'a [u8]>)->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
+    }
+    struct CountingListener { starts:Arc<AtomicUsize>, closes:Arc<AtomicUsize> }
+    impl ServerListener for CountingListener {
+        fn start(&self,_:ByteConnectionAcceptor)->ServerFuture<'_,()> {Box::pin(async move {self.starts.fetch_add(1,Ordering::SeqCst);Ok(())})}
+        fn close(&self)->ServerFuture<'_,()> {Box::pin(async move {self.closes.fetch_add(1,Ordering::SeqCst);Ok(())})}
+    }
+    let starts=Arc::new(AtomicUsize::new(0));let closes=Arc::new(AtomicUsize::new(0));
+    let errors:Arc<Mutex<Vec<String>>>=Arc::new(Mutex::new(Vec::new()));let captured=errors.clone();
+    let test=create_test_server(TestServerOptions {
+        host:Some(Arc::new(Host)),
+        listeners:vec![Arc::new(CountingListener {starts:starts.clone(),closes:closes.clone()})],
+        on_error:Some(Arc::new(move |error:ServerError| captured.lock().unwrap().push(error.message))),
+        ..Default::default()
+    }).unwrap();
+    test.server.start().await.unwrap();
+    assert_eq!(starts.load(Ordering::SeqCst),1);
+    let (sender,inbound)=tokio::sync::mpsc::channel(1);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    sender.send(Ok(maho_server::protocol::codec::encode_client_message(&json!({"type":"hello","version":8}),maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap())).await.unwrap();
+    let error=test.server.serve(Arc::new(Connection),inbound,signal).await.unwrap_err();
+    assert_eq!(error.message,"hello send failed");
+    assert_eq!(errors.lock().unwrap().as_slice(),["hello send failed".to_string()]);
+    test.server.close().await.unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst),1);
+}

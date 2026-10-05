@@ -15,12 +15,18 @@ impl McpWireStatusAdapter {
 }
 impl Drop for McpWireStatusAdapter {fn drop(&mut self) {self.dispose();}}
 #[derive(Default)]
-pub struct McpWireStatusRegistry {global:Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>>,threads:BTreeMap<String,Arc<std::sync::Mutex<McpWireStatusAdapter>>>}
+pub struct McpWireStatusRegistry {global:Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>>,threads:BTreeMap<String,Arc<std::sync::Mutex<McpWireStatusAdapter>>>,registrations:u64,ready:Arc<tokio::sync::Notify>}
 impl McpWireStatusRegistry {
-    pub fn new(global: Option<McpWireStatusAdapter>) -> Self {Self {global:global.map(|adapter|Arc::new(std::sync::Mutex::new(adapter))),threads:BTreeMap::new()}}
+    pub fn new(global: Option<McpWireStatusAdapter>) -> Self {Self {global:global.map(|adapter|Arc::new(std::sync::Mutex::new(adapter))),threads:BTreeMap::new(),registrations:0,ready:Arc::new(tokio::sync::Notify::new())}}
     pub fn set_global(&mut self,adapter: McpWireStatusAdapter) {self.global = Some(Arc::new(std::sync::Mutex::new(adapter)));}
-    pub fn register_thread(&mut self,id: String,adapter: Arc<std::sync::Mutex<McpWireStatusAdapter>>) {self.threads.insert(id,adapter);}
+    pub fn register_thread(&mut self,id: String,adapter: Arc<std::sync::Mutex<McpWireStatusAdapter>>) {self.threads.insert(id,adapter);self.registrations+=1;self.ready.notify_one();}
     pub fn remove_thread(&mut self,id: &str) {self.threads.remove(id);}
+    /// Number of per-thread registrations performed so far (test-observable completion signal).
+    pub fn registration_count(&self) -> u64 {self.registrations}
+    /// A shared signal that fires (with a stored permit) on every per-thread registration, so a
+    /// caller that takes `ready_signal()` before triggering a thread start can await it with a
+    /// bounded timeout instead of polling.
+    pub fn ready_signal(&self) -> Arc<tokio::sync::Notify> {self.ready.clone()}
     pub fn resolve(&self,id: Option<&str>) -> Option<Arc<std::sync::Mutex<McpWireStatusAdapter>>> {match id {None=>self.global.clone(),Some(id)=>self.threads.get(id).cloned()}}
     pub fn thread_ids(&self) -> Vec<String> {self.threads.keys().cloned().collect()}
 }

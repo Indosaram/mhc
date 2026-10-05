@@ -1,12 +1,18 @@
 use rand::RngCore;
-use std::{io, path::{Path, PathBuf}};
+use std::{io, path::{Path, PathBuf}, sync::Arc};
 use subtle::ConstantTimeEq;
 use tokio::io::AsyncWriteExt;
 
 pub enum WebSocketListenerAuth { Off, TokenFile(PathBuf), TokenValue(String) }
 pub enum ResolvedWebSocketListenerAuth { Off, Bearer { token: String, path: Option<PathBuf> } }
 fn trim_token(token: &str) -> &str { maho_ai::utils::js::trim(token) }
+/// Pinned `resolveWebSocketListenerAuth`'s injectable stderr: the token-path receipt is written
+/// through this observer so a caller (or test) can capture it instead of the process stderr.
+pub type TokenReceiptWriter = Arc<dyn Fn(&str) + Send + Sync>;
 pub async fn resolve_websocket_listener_auth(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>) -> io::Result<ResolvedWebSocketListenerAuth> {
+    resolve_websocket_listener_auth_with_receipt(auth, default_path, None).await
+}
+pub async fn resolve_websocket_listener_auth_with_receipt(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>, receipt: Option<TokenReceiptWriter>) -> io::Result<ResolvedWebSocketListenerAuth> {
     let (path, managed) = match auth {
         Some(WebSocketListenerAuth::Off) => return Ok(ResolvedWebSocketListenerAuth::Off),
         Some(WebSocketListenerAuth::TokenValue(token)) => return Ok(ResolvedWebSocketListenerAuth::Bearer { token, path:None }),
@@ -35,7 +41,8 @@ pub async fn resolve_websocket_listener_auth(auth: Option<WebSocketListenerAuth>
         },
     };
     if token.is_empty() { return Err(io::Error::other(format!("app-server ws auth token file is empty: {}", path.display()))); }
-    eprintln!("app-server websocket token: {}",path.display());
+    let receipt_message = format!("app-server websocket token: {}",path.display());
+    match &receipt { Some(writer) => writer(&receipt_message), None => eprintln!("{receipt_message}") }
     Ok(ResolvedWebSocketListenerAuth::Bearer { token, path:Some(path) })
 }
 pub fn is_websocket_request_authorized(header: Option<&str>, auth: &ResolvedWebSocketListenerAuth) -> bool {

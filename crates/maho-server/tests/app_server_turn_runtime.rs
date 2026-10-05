@@ -1,4 +1,5 @@
-use maho_server::app_server::turn_runtime::{build_turn, build_user_message, parse_input};
+use maho_server::app_server::turn_runtime::{build_turn, build_user_message, parse_input, read_logged_items};
+use maho_server::app_server::turn_log::{RecordTurnOptions, TurnLog};
 use serde_json::json;
 
 #[test]
@@ -44,4 +45,18 @@ fn user_message_retains_client_identity_and_content() {
 fn text_validation_uses_ecmascript_trim_without_altering_input() {
     assert_eq!(parse_input(&[json!({"type":"text","text":"\u{feff}"})]).err().unwrap().code,-32602);
     assert_eq!(parse_input(&[json!({"type":"text","text":"\u{0085}"})]).unwrap().text,"\u{0085}");
+}
+
+#[test]
+fn logged_items_are_returned_as_json_for_the_matching_turn_only() {
+    // Pinned `readLoggedItems` (turn-runtime.ts): the logged items of the named turn, converted to
+    // JSON. Rust WireItem is already a serde_json::Map, so no `wireItemToJson` conversion is needed
+    // (that export is N/A here); this proves the read side.
+    let mut log = TurnLog::default();
+    log.record_turn("thread", RecordTurnOptions { turn_id:"turn".into(), started_at:"2026-01-01T00:00:00.000Z".into(), status:None, completed_at:None, error:None });
+    log.record_turn("thread", RecordTurnOptions { turn_id:"other".into(), started_at:"2026-01-01T00:00:00.000Z".into(), status:None, completed_at:None, error:None });
+    log.append_item("thread","turn", json!({"type":"userMessage","id":"u"}).as_object().unwrap().clone()).unwrap();
+    log.append_item("thread","other", json!({"type":"userMessage","id":"other"}).as_object().unwrap().clone()).unwrap();
+    assert_eq!(read_logged_items(&mut log, "thread", "turn"), vec![json!({"type":"userMessage","id":"u"})]);
+    assert!(read_logged_items(&mut log, "thread", "missing").is_empty());
 }
