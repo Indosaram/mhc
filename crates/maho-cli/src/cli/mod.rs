@@ -16,7 +16,6 @@ pub mod help_fast_path;
 pub mod host_command;
 pub mod host_request;
 pub mod hook_sources;
-pub mod llama;
 pub mod oauth_providers;
 pub mod omo_mount;
 pub mod omo_shipped;

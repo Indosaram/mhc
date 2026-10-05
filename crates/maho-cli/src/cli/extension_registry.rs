@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use maho_ext_llama::llama;
 use maho_ext_api::{Extension, ExtensionSessionProfile, SourceInfo};
 use maho_ext_host::loader::{load_extensions, LoadExtensionsResult, NativeExtensionFactory};
 
@@ -263,7 +264,7 @@ pub fn deferred_builtin_extensions() -> &'static [DeferredExtension] {
 pub const INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
 
 static INLINE_FACTORIES: [NativeExtension; 1] = [
-    NativeExtension { id: "llama.cpp", crate_name: "maho-cli", factory: llama },
+    NativeExtension { id: "llama.cpp", crate_name: "maho-ext-llama", factory: llama },
 ];
 
 pub fn inline_extensions() -> &'static [NativeExtension] {

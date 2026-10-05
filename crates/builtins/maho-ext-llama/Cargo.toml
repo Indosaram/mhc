@@ -1,0 +1,22 @@
+[package]
+name = "maho-ext-llama"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "MIT"
+
+[dependencies]
+maho-ext-api = { path = "../../maho-ext-api" }
+maho-ai = { path = "../../maho-ai" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+futures-util = { version = "=0.3.34", features = ["stream"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
+
+[lints]
+workspace = true
