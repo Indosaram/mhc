@@ -58,7 +58,7 @@ async fn runtime_subscribes_to_provider_account_events_and_unsubscribes_on_dispo
     let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().display().to_string()),None).await;
     let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
     runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
-    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}})).await.unwrap();
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
     receive.try_recv().unwrap();
     maho_core::emit_provider_accounts_changed("app-server-fixture-provider");
     let notification = tokio::time::timeout(std::time::Duration::from_secs(5),async {

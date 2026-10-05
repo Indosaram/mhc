@@ -202,9 +202,9 @@ async fn concurrent_failed_open_shares_one_result_and_later_attach_retries() {
     let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
     let first={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
     gate.entered.wait().await;
-    let second=router.attach("session-1").await.unwrap_err();
+    let second=router.attach("session-1").await.err().expect("second concurrent attach fails");
     gate.release.resolve(());
-    let first=first.await.unwrap().unwrap_err();
+    let first=first.await.unwrap().err().expect("first concurrent attach fails");
     assert_eq!(first,second);
     assert_eq!(first.message,"faux open failure");
     assert_eq!(host.state.lock().await.open_session_count,1);
@@ -226,7 +226,7 @@ async fn cancelled_leader_releases_waiter_which_then_opens() {
         let mut waiter=Box::pin(router.attach("session-1"));
         assert!(futures_util::poll!(waiter.as_mut()).is_pending());
         leader.abort();
-        assert!(leader.await.unwrap_err().is_cancelled());
+        assert!(leader.await.err().expect("leader task was aborted").is_cancelled());
         let attachment=waiter.await.unwrap();
         assert_eq!(host.state.lock().await.open_session_count,2);
         assert_eq!(host.latest_harness("session-1").await.unwrap().state.lock().await.attached_clients,1);
