@@ -67,7 +67,7 @@ async fn configured_client(ctx: &ExtensionCommandContext) -> Option<LlamaClient>
         .cloned();
     let server_url = configured_url
         .unwrap_or_else(|| result.auth.base_url.clone().unwrap_or_default());
-    let server_url = normalize_llama_server_url(&server_url).unwrap_or_else(|_| server_url);
+    let server_url = normalize_llama_server_url(&server_url).unwrap_or(server_url);
     LlamaClient::new(&server_url, result.auth.api_key.as_deref()).ok()
 }
 
@@ -356,12 +356,12 @@ async fn run_flow(
                 }
             }
             LlamaManagerAction::Model(model) if model_is_loaded(model) => {
-                if let Err(error) = unload_model(&notify, &registry, &client, ui.clone(), model.clone()).await {
+                if let Err(error) = unload_model(&notify, &registry, &client, ui.clone(), model.as_ref().clone()).await {
                     action_error = Some(error);
                 }
             }
             LlamaManagerAction::Model(model) if model.status.value == "unloaded" => {
-                if let Err(error) = load_model(&notify, &registry, &client, ui.clone(), catalog.clone(), model.clone()).await {
+                if let Err(error) = load_model(&notify, &registry, &client, ui.clone(), catalog.clone(), model.as_ref().clone()).await {
                     action_error = Some(error);
                 }
             }
