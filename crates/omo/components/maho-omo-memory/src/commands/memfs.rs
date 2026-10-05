@@ -483,6 +483,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn given_a_reachable_mirror_when_sync_runs_then_the_push_is_reported_as_successful() {
+        let (_root, identity) = temp_identity();
+        let repo = seeded_repo(&identity, seeds());
+        // A real bare mirror on disk; git only resolves a `file://` remote when the path is
+        // canonical, so the absolute tempdir path is used verbatim.
+        let mirror = tempfile::tempdir().expect("mirror root");
+        let init = std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .arg(mirror.path())
+            .output()
+            .expect("git init --bare");
+        assert!(init.status.success(), "git init --bare failed: {}", String::from_utf8_lossy(&init.stderr));
+        repo.config_set(
+            memory_core::sync::CONFIG_KEY,
+            &format!("file://{}", mirror.path().display()),
+        )
+        .expect("configure mirror");
+        let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
+        let context = fake_command_context(FakeContextOptions::default());
+
+        let response = handle_memfs(&fake.deps, &context.ctx, "sync").await;
+
+        assert!(response.text.contains("pushed"), "unexpected sync output: {}", response.text);
+        assert_eq!(context.ui.last_level(), Some(NotifyLevel::Info));
+    }
+
+    #[tokio::test]
     async fn given_a_skill_missing_name_frontmatter_when_repair_runs_then_hooks_are_reinstalled_and_the_skill_is_repaired() {
         let (_root, identity) = temp_identity();
         seeded_repo(&identity, seeds());
