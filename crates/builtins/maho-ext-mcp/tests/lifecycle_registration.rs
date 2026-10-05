@@ -63,14 +63,14 @@ impl Extension for McpExtension {
 
 fn seed_direct_server(agent_dir: &Path) {
     let declaration = json!({"type":"stdio","command":"/usr/bin/node","args":["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts","--tools","2"],"exposure":"direct"});
-    std::fs::write(agent_dir.join("mcp.json"), json!({"mcpServers":{"fx":declaration.clone()}}).to_string()).unwrap();
-    let config: ServerConfigWire = serde_json::from_value(declaration).unwrap();
-    let hash = hash_config(&normalize_server(config)).unwrap();
+    std::fs::write(agent_dir.join("mcp.json"), json!({"mcpServers":{"fx":declaration.clone()}}).to_string()).expect("write mcp.json");
+    let config: ServerConfigWire = serde_json::from_value(declaration).expect("parse the mcp server declaration");
+    let hash = hash_config(&normalize_server(config)).expect("hash the seeded server config");
     let cache_dir = agent_dir.join("cache");
-    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).expect("create the cache dir");
     let catalog = json!({"version":1,"servers":{"fx":{"configHash":hash,"fetchedAt":chrono::Utc::now().timestamp_millis() as f64,
         "tools":[{"name":"alpha","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}}}],"resources":[],"prompts":[]}}});
-    std::fs::write(cache_dir.join("mcp-cache.json"), catalog.to_string()).unwrap();
+    std::fs::write(cache_dir.join("mcp-cache.json"), catalog.to_string()).expect("write mcp-cache.json");
 }
 
 #[tokio::test]
