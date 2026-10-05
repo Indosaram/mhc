@@ -160,8 +160,8 @@ pub fn normalize_llama_server_url(value: &str) -> Result<String, String> {
     }
     url.set_fragment(None);
     url.set_query(None);
-    let trimmed = url.path().trim_end_matches('/');
-    let stripped = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    let trimmed = url.path().trim_end_matches('/').to_owned();
+    let stripped = trimmed.strip_suffix("/v1").unwrap_or(&trimmed);
     url.set_path(if stripped.is_empty() { "/" } else { stripped });
     Ok(url.to_string().trim_end_matches('/').to_owned())
 }
@@ -177,7 +177,7 @@ async fn signal_cancelled(signal: Option<&AbortSignal>) {
     }
 }
 
-fn apply_load_event(event: &LlamaModelEvent, model: &str, loaded: &mut bool, error: &mut Option<String>, on_progress: &mut dyn FnMut(LlamaProgress)) {
+fn apply_load_event(event: &LlamaModelEvent, model: &str, loaded: &mut bool, error: &mut Option<String>, on_progress: &mut (dyn FnMut(LlamaProgress) + Send)) {
     if event.model != model { return; }
     if event.event != "model_status" && event.event != "status_change" { return; }
     let status = event.data.as_ref().and_then(|data| data.get("status")).and_then(Value::as_str);
@@ -186,7 +186,7 @@ fn apply_load_event(event: &LlamaModelEvent, model: &str, loaded: &mut bool, err
     if let Some(progress) = event.data.as_ref().and_then(parse_load_progress) { on_progress(progress); }
 }
 
-fn apply_download_event(event: &LlamaModelEvent, model: &str, finished: &mut bool, failure: &mut Option<String>, saw_downloading: &mut bool, on_progress: &mut dyn FnMut(LlamaProgress)) {
+fn apply_download_event(event: &LlamaModelEvent, model: &str, finished: &mut bool, failure: &mut Option<String>, saw_downloading: &mut bool, on_progress: &mut (dyn FnMut(LlamaProgress) + Send)) {
     if event.model != model { return; }
     if event.event == "download_finished" { *finished = true; }
     if event.event == "download_failed" {
@@ -342,7 +342,7 @@ impl LlamaClient {
         (events_rx, ready_rx)
     }
 
-    pub async fn load_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<LlamaModelInfo, String> {
+    pub async fn load_and_wait(&self, model: &str, on_progress: &mut (dyn FnMut(LlamaProgress) + Send), signal: Option<&AbortSignal>) -> Result<LlamaModelInfo, String> {
         let (mut events, ready) = self.subscribe(signal);
         tokio::select! {
             biased;
@@ -377,7 +377,7 @@ impl LlamaClient {
         }
     }
 
-    pub async fn download_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<Vec<LlamaModelInfo>, String> {
+    pub async fn download_and_wait(&self, model: &str, on_progress: &mut (dyn FnMut(LlamaProgress) + Send), signal: Option<&AbortSignal>) -> Result<Vec<LlamaModelInfo>, String> {
         let (mut events, ready) = self.subscribe(signal);
         tokio::select! {
             biased;
@@ -420,6 +420,7 @@ pub fn progress_map(entries: &BTreeMap<String, Value>) -> Option<LlamaProgress> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -496,11 +497,11 @@ mod tests {
     #[test]
     fn download_event_records_finish_failure_and_progress() {
         let (mut finished, mut failure, mut saw) = (false, None, false);
-        let mut progress = Vec::new();
-        let mut sink = |value: LlamaProgress| progress.push(value);
+        let progress = std::cell::RefCell::new(Vec::new());
+        let mut sink = |value: LlamaProgress| progress.borrow_mut().push(value);
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_progress".to_owned(), data: Some(serde_json::json!({ "a": { "done": 1, "total": 4 } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
         assert!(saw);
-        assert_eq!(progress[0].ratio, Some(0.25));
+        assert_eq!(progress.borrow()[0].ratio, Some(0.25));
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_failed".to_owned(), data: Some(serde_json::json!({ "error": { "message": "boom" } })) }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
         assert_eq!(failure.as_deref(), Some("boom"));
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_finished".to_owned(), data: None }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
