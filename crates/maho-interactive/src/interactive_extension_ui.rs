@@ -116,6 +116,9 @@ impl ExtensionUi for InteractiveExtensionUi {
         self.send(UiRequest::Input { title: title.into(), reply });
         Box::pin(Self::wait(receiver, opts))
     }
+    fn request_render(&self) -> Result<(), ExtensionFailure> {
+        self.sender.send(UiRequest::WidgetFrame).map_err(|_| ExtensionFailure::new("Interactive UI request channel is closed"))
+    }
     fn notify(&self, message: &str, kind: NotificationType) { self.send(UiRequest::Notify(message.into(), kind)); }
     fn set_status(&self, key: &str, text: Option<&str>) {
         let mut statuses = self.statuses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
