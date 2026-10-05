@@ -110,7 +110,7 @@ pub async fn register_direct_mcp_tools(
     registrar: Arc<dyn McpToolRegistrar>,
     config: &ResolvedMcpConfig,
     entries: Vec<McpServiceRegistrationEntry>,
-    mut tool_search: Option<&mut ToolSearchService>,
+    tool_search: Option<&mut ToolSearchService>,
     registry: &mut McpTierBRegistry,
     refresh_active_set_when_empty: bool,
 ) -> Result<Option<McpSessionRegistration>, ExtensionFailure> {
@@ -157,7 +157,7 @@ pub async fn register_direct_mcp_tools(
     let registration = register_mcp_tier_b_tools(registrar, McpTierBRegistrationInput {
         registered_entries, active_entries, search_mode, proxy_gateways, utility_tools,
         settings: config.settings.clone(), agent_dir, artifacts, output_guard: config.settings.output_guard.clone(),
-    }, tool_search.as_deref_mut(), registry, None)?;
+    }, tool_search, registry, None)?;
     let registered_tools = registration.searchable.iter().map(|tool| tool.name.clone()).collect();
     Ok(Some(McpSessionRegistration {registration, prompt_servers, resource_servers, registered_tools, wiring_errors}))
 }

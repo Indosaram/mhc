@@ -104,8 +104,8 @@ fn context()->ExtensionContext {
         service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,
         loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,
         is_idle_fn:std::sync::Arc::new(||true),wait_for_idle_fn:std::sync::Arc::new(||Box::pin(async{})),is_project_trusted_fn:std::sync::Arc::new(||true),
-        is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(||String::new()),
-        get_system_prompt_options_fn:std::sync::Arc::new(||BuildSystemPromptOptions::default()),
+        is_compacting_fn:std::sync::Arc::new(||false),get_system_prompt_fn:std::sync::Arc::new(String::new),
+        get_system_prompt_options_fn:std::sync::Arc::new(BuildSystemPromptOptions::default),
         registered_mcp_servers:Vec::new(),update_tool_hook_status:None,idle_coordinator:None,logger:None,defer_macrotask:None, compaction_signal: Default::default() }
 }
 fn anthropic_model()->Model {
