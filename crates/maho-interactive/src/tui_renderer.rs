@@ -1,6 +1,10 @@
 //! Port of tui-renderer.ts. Terminal IO is supplied by the host render loop.
 use crate::theme::{Theme, ThemeBg, ThemeColor};
-use maho_tui::{tui::TuiBase, tui_alt_screen::TuiAltScreen, tui_main_screen::TuiMainScreen};
+use maho_tui::{
+    tui::{Component, TuiBase},
+    tui_alt_screen::TuiAltScreen,
+    tui_main_screen::TuiMainScreen,
+};
 use std::{cell::RefCell, rc::Rc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +61,17 @@ impl InteractiveTui {
         match self {
             Self::Regular(t) => &mut t.base,
             Self::Fullscreen(t) => &mut t.base,
+        }
+    }
+
+    /// Mounts the app's single render root on the renderer that reads it. senpi's main screen
+    /// renders its mounted children (`addChild`), while the alternate screen renders only its
+    /// `layoutRoot` (`setLayoutRoot`); a root added as a plain child is invisible in fullscreen, so
+    /// every entry mounts through here (see `InteractiveTerminal::new`).
+    pub fn set_render_root(&mut self, root: Rc<RefCell<dyn Component>>) {
+        match self {
+            Self::Regular(tui) => tui.base.add_child(root),
+            Self::Fullscreen(tui) => tui.set_layout_root(Some(root)),
         }
     }
 }
