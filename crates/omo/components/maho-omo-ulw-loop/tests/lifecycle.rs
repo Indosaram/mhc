@@ -236,7 +236,7 @@ fn active_runner() -> maho_omo_ulw_loop::index::CommandRunner {
 fn coordinator_harness(runner: Option<maho_omo_ulw_loop::index::CommandRunner>) -> (ExtensionApi, Arc<Actions>, Arc<RecordingCoordinator>) {
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
-    runtime.bind(Arc::clone(&actions));
+    runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None, run_command: runner }.register(&mut api);
     (api, actions, Arc::new(RecordingCoordinator::default()))
@@ -296,7 +296,7 @@ async fn active_boulder_defers_without_enqueuing_a_continuation() -> Result<(), 
     }).to_string())?;
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
-    runtime.bind(Arc::clone(&actions));
+    runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("loop", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), runtime);
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None, run_command: Some(Arc::new(|_, _, _| panic!("boulder precedence must bypass status"))) }.register(&mut api);
     let coordinator = Arc::new(RecordingCoordinator::default());
@@ -330,7 +330,7 @@ async fn malformed_status_warns_through_the_context_logger() {
         ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None,
         run_command: Some(Arc::new(|_, _, _| Box::pin(async { Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0, stdout: "{bad json".into() }) }))) }.register(&mut api);
-    let mut ctx = support::context_with_logger(Arc::clone(&recorder));
+    let ctx = support::context_with_logger(Arc::clone(&recorder));
     let mut event = ExtensionEvent::Input(InputEvent { input_id: "id".into(), text: "hi".into(), images: None, source: InputSource::Interactive, streaming_behavior: Some(StreamingBehavior::Steer) });
     api.registered.handlers[&EventKind::Input][0](&mut event, &ctx).await.expect("dispatch");
     assert!(support::logger_entries(&recorder).iter().any(|(level, _, details)| level == "warn"
@@ -342,12 +342,12 @@ async fn stale_status_logs_skipped_through_the_context_logger() {
     let recorder = Arc::new(support::RecordingLogger::default());
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
-    runtime.bind(Arc::clone(&actions));
+    runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
         ExtensionSessionProfile::default(), EventBus::default(), runtime);
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None,
         run_command: Some(Arc::new(|_, _, _| Box::pin(async { Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0, stdout: r#"{"ok":true,"plan":{"goals":[{"status":"pending"}]}}"#.into() }) }))) }.register(&mut api);
-    let mut ctx = support::context_with_logger(Arc::clone(&recorder));
+    let ctx = support::context_with_logger(Arc::clone(&recorder));
     for _ in 0..2 {
         let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
         api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch");
@@ -364,13 +364,13 @@ async fn cap_reached_logs_skipped_through_the_context_logger() {
     let observed = Arc::clone(&calls);
     let actions = Arc::new(Actions::default());
     let runtime = ExtensionRuntime::default();
-    runtime.bind(Arc::clone(&actions));
+    runtime.bind(actions.clone());
     let mut api = ExtensionApi::new(LoadedExtension::new("loop", "/tmp".into(), SourceInfo::default()),
         ExtensionSessionProfile::default(), EventBus::default(), runtime);
     maho_omo_ulw_loop::index::UlwLoopComponent { bin: Some("/toolkit".into()), js_runtime: "bun".into(), logger: None,
         run_command: Some(Arc::new(move |_, _, _| { let n = observed.fetch_add(1, Ordering::SeqCst); Box::pin(async move {
             Ok(maho_omo_ulw_loop::omo_command::CommandResult { code: 0, stdout: serde_json::json!({"ok":true,"revision":n,"plan":{"goals":[{"status":"pending"}]}}).to_string() }) }) })) }.register(&mut api);
-    let mut ctx = support::context_with_logger(Arc::clone(&recorder));
+    let ctx = support::context_with_logger(Arc::clone(&recorder));
     for _ in 0..9 {
         let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };
         api.registered.handlers[&EventKind::AgentEnd][0](&mut event, &ctx).await.expect("dispatch");

@@ -1,5 +1,5 @@
 #[path = "../../maho-ext-imagegen/tests/support.rs"]
-mod imagegen_support;
+pub mod imagegen_support;
 
 use maho_ai::node::provider_scope::{run_with_provider_scope_async, ProviderScope};
 use maho_ext_api::*;
@@ -9,6 +9,28 @@ use maho_test_support::faux::{FauxResponse, FauxScript};
 use maho_test_support::faux_session::{FauxSession, NativeSession};
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+// `imagegen_support::FixtureRegistry` is a foreign crate's type, so this crate cannot implement
+// `ImageGenAuthRegistry` for it (orphan rule). Mirror its credential fields in a local fixture.
+struct AuthFixture {
+    stored_api_key: bool,
+    provider_api_key: Option<String>,
+    provider_headers: Option<std::collections::BTreeMap<String, Option<String>>>,
+    models: Vec<Model>,
+}
+
+impl maho_ext_imagegen::auth::ImageGenAuthRegistry for AuthFixture {
+    fn stored_openai_is_api_key(&self) -> bool { self.stored_api_key }
+    fn get_all(&self) -> Vec<Model> { self.models.clone() }
+    fn get_provider_auth(&self, _: &str) -> maho_ext_imagegen::auth::AuthFuture<'_> {
+        let key = self.provider_api_key.clone();
+        let headers = self.provider_headers.clone().unwrap_or_default();
+        Box::pin(async move { Ok(key.map(|api_key| maho_ext_imagegen::auth::Credentials { api_key: Some(api_key), headers })) })
+    }
+    fn get_api_key_and_headers<'a>(&'a self, _: &'a Model) -> maho_ext_imagegen::auth::AuthFuture<'a> {
+        self.get_provider_auth("")
+    }
+}
 
 fn script() -> FauxScript {
     FauxScript { name: "imagegen-extension".into(), prompt: "draw".into(), responses: vec![FauxResponse { content: "ok".into(), stop_reason: "stop".into() }] }
@@ -35,11 +57,11 @@ fn completions() -> maho_ai::types::Model {
 }
 
 fn credentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] })
+    Arc::new(AuthFixture { stored_api_key: false, provider_api_key: Some("gateway-secret".into()), provider_headers: None, models: vec![imagegen_support::gateway_model()] })
 }
 
 fn uncredentialed() -> Arc<dyn maho_ext_imagegen::auth::ImageGenAuthRegistry> {
-    Arc::new(imagegen_support::FixtureRegistry { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() })
+    Arc::new(AuthFixture { stored_api_key: false, provider_api_key: None, provider_headers: None, models: Vec::new() })
 }
 
 async fn boot() -> NativeSession {
@@ -116,8 +138,8 @@ async fn proxied_responses_without_credentials_exposes_neither_tool() {
 async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, proxied()).await;
-    assert_eq!(native_tools(&payload), 0);
+    let initial = payload(&session, proxied()).await;
+    assert_eq!(native_tools(&initial), 0);
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
@@ -129,8 +151,8 @@ async fn switching_to_the_official_endpoint_hands_over_to_the_server_tool() {
 async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(credentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, official()).await;
-    assert_eq!(native_tools(&payload), 1);
+    let initial = payload(&session, official()).await;
+    assert_eq!(native_tools(&initial), 1);
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -144,8 +166,8 @@ async fn switching_to_a_proxied_endpoint_hands_back_to_the_client_tool() {
 async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endpoint() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, official()).await;
-    assert_eq!(native_tools(&payload), 1);
+    let initial = payload(&session, official()).await;
+    assert_eq!(native_tools(&initial), 1);
     session.set_model(proxied()).await.expect("model");
     let payload = payload(&session, proxied()).await;
     assert_eq!(native_tools(&payload), 0);
@@ -157,8 +179,8 @@ async fn a_native_session_without_credentials_loses_both_tools_on_a_proxied_endp
 async fn an_unavailable_session_gains_the_server_tool_on_the_official_endpoint() {
     let _guard = imagegen_support::GlobalStateGuard::acquire(Some(uncredentialed())).await;
     let session = boot().await;
-    let payload = payload(&session, proxied()).await;
-    assert_eq!(native_tools(&payload), 0);
+    let initial = payload(&session, proxied()).await;
+    assert_eq!(native_tools(&initial), 0);
     session.set_model(official()).await.expect("model");
     let payload = payload(&session, official()).await;
     assert_eq!(native_tools(&payload), 1);
