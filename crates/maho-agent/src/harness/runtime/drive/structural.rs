@@ -268,8 +268,8 @@ enum StructuralPublication {
 }
 
 enum StructuralAttempt {
-    Compaction { result: CompactResult, retryable: bool },
-    BranchSummary { result: BranchSummaryResult, retryable: bool },
+    Compaction { result: CompactResult },
+    BranchSummary { result: BranchSummaryResult },
     Error { error: OperationError, retryable: bool },
     CancelRequested,
 }
@@ -701,7 +701,7 @@ async fn publish_structural_outcome(
                             let end = HarnessEvent::new(HarnessEventPayload::RunEnd(RunEndPayload { run_id: id.clone(), from_tip_id: meta.source_tip_id.clone(), tip_id: Some(tip), ended_at: record.ended_at, status: "failed".into(), error: Some(error) }), Some(name.clone()));
                             let compaction_end = HarnessEvent::new(HarnessEventPayload::CompactionEnd { run_id: id.clone(), reason, ended_at: record.ended_at, status: if is_declined { "declined".into() } else { "failed".into() }, entry_id: None }, Some(name.clone()));
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: None, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![compaction_end.clone(), end.clone()])) }) });
+                            Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: None, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![compaction_end.clone(), end.clone()])) }) })
                         }
                         ResultBoundary::Finish => {
                             if is_branch_result {
@@ -715,11 +715,10 @@ async fn publish_structural_outcome(
                             let cleanup = operation_cleanup_writes(reader, &operation_id, &current, &drive_context).await?;
                             let record = operation_result_record(&meta, status, terminal_tip_id.clone(), error).map_err(|e| session_invariant_error(e.to_string()))?;
                             writes.extend(cleanup);
-                            let (name, id) = (lane_name.clone(), operation_id.clone());
                             let events_arc = events.clone();
                             let lane_patch = if is_compaction_result { Some(LanePatch { tip_id: Some(terminal_tip_id.clone()), inbox: None, configuration: None }) } else { None };
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |commit| (events_arc)(commit))) }) });
+                            Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |commit| (events_arc)(commit))) }) })
                         }
                         ResultBoundary::CommitNavigation { .. } => {
                             if is_compaction_result {
@@ -737,7 +736,7 @@ async fn publish_structural_outcome(
                             let status_text = if is_branch_result { "completed" } else if is_declined { "declined" } else { "failed" };
                             let lane_patch = if is_branch_result { Some(LanePatch { tip_id: Some(terminal_tip_id.clone()), inbox: None, configuration: None }) } else { None };
                             let outcome_record = record.clone();
-                            return Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::NavigationEnd(crate::harness::events::NavigationEndPayload { run_id: id.clone(), from_tip_id: from_tip.clone(), tip_id: tip.clone(), ended_at, status: status_text.into(), error: None }), Some(name.clone()))])) }) });
+                            Ok(OperationCommand::Finish { decision: Box::new(crate::harness::runtime::lane::FinishDecision { writes, record, lane: lane_patch, materialize: Arc::new(move |_| StructuralPublication::Procedure(ProcedureResult::Settled { outcome: outcome_record.clone() })), events: Some(Arc::new(move |_| vec![HarnessEvent::new(HarnessEventPayload::NavigationEnd(crate::harness::events::NavigationEndPayload { run_id: id.clone(), from_tip_id: from_tip.clone(), tip_id: tip.clone(), ended_at, status: status_text.into(), error: None }), Some(name.clone()))])) }) })
                         }
                     }
                 })
@@ -960,7 +959,7 @@ async fn perform_structural_attempt(
             return Ok(StructuralAttempt::CancelRequested);
         }
         return Ok(match outcome {
-            Ok(result) => StructuralAttempt::Compaction { result, retryable: retryable(&request) },
+            Ok(result) => StructuralAttempt::Compaction { result },
             Err(error) => StructuralAttempt::Error { error: operation_error(error.code.as_str(), error.message, None), retryable: retryable(&request) },
         });
     }
@@ -973,7 +972,7 @@ async fn perform_structural_attempt(
         return Ok(StructuralAttempt::CancelRequested);
     }
     Ok(match outcome {
-        Ok(result) => StructuralAttempt::BranchSummary { result, retryable: retryable(&request) },
+        Ok(result) => StructuralAttempt::BranchSummary { result },
         Err(error) => StructuralAttempt::Error { error: operation_error(error.code.as_str(), error.message, None), retryable: retryable(&request) },
     })
 }

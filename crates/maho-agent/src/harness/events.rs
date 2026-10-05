@@ -415,10 +415,10 @@ fn wire_value_of<T: serde::Serialize>(value: &T) -> JsonValue {
 }
 
 fn wire_insert_optional(object: &mut serde_json::Map<String, JsonValue>, key: &str, value: Option<JsonValue>) {
-    if let Some(value) = value {
-        if !value.is_null() {
-            object.insert(key.to_owned(), value);
-        }
+    if let Some(value) = value
+        && !value.is_null()
+    {
+        object.insert(key.to_owned(), value);
     }
 }
 
