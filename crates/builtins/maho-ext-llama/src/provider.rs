@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use maho_ai::model::ModelCompat;
 use maho_ai::types::{InputModality, ModelCost};
-use maho_ext_api::{ProviderConfig, ProviderModelConfig, ProviderRefresh};
+use maho_ext_api::{ExtensionFailure, ProviderConfig, ProviderModelConfig, ProviderRefresh};
 use serde_json::{Map, Value};
 
 use crate::client::{LlamaClient, LlamaModelInfo, llama_inference_url, normalize_llama_server_url};
@@ -93,7 +93,7 @@ pub fn llama_provider_config() -> ProviderConfig {
         let refresh: ProviderRefresh = Arc::new(|context| {
             let credential = context.credential.clone();
             let allow_network = context.allow_network;
-            Box::pin(async move { refresh_models(credential.as_ref(), allow_network).await })
+            Box::pin(async move { refresh_models(credential.as_ref(), allow_network).await.map_err(ExtensionFailure::new) })
         });
     ProviderConfig {
         name: Some("llama.cpp".to_owned()),

@@ -14,7 +14,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
-futures-util = { version = "=0.3.34", features = ["stream"] }
+futures-util = { version = "=0.3.34", features = ["alloc"] }
 
 [dev-dependencies]
 tempfile.workspace = true
