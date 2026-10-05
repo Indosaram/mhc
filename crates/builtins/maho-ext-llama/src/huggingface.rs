@@ -233,6 +233,8 @@ async fn signal_cancelled(signal: Option<&AbortSignal>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn quantization_tokens_match_the_pinned_pattern() {
@@ -251,5 +253,29 @@ mod tests {
         let mut env = BTreeMap::new();
         env.insert("HF_TOKEN".to_owned(), "  spaced  ".to_owned());
         assert_eq!(find_hugging_face_token(&env).as_deref(), Some("spaced"));
+    }
+
+    #[tokio::test]
+    async fn request_cancels_while_the_response_body_is_held() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else { return; };
+            let mut buffer = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                match stream.read(&mut byte).await { Ok(0) | Err(_) => break, Ok(_) => buffer.push(byte[0]) }
+                if buffer.ends_with(b"\r\n\r\n") { break; }
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n").await;
+            let _ = stream.flush().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let client = HuggingFaceClient::new(None, Some(&format!("http://{addr}")));
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_millis(100)).await; controller.abort(None); });
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), client.search("x", Some(&signal))).await.expect("bounded");
+        assert_eq!(result.unwrap_err(), "Cancelled");
     }
 }

@@ -17,13 +17,6 @@ fn configured_server_url() -> String {
         .unwrap_or_else(|| crate::provider::DEFAULT_LLAMA_SERVER_URL.to_owned())
 }
 
-fn model_lines(models: &[Value]) -> Vec<String> {
-    models
-        .iter()
-        .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_owned))
-        .collect()
-}
-
 async fn run_list(ctx: &ExtensionCommandContext) -> Result<(), String> {
     let server_url = configured_server_url();
     let client = LlamaClient::new(&server_url, None)?;

@@ -289,9 +289,14 @@ impl LlamaClient {
         tokio::spawn(async move {
             let mut request = http.get(url).timeout(Duration::from_millis(REQUEST_TIMEOUT_MS));
             if let Some(key) = &api_key { request = request.header("authorization", format!("Bearer {key}")); }
-            let response = match request.send().await {
-                Ok(response) => response,
-                Err(error) => { let _ = ready_tx.send(Err(format!("llama.cpp SSE failed: {error}"))); return; }
+            let response = tokio::select! {
+                biased;
+                _ = events_tx.closed() => return,
+                _ = signal_cancelled(signal.as_ref()) => return,
+                result = request.send() => match result {
+                    Ok(response) => response,
+                    Err(error) => { let _ = ready_tx.send(Err(format!("llama.cpp SSE failed: {error}"))); return; }
+                },
             };
             if !response.status().is_success() {
                 let _ = ready_tx.send(Err(format!("llama.cpp SSE returned HTTP {}", response.status().as_u16())));
@@ -299,7 +304,8 @@ impl LlamaClient {
             }
             let _ = ready_tx.send(Ok(()));
             let mut stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut raw: Vec<u8> = Vec::new();
+            let mut text = String::new();
             loop {
                 let chunk = tokio::select! {
                     biased;
@@ -309,9 +315,18 @@ impl LlamaClient {
                 };
                 let Some(chunk) = chunk else { break; };
                 let Ok(chunk) = chunk else { break; };
-                buffer.push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
-                while let Some(boundary) = buffer.find("\n\n") {
-                    let frame: String = buffer.drain(..boundary + 2).collect();
+                raw.extend_from_slice(&chunk);
+                match std::str::from_utf8(&raw) {
+                    Ok(decoded) => { text.push_str(decoded); raw.clear(); }
+                    Err(error) => {
+                        let valid = error.valid_up_to();
+                        text.push_str(std::str::from_utf8(&raw[..valid]).expect("valid utf8 prefix"));
+                        raw.drain(..valid);
+                    }
+                }
+                if text.contains('\r') { text = text.replace("\r\n", "\n"); }
+                while let Some(boundary) = text.find("\n\n") {
+                    let frame: String = text.drain(..boundary + 2).collect();
                     let data: String = frame.lines().filter_map(|line| line.strip_prefix("data:")).map(|line| line.trim_start()).collect::<Vec<_>>().join("\n");
                     if data.is_empty() { continue; }
                     if let Ok(event) = serde_json::from_str::<LlamaModelEvent>(&data)
@@ -328,7 +343,11 @@ impl LlamaClient {
 
     pub async fn load_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<LlamaModelInfo, String> {
         let (mut events, ready) = self.subscribe(signal);
-        ready.await.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??;
+        tokio::select! {
+            biased;
+            _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+            result = ready => result.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??,
+        }
         self.load(model, signal).await?;
         on_progress(LlamaProgress { message: "Loading model".to_owned(), ..Default::default() });
         let mut event_loaded = false;
@@ -359,7 +378,11 @@ impl LlamaClient {
 
     pub async fn download_and_wait(&self, model: &str, on_progress: &mut dyn FnMut(LlamaProgress), signal: Option<&AbortSignal>) -> Result<Vec<LlamaModelInfo>, String> {
         let (mut events, ready) = self.subscribe(signal);
-        ready.await.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??;
+        tokio::select! {
+            biased;
+            _ = signal_cancelled(signal) => return Err("Cancelled".to_owned()),
+            result = ready => result.map_err(|_| "llama.cpp SSE subscription closed".to_owned())??,
+        }
         self.download(model, signal).await?;
         on_progress(LlamaProgress { message: "Downloading model".to_owned(), ..Default::default() });
         let mut finished = false;
@@ -396,6 +419,26 @@ pub fn progress_map(entries: &BTreeMap<String, Value>) -> Option<LlamaProgress> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn read_head(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            match stream.read(&mut byte).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => buffer.push(byte[0]),
+            }
+            if buffer.ends_with(b"\r\n\r\n") { break; }
+        }
+        String::from_utf8_lossy(&buffer).into_owned()
+    }
+
+    fn http_ok(body: &str) -> String {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+    }
 
     #[test]
     fn normalize_strips_v1_and_trailing_slash() {
@@ -461,5 +504,98 @@ mod tests {
         assert_eq!(failure.as_deref(), Some("boom"));
         apply_download_event(&LlamaModelEvent { model: "m".to_owned(), event: "download_finished".to_owned(), data: None }, "m", &mut finished, &mut failure, &mut saw, &mut sink);
         assert!(finished);
+    }
+
+    #[tokio::test]
+    async fn load_triggers_the_post_only_after_the_sse_subscription_is_live() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let order = Arc::new(Mutex::new(Vec::<String>::new()));
+        let server_order = order.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { break; };
+                let order = server_order.clone();
+                tokio::spawn(async move {
+                    let head = read_head(&mut stream).await;
+                    let line = head.lines().next().unwrap_or("").to_owned();
+                    if line.contains("/models/sse") {
+                        order.lock().unwrap().push("sse".to_owned());
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").await;
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = stream.write_all(b"data: {\"model\":\"m\",\"event\":\"model_status\",\"data\":{\"status\":\"loaded\"}}\n\n").await;
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    } else if line.starts_with("POST /models/load") {
+                        order.lock().unwrap().push("load".to_owned());
+                        let _ = stream.write_all(http_ok("{}").as_bytes()).await;
+                    } else if line.starts_with("GET /models") {
+                        order.lock().unwrap().push("list".to_owned());
+                        let _ = stream.write_all(http_ok(r#"{"data":[{"id":"m","status":{"value":"loaded"}}]}"#).as_bytes()).await;
+                    }
+                });
+            }
+        });
+        let client = LlamaClient::new(&format!("http://{addr}"), None).expect("client");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let mut progress = Vec::new();
+        let model = tokio::time::timeout(Duration::from_secs(3), client.load_and_wait("m", &mut |p| progress.push(p), Some(&controller.signal()))).await.expect("bounded").expect("load");
+        assert_eq!(model.id, "m");
+        let order = order.lock().unwrap().clone();
+        assert_eq!(&order[..2], &["sse".to_owned(), "load".to_owned()], "POST must follow the SSE subscription: {order:?}");
+    }
+
+    #[tokio::test]
+    async fn subscribe_aborts_while_sse_headers_are_held() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else { return; };
+            let _ = read_head(&mut stream).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let client = LlamaClient::new(&format!("http://{addr}"), None).expect("client");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let signal = controller.signal();
+        tokio::spawn(async move { tokio::time::sleep(Duration::from_millis(100)).await; controller.abort(None); });
+        let mut progress = Vec::new();
+        let result = tokio::time::timeout(Duration::from_secs(3), client.load_and_wait("m", &mut |p| progress.push(p), Some(&signal))).await.expect("bounded");
+        assert_eq!(result.unwrap_err(), "Cancelled");
+    }
+
+    #[tokio::test]
+    async fn sse_reassembles_a_frame_split_across_chunks_and_utf8() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else { break; };
+                tokio::spawn(async move {
+                    let head = read_head(&mut stream).await;
+                    let line = head.lines().next().unwrap_or("").to_owned();
+                    if line.contains("/models/sse") {
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n").await;
+                        let _ = stream.flush().await;
+                        let frame = "data: {\"model\":\"m\",\"event\":\"model_status\",\"data\":{\"status\":\"loaded\",\"note\":\"로딩\"}}\n\n";
+                        let bytes = frame.as_bytes();
+                        let split = frame.find('로').expect("char") + 1;
+                        let _ = stream.write_all(&bytes[..split]).await;
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        let _ = stream.write_all(&bytes[split..]).await;
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    } else if line.starts_with("GET /models") {
+                        let _ = stream.write_all(http_ok(r#"{"data":[]}"#).as_bytes()).await;
+                    }
+                });
+            }
+        });
+        let client = LlamaClient::new(&format!("http://{addr}"), None).expect("client");
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let mut progress = Vec::new();
+        let model = tokio::time::timeout(Duration::from_secs(3), client.load_and_wait("m", &mut |p| progress.push(p), Some(&controller.signal()))).await.expect("bounded").expect("load");
+        assert_eq!(model.status.value, "loaded", "the split SSE frame must decode to the loaded event");
     }
 }

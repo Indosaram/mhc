@@ -5,12 +5,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use maho_ai::utils::abort::AbortSignal;
-use maho_ext_api::{CustomUiDone, CustomUiFactoryOptions, ExtensionContext, ExtensionFailure, ExtensionOverlayOptions, ExtensionUi, JsonValue};
+use maho_ext_api::{CustomUiDone, CustomUiFactoryOptions, ExtensionContext, ExtensionFailure, ExtensionOverlayOptions, ExtensionTuiHost, ExtensionUi, JsonValue};
 use maho_interactive::components::keybinding_hints::key_hint;
 use maho_interactive::theme::{Theme, ThemeColor};
 use maho_tui::components::input::{Input, InputOptions};
 use maho_tui::keybindings::get_keybindings;
-use maho_tui::tui::{Component, ExtensionTuiHost, SizeValue};
+use maho_tui::tui::{Component, SizeValue};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::client::{LlamaModelInfo, LlamaProgress};
@@ -112,16 +112,21 @@ enum SearchOutcome {
 struct ChannelUi {
     tx: mpsc::UnboundedSender<UiRequest>,
     ui: Arc<dyn ExtensionUi>,
+    closed: Arc<tokio::sync::Notify>,
 }
 
 impl ChannelUi {
-    fn send(&self, request: UiRequest) {
-        if self.tx.send(request).is_ok() { let _ = self.ui.request_render(); }
+    fn send(&self, request: UiRequest) -> bool {
+        if self.tx.send(request).is_err() || self.ui.request_render().is_err() {
+            self.closed.notify_waiters();
+            return false;
+        }
+        true
     }
 
     async fn request<T>(&self, make: impl FnOnce(oneshot::Sender<T>) -> UiRequest) -> Option<T> {
         let (tx, rx) = oneshot::channel();
-        self.send(make(tx));
+        if !self.send(make(tx)) { return None; }
         rx.await.ok()
     }
 }
@@ -178,6 +183,7 @@ pub struct LlamaView {
     theme: Theme,
     render_request: Rc<dyn Fn()>,
     ui: Arc<dyn ExtensionUi>,
+    closed: Arc<tokio::sync::Notify>,
     rx: mpsc::UnboundedReceiver<UiRequest>,
     search_tx: mpsc::UnboundedSender<SearchOutcome>,
     search_rx: mpsc::UnboundedReceiver<SearchOutcome>,
@@ -187,8 +193,8 @@ pub struct LlamaView {
 }
 
 impl LlamaView {
-    fn new(theme: Theme, render_request: Rc<dyn Fn()>, ui: Arc<dyn ExtensionUi>, rx: mpsc::UnboundedReceiver<UiRequest>, search_tx: mpsc::UnboundedSender<SearchOutcome>, search_rx: mpsc::UnboundedReceiver<SearchOutcome>, done: CustomUiDone) -> Self {
-        Self { theme, render_request, ui, rx, search_tx, search_rx, done, screen: Screen::Empty, finished: false }
+    fn new(theme: Theme, render_request: Rc<dyn Fn()>, ui: Arc<dyn ExtensionUi>, closed: Arc<tokio::sync::Notify>, rx: mpsc::UnboundedReceiver<UiRequest>, search_tx: mpsc::UnboundedSender<SearchOutcome>, search_rx: mpsc::UnboundedReceiver<SearchOutcome>, done: CustomUiDone) -> Self {
+        Self { theme, render_request, ui, closed, rx, search_tx, search_rx, done, screen: Screen::Empty, finished: false }
     }
 
     fn drain(&mut self) {
@@ -200,7 +206,7 @@ impl LlamaView {
                 UiRequest::Progress { state, reply } => self.screen = Screen::Progress { state, reply: Some(reply) },
                 UiRequest::UpdateProgress { state } => if let Screen::Progress { state: current, .. } = &mut self.screen { *current = state; },
                 UiRequest::ShowStatus { title, message } => self.screen = Screen::Select { title: format!("{title}\n\n{message}"), options: Vec::new(), selected: 0, reply: None },
-                UiRequest::Finish => self.finish(),
+                UiRequest::Finish => self.finish_and_wake(),
             }
         }
         while let Ok(SearchOutcome::Results { query, results }) = self.search_rx.try_recv() {
@@ -219,6 +225,14 @@ impl LlamaView {
         if !self.finished {
             self.finished = true;
             (self.done)(JsonValue::Null);
+        }
+    }
+
+    fn finish_and_wake(&mut self) {
+        if !self.finished {
+            self.finished = true;
+            (self.done)(JsonValue::Null);
+            let _ = self.ui.request_render();
         }
     }
 
@@ -319,9 +333,12 @@ impl LlamaView {
         if let Some((search, query)) = spawn {
             let tx = self.search_tx.clone();
             let ui = self.ui.clone();
+            let closed = self.closed.clone();
             tokio::spawn(async move {
                 let results = search(query.clone(), AbortSignal::default()).await.unwrap_or_default();
-                if tx.send(SearchOutcome::Results { query, results }).is_ok() { let _ = ui.request_render(); }
+                if tx.send(SearchOutcome::Results { query, results }).is_err() || ui.request_render().is_err() {
+                    closed.notify_waiters();
+                }
             });
         }
     }
@@ -374,6 +391,7 @@ pub async fn show_llama_ui(ctx: ExtensionContext, options: ShowLlamaOptions) -> 
     let flow = Arc::new(std::sync::Mutex::new(Some(options.flow)));
     let rx_slot = Arc::new(std::sync::Mutex::new(Some(rx)));
     let search_rx_slot = Arc::new(std::sync::Mutex::new(Some(search_rx)));
+    let closed = Arc::new(tokio::sync::Notify::new());
     let factory_ui = ui_host.clone();
     ctx.ui.custom_factory(Arc::new(move |host, theme, _keybindings, done| {
         let render_request = (render)(host);
@@ -382,12 +400,17 @@ pub async fn show_llama_ui(ctx: ExtensionContext, options: ShowLlamaOptions) -> 
         let (Some(rx), Some(search_rx)) = (rx, search_rx) else {
             return Box::pin(async { Ok(Box::new(EmptyView) as Box<dyn Component>) });
         };
-        let view = LlamaView::new(theme.clone(), render_request, factory_ui.clone(), rx, search_tx.clone(), search_rx, done);
+        let view = LlamaView::new(theme.clone(), render_request, factory_ui.clone(), closed.clone(), rx, search_tx.clone(), search_rx, done);
         if let Some(flow) = flow.lock().unwrap_or_else(|error| error.into_inner()).take() {
-            let ui: Arc<dyn LlamaUi> = Arc::new(ChannelUi { tx: tx.clone(), ui: ui_host.clone() });
+            let ui: Arc<dyn LlamaUi> = Arc::new(ChannelUi { tx: tx.clone(), ui: ui_host.clone(), closed: closed.clone() });
             let tx = tx.clone();
             tokio::spawn(async move {
-                flow(ui).await;
+                let flow = flow(ui);
+                tokio::pin!(flow);
+                tokio::select! {
+                    _ = &mut flow => {}
+                    _ = closed.notified() => {}
+                }
                 let _ = tx.send(UiRequest::Finish);
             });
         }
@@ -423,22 +446,33 @@ pub struct RunProgressOptions<T> {
 
 pub async fn run_with_progress<T: Send + 'static>(ui: Arc<dyn LlamaUi>, options: RunProgressOptions<T>) -> Result<Option<T>, String> {
     let signal = AbortSignal::default();
-    let state = ProgressState { title: options.title, model: options.model, message: options.initial_message, ratio: None, detail: None };
-    let run = (options.run)(signal.clone(), Box::new(|_| {}));
+    let progress_slot: Arc<std::sync::Mutex<ProgressState>> = Arc::new(std::sync::Mutex::new(ProgressState { title: options.title.clone(), model: options.model.clone(), message: options.initial_message.clone(), ratio: None, detail: None }));
+    let update_slot = progress_slot.clone();
+    let ui_update = ui.clone();
+    let run = (options.run)(signal.clone(), Box::new(move |progress| {
+        if let Ok(mut state) = update_slot.lock() {
+            state.message = progress.message;
+            state.ratio = progress.ratio;
+            state.detail = progress.detail;
+            ui_update.update_progress(state.clone());
+        }
+    }));
     tokio::pin!(run);
-    let outcome = tokio::select! {
-        biased;
-        result = &mut run => Some(result),
-        () = ui.progress(state) => None,
-    };
-    match outcome {
-        Some(result) => Ok(Some(result?)),
-        None => {
-            let stop = ui.confirm(options.cancel_title, options.cancel_message).await;
-            if !stop { return Ok(None); }
-            (options.cancel)().await;
-            signal.abort(None);
-            Ok(None)
+    let progress_future = ui.progress(progress_slot.lock().map(|state| state.clone()).unwrap_or_default());
+    tokio::pin!(progress_future);
+    loop {
+        tokio::select! {
+            result = &mut run => return Ok(Some(result?)),
+            () = &mut progress_future => {
+                let stop = ui.confirm(options.cancel_title.clone(), options.cancel_message.clone()).await;
+                if !stop {
+                    progress_future.set(ui.progress(progress_slot.lock().map(|state| state.clone()).unwrap_or_default()));
+                    continue;
+                }
+                (options.cancel)().await;
+                signal.abort(None);
+                return Ok(None);
+            }
         }
     }
 }
