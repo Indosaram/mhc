@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn list_sort_puts_loaded_first_then_id() {
-        let mut models = vec![model("b", "unloaded"), model("a", "loaded"), model("c", "sleeping")];
+        let mut models = [model("b", "unloaded"), model("a", "loaded"), model("c", "sleeping")];
         models.sort_by(|left, right| model_is_loaded(right).cmp(&model_is_loaded(left)).then_with(|| left.id.cmp(&right.id)));
         assert_eq!(models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), vec!["a", "c", "b"]);
     }
@@ -653,7 +653,7 @@ mod tests {
             }).await
         });
         gate.send(()).expect("progress gate");
-        tokio::time::timeout(Duration::from_secs(3), permits.acquire()).await.expect("the cancel prompt must appear").expect("permit");
+        let _ = tokio::time::timeout(Duration::from_secs(3), permits.acquire()).await.expect("the cancel prompt must appear").expect("permit");
         release_tx.send(()).expect("release");
         let outcome = tokio::time::timeout(Duration::from_secs(3), handle).await.expect("bounded").expect("join");
         assert_eq!(outcome.expect("completed"), Some(7));
