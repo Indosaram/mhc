@@ -68,7 +68,7 @@ impl FauxSession {
         use std::sync::Mutex;
         use maho_core::agent_session::PromptOptions;
 
-        let NativeSession { session, runner: _runner, provider: _provider, script: _script, calls: _calls, gate: _gate, temp: _temp } =
+        let NativeSession { session, runner: _runner, provider: _provider, script: _script, calls: _calls, gate: _gate, inflight: _inflight, temp: _temp } =
             self.boot_native().await?;
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();

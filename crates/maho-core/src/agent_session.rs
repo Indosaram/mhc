@@ -1481,9 +1481,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The erased handler a native bus channel carries: a callback over the `Arc<dyn Any>` payload
+/// that each subscriber downcasts to its own concrete snapshot type.
+type ErasedHandler = Arc<dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) + Send + Sync>;
+
 /// Adapt a typed MCP wire-status handler to the erased `Arc<dyn Any>` the bus channel carries,
 /// downcasting per emission so the channel needs no concrete type from maho-core.
-fn downcast_handler<T: Send + Sync + 'static>(handler: Arc<dyn Fn(&T) + Send + Sync>) -> Arc<dyn Fn(&Arc<dyn std::any::Any + Send + Sync>) + Send + Sync> {
+fn downcast_handler<T: Send + Sync + 'static>(handler: Arc<dyn Fn(&T) + Send + Sync>) -> ErasedHandler {
     Arc::new(move |value| { if let Some(snapshot) = value.downcast_ref::<T>() { handler(snapshot); } })
 }
 
