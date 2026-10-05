@@ -10,7 +10,7 @@
 // contract — never a proxy pass and never a stub. It writes `$E/qa/residual-qa.json`
 // (schema session2-residual-qa/v1) plus per-scenario artifacts.
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,7 +27,7 @@ const ACCENT = "#ff8800"; // custom theme accent; its truecolor must appear in t
 
 function usage(message) {
 	console.error(`residual-qa: ${message}`);
-	console.error("usage: bun tools/residual-qa.mjs --binary <mhc> --installed <mhc> --scenario <tui|theme|install|mini|server|registry|all> --evidence <E>");
+	console.error("usage: bun tools/residual-qa.mjs --binary <mhc> --installed <mhc> --scenario <tui|theme|install|mini|server|registry|all> --evidence <E> [--sha <gate-sha>]");
 	process.exit(2);
 }
 
@@ -43,6 +43,7 @@ function parseArgs(argv) {
 		else if (key === "--installed") args.installed = argv[++i];
 		else if (key === "--scenario") args.scenario = argv[++i];
 		else if (key === "--evidence") args.evidence = argv[++i];
+		else if (key === "--sha") args.sha = argv[++i];
 		else usage(`unknown argument ${key}`);
 	}
 	if (!args.binary) usage("--binary is required");
@@ -57,6 +58,9 @@ const { startLoopback, writeOfflineAgent, markOnboardingComplete } = await impor
 // scenario asserts both that the provider saw MINI_PROMPT and that a lane event carried MINI_REPLY.
 const MINI_PROMPT = "residual-mini-probe-unique";
 const MINI_REPLY = "mini-loopback-transcript-ack";
+// Registry RPC probe: a unique prompt the recording loopback must have seen, so the reply is
+// causally tied to THIS prompt (never an onboarding or unrelated turn).
+const REGISTRY_PROMPT = "residual-registry-probe-unique";
 
 const newHome = (prefix) => mkdtempSync(join(tmpdir(), prefix));
 
@@ -332,18 +336,18 @@ async function scenarioTui(ctx) {
 // Scenario: theme — custom registered theme renders (accent truecolor) / malformed falls back.
 // ---------------------------------------------------------------------------------------------
 
-function customThemeDocument(name, accent) {
-	return (
-		JSON.stringify(
-			{
-				name,
-				vars: { accent },
-				colors: { accent: "accent", border: "accent", borderAccent: "accent", text: accent, muted: accent },
-			},
-			null,
-			2,
-		) + "\n"
-	);
+// A candidate-consistent custom theme: the candidate validates a theme document against EVERY
+// `ThemeColor::ALL`/`ThemeBg::ALL` token (`theme_json::validate_theme_json`), so a hand-written
+// minimal document is rejected ("Missing required color tokens") and the theme never registers.
+// Deriving from the candidate's own builtin `dark.json` keeps every required token present while
+// overriding the accent var, so the registered theme renders the custom accent truecolor.
+function customThemeDocument(repo, name, accent) {
+	const base = JSON.parse(readFileSync(join(repo, "crates", "maho-interactive", "src", "theme", "dark.json"), "utf8"));
+	delete base.$schema;
+	base.name = name;
+	base.vars = { ...(base.vars ?? {}), accent };
+	base.colors = { ...(base.colors ?? {}), accent: "accent" };
+	return JSON.stringify(base, null, 2) + "\n";
 }
 
 async function scenarioTheme(ctx) {
@@ -356,7 +360,7 @@ async function scenarioTheme(ctx) {
 	try {
 		const good = join(scratch, "custom-accent.json");
 		const bad = join(scratch, "broken-fallback.json");
-		writeFileSync(good, customThemeDocument("custom-accent", ACCENT));
+		writeFileSync(good, customThemeDocument(REPO, "custom-accent", ACCENT));
 		writeFileSync(bad, "{ this is not valid theme json ");
 		const goodDir = join(ctx.qaRoot, "theme-custom");
 		const badDir = join(ctx.qaRoot, "theme-fallback");
@@ -411,7 +415,7 @@ async function scenarioInstall(ctx) {
 		timeoutMs: 120_000,
 	});
 	writeFileSync(join(ctx.qaRoot, "install-verify.log"), verify.stdout + verify.stderr);
-	artifacts.push("install-verify.log", "manifest.json");
+	artifacts.push("install-verify.log");
 	// Real surface (plan task 3): the staged runtime must carry ALL pinned builtin skills, and the
 	// native ast-grep MCP helper must answer an MCP initialize handshake.
 	const skillNames = pinnedBuiltinSkills(REPO);
@@ -693,10 +697,16 @@ async function scenarioServer(ctx) {
 	let client;
 	let stderrText;
 	let deadline;
+	let loopback = null;
 	try {
 		markOnboardingComplete(home);
-		const agent = join(home, ".maho", "agent");
-		mkdirSync(agent, { recursive: true });
+		// The app-server resolves its default model from the agent dir's `models.json`
+		// (`maho-core` sdk: `registry.get_available()...ok_or("No model available")`). Without a
+		// candidate-consistent offline provider config `thread/start` fails with "No model available",
+		// so write the same isolated offline agent the other scenarios use before spawning.
+		const { server: loop, baseUrl } = startLoopback();
+		loopback = loop;
+		const agent = writeOfflineAgent(home, baseUrl);
 		proc = Bun.spawn([ctx.binary, "app-server", "--listen", "stdio://"], {
 			cwd: home,
 			env: { PATH: process.env.PATH, HOME: home, MAHO_CODING_AGENT_DIR: agent },
@@ -786,6 +796,7 @@ async function scenarioServer(ctx) {
 			await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 3_000))]);
 		}
 		await Promise.race([stderrText, new Promise((r) => setTimeout(r, 2_000))]);
+		if (loopback) loopback.stop(true);
 		const groupGone = !proc || processGroupGone(proc.pid);
 		rmSync(home, { recursive: true, force: true });
 		cleanupOk = groupGone && !existsSync(home);
@@ -837,7 +848,10 @@ async function scenarioRegistry(ctx) {
 		const providerListed = listModels.exitCode === 0 && listModels.stdout.includes("residual-registry") && listModels.stdout.includes("residual-model");
 
 		// RPC own-prompt lifecycle over the loopback: a real prompt produces a response, not just stats.
-		const { server, baseUrl } = startLoopback();
+		// The provider RECORDS every request body so the reply can be correlated to OUR unique prompt,
+		// and the NDJSON frames are parsed exactly (response id + assistant text delta + settled turn) —
+		// never a global substring proxy. stdin closes only AFTER the turn settles.
+		const { server, baseUrl, requests } = startRecordingLoopback();
 		let rpcPrompted = false;
 		let rpcExit = null;
 		let deadline;
@@ -852,10 +866,7 @@ async function scenarioRegistry(ctx) {
 				stderr: "pipe",
 			});
 			const proc = rpcProc;
-			const stdoutText = new Response(proc.stdout).text();
 			const stderrText = new Response(proc.stderr).text();
-			proc.stdin.write(`${JSON.stringify({ type: "prompt", id: "prompt_1", prompt: "registry probe" })}\n`);
-			proc.stdin.end();
 			deadline = setTimeout(() => {
 				try {
 					process.kill(-proc.pid, "SIGKILL");
@@ -863,21 +874,73 @@ async function scenarioRegistry(ctx) {
 					/* group already gone */
 				}
 			}, 30_000);
-			const [text, code, stderr] = await Promise.all([stdoutText, proc.exited, stderrText]);
+			// The pinned RPC `Prompt` command carries `message` (rpc_types::RpcCommandBody::Prompt),
+			// not `prompt`. Parse the exact NDJSON frames as they arrive: the `response` echoing OUR
+			// command id (`prompt_1`), the assistant `message_update` text_delta whose accumulated text
+			// carries the loopback reply, and the settled-turn frame (`agent_settled`/`agent_end`).
+			// stdin closes only once the turn has settled (the pump drops a still-pending command on EOF).
+			proc.stdin.write(`${JSON.stringify({ type: "prompt", id: "prompt_1", message: REGISTRY_PROMPT })}\n`);
+			const reader = proc.stdout.getReader();
+			const decoder = new TextDecoder("utf8");
+			let buffer = "";
+			let replyText = "";
+			const seen = { response: false, reply: false, settled: false };
+			const consume = (line) => {
+				if (!line) return;
+				let frame;
+				try {
+					frame = JSON.parse(line);
+				} catch {
+					return;
+				}
+				if (frame.type === "response" && frame.id === "prompt_1") seen.response = true;
+				if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") {
+					replyText += String(frame.assistantMessageEvent.delta ?? "");
+					if (replyText.includes(MINI_REPLY)) seen.reply = true;
+				}
+				if (frame.type === "agent_settled" || frame.type === "agent_end") seen.settled = true;
+			};
+			const readDeadline = Date.now() + 25_000;
+			try {
+				while (Date.now() < readDeadline && !(seen.response && seen.reply && seen.settled)) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					buffer += decoder.decode(value, { stream: true });
+					let index;
+					while ((index = buffer.indexOf("\n")) >= 0) {
+						consume(buffer.slice(0, index).trim());
+						buffer = buffer.slice(index + 1);
+					}
+				}
+			} finally {
+				try {
+					reader.releaseLock();
+				} catch {
+					/* already released */
+				}
+			}
+			try {
+				proc.stdin.end();
+			} catch {
+				/* already closed */
+			}
+			const stderr = await stderrText;
+			const code = await Promise.race([proc.exited, new Promise((r) => setTimeout(() => r(124), 5_000))]);
 			clearTimeout(deadline);
-			writeFileSync(join(ctx.qaRoot, "registry-rpc.log"), text + stderr);
+			const providerSawPrompt = requests.some((body) => body.includes(REGISTRY_PROMPT));
+			writeFileSync(join(ctx.qaRoot, "registry-rpc.log"), JSON.stringify({ frames: seen, providerSawPrompt, replyText }, null, 2) + "\n" + stderr);
 			artifacts.push("registry-rpc.log");
 			rpcExit = code;
-			rpcPrompted = text.includes("prompt_1") && text.includes(REPLY);
+			rpcPrompted = seen.response && providerSawPrompt && seen.reply && seen.settled;
 		} finally {
 			clearTimeout(deadline);
-			if (proc) {
+			if (rpcProc) {
 				try {
-					process.kill(-proc.pid, "SIGKILL");
+					process.kill(-rpcProc.pid, "SIGKILL");
 				} catch {
 					/* group already gone */
 				}
-				await Promise.race([proc.exited, new Promise((r) => setTimeout(r, 3_000))]);
+				await Promise.race([rpcProc.exited, new Promise((r) => setTimeout(r, 3_000))]);
 			}
 			server.stop(true);
 		}
@@ -906,6 +969,13 @@ async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const ctx = { binary: resolve(args.binary), installed: args.installed ? resolve(args.installed) : null, qaRoot: join(resolve(args.evidence), "qa") };
 	mkdirSync(ctx.qaRoot, { recursive: true });
+	// Stale-binary guard: a QA run must exercise the binary THIS run owns, not a pre-existing
+	// artifact (the task-19 gate ran QA against a stale debug/mhc). Capture the binary identity +
+	// mtime before any scenario and re-check after; a change, or a missing binary, marks the whole
+	// run unverified. The gate runner owns the stronger build->QA provenance (fail if BIN was not
+	// produced by this run); this driver refuses to certify a binary that moved under it.
+	const binaryBefore = existsSync(ctx.binary) ? { sha256: sha256(readFileSync(ctx.binary)), mtimeMs: statSync(ctx.binary).mtimeMs } : null;
+	if (!binaryBefore) console.error(`residual-qa: --binary ${ctx.binary} is missing; every scenario will be unverified`);
 	const names = args.scenario === "all" ? Object.keys(SCENARIOS) : [args.scenario];
 	for (const name of names) if (!SCENARIOS[name]) usage(`unknown scenario ${name}`);
 
@@ -929,10 +999,53 @@ async function main() {
 		console.log(`residual-qa: ${name} -> ${result.status}${result.blocker ? ` (${result.blocker})` : ""}`);
 	}
 
+	// The QA summary binds the gate SHA (verifier: `summary.sha === gate SHA`) and the ACTUAL staged
+	// artifact hash (verifier: `summary.binary_sha256 === sha256($E/install/mhc)`), so QA evidence is
+	// SHA-bound and binary-bound rather than self-reported. The gate runner exports SHA; a direct
+	// invocation may pass --sha.
+	const sha = args.sha ?? process.env.SHA ?? null;
+	// Certification: the executed binary (ctx.binary) must BE the staged artifact the verifier binds
+	// (`$E/install/mhc`, a byte-for-byte `copyFile`) and the build-provenance expected binary
+	// (`build-provenance.json`). Every hash is exposed honestly; a run whose executed binary differs
+	// from the bound artifact is never certified.
+	const evidenceRoot = resolve(args.evidence);
+	const binaryAfter = existsSync(ctx.binary) ? { sha256: sha256(readFileSync(ctx.binary)), mtimeMs: statSync(ctx.binary).mtimeMs } : null;
+	const binaryActualSha = binaryAfter?.sha256 ?? null;
+	const stagedPath = ctx.installed ?? join(evidenceRoot, "install", "mhc");
+	const stagedSha = existsSync(stagedPath) ? sha256(readFileSync(stagedPath)) : null;
+	let provenanceSha = null;
+	const provenancePath = join(evidenceRoot, "build-provenance.json");
+	if (existsSync(provenancePath)) {
+		try {
+			provenanceSha = JSON.parse(readFileSync(provenancePath, "utf8")).binary_sha256 ?? null;
+		} catch {
+			provenanceSha = null;
+		}
+	}
+	const binaryStable = binaryBefore !== null && binaryAfter !== null && binaryBefore.sha256 === binaryAfter.sha256;
+	const binaryMatchesStaged = stagedSha !== null && binaryActualSha !== null && binaryActualSha === stagedSha;
+	const binaryMatchesProvenance = provenanceSha === null || (stagedSha !== null && provenanceSha === stagedSha);
+	const binaryVerified = binaryStable && binaryMatchesStaged && binaryMatchesProvenance;
+	if (!binaryVerified) {
+		anyBlocked = true;
+		console.error(`residual-qa: binary certification failed (actual=${binaryActualSha ?? "absent"} staged=${stagedSha ?? "absent"} provenance=${provenanceSha ?? "absent"} stable=${binaryStable} matchesStaged=${binaryMatchesStaged}); QA evidence is unverified`);
+	}
 	writeFileSync(
 		join(ctx.qaRoot, "residual-qa.json"),
 		JSON.stringify(
-			{ schema: SCHEMA, binary: ctx.binary, binary_sha256: existsSync(ctx.binary) ? sha256(readFileSync(ctx.binary)) : null, scenarios },
+			{
+				schema: SCHEMA,
+				sha,
+				binary: ctx.binary,
+				binary_sha256: stagedSha ?? binaryActualSha,
+				binary_actual_sha256: binaryActualSha,
+				staged_sha256: stagedSha,
+				provenance_sha256: provenanceSha,
+				binary_mtime_ms: binaryBefore?.mtimeMs ?? null,
+				binary_matches_staged: binaryMatchesStaged,
+				binary_verified: binaryVerified,
+				scenarios,
+			},
 			null,
 			2,
 		) + "\n",
