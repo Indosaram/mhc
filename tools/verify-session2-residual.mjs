@@ -533,8 +533,13 @@ export function validateBuildProvenance(evidenceDir, repo, sha, commandManifest,
 			if (existsSync(qaSummary)) {
 				try {
 					const summary = readJson(qaSummary);
-					if (SHA256_HEX.test(String(summary.binary_sha256 ?? "")) && summary.binary_sha256 !== prov.binary_sha256) {
-						report.fail("QA summary binary_sha256 is not the freshly built binary (QA hash identity mismatch)");
+					// The QA summary's four hashes must ALL equal the build-provenance artifact: the executed
+					// binary (actual) == the staged install == the provenance artifact. A null provenance (which
+					// the summary's own permissive check allows) is a FAILURE here.
+					for (const field of ["binary_actual_sha256", "staged_sha256", "provenance_sha256", "binary_sha256"]) {
+						if (SHA256_HEX.test(String(summary[field] ?? "")) && summary[field] !== prov.binary_sha256) {
+							report.fail(`QA summary ${field} != build-provenance binary_sha256 (QA is not bound to the built artifact)`);
+						}
 					}
 				} catch {
 					// validateQa reports the malformed summary; do not duplicate here.
@@ -691,6 +696,19 @@ export function validateQa(evidenceDir, sha, manifest, report) {
 		report.fail("QA summary binary_sha256 != the staged $E/install/mhc artifact hash");
 	} else if (!existsSync(staged)) {
 		report.fail("QA cannot bind binary_sha256: $E/install/mhc is missing");
+	}
+	// INDEPENDENT binary certification: the summary's own binaryMatchesProvenance permits a null
+	// provenance, so the verifier must not rely on the summary claim or a staged-only hash. Require
+	// the three exposed hashes to be present AND mutually equal, and the certification flags true.
+	for (const field of ["binary_actual_sha256", "staged_sha256", "provenance_sha256"]) {
+		if (!SHA256_HEX.test(String(summary[field] ?? ""))) report.fail(`QA summary ${field} is not a 64-hex hash (binary not independently certified)`);
+	}
+	if (summary.binary_verified !== true) report.fail("QA summary binary_verified is not true (executed binary is not certified)");
+	if (summary.binary_matches_staged !== true) report.fail("QA summary binary_matches_staged is not true (executed binary is not the staged artifact)");
+	if (SHA256_HEX.test(String(summary.binary_actual_sha256 ?? "")) && SHA256_HEX.test(String(summary.staged_sha256 ?? "")) && SHA256_HEX.test(String(summary.provenance_sha256 ?? ""))) {
+		if (summary.binary_actual_sha256 !== summary.staged_sha256) report.fail("QA summary binary_actual_sha256 != staged_sha256 (executed binary is not the staged artifact)");
+		if (summary.staged_sha256 !== summary.provenance_sha256) report.fail("QA summary staged_sha256 != provenance_sha256 (staged artifact is not the build-provenance artifact)");
+		if (SHA256_HEX.test(String(summary.binary_sha256 ?? "")) && summary.binary_sha256 !== summary.staged_sha256) report.fail("QA summary binary_sha256 != staged_sha256");
 	}
 	for (const name of REQUIRED_SCENARIOS) {
 		const scenario = summary.scenarios?.[name];
@@ -1205,7 +1223,7 @@ function buildValidFixture(root, sha) {
 	const qaScenarios = {};
 	for (const name of REQUIRED_SCENARIOS) qaScenarios[name] = { status: "pass", cleanup_ok: true, artifacts: [`scenario-${name}.log`] };
 	for (const name of REQUIRED_SCENARIOS) put(join(evidence, `qa/scenario-${name}.log`), `${name} pass\n`);
-	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, binary_sha256: stagedHash, scenarios: qaScenarios }, null, 2));
+	put(join(evidence, "qa/residual-qa.json"), JSON.stringify({ schema: QA_SCHEMA, sha, binary_sha256: stagedHash, binary_actual_sha256: stagedHash, staged_sha256: stagedHash, provenance_sha256: stagedHash, binary_matches_staged: true, binary_verified: true, binary_mtime_ms: 0, scenarios: qaScenarios }, null, 2));
 	// The successful-candidate build provenance the gate runner binds (valid by default). The artifact
 	// is byte-identical to the pre-run baseline ON PURPOSE: cargo reuse of an up-to-date artifact must
 	// be ACCEPTED (the earlier hash-inequality/mtime predicate was wrong).
@@ -1644,6 +1662,24 @@ export function selfTest() {
 		prov.build_exit_code = 101;
 		prov.produced = true;
 		write(p, JSON.stringify(prov));
+	}));
+	check("QA summary with null provenance rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "qa/residual-qa.json");
+		const s = JSON.parse(read(p, "utf8"));
+		s.provenance_sha256 = null;
+		write(p, JSON.stringify(s));
+	}));
+	check("QA summary not certified rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "qa/residual-qa.json");
+		const s = JSON.parse(read(p, "utf8"));
+		s.binary_verified = false;
+		write(p, JSON.stringify(s));
+	}));
+	check("QA summary actual != staged rejected", mutate(({ evidence, read, write, join }) => {
+		const p = join(evidence, "qa/residual-qa.json");
+		const s = JSON.parse(read(p, "utf8"));
+		s.binary_actual_sha256 = "9".repeat(64);
+		write(p, JSON.stringify(s));
 	}));
 	check("cargo-reused byte-identical artifact accepted", (() => {
 		const root = mkdtempSync(join(tmpdir(), "verify-session2-reuse-"));
