@@ -364,7 +364,12 @@ async function main() {
 	const writeCommands = () => writeFileSync(join(evidence, "command-manifest.json"), JSON.stringify({ schema: COMMAND_SCHEMA, sha, cargo: env.CARGO, binary: env.BIN, commands }, null, 2) + "\n");
 	writeCommands();
 
-	let failed = 0;
+	// Failure accounting is split so the reported aggregate is honest: per-command failures (a nonzero
+	// exit, including a BLOCKED binary-dependent command) are counted separately from run-level
+	// failures (a build that produced no artifact, a dirty end source identity, and a failing final
+	// audit). `failed` remains their sum, so the exit code and verdict are unchanged.
+	let commandFailures = 0;
+	let runFailures = 0;
 	// The pre-run `$BIN` state; a stale binary (unchanged sha256, mtime before the run) must never
 	// satisfy a binary-dependent command. The build command's success gates those commands.
 	const baseline = binBaseline(args.binary);
@@ -391,7 +396,7 @@ async function main() {
 				stderr_bytes: bytes.length,
 				log_sha256: sha256(bytes),
 			});
-			failed += 1;
+			commandFailures += 1;
 			console.log(`[gate ${i + 1}/${commands.length}] BLOCKED (build failed): ${entry.command}`);
 			writeCommands();
 			continue;
@@ -407,24 +412,22 @@ async function main() {
 			provenance = buildProvenance(repo, args.binary, sha, buildExit, join(evidence, entry.log), process.env.CARGO_TARGET_DIR ?? null, baseline);
 			writeFileSync(join(evidence, BUILD_PROVENANCE), JSON.stringify(provenance, null, 2) + "\n");
 		}
-		if (result.exit_code !== 0) failed += 1;
+		if (result.exit_code !== 0) commandFailures += 1;
 		writeCommands();
 	}
 
 	// Fail the gate if the build reported success but the binary was NOT produced by this run.
 	if (buildExit === 0 && provenance && !provenance.produced) {
 		console.error("run-session2-residual-gate: build reported success but $BIN was not produced by this run (stale/absent binary); failing.");
-		failed += 1;
+		runFailures += 1;
 	}
-
-	console.log(`run-session2-residual-gate: ${commands.length} commands, ${failed} failed`);
 
 	// End-of-run source identity: prove the gate did not mutate the worktree.
 	const endIdentity = await sourceIdentity(repo, sha, evidenceRel);
 	writeFileSync(join(evidence, "source-identity-end.json"), JSON.stringify(endIdentity, null, 2) + "\n");
 	if (!endIdentity.clean || !endIdentity.head_matches_sha) {
 		console.error(`run-session2-residual-gate: worktree changed during the gate (clean=${endIdentity.clean} head=${endIdentity.head}); failing.`);
-		failed += 1;
+		runFailures += 1;
 	}
 
 	// Non-circular final audit: the listed verifier ran mid-list (pre-final, excluding exactly its
@@ -437,9 +440,11 @@ async function main() {
 		repo,
 	);
 	console.log(`run-session2-residual-gate: final verifier audit exit=${finalAudit.exit_code}`);
-	if (finalAudit.exit_code !== 0) failed += 1;
+	if (finalAudit.exit_code !== 0) runFailures += 1;
 
-	writeFileSync(join(evidence, "gate-complete.json"), JSON.stringify({ schema: "session2-residual-gate-complete/v1", sha, failed, commands: commands.length, final_audit_exit: finalAudit.exit_code, build_exit_code: buildExit, build_produced: provenance ? provenance.produced : null }, null, 2) + "\n");
+	const failed = commandFailures + runFailures;
+	console.log(`run-session2-residual-gate: ${commands.length} commands, ${commandFailures} command failure(s), ${runFailures} run-level failure(s), ${failed} total`);
+	writeFileSync(join(evidence, "gate-complete.json"), JSON.stringify({ schema: "session2-residual-gate-complete/v1", sha, failed, command_failures: commandFailures, run_failures: runFailures, commands: commands.length, final_audit_exit: finalAudit.exit_code, build_exit_code: buildExit, build_produced: provenance ? provenance.produced : null }, null, 2) + "\n");
 	process.exit(failed === 0 ? 0 : 1);
 }
 

@@ -1397,7 +1397,9 @@ export function selfTest() {
 	}));
 	check("not-started scope blocks completion", mutate(({ evidence, read, write, join }) => {
 		const m = JSON.parse(read(join(evidence, "requirements-manifest.json"), "utf8"));
-		m.not_started.push({ id: "task-19", kind: "task" });
+		// Use a NON-post-gate id: POST_GATE_SCOPES (F1-F4, task-19, task-20) are exempt pre-gate, so a
+		// fixture reusing one of those ids would exercise the exemption instead of the blocking path.
+		m.not_started.push({ id: "task-21", kind: "task" });
 		write(join(evidence, "requirements-manifest.json"), JSON.stringify(m));
 	}));
 	check("awaited-executed category blocks completion", mutate(({ evidence, read, write, join }) => {
