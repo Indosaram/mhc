@@ -56,10 +56,12 @@ fn forget_candidates_in(lock_directory: &Path) {
     }
 }
 
+type UnlinkFn<'a> = &'a dyn Fn(&Path) -> std::io::Result<()>;
+
 /// Injectable seams for the sweeper.
 #[derive(Default)]
 pub struct CandidateSweepOptions<'a> {
-    pub unlink: Option<&'a dyn Fn(&Path) -> std::io::Result<()>>,
+    pub unlink: Option<UnlinkFn<'a>>,
     pub is_sharing_error: Option<&'a dyn Fn(&std::io::Error) -> bool>,
     pub on_failure: Option<&'a dyn Fn(&Path)>,
 }

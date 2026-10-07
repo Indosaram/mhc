@@ -1,4 +1,12 @@
 //! Operating system process liveness detection and start-time identity resolution.
+//!
+//! The pin (`locks/process-start-time.ts`) replaces the macOS `/bin/ps` fork with an in-process
+//! `libproc` `proc_pidinfo` call and the Windows `powershell.exe` probe with `kernel32`
+//! `GetProcessTimes`, because a fork per lock check filled the process table on a long-lived shared
+//! host. Both replacements are FFI (`bun:ffi` `dlopen` upstream); Rust has no safe binding for
+//! either in this workspace and this crate forbids `unsafe_code`, so those two platforms keep their
+//! pre-existing behavior and the fork-free port is a recorded platform blocker, not a silent
+//! degradation. Linux's `/proc` read is already in process and needs no FFI.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -79,11 +87,51 @@ pub fn get_process_start_identity(pid: u32) -> Option<String> {
     {
         read_bsd_start_identity(pid)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    #[cfg(target_os = "windows")]
+    {
+        read_windows_start_identity(pid)
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "windows"
+    )))]
     {
         let _ = pid;
         None
     }
+}
+
+/// Windows keeps its pre-existing behavior: the pinned fork-free replacement is `kernel32`
+/// `GetProcessTimes` behind `bun:ffi` `dlopen`, and neither this crate nor the workspace exposes a
+/// safe binding for it. Identity stays unavailable, which `locks/acquire.rs` already handles by
+/// comparing liveness alone (conservative: it never reclaims a live owner's lock).
+#[cfg(target_os = "windows")]
+fn read_windows_start_identity(pid: u32) -> Option<String> {
+    let _ = pid;
+    None
+}
+
+fn identity_scheme(identity: &str) -> Option<&str> {
+    match identity.find(':') {
+        Some(0) | None => None,
+        Some(index) => Some(&identity[..index]),
+    }
+}
+
+pub fn start_identities_conflict(recorded: &str, actual: &str) -> bool {
+    let Some(recorded_scheme) = identity_scheme(recorded) else {
+        return false;
+    };
+    if Some(recorded_scheme) != identity_scheme(actual) {
+        return false;
+    }
+    recorded != actual
+}
+
+pub fn start_identities_comparable(recorded: &str, actual: &str) -> bool {
+    identity_scheme(recorded) == identity_scheme(actual)
 }
 
 /// Probes whether a process with the given PID is currently alive, dead, or unknown.
@@ -148,3 +196,7 @@ pub fn get_pid_liveness(pid: u32) -> ProcessLiveness {
 #[cfg(test)]
 #[path = "process_identity_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "process_identity_conflict_tests.rs"]
+mod conflict_tests;
