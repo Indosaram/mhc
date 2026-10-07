@@ -24,6 +24,22 @@ pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductCon
     config
 }
 pub const BUILTIN_SKILL_NAMES: &[&str] = &["ast-grep", "coding-agent-sessions", "dag-library", "data-scientist", "debugging", "frontend", "git-master", "give-me-tips", "hyperplan", "init-deep", "lsp-setup", "mass-ulw", "onboarding", "programming", "refactor", "remove-ai-slops", "review-work", "start-work", "ultimate-browsing", "ultrawork", "ulw-loop", "ulw-plan", "ulw-research", "visual-qa"];
+/// The pinned skill vocabulary, unchanged: `tools/package-native.mjs::parseBuiltinSkillNames` reads
+/// this constant and requires the pinned checkout's list to match, so it MUST stay the pin-era set.
+pub fn pinned_skill_names()->Vec<String> {BUILTIN_SKILL_NAMES.iter().map(|name|(*name).to_string()).collect()}
+/// The selected-source skill vocabulary of the staged root the telemetry component consumes:
+/// `<skills_root>/../manifest.json` `skills.names`, written by `tools/package-native.mjs` for the
+/// selected delivery. `None` when the manifest is absent or malformed (dev tree), never a panic.
+pub fn staged_skill_names(skills_root:&Path)->Option<Vec<String>> {
+    let manifest=skills_root.parent()?.join("manifest.json");
+    let raw=std::fs::read_to_string(manifest).ok()?;
+    let value:serde_json::Value=serde_json::from_str(&raw).ok()?;
+    let names=value.get("skills")?.get("names")?.as_array()?;
+    let names:Vec<String>=names.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect();
+    (!names.is_empty()).then_some(names)
+}
+/// The runtime skill vocabulary: the selected manifest's names when present, else the pinned set.
+pub fn selected_skill_names(skills_root:&Path)->Vec<String> {staged_skill_names(skills_root).unwrap_or_else(pinned_skill_names)}
 pub const EVENT_PROPERTY_ALLOWLISTS: &[(&str, &[&str])] = &[
     ("daily_active", &["$session_id", "day_utc", "reason"]),
     ("session_started", &["$session_id", "$os", "$os_version", "arch", "cpu_count", "default_model", "default_provider", "memory_bucket", "model_count", "provider_count", "providers", "reason"]),
@@ -107,4 +123,17 @@ mod identity_tests {
     #[test] fn salt_file_private() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("session-id-salt")).unwrap().permissions().mode()&0o777,0o600);}
     #[test] fn invalid_salt_repaired() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("session-id-salt"),"invalid").unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
     #[test] fn fallback_salt_stable() {let t=tempfile::tempdir().unwrap();let blocked=t.path().join("file");std::fs::write(&blocked,"").unwrap();assert_eq!(hash_session_id("s",&blocked).unwrap(),hash_session_id("s",&blocked).unwrap());}
+    #[test] fn selected_skill_names_follow_the_staged_manifest() {
+        let t=tempfile::tempdir().unwrap();let skills=t.path().join("skills");std::fs::create_dir(&skills).unwrap();
+        assert_eq!(selected_skill_names(&skills),pinned_skill_names());
+        std::fs::write(t.path().join("manifest.json"),serde_json::json!({"skills":{"source":"latest","names":["browser","ulw-execute"]}}).to_string()).unwrap();
+        assert_eq!(selected_skill_names(&skills),vec!["browser".to_string(),"ulw-execute".to_string()]);
+        assert!(BUILTIN_SKILL_NAMES.contains(&"start-work"),"the pinned constant stays the pinned identity");
+        assert!(!BUILTIN_SKILL_NAMES.contains(&"browser"));
+    }
+    #[test] fn pure_schema_stays_pinned() {
+        let pinned=omo_native_event_schemas()["skill_loaded"]["skill_name"]["values"].as_array().unwrap().clone();
+        assert!(!pinned.contains(&serde_json::json!("browser")));
+        assert!(pinned.contains(&serde_json::json!("start-work")));
+    }
 }

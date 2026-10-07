@@ -1,23 +1,31 @@
-use std::{collections::{HashMap,HashSet},path::Path};
+use std::{collections::{BTreeSet,HashMap,HashSet},path::Path};
 use serde_json::{Value,json};
-use crate::product_identity::BUILTIN_SKILL_NAMES;
 pub fn matches_tool_name(name:&str,expected:&str)->bool {let name=name.trim().to_lowercase().replace('-',"_");let expected=expected.trim().to_lowercase().replace('-',"_");name==expected || ["_",":","/"].iter().any(|s|name.ends_with(&format!("{s}{expected}")))}
-pub fn builtin_skill_name(root:&Path,target:&Path)->Option<String> {let root=root.canonicalize().ok()?;let target=target.canonicalize().ok()?;if cfg!(windows) {return builtin_skill_name_from_windows_canonical_paths(root.to_str()?,target.to_str()?);}let relative=target.strip_prefix(root).ok()?;let parts:Vec<_>=relative.components().collect();if parts.len()!=2 || parts[1].as_os_str()!="SKILL.md" {return None;}let name=parts[0].as_os_str().to_str()?;BUILTIN_SKILL_NAMES.contains(&name).then(||name.into())}
+pub fn builtin_skill_name(root:&Path,target:&Path)->Option<String> {builtin_skill_name_in(root,target,&crate::product_identity::pinned_skill_names().into_iter().collect())}
+/// The gate the runtime uses: membership in the SELECTED skill vocabulary (staged root manifest),
+/// never the pinned constant, so a latest-only name like `browser` still emits. Windows resolves
+/// through the same selected allowlist.
+pub fn builtin_skill_name_in(root:&Path,target:&Path,allowlist:&BTreeSet<String>)->Option<String> {let root=root.canonicalize().ok()?;let target=target.canonicalize().ok()?;if cfg!(windows) {return builtin_skill_name_from_windows_canonical_paths_in(root.to_str()?,target.to_str()?,allowlist);}let relative=target.strip_prefix(root).ok()?;let parts:Vec<_>=relative.components().collect();if parts.len()!=2 || parts[1].as_os_str()!="SKILL.md" {return None;}let name=parts[0].as_os_str().to_str()?;allowlist.contains(name).then(||name.into())}
 fn identifier(v:Option<&Value>)->Option<&str> {v?.as_str().map(str::trim).filter(|s|!s.is_empty())}
-pub fn builtin_skill_name_from_windows_canonical_paths(root:&str,target:&str)->Option<String> {
+pub fn builtin_skill_name_from_windows_canonical_paths(root:&str,target:&str)->Option<String> {builtin_skill_name_from_windows_canonical_paths_in(root,target,&crate::product_identity::pinned_skill_names().into_iter().collect())}
+pub fn builtin_skill_name_from_windows_canonical_paths_in(root:&str,target:&str,allowlist:&BTreeSet<String>)->Option<String> {
     let normalize=|path:&str| {let path=if let Some(rest)=path.strip_prefix("\\\\?\\UNC\\") {format!("\\\\{rest}")} else {path.strip_prefix("\\\\?\\").unwrap_or(path).into()};path.to_lowercase()};
-    let root=normalize(root);let target=normalize(target);let prefix=format!("{}\\",root.trim_end_matches('\\'));let relative=target.strip_prefix(&prefix)?;let parts:Vec<_>=relative.split('\\').collect();if parts.len()!=2 || parts[1]!="skill.md" {return None;}BUILTIN_SKILL_NAMES.contains(&parts[0]).then(||parts[0].into())
+    let root=normalize(root);let target=normalize(target);let prefix=format!("{}\\",root.trim_end_matches('\\'));let relative=target.strip_prefix(&prefix)?;let parts:Vec<_>=relative.split('\\').collect();if parts.len()!=2 || parts[1]!="skill.md" {return None;}allowlist.contains(parts[0]).then(||parts[0].into())
 }
 fn target(item:&Value,parent:&Value)->Option<(&'static str,String)> {let category=identifier(item.get("category"));let agent=identifier(item.get("subagent_type"));let category=category.or_else(||if agent.is_none() {identifier(parent.get("category"))} else {None});let agent=agent.or_else(||if identifier(item.get("category")).is_none() {identifier(parent.get("subagent_type"))} else {None});match (category,agent) {(Some(c),None)=>Some(("category",c.into())),(None,Some(a))=>Some(("subagent",a.into())),_=>None}}
-#[derive(Default)]
-pub struct ToolTelemetry {feature_usage:HashMap<String,HashSet<&'static str>>}
+pub struct ToolTelemetry {feature_usage:HashMap<String,HashSet<&'static str>>,skill_names:BTreeSet<String>}
+/// The pinned default: `ToolTelemetry::default()` keeps the prior pinned vocabulary so an existing
+/// default consumer does not silently stop emitting `skill_loaded`; the composition uses
+/// [`ToolTelemetry::for_skills_root`] for the selected staged root.
+impl Default for ToolTelemetry {fn default()->Self {Self {feature_usage:HashMap::new(),skill_names:crate::product_identity::pinned_skill_names().into_iter().collect()}}}
 impl ToolTelemetry {
+    pub fn for_skills_root(skills_root:&Path)->Self {Self {feature_usage:HashMap::new(),skill_names:crate::product_identity::selected_skill_names(skills_root).into_iter().collect()}}
     pub fn clear(&mut self,session:&str) {self.feature_usage.remove(session);}
     pub fn record(&mut self,event:&Value,session:&str,hash:&str,cwd:&Path,skills_root:&Path)->Vec<(&'static str,Value)> {
         let Some(name)=event.get("toolName").and_then(Value::as_str) else {return Vec::new();};
         if event.get("type").and_then(Value::as_str)!=Some("tool_result") || !event.get("input").is_some_and(Value::is_object) || session.is_empty() {return Vec::new();}
         let input=&event["input"];let error=event.get("isError").and_then(Value::as_bool)==Some(true);
-        if matches_tool_name(name,"read") && !error {return input.get("path").and_then(Value::as_str).and_then(|path|builtin_skill_name(skills_root,&cwd.join(path))).map(|skill|vec![("skill_loaded",json!({"$session_id":hash,"skill_name":skill}))]).unwrap_or_default();}
+        if matches_tool_name(name,"read") && !error {return input.get("path").and_then(Value::as_str).and_then(|path|builtin_skill_name_in(skills_root,&cwd.join(path),&self.skill_names)).map(|skill|vec![("skill_loaded",json!({"$session_id":hash,"skill_name":skill}))]).unwrap_or_default();}
         if matches_tool_name(name,"task") && !error {
             let batch=input.get("tasks").and_then(Value::as_array);let size=batch.map_or(1,Vec::len);let targets:Vec<_>=match batch {Some(items)=>items.iter().filter(|v|v.is_object()).filter_map(|v|target(v,input)).collect(),None=>target(input,input).into_iter().collect()};
             return targets.into_iter().map(|(kind,name)| {let known=if kind=="category" {senpi_task::category::BUILTIN_CATEGORY_DEFAULTS.iter().any(|c|c.name==name)} else {senpi_task::agents::curated_readonly_agent_names().contains(name.as_str())};("delegation_started",json!({"$session_id":hash,"kind":kind,"name":if known {name.as_str()} else {"custom"},"background":input.get("run_in_background").and_then(Value::as_bool)==Some(true),"batch_size_bucket":if size<=1 {"1"} else if size<=4 {"2_4"} else {"5_plus"}}))}).collect();
@@ -30,7 +38,7 @@ pub type ToolDiagnostics=std::sync::Arc<dyn Fn(&str,Value)+Send+Sync>;
 pub fn register_omo_native_tool_telemetry(api:&mut maho_ext_api::ExtensionApi,skills_root:std::path::PathBuf,hash:std::sync::Arc<dyn Fn(&str)->String+Send+Sync>,capture:crate::omo_native_parallel_summary::SummaryCapture,diagnostics:Option<ToolDiagnostics>) {
     use std::sync::{Arc,Mutex};
     use maho_ext_api::{EventKind,EventResult,ExtensionEvent};
-    let state=Arc::new(Mutex::new(ToolTelemetry::default()));let results=Arc::clone(&state);
+    let state=Arc::new(Mutex::new(ToolTelemetry::for_skills_root(&skills_root)));let results=Arc::clone(&state);
     api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {if !event.input.is_object() && let Some(diagnostics)=&diagnostics {diagnostics("omo-native tool_result missing input",json!({"toolName":event.tool_name}));}results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
     api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(ctx.session_manager.session_id());Box::pin(async {Ok(EventResult::None)})}));
 }
@@ -50,4 +58,21 @@ mod tests {
     #[test] fn missing_input_ignored() {let mut t=ToolTelemetry::default();assert!(t.record(&json!({"type":"tool_result","toolName":"read"}),"s","hash",Path::new("/"),Path::new("/")).is_empty());}
     #[test] fn exact_event_allowlists() {let mut t=ToolTelemetry::default();for name in ["task","create_goal"] {let e=json!({"type":"tool_result","toolName":name,"input":{"subagent_type":"explore"}});for (kind,p) in t.record(&e,"s","hash",Path::new("/"),Path::new("/")) {let (_,expected)=crate::product_identity::EVENT_PROPERTY_ALLOWLISTS.iter().find(|(event,_)|*event==kind).unwrap();let mut expected=expected.to_vec();expected.sort_unstable();let mut keys:Vec<_>=p.as_object().unwrap().keys().map(String::as_str).collect();keys.sort_unstable();assert_eq!(keys,expected);}}}
     #[test] fn symlink_escape_rejected() {let t=tempfile::tempdir().unwrap();let root=t.path().join("skills");let outside=t.path().join("outside");std::fs::create_dir(&root).unwrap();std::fs::create_dir(&outside).unwrap();std::fs::write(outside.join("SKILL.md"),"").unwrap();std::os::unix::fs::symlink(&outside,root.join("debugging")).unwrap();assert!(builtin_skill_name(&root,&root.join("debugging/SKILL.md")).is_none());}
+    #[test] fn staged_manifest_gates_skill_loaded() {
+        let t=tempfile::tempdir().unwrap();let skills=t.path().join("skills");
+        for name in ["browser","start-work"] {std::fs::create_dir_all(skills.join(name)).unwrap();std::fs::write(skills.join(name).join("SKILL.md"),"").unwrap();}
+        std::fs::write(t.path().join("manifest.json"),json!({"skills":{"source":"latest","names":["browser","ulw-execute"]}}).to_string()).unwrap();
+        let mut telemetry=ToolTelemetry::for_skills_root(&skills);
+        let read=|name:&str| json!({"type":"tool_result","toolName":"read","input":{"path":format!("{name}/SKILL.md")},"isError":false});
+        let loaded=telemetry.record(&read("browser"),"s","hash",&skills,&skills);
+        assert_eq!(loaded.len(),1);assert_eq!(loaded[0].1["skill_name"],"browser");
+        assert!(telemetry.record(&read("start-work"),"s","hash",&skills,&skills).is_empty(),"a retired name outside the selected vocabulary emits nothing");
+    }
+    #[test] fn windows_selected_identity_gate_uses_the_supplied_allowlist() {
+        let selected:BTreeSet<String>=["browser".to_string()].into_iter().collect();
+        let root=r"C:\plugin\skills";
+        assert_eq!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\browser\SKILL.md",&selected),Some("browser".into()));
+        assert!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\start-work\SKILL.md",&selected).is_none());
+        assert!(builtin_skill_name_from_windows_canonical_paths_in(root,r"C:\plugin\skills\browser\SKILL.md",&crate::product_identity::pinned_skill_names().into_iter().collect()).is_none(),"the pinned helper default does not know the latest-only name");
+    }
 }
