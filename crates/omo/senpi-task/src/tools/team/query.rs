@@ -93,7 +93,8 @@ pub fn run_team_list_in(
     project_root: &Path,
 ) -> Result<AgentToolResult<Vec<TeamListEntry>>, TeamToolServiceError> {
     let declared = service.discover_team_specs(project_root)?;
-    let filtered: Vec<DiscoveredTeamSpec> = match scope.spec_scope() {
+    let scope_filter = scope.spec_scope();
+    let filtered: Vec<DiscoveredTeamSpec> = match scope_filter {
         Some(wanted) => declared
             .into_iter()
             .filter(|spec| spec.scope == wanted)
@@ -126,6 +127,9 @@ pub fn run_team_list_in(
 
     for team in &active {
         if declared_member_counts.contains_key(&team.team_name) {
+            continue;
+        }
+        if scope_filter.is_some_and(|wanted| team.scope != wanted) {
             continue;
         }
         entries.push(TeamListEntry {
