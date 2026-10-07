@@ -11,7 +11,7 @@ fn get(path: &str) -> Request {
 fn get_with(path: &str, headers: &[(&str, &str)]) -> Request {
     let mut request = get(path);
     for (name, value) in headers {
-        request.headers.set(name, value);
+        request.headers.set(name, *value);
     }
     request
 }

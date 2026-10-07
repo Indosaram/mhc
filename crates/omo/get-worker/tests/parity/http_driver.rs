@@ -333,7 +333,8 @@ mod tests {
         assert_eq!(response.body_text(), "5.1.1\n");
         assert_eq!(response.header("Cache-Control"), Some("public, max-age=60"));
         assert_eq!(response.header("X-Omo-Source"), Some("r2"));
-        let blobs = &driver.harness().sink.points().last().expect("a point").blobs;
+        let points = driver.harness().sink.points();
+        let blobs = &points.last().expect("a point").blobs;
         assert_eq!(
             blobs.as_slice(),
             ["channel", "worker", "5.1.1", "latest", "XX", ""]
@@ -398,7 +399,9 @@ mod tests {
 
     #[test]
     fn a_channel_with_no_pointer_and_a_failing_registry_is_unavailable() {
-        let driver = driver(StaticFetcher::new());
+        let driver = driver(
+            StaticFetcher::new().with(NPM_DIST_TAGS, get_worker::FetchResponse::new(503, "")),
+        );
 
         let response = driver.exchange("GET", "/channels/beta", &[]);
         assert_eq!(response.status, 503);
