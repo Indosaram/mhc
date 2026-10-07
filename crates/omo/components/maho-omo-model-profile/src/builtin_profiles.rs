@@ -5,11 +5,11 @@
 //! "Geeky · Heavy") instead of by model id. It is not the `profiles` key in omo.json: that one is a
 //! VSCode-style config-layer overlay activated by `OMO_PROFILE`.
 //!
-//! Every rung is `{ providers, model, variant? }` - the exact shape the category fallback chains use
-//! - and NOT a single `provider/model` string, so a Copilot-only, Bedrock-only or gateway-only user
-//! still resolves the model instead of reading "unavailable" while the model sits right there in the
-//! registry. Provider spellings are copied from those chains: senpi-only `kimi-coding` plus the
-//! leftover OpenCode `kimi-for-coding` alias those chains keep, and the engine GLM ids `zai` /
+//! Every rung is `{ providers, model, variant? }` - the exact shape the category fallback chains
+//! use - and NOT a single `provider/model` string, so a Copilot-only, Bedrock-only or gateway-only
+//! user still resolves the model instead of reading "unavailable" while the model sits right there
+//! in the registry. Provider spellings are copied from those chains: senpi-only `kimi-coding` plus
+//! the leftover OpenCode `kimi-for-coding` alias those chains keep, and the engine GLM ids `zai` /
 //! `zai-coding-cn` (not OpenCode's `zai-coding-plan`; #8824).
 //!
 //! The table is additive data: an `omo.json` `model_profiles.<name>` entry replaces the builtin of
@@ -97,8 +97,8 @@ const GPT_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai", "github-copil
 const GPT_6_1_PROVIDERS: &[&str] = &["chatgpt-subscription", "openai"];
 
 const RECOMMENDED_MODELS: &[BuiltinRung] = &[
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "", variant: Some("medium") },
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "", variant: Some("xhigh") },
+    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
+    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-fable-5-1", variant: Some("xhigh") },
     BuiltinRung { providers: KIMI_PROVIDERS, model: "kimi-k3", variant: Some("max") },
     BuiltinRung { providers: GPT_PROVIDERS, model: "gpt-6-astra", variant: Some("xhigh") },
     BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol", variant: Some("medium") },
@@ -106,12 +106,12 @@ const RECOMMENDED_MODELS: &[BuiltinRung] = &[
     BuiltinRung { providers: GLM_PROVIDERS, model: "glm-5.3", variant: Some("max") },
 ];
 const DAILY_NORMAL_MODELS: &[BuiltinRung] = &[
-    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "", variant: Some("medium") },
+    BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-opus-5-5", variant: Some("medium") },
     BuiltinRung { providers: KIMI_PROVIDERS, model: "kimi-k3", variant: Some("max") },
     BuiltinRung { providers: GLM_PROVIDERS, model: "glm-5.3", variant: Some("max") },
 ];
 const DAILY_HEAVY_MODELS: &[BuiltinRung] =
-    &[BuiltinRung { providers: CLAUDE_PROVIDERS, model: "", variant: Some("xhigh") }];
+    &[BuiltinRung { providers: CLAUDE_PROVIDERS, model: "claude-fable-5-1", variant: Some("xhigh") }];
 const GEEKY_NORMAL_MODELS: &[BuiltinRung] = &[
     BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol-fast", variant: Some("medium") },
     BuiltinRung { providers: GPT_6_1_PROVIDERS, model: "gpt-6.1-sol", variant: Some("medium") },

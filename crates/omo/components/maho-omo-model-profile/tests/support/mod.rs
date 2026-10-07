@@ -485,7 +485,7 @@ pub fn harness(
     use maho_ext_api::Extension;
     component.register(&mut api);
     let logger = Arc::new(RecordingLogger::default());
-    let ctx = context_with(registry.clone(), session_id, mode, cwd, agent_dir, logger.clone());
+    let ctx = context_with(registry.clone(), session_id, mode, cwd, agent_dir.clone(), logger.clone());
     Harness { api, ctx, registry, session_actions, actions, logger, agent_dir, agent_dir_guard: None }
 }
 

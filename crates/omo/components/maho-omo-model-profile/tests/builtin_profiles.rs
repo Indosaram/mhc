@@ -1,4 +1,4 @@
-mod support;
+pub mod support;
 
 use indexmap::IndexMap;
 use maho_omo_model_profile::builtin_profiles::{
@@ -71,7 +71,7 @@ fn uses_recommended_which_is_not_a_lane_as_the_unset_config_default_id() {
 fn orders_recommended_opus_medium_fable_xhigh_kimi_max_astra_xhigh_61_sol_medium_6_sol_medium_glm_max() {
     assert_eq!(
         chain_of("recommended"),
-        [" medium", " xhigh", "kimi-k3 max", "gpt-6-astra xhigh", "gpt-6.1-sol medium", "gpt-6-sol medium", "glm-5.3 max"]
+        ["claude-opus-5-5 medium", "claude-fable-5-1 xhigh", "kimi-k3 max", "gpt-6-astra xhigh", "gpt-6.1-sol medium", "gpt-6-sol medium", "glm-5.3 max"]
     );
 }
 
@@ -188,7 +188,7 @@ fn heads_every_claude_rung_with_the_anthropic_subscription_lane() {
 
 #[test]
 fn orders_daily_normal_opus_medium_then_kimi_max_then_glm_max() {
-    assert_eq!(chain_of("daily-normal"), [" medium", "kimi-k3 max", "glm-5.3 max"]);
+    assert_eq!(chain_of("daily-normal"), ["claude-opus-5-5 medium", "kimi-k3 max", "glm-5.3 max"]);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn runs_daily_heavy_as_fable_xhigh_only() {
         models,
         [(
             vec!["anthropic-subscription", "anthropic", "anthropic-api", "github-copilot", "opencode"],
-            "",
+            "claude-fable-5-1",
             Some("xhigh")
         )]
     );

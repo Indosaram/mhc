@@ -1,4 +1,4 @@
-mod support;
+pub mod support;
 
 use maho_ext_api::JsonValue;
 use maho_omo_model_profile::resolve::{
@@ -7,12 +7,12 @@ use maho_omo_model_profile::resolve::{
 };
 use serde_json::json;
 
-const OPUS: &str = "anthropic/";
-const OPUS_SUBSCRIPTION: &str = "anthropic-subscription/";
-const OPUS_ZEN: &str = "opencode/";
-const OPUS_API: &str = "anthropic-api/";
-const FABLE: &str = "anthropic-subscription/";
-const FABLE_ZEN: &str = "opencode/";
+const OPUS: &str = "anthropic/claude-opus-5-5";
+const OPUS_SUBSCRIPTION: &str = "anthropic-subscription/claude-opus-5-5";
+const OPUS_ZEN: &str = "opencode/claude-opus-5-5";
+const OPUS_API: &str = "anthropic-api/claude-opus-5-5";
+const FABLE: &str = "anthropic-subscription/claude-fable-5-1";
+const FABLE_ZEN: &str = "opencode/claude-fable-5-1";
 const KIMI: &str = "moonshotai/kimi-k3";
 const FLASH: &str = "deepseek/deepseek-flash";
 const LUNA: &str = "openai/gpt-5.6-luna-fast";
@@ -108,14 +108,14 @@ fn resolves_a_rung_through_its_second_provider_when_the_first_is_absent() {
     let result = resolve("daily-normal", &[OPUS_API], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic-api");
-    assert_eq!(resolved.model_id, "");
+    assert_eq!(resolved.model_id, "claude-opus-5-5");
     assert!(resolved.skipped.is_empty());
 }
 
 #[test]
 fn treats_a_value_carrying_a_slash_as_a_literal_pin() {
     let result = resolve(OPUS, &[FABLE, OPUS], None);
-    assert_eq!(result, expected_resolved(OPUS, OPUS, ModelProfileSource::Pin, "anthropic", "", None, &[]));
+    assert_eq!(result, expected_resolved(OPUS, OPUS, ModelProfileSource::Pin, "anthropic", "claude-opus-5-5", None, &[]));
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn carries_a_reasoning_suffix_written_on_a_user_chain_entry() {
     let result = resolve("pair", &[OPUS], Some(json!({"pair": {"models": [format!("{OPUS}:high")]}})));
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic");
-    assert_eq!(resolved.model_id, "");
+    assert_eq!(resolved.model_id, "claude-opus-5-5");
     assert_eq!(resolved.reasoning, Some("high"));
 }
 
@@ -234,7 +234,7 @@ fn keeps_daily_heavy_on_the_claude_subscription_when_an_opencode_zen_key_serves_
     let result = resolve("daily-heavy", &[FABLE_ZEN, FABLE], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic-subscription");
-    assert_eq!(resolved.model_id, "");
+    assert_eq!(resolved.model_id, "claude-fable-5-1");
     assert_eq!(resolved.reasoning, Some("xhigh"));
 }
 
@@ -243,7 +243,7 @@ fn keeps_daily_normal_on_the_claude_subscription_when_zen_also_serves_opus() {
     let result = resolve("daily-normal", &[OPUS_ZEN, OPUS_SUBSCRIPTION], None);
     let resolved = resolved(&result);
     assert_eq!(resolved.provider, "anthropic-subscription");
-    assert_eq!(resolved.model_id, "");
+    assert_eq!(resolved.model_id, "claude-opus-5-5");
     assert_eq!(resolved.reasoning, Some("medium"));
 }
 
@@ -308,8 +308,8 @@ fn never_serves_a_builtin_lane_from_a_gateways_copy_of_its_models() {
         let result = resolve(
             active,
             &[
-                "openrouter/anthropic/",
-                "opengateway/anthropic/",
+                "openrouter/anthropic/claude-opus-5-5",
+                "opengateway/anthropic/claude-opus-5-5",
                 "openrouter/moonshotai/kimi-k3",
                 "openrouter/openai/gpt-6-astra",
                 "openrouter/openai/gpt-5.6-sol",
