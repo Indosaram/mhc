@@ -21,6 +21,9 @@ fn test_identity_paths(root: PathBuf) -> MemoryIdentityPaths {
         facts: runtime.join("facts"),
         notices: runtime.join("notices"),
         tool_receipts: runtime.join("tool-receipts"),
+        recall: runtime.join("recall"),
+        recall_ledger: runtime.join("recall").join("ledger"),
+        recall_pending: runtime.join("recall").join("pending"),
         runtime,
         root,
     }

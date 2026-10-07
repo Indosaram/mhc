@@ -37,7 +37,7 @@ fn parse_cat_file_batch_reads_blob_content_and_skips_missing_oids() {
     let output = b"aaa111 blob 5\nhello\nbbb222 missing\n";
     let blobs = parse_cat_file_batch(output).expect("parse");
     assert_eq!(blobs.get("aaa111").map(String::as_str), Some("hello"));
-    assert!(blobs.get("bbb222").is_none());
+    assert!(!blobs.contains_key("bbb222"));
 }
 
 #[test]

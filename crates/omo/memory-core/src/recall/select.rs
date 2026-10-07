@@ -78,14 +78,12 @@ fn expansion_texts(expansions: Option<&RecallQueryExpansions>) -> Vec<String> {
         return Vec::new();
     };
     let mut texts: Vec<String> = Vec::new();
-    for tier in [
+    for values in [
         &expansions.synonyms,
         &expansions.keywords,
         &expansions.related,
-    ] {
-        if let Some(values) = tier {
-            texts.extend(values.iter().cloned());
-        }
+    ].into_iter().flatten() {
+        texts.extend(values.iter().cloned());
     }
     if let Some(note_line) = &expansions.note_line {
         texts.push(note_line.clone());
