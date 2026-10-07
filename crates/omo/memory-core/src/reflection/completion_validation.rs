@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::git::exec::GitExec;
+use crate::memfs::{describe_frontmatter_violation, is_memory_content_path, split_frontmatter};
 
 use super::worktree::ReflectionWorktree;
 
@@ -140,9 +141,70 @@ pub fn validate_completion(
         }
     }
 
+    match find_frontmatter_failure(exec, &worktree.dir, recorded_base, &tip_sha, &changed_paths) {
+        Ok(Some(detail)) => return CompletionValidation::Failed { detail },
+        Ok(None) => {}
+        Err(error) => {
+            return CompletionValidation::Failed {
+                detail: format!("git show failed: {error}"),
+            };
+        }
+    }
+
     CompletionValidation::Valid {
         tip_sha,
         changed_paths,
+    }
+}
+
+/// A reflection may not introduce or alter frontmatter that a strict YAML consumer rejects. Legacy
+/// files whose frontmatter block is byte-identical to the base are the normalizer's job, not the
+/// reflection's, so a body-only edit of one still passes.
+fn find_frontmatter_failure(
+    exec: &dyn GitExec,
+    dir: &Path,
+    base_sha: &str,
+    tip_sha: &str,
+    changed_paths: &[String],
+) -> Result<Option<String>, String> {
+    for path in changed_paths {
+        if !is_memory_content_path(path) {
+            continue;
+        }
+        let Some(tip_content) = show_optional(exec, dir, tip_sha, path)? else {
+            continue;
+        };
+        let Some(violation) = describe_frontmatter_violation(&tip_content) else {
+            continue;
+        };
+        if let Some(base_content) = show_optional(exec, dir, base_sha, path)?
+            && frontmatter_block(&base_content) == frontmatter_block(&tip_content)
+        {
+            continue;
+        }
+        return Ok(Some(format!(
+            "Reflection commit contains invalid frontmatter in {path}: {violation}"
+        )));
+    }
+    Ok(None)
+}
+
+fn frontmatter_block(content: &str) -> Option<String> {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    split_frontmatter(&normalized).map(|(header, _)| header)
+}
+
+fn show_optional(
+    exec: &dyn GitExec,
+    dir: &Path,
+    revision: &str,
+    path: &str,
+) -> Result<Option<String>, String> {
+    let spec = format!("{revision}:{path}");
+    match exec.run_in(dir, &["show", spec.as_str()]) {
+        Ok(result) if result.code == 0 => Ok(Some(result.stdout)),
+        Ok(_) => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
 }
 
