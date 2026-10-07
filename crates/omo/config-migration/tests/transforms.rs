@@ -227,7 +227,11 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
     );
 
     // then
-    assert!(user_result.is_ok(), "user document parses: {user_result:?}");
+    let issues = user_result.expect_err("preserved retired codex field is rejected by the strict schema");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].code, omo_config_core::issue::IssueCode::UnrecognizedKeys);
+    assert_eq!(issues[0].path, vec!["[codex]".to_string()]);
+    assert_eq!(issues[0].keys, vec!["disabled_hooks".to_string()]);
     assert!(
         project_result.is_ok(),
         "project document parses: {project_result:?}"
