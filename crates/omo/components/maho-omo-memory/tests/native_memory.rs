@@ -231,3 +231,61 @@ async fn native_faux_corrupt_memory_reports_ts_doctor_parser_error() {
     assert_eq!(*notifications.lock().unwrap(),0); assert_eq!(engine.repo.head().unwrap(),before);
     assert_eq!(std::fs::read_to_string(paths.repo.join("system/persona.md")).unwrap(),"broken persona without frontmatter\n");
 }
+
+/// Registers the trusted provenance producer (the registered `ToolCall` hook) beside the registered
+/// `memory` tool, so a real faux tool call exercises hook -> tool -> git commit end to end.
+struct ProvenanceToolsExtension {
+    identity: MemoryIdentityContext,
+    wiring: Arc<Mutex<maho_omo_memory::nudge_wiring::MemoryNudgeWiring>>,
+    sessions: Arc<Mutex<Vec<String>>>,
+}
+
+impl Extension for ProvenanceToolsExtension {
+    fn register(&self, api: &mut ExtensionApi) {
+        let hook_identity = self.identity.clone();
+        let prompt_resolver: maho_omo_memory::prompt::PromptContextResolver =
+            Arc::new(move |_session: &str| Some(hook_identity.clone()));
+        maho_omo_memory::nudge_wiring::MemoryNudgeWiring::register(
+            self.wiring.clone(),
+            api,
+            prompt_resolver,
+        );
+        let tool_identity = self.identity.clone();
+        maho_omo_memory::tools::register_memory_tools(
+            api,
+            Arc::new(move || Some(tool_identity.clone())),
+        );
+        let sessions = self.sessions.clone();
+        api.on(EventKind::SessionStart, Arc::new(move |_, context| {
+            sessions
+                .lock()
+                .unwrap_or_else(|error| panic!("session capture lock: {error}"))
+                .push(context.session_manager.session_id().into());
+            Box::pin(async { Ok(EventResult::None) })
+        }));
+    }
+}
+
+#[tokio::test]
+async fn native_faux_memory_tool_commit_carries_injected_provenance_trailers() {
+    use maho_ai::providers::faux::{faux_assistant_message,faux_tool_call,FauxAssistantMessageOptions};
+    let root=tempfile::tempdir().unwrap(); let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");
+    let identity=MemoryIdentityContext::new("agent".into(),paths.clone(),MemorySessionBinding {identity:"agent".into(),repo_path_hash:"fixture".into(),bound_at:0.0});
+    let wiring=Arc::new(Mutex::new(maho_omo_memory::nudge_wiring::MemoryNudgeWiring::default()));
+    let sessions=Arc::new(Mutex::new(Vec::new()));
+    let session=FauxSession::new(FauxScript {name:"memory-provenance".into(),prompt:"save".into(),responses:vec![]}).with_native_extension(NativeExtensionFactory {path:"<memory-provenance>".into(),source_info:SourceInfo {source:"inline".into(),..Default::default()},extension:Box::new(ProvenanceToolsExtension {identity,wiring:wiring.clone(),sessions:sessions.clone()})}).with_native_responses(vec![
+        faux_assistant_message(faux_tool_call("memory",serde_json::from_value(serde_json::json!({"command":"create","file_path":"notes/provenance.md","description":"Fixture","file_text":"fact","reason":"save fact"})).unwrap(),Some("provenance-call")),FauxAssistantMessageOptions {stop_reason:Some(maho_ai::types::StopReason::ToolUse),timestamp:Some(0),..Default::default()}),
+        faux_assistant_message("done",FauxAssistantMessageOptions {timestamp:Some(0),..Default::default()}),
+    ]);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
+    let tool=result["messages"].as_array().unwrap().iter().find(|message|message["role"]=="toolResult").unwrap();
+    assert_eq!(tool["isError"],false,"native result: {result}");
+    let session_id=sessions.lock().unwrap().first().cloned().expect("captured session id");
+    let repo=GitMemoryRepo::open(&paths.repo,"agent").unwrap();
+    let head=repo.head().unwrap().unwrap();
+    let commit=repo.log(None).unwrap().into_iter().find(|commit|commit.sha==head).unwrap();
+    assert_eq!(commit.trailers.get("Omo-Writer").map(String::as_str),Some("memory-tool"));
+    assert_eq!(commit.trailers.get("Omo-Session").map(String::as_str),Some(session_id.as_str()));
+    assert!(commit.trailers.get("Omo-Turn").and_then(|turns|turns.parse::<u64>().ok()).is_some_and(|turns|turns>=1),"missing Omo-Turn trailer: {:?}",commit.trailers);
+    assert!(repo.show(&head,"notes/provenance.md").unwrap().contains("fact"));
+}

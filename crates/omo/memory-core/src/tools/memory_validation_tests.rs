@@ -221,7 +221,7 @@ fn test_rejects_no_changes_and_missing_strings() {
     assert!(
         err_no_change
             .message
-            .contains("str_replace made no changes")
+            .contains("str_replace made no effective changes")
     );
 }
 

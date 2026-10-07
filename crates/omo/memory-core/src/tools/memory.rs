@@ -15,6 +15,7 @@ use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
 };
+use crate::memfs::validate_repository_path_with_field;
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
 
@@ -57,6 +58,21 @@ pub struct MemoryToolParams {
     pub insert_text: Option<String>,
     pub old_path: Option<String>,
     pub new_path: Option<String>,
+    /// Trusted provenance injected by the registered `ToolCall` hook; never read from the model.
+    pub provenance: Option<MemoryToolProvenanceInput>,
+}
+
+/// Trusted commit provenance injected at the tool boundary (pin `memory.ts:21-24`).
+///
+/// This is the *input* shape (`{ sessionId, userTurns }`) and is deliberately distinct from
+/// [`MemoryToolProvenance`], which is the output attribution record. The registered hook
+/// overwrites the whole object before the tool runs, so a model-supplied value never survives;
+/// when it is absent the commit is a plain reason with no trailers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryToolProvenanceInput {
+    pub session_id: String,
+    pub user_turns: u64,
 }
 
 /// Commit metadata returned by memory tool operations.
@@ -132,7 +148,7 @@ pub fn run_memory_tool(
     let default_lock = NoopMemoryToolLock;
     let effective_lock = lock.unwrap_or(&default_lock);
 
-    effective_lock.with_lock("memory:all", &mut || {
+    effective_lock.with_lock("memory-write", &mut || {
         run_memory_tool_inner(repo, author, params)
     })
 }
@@ -208,9 +224,6 @@ fn run_memory_tool_inner(
                         "str_replace: old_string was not found in the target memory block",
                     ));
                 }
-                if old_str == new_str {
-                    return Err(err("str_replace made no changes"));
-                }
 
                 let updated_body = parsed.body.replacen(old_str, new_str, 1);
                 let rendered =
@@ -248,10 +261,6 @@ fn run_memory_tool_inner(
                 }
 
                 let updated_body = lines.join("\n");
-                if updated_body == parsed.body {
-                    return Err(err("insert made no changes"));
-                }
-
                 let rendered =
                     render_memory_file(&parsed.frontmatter, &updated_body).map_err(|e| err(e.0))?;
 
@@ -260,19 +269,26 @@ fn run_memory_tool_inner(
             }
             "delete" => {
                 let path_str = require_str("delete", "file_path", params.file_path.as_deref())?;
+                // Pin `remove` resolves the repository path first so a directory target is deleted as
+                // a tree and reports every tracked file under it, not the directory label.
+                let repository_path = validate_repository_path_with_field(root, path_str, "file_path")
+                    .map_err(|e| err(e.message.strip_prefix("memory path: ").unwrap_or(&e.message)))?;
+                if repository_path.is_dir() {
+                    assert_dir_not_readonly(&repository_path, root)?;
+                    let mut tracked = Vec::new();
+                    collect_files(&repository_path, root, &mut tracked)?;
+                    affected_relative_paths.extend(tracked);
+                    fs::remove_dir_all(&repository_path).map_err(|e| err(e.to_string()))?;
+                    return Ok(());
+                }
+
                 let target = validate_path(root, path_str, "file_path")?;
                 let rel = to_relative(root, &target);
                 affected_relative_paths.push(rel.clone());
-
-                if target.is_dir() {
-                    assert_dir_not_readonly(&target, root)?;
-                    fs::remove_dir_all(&target).map_err(|e| err(e.to_string()))?;
-                } else if target.exists() {
-                    let content = read_existing_file(&target, &rel)?;
-                    let parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
-                    assert_not_readonly(&parsed.frontmatter, &rel)?;
-                    fs::remove_file(&target).map_err(|e| err(e.to_string()))?;
-                }
+                let content = read_existing_file(&target, &rel)?;
+                let parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
+                assert_not_readonly(&parsed.frontmatter, &rel)?;
+                fs::remove_file(&target).map_err(|e| err(e.to_string()))?;
                 Ok(())
             }
             "rename" => {
@@ -331,10 +347,6 @@ fn run_memory_tool_inner(
                 let mut parsed = parse_memory_file(&content).map_err(|e| err(e.0))?;
                 assert_not_readonly(&parsed.frontmatter, &rel)?;
 
-                if parsed.frontmatter.description.trim() == desc_str.trim() {
-                    return Err(err("update_description made no changes"));
-                }
-
                 parsed.frontmatter.description = desc_str.to_string();
                 let rendered =
                     render_memory_file(&parsed.frontmatter, &parsed.body).map_err(|e| err(e.0))?;
@@ -348,7 +360,11 @@ fn run_memory_tool_inner(
 
     execute_command()?;
 
-    let commit_res = repo.commit_write(&affected_relative_paths, &params.reason, author);
+    let commit_res = repo.commit_write(
+        &affected_relative_paths,
+        &memory_commit_message(&params.reason, params.provenance.as_ref()),
+        author,
+    );
 
     let commit_info = match commit_res {
         Ok(res) => res,
@@ -358,10 +374,7 @@ fn run_memory_tool_inner(
         Err(err_val) => return Err(err(err_val.to_string())),
     };
 
-    let has_remote = repo
-        .config_get("remote.origin.url")
-        .map_err(|e| err(e.to_string()))?
-        .is_some();
+    let has_remote = has_configured_remote(repo);
 
     let short_sha = if commit_info.sha.len() >= 7 {
         &commit_info.sha[..7]
@@ -393,9 +406,26 @@ fn run_memory_tool_inner(
             author_name: author.author_name.clone(),
             timestamp,
             commit_sha: Some(commit_info.sha),
-            lock_domain: "memory:all".to_string(),
+            lock_domain: "memory-write".to_string(),
         },
     })
+}
+
+/// Build the commit message for a memory write (pin `memory.ts:257-264`).
+///
+/// Absent provenance yields the plain reason; present provenance appends the `Omo-Writer`,
+/// `Omo-Session`, and `Omo-Turn` trailers consumed by the watermark and nudge readers.
+pub(crate) fn memory_commit_message(
+    reason: &str,
+    provenance: Option<&MemoryToolProvenanceInput>,
+) -> String {
+    match provenance {
+        None => reason.to_string(),
+        Some(provenance) => format!(
+            "{reason}\n\nOmo-Writer: memory-tool\nOmo-Session: {}\nOmo-Turn: {}",
+            provenance.session_id, provenance.user_turns
+        ),
+    }
 }
 
 fn validate_path(root: &Path, path: &str, field_name: &str) -> Result<PathBuf, MemoryToolError> {
@@ -441,6 +471,50 @@ fn assert_not_readonly(
         )));
     }
     Ok(())
+}
+
+/// Collect every file under a directory as a repository-relative path (pin `collectFiles`).
+fn collect_files(
+    dir: &Path,
+    root: &Path,
+    collected: &mut Vec<String>,
+) -> Result<(), MemoryToolError> {
+    for entry in fs::read_dir(dir).map_err(|e| err(e.to_string()))? {
+        let entry = entry.map_err(|e| err(e.to_string()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, root, collected)?;
+        } else if path.is_file() {
+            collected.push(to_relative(root, &path));
+        }
+    }
+    Ok(())
+}
+
+/// Pin `hasConfiguredRemote`: any `[remote "<name>"]` section in the repository's git config.
+fn has_configured_remote(repo: &GitMemoryRepo) -> bool {
+    let config = fs::read_to_string(repo.dir.join(".git").join("config")).unwrap_or_default();
+    config.lines().any(is_remote_section_header)
+}
+
+fn is_remote_section_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("[remote") else {
+        return false;
+    };
+    let Some(first) = rest.chars().next() else {
+        return false;
+    };
+    if !first.is_whitespace() {
+        return false;
+    }
+    let Some(after_quote) = rest.trim_start().strip_prefix('"') else {
+        return false;
+    };
+    let Some((name, tail)) = after_quote.split_once('"') else {
+        return false;
+    };
+    !name.is_empty() && tail.starts_with(']')
 }
 
 fn assert_dir_not_readonly(dir: &Path, root: &Path) -> Result<(), MemoryToolError> {

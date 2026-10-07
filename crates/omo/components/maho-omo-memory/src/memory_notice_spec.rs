@@ -139,7 +139,7 @@ pub fn memory_failure_notice_spec(message: &str, args: &MemoryNoticeArgs) -> Not
 /// The pending call line while the write runs.
 pub fn memory_pending_line(args: &MemoryNoticeArgs) -> String {
     if args.command.as_deref() == Some("delete") {
-        return join_fields(&[Some("◌ Letting go"), optional(args.file_path.as_deref())]);
+        return join_fields(&[Some("◌ Letting go"), optional(args.file_path.as_deref()).as_deref()]);
     }
     if args.command.as_deref() == Some("rename") {
         let from = optional(args.old_path.as_deref());
@@ -151,7 +151,7 @@ pub fn memory_pending_line(args: &MemoryNoticeArgs) -> String {
         };
         return join_fields(&[Some("◌ Moving"), target.as_deref()]);
     }
-    join_fields(&[Some("◌ Remembering"), optional(args.file_path.as_deref())])
+    join_fields(&[Some("◌ Remembering"), optional(args.file_path.as_deref()).as_deref()])
 }
 
 fn title_line(notice: &MemoryWriteNotice, args: &MemoryNoticeArgs) -> String {
@@ -344,7 +344,7 @@ fn timeline_line(notice: &MemoryWriteNotice, now_ms: f64) -> Option<NoticeExtraL
     let entry_age = relative_age(timeline.previous_entry_at_iso.as_deref(), now_ms);
     let consolidation_age = relative_age(timeline.last_consolidation_at_iso.as_deref(), now_ms);
     let steps = timeline.unreflected_steps;
-    let text = join_fields(&[
+    let fields = [
         entry_age.as_ref().map(|age| format!("last entry {age}")),
         consolidation_age
             .as_ref()
@@ -354,6 +354,7 @@ fn timeline_line(notice: &MemoryWriteNotice, now_ms: f64) -> Option<NoticeExtraL
             format!("{steps} step{plural} unreflected")
         }),
     ];
+    let text = join_fields(&fields.iter().map(Option::as_deref).collect::<Vec<_>>());
     if text.is_empty() {
         return None;
     }
@@ -474,7 +475,7 @@ pub fn gather_write_notice(
 }
 
 fn read_affected_files(repo: &memory_core::git::GitMemoryRepo, sha: &str) -> Vec<MemoryWriteAffectedFile> {
-    let argv = vec![
+    let argv = [
         "show".to_string(),
         "--numstat".to_string(),
         "-z".to_string(),
