@@ -40,13 +40,14 @@ use crate::types::{
 
 pub type LegacyConfigMigrationTransform =
     Rc<dyn Fn(&[LoadedMigrationSource]) -> Result<ConfigMigrationTransformResult, MigrationError>>;
+pub type LegacyConfigMigrationPredicate = Rc<dyn Fn(&Value) -> bool>;
 
 #[derive(Clone)]
 pub struct LegacyConfigMigrationPlan {
     pub id: String,
     pub inspect: LegacyConfigMigrationTransform,
     pub mode: MigrationMode,
-    pub should_run: Option<Rc<dyn Fn(&Value) -> bool>>,
+    pub should_run: Option<LegacyConfigMigrationPredicate>,
     pub sources: Vec<MigrationSourceDescriptor>,
     pub target_path: String,
     pub transform: LegacyConfigMigrationTransform,
