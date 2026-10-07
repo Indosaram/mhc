@@ -1,20 +1,37 @@
 use std::sync::Arc;
 use maho_ext_api::{ExtensionApi, ToolDefinition, ToolError, ToolExecutionMode, ToolResult};
-use memory_core::tools::{memory::{MemoryToolParams, run_memory_tool}, memory_apply_patch::{MemoryApplyPatchParams, run_memory_apply_patch}};
+use memory_core::tools::{memory::{MemoryToolParams, MemoryToolProvenanceInput, run_memory_tool}, memory_apply_patch::{MemoryApplyPatchParams, run_memory_apply_patch}};
 use crate::{context::MemoryIdentityContext, engine_session::{MemoryEngineSessionOptions, prepare_memory_engine_session}, tool_metadata::*};
 
 pub type MemoryContextResolver = Arc<dyn Fn() -> Option<MemoryIdentityContext> + Send + Sync>;
 pub type MemoryCommitNotice = Arc<dyn Fn(memory_core::tools::memory::MemoryToolCommit) + Send + Sync>;
+/// `memory.write_notice.enabled` for the bound identity (pin `wiring-static.ts:142`).
+pub type WriteNoticeGate = Arc<dyn Fn() -> bool + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct MemoryToolsOptions {
     pub lock_wait_timeout_ms: Option<u64>,
     pub lock_retry_delay_ms: Option<u64>,
     pub on_commit: Option<MemoryCommitNotice>,
+    /// Read per call rather than latched at registration: the gate is presentation-only, so a
+    /// config edit takes effect on the next write instead of at the next restart.
+    pub write_notice: Option<WriteNoticeGate>,
 }
 
 fn result(message: String) -> ToolResult {
     let mut result = ToolResult::text(&message);
     result.details = Some(serde_json::json!({"message":message}));
+    result
+}
+
+fn result_with_write_notice(message: String, write_notice: Option<serde_json::Value>) -> ToolResult {
+    let mut result = ToolResult::text(&message);
+    let mut details = serde_json::json!({"message":message});
+    if let Some(notice) = write_notice
+        && let Some(object) = details.as_object_mut()
+    {
+        object.insert("writeNotice".into(), notice);
+    }
+    result.details = Some(details);
     result
 }
 
@@ -32,7 +49,26 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
             let context = resolve().ok_or_else(|| ToolError::Message("memory: no memory identity bound to this session; enable omo memory and restart the session so the memory tools can initialize".into()))?;
             let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms }).map_err(|e| ToolError::Message(e.message))?;
             let params: MemoryToolParams = serde_json::from_value(call.params)?;
-            engine.lock.run("memory-write", || run_memory_tool(&engine.repo, &engine.author, &params, None)).map(|value| { if let (Some(commit), Some(notice)) = (value.commit, options.on_commit) { notice(commit); } result(value.result) }).map_err(|e| ToolError::Message(e.message))
+            let repaired = memory_core::tools::leaked_arguments::repair_leaked_arguments(params);
+            let repair_note = memory_core::tools::leaked_arguments::describe_repairs(&repaired.repairs);
+            let params = repaired.params;
+            engine.lock.run("memory-write", || run_memory_tool(&engine.repo, &engine.author, &params, None)).map(|value| {
+                let write_notice = if options.write_notice.as_ref().is_some_and(|gate| gate()) {
+                    value.commit.as_ref().map(|commit| {
+                        let notice = crate::memory_notice_spec::gather_write_notice(
+                            &engine.repo,
+                            &commit.sha,
+                            params.reason.as_str(),
+                            engine.author.agent_id.as_str(),
+                        );
+                        serde_json::to_value(notice).unwrap_or(serde_json::Value::Null)
+                    })
+                } else { None };
+                if let (Some(commit), Some(notice)) = (value.commit, options.on_commit) { notice(commit); }
+                let mut message = value.result;
+                message.push_str(&repair_note);
+                result_with_write_notice(message, write_notice)
+            }).map_err(|e| ToolError::Message(e.message))
         })
     }));
     memory.label = "Memory".into();
@@ -47,7 +83,11 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
             let engine = prepare_memory_engine_session(&context.identity, &context.identity_paths, MemoryEngineSessionOptions { lock_wait_timeout_ms: options.lock_wait_timeout_ms, lock_retry_delay_ms: options.lock_retry_delay_ms }).map_err(|e| ToolError::Message(e.message))?;
             let reason = call.params.get("reason").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: reason must be a string".into()))?;
             let input = call.params.get("input").and_then(serde_json::Value::as_str).ok_or_else(|| ToolError::Message("memory_apply_patch: input must be a string".into()))?;
-            let params = MemoryApplyPatchParams { reason: reason.into(), input: input.into(), author: engine.author.clone(), provenance: None };
+            // The registered ToolCall hook writes the trusted provenance object into the call
+            // arguments; consume it here and never read a model-supplied value (pin
+            // memory-apply-patch.ts:242-249). Absent provenance stays a plain-reason commit.
+            let provenance = call.params.get("provenance").cloned().map(serde_json::from_value::<MemoryToolProvenanceInput>).transpose().map_err(|error| ToolError::Message(format!("memory_apply_patch: invalid provenance: {error}")))?;
+            let params = MemoryApplyPatchParams { reason: reason.into(), input: input.into(), author: engine.author.clone(), provenance };
             engine.lock.run("memory-write", || run_memory_apply_patch(&engine.repo, &params, None)).map(|value| { if let (Some(commit), Some(notice)) = (value.commit, options.on_commit) { notice(commit); } result(value.message) }).map_err(|e| ToolError::Message(e.message))
         })
     }));

@@ -16,7 +16,7 @@ use super::memfs::{
     MemoryFrontmatter, ValidateMemoryPathOptions, parse_memory_file, render_memory_file,
     validate_memory_path,
 };
-use super::memory::{MemoryToolCommit, MemoryToolLock, MemoryToolProvenance};
+use super::memory::{MemoryToolCommit, MemoryToolLock, MemoryToolProvenanceInput, memory_commit_message};
 use super::patch_parser::{PatchOperation, apply_memory_patch_hunk, parse_memory_patch};
 use super::soul::{SOUL_EDIT_RESULT_LINE, touches_soul_path};
 use super::tool_errors::MemoryToolError;
@@ -27,7 +27,8 @@ pub struct MemoryApplyPatchParams {
     pub reason: String,
     pub input: String,
     pub author: GitCommitAuthor,
-    pub provenance: Option<MemoryToolProvenance>,
+    /// Trusted provenance injected by the registered `ToolCall` hook (pin `memory-apply-patch.ts:242-249`).
+    pub provenance: Option<MemoryToolProvenanceInput>,
 }
 
 /// Output result produced by a successful patch application.
@@ -59,7 +60,11 @@ pub fn run_memory_apply_patch(
     let operations = parse_memory_patch(&params.input).map_err(|e| err(e.message))?;
     let affected_paths = apply_operations(&repo.dir, &operations)?;
 
-    let commit_res = repo.commit_write(&affected_paths, &params.reason, &params.author);
+    let commit_res = repo.commit_write(
+        &affected_paths,
+        &memory_commit_message(&params.reason, params.provenance.as_ref()),
+        &params.author,
+    );
 
     let commit_info = match commit_res {
         Ok(res) => res,
@@ -71,10 +76,7 @@ pub fn run_memory_apply_patch(
         Err(err_val) => return Err(err(err_val.to_string())),
     };
 
-    let has_remote = repo
-        .config_get("remote.origin.url")
-        .map_err(|e| err(e.to_string()))?
-        .is_some();
+    let has_remote = has_configured_remote(repo);
 
     let short_sha = if commit_info.sha.len() >= 7 {
         &commit_info.sha[..7]
@@ -258,6 +260,32 @@ fn normalize_added_content(rel_path: &str, raw_content: &str) -> String {
         };
         render_memory_file(&frontmatter, raw_content).unwrap_or_else(|_| raw_content.to_string())
     }
+}
+
+/// Pin `hasConfiguredRemote`: any `[remote "<name>"]` section in the repository's git config.
+fn has_configured_remote(repo: &GitMemoryRepo) -> bool {
+    let config = fs::read_to_string(repo.dir.join(".git").join("config")).unwrap_or_default();
+    config.lines().any(is_remote_section_header)
+}
+
+fn is_remote_section_header(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("[remote") else {
+        return false;
+    };
+    let Some(first) = rest.chars().next() else {
+        return false;
+    };
+    if !first.is_whitespace() {
+        return false;
+    }
+    let Some(after_quote) = rest.trim_start().strip_prefix('"') else {
+        return false;
+    };
+    let Some((name, tail)) = after_quote.split_once('"') else {
+        return false;
+    };
+    !name.is_empty() && tail.starts_with(']')
 }
 
 fn assert_editable(read_only: Option<&str>, path: &str) -> Result<(), MemoryToolError> {
