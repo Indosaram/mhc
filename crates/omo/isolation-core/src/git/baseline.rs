@@ -144,10 +144,8 @@ pub fn discover_nested_repos(repo_root: &Path) -> Result<Vec<String>> {
     let mut submodules: HashSet<String> = HashSet::new();
     for line in status.split('\n').filter(|line| !line.is_empty()) {
         let mut rest: String = line.chars().skip(42).collect();
-        if rest.ends_with(')') {
-            if let Some(index) = rest.rfind(" (") {
-                rest.truncate(index);
-            }
+        if rest.ends_with(')') && let Some(index) = rest.rfind(" (") {
+            rest.truncate(index);
         }
         submodules.insert(rest);
     }

@@ -7,6 +7,13 @@ use isolation_core::{
     SweepOptions, SweepResult,
 };
 
+type MarkerFn = fn(
+    &std::path::Path,
+    &str,
+    &isolation_core::IsolationOwner,
+    &dyn Fn(u32) -> Option<String>,
+) -> IsolationResult<()>;
+
 #[test]
 fn public_surface_exposes_the_whole_isolation_lifecycle_from_the_crate_root() {
     let _ensure: fn(EnsureIsolationOptions) -> IsolationResult<IsolationHandle> = ensure_isolation;
@@ -18,12 +25,7 @@ fn public_surface_exposes_the_whole_isolation_lifecycle_from_the_crate_root() {
         &dyn OwnerProbe,
         u64,
     ) -> IsolationResult<isolation_core::OwnerLiveness> = read_owner_liveness;
-    let _marker: fn(
-        &std::path::Path,
-        &str,
-        &isolation_core::IsolationOwner,
-        &dyn Fn(u32) -> Option<String>,
-    ) -> IsolationResult<()> = write_owner_marker;
+    let _marker: MarkerFn = write_owner_marker;
     let _base: fn(
         &std::path::Path,
         &std::path::Path,

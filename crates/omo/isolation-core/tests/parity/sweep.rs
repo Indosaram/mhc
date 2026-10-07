@@ -76,7 +76,7 @@ fn sweep_stops_dead_backends_and_retains_live_foreign_unknown_retained_and_skips
         ..TestBackend::new()
     });
     let result = sweep_stale_isolations(
-        &[sweep_root.clone()],
+        std::slice::from_ref(&sweep_root),
         &SweepOptions {
             backends: vec![sweeper],
             probe: Some(Arc::new(DeadUnless {
@@ -109,7 +109,7 @@ fn sweep_keeps_dead_trees_when_backend_teardown_fails() {
         ..TestBackend::new()
     });
     let result = sweep_stale_isolations(
-        &[f.root.clone()],
+        std::slice::from_ref(&f.root),
         &SweepOptions {
             backends: vec![sweeper],
             probe: Some(Arc::new(DeadUnless {

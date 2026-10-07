@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::backend::{platform_name, IsolationError, Result};
 use crate::git::command::exists;
-use crate::util::{device_of, dirname, is_denied};
+use crate::util::{device_of, dirname};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
@@ -115,7 +115,7 @@ impl BackendRuntime for SystemRuntime {
             if unsafe { libc::access(c_path.as_ptr(), libc::R_OK | libc::W_OK) } == 0 {
                 return Ok(true);
             }
-            return match std::io::Error::last_os_error().raw_os_error() {
+            match std::io::Error::last_os_error().raw_os_error() {
                 Some(code)
                     if code == libc::ENOENT || code == libc::EACCES || code == libc::EPERM =>
                 {
@@ -123,7 +123,7 @@ impl BackendRuntime for SystemRuntime {
                 }
                 Some(_) => Ok(false),
                 None => Ok(false),
-            };
+            }
         }
         #[cfg(not(unix))]
         {
@@ -141,12 +141,12 @@ impl BackendRuntime for SystemRuntime {
         {
             let mounts = std::fs::read_to_string("/proc/mounts")?;
             let target = path.to_string_lossy();
-            return Ok(mounts.lines().any(|line| {
+            Ok(mounts.lines().any(|line| {
                 line.split(' ')
                     .nth(1)
                     .map(|raw| decode_mount_path(raw) == target)
                     .unwrap_or(false)
-            }));
+            }))
         }
         #[cfg(not(target_os = "linux"))]
         {

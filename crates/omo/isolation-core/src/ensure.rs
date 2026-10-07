@@ -204,13 +204,13 @@ pub fn ensure_isolation(options: EnsureIsolationOptions) -> Result<IsolationHand
                 });
             }
             Err(error) => {
-                if start_attempted {
-                    if let Err(stop_error) = backend.stop(&merged) {
-                        return Err(IsolationError::other(format!(
-                            "Isolation teardown failed: {}: {error}; {stop_error}",
-                            creating.display()
-                        )));
-                    }
+                if start_attempted
+                    && let Err(stop_error) = backend.stop(&merged)
+                {
+                    return Err(IsolationError::other(format!(
+                        "Isolation teardown failed: {}: {error}; {stop_error}",
+                        creating.display()
+                    )));
                 }
                 let _ = std::fs::remove_dir_all(&creating);
                 if !error.is_unavailable() {

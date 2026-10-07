@@ -77,14 +77,12 @@ fn take_trailing_token(text: &str) -> Option<String> {
 }
 
 fn split_diff_paths(rest: &str) -> Option<(String, String)> {
-    if rest.starts_with('"') {
-        if let Some(end) = find_closing_quote(rest) {
-            if rest.as_bytes().get(end + 1) == Some(&b' ') {
-                if let Some(second) = take_trailing_token(&rest[end + 2..]) {
-                    return Some((rest[..end + 1].to_string(), second));
-                }
-            }
-        }
+    if rest.starts_with('"')
+        && let Some(end) = find_closing_quote(rest)
+        && rest.as_bytes().get(end + 1) == Some(&b' ')
+        && let Some(second) = take_trailing_token(&rest[end + 2..])
+    {
+        return Some((rest[..end + 1].to_string(), second));
     }
     for (index, _) in rest.match_indices(' ') {
         let first = &rest[..index];

@@ -3,9 +3,12 @@ use std::sync::Arc;
 
 use isolation_core::{choose_base_dir, resolve_path, sha1_hex, BaseDirIo, IsolationError, IsolationResult};
 
+type StatFn = Arc<dyn Fn(&Path) -> IsolationResult<u64> + Send + Sync>;
+type WritableFn = Arc<dyn Fn(&Path) -> IsolationResult<bool> + Send + Sync>;
+
 struct FakeIo {
-    stat: Arc<dyn Fn(&Path) -> IsolationResult<u64> + Send + Sync>,
-    writable: Arc<dyn Fn(&Path) -> IsolationResult<bool> + Send + Sync>,
+    stat: StatFn,
+    writable: WritableFn,
 }
 
 impl BaseDirIo for FakeIo {
@@ -111,7 +114,7 @@ fn different_task_ids_get_different_paths_without_interpolating_the_id() {
 fn never_places_the_base_directory_inside_a_subvolume_style_repository_root() {
     let repo = repo();
     let io = FakeIo {
-        stat: Arc::new(move |path| {
+        stat: Arc::new({ let repo = repo.clone(); move |path| {
             Ok(if resolve_path(path) == repo {
                 7
             } else if on_volume(path) {
@@ -119,7 +122,7 @@ fn never_places_the_base_directory_inside_a_subvolume_style_repository_root() {
             } else {
                 1
             })
-        }),
+        }}),
         writable: Arc::new(|_| Ok(true)),
     };
     let selection = choose_base_dir(&repo, &home(), "task-one", &io).expect("selection");

@@ -198,13 +198,13 @@ impl IsolationBackend for RcopyBackend {
                 Ok(result) if result.code != 0 => {
                     // Only an actually-gone registration makes removal failure spurious;
                     // a live one must surface instead of leaking a stale registration.
-                    if let Some(admin) = &admin {
-                        if exists(Path::new(admin))? {
-                            return Err(IsolationError::other(format!(
-                                "git worktree remove failed ({}): {}",
-                                result.code, result.stderr
-                            )));
-                        }
+                    if let Some(admin) = &admin
+                        && exists(Path::new(admin))?
+                    {
+                        return Err(IsolationError::other(format!(
+                            "git worktree remove failed ({}): {}",
+                            result.code, result.stderr
+                        )));
                     }
                 }
                 Ok(_) => {}

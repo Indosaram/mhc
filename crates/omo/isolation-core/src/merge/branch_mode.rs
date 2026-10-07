@@ -177,10 +177,8 @@ pub fn commit_to_branch_locked(
     .iter()
     .any(|patch| !patch.trim().is_empty());
     let message = |patch: &str| -> Result<String> {
-        if let Some(callback) = &options.commit_message {
-            if let Some(text) = callback(patch)? {
-                return Ok(text);
-            }
+        if let Some(callback) = &options.commit_message && let Some(text) = callback(patch)? {
+            return Ok(text);
         }
         Ok(format!("chore(task): {id} leftovers"))
     };
@@ -212,7 +210,7 @@ pub fn commit_to_branch_locked(
         };
         let leftovers = capture_delta_patch(isolation_dir, &empty)?;
         if !leftovers.root_patch.trim().is_empty() {
-            let tree = write_synthetic_tree(repo_root, &head, &[leftovers.root_patch.clone()])?;
+            let tree = write_synthetic_tree(repo_root, &head, std::slice::from_ref(&leftovers.root_patch))?;
             commit_tree(
                 repo_root,
                 &branch_name,

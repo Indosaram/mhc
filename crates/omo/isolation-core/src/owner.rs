@@ -163,10 +163,8 @@ pub fn hostname() -> String {
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(buffer.len());
-            if let Ok(name) = std::str::from_utf8(&buffer[..end]) {
-                if !name.is_empty() {
-                    return name.to_string();
-                }
+            if let Ok(name) = std::str::from_utf8(&buffer[..end]) && !name.is_empty() {
+                return name.to_string();
             }
         }
     }
@@ -254,15 +252,13 @@ pub fn read_owner_liveness(base_dir: &Path, probe: &dyn OwnerProbe, now: u64) ->
         Some(text) => serde_json::from_str(&text).ok(),
         None => None,
     };
-    if let Some(value) = &marker {
-        if let Some(recorded_host) = value.get("hostname").and_then(|host| host.as_str()) {
-            if recorded_host != hostname() {
-                return Ok(OwnerLiveness::Foreign);
-            }
-        }
+    if let Some(value) = &marker
+        && let Some(recorded_host) = value.get("hostname").and_then(|host| host.as_str())
+        && recorded_host != hostname()
+    {
+        return Ok(OwnerLiveness::Foreign);
     }
-    if let Some(value) = &marker {
-        if is_owner_marker(value) {
+    if let Some(value) = &marker && is_owner_marker(value) {
             let parsed: OwnerMarker = serde_json::from_value(value.clone())
                 .map_err(|error| crate::backend::IsolationError::other(error.to_string()))?;
             let mut states = vec![probe.pid_alive(
@@ -298,7 +294,6 @@ pub fn read_owner_liveness(base_dir: &Path, probe: &dyn OwnerProbe, now: u64) ->
             if !name.contains(".creating-") {
                 return Ok(OwnerLiveness::Dead);
             }
-        }
     }
     let age = now.saturating_sub(mtime_ms(base_dir)?);
     Ok(if age > CREATING_GRACE_MS {

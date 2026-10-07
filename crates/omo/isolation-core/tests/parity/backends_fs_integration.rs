@@ -1,4 +1,5 @@
 use std::path::Path;
+use isolation_core::IsolationBackend;
 
 use isolation_core::{
     checked, cleanup_isolation, ensure_isolation, BackendKind, BackendRef, BtrfsBackend,

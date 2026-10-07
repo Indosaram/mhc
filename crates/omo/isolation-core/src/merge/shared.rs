@@ -208,12 +208,12 @@ pub fn with_repo_lock<T>(
         },
     )
     .map_err(|error| IsolationError::other(format!("{error:?}")))?;
-    let result = (|| {
+    let result = {
         if let Some(hook) = hook {
             hook(LockEvent::Acquired, &path);
         }
         f()
-    })();
+    };
     let _ = release_lock(&path, record.nonce.as_str());
     if let Some(hook) = hook {
         hook(LockEvent::Released, &path);

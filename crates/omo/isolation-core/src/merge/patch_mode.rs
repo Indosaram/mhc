@@ -69,10 +69,8 @@ pub fn apply_nested_patches(
             )?;
             Ok(())
         })();
-        if let Some(stashed) = &stashed {
-            if let Some(warning) = stash_pop(&cwd, stashed)? {
-                warnings.push(format!("{}: {warning}", nested.relative_path));
-            }
+        if let Some(stashed) = &stashed && let Some(warning) = stash_pop(&cwd, stashed)? {
+            warnings.push(format!("{}: {warning}", nested.relative_path));
         }
         if let Err(error) = apply {
             if !matches!(&error, IsolationError::Git { .. }) {

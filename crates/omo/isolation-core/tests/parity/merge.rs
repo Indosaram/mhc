@@ -3,6 +3,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::test_support::Fixture;
+use isolation_core::merge::CommitMessage;
 use isolation_core::{
     capture_baseline, capture_delta_patch, commit_to_branch, merge_isolated_changes,
     merge_task_branch, IsolationError, IsolationMergeOptions, LockEvent, MergeKind, MergeMode,
@@ -25,6 +26,7 @@ fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
 
 struct Setup {
     f: Fixture,
+    baseline: isolation_core::git::baseline::WorktreeBaseline,
     isolation_dir: PathBuf,
     artifacts_dir: PathBuf,
 }
@@ -39,17 +41,16 @@ fn setup(nested: bool) -> Setup {
     let isolation_dir = f.root.join("child");
     copy_dir_all(&f.repo_root, &isolation_dir).expect("isolation copy");
     let artifacts_dir = f.root.join("artifacts");
-    let _ = baseline;
     Setup {
         f,
+        baseline,
         isolation_dir,
         artifacts_dir,
     }
 }
 
 fn options(setup: &Setup, mode: MergeMode) -> IsolationMergeOptions {
-    let baseline = capture_baseline(&setup.f.repo_root, ISOLATION_BASELINE_MAX_CONTENT_BYTES)
-        .expect("baseline");
+    let baseline = setup.baseline.clone();
     IsolationMergeOptions {
         id: "test".to_string(),
         artifacts_dir: setup.artifacts_dir.clone(),

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use isolation_core::test_support::fixture;
+use isolation_core::test_support::{fixture, Fixture};
 use isolation_core::{
     hostname, read_owner_liveness, write_owner_marker, IsolationOwner, OwnerChild, OwnerLiveness,
     OwnerProbe, OwnerStatus,
@@ -9,9 +9,12 @@ use isolation_core::{
 
 const NOW: u64 = 2_000_000;
 
+type PidProbeFn = Arc<dyn Fn(u32, Option<&str>) -> OwnerStatus + Send + Sync>;
+type SessionProbeFn = Arc<dyn Fn(&str, &str) -> OwnerStatus + Send + Sync>;
+
 struct Probe {
-    pid: Arc<dyn Fn(u32, Option<&str>) -> OwnerStatus + Send + Sync>,
-    session: Option<Arc<dyn Fn(&str, &str) -> OwnerStatus + Send + Sync>>,
+    pid: PidProbeFn,
+    session: Option<SessionProbeFn>,
 }
 
 impl Probe {
@@ -38,7 +41,7 @@ fn set_mtime_ms(path: &Path, millis: u64) {
     filetime::set_file_mtime(path, time).expect("mtime");
 }
 
-fn marked(name: &str, child: Option<&str>, host: &str) -> PathBuf {
+fn marked(name: &str, child: Option<&str>, host: &str) -> (Fixture, PathBuf) {
     let f = fixture();
     let base = f.root.join(name);
     std::fs::create_dir_all(&base).expect("base dir");
@@ -54,12 +57,12 @@ fn marked(name: &str, child: Option<&str>, host: &str) -> PathBuf {
     )
     .expect("owner marker");
     set_mtime_ms(&base, 0);
-    base
+    (f, base)
 }
 
 #[test]
 fn dead_host_is_dead() {
-    let base = marked("t0123456789", None, &hostname());
+    let (_f, base) = marked("t0123456789", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &Probe::dead(), NOW).expect("liveness"),
         OwnerLiveness::Dead
@@ -78,7 +81,7 @@ fn recycled_host_start_identity_is_passed_to_the_probe_and_rejected() {
         }),
         session: None,
     };
-    let base = marked("t0123456789", None, &hostname());
+    let (_f, base) = marked("t0123456789", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &probe, NOW).expect("liveness"),
         OwnerLiveness::Dead
@@ -87,7 +90,7 @@ fn recycled_host_start_identity_is_passed_to_the_probe_and_rejected() {
 
 #[test]
 fn malformed_old_marker_obeys_the_grace_period() {
-    let base = marked("t0123456789", None, &hostname());
+    let (_f, base) = marked("t0123456789", None, &hostname());
     std::fs::write(base.join(".omo-isolation-owner.json"), "{").expect("write");
     set_mtime_ms(&base, 0);
     assert_eq!(
@@ -98,7 +101,7 @@ fn malformed_old_marker_obeys_the_grace_period() {
 
 #[test]
 fn malformed_young_marker_obeys_the_grace_period() {
-    let base = marked("t0123456789", None, &hostname());
+    let (_f, base) = marked("t0123456789", None, &hostname());
     std::fs::write(base.join(".omo-isolation-owner.json"), "{").expect("write");
     set_mtime_ms(&base, NOW);
     assert_eq!(
@@ -130,7 +133,7 @@ fn foreign_host_is_never_probed() {
         pid: Arc::new(|_, _| panic!("must not probe foreign pid")),
         session: None,
     };
-    let base = marked("t0123456789", None, "foreign.example");
+    let (_f, base) = marked("t0123456789", None, "foreign.example");
     assert_eq!(
         read_owner_liveness(&base, &probe, NOW).expect("liveness"),
         OwnerLiveness::Foreign
@@ -143,7 +146,7 @@ fn retained_directory_is_never_probed() {
         pid: Arc::new(|_, _| panic!("must not probe retained owner")),
         session: None,
     };
-    let base = marked("t0123456789.retained-1-ab", None, &hostname());
+    let (_f, base) = marked("t0123456789.retained-1-ab", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &probe, NOW).expect("liveness"),
         OwnerLiveness::Retained
@@ -152,7 +155,7 @@ fn retained_directory_is_never_probed() {
 
 #[test]
 fn young_creating_directory_with_dead_owner_stays_creating() {
-    let base = marked("t0123456789.creating-101", None, &hostname());
+    let (_f, base) = marked("t0123456789.creating-101", None, &hostname());
     set_mtime_ms(&base, NOW);
     assert_eq!(
         read_owner_liveness(&base, &Probe::dead(), NOW).expect("liveness"),
@@ -166,7 +169,7 @@ fn old_creating_directory_with_alive_owner_stays_creating() {
         pid: Arc::new(|_, _| OwnerStatus::Alive),
         session: None,
     };
-    let base = marked("t0123456789.creating-101", None, &hostname());
+    let (_f, base) = marked("t0123456789.creating-101", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &probe, NOW).expect("liveness"),
         OwnerLiveness::Creating
@@ -175,7 +178,7 @@ fn old_creating_directory_with_alive_owner_stays_creating() {
 
 #[test]
 fn old_creating_directory_with_dead_owner_becomes_reclaimable() {
-    let base = marked("t0123456789.creating-101", None, &hostname());
+    let (_f, base) = marked("t0123456789.creating-101", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &Probe::dead(), NOW).expect("liveness"),
         OwnerLiveness::Reclaimable
@@ -194,7 +197,7 @@ fn live_process_child_preserves_a_dead_host_tree() {
         }),
         session: None,
     };
-    let base = marked(
+    let (_f, base) = marked(
         "t0123456789",
         Some("{\"kind\":\"process\",\"pid\":202,\"start_identity\":\"proc-start-epoch:30\"}"),
         &hostname(),
@@ -215,7 +218,7 @@ fn host_session_alive_with_dead_host_returns_live() {
             OwnerStatus::Alive
         })),
     };
-    let base = marked(
+    let (_f, base) = marked(
         "t0123456789",
         Some("{\"kind\":\"host-session\",\"socket\":\"/socket\",\"session_path\":\"/session\"}"),
         &hostname(),
@@ -232,7 +235,7 @@ fn host_session_unknown_with_dead_host_returns_unknown() {
         pid: Arc::new(|_, _| OwnerStatus::Dead),
         session: Some(Arc::new(|_, _| OwnerStatus::Unknown)),
     };
-    let base = marked(
+    let (_f, base) = marked(
         "t0123456789",
         Some("{\"kind\":\"host-session\",\"socket\":\"/socket\",\"session_path\":\"/session\"}"),
         &hostname(),
@@ -249,7 +252,7 @@ fn host_session_dead_with_dead_host_returns_dead() {
         pid: Arc::new(|_, _| OwnerStatus::Dead),
         session: Some(Arc::new(|_, _| OwnerStatus::Dead)),
     };
-    let base = marked(
+    let (_f, base) = marked(
         "t0123456789",
         Some("{\"kind\":\"host-session\",\"socket\":\"/socket\",\"session_path\":\"/session\"}"),
         &hostname(),
@@ -262,7 +265,7 @@ fn host_session_dead_with_dead_host_returns_dead() {
 
 #[test]
 fn missing_host_session_probe_is_unknown_never_dead() {
-    let base = marked(
+    let (_f, base) = marked(
         "t0123456789",
         Some("{\"kind\":\"host-session\",\"socket\":\"/socket\",\"session_path\":\"/session\"}"),
         &hostname(),
@@ -279,7 +282,7 @@ fn unknown_pid_ownership_wins_over_old_age() {
         pid: Arc::new(|_, _| OwnerStatus::Unknown),
         session: None,
     };
-    let base = marked("t0123456789.creating-101", None, &hostname());
+    let (_f, base) = marked("t0123456789.creating-101", None, &hostname());
     assert_eq!(
         read_owner_liveness(&base, &probe, NOW).expect("liveness"),
         OwnerLiveness::Unknown
