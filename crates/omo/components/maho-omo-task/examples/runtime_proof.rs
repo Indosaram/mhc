@@ -225,15 +225,15 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     drop(configured);
     println!("PASS configured assembled scheduler ring overflow persisted and subscriber drained");
     let mut api = support::api();
-    let component = TaskComponent::register(&mut api, dag_task_engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, false)?.ok_or("dag component disabled")?;
+    let status_timers = Arc::new(SurfaceTimers::default());
+    let rpc_timers = Arc::new(SurfaceTimers::default());
+    let component = TaskComponent::register_with_dag_timers(&mut api, dag_task_engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, false, (Arc::new(SurfaceTimers::default()), status_timers.clone(), rpc_timers.clone()))?.ok_or("dag component disabled")?;
+    let dag = component.dag_engine().expect("component owns the dag engine");
     let cleanup = Cleanup(component.clone());
     let dag_ui = Arc::new(support::Ui::default());
     context.ui = dag_ui.clone();
     context.mode = ExtensionMode::Tui;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New, initial_model_provenance:None, previous_session_file:None }), &context).await?;
-    dag.register_queries(&mut api, &component)?;
-    let status_timers = Arc::new(SurfaceTimers::default());
-    dag.register_rpc_with_status_timers(&mut api, &component, status_timers.clone());
     let pending = dag.manager.start(senpi_task::dag::manager::DagStartParams {
         definition: senpi_task::dag::graph::DagDefinition { key:"lifecycle".into(), name:"lifecycle".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
             id:"pending".into(), prompt:"pending".into(), target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(), model:Some("faux/native".into()) },
@@ -271,13 +271,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
             if event["data"]["type"] == "dag.run.completed" && let Err(error) = terminal.send(event["data"].clone()) { eprintln!("DAG proof terminal delivery failed: {error}"); }
         }
     }));
-    dag.register_tool(&mut api, component.clone());
     let tool = &api.registered.tools.iter().find(|tool| tool.definition.name == "dag").ok_or("dag missing")?.definition;
     let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"explore","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"explore","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
     let run = result.details.as_ref().and_then(|details| details["run_id"].as_str()).ok_or("dag run missing")?;
     let scheduler = dag.scheduler(&component.engine, run, "s")?;
     let record = scheduler.snapshot();
     let terminal = settled.recv_timeout(Duration::from_secs(10))?;
+    rpc_timers.fire_delay(150);
     let activity = observed_activity.recv_timeout(Duration::from_secs(10))?;
     assert_eq!(activity["runId"], run);
     assert_eq!(activity["schemaVersion"], 1);

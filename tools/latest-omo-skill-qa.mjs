@@ -99,7 +99,7 @@ function skillMarker(body, name) {
 function resolveSkill(home, stagedRoot) {
 	if (!stagedRoot) {
 		const root = fixtureSkillsRoot(home);
-		return { root, name: FIXTURE_SKILL, marker: FIXTURE_MARKER, staged: false };
+		return { root, name: FIXTURE_SKILL, marker: FIXTURE_MARKER, staged: false, candidates: [{ name: FIXTURE_SKILL, marker: FIXTURE_MARKER }] };
 	}
 	if (!existsSync(stagedRoot)) return { root: stagedRoot, name: null, marker: null, staged: true, reason: `${stagedRoot} does not exist` };
 	const entries = readdirSync(stagedRoot, { withFileTypes: true })
@@ -107,9 +107,11 @@ function resolveSkill(home, stagedRoot) {
 		.map((entry) => entry.name)
 		.sort((left, right) => left.localeCompare(right));
 	if (entries.length === 0) return { root: stagedRoot, name: null, marker: null, staged: true, reason: `${stagedRoot} holds no staged skill with a SKILL.md` };
-	const directory = entries[0];
-	const body = readFileSync(join(stagedRoot, directory, "SKILL.md"), "utf8");
-	return { root: stagedRoot, name: skillName(body, directory), marker: skillMarker(body, directory), staged: true };
+	const candidates = entries.map((directory) => {
+		const body = readFileSync(join(stagedRoot, directory, "SKILL.md"), "utf8");
+		return { name: skillName(body, directory), marker: skillMarker(body, directory) };
+	});
+	return { root: stagedRoot, ...candidates[0], staged: true, candidates };
 }
 
 /** The registered skill NAME: the frontmatter `name:` when present, else the directory name. */
@@ -223,7 +225,7 @@ async function connectHost(socketPath) {
 	});
 	client.request = (fields, ms = REQUEST_TIMEOUT_MS) =>
 		new Promise((resolvePromise) => {
-			const id = client.nextId++;
+			const id = String(client.nextId++);
 			const timer = setTimeout(() => {
 				client.waiters.delete(id);
 				resolvePromise(null);
@@ -337,6 +339,7 @@ async function scenarioGetCommands(ctx) {
 		} else {
 			client = await connectHost(socket);
 			const opened = await client.request({ type: "open_session", cwd: join(home, "project") });
+			receipt.openResponse = opened;
 			const sessionId = opened?.data?.sessionId ?? null;
 			receipt.sessionId = sessionId;
 			if (!sessionId) {
@@ -402,11 +405,20 @@ async function scenarioBareRewrite(ctx) {
 		} else {
 			client = await connectHost(socket);
 			const opened = await client.request({ type: "open_session", cwd: join(home, "project") });
+			receipt.openResponse = opened;
 			const sessionId = opened?.data?.sessionId ?? null;
 			receipt.sessionId = sessionId;
 			if (!sessionId) {
 				detail = "the host answered no sessionId to open_session";
 			} else {
+				const commands = (await client.request({ type: "get_commands", sessionId }))?.data?.commands ?? [];
+				const owned = new Set(commands.map((command) => command.name));
+				const candidate = skill.candidates.find((entry) => !owned.has(entry.name));
+				if (!candidate) throw new Error("every staged skill name is owned by a registered command");
+				skill.name = candidate.name;
+				skill.marker = candidate.marker;
+				receipt.selectedSkill = candidate.name;
+				receipt.marker = candidate.marker;
 				await client.request({ type: "prompt", sessionId, message: `/${skill.name} hello` });
 				const bareMessages = await client.request({ type: "get_messages", sessionId });
 				receipt.bareMessage = userMessageText(bareMessages);
