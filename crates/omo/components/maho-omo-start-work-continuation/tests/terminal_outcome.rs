@@ -15,7 +15,21 @@ impl ExtensionActions for Actions {
 
 const CODEX_ERROR: &str = "Codex error: This request was blocked by our safety systems. Reason: Potentially unintended activity.";
 
-fn messages(value: JsonValue) -> Vec<AgentMessage> { serde_json::from_value(value).expect("agent messages") }
+fn messages(mut value: JsonValue) -> Vec<AgentMessage> {
+    for message in value.as_array_mut().expect("message array") {
+        let role = message["role"].as_str().expect("role").to_owned();
+        let fields = message.as_object_mut().expect("message object");
+        fields.entry("content").or_insert_with(|| serde_json::json!([]));
+        fields.entry("timestamp").or_insert_with(|| serde_json::json!(0));
+        if role == "assistant" {
+            fields.insert("api".into(), serde_json::json!("openai-completions"));
+            fields.insert("provider".into(), serde_json::json!("faux"));
+            fields.insert("model".into(), serde_json::json!("faux"));
+            fields.insert("usage".into(), serde_json::to_value(Usage::default()).expect("usage"));
+        }
+    }
+    serde_json::from_value(value).expect("agent messages")
+}
 
 fn clean_messages() -> Vec<AgentMessage> {
     messages(serde_json::json!([{ "role": "assistant", "stopReason": "stop", "content": [] }]))
