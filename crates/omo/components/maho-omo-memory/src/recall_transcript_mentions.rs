@@ -159,15 +159,10 @@ struct SessionMentions {
 }
 
 /// Incremental per-entry mention cache; insertion order is the LRU order.
+#[derive(Default)]
 pub struct BranchMentionIndex {
     matcher_set: Option<MatcherSet>,
     sessions: Vec<(String, SessionMentions)>,
-}
-
-impl Default for BranchMentionIndex {
-    fn default() -> Self {
-        Self { matcher_set: None, sessions: Vec::new() }
-    }
 }
 
 impl BranchMentionIndex {
@@ -201,7 +196,7 @@ impl BranchMentionIndex {
         while self.sessions.len() > MAX_TRACKED_SESSIONS {
             self.sessions.remove(0);
         }
-        &mut self
+        self
             .sessions
             .last_mut()
             .map(|(_, session)| session)

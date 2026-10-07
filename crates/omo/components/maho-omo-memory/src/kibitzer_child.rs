@@ -31,10 +31,10 @@ pub enum KibitzerChildObservation {
         /// or `None` when the call was not refused.
         refusal: Option<String>,
     },
-    /// `message_end`: the native message, carried WHOLE so the lifecycle projects consumption
-    /// (`UserContent` text) and provider/model/`Usage` from the real contract instead of an invented
-    /// optional or non-finite usage case.
-    MessageEnd { message: AgentMessage },
+    /// `message_end`: the native message, carried WHOLE (boxed, so this variant stays small) so the
+    /// lifecycle projects consumption (`UserContent` text) and provider/model/`Usage` from the real
+    /// contract instead of an invented optional or non-finite usage case.
+    MessageEnd { message: Box<AgentMessage> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +64,9 @@ pub trait KibitzerChild: Send + Sync {
     fn dispose<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }
 
+/// The child-spawner future: resolves the resident child or a typed start error.
+pub type KibitzerChildSpawnFuture<'a> = Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, crate::kibitzer_sidecar_model::KibitzerSidecarStartError>> + Send + 'a>>;
+
 pub trait KibitzerChildSpawner: Send + Sync {
-    fn spawn<'a>(&'a self, input: KibitzerChildSpawnInput) -> Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, crate::kibitzer_sidecar_model::KibitzerSidecarStartError>> + Send + 'a>>;
+    fn spawn<'a>(&'a self, input: KibitzerChildSpawnInput) -> KibitzerChildSpawnFuture<'a>;
 }

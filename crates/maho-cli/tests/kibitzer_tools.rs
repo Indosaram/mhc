@@ -13,7 +13,7 @@ use maho_cli::cli::kibitzer_tools::{
 use maho_ext_api::{AbortSignal, ToolCall, ToolContent, ToolDefinition, ToolResult};
 use maho_omo_memory::kibitzer_contract::KibitzerBudgetSlot;
 use maho_omo_memory::kibitzer_events::KibitzerEventCaps;
-use maho_omo_memory::kibitzer_tools::DEFAULT_KIBITZER_TOOL_CAPS;
+use maho_omo_memory::kibitzer_tools_caps::DEFAULT_KIBITZER_TOOL_CAPS;
 
 fn call(params: serde_json::Value) -> ToolCall<'static> {
     ToolCall { id: "call-1", params, signal: AbortSignal::default(), on_update: None, context: None }
@@ -51,7 +51,8 @@ async fn read_bounds_characters_and_redacts_secrets() {
     std::fs::write(dir.path().join("note.txt"), format!("OPENAI_API_KEY=sk-live-abc\n{}", "x".repeat(7000))).expect("write");
     let tools = tools(dir.path(), Vec::new(), Arc::new(CliBudgetSlot::new(8)));
     let body = text((tool(&tools, "read").execute)(call(serde_json::json!({ "path": "note.txt" }))).await.expect("read ok"));
-    assert!(body.contains("OPENAI_API_KEY=[REDACTED]"), "the secret is redacted");
+    assert!(body.contains("OPENAI_API_KEY=***"), "the secret is redacted");
+    assert!(!body.contains("sk-live-abc"), "the credential is absent");
     let cap = DEFAULT_KIBITZER_TOOL_CAPS.read_chars;
     assert!(body.chars().count() <= cap + 64, "the body is bounded by the read cap: {} chars", body.chars().count());
 }

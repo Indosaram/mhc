@@ -233,7 +233,8 @@ impl TurnLifecycle {
         if let Some(tokens) = *current.usage_tokens.lock().unwrap_or_else(PoisonError::into_inner) {
             return tokens;
         }
-        current.chars_sent.lock().unwrap_or_else(PoisonError::into_inner).div_ceil(4)
+        let chars = *current.chars_sent.lock().unwrap_or_else(PoisonError::into_inner);
+        chars / 4 + i64::from(chars % 4 != 0)
     }
 
     /// Arms the wake deadline at `min(now + wakeDeadlineMs, turn.totalDeadlineAt)`: the quiet period

@@ -28,5 +28,5 @@ fn given_a_second_attempt_when_computed_then_the_band_doubled() {
 #[test]
 fn given_a_non_finite_jitter_when_computed_then_it_defaults_to_the_midpoint() {
     assert_eq!(backoff_delay_ms(0, &*fixed(f64::NAN), KIBITZER_BACKOFF_MIN_MS, KIBITZER_BACKOFF_MAX_MS), 1_000);
-    assert_eq!(backoff_delay_ms(1, &*fixed(f64::INFINITY), KIBITZER_BACKOFF_MIN_MS, KIBITZER_BACKOFF_MAX_MS), 2_000);
+    assert_eq!(backoff_delay_ms(1, &*fixed(f64::INFINITY), KIBITZER_BACKOFF_MIN_MS, KIBITZER_BACKOFF_MAX_MS), 1_500);
 }

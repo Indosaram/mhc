@@ -37,6 +37,7 @@ pub struct CliRuntimeConfiguration {
     pub app_mode: AppMode,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub models: Vec<String>,
     pub thinking: Option<String>,
     pub auto_title_sessions: Option<bool>,
     pub help: bool,
@@ -59,6 +60,7 @@ impl Default for CliRuntimeConfiguration {
             app_mode: AppMode::Print,
             provider: None,
             model: None,
+            models: Vec::new(),
             thinking: None,
             auto_title_sessions: None,
             help: false,
@@ -83,6 +85,7 @@ impl CliRuntimeConfiguration {
             app_mode,
             provider: parsed.provider.clone(),
             model: parsed.model.clone(),
+            models: parsed.models.clone().unwrap_or_default(),
             thinking: parsed.thinking.clone(),
             auto_title_sessions: parsed.auto_title_sessions.then_some(true),
             help: parsed.help,
@@ -160,6 +163,7 @@ pub fn resolve_cli_path(cwd: &str, path: &str) -> String {
 /// The per-runtime inputs a mode supplies when it mounts a session runtime.
 #[derive(Default)]
 pub struct CliRuntimeRequest {
+    pub cwd: Option<String>,
     pub session_manager: Option<SessionManager>,
     pub session_start_event: Option<SessionStartEvent>,
     pub model: Option<maho_ai::model::Model>,
@@ -206,6 +210,7 @@ pub async fn mount_agent_session_runtime(
     settings_manager: Option<SettingsManager>,
 ) -> Result<MountedRuntime, String> {
     let CliRuntimeRequest {
+        cwd,
         session_manager,
         session_start_event,
         model,
@@ -221,8 +226,11 @@ pub async fn mount_agent_session_runtime(
         auto_title_sessions,
         session_profile,
     } = request;
+    let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
+    let mut launch_config = config.clone();
+    launch_config.cwd = cwd.clone();
     let services = create_agent_session_services(CreateAgentSessionServicesOptions {
-        cwd: config.cwd.clone(),
+        cwd,
         agent_dir: Some(config.agent_dir.clone()),
         settings_manager,
         model_runtime,
@@ -254,7 +262,7 @@ pub async fn mount_agent_session_runtime(
     )
     .await?;
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
-    let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(config, settings));
+    let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&launch_config, settings));
     created.session.set_hook_sources(Some(hooks));
     created.session.bind_extensions(maho_core::agent_session::ExtensionBindings {
         mode: Some(match config.app_mode {
@@ -273,7 +281,7 @@ pub async fn mount_agent_session_runtime(
         created.services,
         diagnostics.clone(),
         model_fallback_message.clone(),
-        Some(config.launch_profile()),
+        Some(launch_config.launch_profile()),
     );
     Ok(MountedRuntime { runtime, diagnostics, model_fallback_message, widget_requests })
 }
@@ -394,15 +402,23 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
             let thinking = profile.runtime.initial_thinking_level.clone().or_else(|| config.thinking.clone())
                 .and_then(|level| maho_ai::types::ThinkingLevel::parse(&level));
             let creation_model = profile.runtime.creation_model.clone().or_else(|| config.provider.clone().zip(config.model.clone()));
-            let model = creation_model.and_then(|(provider, model_id)| {
-                maho_core::model_resolver::resolve_cli_model(Some(provider.as_str()), Some(model_id.as_str()), thinking.map(Into::into), &model_runtime)
-                    .parsed
-                    .model
+            let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &model_runtime.get_models(None));
+            let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), false);
+            let is_continuing = !session_manager.build_context(session_manager.leaf_id()).messages.is_empty();
+            let initial = resolve_cli_initial_model(creation_model, thinking, is_continuing, &settings, &model_runtime, &scoped.scoped_models).await;
+            let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
+                reason: maho_ext_api::SessionReason::Startup,
+                initial_model_provenance: Some(provenance.to_owned()),
+                previous_session_file: None,
             });
             let request = CliRuntimeRequest {
+                cwd: Some(profile.runtime.cwd.clone()),
                 session_manager: Some(session_manager),
-                model,
-                thinking_level: thinking,
+                session_start_event,
+                model: initial.model,
+                thinking_level: thinking.or(initial.thinking_level.and_then(|level| maho_ai::types::ThinkingLevel::parse(level.as_str()))),
+                thinking_selection: initial.thinking_selection,
+                scoped_models: super::startup::session_model_entries(scoped.scoped_models)?,
                 auto_title_sessions: profile.runtime.auto_title.or(config.auto_title_sessions),
                 session_profile: maho_ext_api::ExtensionSessionProfile {
                     shared_host_enabled: true,
@@ -417,8 +433,65 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
     })
 }
 
-/// senpi's per-open session manager: an explicit `sessionPath` opens it (with the profile's cwd as
-/// the override), otherwise a fresh session carries the profile's durable id.
+/// Initial model and senpi origin forwarded to a fresh session's startup event.
+pub struct CliInitialModel {
+    pub model: Option<maho_ai::model::Model>,
+    pub thinking_level: Option<maho_ai::types::ModelThinkingLevel>,
+    pub provenance: Option<&'static str>,
+    pub thinking_selection: Option<maho_ai::types::ThinkingSelection>,
+}
+
+fn provenance_str(provenance: maho_core::model_resolver::InitialModelProvenance) -> &'static str {
+    use maho_core::model_resolver::InitialModelProvenance as P;
+    match provenance {
+        P::Cli => "cli",
+        P::Scoped => "scoped",
+        P::Settings => "settings",
+        P::ProviderDefault => "provider-default",
+        P::FirstAvailable => "first-available",
+    }
+}
+
+pub async fn resolve_cli_initial_model(
+    creation_model: Option<(String, String)>,
+    thinking: Option<maho_ai::types::ThinkingLevel>,
+    is_continuing: bool,
+    settings: &SettingsManager,
+    model_runtime: &ModelRuntime,
+    scoped: &[maho_core::model_resolver::ScopedModel],
+) -> CliInitialModel {
+    if is_continuing {
+        return CliInitialModel { model: None, thinking_level: None, provenance: None, thinking_selection: None };
+    }
+    if let Some((provider, model_id)) = creation_model {
+        let resolved = maho_core::model_resolver::resolve_cli_model(Some(provider.as_str()), Some(model_id.as_str()), thinking.map(Into::into), model_runtime);
+        return CliInitialModel { model: resolved.parsed.model, thinking_level: resolved.parsed.thinking_level, provenance: Some("cli"), thinking_selection: None };
+    }
+    let default_provider = settings.get_string("defaultProvider");
+    let default_model_id = settings.get_string("defaultModel");
+    match maho_core::model_resolver::find_initial_model(
+        maho_core::model_resolver::InitialModelOptions {
+            cli_provider: None,
+            cli_model: None,
+            scoped_models: scoped,
+            is_continuing: false,
+            default_provider: default_provider.as_deref(),
+            default_model_id: default_model_id.as_deref(),
+            model_thinking_levels: None,
+        },
+        model_runtime,
+    ).await {
+        Ok(resolved) => CliInitialModel {
+            model: resolved.parsed.model,
+            thinking_level: resolved.parsed.thinking_level,
+            provenance: Some(provenance_str(resolved.provenance)),
+            thinking_selection: resolved.parsed.thinking_selection,
+        },
+        Err(_) => CliInitialModel { model: None, thinking_level: None, provenance: None, thinking_selection: None },
+    }
+}
+
+/// senpi's per-open session manager: an explicit `sessionPath` opens it with the profile's cwd.
 pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> SessionManager {
     let identity = profile.durable_session_id.clone().map(|id| maho_core::session_manager::NewSessionOptions { id: Some(id), parent_session: None });
     match profile.session_path.as_deref() {

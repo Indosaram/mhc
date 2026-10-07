@@ -374,7 +374,7 @@ fn matches_line(pattern: &regress::Regex, line: &str) -> bool {
 /// `maho-ext-mcp`, `maho-ext-rules`, `maho-ext-tool-search`, `maho-ext-compaction`, `maho-ext-goal`
 /// and `maho-interactive` use for JS `localeCompare`. `icu_collator = "=2.3.1"` must be added to this
 /// crate by the sequential Cargo owner, exactly as those crates pin it.
-fn locale_collator() -> icu_collator::Collator {
+fn locale_collator() -> icu_collator::CollatorBorrowed<'static> {
     icu_collator::Collator::try_new(Default::default(), Default::default())
         .expect("compiled collation data is available")
 }

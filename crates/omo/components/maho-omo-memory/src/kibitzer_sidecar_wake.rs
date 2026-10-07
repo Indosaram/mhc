@@ -611,13 +611,13 @@ impl WakeTransitions {
         let handle = Arc::clone(handle);
         let warn = self.core.options.warn.clone();
         (self.spawn)(Box::pin(async move {
-            if let Err(error) = handle.dispose().await {
-                if let Some(warn) = warn {
-                    warn(&format!(
-                        "omo-senpi kibitzer sidecar dispose failed {}",
-                        json!({ "generation": generation, "error": error })
-                    ));
-                }
+            if let Err(error) = handle.dispose().await
+                && let Some(warn) = warn
+            {
+                warn(&format!(
+                    "omo-senpi kibitzer sidecar dispose failed {}",
+                    json!({ "generation": generation, "error": error })
+                ));
             }
         }));
     }

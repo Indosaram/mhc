@@ -3,6 +3,9 @@ use super::completion_contracts::ReflectionCompletionRecord;
 
 pub trait ReflectionReservationPort {
     fn read_state(&self) -> Result<ReservationState, String>;
+    fn read_state_with_wait(&self, _wait_timeout_ms: Option<u64>) -> Result<ReservationState, memory_core::reflection::ReservationError> {
+        self.read_state().map_err(memory_core::reflection::ReservationError::Lock)
+    }
     fn complete(&self, run_id: &str, outcome: memory_core::reflection::ReflectionOutcome) -> Result<CompletionResult, String>;
 }
 

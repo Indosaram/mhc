@@ -12,6 +12,7 @@ use crate::reflection::machine::{
 };
 use crate::reflection::reservation::{
     ReflectionLauncherIdentity, ReflectionReservationStore, ReflectionReservationStoreOptions,
+    ReservationError,
 };
 
 fn setup_store(temp: &TempDir) -> ReflectionReservationStore {
@@ -88,13 +89,13 @@ fn given_an_active_reflection_run_when_a_manual_run_arrives_then_manual_work_is_
     let store = setup_store(&temp);
 
     let res1 = store
-        .try_reserve(make_request(ReflectionTrigger::StepCount, "convo-1"))
+        .try_reserve(make_request(ReflectionTrigger::StepCount, "convo-1"), None)
         .expect("reserve 1");
     assert_eq!(res1.status, "active");
     assert_eq!(res1.run.launcher_pid, Some(1234));
 
     let res2 = store
-        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-2"))
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-2"), None)
         .expect("reserve 2");
     assert_eq!(res2.status, "pending");
 
@@ -115,10 +116,10 @@ fn given_active_reflection_and_queued_compaction_when_manual_reflection_arrives_
     let store = setup_store(&temp);
 
     store
-        .try_reserve(make_request(ReflectionTrigger::StepCount, "convo-1"))
+        .try_reserve(make_request(ReflectionTrigger::StepCount, "convo-1"), None)
         .expect("active");
     store
-        .try_reserve(make_request(ReflectionTrigger::Compaction, "convo-2"))
+        .try_reserve(make_request(ReflectionTrigger::Compaction, "convo-2"), None)
         .expect("pending compaction");
 
     let state1 = store.read_state().expect("read state 1");
@@ -128,7 +129,7 @@ fn given_active_reflection_and_queued_compaction_when_manual_reflection_arrives_
     );
 
     store
-        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-3"))
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-3"), None)
         .expect("pending manual");
 
     let state2 = store.read_state().expect("read state 2");
@@ -144,10 +145,10 @@ fn given_completed_active_run_when_pending_exists_then_pending_is_promoted_to_ac
     let store = setup_store(&temp);
 
     let active_res = store
-        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-1"))
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-1"), None)
         .expect("active");
     let pending_res = store
-        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-2"))
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-2"), None)
         .expect("pending");
 
     let completion = store
@@ -167,4 +168,108 @@ fn given_completed_active_run_when_pending_exists_then_pending_is_promoted_to_ac
         pending_res.run.run_id
     );
     assert!(state.pending.is_none());
+}
+
+#[test]
+fn given_dream_outcomes_when_runs_complete_then_dream_state_advances_only_for_merged_and_no_changes() {
+    // Port of reservation.test.ts "#given dream outcomes #when runs complete #then dream state
+    // advances only for merged and no_changes". A fresh store per outcome keeps the assertion
+    // independent of iteration order (the pinned test relies on failed/timed_out running first).
+    let outcomes = [
+        ReflectionOutcome::Failed,
+        ReflectionOutcome::TimedOut,
+        ReflectionOutcome::Merged,
+        ReflectionOutcome::NoChanges,
+    ];
+    for outcome in outcomes {
+        let temp = TempDir::new().expect("temp dir");
+        let store = setup_store(&temp);
+        let active = store
+            .try_reserve(make_request(ReflectionTrigger::Dream, "convo-1"), None)
+            .expect("reserve dream");
+
+        store
+            .complete(&active.run.run_id, outcome)
+            .expect("complete");
+
+        let state_path = build_identity_paths(&temp.path().join("mem-root"), "test-identity")
+            .runtime
+            .join("dream")
+            .join("state.json");
+        if outcome == ReflectionOutcome::Failed || outcome == ReflectionOutcome::TimedOut {
+            assert!(
+                !state_path.exists(),
+                "dream state must not be written for {outcome:?}"
+            );
+        } else {
+            let raw = std::fs::read_to_string(&state_path).expect("read dream state");
+            let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse dream state");
+            assert_eq!(
+                parsed,
+                serde_json::json!({
+                    "last_dream_at": "2026-03-30T12:00:00Z",
+                    "lastRunId": active.run.run_id,
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn given_a_non_dream_active_run_when_it_completes_then_no_dream_state_is_written() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    let active = store
+        .try_reserve(make_request(ReflectionTrigger::Manual, "convo-1"), None)
+        .expect("reserve manual");
+
+    store
+        .complete(&active.run.run_id, ReflectionOutcome::Merged)
+        .expect("complete");
+
+    let state_path = build_identity_paths(&temp.path().join("mem-root"), "test-identity")
+        .runtime
+        .join("dream")
+        .join("state.json");
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn given_an_aborted_signal_when_reservation_starts_then_active_and_pending_state_remain_empty() {
+    // Port of reservation.test.ts "#given an aborted signal #when reservation starts #then active
+    // and pending state remain empty".
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    let aborted = || true;
+    let aborted: &dyn Fn() -> bool = &aborted;
+
+    let error = store
+        .try_reserve(
+            make_request(ReflectionTrigger::StepCount, "convo-1"),
+            Some(aborted),
+        )
+        .expect_err("aborted reservation must fail");
+
+    assert!(matches!(error, ReservationError::Aborted));
+    let state = store.read_state().expect("read state");
+    assert!(state.active.is_none());
+    assert!(state.pending.is_none());
+}
+
+#[test]
+fn given_a_live_signal_when_reservation_runs_then_it_still_reserves() {
+    let temp = TempDir::new().expect("temp dir");
+    let store = setup_store(&temp);
+    let live = || false;
+    let live: &dyn Fn() -> bool = &live;
+
+    let result = store
+        .try_reserve(
+            make_request(ReflectionTrigger::StepCount, "convo-1"),
+            Some(live),
+        )
+        .expect("live reservation");
+
+    assert_eq!(result.status, "active");
+    assert!(store.read_state().expect("read state").active.is_some());
 }

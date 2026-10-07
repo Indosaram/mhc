@@ -26,14 +26,21 @@ pub trait PendingNudgesPort: Send + Sync {
     fn take(&self, session_id: &str) -> Vec<RecallNudge>;
 }
 
+/// The injected environment lookup (`options.env`).
+pub type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// The pending-nudge port for one identity (`options.pendingFor`).
+pub type DrainPendingFor = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
+/// The in-memory queued-nudge drain for one session (`options.drainQueued`).
+pub type DrainQueued = Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<RecallNudge> + Send + Sync>;
+
 /// `createRecallDrain` options.
 pub struct RecallDrainOptions {
     pub resolve_context: crate::prompt::PromptContextResolver,
     pub resolve_settings: Arc<dyn Fn() -> Value + Send + Sync>,
-    pub env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub env: EnvLookup,
     pub ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync>,
-    pub pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>,
-    pub drain_queued: Option<Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<RecallNudge> + Send + Sync>>,
+    pub pending_for: DrainPendingFor,
+    pub drain_queued: Option<DrainQueued>,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -87,7 +94,7 @@ impl RecallDrain {
                     if session_id.is_empty() {
                         return Ok(maho_ext_api::EventResult::None);
                     }
-                    let Some(injection) = deliver(&options, &session_id) else {
+                    let Some(injection) = deliver(&options, session_id) else {
                         return Ok(maho_ext_api::EventResult::None);
                     };
                     if let Ok(value) = serde_json::to_value(&injection.record) {
@@ -118,10 +125,10 @@ pub fn create_recall_drain(options: RecallDrainOptions) -> RecallDrain {
 struct RecallDrainOptionsView {
     resolve_context: crate::prompt::PromptContextResolver,
     resolve_settings: Arc<dyn Fn() -> Value + Send + Sync>,
-    env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    env: EnvLookup,
     ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync>,
-    pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>,
-    drain_queued: Option<Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<RecallNudge> + Send + Sync>>,
+    pending_for: DrainPendingFor,
+    drain_queued: Option<DrainQueued>,
     warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -166,7 +173,7 @@ fn deliver(options: &RecallDrainOptionsView, session_id: &str) -> Option<Deliver
 }
 
 /// A memory worker child must never receive recall hints (reflection/facts sentinels).
-fn child_sentinel(env: &Arc<dyn Fn(&str) -> Option<String> + Send + Sync>) -> bool {
+fn child_sentinel(env: &EnvLookup) -> bool {
     ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FACTS"]
         .iter()
         .any(|name| env(name).as_deref() == Some("1"))

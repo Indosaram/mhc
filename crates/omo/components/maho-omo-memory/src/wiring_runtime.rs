@@ -15,7 +15,7 @@ impl crate::trigger_wiring::ReflectionTriggerEngine for RuntimeTriggerEngine{
         Ok(result)
     }
 }
-pub struct RuntimeDreamSession<'a>{pub session_id:String,pub runtime:&'a MemoryIdentityRuntime,pub launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>}
+pub struct RuntimeDreamSession<'a>{pub session_id:String,pub runtime:&'a MemoryIdentityRuntime,pub launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>,pub aborted:&'a dyn Fn()->bool}
 #[derive(Debug)]pub enum RuntimeDreamError{Io(std::io::Error),Selector(crate::dream_selector::DreamSelectorError),Journal(memory_core::journal::store::JournalError),Reservation(memory_core::reflection::reservation::ReservationError),Launch(String)}
 impl From<std::io::Error> for RuntimeDreamError{fn from(error:std::io::Error)->Self{Self::Io(error)}}
 impl From<crate::dream_selector::DreamSelectorError> for RuntimeDreamError{fn from(error:crate::dream_selector::DreamSelectorError)->Self{Self::Selector(error)}}
@@ -24,7 +24,7 @@ impl crate::dream_trigger_fire::DreamTriggerSession for RuntimeDreamSession<'_>{
     fn conversation_id(&self)->&str{&self.session_id}
     fn paths(&self)->&memory_core::identity::layout::MemoryIdentityPaths{&self.runtime.identity.identity_paths}
     fn capture_snapshot(&mut self,conversation:&str)->Result<Option<memory_core::journal::cursor::ReflectionSnapshot>,Self::Error>{memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(self.runtime.identity.identity_paths.transcripts.join(conversation))).capture_reflection_snapshot(None).map_err(RuntimeDreamError::Journal)}
-    fn try_reserve(&mut self,request:memory_core::reflection::ReflectionRequest)->Result<memory_core::reflection::ReservationResult,Self::Error>{self.runtime.store.try_reserve(request).map_err(RuntimeDreamError::Reservation)}
+    fn try_reserve(&mut self,request:memory_core::reflection::ReflectionRequest)->Result<memory_core::reflection::ReservationResult,Self::Error>{self.runtime.store.try_reserve(request,Some(self.aborted)).map_err(RuntimeDreamError::Reservation)}
     fn launch(&mut self,run:memory_core::reflection::ReservedRun)->Result<(),Self::Error>{(self.launch)(run).map_err(RuntimeDreamError::Launch)}
 }
 impl MemoryRuntimeWiring{
@@ -41,7 +41,7 @@ impl MemoryRuntimeWiring{
         let RuntimeDreamInput{session,origin,request,settings,now,aborted,warn}=input;
         let Some(identity)=self.resolve_context(session)else{return Ok(None);};
         let policy=crate::dream_trigger_gates::resolve_dream_trigger_settings(settings,Some(&identity.identity))?;
-        let Some(mut session)=self.dream_session_by_id(session,||Ok(settings.clone()),launch)?else{return Ok(None);};
+        let Some(mut session)=self.dream_session_by_id(session,||Ok(settings.clone()),launch,aborted)?else{return Ok(None);};
         crate::dream_trigger_fire::fire_dream(&mut session,origin,&policy,request,now,aborted,&mut |error|warn(&format!("memory dream launch failed: {error:?}"))).map(Some).map_err(|error|format!("{error:?}"))
     }
     pub fn trigger_session_by_id(&mut self,session:&str,settings:impl FnOnce()->Result<serde_json::Value,String>,launch:RuntimeReflectionLaunch)->Result<Option<crate::trigger_wiring::ReflectionTriggerSession>,String>{
@@ -74,9 +74,9 @@ impl MemoryRuntimeWiring{
                 debounce_settles:Box::new(move||match settings(){Ok(settings)=>settings["agents"][&debounce_identity]["facts"]["debounce_settles"].as_u64().or_else(||settings["facts"]["debounce_settles"].as_u64()).unwrap_or(4) as usize,Err(error)=>{debounce_warn(&error);4}}),
             }
     }
-    pub fn dream_session_by_id<'a>(&'a mut self,session:&str,settings:impl FnOnce()->Result<serde_json::Value,String>,launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>)->Result<Option<RuntimeDreamSession<'a>>,String>{
+    pub fn dream_session_by_id<'a>(&'a mut self,session:&str,settings:impl FnOnce()->Result<serde_json::Value,String>,launch:&'a mut dyn FnMut(memory_core::reflection::ReservedRun)->Result<(),String>,aborted:&'a dyn Fn()->bool)->Result<Option<RuntimeDreamSession<'a>>,String>{
         let Some(identity)=self.resolve_context(session).cloned()else{return Ok(None);};let runtime=self.runtime_for(&identity,settings)?;
-        Ok(Some(RuntimeDreamSession{session_id:session.into(),runtime,launch}))
+        Ok(Some(RuntimeDreamSession{session_id:session.into(),runtime,launch,aborted}))
     }
 }
 #[cfg(test)]mod tests{

@@ -45,7 +45,7 @@ use serde_json::Value;
 use crate::kibitzer_child::KibitzerChild;
 use crate::kibitzer_contract::{
     KibitzerSidecarState, KibitzerSidecarTimers, KibitzerToolBudget, KIBITZER_RESEED_FRACTION,
-    KIBITZER_SIDECAR_MAX_TOKENS, KIBITZER_WAKE_DEADLINE_MS, KIBITZER_WAKE_TOOL_BUDGET,
+    KIBITZER_SIDECAR_MAX_TOKENS, KIBITZER_WAKE_DEADLINE_MS, KIBITZER_WAKE_TOOL_BUDGET, WarnFn,
 };
 use crate::kibitzer_events::{
     create_kibitzer_event_stream, KibitzerEvent, KibitzerEventCaps, KibitzerEventStream,
@@ -83,7 +83,7 @@ pub struct KibitzerSidecarCoreOptions {
     /// The injectable timers; the runtime's unref'd timers when absent.
     pub timers: Option<Arc<dyn KibitzerSidecarTimers>>,
     /// `options.logger?.warn`; absent means the record stays silent.
-    pub warn: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub warn: Option<WarnFn>,
 }
 
 /// Events and candidates one envelope carried; kept until the child is known to have read them.
@@ -104,6 +104,9 @@ pub struct Envelope {
     /// Confirmed through the child's own `message_end` for the user message carrying `text`.
     pub consumed: bool,
 }
+
+/// The child's own event subscriptions, drained once on disposal.
+pub type Unsubscribes = Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
 
 /// The resident child one sidecar keeps for a bound session (upstream `Child`).
 ///
@@ -128,7 +131,7 @@ pub struct Child {
     /// The child's own event subscriptions; called on disposal so a torn-down child stops reporting.
     /// `Arc`-shared so a clone taken to report OUTSIDE the record lock owns the SAME list: draining
     /// it once in `dispose_child` runs each unsubscribe exactly once, never once per snapshot.
-    pub unsubscribes: Arc<Mutex<Vec<Box<dyn FnOnce() + Send>>>>,
+    pub unsubscribes: Unsubscribes,
     /// `usage.input + usage.cacheRead` of the newest assistant message; `None` until usage is seen.
     /// `Arc`-shared: every snapshot reads the same counter.
     pub usage_tokens: Arc<Mutex<Option<i64>>>,

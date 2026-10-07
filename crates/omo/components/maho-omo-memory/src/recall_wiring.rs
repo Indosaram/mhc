@@ -16,18 +16,18 @@ use crate::context::MemoryIdentityContext;
 use crate::kibitzer_child::KibitzerChildSpawner;
 use crate::kibitzer_contract::KibitzerSidecarTimers;
 use crate::kibitzer_delivery::{
-    KibitzerDelivery, KibitzerDeliveryOptions, KibitzerIdleCoordinator, KibitzerPendingPort,
-    KibitzerSteerMessage, KibitzerToolResultGate,
+    AppendEntry, KibitzerDelivery, KibitzerDeliveryOptions, KibitzerIdleCoordinator,
+    KibitzerPendingFor, KibitzerSteerMessage, KibitzerToolResultGate,
 };
 use crate::kibitzer_events::KibitzerEventCaps;
-use crate::kibitzer_hooks::{KibitzerHookSink, default_gate_resolver, register_kibitzer_hooks};
+use crate::kibitzer_hooks::{KibitzerHookSink, KibitzerToolResultEvent, default_gate_resolver, register_kibitzer_hooks};
 use crate::kibitzer_session_resources::KibitzerSessionResources;
 use crate::kibitzer_sidecar::{KibitzerOfferInput, KibitzerSidecar, KibitzerSidecarOptions, KibitzerWakeSpawn};
 use crate::kibitzer_sidecar_admission::KibitzerBlockingExecutor;
 use crate::kibitzer_sidecar_wake::KibitzerWakeDeliver;
 use crate::kibitzer_wake_slot::{KibitzerWakeSlot, KibitzerWakeSlotOptions};
 use crate::recall_consumer::{CollectedRecallCandidates, CollectRecallCandidatesInput, collect_recall_candidates};
-use crate::recall_drain::{PendingNudgesPort, RecallDrainOptions, create_recall_drain};
+use crate::recall_drain::{DrainPendingFor, DrainQueued, EnvLookup, RecallDrainOptions, create_recall_drain};
 use crate::recall_planner_tools::{ToolArgWindow, tool_arg_texts};
 use crate::recall_session_read::{RecallSessionSnapshot, snapshot_session};
 use crate::recall_transcript_mentions::{BranchMentionIndex, MentionDocument, TranscriptMentionIndex, TranscriptMentionInput, create_transcript_mention_index};
@@ -35,17 +35,20 @@ use crate::worker::completion_renderers::ResolveEntryTheme;
 
 const CHILD_SENTINELS: [&str; 2] = ["SENPI_MEMORY_REFLECTION", "SENPI_MEMORY_FACTS"];
 
+/// Open the identity's git memory repo (`options.createRepo`).
+pub type CreateRepo = Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
+
 pub struct MemoryRecallWiringOptions {
     pub resolve_context: crate::prompt::PromptContextResolver,
     /// The resolved settings, fail-open: an `Err` falls back to defaults, never disables recall.
     pub resolve_settings: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>,
-    pub env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
-    pub create_repo: Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>,
+    pub env: EnvLookup,
+    pub create_repo: CreateRepo,
     pub ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync>,
-    pub pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>,
+    pub pending_for: KibitzerPendingFor,
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
-    pub append_entry: Arc<dyn Fn(&str, Value) + Send + Sync>,
+    pub append_entry: AppendEntry,
     pub spawn: KibitzerWakeSpawn,
     pub timers: Arc<dyn KibitzerSidecarTimers>,
     pub now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -67,8 +70,8 @@ pub struct MemoryRecallWiringOptions {
     /// The prompt drain options (renderers + `before_agent_start` injection). `resolve_settings` and
     /// `pending_for` here are the ACTUAL `recall_drain` option types.
     pub drain_resolve_settings: Arc<dyn Fn() -> Value + Send + Sync>,
-    pub drain_pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>,
-    pub drain_queued: Option<Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<memory_core::recall::RecallNudge> + Send + Sync>>,
+    pub drain_pending_for: DrainPendingFor,
+    pub drain_queued: Option<DrainQueued>,
 }
 
 pub struct MemoryRecallWiring {
@@ -263,7 +266,7 @@ impl KibitzerHookSink for MemoryRecallWiring {
         let cursor = entries.len();
         let _ = sidecar.on_branch(entries, cursor);
         let _ = sidecar.on_prompt(prompt, cursor);
-        let extra = self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).texts(session_id);
+        let extra = vec![prompt.to_owned()];
         let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else { return; };
         // `task_summary` stays None: `on_prompt` already remembered the task line from the prompt.
         let input = KibitzerOfferInput {
@@ -285,7 +288,8 @@ impl KibitzerHookSink for MemoryRecallWiring {
     fn on_tool_call(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, entries: &[Value]) {
         // Capture into the EXISTING sidecar only, and capture the branch BEFORE the tool event that
         // follows it; a tool hook after shutdown must never resurrect a terminal sidecar.
-        if let Some(sidecar) = self.existing_sidecar(session_id) {
+        let sidecar = self.existing_sidecar(session_id);
+        if let Some(sidecar) = &sidecar {
             let cursor = entries.len();
             let _ = sidecar.on_branch(entries, cursor);
             let _ = sidecar.on_tool_call(tool_name, input, cursor);
@@ -294,9 +298,24 @@ impl KibitzerHookSink for MemoryRecallWiring {
         self.delivery.mark_tool_started(session_id, tool_call_id);
         let texts = tool_arg_texts(tool_name, input);
         self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(session_id, texts);
+        let Some(sidecar) = sidecar else { return; };
+        let extra = self.tool_args.lock().unwrap_or_else(std::sync::PoisonError::into_inner).texts(session_id);
+        let Some(candidates) = self.collect_candidates(session_id, entries, &extra) else { return; };
+        let offer = KibitzerOfferInput {
+            candidates: candidates.candidates,
+            surfaced: candidates.surfaced,
+            max_items: candidates.max_items,
+            task_summary: None,
+        };
+        let warn = Arc::clone(&self.options.warn);
+        (self.options.spawn)(Box::pin(async move {
+            if let Err(error) = sidecar.offer(offer).await {
+                warn(&format!("omo-senpi kibitzer offer failed: {error}"));
+            }
+        }));
     }
 
-    fn on_tool_result(&self, session_id: &str, tool_call_id: &str, tool_name: &str, _input: &Value, content: &[maho_ext_api::ToolContent], is_error: bool, entries: &[Value], gate: &KibitzerToolResultGate) {
+    fn on_tool_result(&self, session_id: &str, event: &KibitzerToolResultEvent<'_>, entries: &[Value], gate: &KibitzerToolResultGate) {
         // Capture the result head into the EXISTING sidecar only, before delivery may steer a held
         // nudge. The branch is captured first, then the result content and its error flag.
         if let Some(sidecar) = self.existing_sidecar(session_id) {
@@ -304,14 +323,14 @@ impl KibitzerHookSink for MemoryRecallWiring {
             let _ = sidecar.on_branch(entries, cursor);
             // The real content is serialized through the shared serde contract (`ToolContent` is
             // `Serialize`); an impossible failure is reported, never replaced by a fabricated Null.
-            match serde_json::to_value(content) {
+            match serde_json::to_value(event.content) {
                 Ok(result) => {
-                    let _ = sidecar.on_tool_result(tool_name, &result, is_error, cursor);
+                    let _ = sidecar.on_tool_result(event.tool_name, &result, event.is_error, cursor);
                 }
                 Err(error) => (self.options.warn)(&format!("omo-senpi kibitzer tool result content serialization failed: {error}")),
             }
         }
-        self.delivery.mark_tool_finished(session_id, tool_call_id);
+        self.delivery.mark_tool_finished(session_id, event.tool_call_id);
         if let Some(context) = (self.options.resolve_context)(session_id) {
             self.delivery.on_tool_result(session_id, &context, gate);
         }

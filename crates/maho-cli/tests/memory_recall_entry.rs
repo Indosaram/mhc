@@ -274,7 +274,7 @@ fn seed_corpus(paths: &MemoryIdentityPaths) {
         .expect("repo init");
     let notes = paths.repo.join("notes");
     std::fs::create_dir_all(&notes).expect("notes directory");
-    std::fs::write(notes.join("qa.md"), "# Deploy gate\nThe note records the canary rollback gate and the release order.\n")
+    std::fs::write(notes.join("qa.md"), "---\ndescription: Canary rollback gate and release order\n---\n# Deploy gate\nThe note records the canary rollback gate and the release order.\n")
         .expect("corpus document");
     let author = GitCommitAuthor { agent_id: IDENTITY.to_owned(), author_name: GIT_NAME.to_owned(), author_email: Some(GIT_EMAIL.to_owned()) };
     repo.commit_write(&[CORPUS_PATH], "fixture corpus", &author).expect("corpus commit");
@@ -561,7 +561,7 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     assert!(parent.as_deref().is_some_and(|body| !body.contains(CORPUS_PATH)), "the parent request is not the envelope");
     assert!(
         children.first().is_some_and(|body| body.contains(CORPUS_PATH)),
-        "the child's first request is the rendered envelope carrying the offered corpus path; children={}",
+        "the child's first request is the rendered envelope carrying the offered corpus path; stderr={stderr_text}; children={}",
         children.len()
     );
     let continuation = children.get(1).unwrap_or_else(|| {

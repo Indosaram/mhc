@@ -1,6 +1,27 @@
 use maho_cli::cli::{args::{Args, Mode}, startup::*};
 use maho_core::project_trust::AppMode;
 #[test]
+fn cli_model_selection_reports_the_origin_the_profile_gate_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy();
+    let agent = dir.path().join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(dir.path().join("models.json")), auth_path: Some(dir.path().join("auth.json")), ..Default::default()
+    });
+    let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent.to_string_lossy(), &cwd, false);
+    let model = runtime.get_models(None).remove(0);
+    let pinned = build_session_options(
+        &Args { provider: Some(model.provider.clone()), model: Some(model.id.clone()), ..Default::default() },
+        &[], false, &runtime, &settings);
+    assert_eq!(pinned.options.initial_model_provenance, Some("cli"));
+    let scoped = [maho_core::model_resolver::ScopedModel {
+        model: model.clone(), thinking_level: None, thinking_selection: None, service_tier: None }];
+    assert_eq!(build_session_options(&Args::default(), &scoped, false, &runtime, &settings).options.initial_model_provenance, Some("scoped"));
+    assert_eq!(build_session_options(&Args::default(), &scoped, true, &runtime, &settings).options.initial_model_provenance, None);
+}
+
+#[test]
 fn mode_selection_respects_explicit_protocols_and_terminal_state() {
     assert_eq!(resolve_app_mode(&Args::default(), true, true), AppMode::Interactive);
     assert_eq!(resolve_app_mode(&Args::default(), false, true), AppMode::Print);

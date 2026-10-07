@@ -117,7 +117,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
     let paths = env.clone();
     let which = Arc::new(move |name: &str| paths.get("PATH").into_iter().flat_map(|path| std::env::split_paths(path))
         .map(|path| path.join(name)).find(|path| path.is_file()).map(|path| path.to_string_lossy().into_owned()));
-    let warn = Arc::new(move |message: &str| eprintln!("memory: {message}"));
+    let warn: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |message: &str| eprintln!("memory: {message}"));
     let recall_warn: Arc<dyn Fn(&str) + Send + Sync> = Arc::clone(&warn);
 
     let runtime = super::memory_runtime::MemoryRuntime::new(super::memory_runtime::MemoryRuntimeHost {
@@ -150,7 +150,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
     });
     // The producer-owned per-session registry: the host retrieves the SAME `KibitzerSessionResources`
     // the sidecar uses, and passes the same accessor into the wiring so both sides share it.
-    let session_resources_for = Arc::clone(&recall_ports.session_resources_for);
+    let session_resources_for = maho_omo_memory::kibitzer_session_resources::KibitzerSessionResourceRegistry::new().getter();
     let resources: super::kibitzer_child::KibitzerChildResourcesFactory = {
         let runtime = runtime.clone();
         let cwd = cwd.to_string_lossy().into_owned();
@@ -187,7 +187,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
             let mut tools = super::kibitzer_tools::create_kibitzer_host_tools(super::kibitzer_tools::KibitzerHostToolsInput {
                 cwd: cwd.clone(), session_entries, caps: tool_caps, budget,
             });
-            tools.extend(maho_omo_memory::kibitzer_member_tools(maho_omo_memory::kibitzer_member_tools::KibitzerMemberToolsInput {
+            tools.extend(maho_omo_memory::kibitzer_member_tools::kibitzer_member_tools(maho_omo_memory::kibitzer_member_tools::KibitzerMemberToolsInput {
                 session_id,
                 resolve_context: runtime.resolve_context(),
                 env: recall_env.clone(),
@@ -214,7 +214,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
         actions: Arc::clone(&recall_actions),
         resolve_context: runtime.resolve_context(),
         resolve_settings: { let this = runtime.clone(); Arc::new(move || this.settings()) },
-        env: recall_env,
+        env: Arc::new(move |key: &str| recall_env.get(key).cloned()),
         warn: Arc::clone(&recall_warn),
         caps: event_caps,
         task_summary: None,

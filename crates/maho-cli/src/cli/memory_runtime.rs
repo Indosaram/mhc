@@ -106,9 +106,10 @@ impl MemoryRuntime {
                     identity, store: worker.store.clone(), runner: Default::default(), sandbox: Default::default(),
                 };
                 let mut launch = |run| this.launch(worker.clone(), run);
-                let mut session = maho_omo_memory::wiring_runtime::RuntimeDreamSession { session_id: session, runtime: &runtime, launch: &mut launch };
+                let aborted = || signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted);
+                let mut session = maho_omo_memory::wiring_runtime::RuntimeDreamSession { session_id: session, runtime: &runtime, launch: &mut launch, aborted: &aborted };
                 maho_omo_memory::dream_trigger_fire::fire_dream(&mut session, origin, &policy, &request,
-                    &|| memory_core::support::time::now_millis() as f64, &|| signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted),
+                    &|| memory_core::support::time::now_millis() as f64, &aborted,
                     &mut |error| (this.host.warn)(&format!("memory dream launch failed: {error:?}"))).map_err(|error| format!("{error:?}"))
             })
         });
@@ -127,7 +128,11 @@ impl MemoryRuntime {
             resolve_context: {let this=this.clone();Arc::new(move |session| this.identity(session))},
             resolve_identity: Some({let this=this.clone();Arc::new(move || this.context().and_then(|context| this.identity(context.session_manager.session_id())))}),
             settings: {let this=this.clone();Arc::new(move || this.settings())},
-            bust_prompt_cache: {let prompt=self.prompt.clone();Arc::new(move || prompt.cache.clear())},
+            bust_prompt_cache: {let prompt=self.prompt.clone();Arc::new(move || {
+                use maho_omo_memory::projection_pin::ProjectionPins;
+                prompt.cache.clear();
+                prompt.pins.request_refresh();
+            })},
             config_path: Some({let cwd=self.host.cwd.clone();let agent_dir=self.host.agent_dir.clone();Arc::new(move || {
                 cwd.ancestors().flat_map(|ancestor| [ancestor.join(".omo/omo.json"), ancestor.join(".omo/omo.jsonc")]).find(|path| path.is_file())
                     .or_else(|| [agent_dir.join("settings.json"), agent_dir.join("settings.jsonc")].into_iter().find(|path| path.is_file()))
@@ -223,13 +228,13 @@ impl MemoryRuntime {
     /// tool. `since` is the count of entries the caller has already seen.
     pub fn session_entries_since(&self, since: i64) -> Vec<Value> {
         let Some(context) = self.context() else { return Vec::new(); };
-        context.session_manager.entries().into_iter().skip(since.max(0) as usize).collect()
+        context.session_manager.get_entries().into_iter().skip(since.max(0) as usize).map(|entry| entry.data).collect()
     }
 
     /// Returns the bound parent's raw entries; the member tool applies its cursor and caps.
     pub fn session_entries_for(&self, session_id: &str) -> Vec<Value> {
         self.contexts.lock().unwrap_or_else(PoisonError::into_inner).get(session_id)
-            .map(|context| context.session_manager.entries().into_iter().collect())
+            .map(|context| context.session_manager.get_entries().into_iter().map(|entry| entry.data).collect())
             .unwrap_or_default()
     }
 
@@ -516,7 +521,8 @@ impl MemoryRuntime {
         };
         let gate = |dir: &Path, run: &str, operation: &mut dyn FnMut() -> Result<Option<worker::run_finalization_types::ReservationRunResult>, String>| terminal_gate(dir, run, operation);
         let recovery = worker::run_reconciliation::NativeReflectionRecovery { context: &context, terminal_gate: &gate };
-        worker::run_reconciliation::reconcile_reflection_runs(&context, &recovery).await.map(|_| ())
+        let sweep_logger = worker::run_reconciliation_sweep::ReflectionSweepWarnLogger(self.host.warn.as_ref());
+        worker::run_reconciliation::reconcile_reflection_runs_with_options(&context, &recovery, Some(&sweep_logger), true).await.map(|_| ())
     }
 }
 

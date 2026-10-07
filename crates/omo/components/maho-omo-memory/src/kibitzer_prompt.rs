@@ -96,7 +96,7 @@ fn render_envelope(tag: &str, input: &KibitzerEnvelopeInput) -> String {
     let window = input.event_window.unwrap_or(KIBITZER_EVENT_WINDOW);
     // `[...input.events].sort((left, right) => left.cursor - right.cursor)`: ascending parent cursor.
     let mut ordered: Vec<&KibitzerEvent> = input.events.iter().collect();
-    ordered.sort_by(|left, right| left.cursor.cmp(&right.cursor));
+    ordered.sort_by_key(|left| left.cursor);
     // `ordered.length <= window ? ordered : ordered.slice(ordered.length - window)`: newest window.
     let kept: &[&KibitzerEvent] = if ordered.len() <= window { &ordered } else { &ordered[ordered.len() - window..] };
 

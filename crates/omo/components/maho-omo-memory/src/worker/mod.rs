@@ -50,6 +50,8 @@ pub mod spawn_supervisor;
 pub mod spawn;
 pub mod runner_completion_publication;
 pub mod run_reconciliation;
+pub mod run_reconciliation_sweep;
+pub mod run_temporaries;
 pub mod create_run_worktree;
 pub mod facts_child_launch;
 pub mod entry_renderers;

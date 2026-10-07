@@ -13,7 +13,7 @@ use std::task::Poll;
 
 use memory_core::recall::RecallNudge;
 
-use crate::kibitzer_child::{JudgeSettle, KibitzerChildObservation};
+use crate::kibitzer_child::{JudgeSettle, KibitzerChildObservation, KibitzerChildSpawnFuture};
 use crate::kibitzer_contract::{KibitzerWakeRequest, KibitzerWakeStatus};
 
 type NudgeListener = Arc<dyn Fn(RecallNudge) + Send + Sync>;
@@ -122,7 +122,7 @@ struct RecordingSpawner {
 }
 
 impl KibitzerChildSpawner for RecordingSpawner {
-    fn spawn<'a>(&'a self, input: KibitzerChildSpawnInput) -> Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, crate::kibitzer_sidecar_model::KibitzerSidecarStartError>> + Send + 'a>> {
+    fn spawn<'a>(&'a self, input: KibitzerChildSpawnInput) -> KibitzerChildSpawnFuture<'a> {
         self.last_generation.store(input.generation as usize, Ordering::SeqCst);
         let child = Arc::clone(&self.child);
         Box::pin(async move { Ok(child as Arc<dyn KibitzerChild>) })
@@ -146,7 +146,7 @@ impl ManualSpawn {
             let next = { self.queue.lock().unwrap().pop() };
             match next {
                 Some(future) => {
-                    let _ = poll_ready(future);
+                    poll_ready(future);
                 }
                 None => break,
             }
@@ -158,7 +158,7 @@ impl ManualSpawn {
 fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
     use std::task::{Context as TaskContext, Waker};
     let waker = Waker::noop();
-    let mut cx = TaskContext::from_waker(&waker);
+    let mut cx = TaskContext::from_waker(waker);
     future.poll(&mut cx)
 }
 
@@ -271,7 +271,7 @@ fn given_a_running_turn_when_steered_then_the_accumulator_is_preserved() {
     assert_eq!(steered.nudges[0].hint, "before steer");
     assert!(poll_once(first.as_mut()).is_pending(), "the steer's settlement is its own one-shot");
     child.release_settle(0);
-    let _ = poll_ready(first);
+    poll_ready(first);
 }
 
 #[test]
@@ -348,10 +348,10 @@ fn given_a_live_turn_when_only_non_start_observations_arrive_then_no_charge_unti
     });
     assert_eq!(child.aborted.load(Ordering::SeqCst), 0);
     child.fire_tool(0, KibitzerChildObservation::MessageEnd {
-        message: maho_ext_api::AgentMessage::Llm(maho_ext_api::Message::User(maho_ext_api::UserMessage {
+        message: Box::new(maho_ext_api::AgentMessage::Llm(maho_ext_api::Message::User(maho_ext_api::UserMessage {
             content: maho_ext_api::UserContent::Text("hello".into()),
             timestamp: 0,
-        })),
+        }))),
     });
     assert_eq!(child.aborted.load(Ordering::SeqCst), 0);
 

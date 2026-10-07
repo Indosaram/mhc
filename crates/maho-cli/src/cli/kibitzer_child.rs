@@ -56,6 +56,9 @@ pub struct KibitzerChildResources {
 pub type KibitzerChildResourcesFactory =
     Arc<dyn Fn(&KibitzerChildSpawnInput) -> KibitzerChildResources + Send + Sync>;
 
+pub type SessionModelRegistry =
+    Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> + Send + Sync>;
+
 type ChildRegistry = Arc<Mutex<BTreeMap<String, Arc<CliKibitzerChild>>>>;
 
 /// The CLI's concrete `KibitzerChildSpawner`.
@@ -70,7 +73,7 @@ pub struct CliKibitzerChildSpawner {
     category: Option<String>,
     /// The session's registry snapshot, resolved at child start (per-session, never a stale mount
     /// capture). `None` -> the resolver returns `RegistrySnapshotUnavailable`.
-    registry_for: Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> + Send + Sync>,
+    registry_for: SessionModelRegistry,
     resources: KibitzerChildResourcesFactory,
     children: ChildRegistry,
     inflight: Mutex<BTreeSet<String>>,
@@ -80,13 +83,13 @@ impl CliKibitzerChildSpawner {
     pub fn new(
         executor: tokio::runtime::Handle,
         factory: maho_core::sdk::HostRuntimeFactory,
-        cwd: String,
-        agent_dir: String,
+        paths: (String, String),
         config: super::memory_runtime::LiveMemoryConfig,
         category: Option<String>,
-        registry_for: Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> + Send + Sync>,
+        registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
     ) -> Arc<Self> {
+        let (cwd, agent_dir) = paths;
         Arc::new(Self { executor, factory, cwd, agent_dir, config, category, registry_for, resources, children: Arc::new(Mutex::new(BTreeMap::new())), inflight: Mutex::new(BTreeSet::new()) })
     }
 
@@ -99,7 +102,7 @@ impl CliKibitzerChildSpawner {
         agent_dir: String,
         config: super::memory_runtime::LiveMemoryConfig,
         category: Option<String>,
-        registry_for: Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> + Send + Sync>,
+        registry_for: SessionModelRegistry,
         resources: KibitzerChildResourcesFactory,
     ) -> Arc<Self> {
         let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
@@ -112,7 +115,7 @@ impl CliKibitzerChildSpawner {
             model_runtime,
             extension_factories: Vec::new(),
         };
-        Self::new(executor, factory, cwd, agent_dir, config, category, registry_for, resources)
+        Self::new(executor, factory, (cwd, agent_dir), config, category, registry_for, resources)
     }
 
     /// Publish nudges accepted this turn to the resident child's `subscribe_nudges` listeners.
@@ -286,7 +289,7 @@ impl CliKibitzerChild {
                     terminate: result_terminate(result),
                     refusal: result_refusal(result),
                 }),
-                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageEnd { message }) => Some(KibitzerChildObservation::MessageEnd { message: message.clone() }),
+                maho_ext_api::AgentSessionEvent::Agent(maho_ext_api::AgentEvent::MessageEnd { message }) => Some(KibitzerChildObservation::MessageEnd { message: Box::new(message.clone()) }),
                 maho_ext_api::AgentSessionEvent::AgentSettled => {
                     // The FINAL boundary: `publish` captures the current logical turn and the finished
                     // generation, releases, then publishes - all under the settlement lock.
@@ -421,10 +424,10 @@ fn result_refusal(result: &serde_json::Value) -> Option<String> {
             continue;
         }
         let Some(text) = block.get("text").and_then(serde_json::Value::as_str) else { continue };
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
-            if let Some(code) = parsed.get("rejected").and_then(serde_json::Value::as_str) {
-                return Some(code.to_owned());
-            }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text)
+            && let Some(code) = parsed.get("rejected").and_then(serde_json::Value::as_str)
+        {
+            return Some(code.to_owned());
         }
     }
     None

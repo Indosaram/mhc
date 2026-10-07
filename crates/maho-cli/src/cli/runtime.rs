@@ -88,6 +88,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let created = host_factory.create(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(cwd_text.to_string()), agent_dir: Some(agent_dir.clone()), loaded_extensions: Some(extensions),
         settings_manager: Some(settings), session_manager: Some(manager), model: options.options.model,
+        initial_model_provenance: options.options.initial_model_provenance.map(str::to_owned),
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
         thinking_selection: options.options.thinking_selection,
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
