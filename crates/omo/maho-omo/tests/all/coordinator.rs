@@ -3,7 +3,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ext_api::{DeliverAs, IdleInjection, IdleInjectionCoordinator, IdleInjectionSource, JsonValue};
-use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDetail, IdleInjectionMessage, TurnBarrier, RETIRED_ERROR_MESSAGE, WAKE_CUSTOM_TYPE};
+use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDetail, IdleInjectionMessage, TurnBarrier, WAKE_CUSTOM_TYPE};
+use maho_omo::coordinator::RETIRED_ERROR_MESSAGE;
 use crate::support::{DeliveryLog, injection, manual_coordinator, passive_injection};
 
 fn inline_pair() -> (DeferredScheduler, DeferredScheduler) {

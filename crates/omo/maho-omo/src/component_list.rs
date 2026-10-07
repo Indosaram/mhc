@@ -65,7 +65,9 @@ impl OmoComponentOptions {
     }
 
     fn skills_root_string(&self) -> String {
-        self.skills_root.to_string_lossy().into_owned()
+        let mut root = self.skills_root.to_string_lossy().into_owned();
+        if !root.ends_with(std::path::MAIN_SEPARATOR) { root.push(std::path::MAIN_SEPARATOR); }
+        root
     }
 }
 

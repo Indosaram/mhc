@@ -3,9 +3,9 @@ mod support;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use maho_ext_api::{Extension, McpExposure, McpLifecycle, McpServerDeclaration, McpTransport, RegisteredMcpServerDeclaration};
+use maho_ext_api::{Extension, McpServerDeclaration, RegisteredMcpServerDeclaration};
 use maho_ext_mcp::config::{load_mcp_config, merge_extension_mcp_servers, validate_mcp_server_declaration};
-use maho_ext_mcp::config_schema::{LoadMcpConfigOptions, McpServerSource, McpServerState, ResolvedMcpConfig, ServerConfigWire};
+use maho_ext_mcp::config_schema::{Exposure, Lifecycle, LoadMcpConfigOptions, McpServerSource, McpServerState, ResolvedMcpConfig, ServerConfigWire, Transport};
 use maho_omo_builtin_mcps::{BuiltinMcpsComponent, CONTEXT7_API_KEY_ENV, CONTEXT7_SERVER_NAME, GREP_APP_SERVER_NAME};
 
 fn declarations(api_key: Option<&str>) -> Vec<RegisteredMcpServerDeclaration> {
@@ -59,9 +59,9 @@ fn given_no_mcp_json_when_the_declarations_merge_then_both_servers_are_present_a
         assert_eq!(server.source, McpServerSource::Extension);
         assert_eq!(server.state, McpServerState::Enabled);
         let resolved = server.config.as_ref().expect("resolved config");
-        assert_eq!(resolved.transport, Some(McpTransport::Http));
-        assert_eq!(resolved.lifecycle, Some(McpLifecycle::Lazy));
-        assert_eq!(resolved.exposure, Some(McpExposure::Search));
+        assert_eq!(resolved.transport, Some(Transport::Http));
+        assert_eq!(resolved.lifecycle, Some(Lifecycle::Lazy));
+        assert_eq!(resolved.exposure, Some(Exposure::Search));
     }
     assert!(config.diagnostics.is_empty(), "{:?}", config.diagnostics);
 }
