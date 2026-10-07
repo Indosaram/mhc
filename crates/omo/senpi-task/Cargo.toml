@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 maho-delegate-core.workspace = true
-maho-isolation-core = { path = "../../isolation-core" }
+maho-isolation-core.workspace = true
 maho-omo-config-core.workspace = true
 maho-model-core.workspace = true
 maho-team-core.workspace = true
