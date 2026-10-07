@@ -8,11 +8,12 @@ impl Extension for OnboardingComponent {
         api.register_flag("onboard",FlagType::Boolean{default:Some(false)},Some("Force the onboarding flow on startup.".into()));
         let runtime=api.runtime.clone(); let state_dir=self.state_dir.clone(); let skills_root=self.skills_root.clone();
         let consumed=Arc::new(Mutex::new(false));
-        api.on(EventKind::SessionStart,Arc::new(move |event,_| {
+        api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {
+            let has_ui=ctx.has_ui;
             let runtime=runtime.clone(); let state_dir=state_dir.clone(); let skills_root=skills_root.clone(); let consumed=Arc::clone(&consumed);
             Box::pin(async move {
                 let ExtensionEvent::SessionStart(event)=event else { return Ok(EventResult::None); };
-                if event.reason != SessionReason::Startup || runtime.get_flag("omo-senpi-onboarding-disabled")==Some(FlagValue::Boolean(true)) { return Ok(EventResult::None); }
+                if event.reason != SessionReason::Startup || !has_ui || runtime.get_flag("omo-senpi-onboarding-disabled")==Some(FlagValue::Boolean(true)) { return Ok(EventResult::None); }
                 let force=runtime.get_flag("onboard")==Some(FlagValue::Boolean(true));
                 if force && *consumed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) { return Ok(EventResult::None); }
                 if !force && !claim_onboarding(&state_dir) { return Ok(EventResult::None); }
