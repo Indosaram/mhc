@@ -119,6 +119,12 @@ pub struct BeforeToolCallResult {
     /// Hint that the agent should stop after the current tool batch when this call is blocked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
+    /// Native carrier for senpi's in-place mutation of the validated args object.
+    /// The pinned result type has no args field: agent-loop.ts:1110/1116/1154 shares
+    /// one object with the hook. Owned native arguments need this explicit replacement.
+    /// `None` preserves the validated arguments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
 }
 
 /// Partial override returned from `afterToolCall`. Merge semantics are field-by-field.

@@ -416,6 +416,8 @@ struct AgentSessionState {
     extension_ui_context: Option<Arc<dyn ExtensionUi>>,
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
+    /// Tracks startup dispatch so RPC attach can install UI without repeating the lifecycle.
+    extension_lifecycle_started: bool,
     message_revision: u64,
     assistant_generation: u64,
     last_persisted_assistant: Option<(String, u64)>,
@@ -1568,6 +1570,7 @@ impl AgentSession {
             extension_ui_context: None,
             extension_abort_handler: None,
             extension_error_listener: None,
+            extension_lifecycle_started: false,
             message_revision: 0,
             assistant_generation: 0,
             last_persisted_assistant: None,
@@ -4806,7 +4809,7 @@ impl AgentSession {
         &self,
         tool_call: &maho_agent::types::AgentToolCall,
         input: Value,
-    ) -> Option<maho_ext_api::ToolCallEventResult> {
+    ) -> Option<(maho_ext_api::ToolCallEventResult, Value)> {
         let mut guard = self.extension_runner.lock().await.clone();
         let runner = guard.as_mut()?;
         if !runner.has_handlers(maho_ext_api::EventKind::ToolCall) {
@@ -4818,10 +4821,13 @@ impl AgentSession {
             input,
         };
         match runner.emit_tool_call(&mut event).await {
-            Ok(result) => result,
-            Err(error) => Some(maho_ext_api::ToolCallEventResult {
-                block: Some(true), reason: Some(error.message), terminate: None,
-            }),
+            Ok(result) => Some((result.unwrap_or_default(), event.input)),
+            Err(error) => Some((
+                maho_ext_api::ToolCallEventResult {
+                    block: Some(true), reason: Some(error.message), terminate: None,
+                },
+                event.input,
+            )),
         }
     }
 
@@ -4981,6 +4987,7 @@ impl AgentSession {
             argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
         }).collect()));
         *self.extension_runner.lock().await = Some(runner);
+        self.apply_extension_bindings().await;
         if self.state().uses_default_stream_function {
             let weak = Arc::downgrade(&self.inner);
             self.agent.set_stream_function(Arc::new(move |model, context, options| {
@@ -5068,8 +5075,9 @@ impl AgentSession {
             Box::pin(async move {
                 let inner = weak.upgrade()?;
                 let session = AgentSession { inner };
-                session.preflight_tool_call(&context.tool_call, context.args).await.map(|result|
-                    maho_agent::types::BeforeToolCallResult { block: result.block, reason: result.reason, terminate: result.terminate })
+                let original = context.args.clone();
+                session.preflight_tool_call(&context.tool_call, context.args).await.map(|(result, input)|
+                    maho_agent::types::BeforeToolCallResult { block: result.block, reason: result.reason, terminate: result.terminate, args: (input != original).then_some(input) })
             })
         })));
         let weak = Arc::downgrade(&self.inner);
@@ -5112,8 +5120,7 @@ impl AgentSession {
 
     /// The three command groups `get_commands` merges, each still classified by its real source.
     /// Upstream `buildRpcCommandsForSession` reads the same three: the extension runner's registered
-    /// commands, the prompt templates, and the skills. Exposed so the RPC `get_commands` handler can
-    /// classify each group by source instead of re-deriving it from the merged, prefixed names.
+    /// commands, the prompt templates, and raw skills. Each consumer applies its own skill prefix.
     pub fn command_groups(&self) -> (Vec<maho_ext_api::SlashCommandInfo>, Vec<maho_ext_api::SlashCommandInfo>, Vec<maho_ext_api::SlashCommandInfo>) {
         let extensions = {
             let state = self.state();
@@ -5137,7 +5144,7 @@ impl AgentSession {
             source_info: Some(source_info(template.source_info)),
         }).collect();
         let skills = self.state().skills.clone().into_iter().map(|skill| maho_ext_api::SlashCommandInfo {
-            name: format!("skill:{}", skill.name), description: Some(skill.description), argument_hint: None,
+            name: skill.name, description: Some(skill.description), argument_hint: None,
             source_info: Some(source_info(skill.source_info)),
         }).collect();
         (extensions, templates, skills)
@@ -5146,7 +5153,10 @@ impl AgentSession {
     pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
         let (mut commands, templates, skills) = self.command_groups();
         commands.extend(templates);
-        commands.extend(skills);
+        commands.extend(skills.into_iter().map(|mut skill| {
+            skill.name = format!("skill:{}", skill.name);
+            skill
+        }));
         commands
     }
 
@@ -5281,6 +5291,25 @@ impl AgentSession {
         }
     }
 
+    async fn apply_extension_bindings(&self) {
+        let (ui, mode, has_ui) = {
+            let state = self.state();
+            (state.extension_ui_context.clone(), state.extension_mode, state.extension_ui_context.is_some())
+        };
+        if let Some(ui) = ui
+            && let Err(error) = self.rebind_extension_ui(ui).await
+        {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error });
+        }
+        let error = {
+            let mut runner = self.extension_runner.lock().await;
+            runner.as_mut().and_then(|runner| runner.set_extension_mode(mode, has_ui).err())
+        };
+        if let Some(error) = error {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+        }
+    }
+
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
         let binding_work = self.work_barrier.begin();
         let pending = Arc::new(Mutex::new(Vec::new()));
@@ -5293,10 +5322,12 @@ impl AgentSession {
             if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
         }
+        self.apply_extension_bindings().await;
         let event = self.state().session_start_event.clone();
         let reason = if event.reason == maho_ext_api::SessionReason::Reload { maho_ext_api::SessionReason::Reload }
             else { maho_ext_api::SessionReason::Startup };
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(event)).await;
+        self.state().extension_lifecycle_started = true;
         let defaults = self.state().default_tool_names.clone();
         if let Some(defaults) = defaults {
             let active = self.get_active_tool_names().into_iter().filter(|name| {
@@ -5314,6 +5345,24 @@ impl AgentSession {
             // Sender drop signals admission or an early exit, including cancellation.
             match receiver.await { Ok(()) | Err(_) => {} }
         }
+    }
+
+    /// Whether the first extension lifecycle dispatch has completed.
+    pub fn has_started_extension_lifecycle(&self) -> bool {
+        self.state().extension_lifecycle_started
+    }
+
+    /// Update an already-started session's connection context without repeating SessionStart.
+    /// First binds and explicit Reload dispatches continue to use `bind_extensions`.
+    pub async fn rebind_extension_context(&self, bindings: ExtensionBindings) {
+        {
+            let mut state = self.state();
+            if let Some(ui) = bindings.ui_context { state.extension_ui_context = Some(ui); }
+            if let Some(mode) = bindings.mode { state.extension_mode = mode; }
+            if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
+            if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+        }
+        self.apply_extension_bindings().await;
     }
 
     async fn extend_resources_from_extensions(&self, reason: maho_ext_api::SessionReason) {
@@ -8340,6 +8389,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatched_context_reflects_bound_ui_and_mode_and_survives_runner_recreation() {
+        let session = test_session();
+        let seen = Arc::new(Mutex::new(Vec::<(ExtensionMode, bool)>::new()));
+        let observed = seen.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:binding-contract>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, context| {
+            lock(&observed).push((context.mode, context.has_ui));
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        let retained = extension.clone();
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session));
+        runner.set_runtime_factory(Arc::new(move |context| {
+            let extension = retained.clone();
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)) })
+        }));
+        session.set_extension_runner(runner).await;
+        session.bind_extensions(ExtensionBindings { mode: Some(ExtensionMode::Print), ..Default::default() }).await;
+        session.bind_extensions(ExtensionBindings { mode: Some(ExtensionMode::Json), ..Default::default() }).await;
+        session.bind_extensions(ExtensionBindings { ui_context: Some(Arc::new(TestExtensionUi)), mode: Some(ExtensionMode::Rpc), ..Default::default() }).await;
+        session.bind_extensions(ExtensionBindings { ui_context: Some(Arc::new(TestExtensionUi)), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+        session.reload().await.expect("reload re-applies the bound mode and UI");
+        assert_eq!(*lock(&seen), vec![
+            (ExtensionMode::Print, false),
+            (ExtensionMode::Json, false),
+            (ExtensionMode::Rpc, true),
+            (ExtensionMode::Tui, true),
+            (ExtensionMode::Tui, true),
+        ]);
+    }
+
+    #[tokio::test]
     async fn binding_waits_for_startup_user_message_admission() {
         let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("welcome", Default::default())], 0);
         let captured = session.clone();
@@ -8404,6 +8484,48 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("cleanup provider");
         result.expect("binding must finish without provider completion");
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("welcome"));
+    }
+
+    #[tokio::test]
+    async fn attach_rebind_installs_context_without_repeating_startup() {
+        let session = test_session();
+        let dispatches = Arc::new(Mutex::new(Vec::<(ExtensionMode, bool, maho_ext_api::SessionReason)>::new()));
+        let observed = dispatches.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:attach-rebind>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |event, context| {
+            if let maho_ext_api::ExtensionEvent::SessionStart(event) = event {
+                lock(&observed).push((context.mode, context.has_ui, event.reason));
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        let retained = extension.clone();
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session));
+        runner.set_runtime_factory(Arc::new(move |context| {
+            let extension = retained.clone();
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)) })
+        }));
+        session.set_extension_runner(runner).await;
+
+        assert!(!session.has_started_extension_lifecycle());
+        session.bind_extensions(ExtensionBindings { mode: Some(ExtensionMode::Rpc), ..Default::default() }).await;
+        assert_eq!(*lock(&dispatches), vec![(ExtensionMode::Rpc, false, maho_ext_api::SessionReason::Startup)]);
+        assert!(session.has_started_extension_lifecycle());
+
+        session.rebind_extension_context(ExtensionBindings {
+            ui_context: Some(Arc::new(TestExtensionUi)), mode: Some(ExtensionMode::Rpc), ..Default::default()
+        }).await;
+        assert_eq!(lock(&dispatches).len(), 1);
+        assert_eq!(session.state().extension_mode, ExtensionMode::Rpc);
+        assert!(session.state().extension_ui_context.is_some());
+
+        session.reload().await.expect("reload re-applies the bound mode and UI");
+        assert_eq!(
+            *lock(&dispatches),
+            vec![
+                (ExtensionMode::Rpc, false, maho_ext_api::SessionReason::Startup),
+                (ExtensionMode::Rpc, true, maho_ext_api::SessionReason::Reload),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -11344,6 +11466,19 @@ mod tests {
         session.state().extension_command_catalog = Some(Arc::new(move || catalog.lock().unwrap().clone()));
         live.lock().unwrap().push(maho_ext_api::SlashCommandInfo { name: "late".into(), description: None, argument_hint: None, source_info: None });
         assert_eq!(session.get_commands().iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["late", "review", "skill:guide"]);
+    }
+
+    #[test]
+    fn command_groups_keep_skill_names_raw_for_rpc_consumers() {
+        let session = test_session();
+        session.state().skills.push(crate::skills::Skill {
+            name: "guide".into(), description: "guide skill".into(), file_path: "/tmp/guide/SKILL.md".into(), base_dir: "/tmp/guide".into(),
+            source_info: crate::source_info::create_synthetic_source_info("/tmp/guide/SKILL.md", Default::default()),
+            disable_model_invocation: true,
+        });
+        let (_, _, skills) = session.command_groups();
+        assert_eq!(skills.iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["guide"]);
+        assert_eq!(session.get_commands().iter().map(|command| command.name.as_str()).collect::<Vec<_>>(), ["skill:guide"]);
     }
 
     #[tokio::test]
