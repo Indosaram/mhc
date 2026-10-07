@@ -3,6 +3,31 @@ use serde_json::{Value,json};
 use sha2::{Digest,Sha256};
 use fancy_regex::Regex;
 pub fn fingerprint_secret(secret:&str)->String {format!("{:x}",Sha256::digest(secret))[..8].into()}
+fn sensitive_query_key(key:&str)->bool {let lower=key.to_lowercase();lower.contains("key") || lower.contains("token") || lower.contains("secret")}
+/// Pinned `http-client.ts::redactUrl`: query params whose key contains `key`, `token` or
+/// `secret` become `***REDACTED***`; a value that is not a URL is returned unchanged.
+pub fn redact_url(value:&str)->String {
+    let Ok(mut url)=url::Url::parse(value) else{return value.to_owned();};
+    let pairs=url.query_pairs().map(|(key,value)|(key.into_owned(),value.into_owned())).collect::<Vec<_>>();
+    if pairs.is_empty(){return url.to_string();}
+    let mut serializer=url::form_urlencoded::Serializer::new(String::new());
+    for (key,value) in &pairs {serializer.append_pair(key,if sensitive_query_key(key){"***REDACTED***"}else{value.as_str()});}
+    url.set_query(Some(&serializer.finish()));
+    url.to_string()
+}
+/// Pinned `redactCleanupErrorMessage` URL pass: every `http(s)://...` token in the text is run
+/// through `redact_url`.
+pub fn redact_urls_in_text(text:&str)->String {
+    let mut output=String::new();let mut index=0;
+    while index<text.len() {
+        let rest=&text[index..];
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            let end=rest.find(|character:char|character.is_whitespace() || matches!(character,'"'|'\''|'<'|'>'|')'|'}'|']')).unwrap_or(rest.len());
+            output.push_str(&redact_url(&rest[..end]));index+=end;
+        }else if let Some(character)=rest.chars().next() {output.push(character);index+=character.len_utf8();}else{break;}
+    }
+    output
+}
 fn redaction(secret:&str,secrets:&mut BTreeSet<String>)->String {
     if !secret.is_empty() && !secret.starts_with("<redacted:"){secrets.insert(secret.into());}
     format!("<redacted:{}>",fingerprint_secret(secret))

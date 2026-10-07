@@ -29,15 +29,38 @@ pub struct McpOAuthProvider {
     pub logger:Option<std::sync::Arc<std::sync::Mutex<crate::log::McpLogger>>>,
     pub on_redirect:Option<McpRedirectHandler>,
     expected_state: Option<String>, pub last_authorization_url: Option<url::Url>,
+    /// The pinned `parseHttpsUrl` gate (`discovery.ts`): `true` in production; the deterministic
+    /// loopback HTTP fixtures opt out explicitly and never as a production default.
+    pub require_https: bool,
+    /// Scopes a pinned step-up merged in (`oauth-handler.ts::handleStepUpIfNeeded` -> `mergeScopes`).
+    pub escalated_scopes: std::sync::Mutex<Vec<String>>,
 }
 #[derive(Clone, Copy)]
 pub enum CredentialScope { All, Client, Tokens, Verifier, Discovery }
 impl McpOAuthProvider {
-    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,on_redirect:None,expected_state:None,last_authorization_url:None } }
+    pub fn new(store: McpTokenStore) -> Self { Self { store,redirect_url:None,scopes:None,client_id:None,client_metadata_url:None,logger:None,on_redirect:None,expected_state:None,last_authorization_url:None,require_https:true,escalated_scopes:std::sync::Mutex::new(Vec::new()) } }
+    /// The DCR request body: exactly the pinned `ClientRegistrationRequest` shape. The pin sends
+    /// `client_name: PLUGIN_NAME` ("oh-my-openagent") and no `scope` field.
     pub fn client_metadata(&self) -> Value {
-        let mut value = json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"senpi"});
-        if let Some(scopes) = &self.scopes { value["scope"] = Value::String(scopes.join(" ")); }
-        value
+        json!({"redirect_uris":self.redirect_url.iter().collect::<Vec<_>>(),"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","client_name":"oh-my-openagent"})
+    }
+    /// The RFC 8707 resource indicator: the server URL normalised exactly as the pinned
+    /// `discoverOAuthServerMetadata` normalises it (`new URL(serverUrl).toString()`).
+    pub fn resource_indicator(&self) -> String {
+        url::Url::parse(&self.store.server_url).map_or_else(|_|self.store.server_url.clone(),|url|url.to_string())
+    }
+    /// Pinned `oauth-handler.ts::handleStepUpIfNeeded` -> `mergeScopes`: the challenge scopes are
+    /// unioned into the requested scope set so the next authorization asks for them.
+    pub fn escalate_scopes(&self, required: &[String]) -> Vec<String> {
+        let mut escalated = self.escalated_scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *escalated = super::step_up::merge_scopes(&escalated, required);
+        escalated.clone()
+    }
+    /// The scopes an authorization request should ask for: the configured scopes plus any scopes a
+    /// pinned step-up merged in.
+    pub fn effective_scopes(&self) -> Vec<String> {
+        let escalated = self.escalated_scopes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::step_up::merge_scopes(self.scopes.as_deref().unwrap_or(&[][..]), &escalated)
     }
     pub fn state(&mut self) -> Result<String, getrandom::Error> {
         let mut bytes = [0u8;16]; getrandom::fill(&mut bytes)?;
@@ -49,8 +72,6 @@ impl McpOAuthProvider {
         Ok(self.store.read()?.and_then(|r| r.client_info))
     }
     pub fn save_client_information(&self, info: Value) -> Result<(),TokenStoreError> { self.store.update(|r| { let mut next = r.unwrap_or_default(); next.client_info=Some(info); Some(next) })?; Ok(()) }
-    pub fn save_discovery_state(&self, state: Value) -> Result<(),TokenStoreError> { self.store.update(|r| { let mut next = r.unwrap_or_default(); next.discovery_state=Some(state); Some(next) })?; Ok(()) }
-    pub fn discovery_state(&self) -> Result<Option<Value>,TokenStoreError> { Ok(self.store.read()?.and_then(|r| r.discovery_state)) }
     pub fn tokens(&self, now: f64) -> Result<Option<OAuthTokens>,TokenStoreError> { Ok(stored_auth_to_tokens(self.store.read()?.as_ref(),now)) }
     pub fn save_tokens(&self, tokens: &OAuthTokens, now: f64) -> Result<(),TokenStoreError> {
         self.store.update(|r| Some(merge_tokens_into_stored_auth(r,tokens,&self.store.server_url,now)))?;
@@ -69,8 +90,11 @@ impl McpOAuthProvider {
     pub fn validate_resource_url(server_url: &str, resource: Option<&str>) -> Result<url::Url,url::ParseError> { url::Url::parse(resource.unwrap_or(server_url)) }
     pub fn invalidate_credentials(&self, scope: CredentialScope) -> Result<(),TokenStoreError> {
         if matches!(scope,CredentialScope::All) { return self.store.clear(); }
+        // Pinned `discovery.ts::resetDiscoveryCache`: discovery invalidation clears the
+        // process-local cache; the pin never persists discovery state.
+        if matches!(scope,CredentialScope::Discovery) { super::oauth::reset_discovery_cache(); return Ok(()); }
         self.store.update(|current| current.map(|mut next| {
-            match scope { CredentialScope::All => (), CredentialScope::Tokens => { next.access_token=None; next.refresh_token=None; next.expires_at=None; }, CredentialScope::Client => next.client_info=None, CredentialScope::Verifier => next.code_verifier=None, CredentialScope::Discovery => next.discovery_state=None }
+            match scope { CredentialScope::All => (), CredentialScope::Tokens => { next.access_token=None; next.refresh_token=None; next.expires_at=None; }, CredentialScope::Client => next.client_info=None, CredentialScope::Verifier => next.code_verifier=None, CredentialScope::Discovery => () }
             next
         }))?; Ok(())
     }

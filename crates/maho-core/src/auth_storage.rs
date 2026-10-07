@@ -447,6 +447,12 @@ impl AuthStorage {
         self.runtime_overrides.remove(provider);
     }
 
+    /// Whether a non-persistent runtime API key is set for the provider. senpi's
+    /// `getProviderAuthStatus` reports `source: "runtime"` for exactly this case.
+    pub fn has_runtime_api_key(&self, provider: &str) -> bool {
+        self.runtime_overrides.contains_key(provider)
+    }
+
     pub fn get(&self, provider: &str) -> Option<Value> {
         read_by_provider_id(&self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner), provider)
     }

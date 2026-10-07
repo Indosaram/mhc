@@ -108,6 +108,9 @@ impl CliRuntimeConfiguration {
         paths.iter().map(|path| resolve_cli_path(&self.cwd, path)).collect()
     }
 
+    // RESERVED (assembly, sequential): the input/resources seam for the component owners - an owner
+    // that ships resources (skills, prompt templates, extensions) declares them here once its source
+    // receipt lands. Do not integrate from a summary.
     pub fn resolved_extension_paths(&self) -> Vec<String> {
         self.resolve_cli_paths(&self.extensions)
     }
@@ -170,6 +173,7 @@ pub struct CliRuntimeRequest {
     pub custom_tools: Vec<maho_ext_api::ToolDefinition>,
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     pub auto_title_sessions: Option<bool>,
+    pub session_profile: maho_ext_api::ExtensionSessionProfile,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -215,6 +219,7 @@ pub async fn mount_agent_session_runtime(
         custom_tools,
         extension_flag_values,
         auto_title_sessions,
+        session_profile,
     } = request;
     let services = create_agent_session_services(CreateAgentSessionServicesOptions {
         cwd: config.cwd.clone(),
@@ -242,6 +247,7 @@ pub async fn mount_agent_session_runtime(
             custom_tools,
             auto_title_sessions,
             extension_factories,
+            session_profile,
             defer_extension_start: true,
             ..Default::default()
         },
@@ -319,4 +325,104 @@ pub fn create_cli_runtime_factory(config: CliRuntimeConfiguration) -> CliSession
             mount_agent_session_runtime(&config, mount_request, model_runtime, settings_manager).await
         })
     })
+}
+
+/// The shared host's process-local core, built from the CLI configuration and the host's cwd
+/// (senpi `createHostCore` + the `runMultiSessionHost` argument object).
+pub fn create_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Option<&str>) -> std::sync::Arc<maho_rpc::multi_session_host::HostCore> {
+    // One model runtime for every session this host opens (senpi `hostModelRuntime`, senpi#1844):
+    // the sessions share one agent dir, so a per-open rebuild would pay the same catalog load once
+    // per open instead of once per host.
+    let model_runtime = host_model_runtime(&config);
+    let create_runtime = host_runtime_factory(config.clone(), model_runtime);
+    // A socket host answers each connection through its own writer, so its fallback writer is a
+    // sink; the stdio host answers on stdout (senpi `runSocketHost` vs `runStdioHost`).
+    let writer = match listen {
+        None | Some("stdio://") => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::stdout())),
+        Some(_) => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::sink())),
+    };
+    std::sync::Arc::new(maho_rpc::multi_session_host::HostCore::new(
+        maho_rpc::multi_session_host::HostCoreOptions {
+            agent_dir: PathBuf::from(&config.agent_dir),
+            cwd: cwd.to_owned(),
+            create_runtime,
+            capabilities: maho_rpc::custom_capability::parse_client_capabilities(
+                maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES", &maho_core::config::current_env()).as_deref(),
+            ),
+            close_grace_ms: host_close_grace_ms(),
+        },
+        writer,
+    ))
+}
+
+/// senpi's shared host model runtime (`hostModelRuntime`): one catalog and one auth store behind
+/// every in-process session the host opens.
+fn host_model_runtime(config: &CliRuntimeConfiguration) -> ModelRuntime {
+    ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+        models_path: Some(Path::new(&config.agent_dir).join("models.json")),
+        auth_path: Some(Path::new(&config.agent_dir).join("auth.json")),
+        ..Default::default()
+    })
+}
+
+/// senpi `closeGraceMs`: the configured grace, else ten seconds.
+fn host_close_grace_ms() -> u64 {
+    maho_rpc::host_lifecycle::parse_idle_exit_ms(std::env::var(maho_rpc::multi_session_host::RPC_CLOSE_GRACE_MS_ENV).ok().as_deref())
+        .map_or(10_000, |milliseconds| if milliseconds.is_finite() && milliseconds > 0.0 { milliseconds as u64 } else { 10_000 })
+}
+
+/// Serve the shared host (senpi `runMultiSessionHost`).
+pub async fn serve_multi_session_host(
+    core: std::sync::Arc<maho_rpc::multi_session_host::HostCore>,
+    listen: Option<String>,
+) -> std::io::Result<()> {
+    maho_rpc::multi_session_host::run_multi_session_host(core, listen).await
+}
+
+/// senpi `createCliRuntimeFactory`'s `HostRuntimeFactory` adapter: one fully mounted session runtime
+/// per `open_session`, built by the same CLI mount path every other mode uses (the seam
+/// `maho_rpc::multi_session_host::HostRuntimeFactory` exists for).
+pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: ModelRuntime) -> maho_rpc::multi_session_host::HostRuntimeFactory {
+    std::sync::Arc::new(move |profile: maho_rpc::session_registry::RpcSessionLaunchProfile| {
+        let config = config.clone();
+        let model_runtime = model_runtime.clone();
+        Box::pin(async move {
+            let session_manager = open_profile_session_manager(&config, &profile);
+            // The profile's per-session startup choices feed the same resolver as
+            // `--provider/--model/--thinking`: an open that names none keeps the CLI's own
+            // (senpi `runtimeParsed` inside `createCliRuntimeFactory`).
+            let thinking = profile.runtime.initial_thinking_level.clone().or_else(|| config.thinking.clone())
+                .and_then(|level| maho_ai::types::ThinkingLevel::parse(&level));
+            let creation_model = profile.runtime.creation_model.clone().or_else(|| config.provider.clone().zip(config.model.clone()));
+            let model = creation_model.and_then(|(provider, model_id)| {
+                maho_core::model_resolver::resolve_cli_model(Some(provider.as_str()), Some(model_id.as_str()), thinking.map(Into::into), &model_runtime)
+                    .parsed
+                    .model
+            });
+            let request = CliRuntimeRequest {
+                session_manager: Some(session_manager),
+                model,
+                thinking_level: thinking,
+                auto_title_sessions: profile.runtime.auto_title.or(config.auto_title_sessions),
+                session_profile: maho_ext_api::ExtensionSessionProfile {
+                    shared_host_enabled: true,
+                    session_kind: profile.session_kind.unwrap_or_default(),
+                    session_context: profile.session_context.clone().unwrap_or_default(),
+                },
+                ..Default::default()
+            };
+            let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), None).await?;
+            Ok(mounted.runtime)
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<AgentSessionRuntime, String>> + Send>>
+    })
+}
+
+/// senpi's per-open session manager: an explicit `sessionPath` opens it (with the profile's cwd as
+/// the override), otherwise a fresh session carries the profile's durable id.
+pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> SessionManager {
+    let identity = profile.durable_session_id.clone().map(|id| maho_core::session_manager::NewSessionOptions { id: Some(id), parent_session: None });
+    match profile.session_path.as_deref() {
+        Some(path) => SessionManager::open(path, config.session_dir.as_deref(), Some(profile.runtime.cwd.as_str()), identity),
+        None => SessionManager::create(&profile.runtime.cwd, config.session_dir.as_deref(), identity),
+    }
 }

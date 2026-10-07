@@ -575,7 +575,17 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
         Box::pin(async move { Ok(self.registry.get_api_key_for_provider(provider).await) })
     }
     fn get_provider_auth<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
-        Box::pin(async move { self.registry.model_runtime.get_auth(provider).await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.message)) })
+        self.get_provider_auth_for_slot(provider, None)
+    }
+    fn get_provider_auth_for_slot<'a>(&'a self, provider: &'a str, slot_name: Option<&'a str>) -> maho_ext_api::ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        Box::pin(async move {
+            self.registry.get_provider_auth_for_slot(provider, slot_name).await
+                .map_err(|error| maho_ext_api::ExtensionFailure::classified(error.message, Some("ModelsError".into()), Some(error.code.as_str().to_owned())))
+        })
+    }
+    fn get_provider_auth_status(&self, provider: &str) -> maho_ext_api::ProviderAuthStatus {
+        let status = self.registry.get_provider_auth_status(provider);
+        maho_ext_api::ProviderAuthStatus { configured: status.configured, source: status.source, label: status.label }
     }
     fn get_stored_credential_type(&self, provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, maho_ext_api::ExtensionFailure> {
         Ok(self.registry.auth_storage.get(provider).as_ref().and_then(crate::auth_storage::credential_kind).map(|kind| match kind {
@@ -587,13 +597,16 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
         Ok(self.registry.stream_simple(model, context, options))
     }
     fn get_api_key_and_headers<'a>(&'a self, model: &'a Model) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ResolvedRequestAuth> {
+        self.get_api_key_and_headers_for_slot(model, None)
+    }
+    fn get_api_key_and_headers_for_slot<'a>(&'a self, model: &'a Model, slot_name: Option<&'a str>) -> maho_ext_api::ExtensionFuture<'a, maho_ext_api::ResolvedRequestAuth> {
         Box::pin(async move {
-            match self.registry.get_api_key_and_headers(model).await {
+            match self.registry.get_api_key_and_headers_for_slot(model, slot_name).await {
                 crate::model_registry::ResolvedRequestAuth::Resolved { auth, compatibility, env } => Ok(maho_ext_api::ResolvedRequestAuth {
                     auth, extra_body: compatibility.extra_body, upstream_model_id: compatibility.upstream_model_id,
                     service_tier: compatibility.service_tier, env,
                 }),
-                crate::model_registry::ResolvedRequestAuth::Failed { error } => Err(maho_ext_api::ExtensionFailure::new(error)),
+                crate::model_registry::ResolvedRequestAuth::Failed { error, class, code } => Err(maho_ext_api::ExtensionFailure::classified(error, class, code)),
             }
         })
     }
@@ -5097,8 +5110,12 @@ impl AgentSession {
         })));
     }
 
-    pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
-        let mut commands = {
+    /// The three command groups `get_commands` merges, each still classified by its real source.
+    /// Upstream `buildRpcCommandsForSession` reads the same three: the extension runner's registered
+    /// commands, the prompt templates, and the skills. Exposed so the RPC `get_commands` handler can
+    /// classify each group by source instead of re-deriving it from the merged, prefixed names.
+    pub fn command_groups(&self) -> (Vec<maho_ext_api::SlashCommandInfo>, Vec<maho_ext_api::SlashCommandInfo>, Vec<maho_ext_api::SlashCommandInfo>) {
+        let extensions = {
             let state = self.state();
             state.extension_command_catalog.as_ref().map_or_else(|| state.extension_commands.clone(), |catalog| catalog())
         };
@@ -5115,14 +5132,21 @@ impl AgentSession {
                 crate::source_info::SourceOrigin::TopLevel => maho_ext_api::SourceOrigin::TopLevel,
             },
         };
-        commands.extend(self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
+        let templates = self.prompt_templates().into_iter().map(|template| maho_ext_api::SlashCommandInfo {
             name: template.name, description: Some(template.description), argument_hint: template.argument_hint,
             source_info: Some(source_info(template.source_info)),
-        }));
-        commands.extend(self.state().skills.clone().into_iter().map(|skill| maho_ext_api::SlashCommandInfo {
+        }).collect();
+        let skills = self.state().skills.clone().into_iter().map(|skill| maho_ext_api::SlashCommandInfo {
             name: format!("skill:{}", skill.name), description: Some(skill.description), argument_hint: None,
             source_info: Some(source_info(skill.source_info)),
-        }));
+        }).collect();
+        (extensions, templates, skills)
+    }
+
+    pub fn get_commands(&self) -> Vec<maho_ext_api::SlashCommandInfo> {
+        let (mut commands, templates, skills) = self.command_groups();
+        commands.extend(templates);
+        commands.extend(skills);
         commands
     }
 
@@ -5223,9 +5247,16 @@ impl AgentSession {
         self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
         let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
+        // Atomically take a late User join AND close the boundary BEFORE the final settled emission, so
+        // a join arriving after this point is not swallowed (source cleared -> normal abort path) and
+        // the captured join is delivered once, before AgentSettled. `AgentSessionEvent::AgentSettled`
+        // is thus the cycle's last terminal for the captured join.
+        let late_user_abort = self.state().abort_provenance.take_late_join_and_close();
+        if late_user_abort {
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
+            self.emit(AgentSessionEvent::SessionAbort);
+        }
         self.emit(AgentSessionEvent::AgentSettled);
-        self.emit_late_user_abort().await;
-        self.state().abort_provenance.close_agent_end_boundary();
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
         drop(settling);
         for action in batch.actions { action(); }

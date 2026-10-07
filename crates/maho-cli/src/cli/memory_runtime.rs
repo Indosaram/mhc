@@ -57,6 +57,8 @@ pub struct MemoryRuntime {
     pub wiring: Arc<tokio::sync::Mutex<MemoryWiring>>,
     host: MemoryRuntimeHost,
     current: Mutex<Option<ExtensionContext>>,
+    /// Retained contexts bind member tools to an explicit session and are pruned on shutdown.
+    contexts: Mutex<BTreeMap<String, ExtensionContext>>,
     workers: Mutex<BTreeMap<String, Arc<IdentityWorker>>>,
     ledgers: Mutex<BTreeMap<String, Arc<Mutex<maho_omo_memory::context::MemoryPendingLedger>>>>,
     write_sessions: Mutex<BTreeMap<String, Arc<Mutex<maho_omo_memory::wiring_memory_write::MemoryWriteSession>>>>,
@@ -80,6 +82,11 @@ impl MemoryRuntime {
                 Box::pin(async { Ok(maho_ext_api::EventResult::None) })
             }));
         }
+        let this = self.clone();
+        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, context| {
+            this.contexts.lock().unwrap_or_else(PoisonError::into_inner).remove(context.session_manager.session_id());
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
         let this = self.clone(); let resolve_session = Arc::new(move |context: &ExtensionContext| {
             this.capture_context(context);
             this.identity(context.session_manager.session_id()).map(|identity| (context.session_manager.session_id().into(), identity.identity))
@@ -189,19 +196,48 @@ impl MemoryRuntime {
         let wiring = Arc::new(tokio::sync::Mutex::new(create_memory_wiring(MemoryWiringOptions {
             runtime: MemoryRuntimeWiring::default(), skills_usage: skills.clone(),
         })));
-        Ok(Arc::new(Self { component, wiring, host, skills, current: Mutex::new(None), workers: Mutex::new(BTreeMap::new()),
+        Ok(Arc::new(Self { component, wiring, host, skills, current: Mutex::new(None), contexts: Mutex::new(BTreeMap::new()), workers: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(BTreeMap::new()), write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())), health_notices: Mutex::new(BTreeSet::new()),
             prompt: Arc::new(Default::default()), advisory_notified: Mutex::new(BTreeSet::new()), static_options: Mutex::new(None) }))
     }
 
     pub fn capture_context(&self, context: &ExtensionContext) {
+        self.contexts.lock().unwrap_or_else(PoisonError::into_inner).insert(context.session_manager.session_id().to_owned(), context.clone());
         *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(context.clone());
     }
 
     pub fn settings(&self) -> Result<Value, String> {
         let config = (self.host.load_config)()?;
         maho_omo_memory::reflection_settings::resolve_memory_settings(config.get("memory"))
+    }
+
+    /// The prompt-context resolver the recall wiring and prompt injection share: a session id to its
+    /// bound memory identity, or `None` when the session has no enabled memory binding.
+    pub fn resolve_context(self: &Arc<Self>) -> maho_omo_memory::prompt::PromptContextResolver {
+        let this = self.clone();
+        Arc::new(move |session: &str| this.identity(session))
+    }
+
+    /// The bound parent session's entries after a cursor, for the member-scoped `session_entries`
+    /// tool. `since` is the count of entries the caller has already seen.
+    pub fn session_entries_since(&self, since: i64) -> Vec<Value> {
+        let Some(context) = self.context() else { return Vec::new(); };
+        context.session_manager.entries().into_iter().skip(since.max(0) as usize).collect()
+    }
+
+    /// Returns the bound parent's raw entries; the member tool applies its cursor and caps.
+    pub fn session_entries_for(&self, session_id: &str) -> Vec<Value> {
+        self.contexts.lock().unwrap_or_else(PoisonError::into_inner).get(session_id)
+            .map(|context| context.session_manager.entries().into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// The bound session's model-registry snapshot, from the SAME retained `ExtensionContext` the
+    /// member tools read (captured on the hook pipeline, pruned on shutdown). `None` means no context
+    /// was captured for this session yet - the resolver reports that as `RegistrySnapshotUnavailable`.
+    pub fn session_registry_for(&self, session_id: &str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> {
+        self.contexts.lock().unwrap_or_else(PoisonError::into_inner).get(session_id).map(|context| context.model_registry.clone())
     }
 
     /// Config-driven people gate for `/palace`, mirroring upstream `resolvePalacePeople`

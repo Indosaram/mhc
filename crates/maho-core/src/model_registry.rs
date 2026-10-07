@@ -9,7 +9,7 @@ use std::{path::PathBuf,sync::Arc};
 #[derive(Clone)]
 pub struct ModelRegistry {pub model_runtime:ModelRuntime,pub auth_storage:Arc<AuthStorage>}
 #[derive(Debug)]
-pub enum ResolvedRequestAuth {Resolved {auth:maho_ai::models::ProviderAuthResult,compatibility:crate::provider_composer::CompatibilityRequestConfig,env:Option<maho_ai::types::ProviderEnv>},Failed {error:String}}
+pub enum ResolvedRequestAuth {Resolved {auth:maho_ai::models::ProviderAuthResult,compatibility:crate::provider_composer::CompatibilityRequestConfig,env:Option<maho_ai::types::ProviderEnv>},Failed {error:String,class:Option<String>,code:Option<String>}}
 impl ModelRegistry {
     pub fn new(runtime:ModelRuntime) -> Self {Self {auth_storage:runtime.credentials.clone(),model_runtime:runtime}}
     pub fn create(auth_storage:Arc<AuthStorage>,models_path:PathBuf) -> Self {Self::new(ModelRuntime::create_sync(CreateModelRuntimeOptions {credentials:Some(auth_storage),models_path:Some(models_path),..Default::default()}))}
@@ -28,10 +28,20 @@ impl ModelRegistry {
     pub fn unregister_provider(&mut self,id:&str) {self.model_runtime.unregister_provider(id)}
     pub fn get_upstream_model_id(&self,model:&Model)->Option<String>{self.model_runtime.get_compatibility_request_config(model).upstream_model_id}
     pub fn get_service_tier(&self,model:&Model)->Option<maho_ai::types::ServiceTierPreference>{self.model_runtime.get_compatibility_request_config(model).service_tier}
-    pub async fn get_api_key_and_headers(&self,model:&Model)->ResolvedRequestAuth {
+    /// senpi `runtime.getAuth(provider, { slotName })`: resolve the named credential-pool slot, or
+    /// the flat/default credential when `slot_name` is `None`.
+    pub async fn get_provider_auth_for_slot(&self,provider:&str,slot_name:Option<&str>)->Result<Option<maho_ai::models::AuthResolution>,maho_ai::models::ModelsError> {
+        self.model_runtime.get_auth_with_overrides(provider,&maho_ai::models::AuthResolutionOverrides {slot_name:slot_name.map(str::to_owned),..Default::default()}).await
+    }
+    pub async fn get_api_key_and_headers(&self,model:&Model)->ResolvedRequestAuth {self.get_api_key_and_headers_for_slot(model,None).await}
+    /// senpi `runtime.getAuth(model, { slotName })`: the slot is threaded into the provider probe so
+    /// the model's own headers resolve against the same account. Only the provider probe yields a
+    /// `ModelsError` (classified `ModelsError/<code>`); the two synthesized failures below carry no
+    /// machine class, so `class` stays `None` rather than being fabricated from the message text.
+    pub async fn get_api_key_and_headers_for_slot(&self,model:&Model,slot_name:Option<&str>)->ResolvedRequestAuth {
         let mut compatibility=self.model_runtime.get_compatibility_request_config(model);
-        let resolution=match self.model_runtime.get_auth(&model.provider).await{Ok(auth)=>auth,Err(error)=>return ResolvedRequestAuth::Failed{error:error.message}};
-        if resolution.is_none()&&compatibility.auth_header{return ResolvedRequestAuth::Failed{error:format!("No API key found for \"{}\"",model.provider)};}
+        let resolution=match self.get_provider_auth_for_slot(&model.provider,slot_name).await{Ok(auth)=>auth,Err(error)=>return ResolvedRequestAuth::Failed{error:error.message,class:Some("ModelsError".into()),code:Some(error.code.as_str().to_owned())}};
+        if resolution.is_none()&&compatibility.auth_header{return ResolvedRequestAuth::Failed{error:format!("No API key found for \"{}\"",model.provider),class:None,code:None};}
         if resolution.is_none() {
             compatibility.upstream_model_id = None;
             compatibility.service_tier = None;
@@ -39,7 +49,7 @@ impl ModelRegistry {
         let mut auth=resolution.as_ref().map(|r|r.auth.clone()).unwrap_or_default();
         let env=resolution.as_ref().and_then(|r|r.env.clone());let header_env=env.as_ref().map(|v|v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
         match self.model_runtime.get_compatibility_request_headers(model,header_env.as_ref()).await {
-            Ok(Some(headers))=>auth.headers.get_or_insert_with(Default::default).extend(headers),Ok(None)=>{},Err(error)=>return ResolvedRequestAuth::Failed{error},
+            Ok(Some(headers))=>auth.headers.get_or_insert_with(Default::default).extend(headers),Ok(None)=>{},Err(error)=>return ResolvedRequestAuth::Failed{error,class:None,code:None},
         }
         ResolvedRequestAuth::Resolved{auth,compatibility,env}
     }

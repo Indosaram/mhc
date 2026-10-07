@@ -9,11 +9,29 @@ pub enum McpTransportSpec {
     Http {url:url::Url,headers:BTreeMap<String,String>},
 }
 type Reply=oneshot::Sender<Result<Value,McpError>>;
+/// The service-owned interactive step-up seam (pinned `handleStepUpIfNeeded` -> `provider.login()`
+/// plus `withOperationRetry` -> `forceReconnect`). The transport cannot perform either half itself,
+/// so the host binds this trait to run the real re-login and reconnect instead of retrying stale
+/// credentials.
+pub type AuthStepUpLoginFuture=std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),McpError>>+Send>>;
+pub type AuthStepUpReconnectFuture=std::pin::Pin<Box<dyn std::future::Future<Output=Result<Arc<McpClient>,McpError>>+Send>>;
+pub trait McpAuthStepUp:Send+Sync {
+    /// Pinned `oauth-handler.ts::handleStepUpIfNeeded`: merge the challenge scopes into the
+    /// requested scopes, drop the cached provider and run the interactive `provider.login()`.
+    fn login(&self,required_scopes:Vec<String>)->AuthStepUpLoginFuture;
+    /// Pinned `manager.ts::withOperationRetry` -> `forceReconnect(state, clientKey)`: reconnect and
+    /// hand back the renewed client so the retried operation runs on the fresh connection.
+    fn reconnect(&self)->AuthStepUpReconnectFuture;
+}
+/// Pinned `manager.ts::withOperationRetry` `maxRetries`: the bounded attempt budget shared by the
+/// step-up re-login/reconnect and the post-request refresh.
+pub const MCP_OPERATION_MAX_ATTEMPTS:usize=3;
 pub struct McpClient {
     server:String,io:ClientTransport,pending:Arc<Mutex<BTreeMap<u64,Reply>>>,next_id:AtomicU64,
     pub notifications:broadcast::Sender<Value>,pub closed:tokio::sync::watch::Sender<bool>,pub root_pid:Option<u32>,
     pub server_capabilities:tokio::sync::RwLock<Value>,pub server_info:tokio::sync::RwLock<Value>,pub instructions:tokio::sync::RwLock<Option<String>>,
     auth:tokio::sync::RwLock<Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>>,
+    step_up:tokio::sync::RwLock<Option<Arc<dyn McpAuthStepUp>>>,
     http_stream:Mutex<Option<JoinHandle<()>>>,
     pub resource_subscriptions:tokio::sync::Mutex<std::collections::BTreeSet<String>>,
 }
@@ -33,6 +51,12 @@ fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool,first_line:&mut bool)->Op
 fn failure(server:&str,kind:McpErrorKind,message:impl Into<String>,phase:&str)->McpError {
     let mut error=McpError::new(kind,message);error.server_name=Some(server.into());error.phase=Some(phase.into());error
 }
+/// The pinned `manager.ts::withOperationRetry` per-operation attempt flags (`refreshAttempted`).
+#[derive(Default)]
+struct AuthRetry { step_up_attempted: bool, refresh_attempted: bool }
+/// The pinned `withOperationRetry` outcome of a `WWW-Authenticate` challenge: retry on the same
+/// client, retry on the client the step-up reconnect produced, or fail.
+enum ChallengeRetry { None, Retry, Reconnected(Arc<McpClient>) }
 impl McpClient {
     pub async fn materialize_stdio(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         let McpTransportSpec::Stdio {command,args,cwd,env}=spec else{return Err(failure(server,McpErrorKind::Connect,"HTTP transport not materialized","create"));};
@@ -65,7 +89,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(input),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(input),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         match spec {
@@ -74,7 +98,7 @@ impl McpClient {
                 let client=reqwest::Client::builder().build().map_err(|e|failure(server,McpErrorKind::Connect,e.to_string(),"create"))?;
                 let (notifications,_)=broadcast::channel(256);
                 let (closed,_)=tokio::sync::watch::channel(false);
-                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+                Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Http {client,url:url.clone(),headers:headers.clone(),session:tokio::sync::RwLock::new(None)},pending:Arc::new(Mutex::new(BTreeMap::new())),next_id:AtomicU64::new(1),notifications,closed,root_pid:None,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
             }
         }
     }
@@ -107,13 +131,14 @@ impl McpClient {
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);result
     }
     pub async fn set_auth(&self,refresh:Arc<crate::auth::oauth_refresh::McpRefreshManager>) {*self.auth.write().await=Some(refresh);}
+    pub async fn set_step_up(&self,step_up:Arc<dyn McpAuthStepUp>) {*self.step_up.write().await=Some(step_up);}
     async fn send(&self,value:&Value)->Result<(),McpError> {
         let ClientTransport::Stdio {input,..}=&self.io else{self.http_send(value).await?;return Ok(());};
         let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;
         input.write_all(text.as_bytes()).await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
         input.flush().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))
     }
-    async fn http_send(&self,value:&Value)->Result<Value,McpError> {
+    async fn http_request(&self,value:&Value)->Result<reqwest::Response,McpError> {
         let ClientTransport::Http {client,url,headers,session}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
         let mut request=client.post(url.clone()).header("accept","application/json, text/event-stream").header("mcp-protocol-version","2025-11-25").json(value);
         for (name,value) in headers {request=request.header(name,value);}
@@ -123,19 +148,69 @@ impl McpClient {
             request=request.bearer_auth(tokens.access_token);
         }
         if let Some(id)=session.read().await.as_ref(){request=request.header("mcp-session-id",id);}
-        let mut response=request.send().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
-        if !response.status().is_success() {
-            let status=response.status().as_u16();let mut error=failure(&self.server,if status==401{McpErrorKind::Auth}else{McpErrorKind::Protocol},format!("HTTP {status}"),"request");error.cause=Some(Box::new(json!({"status":status})));return Err(error);
+        request.send().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,crate::log::redact_urls_in_text(&e.to_string()),"request"))
+    }
+    /// Pinned `oauth-handler.ts` post-request handling: a 403 with a parseable
+    /// `WWW-Authenticate` challenge escalates the scopes (`handleStepUpIfNeeded` -> `mergeScopes`),
+    /// and a 401/403 then refreshes once (`handlePostRequestAuthError`). Each is attempted at most
+    /// once per request, mirroring the pinned `refreshAttempted` set and bounded retry.
+    ///
+    /// The pinned `handleStepUpIfNeeded` finishes a step-up with `provider.login()` — an
+    /// interactive browser authorization — and `manager.ts::withOperationRetry` then calls
+    /// `forceReconnect`. When a `McpAuthStepUp` handler is bound (the production service path) this
+    /// transport performs that real re-login and reconnect and retries on the renewed client. When
+    /// none is bound (a bare transport, e.g. the deterministic transport fixtures) it keeps the
+    /// pinned scope escalation and the post-request refresh/retry on the same client.
+    async fn retry_after_challenge(&self,status:u16,challenge:Option<&str>,retry:&mut AuthRetry)->ChallengeRetry {
+        if !retry.step_up_attempted && let Some(step_up)=crate::auth::step_up::is_step_up_required(status,challenge) {
+            retry.step_up_attempted=true;
+            let refresh=self.auth.read().await.clone();
+            if let Some(refresh)=&refresh {refresh.escalate_scopes(&step_up.required_scopes);}
+            let handler=self.step_up.read().await.clone();
+            if let Some(handler)=handler {
+                // Pinned `handleStepUpIfNeeded` -> `provider.login()` then `forceReconnect`.
+                if handler.login(step_up.required_scopes.clone()).await.is_ok() && let Ok(next)=handler.reconnect().await {return ChallengeRetry::Reconnected(next);}
+            }else if refresh.is_some() {return ChallengeRetry::Retry;}
         }
+        if !retry.refresh_attempted && matches!(status,401|403) && let Some(refresh)=self.auth.read().await.clone() {
+            retry.refresh_attempted=true;
+            if refresh.force_refresh().await.is_ok() {return ChallengeRetry::Retry;}
+        }
+        ChallengeRetry::None
+    }
+    fn http_failure(&self,status:u16,challenge:Option<&str>)->McpError {
+        let mut error=failure(&self.server,if status==401{McpErrorKind::Auth}else{McpErrorKind::Protocol},format!("HTTP {status}"),"request");
+        let mut cause=json!({"status":status});
+        if let Some(challenge)=challenge {cause["wwwAuthenticate"]=json!(challenge);}
+        if let Some(scopes)=challenge.and_then(crate::auth::step_up::parse_www_authenticate).map(|info|info.required_scopes) {cause["requiredScopes"]=json!(scopes);}
+        error.cause=Some(Box::new(cause));error
+    }
+    async fn http_send(&self,value:&Value)->Result<Value,McpError> {self.http_send_with_attempts(value,MCP_OPERATION_MAX_ATTEMPTS).await}
+    async fn http_send_with_attempts(&self,value:&Value,attempts:usize)->Result<Value,McpError> {
+        let ClientTransport::Http {session,..}=&self.io else{return Err(failure(&self.server,McpErrorKind::Protocol,"not HTTP","request"));};
+        let mut retry=AuthRetry::default();
+        let mut response=loop {
+            let response=self.http_request(value).await?;
+            if response.status().is_success() {break response;}
+            let status=response.status().as_u16();
+            let challenge=response.headers().get(reqwest::header::WWW_AUTHENTICATE).and_then(|value|value.to_str().ok()).map(str::to_owned);
+            match self.retry_after_challenge(status,challenge.as_deref(),&mut retry).await {
+                ChallengeRetry::Retry=>continue,
+                // Pinned `withOperationRetry` retries the operation on the client `forceReconnect`
+                // produced; the shared attempt budget bounds the recursion like the pinned `maxRetries`.
+                ChallengeRetry::Reconnected(next)=>if attempts>1 {return next.http_send_with_attempts(value,attempts-1).await;}else{return Err(self.http_failure(status,challenge.as_deref()));},
+                ChallengeRetry::None=>return Err(self.http_failure(status,challenge.as_deref())),
+            }
+        };
         if let Some(id)=response.headers().get("mcp-session-id").and_then(|v|v.to_str().ok()) {*session.write().await=Some(id.into());}
         if response.status()==reqwest::StatusCode::ACCEPTED || response.status()==reqwest::StatusCode::NO_CONTENT {return Ok(Value::Null);}
         let is_sse=response.headers().get("content-type").and_then(|v|v.to_str().ok()).is_some_and(|s|s.starts_with("text/event-stream"));
         if !is_sse {
-            let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,e.to_string(),"request"))?;
+            let reply=response.json::<Value>().await.map_err(|e|failure(&self.server,McpErrorKind::Protocol,crate::log::redact_urls_in_text(&e.to_string()),"request"))?;
             return self.http_reply(reply,value.get("id"));
         }
         let mut buffer=Vec::new();let mut data=String::new();let mut event_type=String::new();let mut skip_lf=false;let mut first_line=true;
-        while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))? {
+        while let Some(chunk)=response.chunk().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,crate::log::redact_urls_in_text(&e.to_string()),"request"))? {
             buffer.extend_from_slice(&chunk);
             while let Some(line)=take_sse_line(&mut buffer,&mut skip_lf,&mut first_line) {
                 if let Some(part)=line.strip_prefix("data:"){if !data.is_empty(){data.push('\n');}data.push_str(part.strip_prefix(' ').unwrap_or(part));}

@@ -27,15 +27,20 @@ use crate::scheduler::{DeferredScheduler, DeferredTask, TurnBarrier};
 
 pub const WAKE_CUSTOM_TYPE: &str = "omo-senpi:wake";
 pub const DETAIL_SEPARATOR: &str = "\n\n";
+/// Upstream `IdleInjectionRetiredError` default message: handed to every still-queued injection's
+/// `on_delivery_failed` when the coordinator is retired on session shutdown.
+pub const RETIRED_ERROR_MESSAGE: &str = "idle-injection coordinator retired on session shutdown; injection not delivered";
 
 fn source_rank(source: IdleInjectionSource) -> u8 {
     match source {
         IdleInjectionSource::TaskCompletion => 0,
+        IdleInjectionSource::WorkpoolAggregate => 0,
         IdleInjectionSource::TeamMessage => 1,
         IdleInjectionSource::TeamLiveness => 2,
         IdleInjectionSource::BoulderContinuation => 3,
         IdleInjectionSource::UlwContinuation => 4,
         IdleInjectionSource::DagRun => 5,
+        IdleInjectionSource::Kibitzer => 6,
     }
 }
 
@@ -89,6 +94,7 @@ struct Inner {
     pending: Mutex<IndexMap<String, IdleInjection>>,
     flush_scheduled: AtomicBool,
     soon_scheduled: AtomicBool,
+    retired: AtomicBool,
     barrier: Arc<TurnBarrier>,
 }
 
@@ -109,6 +115,7 @@ impl IdleInjectionQueue {
                 pending: Mutex::new(IndexMap::new()),
                 flush_scheduled: AtomicBool::new(false),
                 soon_scheduled: AtomicBool::new(false),
+                retired: AtomicBool::new(false),
                 barrier,
             }),
         }
@@ -137,10 +144,22 @@ impl IdleInjectionQueue {
         body()
     }
 
+    /// Re-arms a retired queue for the next generation. Upstream builds a fresh coordinator on every
+    /// `register`; the native composition retains one across a reload, so the reload re-arms it
+    /// instead of leaving the previous generation's retirement in force.
+    pub fn rearm(&self) {
+        self.inner.retired.store(false, Ordering::SeqCst);
+    }
+
     fn flush(&self, deliver_as: DeliverAs) -> usize {
         let ordered: Vec<IdleInjection> = {
             let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
             if pending.is_empty() {
+                return 0;
+            }
+            // LATEST `#flush`: an all-passive queue is RETAINED - no delivery, no receipts - until a
+            // non-passive entry joins; that entry then carries the batch out in source order.
+            if pending.values().all(|injection| injection.passive == Some(true)) {
                 return 0;
             }
             let mut ordered: Vec<IdleInjection> = pending.drain(..).map(|(_, injection)| injection).collect();
@@ -188,9 +207,31 @@ impl IdleInjectionQueue {
 }
 
 impl IdleInjectionCoordinatorTrait for IdleInjectionQueue {
-    fn enqueue(&self, injection: IdleInjection) {
+    fn enqueue(&self, injection: IdleInjection) -> bool {
         let _turn = self.enter_turn();
-        self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(injection.key.clone(), injection);
+        let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.inner.retired.load(Ordering::SeqCst) {
+            return false;
+        }
+        pending.insert(injection.key.clone(), injection);
+        true
+    }
+
+    fn retire(&self) {
+        let _turn = self.enter_turn();
+        let dropped: Vec<IdleInjection> = {
+            let mut pending = self.inner.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            self.inner.retired.store(true, Ordering::SeqCst);
+            pending.drain(..).map(|(_, injection)| injection).collect()
+        };
+        // Ownership never transferred for a refused injection; a queued one is handed back to its
+        // producer as a delivery failure so a completion caught inside the batch window is recorded
+        // as undelivered and redelivered after the reload.
+        for injection in &dropped {
+            if let Some(callback) = &injection.on_delivery_failed {
+                callback(RETIRED_ERROR_MESSAGE);
+            }
+        }
     }
 
     fn schedule_flush(&self) {

@@ -29,7 +29,7 @@ pub async fn diagnose_mcp_connect_failure(server:&str,config:&McpServerConfig,en
     if !lines.is_empty(){return connect_error(server,cause,Some(bound(&lines)));}
     let Some(command)=config.command.as_ref().filter(|command|!command.trim().is_empty()) else{return connect_error(server,cause,None);};
     let mut merged=BTreeMap::new();for key in ["HOME","LOGNAME","PATH","SHELL","TERM","USER"] {if let Ok(value)=std::env::var(key) && !value.starts_with("()") {merged.insert(key.to_owned(),value);}}
-    if let Some(env)=env {merged.extend(env.clone());}merged.extend(config.env.clone().unwrap_or_default());
+    merged.extend(crate::env_cleaner::create_clean_mcp_environment_from(&env.cloned().unwrap_or_default(),&config.env.clone().unwrap_or_default()));
     let mut process=tokio::process::Command::new(command);process.args(config.args.as_deref().unwrap_or(&[])).env_clear().envs(&merged).stdin(Stdio::null()).kill_on_drop(true);
     if let Some(cwd)=&config.cwd {process.current_dir(cwd);}
     process.stdout(Stdio::piped()).stderr(Stdio::piped());

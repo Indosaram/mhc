@@ -70,3 +70,22 @@ async fn static_hook_reemits_from_base_and_omits_native_context() {
  payload.system_prompt_options.context_files.push(ContextFile { path: instructions.to_string_lossy().into_owned(), content: "fixture".into() });
  assert!(matches!(hook(&mut event, &ctx).await.unwrap(), EventResult::None));
 }
+
+#[tokio::test]
+async fn dynamic_hook_injects_structural_grammar_matched_rule() {
+ let root = tempfile::tempdir().unwrap();
+ std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
+ std::fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
+ std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: '**/*.{rs,ts}'\n---\nfixture grammar rule").unwrap();
+ std::fs::write(root.path().join("sample.rs"), "fn main() {}").unwrap();
+ let mut ctx = context(); ctx.cwd = root.path().into();
+ let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ let home = tempfile::tempdir().unwrap();
+ maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
+ let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "call".into(), input: serde_json::json!({"path": "sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
+ let hook = &api.registered.handlers[&EventKind::ToolResult][0];
+ let result = hook(&mut event, &ctx).await.unwrap();
+ let EventResult::ToolResult(result) = result else { panic!("expected dynamic rule injection") };
+ let text = result.content.expect("injected content").into_iter().find_map(|content| match content { ToolContent::Text { text, .. } => Some(text), _ => None }).expect("injected text");
+ assert!(text.contains("fixture grammar rule"), "{text}");
+}

@@ -14,6 +14,11 @@ maho-ext-api = { path = "../../maho-ext-api" }
 maho-omo-ast-grep = { path = "../components/maho-omo-ast-grep" }
 maho-omo-comment-checker = { path = "../components/maho-omo-comment-checker" }
 maho-omo-config-startup = { path = "../components/maho-omo-config-startup" }
+maho-omo-model-profile = { path = "../components/maho-omo-model-profile" }
+maho-omo-bundled-skills = { path = "../components/maho-omo-bundled-skills" }
+maho-omo-skill-commands = { path = "../components/maho-omo-skill-commands" }
+maho-omo-git-master = { path = "../components/maho-omo-git-master" }
+maho-omo-builtin-mcps = { path = "../components/maho-omo-builtin-mcps" }
 maho-omo-config-watch = { path = "../components/maho-omo-config-watch" }
 maho-omo-fallback-architect = { path = "../components/maho-omo-fallback-architect" }
 maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor" }

@@ -21,30 +21,41 @@ pub fn read_host_watchdog_config_from_brand_env(env:&HashMap<String,String>)->Op
 }
 /**
  * Arms the configured watchdog: `on_supervisor_gone` receives the reason and is expected to
- * run the host's normal clean shutdown. Returns the reason future; a caller awaits it, or
- * drops it to disarm (senpi `armHostWatchdog`).
+ * run the host's normal clean shutdown. `capture_before_cleanup` runs first, while the supervisor's
+ * private directory still exists, so the host can read state its shutdown needs - the public-socket
+ * ownership token above all (senpi `armHostWatchdog`'s `beforeCleanup`). Returns the reason future;
+ * a caller awaits it, or drops it to disarm.
  */
-pub async fn arm_host_watchdog(config:Option<HostWatchdogConfig>,mut on_supervisor_gone:impl FnMut(String)){
+pub async fn arm_host_watchdog(config:Option<HostWatchdogConfig>,capture_before_cleanup:impl std::future::Future<Output=Result<(),String>>,mut on_supervisor_gone:impl FnMut(String)){
     let Some(config)=config else{return;};
-    let reason=if let Some(fd)=config.fd{
-        match watch_fd_for_eof(fd).await{Some(reason)=>Some(reason),None=>config.ppid.map(|pid|format!("supervisor pid {pid} is gone (ppid={})",parent_pid()))}
+    let reason=if let Some(receiver)=config.fd.and_then(watch_fd_for_eof){
+        match receiver.await{Ok(reason)=>Some(reason),Err(_)=>config.ppid.map(|pid|format!("supervisor pid {pid} is gone (ppid={})",parent_pid()))}
     }else if let Some(pid)=config.ppid{
         Some(watch_supervisor_parent(u32::try_from(pid).unwrap_or(u32::MAX),std::process::id(),||(parent_pid(),crate::host_reservations::process_is_live(u32::try_from(pid).unwrap_or(u32::MAX)))).await)
     }else{None};
     let Some(reason)=reason else{return;};
-    let _=cleanup_watchdog_paths(&config,async{Ok::<(),String>(())}).await;
+    let _=cleanup_watchdog_paths(&config,capture_before_cleanup).await;
     on_supervisor_gone(reason);
 }
 fn parent_pid()->u32{std::os::unix::process::parent_id()}
-/// EOF on the inherited pipe is the primary signal; readable data is ignored. The read runs on
-/// the event loop (epoll) rather than a blocking thread, so a host that exits on its own is not
-/// held open by the watcher; an inheritable descriptor that cannot be reopened leaves it inert.
-async fn watch_fd_for_eof(fd:u64)->Option<String>{
-    use tokio::io::AsyncReadExt;
-    let file=std::fs::File::open(format!("/dev/fd/{fd}")).ok()?;
-    let mut pipe=tokio::fs::File::from_std(file);
-    let mut buffer=[0u8;1024];
-    loop{match pipe.read(&mut buffer).await{Ok(0)|Err(_)=>return Some(format!("supervisor pipe fd {fd} closed")),Ok(_)=>{}}}
+/// EOF on the inherited pipe is the primary signal; readable data is ignored, only close matters.
+///
+/// The blocking read lives on its OWN detached OS thread, never on the runtime's blocking pool: a
+/// pooled read parked in `read(2)` is not cancelled when its task is dropped, and tokio joins every
+/// blocking worker when the runtime drops, so a host that decides to exit on its own (an idle or
+/// empty exit) would hang in that join until something killed it - the exact failure senpi
+/// documents for a thread-pool read. A detached thread blocked on the pipe is terminated by process
+/// exit and is never joined. A descriptor that cannot be reopened leaves the binding inert rather
+/// than killing a healthy host.
+fn watch_fd_for_eof(fd:u64)->Option<tokio::sync::oneshot::Receiver<String>>{
+    use std::io::Read;
+    let mut file=std::fs::File::open(format!("/dev/fd/{fd}")).ok()?;
+    let(sender,receiver)=tokio::sync::oneshot::channel();
+    std::thread::Builder::new().name(format!("rpc-host-watch-{fd}")).spawn(move||{
+        let mut buffer=[0u8;1024];
+        loop{match file.read(&mut buffer){Ok(0)|Err(_)=>{let _=sender.send(format!("supervisor pipe fd {fd} closed"));return;}Ok(_)=>{}}}
+    }).ok()?;
+    Some(receiver)
 }
 pub fn supervisor_gone_reason(supervisor_pid:u32,self_pid:u32,ppid:u32,alive:bool)->Option<String>{if supervisor_pid==self_pid{return None;}(!alive||ppid!=supervisor_pid).then(||format!("supervisor pid {supervisor_pid} is gone (ppid={ppid})"))}
 pub async fn watch_supervisor_pipe(mut input:impl tokio::io::AsyncRead+Unpin)->std::io::Result<()>{

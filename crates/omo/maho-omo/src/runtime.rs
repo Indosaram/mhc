@@ -97,6 +97,10 @@ impl OmoRuntime {
     pub fn rebind(&self, delivery: IdleInjectionDelivery, config: ConfigAccessor) {
         *self.delivery.lock().unwrap_or_else(PoisonError::into_inner) = delivery;
         *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
+        // A new generation reuses the retained queue (upstream builds a fresh coordinator on every
+        // register), so re-arm it here; otherwise the previous generation's session-shutdown
+        // retirement would refuse every injection for the rest of the process.
+        self.coordinator.rearm();
     }
 
     pub fn context(&self) -> &OmoComponentContext {

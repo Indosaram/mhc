@@ -5,6 +5,7 @@ pub mod config_edit;
 pub mod expose;
 pub mod errors;
 pub mod auth;
+pub mod env_cleaner;
 pub mod catalog_cache;
 pub mod guard;
 pub mod skills;

@@ -103,7 +103,7 @@ fn before() -> BeforeAgentStartEvent { BeforeAgentStartEvent { prompt: "hello".i
 fn input() -> InputEvent { InputEvent { input_id: "id".into(), text: "X".into(), images: None, source: InputSource::Interactive, streaming_behavior: None } }
 fn result_event() -> ToolResultEvent { ToolResultEvent { tool_name: "bash".into(), tool_call_id: "call".into(), input: JsonValue::Null, content: vec![ToolContent::text("base")], details: None, is_error: false, usage: None } }
 fn none() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Ok(EventResult::None) })) }
-fn failure() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure { message: "boom".into(), stack: Some("test-stack".into()) }) })) }
+fn failure() -> ExtensionHandler { Arc::new(|_, _| Box::pin(async { Err(ExtensionFailure { message: "boom".into(), stack: Some("test-stack".into()), class: None, code: None }) })) }
 fn transform(suffix: &'static str) -> ExtensionHandler {
     Arc::new(move |event, _| Box::pin(async move {
         if let ExtensionEvent::Input(input) = event { return Ok(EventResult::Input(InputEventResult::Transform { text: format!("{}{suffix}", input.text), images: None })); }

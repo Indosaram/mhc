@@ -1,0 +1,4981 @@
+{
+  "schemaVersion": 1,
+  "name": "omo-latest",
+  "purpose": "Repository-owned latest skill assets for `bun tools/package-native.mjs --skill-source latest`. Staging reads ONLY this overlay, so the pinned checkout can never silently contribute latest assets.",
+  "commit": "455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b",
+  "sourceRepo": "/home/indo/T9-Mac/maho-code-lanes/upstream-omo-audit-20261006",
+  "pinCommit": "77f3067f157a4f88e6d8ed48b3a6c338654402ed",
+  "pinSenpi": "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407",
+  "versions": {
+    "omoSenpi": "5.1.20",
+    "sharedSkills": "0.1.0"
+  },
+  "precedence": [
+    "packages/omo-senpi/skills",
+    "packages/shared-skills/skills"
+  ],
+  "selection": [
+    "ast-grep",
+    "browser",
+    "coding-agent-sessions",
+    "dag-library",
+    "data-scientist",
+    "debugging",
+    "frontend",
+    "git-master",
+    "give-me-tips",
+    "hyperplan",
+    "init-deep",
+    "lsp-setup",
+    "mass-ulw",
+    "onboarding",
+    "programming",
+    "refactor",
+    "remove-ai-slops",
+    "review-work",
+    "ultimate-browsing",
+    "ultrawork",
+    "ulw-execute",
+    "ulw-loop",
+    "ulw-plan",
+    "ulw-research",
+    "visual-qa"
+  ],
+  "retired": [
+    "start-work"
+  ],
+  "poolDocs": {
+    "AGENTS.md": {
+      "path": "skills/AGENTS.md",
+      "source": "packages/omo-senpi/skills/AGENTS.md",
+      "sha256": "6eb35234820726ce19dd55cd047b0a76ebb85a49ba1ea036bc6756c3cbecbdd1",
+      "note": "Pool-root developer doc; mirrored in the overlay, not a staged skill."
+    }
+  },
+  "browserRuntime": {
+    "skill": "browser",
+    "targetDir": "skills/browser/runtime/omowright",
+    "sourceDir": "runtime/browser/omowright",
+    "materializer": "assets/omo-latest/stage-omowright-runtime.mjs",
+    "upstreamMaterializer": "packages/shared-skills/stage-omowright-runtime.mjs",
+    "upstreamMaterializerCommit": "455dee623c9b2f2d2f1e9e68bf7b72a878ee3f0b",
+    "files": [
+      "index.js",
+      "page-bundle.js",
+      "manifest.json"
+    ],
+    "dependency": {
+      "name": "omowright",
+      "spec": "github:code-yeongyu/omowright#293ca5002cbd4c8b0c104c5934683385ef7e0d3a",
+      "commit": "293ca5002cbd4c8b0c104c5934683385ef7e0d3a",
+      "declaredIn": "oh-my-opencode root package.json devDependencies at 455dee62…"
+    },
+    "note": "The browser skill's engine runtime is build-materialized, never committed (see runtime/.gitignore), exactly as upstream gitignores skills/browser/runtime/omowright/. `--skill-source latest` requires --omowright-runtime <dir> and refuses a content-only browser tree; the staged manifest records this identity plus each runtime file's sha256. This is packaging of upstream skill content only: no desktop/browser implementation, engine authorization or extension bridge."
+  },
+  "skills": {
+    "ast-grep": [
+      {
+        "path": "AGENTS.md",
+        "bytes": 3163,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/AGENTS.md"
+      },
+      {
+        "path": "LICENSE",
+        "bytes": 1068,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/LICENSE"
+      },
+      {
+        "path": "README.md",
+        "bytes": 7675,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/README.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 13371,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/SKILL.md"
+      },
+      {
+        "path": "SOURCE",
+        "bytes": 125,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/SOURCE"
+      },
+      {
+        "path": "install.ps1",
+        "bytes": 7165,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/install.ps1"
+      },
+      {
+        "path": "install.sh",
+        "bytes": 7581,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/install.sh"
+      },
+      {
+        "path": "references/cli.md",
+        "bytes": 7273,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/cli.md"
+      },
+      {
+        "path": "references/install.md",
+        "bytes": 5597,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/install.md"
+      },
+      {
+        "path": "references/patterns.md",
+        "bytes": 5538,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/patterns.md"
+      },
+      {
+        "path": "references/pitfalls.md",
+        "bytes": 8914,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/pitfalls.md"
+      },
+      {
+        "path": "references/recipes.md",
+        "bytes": 7870,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/recipes.md"
+      },
+      {
+        "path": "references/sgconfig.md",
+        "bytes": 6413,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/sgconfig.md"
+      },
+      {
+        "path": "references/yaml-rules.md",
+        "bytes": 11383,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/references/yaml-rules.md"
+      },
+      {
+        "path": "scripts/ast_grep_helper.py",
+        "bytes": 26972,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/scripts/ast_grep_helper.py"
+      },
+      {
+        "path": "tests/smoke.ps1",
+        "bytes": 5701,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/tests/smoke.ps1"
+      },
+      {
+        "path": "tests/smoke.sh",
+        "bytes": 7765,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ast-grep/tests/smoke.sh"
+      }
+    ],
+    "browser": [
+      {
+        "path": "ATTRIBUTION.md",
+        "bytes": 1831,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/ATTRIBUTION.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 8793,
+        "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf",
+        "source": "packages/shared-skills/skills/browser/SKILL.md"
+      },
+      {
+        "path": "references/commands.md",
+        "bytes": 6304,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/commands.md"
+      },
+      {
+        "path": "references/install.md",
+        "bytes": 5957,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/install.md"
+      },
+      {
+        "path": "references/owned-engine/README.md",
+        "bytes": 3361,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/owned-engine/README.md"
+      },
+      {
+        "path": "references/owned-engine/frames-and-humans.md",
+        "bytes": 2642,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/owned-engine/frames-and-humans.md"
+      },
+      {
+        "path": "references/owned-engine/ladder.md",
+        "bytes": 3891,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/owned-engine/ladder.md"
+      },
+      {
+        "path": "references/owned-engine/network.md",
+        "bytes": 2990,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/owned-engine/network.md"
+      },
+      {
+        "path": "references/recipes/1password.md",
+        "bytes": 2706,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/recipes/1password.md"
+      },
+      {
+        "path": "references/remote.md",
+        "bytes": 1131,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/references/remote.md"
+      },
+      {
+        "path": "scripts/browser-doctor.mjs",
+        "bytes": 4224,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/scripts/browser-doctor.mjs"
+      },
+      {
+        "path": "scripts/browser-engine-guard.mjs",
+        "bytes": 20543,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/scripts/browser-engine-guard.mjs"
+      },
+      {
+        "path": "scripts/browser-install.mjs",
+        "bytes": 2872,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/scripts/browser-install.mjs"
+      },
+      {
+        "path": "scripts/omowright.mjs",
+        "bytes": 1861,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/browser/scripts/omowright.mjs"
+      }
+    ],
+    "coding-agent-sessions": [
+      {
+        "path": "AGENTS.md",
+        "bytes": 4004,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/AGENTS.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 11097,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/SKILL.md"
+      },
+      {
+        "path": "references/all-platforms.md",
+        "bytes": 6036,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/references/all-platforms.md"
+      },
+      {
+        "path": "references/claude.md",
+        "bytes": 2372,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/references/claude.md"
+      },
+      {
+        "path": "references/codex.md",
+        "bytes": 1867,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/references/codex.md"
+      },
+      {
+        "path": "references/opencode.md",
+        "bytes": 2578,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/references/opencode.md"
+      },
+      {
+        "path": "references/senpi.md",
+        "bytes": 1815,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/references/senpi.md"
+      },
+      {
+        "path": "scripts/agent_sessions/__init__.py",
+        "bytes": 35,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/__init__.py"
+      },
+      {
+        "path": "scripts/agent_sessions/aside_scanner.py",
+        "bytes": 4985,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/aside_scanner.py"
+      },
+      {
+        "path": "scripts/agent_sessions/claude.py",
+        "bytes": 2497,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/claude.py"
+      },
+      {
+        "path": "scripts/agent_sessions/cli.py",
+        "bytes": 11142,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/cli.py"
+      },
+      {
+        "path": "scripts/agent_sessions/codex.py",
+        "bytes": 3908,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/codex.py"
+      },
+      {
+        "path": "scripts/agent_sessions/file_scanners.py",
+        "bytes": 12360,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/file_scanners.py"
+      },
+      {
+        "path": "scripts/agent_sessions/jsonio.py",
+        "bytes": 1361,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/jsonio.py"
+      },
+      {
+        "path": "scripts/agent_sessions/kiro_scanner.py",
+        "bytes": 3158,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/kiro_scanner.py"
+      },
+      {
+        "path": "scripts/agent_sessions/opencode.py",
+        "bytes": 10002,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/opencode.py"
+      },
+      {
+        "path": "scripts/agent_sessions/pi_family.py",
+        "bytes": 1829,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/pi_family.py"
+      },
+      {
+        "path": "scripts/agent_sessions/scanners.py",
+        "bytes": 3592,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/scanners.py"
+      },
+      {
+        "path": "scripts/agent_sessions/sqlite_optional_scanners.py",
+        "bytes": 7689,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/sqlite_optional_scanners.py"
+      },
+      {
+        "path": "scripts/agent_sessions/sqlite_scanners.py",
+        "bytes": 6007,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/sqlite_scanners.py"
+      },
+      {
+        "path": "scripts/agent_sessions/timeparse.py",
+        "bytes": 1967,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/timeparse.py"
+      },
+      {
+        "path": "scripts/agent_sessions/transcript.py",
+        "bytes": 5714,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/transcript.py"
+      },
+      {
+        "path": "scripts/agent_sessions/types.py",
+        "bytes": 1738,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/agent_sessions/types.py"
+      },
+      {
+        "path": "scripts/find-agent-sessions.py",
+        "bytes": 785,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/coding-agent-sessions/scripts/find-agent-sessions.py"
+      }
+    ],
+    "dag-library": [
+      {
+        "path": "SKILL.md",
+        "bytes": 4272,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/dag-library/SKILL.md"
+      }
+    ],
+    "data-scientist": [
+      {
+        "path": "SKILL.md",
+        "bytes": 5797,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/SKILL.md"
+      },
+      {
+        "path": "references/execution-surfaces.md",
+        "bytes": 4088,
+        "sha256": "c0b49550bd582419ca6d1c62d19462ae8c421eab5fefedaeb90f68d253f6257a",
+        "source": "packages/shared-skills/skills/data-scientist/references/execution-surfaces.md"
+      },
+      {
+        "path": "references/placement.md",
+        "bytes": 3424,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/references/placement.md"
+      },
+      {
+        "path": "references/polars-lane.md",
+        "bytes": 3620,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/references/polars-lane.md"
+      },
+      {
+        "path": "references/uv-setup.md",
+        "bytes": 2797,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/references/uv-setup.md"
+      },
+      {
+        "path": "references/visualization.md",
+        "bytes": 3008,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/references/visualization.md"
+      },
+      {
+        "path": "scripts/ensure-js-deps.sh",
+        "bytes": 983,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/scripts/ensure-js-deps.sh"
+      },
+      {
+        "path": "scripts/ensure-py-deps.sh",
+        "bytes": 1358,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/scripts/ensure-py-deps.sh"
+      },
+      {
+        "path": "scripts/quick-query.py",
+        "bytes": 3329,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/scripts/quick-query.py"
+      },
+      {
+        "path": "scripts/setup-uv.ps1",
+        "bytes": 2339,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/scripts/setup-uv.ps1"
+      },
+      {
+        "path": "scripts/setup-uv.sh",
+        "bytes": 1833,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/data-scientist/scripts/setup-uv.sh"
+      }
+    ],
+    "debugging": [
+      {
+        "path": "SKILL.md",
+        "bytes": 12785,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/SKILL.md"
+      },
+      {
+        "path": "references/methodology/00-setup.md",
+        "bytes": 6309,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/00-setup.md"
+      },
+      {
+        "path": "references/methodology/02-investigate.md",
+        "bytes": 9445,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/02-investigate.md"
+      },
+      {
+        "path": "references/methodology/03-flaky-triage.md",
+        "bytes": 4513,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/03-flaky-triage.md"
+      },
+      {
+        "path": "references/methodology/04-oracle-triple.md",
+        "bytes": 6734,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/04-oracle-triple.md"
+      },
+      {
+        "path": "references/methodology/05-escalate.md",
+        "bytes": 3211,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/05-escalate.md"
+      },
+      {
+        "path": "references/methodology/06-fix.md",
+        "bytes": 7247,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/06-fix.md"
+      },
+      {
+        "path": "references/methodology/08-qa.md",
+        "bytes": 6278,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/08-qa.md"
+      },
+      {
+        "path": "references/methodology/09-cleanup.md",
+        "bytes": 6173,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/09-cleanup.md"
+      },
+      {
+        "path": "references/methodology/partial-runtime-evidence.md",
+        "bytes": 10697,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/methodology/partial-runtime-evidence.md"
+      },
+      {
+        "path": "references/runtimes/bundled-js-binary.md",
+        "bytes": 19353,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/bundled-js-binary.md"
+      },
+      {
+        "path": "references/runtimes/go.md",
+        "bytes": 8727,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/go.md"
+      },
+      {
+        "path": "references/runtimes/native-binary.md",
+        "bytes": 23097,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/native-binary.md"
+      },
+      {
+        "path": "references/runtimes/node.md",
+        "bytes": 10699,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/node.md"
+      },
+      {
+        "path": "references/runtimes/python.md",
+        "bytes": 8861,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/python.md"
+      },
+      {
+        "path": "references/runtimes/rust.md",
+        "bytes": 8349,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/runtimes/rust.md"
+      },
+      {
+        "path": "references/scripts/dap.mjs",
+        "bytes": 14143,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/scripts/dap.mjs"
+      },
+      {
+        "path": "references/scripts/fixture-adapter.mjs",
+        "bytes": 3349,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/scripts/fixture-adapter.mjs"
+      },
+      {
+        "path": "references/tools/browser-qa.md",
+        "bytes": 4451,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/tools/browser-qa.md"
+      },
+      {
+        "path": "references/tools/dap.md",
+        "bytes": 5950,
+        "sha256": "141462331a47672a1bd965876eac2d1d2d2f30e692ee8edb16f4a3249feab2c8",
+        "source": "packages/shared-skills/skills/debugging/references/tools/dap.md"
+      },
+      {
+        "path": "references/tools/frida.md",
+        "bytes": 6540,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/tools/frida.md"
+      },
+      {
+        "path": "references/tools/ghidra.md",
+        "bytes": 7360,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/tools/ghidra.md"
+      },
+      {
+        "path": "references/tools/pwndbg.md",
+        "bytes": 7867,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/tools/pwndbg.md"
+      },
+      {
+        "path": "references/tools/pwntools.md",
+        "bytes": 7345,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/debugging/references/tools/pwntools.md"
+      }
+    ],
+    "frontend": [
+      {
+        "path": "ATTRIBUTION.md",
+        "bytes": 13403,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/ATTRIBUTION.md"
+      },
+      {
+        "path": "LICENSE-Apache-2.0.txt",
+        "bytes": 11296,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/LICENSE-Apache-2.0.txt"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 21159,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/SKILL.md"
+      },
+      {
+        "path": "references/design/README.md",
+        "bytes": 27682,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/README.md"
+      },
+      {
+        "path": "references/design/_INDEX.md",
+        "bytes": 17171,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/_INDEX.md"
+      },
+      {
+        "path": "references/design/ambience-skill.md",
+        "bytes": 18314,
+        "sha256": "28255c9b9f4b5a7c5e25c7a03fa914d10ac5abd235d4c0db7d8e9082f92515f9",
+        "source": "packages/shared-skills/skills/frontend/references/design/ambience-skill.md"
+      },
+      {
+        "path": "references/design/aside.md",
+        "bytes": 12839,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/aside.md"
+      },
+      {
+        "path": "references/design/clone-from-url.md",
+        "bytes": 5445,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/clone-from-url.md"
+      },
+      {
+        "path": "references/design/design-system-architecture.md",
+        "bytes": 14720,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/design-system-architecture.md"
+      },
+      {
+        "path": "references/design/interaction-skill.md",
+        "bytes": 16388,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/interaction-skill.md"
+      },
+      {
+        "path": "references/design/layout-skill.md",
+        "bytes": 8528,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/layout-skill.md"
+      },
+      {
+        "path": "references/design/lazyweb.md",
+        "bytes": 3865,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/lazyweb.md"
+      },
+      {
+        "path": "references/design/print-paged-media.md",
+        "bytes": 6785,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/print-paged-media.md"
+      },
+      {
+        "path": "references/design/react-dev-tooling-skill.md",
+        "bytes": 8603,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/react-dev-tooling-skill.md"
+      },
+      {
+        "path": "references/design/stylegallery.md",
+        "bytes": 4298,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/design/stylegallery.md"
+      },
+      {
+        "path": "references/designpowers/EVIDENCE.md",
+        "bytes": 3755,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/EVIDENCE.md"
+      },
+      {
+        "path": "references/designpowers/README.md",
+        "bytes": 3763,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/README.md"
+      },
+      {
+        "path": "references/designpowers/UPSTREAM.md",
+        "bytes": 2234,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/UPSTREAM.md"
+      },
+      {
+        "path": "references/designpowers/lane-a-direction.md",
+        "bytes": 5358,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/lane-a-direction.md"
+      },
+      {
+        "path": "references/designpowers/lane-b-execution.md",
+        "bytes": 5753,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/lane-b-execution.md"
+      },
+      {
+        "path": "references/designpowers/lane-c-review.md",
+        "bytes": 5513,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/lane-c-review.md"
+      },
+      {
+        "path": "references/designpowers/lane-d-memory.md",
+        "bytes": 5111,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/lane-d-memory.md"
+      },
+      {
+        "path": "references/designpowers/orchestration.md",
+        "bytes": 5463,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/orchestration.md"
+      },
+      {
+        "path": "references/designpowers/routing.md",
+        "bytes": 5358,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/designpowers/routing.md"
+      },
+      {
+        "path": "references/perfection/README.md",
+        "bytes": 11790,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/perfection/README.md"
+      },
+      {
+        "path": "references/perfection/react-perf-tooling.md",
+        "bytes": 7898,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/references/perfection/react-perf-tooling.md"
+      },
+      {
+        "path": "scripts/perfection/lighthouse-audit.py",
+        "bytes": 6575,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/frontend/scripts/perfection/lighthouse-audit.py"
+      }
+    ],
+    "git-master": [
+      {
+        "path": "SKILL.md",
+        "bytes": 5439,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/git-master/SKILL.md"
+      }
+    ],
+    "give-me-tips": [
+      {
+        "path": "SKILL.md",
+        "bytes": 13342,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/give-me-tips/SKILL.md"
+      }
+    ],
+    "hyperplan": [
+      {
+        "path": "SKILL.md",
+        "bytes": 27154,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/hyperplan/SKILL.md"
+      }
+    ],
+    "init-deep": [
+      {
+        "path": "SKILL.md",
+        "bytes": 14208,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/init-deep/SKILL.md"
+      }
+    ],
+    "lsp-setup": [
+      {
+        "path": "SKILL.md",
+        "bytes": 5560,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/SKILL.md"
+      },
+      {
+        "path": "references/bash/README.md",
+        "bytes": 2124,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/bash/README.md"
+      },
+      {
+        "path": "references/c-cpp/README.md",
+        "bytes": 2488,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/c-cpp/README.md"
+      },
+      {
+        "path": "references/csharp/README.md",
+        "bytes": 2508,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/csharp/README.md"
+      },
+      {
+        "path": "references/dart/README.md",
+        "bytes": 1903,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/dart/README.md"
+      },
+      {
+        "path": "references/elixir/README.md",
+        "bytes": 2150,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/elixir/README.md"
+      },
+      {
+        "path": "references/go/README.md",
+        "bytes": 1958,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/go/README.md"
+      },
+      {
+        "path": "references/haskell/README.md",
+        "bytes": 2307,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/haskell/README.md"
+      },
+      {
+        "path": "references/java/README.md",
+        "bytes": 2625,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/java/README.md"
+      },
+      {
+        "path": "references/julia/README.md",
+        "bytes": 2335,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/julia/README.md"
+      },
+      {
+        "path": "references/kotlin/README.md",
+        "bytes": 2495,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/kotlin/README.md"
+      },
+      {
+        "path": "references/lua/README.md",
+        "bytes": 2084,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/lua/README.md"
+      },
+      {
+        "path": "references/php/README.md",
+        "bytes": 1928,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/php/README.md"
+      },
+      {
+        "path": "references/python/README.md",
+        "bytes": 3010,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/python/README.md"
+      },
+      {
+        "path": "references/ruby/README.md",
+        "bytes": 2388,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/ruby/README.md"
+      },
+      {
+        "path": "references/rust/README.md",
+        "bytes": 2028,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/rust/README.md"
+      },
+      {
+        "path": "references/swift/README.md",
+        "bytes": 2289,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/swift/README.md"
+      },
+      {
+        "path": "references/terraform/README.md",
+        "bytes": 2233,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/terraform/README.md"
+      },
+      {
+        "path": "references/typescript/README.md",
+        "bytes": 3265,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/typescript/README.md"
+      },
+      {
+        "path": "references/yaml/README.md",
+        "bytes": 2377,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/yaml/README.md"
+      },
+      {
+        "path": "references/zig/README.md",
+        "bytes": 1743,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/references/zig/README.md"
+      },
+      {
+        "path": "scripts/detect-lsp.ts",
+        "bytes": 6631,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/scripts/detect-lsp.ts"
+      },
+      {
+        "path": "scripts/lsp-server-table.ts",
+        "bytes": 5239,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/scripts/lsp-server-table.ts"
+      },
+      {
+        "path": "scripts/tsconfig.json",
+        "bytes": 397,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/scripts/tsconfig.json"
+      },
+      {
+        "path": "scripts/verify-lsp.ts",
+        "bytes": 5218,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/lsp-setup/scripts/verify-lsp.ts"
+      }
+    ],
+    "mass-ulw": [
+      {
+        "path": "SKILL.md",
+        "bytes": 9700,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/mass-ulw/SKILL.md"
+      },
+      {
+        "path": "references/planning.md",
+        "bytes": 23170,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/mass-ulw/references/planning.md"
+      }
+    ],
+    "onboarding": [
+      {
+        "path": "SKILL.md",
+        "bytes": 17003,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/onboarding/SKILL.md"
+      },
+      {
+        "path": "qa-savings-fixture.sh",
+        "bytes": 7352,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/onboarding/qa-savings-fixture.sh"
+      },
+      {
+        "path": "qa-validator.sh",
+        "bytes": 395,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/onboarding/qa-validator.sh"
+      }
+    ],
+    "programming": [
+      {
+        "path": "SKILL.md",
+        "bytes": 38165,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/SKILL.md"
+      },
+      {
+        "path": "references/code-smells.md",
+        "bytes": 14108,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/code-smells.md"
+      },
+      {
+        "path": "references/go/README.md",
+        "bytes": 7568,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/README.md"
+      },
+      {
+        "path": "references/go/backend-stack.md",
+        "bytes": 16952,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/backend-stack.md"
+      },
+      {
+        "path": "references/go/bootstrap.md",
+        "bytes": 9059,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/bootstrap.md"
+      },
+      {
+        "path": "references/go/bubbletea-v2.md",
+        "bytes": 11584,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/bubbletea-v2.md"
+      },
+      {
+        "path": "references/go/cobra-stack.md",
+        "bytes": 11801,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/cobra-stack.md"
+      },
+      {
+        "path": "references/go/concurrency.md",
+        "bytes": 11135,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/concurrency.md"
+      },
+      {
+        "path": "references/go/data-modeling.md",
+        "bytes": 12272,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/data-modeling.md"
+      },
+      {
+        "path": "references/go/error-handling.md",
+        "bytes": 10383,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/error-handling.md"
+      },
+      {
+        "path": "references/go/golangci-strict.md",
+        "bytes": 10258,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/golangci-strict.md"
+      },
+      {
+        "path": "references/go/grpc-connect.md",
+        "bytes": 10520,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/grpc-connect.md"
+      },
+      {
+        "path": "references/go/libraries.md",
+        "bytes": 14059,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/libraries.md"
+      },
+      {
+        "path": "references/go/one-liners.md",
+        "bytes": 5650,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/one-liners.md"
+      },
+      {
+        "path": "references/go/sqlc-pgx.md",
+        "bytes": 13023,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/sqlc-pgx.md"
+      },
+      {
+        "path": "references/go/testing.md",
+        "bytes": 14583,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/testing.md"
+      },
+      {
+        "path": "references/go/type-patterns.md",
+        "bytes": 9774,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/go/type-patterns.md"
+      },
+      {
+        "path": "references/logging.md",
+        "bytes": 10715,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/logging.md"
+      },
+      {
+        "path": "references/python/README.md",
+        "bytes": 15784,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/README.md"
+      },
+      {
+        "path": "references/python/async-anyio.md",
+        "bytes": 14528,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/async-anyio.md"
+      },
+      {
+        "path": "references/python/data-modeling.md",
+        "bytes": 6768,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/data-modeling.md"
+      },
+      {
+        "path": "references/python/data-processing.md",
+        "bytes": 4266,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/data-processing.md"
+      },
+      {
+        "path": "references/python/error-handling.md",
+        "bytes": 6123,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/error-handling.md"
+      },
+      {
+        "path": "references/python/fastapi-stack.md",
+        "bytes": 9458,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/fastapi-stack.md"
+      },
+      {
+        "path": "references/python/httpx2-optimization.md",
+        "bytes": 12308,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/httpx2-optimization.md"
+      },
+      {
+        "path": "references/python/libraries.md",
+        "bytes": 10820,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/libraries.md"
+      },
+      {
+        "path": "references/python/one-liners.md",
+        "bytes": 7966,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/one-liners.md"
+      },
+      {
+        "path": "references/python/orjson-stack.md",
+        "bytes": 13592,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/orjson-stack.md"
+      },
+      {
+        "path": "references/python/pydantic-ai.md",
+        "bytes": 8389,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/pydantic-ai.md"
+      },
+      {
+        "path": "references/python/pyproject-strict.md",
+        "bytes": 9252,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/pyproject-strict.md"
+      },
+      {
+        "path": "references/python/textual-tui.md",
+        "bytes": 5261,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/textual-tui.md"
+      },
+      {
+        "path": "references/python/type-patterns.md",
+        "bytes": 4186,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/python/type-patterns.md"
+      },
+      {
+        "path": "references/rust-ub/README.md",
+        "bytes": 9967,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust-ub/README.md"
+      },
+      {
+        "path": "references/rust-ub/miri-sanitizers-loom.md",
+        "bytes": 11788,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust-ub/miri-sanitizers-loom.md"
+      },
+      {
+        "path": "references/rust-ub/ub-taxonomy.md",
+        "bytes": 13568,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust-ub/ub-taxonomy.md"
+      },
+      {
+        "path": "references/rust/README.md",
+        "bytes": 17027,
+        "sha256": "ee34964be2dad444338530fa62f3c7f802063b76d9a8c3047fb17529520cc1b2",
+        "source": "packages/shared-skills/skills/programming/references/rust/README.md"
+      },
+      {
+        "path": "references/rust/api-design.md",
+        "bytes": 6695,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/api-design.md"
+      },
+      {
+        "path": "references/rust/async-tokio.md",
+        "bytes": 12922,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/async-tokio.md"
+      },
+      {
+        "path": "references/rust/axum-stack.md",
+        "bytes": 14524,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/axum-stack.md"
+      },
+      {
+        "path": "references/rust/cargo-strict.md",
+        "bytes": 10203,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/cargo-strict.md"
+      },
+      {
+        "path": "references/rust/clap-stack.md",
+        "bytes": 12426,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/clap-stack.md"
+      },
+      {
+        "path": "references/rust/concurrency.md",
+        "bytes": 14686,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/concurrency.md"
+      },
+      {
+        "path": "references/rust/libraries.md",
+        "bytes": 17772,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/libraries.md"
+      },
+      {
+        "path": "references/rust/macros.md",
+        "bytes": 3364,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/macros.md"
+      },
+      {
+        "path": "references/rust/one-liners.md",
+        "bytes": 7684,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/one-liners.md"
+      },
+      {
+        "path": "references/rust/proptest-insta.md",
+        "bytes": 14269,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/proptest-insta.md"
+      },
+      {
+        "path": "references/rust/type-state.md",
+        "bytes": 13402,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/type-state.md"
+      },
+      {
+        "path": "references/rust/unsafe-discipline.md",
+        "bytes": 13160,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/unsafe-discipline.md"
+      },
+      {
+        "path": "references/rust/zero-cost-safety.md",
+        "bytes": 17347,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/rust/zero-cost-safety.md"
+      },
+      {
+        "path": "references/typescript/README.md",
+        "bytes": 9393,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/README.md"
+      },
+      {
+        "path": "references/typescript/backend-hono.md",
+        "bytes": 21727,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/backend-hono.md"
+      },
+      {
+        "path": "references/typescript/bootstrap.md",
+        "bytes": 6747,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/bootstrap.md"
+      },
+      {
+        "path": "references/typescript/data-modeling.md",
+        "bytes": 5126,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/data-modeling.md"
+      },
+      {
+        "path": "references/typescript/error-handling.md",
+        "bytes": 4825,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/error-handling.md"
+      },
+      {
+        "path": "references/typescript/tsconfig-strict.md",
+        "bytes": 4921,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/tsconfig-strict.md"
+      },
+      {
+        "path": "references/typescript/type-patterns.md",
+        "bytes": 5339,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/references/typescript/type-patterns.md"
+      },
+      {
+        "path": "scripts/go/check-no-excuse-rules.sh",
+        "bytes": 7234,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/check-no-excuse-rules.sh"
+      },
+      {
+        "path": "scripts/go/new-project.py",
+        "bytes": 4544,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/new-project.py"
+      },
+      {
+        "path": "scripts/go/templates/.editorconfig",
+        "bytes": 206,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/.editorconfig"
+      },
+      {
+        "path": "scripts/go/templates/.golangci.yml",
+        "bytes": 1553,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/.golangci.yml"
+      },
+      {
+        "path": "scripts/go/templates/AGENTS.md.tmpl",
+        "bytes": 845,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/AGENTS.md.tmpl"
+      },
+      {
+        "path": "scripts/go/templates/README.md.tmpl",
+        "bytes": 207,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/README.md.tmpl"
+      },
+      {
+        "path": "scripts/go/templates/Taskfile.yml",
+        "bytes": 706,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/Taskfile.yml"
+      },
+      {
+        "path": "scripts/go/templates/ci.yml",
+        "bytes": 863,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/ci.yml"
+      },
+      {
+        "path": "scripts/go/templates/config.go",
+        "bytes": 643,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/config.go"
+      },
+      {
+        "path": "scripts/go/templates/gitignore",
+        "bytes": 99,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/gitignore"
+      },
+      {
+        "path": "scripts/go/templates/main.go.tmpl",
+        "bytes": 329,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/main.go.tmpl"
+      },
+      {
+        "path": "scripts/go/templates/run.go",
+        "bytes": 350,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/go/templates/run.go"
+      },
+      {
+        "path": "scripts/python/check-no-excuse-rules.py",
+        "bytes": 25489,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/python/check-no-excuse-rules.py"
+      },
+      {
+        "path": "scripts/python/new-project.py",
+        "bytes": 4695,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/python/new-project.py"
+      },
+      {
+        "path": "scripts/python/new-script.py",
+        "bytes": 3236,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/python/new-script.py"
+      },
+      {
+        "path": "scripts/rust/check-no-excuse-rules.sh",
+        "bytes": 7672,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/rust/check-no-excuse-rules.sh"
+      },
+      {
+        "path": "scripts/rust/new-project.py",
+        "bytes": 5818,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/rust/new-project.py"
+      },
+      {
+        "path": "scripts/typescript/check-no-excuse-rules.ts",
+        "bytes": 12813,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/check-no-excuse-rules.ts"
+      },
+      {
+        "path": "scripts/typescript/new-project.ts",
+        "bytes": 4486,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/programming/scripts/typescript/new-project.ts"
+      }
+    ],
+    "refactor": [
+      {
+        "path": "SKILL.md",
+        "bytes": 25289,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/refactor/SKILL.md"
+      }
+    ],
+    "remove-ai-slops": [
+      {
+        "path": "SKILL.md",
+        "bytes": 21504,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/remove-ai-slops/SKILL.md"
+      }
+    ],
+    "review-work": [
+      {
+        "path": "SKILL.md",
+        "bytes": 20572,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/review-work/SKILL.md"
+      }
+    ],
+    "ultimate-browsing": [
+      {
+        "path": "ATTRIBUTION.md",
+        "bytes": 2539,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/ATTRIBUTION.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 10933,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/SKILL.md"
+      },
+      {
+        "path": "engine/AGENTS.md",
+        "bytes": 10667,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/AGENTS.md"
+      },
+      {
+        "path": "engine/__init__.py",
+        "bytes": 668,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/__init__.py"
+      },
+      {
+        "path": "engine/__main__.py",
+        "bytes": 4922,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/__main__.py"
+      },
+      {
+        "path": "engine/bias_check.py",
+        "bytes": 7318,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/bias_check.py"
+      },
+      {
+        "path": "engine/curl_probe.py",
+        "bytes": 2428,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/curl_probe.py"
+      },
+      {
+        "path": "engine/executor.py",
+        "bytes": 6405,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/executor.py"
+      },
+      {
+        "path": "engine/fetch_chain.py",
+        "bytes": 13360,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/fetch_chain.py"
+      },
+      {
+        "path": "engine/referers.py",
+        "bytes": 327,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/referers.py"
+      },
+      {
+        "path": "engine/result_schema.py",
+        "bytes": 1571,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/result_schema.py"
+      },
+      {
+        "path": "engine/summary.py",
+        "bytes": 1198,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/summary.py"
+      },
+      {
+        "path": "engine/surrogate.py",
+        "bytes": 8125,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/surrogate.py"
+      },
+      {
+        "path": "engine/surrogates.yaml",
+        "bytes": 2392,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/surrogates.yaml"
+      },
+      {
+        "path": "engine/templates/package.json",
+        "bytes": 349,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/templates/package.json"
+      },
+      {
+        "path": "engine/templates/playwright_mobile_chrome.js",
+        "bytes": 3729,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/templates/playwright_mobile_chrome.js"
+      },
+      {
+        "path": "engine/templates/playwright_real_chrome.js",
+        "bytes": 5710,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/templates/playwright_real_chrome.js"
+      },
+      {
+        "path": "engine/tests/fixtures/amp_redirect_stub.html",
+        "bytes": 323,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/fixtures/amp_redirect_stub.html"
+      },
+      {
+        "path": "engine/tests/fixtures/search_interstitial.html",
+        "bytes": 92530,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/fixtures/search_interstitial.html"
+      },
+      {
+        "path": "engine/tests/fixtures/wayback_available.json",
+        "bytes": 246,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/fixtures/wayback_available.json"
+      },
+      {
+        "path": "engine/tests/fixtures/wayback_snapshot.html",
+        "bytes": 185773,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/fixtures/wayback_snapshot.html"
+      },
+      {
+        "path": "engine/tests/test_fetch_chain.py",
+        "bytes": 2770,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/test_fetch_chain.py"
+      },
+      {
+        "path": "engine/tests/test_playwright_stealth.py",
+        "bytes": 4013,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/test_playwright_stealth.py"
+      },
+      {
+        "path": "engine/tests/test_playwright_templates.py",
+        "bytes": 10989,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/test_playwright_templates.py"
+      },
+      {
+        "path": "engine/tests/test_surrogate.py",
+        "bytes": 11568,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/test_surrogate.py"
+      },
+      {
+        "path": "engine/tests/test_surrogate_validators.py",
+        "bytes": 3582,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/tests/test_surrogate_validators.py"
+      },
+      {
+        "path": "engine/url_transforms.py",
+        "bytes": 3287,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/url_transforms.py"
+      },
+      {
+        "path": "engine/validators.py",
+        "bytes": 9273,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/validators.py"
+      },
+      {
+        "path": "engine/waf_detector.py",
+        "bytes": 7062,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/waf_detector.py"
+      },
+      {
+        "path": "engine/waf_profiles.yaml",
+        "bytes": 6361,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/engine/waf_profiles.yaml"
+      },
+      {
+        "path": "references/agent-reach/README.md",
+        "bytes": 2259,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/README.md"
+      },
+      {
+        "path": "references/agent-reach/career.md",
+        "bytes": 712,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/career.md"
+      },
+      {
+        "path": "references/agent-reach/dev.md",
+        "bytes": 1382,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/dev.md"
+      },
+      {
+        "path": "references/agent-reach/search.md",
+        "bytes": 821,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/search.md"
+      },
+      {
+        "path": "references/agent-reach/social.md",
+        "bytes": 5693,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/social.md"
+      },
+      {
+        "path": "references/agent-reach/video.md",
+        "bytes": 2740,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/video.md"
+      },
+      {
+        "path": "references/agent-reach/web.md",
+        "bytes": 1910,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/agent-reach/web.md"
+      },
+      {
+        "path": "references/chrome-stealth.md",
+        "bytes": 2299,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/chrome-stealth.md"
+      },
+      {
+        "path": "references/insane-search/README.md",
+        "bytes": 19998,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/README.md"
+      },
+      {
+        "path": "references/insane-search/cache-archive.md",
+        "bytes": 4224,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/cache-archive.md"
+      },
+      {
+        "path": "references/insane-search/fallback.md",
+        "bytes": 6193,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/fallback.md"
+      },
+      {
+        "path": "references/insane-search/jina.md",
+        "bytes": 3938,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/jina.md"
+      },
+      {
+        "path": "references/insane-search/json-api.md",
+        "bytes": 3578,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/json-api.md"
+      },
+      {
+        "path": "references/insane-search/media.md",
+        "bytes": 3550,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/media.md"
+      },
+      {
+        "path": "references/insane-search/metadata.md",
+        "bytes": 2984,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/metadata.md"
+      },
+      {
+        "path": "references/insane-search/naver.md",
+        "bytes": 3399,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/naver.md"
+      },
+      {
+        "path": "references/insane-search/playwright.md",
+        "bytes": 6866,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/playwright.md"
+      },
+      {
+        "path": "references/insane-search/public-api.md",
+        "bytes": 3520,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/public-api.md"
+      },
+      {
+        "path": "references/insane-search/rss.md",
+        "bytes": 3017,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/rss.md"
+      },
+      {
+        "path": "references/insane-search/tls-impersonate.md",
+        "bytes": 6444,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/tls-impersonate.md"
+      },
+      {
+        "path": "references/insane-search/twitter.md",
+        "bytes": 3601,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/references/insane-search/twitter.md"
+      },
+      {
+        "path": "scripts/cookie_crypto.py",
+        "bytes": 2996,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/scripts/cookie_crypto.py"
+      },
+      {
+        "path": "scripts/cookie_domains.py",
+        "bytes": 1159,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/scripts/cookie_domains.py"
+      },
+      {
+        "path": "scripts/cookie_paths.py",
+        "bytes": 3840,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/scripts/cookie_paths.py"
+      },
+      {
+        "path": "scripts/extract_cookies.py",
+        "bytes": 9546,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ultimate-browsing/scripts/extract_cookies.py"
+      }
+    ],
+    "ultrawork": [
+      {
+        "path": "SKILL.md",
+        "bytes": 31107,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ultrawork/SKILL.md"
+      }
+    ],
+    "ulw-execute": [
+      {
+        "path": "SKILL.md",
+        "bytes": 25146,
+        "sha256": "84fc2052600a3f08959e1f4da0b28b80e0604e6bc9e77801e1d32709aac2373b",
+        "source": "packages/shared-skills/skills/ulw-execute/SKILL.md"
+      }
+    ],
+    "ulw-loop": [
+      {
+        "path": "SKILL.md",
+        "bytes": 12630,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-loop/SKILL.md"
+      },
+      {
+        "path": "references/define-goal.md",
+        "bytes": 9096,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-loop/references/define-goal.md"
+      },
+      {
+        "path": "references/full-workflow.md",
+        "bytes": 31304,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-loop/references/full-workflow.md"
+      }
+    ],
+    "ulw-plan": [
+      {
+        "path": "SKILL.md",
+        "bytes": 19296,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/SKILL.md"
+      },
+      {
+        "path": "references/full-workflow.md",
+        "bytes": 33094,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/references/full-workflow.md"
+      },
+      {
+        "path": "references/intent-clear.md",
+        "bytes": 5525,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/references/intent-clear.md"
+      },
+      {
+        "path": "references/intent-unclear.md",
+        "bytes": 6997,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/references/intent-unclear.md"
+      },
+      {
+        "path": "references/stance-calibration.md",
+        "bytes": 9081,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/references/stance-calibration.md"
+      },
+      {
+        "path": "scripts/plan-templates.mjs",
+        "bytes": 7115,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/scripts/plan-templates.mjs"
+      },
+      {
+        "path": "scripts/scaffold-plan.mjs",
+        "bytes": 8336,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-plan/scripts/scaffold-plan.mjs"
+      }
+    ],
+    "ulw-research": [
+      {
+        "path": "ATTRIBUTION.md",
+        "bytes": 3149,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-research/ATTRIBUTION.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 56360,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-research/SKILL.md"
+      },
+      {
+        "path": "references/deliverable-phase.md",
+        "bytes": 18176,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/deliverable-phase.md"
+      },
+      {
+        "path": "references/latex-report.md",
+        "bytes": 11863,
+        "sha256": null,
+        "source": "packages/omo-senpi/skills/ulw-research/references/latex-report.md"
+      },
+      {
+        "path": "references/report-gates.md",
+        "bytes": 7658,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/references/report-gates.md"
+      },
+      {
+        "path": "scripts/cli-support.mjs",
+        "bytes": 3553,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/cli-support.mjs"
+      },
+      {
+        "path": "scripts/contracts.mjs",
+        "bytes": 11535,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/contracts.mjs"
+      },
+      {
+        "path": "scripts/css-lite.mjs",
+        "bytes": 7333,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/css-lite.mjs"
+      },
+      {
+        "path": "scripts/design-spec.mjs",
+        "bytes": 6969,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/design-spec.mjs"
+      },
+      {
+        "path": "scripts/entities.mjs",
+        "bytes": 1535,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/entities.mjs"
+      },
+      {
+        "path": "scripts/entry-guard.mjs",
+        "bytes": 784,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/entry-guard.mjs"
+      },
+      {
+        "path": "scripts/format-extract-css.mjs",
+        "bytes": 5150,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/format-extract-css.mjs"
+      },
+      {
+        "path": "scripts/format-extract.mjs",
+        "bytes": 10219,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/format-extract.mjs"
+      },
+      {
+        "path": "scripts/gates-figures.mjs",
+        "bytes": 7407,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-figures.mjs"
+      },
+      {
+        "path": "scripts/gates-layout.mjs",
+        "bytes": 6380,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-layout.mjs"
+      },
+      {
+        "path": "scripts/gates-static.mjs",
+        "bytes": 6922,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-static.mjs"
+      },
+      {
+        "path": "scripts/gates-structure.mjs",
+        "bytes": 4438,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-structure.mjs"
+      },
+      {
+        "path": "scripts/gates-text.mjs",
+        "bytes": 8140,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/gates-text.mjs"
+      },
+      {
+        "path": "scripts/html-lite.mjs",
+        "bytes": 8868,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/html-lite.mjs"
+      },
+      {
+        "path": "scripts/layout-probe.mjs",
+        "bytes": 4731,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/layout-probe.mjs"
+      },
+      {
+        "path": "scripts/outcome.mjs",
+        "bytes": 10363,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/outcome.mjs"
+      },
+      {
+        "path": "scripts/repair-tracker.mjs",
+        "bytes": 7508,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/repair-tracker.mjs"
+      },
+      {
+        "path": "scripts/report-tools-commands.mjs",
+        "bytes": 11132,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/report-tools-commands.mjs"
+      },
+      {
+        "path": "scripts/report-tools.mjs",
+        "bytes": 1837,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/ulw-research/scripts/report-tools.mjs"
+      }
+    ],
+    "visual-qa": [
+      {
+        "path": "AGENTS.md",
+        "bytes": 3229,
+        "sha256": "b2a9171a6de1368ed7b8689fd7bfed39d4a0e73f420b9be7856eec667c9a7d22",
+        "source": "packages/shared-skills/skills/visual-qa/AGENTS.md"
+      },
+      {
+        "path": "SKILL.md",
+        "bytes": 38062,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/SKILL.md"
+      },
+      {
+        "path": "references/browser-setup.md",
+        "bytes": 5279,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/references/browser-setup.md"
+      },
+      {
+        "path": "scripts/ansi.ts",
+        "bytes": 499,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/ansi.ts"
+      },
+      {
+        "path": "scripts/cli.ts",
+        "bytes": 2479,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/cli.ts"
+      },
+      {
+        "path": "scripts/east-asian-width.ts",
+        "bytes": 3061,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/east-asian-width.ts"
+      },
+      {
+        "path": "scripts/image-diff.ts",
+        "bytes": 3771,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/image-diff.ts"
+      },
+      {
+        "path": "scripts/png-crc.ts",
+        "bytes": 682,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/png-crc.ts"
+      },
+      {
+        "path": "scripts/png-decode.ts",
+        "bytes": 5270,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/png-decode.ts"
+      },
+      {
+        "path": "scripts/png-synth.ts",
+        "bytes": 1670,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/png-synth.ts"
+      },
+      {
+        "path": "scripts/tui-grid.ts",
+        "bytes": 2699,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/tui-grid.ts"
+      },
+      {
+        "path": "scripts/types.ts",
+        "bytes": 1329,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/types.ts"
+      },
+      {
+        "path": "scripts/visual-qa.mjs",
+        "bytes": 16502,
+        "sha256": null,
+        "source": "packages/shared-skills/skills/visual-qa/scripts/visual-qa.mjs"
+      }
+    ]
+  },
+  "targetNames": [
+    "ast-grep",
+    "browser",
+    "coding-agent-sessions",
+    "dag-library",
+    "data-scientist",
+    "debugging",
+    "frontend",
+    "git-master",
+    "give-me-tips",
+    "hyperplan",
+    "init-deep",
+    "lsp-setup",
+    "mass-ulw",
+    "onboarding",
+    "programming",
+    "refactor",
+    "remove-ai-slops",
+    "review-work",
+    "ultimate-browsing",
+    "ultrawork",
+    "ulw-execute",
+    "ulw-loop",
+    "ulw-plan",
+    "ulw-research",
+    "visual-qa"
+  ],
+  "targets": {
+    "mc:H1": {
+      "title": "builtin skill name list",
+      "staged": false,
+      "source": "packages/omo-senpi/src/components/telemetry/event-schemas.ts:31-37",
+      "sha256": "bfccca55b01dd636ca7c47bb22401718b2a91c5424373fea1175e430ce863fba",
+      "note": "Latest BUILTIN_SKILL_NAMES = 25 names (adds browser, ulw-execute; drops start-work). Recorded as targetNames; the native list (crates/omo/components/maho-omo-telemetry/src/product_identity.rs) is owned by another lane and is NOT edited here."
+    },
+    "mc:H2": {
+      "title": "skill staging / drift guard",
+      "staged": false,
+      "sources": [
+        "packages/omo-senpi/plugin/scripts/sync-skills.mjs",
+        "packages/shared-skills/skill-source-filter.mjs"
+      ],
+      "note": "Native analog is tools/package-native.mjs: pinned drift guard preserved, latest mode adds overlay file-set + declared-sha256 integrity; the sync-skills copy filter (ignored dirs/files, *.test.ts, *.pyc, scripts/tests) is mirrored by shouldSkipEntry()."
+    },
+    "mc:H3": {
+      "title": "staged skill set (shipped)",
+      "staged": true,
+      "note": "Latest mode stages exactly this overlay's `selection`; the shipped set is manifest.skills.names of the staged package.",
+      "files": [
+        {
+          "path": "ast-grep/AGENTS.md",
+          "bytes": 3163,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/LICENSE",
+          "bytes": 1068,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/README.md",
+          "bytes": 7675,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/SKILL.md",
+          "bytes": 13371,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/SOURCE",
+          "bytes": 125,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/install.ps1",
+          "bytes": 7165,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/install.sh",
+          "bytes": 7581,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/cli.md",
+          "bytes": 7273,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/install.md",
+          "bytes": 5597,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/patterns.md",
+          "bytes": 5538,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/pitfalls.md",
+          "bytes": 8914,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/recipes.md",
+          "bytes": 7870,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/sgconfig.md",
+          "bytes": 6413,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/references/yaml-rules.md",
+          "bytes": 11383,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/scripts/ast_grep_helper.py",
+          "bytes": 26972,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/tests/smoke.ps1",
+          "bytes": 5701,
+          "sha256": null
+        },
+        {
+          "path": "ast-grep/tests/smoke.sh",
+          "bytes": 7765,
+          "sha256": null
+        },
+        {
+          "path": "browser/ATTRIBUTION.md",
+          "bytes": 1831,
+          "sha256": null
+        },
+        {
+          "path": "browser/SKILL.md",
+          "bytes": 8793,
+          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+        },
+        {
+          "path": "browser/references/commands.md",
+          "bytes": 6304,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/install.md",
+          "bytes": 5957,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/README.md",
+          "bytes": 3361,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/frames-and-humans.md",
+          "bytes": 2642,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/ladder.md",
+          "bytes": 3891,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/network.md",
+          "bytes": 2990,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/recipes/1password.md",
+          "bytes": 2706,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/remote.md",
+          "bytes": 1131,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-doctor.mjs",
+          "bytes": 4224,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-engine-guard.mjs",
+          "bytes": 20543,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-install.mjs",
+          "bytes": 2872,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/omowright.mjs",
+          "bytes": 1861,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/AGENTS.md",
+          "bytes": 4004,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/SKILL.md",
+          "bytes": 11097,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/references/all-platforms.md",
+          "bytes": 6036,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/references/claude.md",
+          "bytes": 2372,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/references/codex.md",
+          "bytes": 1867,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/references/opencode.md",
+          "bytes": 2578,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/references/senpi.md",
+          "bytes": 1815,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/__init__.py",
+          "bytes": 35,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/aside_scanner.py",
+          "bytes": 4985,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/claude.py",
+          "bytes": 2497,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/cli.py",
+          "bytes": 11142,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/codex.py",
+          "bytes": 3908,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/file_scanners.py",
+          "bytes": 12360,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/jsonio.py",
+          "bytes": 1361,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/kiro_scanner.py",
+          "bytes": 3158,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/opencode.py",
+          "bytes": 10002,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/pi_family.py",
+          "bytes": 1829,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/scanners.py",
+          "bytes": 3592,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/sqlite_optional_scanners.py",
+          "bytes": 7689,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/sqlite_scanners.py",
+          "bytes": 6007,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/timeparse.py",
+          "bytes": 1967,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/transcript.py",
+          "bytes": 5714,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/agent_sessions/types.py",
+          "bytes": 1738,
+          "sha256": null
+        },
+        {
+          "path": "coding-agent-sessions/scripts/find-agent-sessions.py",
+          "bytes": 785,
+          "sha256": null
+        },
+        {
+          "path": "dag-library/SKILL.md",
+          "bytes": 4272,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/SKILL.md",
+          "bytes": 5797,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/execution-surfaces.md",
+          "bytes": 4088,
+          "sha256": "c0b49550bd582419ca6d1c62d19462ae8c421eab5fefedaeb90f68d253f6257a"
+        },
+        {
+          "path": "data-scientist/references/placement.md",
+          "bytes": 3424,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/polars-lane.md",
+          "bytes": 3620,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/uv-setup.md",
+          "bytes": 2797,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/visualization.md",
+          "bytes": 3008,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/ensure-js-deps.sh",
+          "bytes": 983,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/ensure-py-deps.sh",
+          "bytes": 1358,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/quick-query.py",
+          "bytes": 3329,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/setup-uv.ps1",
+          "bytes": 2339,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/setup-uv.sh",
+          "bytes": 1833,
+          "sha256": null
+        },
+        {
+          "path": "debugging/SKILL.md",
+          "bytes": 12785,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/00-setup.md",
+          "bytes": 6309,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/02-investigate.md",
+          "bytes": 9445,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/03-flaky-triage.md",
+          "bytes": 4513,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/04-oracle-triple.md",
+          "bytes": 6734,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/05-escalate.md",
+          "bytes": 3211,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/06-fix.md",
+          "bytes": 7247,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/08-qa.md",
+          "bytes": 6278,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/09-cleanup.md",
+          "bytes": 6173,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/partial-runtime-evidence.md",
+          "bytes": 10697,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/bundled-js-binary.md",
+          "bytes": 19353,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/go.md",
+          "bytes": 8727,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/native-binary.md",
+          "bytes": 23097,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/node.md",
+          "bytes": 10699,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/python.md",
+          "bytes": 8861,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/rust.md",
+          "bytes": 8349,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/scripts/dap.mjs",
+          "bytes": 14143,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/scripts/fixture-adapter.mjs",
+          "bytes": 3349,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/browser-qa.md",
+          "bytes": 4451,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/dap.md",
+          "bytes": 5950,
+          "sha256": "141462331a47672a1bd965876eac2d1d2d2f30e692ee8edb16f4a3249feab2c8"
+        },
+        {
+          "path": "debugging/references/tools/frida.md",
+          "bytes": 6540,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/ghidra.md",
+          "bytes": 7360,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/pwndbg.md",
+          "bytes": 7867,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/pwntools.md",
+          "bytes": 7345,
+          "sha256": null
+        },
+        {
+          "path": "frontend/ATTRIBUTION.md",
+          "bytes": 13403,
+          "sha256": null
+        },
+        {
+          "path": "frontend/LICENSE-Apache-2.0.txt",
+          "bytes": 11296,
+          "sha256": null
+        },
+        {
+          "path": "frontend/SKILL.md",
+          "bytes": 21159,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/README.md",
+          "bytes": 27682,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/_INDEX.md",
+          "bytes": 17171,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/ambience-skill.md",
+          "bytes": 18314,
+          "sha256": "28255c9b9f4b5a7c5e25c7a03fa914d10ac5abd235d4c0db7d8e9082f92515f9"
+        },
+        {
+          "path": "frontend/references/design/aside.md",
+          "bytes": 12839,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/clone-from-url.md",
+          "bytes": 5445,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/design-system-architecture.md",
+          "bytes": 14720,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/interaction-skill.md",
+          "bytes": 16388,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/layout-skill.md",
+          "bytes": 8528,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/lazyweb.md",
+          "bytes": 3865,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/print-paged-media.md",
+          "bytes": 6785,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/react-dev-tooling-skill.md",
+          "bytes": 8603,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/stylegallery.md",
+          "bytes": 4298,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/EVIDENCE.md",
+          "bytes": 3755,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/README.md",
+          "bytes": 3763,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/UPSTREAM.md",
+          "bytes": 2234,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-a-direction.md",
+          "bytes": 5358,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-b-execution.md",
+          "bytes": 5753,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-c-review.md",
+          "bytes": 5513,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-d-memory.md",
+          "bytes": 5111,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/orchestration.md",
+          "bytes": 5463,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/routing.md",
+          "bytes": 5358,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/perfection/README.md",
+          "bytes": 11790,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/perfection/react-perf-tooling.md",
+          "bytes": 7898,
+          "sha256": null
+        },
+        {
+          "path": "frontend/scripts/perfection/lighthouse-audit.py",
+          "bytes": 6575,
+          "sha256": null
+        },
+        {
+          "path": "git-master/SKILL.md",
+          "bytes": 5439,
+          "sha256": null
+        },
+        {
+          "path": "give-me-tips/SKILL.md",
+          "bytes": 13342,
+          "sha256": null
+        },
+        {
+          "path": "hyperplan/SKILL.md",
+          "bytes": 27154,
+          "sha256": null
+        },
+        {
+          "path": "init-deep/SKILL.md",
+          "bytes": 14208,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/SKILL.md",
+          "bytes": 5560,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/bash/README.md",
+          "bytes": 2124,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/c-cpp/README.md",
+          "bytes": 2488,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/csharp/README.md",
+          "bytes": 2508,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/dart/README.md",
+          "bytes": 1903,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/elixir/README.md",
+          "bytes": 2150,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/go/README.md",
+          "bytes": 1958,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/haskell/README.md",
+          "bytes": 2307,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/java/README.md",
+          "bytes": 2625,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/julia/README.md",
+          "bytes": 2335,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/kotlin/README.md",
+          "bytes": 2495,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/lua/README.md",
+          "bytes": 2084,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/php/README.md",
+          "bytes": 1928,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/python/README.md",
+          "bytes": 3010,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/ruby/README.md",
+          "bytes": 2388,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/rust/README.md",
+          "bytes": 2028,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/swift/README.md",
+          "bytes": 2289,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/terraform/README.md",
+          "bytes": 2233,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/typescript/README.md",
+          "bytes": 3265,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/yaml/README.md",
+          "bytes": 2377,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/references/zig/README.md",
+          "bytes": 1743,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/scripts/detect-lsp.ts",
+          "bytes": 6631,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/scripts/lsp-server-table.ts",
+          "bytes": 5239,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/scripts/tsconfig.json",
+          "bytes": 397,
+          "sha256": null
+        },
+        {
+          "path": "lsp-setup/scripts/verify-lsp.ts",
+          "bytes": 5218,
+          "sha256": null
+        },
+        {
+          "path": "mass-ulw/SKILL.md",
+          "bytes": 9700,
+          "sha256": null
+        },
+        {
+          "path": "mass-ulw/references/planning.md",
+          "bytes": 23170,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/SKILL.md",
+          "bytes": 17003,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/qa-savings-fixture.sh",
+          "bytes": 7352,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/qa-validator.sh",
+          "bytes": 395,
+          "sha256": null
+        },
+        {
+          "path": "programming/SKILL.md",
+          "bytes": 38165,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/code-smells.md",
+          "bytes": 14108,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/README.md",
+          "bytes": 7568,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/backend-stack.md",
+          "bytes": 16952,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/bootstrap.md",
+          "bytes": 9059,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/bubbletea-v2.md",
+          "bytes": 11584,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/cobra-stack.md",
+          "bytes": 11801,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/concurrency.md",
+          "bytes": 11135,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/data-modeling.md",
+          "bytes": 12272,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/error-handling.md",
+          "bytes": 10383,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/golangci-strict.md",
+          "bytes": 10258,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/grpc-connect.md",
+          "bytes": 10520,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/libraries.md",
+          "bytes": 14059,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/one-liners.md",
+          "bytes": 5650,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/sqlc-pgx.md",
+          "bytes": 13023,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/testing.md",
+          "bytes": 14583,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/type-patterns.md",
+          "bytes": 9774,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/logging.md",
+          "bytes": 10715,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/README.md",
+          "bytes": 15784,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/async-anyio.md",
+          "bytes": 14528,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/data-modeling.md",
+          "bytes": 6768,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/data-processing.md",
+          "bytes": 4266,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/error-handling.md",
+          "bytes": 6123,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/fastapi-stack.md",
+          "bytes": 9458,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/httpx2-optimization.md",
+          "bytes": 12308,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/libraries.md",
+          "bytes": 10820,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/one-liners.md",
+          "bytes": 7966,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/orjson-stack.md",
+          "bytes": 13592,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/pydantic-ai.md",
+          "bytes": 8389,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/pyproject-strict.md",
+          "bytes": 9252,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/textual-tui.md",
+          "bytes": 5261,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/type-patterns.md",
+          "bytes": 4186,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/README.md",
+          "bytes": 9967,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/miri-sanitizers-loom.md",
+          "bytes": 11788,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/ub-taxonomy.md",
+          "bytes": 13568,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/README.md",
+          "bytes": 17027,
+          "sha256": "ee34964be2dad444338530fa62f3c7f802063b76d9a8c3047fb17529520cc1b2"
+        },
+        {
+          "path": "programming/references/rust/api-design.md",
+          "bytes": 6695,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/async-tokio.md",
+          "bytes": 12922,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/axum-stack.md",
+          "bytes": 14524,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/cargo-strict.md",
+          "bytes": 10203,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/clap-stack.md",
+          "bytes": 12426,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/concurrency.md",
+          "bytes": 14686,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/libraries.md",
+          "bytes": 17772,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/macros.md",
+          "bytes": 3364,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/one-liners.md",
+          "bytes": 7684,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/proptest-insta.md",
+          "bytes": 14269,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/type-state.md",
+          "bytes": 13402,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/unsafe-discipline.md",
+          "bytes": 13160,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/zero-cost-safety.md",
+          "bytes": 17347,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/README.md",
+          "bytes": 9393,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/backend-hono.md",
+          "bytes": 21727,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/bootstrap.md",
+          "bytes": 6747,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/data-modeling.md",
+          "bytes": 5126,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/error-handling.md",
+          "bytes": 4825,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/tsconfig-strict.md",
+          "bytes": 4921,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/type-patterns.md",
+          "bytes": 5339,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/check-no-excuse-rules.sh",
+          "bytes": 7234,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/new-project.py",
+          "bytes": 4544,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/.editorconfig",
+          "bytes": 206,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/.golangci.yml",
+          "bytes": 1553,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/AGENTS.md.tmpl",
+          "bytes": 845,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/README.md.tmpl",
+          "bytes": 207,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/Taskfile.yml",
+          "bytes": 706,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/ci.yml",
+          "bytes": 863,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/config.go",
+          "bytes": 643,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/gitignore",
+          "bytes": 99,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/main.go.tmpl",
+          "bytes": 329,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/run.go",
+          "bytes": 350,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/check-no-excuse-rules.py",
+          "bytes": 25489,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/new-project.py",
+          "bytes": 4695,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/new-script.py",
+          "bytes": 3236,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/rust/check-no-excuse-rules.sh",
+          "bytes": 7672,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/rust/new-project.py",
+          "bytes": 5818,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/typescript/check-no-excuse-rules.ts",
+          "bytes": 12813,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/typescript/new-project.ts",
+          "bytes": 4486,
+          "sha256": null
+        },
+        {
+          "path": "refactor/SKILL.md",
+          "bytes": 25289,
+          "sha256": null
+        },
+        {
+          "path": "remove-ai-slops/SKILL.md",
+          "bytes": 21504,
+          "sha256": null
+        },
+        {
+          "path": "review-work/SKILL.md",
+          "bytes": 20572,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/ATTRIBUTION.md",
+          "bytes": 2539,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/SKILL.md",
+          "bytes": 10933,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/AGENTS.md",
+          "bytes": 10667,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/__init__.py",
+          "bytes": 668,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/__main__.py",
+          "bytes": 4922,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/bias_check.py",
+          "bytes": 7318,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/curl_probe.py",
+          "bytes": 2428,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/executor.py",
+          "bytes": 6405,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/fetch_chain.py",
+          "bytes": 13360,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/referers.py",
+          "bytes": 327,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/result_schema.py",
+          "bytes": 1571,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/summary.py",
+          "bytes": 1198,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/surrogate.py",
+          "bytes": 8125,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/surrogates.yaml",
+          "bytes": 2392,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/templates/package.json",
+          "bytes": 349,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/templates/playwright_mobile_chrome.js",
+          "bytes": 3729,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/templates/playwright_real_chrome.js",
+          "bytes": 5710,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/fixtures/amp_redirect_stub.html",
+          "bytes": 323,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/fixtures/search_interstitial.html",
+          "bytes": 92530,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/fixtures/wayback_available.json",
+          "bytes": 246,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/fixtures/wayback_snapshot.html",
+          "bytes": 185773,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/test_fetch_chain.py",
+          "bytes": 2770,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/test_playwright_stealth.py",
+          "bytes": 4013,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/test_playwright_templates.py",
+          "bytes": 10989,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/test_surrogate.py",
+          "bytes": 11568,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/tests/test_surrogate_validators.py",
+          "bytes": 3582,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/url_transforms.py",
+          "bytes": 3287,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/validators.py",
+          "bytes": 9273,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/waf_detector.py",
+          "bytes": 7062,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/engine/waf_profiles.yaml",
+          "bytes": 6361,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/README.md",
+          "bytes": 2259,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/career.md",
+          "bytes": 712,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/dev.md",
+          "bytes": 1382,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/search.md",
+          "bytes": 821,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/social.md",
+          "bytes": 5693,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/video.md",
+          "bytes": 2740,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/agent-reach/web.md",
+          "bytes": 1910,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/chrome-stealth.md",
+          "bytes": 2299,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/README.md",
+          "bytes": 19998,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/cache-archive.md",
+          "bytes": 4224,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/fallback.md",
+          "bytes": 6193,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/jina.md",
+          "bytes": 3938,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/json-api.md",
+          "bytes": 3578,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/media.md",
+          "bytes": 3550,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/metadata.md",
+          "bytes": 2984,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/naver.md",
+          "bytes": 3399,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/playwright.md",
+          "bytes": 6866,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/public-api.md",
+          "bytes": 3520,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/rss.md",
+          "bytes": 3017,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/tls-impersonate.md",
+          "bytes": 6444,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/references/insane-search/twitter.md",
+          "bytes": 3601,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/scripts/cookie_crypto.py",
+          "bytes": 2996,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/scripts/cookie_domains.py",
+          "bytes": 1159,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/scripts/cookie_paths.py",
+          "bytes": 3840,
+          "sha256": null
+        },
+        {
+          "path": "ultimate-browsing/scripts/extract_cookies.py",
+          "bytes": 9546,
+          "sha256": null
+        },
+        {
+          "path": "ultrawork/SKILL.md",
+          "bytes": 31107,
+          "sha256": null
+        },
+        {
+          "path": "ulw-execute/SKILL.md",
+          "bytes": 25146,
+          "sha256": "84fc2052600a3f08959e1f4da0b28b80e0604e6bc9e77801e1d32709aac2373b"
+        },
+        {
+          "path": "ulw-loop/SKILL.md",
+          "bytes": 12630,
+          "sha256": null
+        },
+        {
+          "path": "ulw-loop/references/define-goal.md",
+          "bytes": 9096,
+          "sha256": null
+        },
+        {
+          "path": "ulw-loop/references/full-workflow.md",
+          "bytes": 31304,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/SKILL.md",
+          "bytes": 19296,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/full-workflow.md",
+          "bytes": 33094,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/intent-clear.md",
+          "bytes": 5525,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/intent-unclear.md",
+          "bytes": 6997,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/stance-calibration.md",
+          "bytes": 9081,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/scripts/plan-templates.mjs",
+          "bytes": 7115,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/scripts/scaffold-plan.mjs",
+          "bytes": 8336,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/ATTRIBUTION.md",
+          "bytes": 3149,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/SKILL.md",
+          "bytes": 56360,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/deliverable-phase.md",
+          "bytes": 18176,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/latex-report.md",
+          "bytes": 11863,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/report-gates.md",
+          "bytes": 7658,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/cli-support.mjs",
+          "bytes": 3553,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/contracts.mjs",
+          "bytes": 11535,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/css-lite.mjs",
+          "bytes": 7333,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/design-spec.mjs",
+          "bytes": 6969,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/entities.mjs",
+          "bytes": 1535,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/entry-guard.mjs",
+          "bytes": 784,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/format-extract-css.mjs",
+          "bytes": 5150,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/format-extract.mjs",
+          "bytes": 10219,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-figures.mjs",
+          "bytes": 7407,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-layout.mjs",
+          "bytes": 6380,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-static.mjs",
+          "bytes": 6922,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-structure.mjs",
+          "bytes": 4438,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-text.mjs",
+          "bytes": 8140,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/html-lite.mjs",
+          "bytes": 8868,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/layout-probe.mjs",
+          "bytes": 4731,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/outcome.mjs",
+          "bytes": 10363,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/repair-tracker.mjs",
+          "bytes": 7508,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/report-tools-commands.mjs",
+          "bytes": 11132,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/report-tools.mjs",
+          "bytes": 1837,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/AGENTS.md",
+          "bytes": 3229,
+          "sha256": "b2a9171a6de1368ed7b8689fd7bfed39d4a0e73f420b9be7856eec667c9a7d22"
+        },
+        {
+          "path": "visual-qa/SKILL.md",
+          "bytes": 38062,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/references/browser-setup.md",
+          "bytes": 5279,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/ansi.ts",
+          "bytes": 499,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/cli.ts",
+          "bytes": 2479,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/east-asian-width.ts",
+          "bytes": 3061,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/image-diff.ts",
+          "bytes": 3771,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-crc.ts",
+          "bytes": 682,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-decode.ts",
+          "bytes": 5270,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-synth.ts",
+          "bytes": 1670,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/tui-grid.ts",
+          "bytes": 2699,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/types.ts",
+          "bytes": 1329,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/visual-qa.mjs",
+          "bytes": 16502,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H4": {
+      "title": "skill browser [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/browser/**",
+      "note": "Content only: prose, references and the skill's own loader scripts. No desktop/browser implementation, SDK or engine authorization is implied.",
+      "files": [
+        {
+          "path": "browser/ATTRIBUTION.md",
+          "bytes": 1831,
+          "sha256": null
+        },
+        {
+          "path": "browser/SKILL.md",
+          "bytes": 8793,
+          "sha256": "8ffc0504459d6fbc1cbc03e4203b2f5c8da63c241ff775f61dc4806e3396e8cf"
+        },
+        {
+          "path": "browser/references/commands.md",
+          "bytes": 6304,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/install.md",
+          "bytes": 5957,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/README.md",
+          "bytes": 3361,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/frames-and-humans.md",
+          "bytes": 2642,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/ladder.md",
+          "bytes": 3891,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/owned-engine/network.md",
+          "bytes": 2990,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/recipes/1password.md",
+          "bytes": 2706,
+          "sha256": null
+        },
+        {
+          "path": "browser/references/remote.md",
+          "bytes": 1131,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-doctor.mjs",
+          "bytes": 4224,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-engine-guard.mjs",
+          "bytes": 20543,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/browser-install.mjs",
+          "bytes": 2872,
+          "sha256": null
+        },
+        {
+          "path": "browser/scripts/omowright.mjs",
+          "bytes": 1861,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H5": {
+      "title": "skill ulw-execute [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/ulw-execute/**",
+      "files": [
+        {
+          "path": "ulw-execute/SKILL.md",
+          "bytes": 25146,
+          "sha256": "84fc2052600a3f08959e1f4da0b28b80e0604e6bc9e77801e1d32709aac2373b"
+        }
+      ]
+    },
+    "mc:H6": {
+      "title": "skill start-work (dropped upstream)",
+      "staged": false,
+      "note": "Declared `retired`: latest mode never stages it. Pinned mode is unchanged and still stages it."
+    },
+    "mc:H7": {
+      "title": "ulw-research skill expansion [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/ulw-research/{scripts,references/report-gates.md,references/deliverable-phase.md}",
+      "note": "Overlaid onto the senpi-native ulw-research per sync-skills.mjs sharedAssets (precedence: omo-senpi wins). The shared SKILL.md (f40f613c) is shadowed by the senpi-native SKILL.md and is NOT shipped.",
+      "files": [
+        {
+          "path": "ulw-research/references/deliverable-phase.md",
+          "bytes": 18176,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/report-gates.md",
+          "bytes": 7658,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/cli-support.mjs",
+          "bytes": 3553,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/contracts.mjs",
+          "bytes": 11535,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/css-lite.mjs",
+          "bytes": 7333,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/design-spec.mjs",
+          "bytes": 6969,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/entities.mjs",
+          "bytes": 1535,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/entry-guard.mjs",
+          "bytes": 784,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/format-extract-css.mjs",
+          "bytes": 5150,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/format-extract.mjs",
+          "bytes": 10219,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-figures.mjs",
+          "bytes": 7407,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-layout.mjs",
+          "bytes": 6380,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-static.mjs",
+          "bytes": 6922,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-structure.mjs",
+          "bytes": 4438,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/gates-text.mjs",
+          "bytes": 8140,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/html-lite.mjs",
+          "bytes": 8868,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/layout-probe.mjs",
+          "bytes": 4731,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/outcome.mjs",
+          "bytes": 10363,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/repair-tracker.mjs",
+          "bytes": 7508,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/report-tools-commands.mjs",
+          "bytes": 11132,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/scripts/report-tools.mjs",
+          "bytes": 1837,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H8": {
+      "title": "data-scientist references [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/data-scientist/**",
+      "files": [
+        {
+          "path": "data-scientist/SKILL.md",
+          "bytes": 5797,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/execution-surfaces.md",
+          "bytes": 4088,
+          "sha256": "c0b49550bd582419ca6d1c62d19462ae8c421eab5fefedaeb90f68d253f6257a"
+        },
+        {
+          "path": "data-scientist/references/placement.md",
+          "bytes": 3424,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/polars-lane.md",
+          "bytes": 3620,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/uv-setup.md",
+          "bytes": 2797,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/references/visualization.md",
+          "bytes": 3008,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/ensure-js-deps.sh",
+          "bytes": 983,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/ensure-py-deps.sh",
+          "bytes": 1358,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/quick-query.py",
+          "bytes": 3329,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/setup-uv.ps1",
+          "bytes": 2339,
+          "sha256": null
+        },
+        {
+          "path": "data-scientist/scripts/setup-uv.sh",
+          "bytes": 1833,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H9": {
+      "title": "debugging dap/frida tools [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/debugging/**",
+      "files": [
+        {
+          "path": "debugging/SKILL.md",
+          "bytes": 12785,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/00-setup.md",
+          "bytes": 6309,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/02-investigate.md",
+          "bytes": 9445,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/03-flaky-triage.md",
+          "bytes": 4513,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/04-oracle-triple.md",
+          "bytes": 6734,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/05-escalate.md",
+          "bytes": 3211,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/06-fix.md",
+          "bytes": 7247,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/08-qa.md",
+          "bytes": 6278,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/09-cleanup.md",
+          "bytes": 6173,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/methodology/partial-runtime-evidence.md",
+          "bytes": 10697,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/bundled-js-binary.md",
+          "bytes": 19353,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/go.md",
+          "bytes": 8727,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/native-binary.md",
+          "bytes": 23097,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/node.md",
+          "bytes": 10699,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/python.md",
+          "bytes": 8861,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/runtimes/rust.md",
+          "bytes": 8349,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/scripts/dap.mjs",
+          "bytes": 14143,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/scripts/fixture-adapter.mjs",
+          "bytes": 3349,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/browser-qa.md",
+          "bytes": 4451,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/dap.md",
+          "bytes": 5950,
+          "sha256": "141462331a47672a1bd965876eac2d1d2d2f30e692ee8edb16f4a3249feab2c8"
+        },
+        {
+          "path": "debugging/references/tools/frida.md",
+          "bytes": 6540,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/ghidra.md",
+          "bytes": 7360,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/pwndbg.md",
+          "bytes": 7867,
+          "sha256": null
+        },
+        {
+          "path": "debugging/references/tools/pwntools.md",
+          "bytes": 7345,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H10": {
+      "title": "programming rust refs/scripts [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/programming/**",
+      "files": [
+        {
+          "path": "programming/SKILL.md",
+          "bytes": 38165,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/code-smells.md",
+          "bytes": 14108,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/README.md",
+          "bytes": 7568,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/backend-stack.md",
+          "bytes": 16952,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/bootstrap.md",
+          "bytes": 9059,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/bubbletea-v2.md",
+          "bytes": 11584,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/cobra-stack.md",
+          "bytes": 11801,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/concurrency.md",
+          "bytes": 11135,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/data-modeling.md",
+          "bytes": 12272,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/error-handling.md",
+          "bytes": 10383,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/golangci-strict.md",
+          "bytes": 10258,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/grpc-connect.md",
+          "bytes": 10520,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/libraries.md",
+          "bytes": 14059,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/one-liners.md",
+          "bytes": 5650,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/sqlc-pgx.md",
+          "bytes": 13023,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/testing.md",
+          "bytes": 14583,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/go/type-patterns.md",
+          "bytes": 9774,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/logging.md",
+          "bytes": 10715,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/README.md",
+          "bytes": 15784,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/async-anyio.md",
+          "bytes": 14528,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/data-modeling.md",
+          "bytes": 6768,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/data-processing.md",
+          "bytes": 4266,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/error-handling.md",
+          "bytes": 6123,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/fastapi-stack.md",
+          "bytes": 9458,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/httpx2-optimization.md",
+          "bytes": 12308,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/libraries.md",
+          "bytes": 10820,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/one-liners.md",
+          "bytes": 7966,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/orjson-stack.md",
+          "bytes": 13592,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/pydantic-ai.md",
+          "bytes": 8389,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/pyproject-strict.md",
+          "bytes": 9252,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/textual-tui.md",
+          "bytes": 5261,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/python/type-patterns.md",
+          "bytes": 4186,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/README.md",
+          "bytes": 9967,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/miri-sanitizers-loom.md",
+          "bytes": 11788,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust-ub/ub-taxonomy.md",
+          "bytes": 13568,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/README.md",
+          "bytes": 17027,
+          "sha256": "ee34964be2dad444338530fa62f3c7f802063b76d9a8c3047fb17529520cc1b2"
+        },
+        {
+          "path": "programming/references/rust/api-design.md",
+          "bytes": 6695,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/async-tokio.md",
+          "bytes": 12922,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/axum-stack.md",
+          "bytes": 14524,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/cargo-strict.md",
+          "bytes": 10203,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/clap-stack.md",
+          "bytes": 12426,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/concurrency.md",
+          "bytes": 14686,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/libraries.md",
+          "bytes": 17772,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/macros.md",
+          "bytes": 3364,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/one-liners.md",
+          "bytes": 7684,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/proptest-insta.md",
+          "bytes": 14269,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/type-state.md",
+          "bytes": 13402,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/unsafe-discipline.md",
+          "bytes": 13160,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/rust/zero-cost-safety.md",
+          "bytes": 17347,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/README.md",
+          "bytes": 9393,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/backend-hono.md",
+          "bytes": 21727,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/bootstrap.md",
+          "bytes": 6747,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/data-modeling.md",
+          "bytes": 5126,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/error-handling.md",
+          "bytes": 4825,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/tsconfig-strict.md",
+          "bytes": 4921,
+          "sha256": null
+        },
+        {
+          "path": "programming/references/typescript/type-patterns.md",
+          "bytes": 5339,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/check-no-excuse-rules.sh",
+          "bytes": 7234,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/new-project.py",
+          "bytes": 4544,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/.editorconfig",
+          "bytes": 206,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/.golangci.yml",
+          "bytes": 1553,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/AGENTS.md.tmpl",
+          "bytes": 845,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/README.md.tmpl",
+          "bytes": 207,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/Taskfile.yml",
+          "bytes": 706,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/ci.yml",
+          "bytes": 863,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/config.go",
+          "bytes": 643,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/gitignore",
+          "bytes": 99,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/main.go.tmpl",
+          "bytes": 329,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/go/templates/run.go",
+          "bytes": 350,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/check-no-excuse-rules.py",
+          "bytes": 25489,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/new-project.py",
+          "bytes": 4695,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/python/new-script.py",
+          "bytes": 3236,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/rust/check-no-excuse-rules.sh",
+          "bytes": 7672,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/rust/new-project.py",
+          "bytes": 5818,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/typescript/check-no-excuse-rules.ts",
+          "bytes": 12813,
+          "sha256": null
+        },
+        {
+          "path": "programming/scripts/typescript/new-project.ts",
+          "bytes": 4486,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H11": {
+      "title": "frontend design refs [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/frontend/**",
+      "files": [
+        {
+          "path": "frontend/ATTRIBUTION.md",
+          "bytes": 13403,
+          "sha256": null
+        },
+        {
+          "path": "frontend/LICENSE-Apache-2.0.txt",
+          "bytes": 11296,
+          "sha256": null
+        },
+        {
+          "path": "frontend/SKILL.md",
+          "bytes": 21159,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/README.md",
+          "bytes": 27682,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/_INDEX.md",
+          "bytes": 17171,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/ambience-skill.md",
+          "bytes": 18314,
+          "sha256": "28255c9b9f4b5a7c5e25c7a03fa914d10ac5abd235d4c0db7d8e9082f92515f9"
+        },
+        {
+          "path": "frontend/references/design/aside.md",
+          "bytes": 12839,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/clone-from-url.md",
+          "bytes": 5445,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/design-system-architecture.md",
+          "bytes": 14720,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/interaction-skill.md",
+          "bytes": 16388,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/layout-skill.md",
+          "bytes": 8528,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/lazyweb.md",
+          "bytes": 3865,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/print-paged-media.md",
+          "bytes": 6785,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/react-dev-tooling-skill.md",
+          "bytes": 8603,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/design/stylegallery.md",
+          "bytes": 4298,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/EVIDENCE.md",
+          "bytes": 3755,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/README.md",
+          "bytes": 3763,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/UPSTREAM.md",
+          "bytes": 2234,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-a-direction.md",
+          "bytes": 5358,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-b-execution.md",
+          "bytes": 5753,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-c-review.md",
+          "bytes": 5513,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/lane-d-memory.md",
+          "bytes": 5111,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/orchestration.md",
+          "bytes": 5463,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/designpowers/routing.md",
+          "bytes": 5358,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/perfection/README.md",
+          "bytes": 11790,
+          "sha256": null
+        },
+        {
+          "path": "frontend/references/perfection/react-perf-tooling.md",
+          "bytes": 7898,
+          "sha256": null
+        },
+        {
+          "path": "frontend/scripts/perfection/lighthouse-audit.py",
+          "bytes": 6575,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H12": {
+      "title": "visual-qa refs/AGENTS [new]",
+      "staged": true,
+      "source": "packages/shared-skills/skills/visual-qa/**",
+      "files": [
+        {
+          "path": "visual-qa/AGENTS.md",
+          "bytes": 3229,
+          "sha256": "b2a9171a6de1368ed7b8689fd7bfed39d4a0e73f420b9be7856eec667c9a7d22"
+        },
+        {
+          "path": "visual-qa/SKILL.md",
+          "bytes": 38062,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/references/browser-setup.md",
+          "bytes": 5279,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/ansi.ts",
+          "bytes": 499,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/cli.ts",
+          "bytes": 2479,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/east-asian-width.ts",
+          "bytes": 3061,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/image-diff.ts",
+          "bytes": 3771,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-crc.ts",
+          "bytes": 682,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-decode.ts",
+          "bytes": 5270,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/png-synth.ts",
+          "bytes": 1670,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/tui-grid.ts",
+          "bytes": 2699,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/types.ts",
+          "bytes": 1329,
+          "sha256": null
+        },
+        {
+          "path": "visual-qa/scripts/visual-qa.mjs",
+          "bytes": 16502,
+          "sha256": null
+        }
+      ]
+    },
+    "mc:H13": {
+      "title": "omo-senpi/skills AGENTS + ulw-plan additions [new]",
+      "staged": true,
+      "source": "packages/omo-senpi/skills/**",
+      "note": "Whole senpi-native pool (precedence over shared-skills). AGENTS.md is the pool-root developer doc; it is carried in the overlay at skills/AGENTS.md but is not a staged skill.",
+      "files": [
+        {
+          "path": "dag-library/SKILL.md",
+          "bytes": 4272,
+          "sha256": null
+        },
+        {
+          "path": "give-me-tips/SKILL.md",
+          "bytes": 13342,
+          "sha256": null
+        },
+        {
+          "path": "hyperplan/SKILL.md",
+          "bytes": 27154,
+          "sha256": null
+        },
+        {
+          "path": "init-deep/SKILL.md",
+          "bytes": 14208,
+          "sha256": null
+        },
+        {
+          "path": "mass-ulw/SKILL.md",
+          "bytes": 9700,
+          "sha256": null
+        },
+        {
+          "path": "mass-ulw/references/planning.md",
+          "bytes": 23170,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/SKILL.md",
+          "bytes": 17003,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/qa-savings-fixture.sh",
+          "bytes": 7352,
+          "sha256": null
+        },
+        {
+          "path": "onboarding/qa-validator.sh",
+          "bytes": 395,
+          "sha256": null
+        },
+        {
+          "path": "ultrawork/SKILL.md",
+          "bytes": 31107,
+          "sha256": null
+        },
+        {
+          "path": "ulw-loop/SKILL.md",
+          "bytes": 12630,
+          "sha256": null
+        },
+        {
+          "path": "ulw-loop/references/define-goal.md",
+          "bytes": 9096,
+          "sha256": null
+        },
+        {
+          "path": "ulw-loop/references/full-workflow.md",
+          "bytes": 31304,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/SKILL.md",
+          "bytes": 19296,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/full-workflow.md",
+          "bytes": 33094,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/intent-clear.md",
+          "bytes": 5525,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/intent-unclear.md",
+          "bytes": 6997,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/references/stance-calibration.md",
+          "bytes": 9081,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/scripts/plan-templates.mjs",
+          "bytes": 7115,
+          "sha256": null
+        },
+        {
+          "path": "ulw-plan/scripts/scaffold-plan.mjs",
+          "bytes": 8336,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/ATTRIBUTION.md",
+          "bytes": 3149,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/SKILL.md",
+          "bytes": 56360,
+          "sha256": null
+        },
+        {
+          "path": "ulw-research/references/latex-report.md",
+          "bytes": 11863,
+          "sha256": null
+        }
+      ]
+    }
+  },
+  "loader": {
+    "env": "OMO_SENPI_SKILLS_ROOT",
+    "skillsRoot": "skills",
+    "resolution": "crates/omo/maho-omo/src/component_list.rs: SKILLS_ROOT_ENV + builtin_skills_root() (a set non-empty env root wins, else <exe dir>/skills, else relative skills); consumed in crates/maho-cli/src/cli/omo_mount.rs:38-40 (env root -> OMO_SENPI_PLUGIN_ROOT/skills -> builtin_skills_root). The staged manifest records sources.latestAssets.loader = { skillsRoot: \"skills\", env: \"OMO_SENPI_SKILLS_ROOT\" }.",
+    "invocation": "bun tools/package-native.mjs --binary <mhc> --output <install> --skill-source latest --git-bash-binary <omo-git-bash> --omowright-runtime <materialized runtime dir>; the installed tree is then exercised through the native app-server: `mhc app-server --listen stdio://` with MAHO_CODING_AGENT_DIR=<install> and JSON-RPC `skills/list` (crates/maho-server/src/app_server/skills.rs). The OMO packaged root itself (OMO_SENPI_SKILLS_ROOT -> builtin_skills_root()) is consumed by the onboarding/init-deep-advisor/mass-ulw skill pointers and by the telemetry skill_loaded event (crates/omo/components/maho-omo-telemetry/src/omo_native_tools.rs::builtin_skill_name); it has no CLI/RPC list surface of its own."
+  },
+  "contentBinding": {
+    "files": 335,
+    "declaredSha256": 8,
+    "unbound": 327,
+    "mechanism": "The overlay declares each selected skill's complete file set; staging refuses a set that differs (a missing or extra file is `latest overlay is incomplete`). Every staged file is hashed into the package manifest at stage time, and every non-null declared sha256 is checked against the overlay bytes before staging. The declared bindings for the remaining files are completed at the global final gate (the authoring window forbids hash computation)."
+  }
+}

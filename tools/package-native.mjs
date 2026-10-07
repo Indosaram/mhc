@@ -10,23 +10,53 @@
 //
 //   <staging>/mhc             the CLI binary
 //   <staging>/ast-grep-mcp    the native ast-grep MCP server (AstGrepComponent entry: exe sibling)
-//   <staging>/skills/<name>/  the pinned builtin skills (builtin_skills_root: exe parent + "skills")
+//   <staging>/omo-git-bash    the git-bash MCP sibling (required by --skill-source latest, optional in pinned)
+//   <staging>/skills/<name>/  the builtin skills (builtin_skills_root: exe parent + "skills")
+//   <staging>/skills/browser/runtime/omowright/  the browser skill's materialized engine runtime
+//                            (latest only: staged from --omowright-runtime, never committed)
 //   <staging>/licenses/       retained license texts
-//   <staging>/manifest.json   per-file sha256, sizes, modes, versions and source pins
+//   <staging>/manifest.json   per-file sha256, sizes, modes, versions, pins and the staged skill source
 //
 // The ast-grep MCP entry is the workspace's own `ast-grep-mcp` binary (crate `maho-ast-grep-mcp`,
 // bin `ast-grep-mcp`), which `cargo build --workspace --bins` emits beside `mhc`; nothing is
-// downloaded and no placeholder is written. The staged skill set is the runtime's own
-// `BUILTIN_SKILL_NAMES` (crates/omo/components/maho-omo-telemetry/src/product_identity.rs),
-// cross-checked against the pinned oh-my-openagent list, then copied from the pinned skill roots
-// (`packages/omo-senpi/skills` overrides `packages/shared-skills/skills`, as sync-skills.mjs does).
+// downloaded and no placeholder is written.
+//
+// The staged skill set comes from one explicit source, never a mixture:
+//
+//   pinned (default)  the runtime's own `BUILTIN_SKILL_NAMES`
+//                     (crates/omo/components/maho-omo-telemetry/src/product_identity.rs),
+//                     cross-checked against the pinned oh-my-openagent list, then copied from the
+//                     pinned skill roots (`packages/omo-senpi/skills` overrides
+//                     `packages/shared-skills/skills`, as sync-skills.mjs does).
+//   latest            the repository-owned overlay `assets/omo-latest` (or --latest-assets): it
+//                     declares its own latest commit, its complete skill selection and each owned
+//                     skill's exact file list. The pinned checkout is NOT consulted for skills, so a
+//                     host path cannot silently contribute latest assets; PINS.md is never updated.
+//
+// The git-bash MCP sibling is staged from --git-bash-binary, the single git-bash flag (no aliases).
+// In the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
+// the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
+// pinned baseline it stays optional (absent means no sibling and no placeholder). Either way its
+// source path and sha256 are recorded.
+//
+// The browser skill's engine runtime (upstream `skills/browser/runtime/omowright/`: the bundled
+// omowright entry, its page bundle and the materializer manifest) is build-materialized and never
+// committed, so the selected latest staging REQUIRES --omowright-runtime <dir> and records the
+// runtime's own manifest identity (omowright version, source digest, immutable commit) plus the
+// sha256 of every staged runtime file. A content-only `browser` tree is refused: without the
+// runtime, `skills/browser/scripts/omowright.mjs` throws "omowright is not staged in this skill".
+// The pinned baseline stages no browser runtime (its pinned pool has no `browser` skill).
 //
 // Options:
 //   --binary <path>        the built `mhc` executable (required unless --verify-only/--self-test)
 //   --output <dir>         the staging directory to create (required unless --verify-only/--self-test)
 //   --ast-grep-mcp <path>  native ast-grep MCP binary (default: <binary dir>/ast-grep-mcp)
-//   --omo-root <dir>       pinned oh-my-openagent checkout (default: $OMO_SRC, else $HOME/code/oh-my-openagent)
+//   --omo-root <dir>       pinned oh-my-openagent checkout (default: $OMO_SRC, else $HOME/code/oh-my-openagent); unused by --skill-source latest
 //   --repo-root <dir>      this checkout (default: the tree holding Cargo.toml + crates/)
+//   --skill-source <mode>  skills source: pinned (default) or latest (repository-owned overlay)
+//   --latest-assets <dir>  repository-owned latest overlay root (default: <repo-root>/assets/omo-latest)
+//   --git-bash-binary <p>  git-bash MCP sibling to stage as `omo-git-bash` (required by --skill-source latest)
+//   --omowright-runtime <p>  materialized browser engine runtime directory to stage (required by --skill-source latest)
 //   --force                overwrite an existing non-empty staging directory
 //   --verify-only <dir>    verify an existing staging directory against its manifest
 //   --self-test            run the deterministic fixture self-test
@@ -49,6 +79,30 @@ const LICENSES_DIR = "licenses";
 const CLI_BINARY_NAME = "mhc";
 const AST_GREP_MCP_NAME = "ast-grep-mcp";
 const SCHEMA_VERSION = 1;
+
+// Binary sibling: the git-bash MCP server. Upstream ships it as `packages/git-bash-mcp` with the bin
+// key `omo-git-bash`, and the git-bash crate owner returned that same binary name natively. It is
+// staged only from `--git-bash-binary` (the single git-bash flag, no aliases): the selected product
+// staging (`--skill-source latest`) requires it, the pinned baseline stages it optionally, and its
+// source path + sha256 are recorded in the manifest either way (no guess, no placeholder).
+const GIT_BASH_MCP_NAME = "omo-git-bash";
+
+// The browser skill's engine runtime. Upstream materializes it at build/prepack time from the root
+// `omowright` devDependency into `skills/browser/runtime/omowright/` (gitignored, shipped through the
+// skill's .npmignore); the repository holds no committed copy. The selected latest staging therefore
+// takes it from an explicit `--omowright-runtime <dir>` and refuses a content-only browser tree.
+const BROWSER_SKILL_NAME = "browser";
+const BROWSER_RUNTIME_REL_DIR = "runtime/omowright";
+const BROWSER_RUNTIME_MANIFEST = "manifest.json";
+const BROWSER_RUNTIME_FILES = ["index.js", "page-bundle.js", BROWSER_RUNTIME_MANIFEST];
+const BROWSER_RUNTIME_TARGET_DIR = `${SKILLS_DIR}/${BROWSER_SKILL_NAME}/${BROWSER_RUNTIME_REL_DIR}`;
+
+// The repository-owned latest asset overlay, relative to the repository root. It is read only by
+// `--skill-source latest`; the pinned checkout and this overlay are never mixed.
+const LATEST_ASSETS_DIR = "assets/omo-latest";
+const LATEST_MANIFEST_NAME = "manifest.json";
+const SKILL_SOURCE_MODES = ["pinned", "latest"];
+const DEFAULT_SKILL_SOURCE = "pinned";
 
 // Provenance the manifest must record: the two upstream revisions, each a full 40-hex commit read
 // from PINS.md at stage time. verify() enforces these keys and the commit format from the manifest
@@ -73,6 +127,7 @@ const IGNORED_FILE_NAMES = new Set([".gitignore", ".npmignore", "pyrightconfig.j
 
 function usage() {
 	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--omo-root <dir>] [--repo-root <dir>] [--force]
+       bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> --omowright-runtime <dir> [--latest-assets <dir>]
        bun tools/package-native.mjs --verify-only <dir>
        bun tools/package-native.mjs --self-test`);
 }
@@ -205,21 +260,42 @@ async function parsePins(repoRoot) {
 }
 
 /**
- * Provenance errors for a set of pins and a recorded checkout commit: both expected pins must be
- * full commits and the checkout commit must equal the OMO pin. Shared by stage (checked before the
- * destination is cleared, so a bad pin cannot destroy an existing stage) and verify (checked from
- * the manifest alone, without resolving any host path).
+ * Provenance errors for a set of pins, the recorded staging source and the staged skill source. Both
+ * expected pins must be full commits in every mode. `pinned` additionally requires the recorded
+ * checkout commit to equal the OMO pin. `latest` instead requires the repository-owned overlay's
+ * declared latest commit to be a full commit that is NOT the pinned omo commit, plus the overlay
+ * root and manifest names: the pin must not be mistaken for the latest source. Shared by stage
+ * (checked before the destination is cleared, so a bad pin cannot destroy an existing stage) and
+ * verify (checked from the manifest alone, without resolving any host path).
  */
-function provenanceErrors(pins, omoCommit) {
+function provenanceErrors(pins, sources, skillsSource) {
 	const errors = [];
 	for (const key of PIN_KEYS) {
 		const pin = pins?.[key];
 		if (typeof pin !== "string" || !COMMIT_PATTERN.test(pin)) errors.push(`pin ${key} must be a full 40-hex commit (found ${JSON.stringify(pin)})`);
 	}
-	if (typeof omoCommit !== "string" || !COMMIT_PATTERN.test(omoCommit)) {
-		errors.push(`checkout commit (sources.omoCommit) must be a full 40-hex commit (found ${JSON.stringify(omoCommit)})`);
-	} else if (typeof pins?.omo === "string" && omoCommit !== pins.omo) {
-		errors.push(`checkout commit ${omoCommit} does not match the omo pin ${pins.omo}`);
+	if (skillsSource === "pinned") {
+		const omoCommit = sources?.omoCommit;
+		if (typeof omoCommit !== "string" || !COMMIT_PATTERN.test(omoCommit)) {
+			errors.push(`checkout commit (sources.omoCommit) must be a full 40-hex commit (found ${JSON.stringify(omoCommit)})`);
+		} else if (typeof pins?.omo === "string" && omoCommit !== pins.omo) {
+			errors.push(`checkout commit ${omoCommit} does not match the omo pin ${pins.omo}`);
+		}
+	} else if (skillsSource === "latest") {
+		const latest = sources?.latestAssets;
+		if (latest === null || typeof latest !== "object") {
+			errors.push("sources.latestAssets must record the repository-owned latest asset overlay");
+		} else {
+			if (typeof latest.commit !== "string" || !COMMIT_PATTERN.test(latest.commit)) {
+				errors.push(`latestAssets.commit must be a full 40-hex commit (found ${JSON.stringify(latest.commit)})`);
+			} else if (typeof pins?.omo === "string" && latest.commit === pins.omo) {
+				errors.push(`latestAssets.commit equals the pinned omo commit ${pins.omo}: the overlay must record the latest source, not the pin`);
+			}
+			if (typeof latest.root !== "string" || latest.root.length === 0) errors.push("latestAssets.root must name the repository-owned overlay root");
+			if (typeof latest.manifest !== "string" || latest.manifest.length === 0) errors.push("latestAssets.manifest must name the repository-owned overlay manifest");
+		}
+	} else {
+		errors.push(`skills.source must be one of ${SKILL_SOURCE_MODES.join("|")} (found ${JSON.stringify(skillsSource)})`);
 	}
 	return errors;
 }
@@ -259,8 +335,8 @@ function resolveRepoRoot(explicit) {
 	throw new Error("could not locate the repository root (Cargo.toml + crates/); pass --repo-root");
 }
 
-/** Resolves each builtin skill name to a source directory, senpi-native root first. */
-async function resolveSkillSources(omoRoot, names) {
+/** Resolves each builtin skill name to a pinned-checkout directory, senpi-native root first. */
+async function resolvePinnedSkillSources(omoRoot, names) {
 	const resolved = new Map();
 	for (const root of SKILL_SOURCE_ROOTS) {
 		for (const name of names) {
@@ -272,6 +348,159 @@ async function resolveSkillSources(omoRoot, names) {
 	const missing = names.filter((name) => !resolved.has(name));
 	if (missing.length > 0) throw new Error(`builtin skills missing from the pinned checkout: ${missing.join(", ")}`);
 	return resolved;
+}
+
+/**
+ * Reads the repository-owned latest overlay manifest. The overlay is the only latest skill source, so
+ * it must prove its own identity: the latest commit, the complete selection, the names it retires and
+ * each owned skill's exact file list. Nothing here reads the pinned checkout, so a host path cannot
+ * silently contribute latest assets.
+ */
+async function readLatestOverlay(latestAssetsRoot) {
+	const manifestPath = join(latestAssetsRoot, LATEST_MANIFEST_NAME);
+	if (!existsSync(manifestPath)) throw new Error(`repository-owned latest overlay manifest not found: ${manifestPath}`);
+	let overlay;
+	try {
+		overlay = JSON.parse(await readFile(manifestPath, "utf8"));
+	} catch (error) {
+		throw new Error(`latest overlay manifest is not valid JSON: ${error.message}`);
+	}
+	if (overlay === null || typeof overlay !== "object" || Array.isArray(overlay)) throw new Error(`latest overlay manifest is not an object: ${manifestPath}`);
+	if (typeof overlay.commit !== "string" || !COMMIT_PATTERN.test(overlay.commit)) {
+		throw new Error(`latest overlay manifest commit must be a full 40-hex commit (found ${JSON.stringify(overlay.commit)})`);
+	}
+	const selection = Array.isArray(overlay.selection) ? overlay.selection.filter((name) => typeof name === "string") : [];
+	if (selection.length === 0) throw new Error(`latest overlay manifest declares no selection: ${manifestPath}`);
+	const retired = Array.isArray(overlay.retired) ? overlay.retired.filter((name) => typeof name === "string") : [];
+	const overlap = retired.filter((name) => selection.includes(name));
+	if (overlap.length > 0) throw new Error(`latest overlay selection and retired list overlap: ${overlap.join(", ")}`);
+	const declared = overlay.skills !== null && typeof overlay.skills === "object" && !Array.isArray(overlay.skills) ? overlay.skills : {};
+	// The browser skill's engine runtime is build-materialized, so the overlay must declare its
+	// immutable upstream identity (package + commit) and the exact runtime files; staging then
+	// requires an explicit runtime directory that proves that same identity.
+	let browserRuntime = null;
+	if (overlay.browserRuntime !== undefined && overlay.browserRuntime !== null) {
+		const runtime = overlay.browserRuntime;
+		if (typeof runtime !== "object" || Array.isArray(runtime)) throw new Error(`latest overlay browserRuntime is not an object: ${manifestPath}`);
+		if (runtime.skill !== BROWSER_SKILL_NAME) throw new Error(`latest overlay browserRuntime.skill must be ${JSON.stringify(BROWSER_SKILL_NAME)} (found ${JSON.stringify(runtime.skill)})`);
+		if (runtime.targetDir !== BROWSER_RUNTIME_TARGET_DIR) throw new Error(`latest overlay browserRuntime.targetDir must be ${JSON.stringify(BROWSER_RUNTIME_TARGET_DIR)} (found ${JSON.stringify(runtime.targetDir)})`);
+		if (typeof runtime.materializer !== "string" || runtime.materializer.length === 0) throw new Error("latest overlay browserRuntime must name the repository-owned materializer that produced the runtime");
+		const dependency = runtime.dependency;
+		if (dependency === null || typeof dependency !== "object" || dependency.name !== "omowright" || typeof dependency.commit !== "string" || !COMMIT_PATTERN.test(dependency.commit)) {
+			throw new Error("latest overlay browserRuntime.dependency must record the omowright package and a full 40-hex commit");
+		}
+		browserRuntime = {
+			skill: runtime.skill,
+			targetDir: runtime.targetDir,
+			materializer: runtime.materializer,
+			dependency: {
+				name: dependency.name,
+				spec: typeof dependency.spec === "string" ? dependency.spec : null,
+				commit: dependency.commit,
+				version: typeof dependency.version === "string" ? dependency.version : null,
+			},
+		};
+	}
+	return {
+		root: latestAssetsRoot,
+		manifestPath,
+		commit: overlay.commit,
+		names: [...new Set(selection)].sort(),
+		retired,
+		declared,
+		browserRuntime,
+		versions: {
+			omoSenpi: typeof overlay.versions?.omoSenpi === "string" ? overlay.versions.omoSenpi : null,
+			sharedSkills: typeof overlay.versions?.sharedSkills === "string" ? overlay.versions.sharedSkills : null,
+		},
+	};
+}
+
+/**
+ * Resolves each selected latest skill to its repository-owned overlay directory. The on-disk file set
+ * must equal the overlay manifest's declaration for that skill: a partial or extra tree is refused
+ * rather than shipped short, so the overlay can never publish a silently truncated skill.
+ */
+async function resolveLatestSkillSources(overlay) {
+	const resolved = new Map();
+	const errors = [];
+	for (const name of overlay.names) {
+		const directory = join(overlay.root, SKILLS_DIR, name);
+		if (!existsSync(join(directory, "SKILL.md"))) {
+			errors.push(`missing skill tree: ${LATEST_ASSETS_DIR}/${SKILLS_DIR}/${name}`);
+			continue;
+		}
+		const declared = overlay.declared[name];
+		if (!Array.isArray(declared) || declared.length === 0) {
+			errors.push(`skill ${name} has no declared file list in ${LATEST_MANIFEST_NAME}`);
+			continue;
+		}
+		const declaredPaths = declared.map((entry) => (entry !== null && typeof entry === "object" ? entry.path : null));
+		if (declaredPaths.some((path) => typeof path !== "string" || path.length === 0)) {
+			errors.push(`skill ${name} declares an entry without a path`);
+			continue;
+		}
+		const onDisk = [...(await listFiles(directory))].sort();
+		const declaredSorted = [...declaredPaths].sort();
+		if (declaredSorted.join("\n") !== onDisk.join("\n")) {
+			errors.push(`skill ${name} file set differs from its declaration: on-disk=[${onDisk.join(", ")}] declared=[${declaredSorted.join(", ")}]`);
+			continue;
+		}
+		// A declared sha256 binds the shipped bytes to the recorded identity. A mismatch is a
+		// corrupted overlay and refuses the run; a null hash is simply not yet bound.
+		const mismatched = [];
+		for (const entry of declared) {
+			if (typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.sha256)) continue;
+			if ((await sha256(join(directory, entry.path))) !== entry.sha256) mismatched.push(entry.path);
+		}
+		if (mismatched.length > 0) {
+			errors.push(`skill ${name} files disagree with their recorded sha256: ${mismatched.join(", ")}`);
+			continue;
+		}
+		resolved.set(name, { directory, root: `${LATEST_ASSETS_DIR}/${SKILLS_DIR}` });
+	}
+	if (errors.length > 0) throw new Error(`latest overlay is incomplete:\n  ${errors.join("\n  ")}`);
+	return resolved;
+}
+
+/**
+ * Resolves the browser skill's materialized engine runtime. The repository holds no committed copy
+ * (upstream gitignores `skills/browser/runtime/omowright`), so the selected latest staging requires
+ * an explicit `--omowright-runtime <dir>` and refuses a content-only browser tree. The runtime's own
+ * manifest must carry the immutable identity the overlay declares (upstream package + commit), so a
+ * foreign or stale runtime cannot be staged silently.
+ */
+async function resolveBrowserRuntime(overlay, explicit) {
+	const declared = overlay.browserRuntime;
+	if (declared === null) return null;
+	if (!overlay.names.includes(declared.skill)) {
+		throw new Error(`latest overlay declares a ${declared.skill} runtime but does not select the ${declared.skill} skill`);
+	}
+	if (explicit === undefined || explicit === null) {
+		throw new Error(`--skill-source latest ships the ${declared.skill} skill engine and requires --omowright-runtime <materialized runtime dir>; materialize it with \`node ${declared.materializer} --source <omowright checkout> --target <dir>\``);
+	}
+	const directory = resolve(explicit);
+	if (!existsSync(directory) || !(await stat(directory)).isDirectory()) throw new Error(`--omowright-runtime is not a directory: ${directory}`);
+	for (const file of BROWSER_RUNTIME_FILES) {
+		const candidate = join(directory, file);
+		if (!existsSync(candidate) || !(await stat(candidate)).isFile()) throw new Error(`--omowright-runtime is missing ${file}: ${candidate}`);
+	}
+	let runtimeManifest;
+	try {
+		runtimeManifest = JSON.parse(await readFile(join(directory, BROWSER_RUNTIME_MANIFEST), "utf8"));
+	} catch (error) {
+		throw new Error(`--omowright-runtime manifest is not valid JSON: ${error.message}`);
+	}
+	if (runtimeManifest === null || typeof runtimeManifest !== "object" || Array.isArray(runtimeManifest)) {
+		throw new Error(`--omowright-runtime manifest is not an object: ${directory}`);
+	}
+	if (typeof runtimeManifest.version !== "string" || runtimeManifest.version.length === 0) throw new Error(`--omowright-runtime manifest records no omowright version: ${directory}`);
+	if (typeof runtimeManifest.sourceDigest !== "string" || !/^[0-9a-f]{64}$/.test(runtimeManifest.sourceDigest)) throw new Error(`--omowright-runtime manifest records no 64-hex sourceDigest: ${directory}`);
+	if (typeof runtimeManifest.commit !== "string" || !COMMIT_PATTERN.test(runtimeManifest.commit)) throw new Error(`--omowright-runtime manifest records no full omowright commit: ${directory}`);
+	if (runtimeManifest.commit !== declared.dependency.commit) {
+		throw new Error(`--omowright-runtime was materialized from omowright ${runtimeManifest.commit}, not the overlay-declared commit ${declared.dependency.commit}`);
+	}
+	return { directory, version: runtimeManifest.version, sourceDigest: runtimeManifest.sourceDigest };
 }
 
 async function fileEntry(output, relPath, source) {
@@ -289,6 +518,23 @@ export async function stage(options) {
 	if (!existsSync(astGrepMcp) || !(await stat(astGrepMcp)).isFile()) {
 		throw new Error(`native ast-grep MCP server not found at ${astGrepMcp}: build the workspace bins (cargo build --workspace --bins) so ${AST_GREP_MCP_NAME} sits beside ${CLI_BINARY_NAME}, or pass --ast-grep-mcp`);
 	}
+	// The staging source is explicit and never inferred. `latest` reads only the repository-owned
+	// overlay, so the pinned checkout can never silently contribute latest assets.
+	const skillSource = options.skillSource ?? DEFAULT_SKILL_SOURCE;
+	if (!SKILL_SOURCE_MODES.includes(skillSource)) {
+		throw new Error(`--skill-source must be one of ${SKILL_SOURCE_MODES.join("|")} (found ${JSON.stringify(skillSource)})`);
+	}
+	// Sibling: staged only when an operator names an existing file, never guessed.
+	const gitBashMcp = options.gitBashBinary === undefined || options.gitBashBinary === null ? null : resolve(options.gitBashBinary);
+	if (gitBashMcp !== null && (!existsSync(gitBashMcp) || !(await stat(gitBashMcp)).isFile())) {
+		throw new Error(`--git-bash-binary is not a regular file: ${gitBashMcp}`);
+	}
+	// The selected product staging ships the git-bash MCP sibling, so `latest` requires the actual
+	// built sibling by path: an absent sibling refuses the selected delivery instead of silently
+	// staging the baseline. The pinned baseline keeps it optional.
+	if (skillSource === "latest" && gitBashMcp === null) {
+		throw new Error(`--skill-source latest is the selected product staging and requires --git-bash-binary <built ${GIT_BASH_MCP_NAME}>; the pinned baseline stages the sibling optionally`);
+	}
 	// Refuse an unsafe or non-empty destination before anything is written. The destination is not
 	// removed here: every input is resolved and read first, so a refused run leaves an existing
 	// stage intact.
@@ -297,16 +543,53 @@ export async function stage(options) {
 	const outputExists = existsSync(output);
 	if (outputExists && (await readdir(output)).length > 0 && !options.force) throw new Error(`staging directory is not empty: ${output} (pass --force to overwrite)`);
 
-	// Resolve, read and validate every input before the destination is cleared: the checkout, the
-	// builtin skill set and its sources, the license sources, and the manifest provenance (versions,
-	// pins and the actual checkout commit, whose shape and source match are checked here). A bad
-	// checkout, a missing skill, a missing license text or a mismatched pin refuses the run without
-	// destroying an existing stage. The destination is removed only once those inputs are in hand; a
-	// copy failure after that point can still leave a partial directory, which verify() then reports.
-	const omoRoot = resolveOmoRoot(options.omoRoot);
+	// Resolve, read and validate every input before the destination is cleared: the staged skill source
+	// (pinned checkout or repository-owned overlay), the builtin skill set and its sources, the license
+	// sources, and the manifest provenance (versions, pins and the staged-source identity, whose shape
+	// and match are checked here). A bad source, a missing skill, a missing license text or invalid
+	// provenance refuses the run without destroying an existing stage. The destination is removed only
+	// once those inputs are in hand; a copy failure after that point can still leave a partial
+	// directory, which verify() then reports.
 	const repoRoot = resolveRepoRoot(options.repoRoot);
-	const skillNames = await parseBuiltinSkillNames(repoRoot, omoRoot);
-	const sources = await resolveSkillSources(omoRoot, skillNames);
+	let omoRoot = null;
+	let overlay = null;
+	let browserRuntime = null;
+	let skillNames = [];
+	let sources = new Map();
+	let stagedSource;
+	if (skillSource === "pinned") {
+		omoRoot = resolveOmoRoot(options.omoRoot);
+		skillNames = await parseBuiltinSkillNames(repoRoot, omoRoot);
+		sources = await resolvePinnedSkillSources(omoRoot, skillNames);
+		stagedSource = { skillsSource: "pinned", omoRoot, omoCommit: await gitHead(omoRoot) };
+	} else {
+		overlay = await readLatestOverlay(resolve(options.latestAssets ?? join(repoRoot, LATEST_ASSETS_DIR)));
+		skillNames = overlay.names;
+		sources = await resolveLatestSkillSources(overlay);
+		browserRuntime = await resolveBrowserRuntime(overlay, options.omowrightRuntime);
+		// The installed loader binds the staged tree by this root/env pair; recording it keeps the
+		// overlay source identity, the complete staged content and the loader that resolves it together.
+		const latestAssets = {
+			root: overlay.root,
+			commit: overlay.commit,
+			manifest: LATEST_MANIFEST_NAME,
+			loader: { skillsRoot: SKILLS_DIR, env: "OMO_SENPI_SKILLS_ROOT" },
+		};
+		// The staged engine runtime, with the immutable upstream identity it was materialized from.
+		// Recorded only when the overlay declares one, so a pinned-shaped overlay cannot claim a runtime.
+		if (browserRuntime !== null) {
+			latestAssets.browserRuntime = {
+				skill: BROWSER_SKILL_NAME,
+				targetDir: BROWSER_RUNTIME_TARGET_DIR,
+				materializer: overlay.browserRuntime.materializer,
+				dependency: overlay.browserRuntime.dependency,
+				version: browserRuntime.version,
+				sourceDigest: browserRuntime.sourceDigest,
+				files: BROWSER_RUNTIME_FILES.map((file) => `${BROWSER_RUNTIME_TARGET_DIR}/${file}`),
+			};
+		}
+		stagedSource = { skillsSource: "latest", latestAssets };
+	}
 	const licenseSources = new Map();
 	for (const license of LICENSE_FILES) {
 		const source = join(repoRoot, license.source);
@@ -314,11 +597,10 @@ export async function stage(options) {
 		licenseSources.set(license.name, source);
 	}
 	const workspaceVersion = await parseWorkspaceVersion(repoRoot);
-	const omoSenpiVersion = await parsePackageVersion(join(omoRoot, "packages/omo-senpi/package.json"));
-	const sharedSkillsVersion = await parsePackageVersion(join(omoRoot, "packages/shared-skills/package.json"));
+	const omoSenpiVersion = overlay === null ? await parsePackageVersion(join(omoRoot, "packages/omo-senpi/package.json")) : overlay.versions.omoSenpi;
+	const sharedSkillsVersion = overlay === null ? await parsePackageVersion(join(omoRoot, "packages/shared-skills/package.json")) : overlay.versions.sharedSkills;
 	const pins = await parsePins(repoRoot);
-	const omoCommit = await gitHead(omoRoot);
-	const provenance = provenanceErrors(pins, omoCommit);
+	const provenance = provenanceErrors(pins, stagedSource, skillSource);
 	if (provenance.length > 0) throw new Error(`refusing to stage with invalid provenance:\n  ${provenance.join("\n  ")}`);
 
 	if (outputExists) await rm(output, { recursive: true, force: true });
@@ -331,6 +613,10 @@ export async function stage(options) {
 	executables.push(await fileEntry(output, CLI_BINARY_NAME, binary));
 	await copyExecutable(astGrepMcp, join(output, AST_GREP_MCP_NAME));
 	executables.push(await fileEntry(output, AST_GREP_MCP_NAME, astGrepMcp));
+	if (gitBashMcp !== null) {
+		await copyExecutable(gitBashMcp, join(output, GIT_BASH_MCP_NAME));
+		executables.push(await fileEntry(output, GIT_BASH_MCP_NAME, gitBashMcp));
+	}
 
 	const licenses = [];
 	for (const license of LICENSE_FILES) {
@@ -348,10 +634,25 @@ export async function stage(options) {
 		}
 	}
 
+	// The browser engine runtime is shipped beside its skill but is not part of the overlay's declared
+	// per-skill file set (the repository holds no committed copy), so it is copied here and hashed
+	// into the same manifest the runtime files land in.
+	if (browserRuntime !== null) {
+		for (const file of BROWSER_RUNTIME_FILES) {
+			const relPath = `${BROWSER_RUNTIME_TARGET_DIR}/${file}`;
+			await mkdir(dirname(join(output, relPath)), { recursive: true });
+			await copyFile(join(browserRuntime.directory, file), join(output, relPath));
+			skillFiles.push(await fileEntry(output, relPath, `${LATEST_ASSETS_DIR}.browserRuntime/${file}`));
+		}
+	}
+
+	const layout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	if (gitBashMcp !== null) layout.gitBashMcp = GIT_BASH_MCP_NAME;
+
 	const manifest = {
 		schemaVersion: SCHEMA_VERSION,
 		generator: "tools/package-native.mjs",
-		layout: { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME },
+		layout,
 		versions: {
 			mhc: workspaceVersion,
 			astGrepMcp: workspaceVersion,
@@ -359,10 +660,10 @@ export async function stage(options) {
 			sharedSkills: sharedSkillsVersion,
 		},
 		pins,
-		sources: { omoRoot, omoCommit },
+		sources: stagedSource,
 		executables,
 		licenses,
-		skills: { names: stagedNames, files: skillFiles },
+		skills: { source: skillSource, names: stagedNames, files: skillFiles },
 	};
 	await writeFile(join(output, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
@@ -394,10 +695,17 @@ export async function verify(directory) {
 	for (const [key, value] of Object.entries(expectedLayout)) {
 		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
 	}
+	// The optional git-bash sibling is absent when the key is absent; when the key is present it must
+	// name the declared sibling, so a manifest cannot claim a sibling under a foreign name.
+	if (manifest.layout?.gitBashMcp !== undefined && manifest.layout.gitBashMcp !== GIT_BASH_MCP_NAME) {
+		errors.push(`layout.gitBashMcp must be ${JSON.stringify(GIT_BASH_MCP_NAME)} (found ${JSON.stringify(manifest.layout.gitBashMcp)})`);
+	}
 	// Provenance: the manifest must record both expected upstream pins as full commits, and the
-	// actual checkout commit it staged from must equal the OMO pin. This is read from the manifest
-	// alone, so a staged directory verifies without resolving any host path.
-	for (const error of provenanceErrors(manifest.pins, manifest.sources?.omoCommit)) errors.push(error);
+	// staging source it actually used must prove its identity. `pinned` requires the recorded checkout
+	// commit to equal the OMO pin; `latest` requires the repository-owned overlay's declared latest
+	// commit and never compares the pin, because the pin is not the latest source. This is read from
+	// the manifest alone, so a staged directory verifies without resolving any host path.
+	for (const error of provenanceErrors(manifest.pins, manifest.sources, manifest.skills?.source)) errors.push(error);
 	const check = async (entry) => {
 		if (entry === null || typeof entry !== "object" || typeof entry.path !== "string") {
 			errors.push("manifest entry without a path");
@@ -427,6 +735,30 @@ export async function verify(directory) {
 	// retained license texts must be present, so a manifest cannot omit a shipped asset.
 	for (const required of [CLI_BINARY_NAME, AST_GREP_MCP_NAME]) {
 		if (!executables.some((entry) => entry?.path === required)) errors.push(`required executable missing from the manifest: ${required}`);
+	}
+	// The optional git-bash sibling is required exactly when the manifest declares it.
+	if (manifest.layout?.gitBashMcp !== undefined && !executables.some((entry) => entry?.path === GIT_BASH_MCP_NAME)) {
+		errors.push(`declared git-bash sibling is missing from the manifest executables: ${GIT_BASH_MCP_NAME}`);
+	}
+	// The browser engine runtime is required exactly when the manifest declares it: a declared
+	// runtime whose files are not hashed would ship a `browser` skill whose loader throws.
+	const declaredRuntime = manifest.sources?.latestAssets?.browserRuntime;
+	if (declaredRuntime !== undefined) {
+		if (declaredRuntime === null || typeof declaredRuntime !== "object" || Array.isArray(declaredRuntime)) {
+			errors.push("sources.latestAssets.browserRuntime must record the staged browser engine runtime");
+		} else {
+			if (declaredRuntime.skill !== BROWSER_SKILL_NAME) errors.push(`browserRuntime.skill must be ${JSON.stringify(BROWSER_SKILL_NAME)} (found ${JSON.stringify(declaredRuntime.skill)})`);
+			if (declaredRuntime.targetDir !== BROWSER_RUNTIME_TARGET_DIR) errors.push(`browserRuntime.targetDir must be ${JSON.stringify(BROWSER_RUNTIME_TARGET_DIR)} (found ${JSON.stringify(declaredRuntime.targetDir)})`);
+			if (typeof declaredRuntime.dependency?.commit !== "string" || !COMMIT_PATTERN.test(declaredRuntime.dependency.commit)) errors.push("browserRuntime.dependency.commit must be a full 40-hex commit");
+			if (typeof declaredRuntime.version !== "string" || declaredRuntime.version.length === 0) errors.push("browserRuntime.version must record the materialized omowright version");
+			if (typeof declaredRuntime.sourceDigest !== "string" || !/^[0-9a-f]{64}$/.test(declaredRuntime.sourceDigest)) errors.push("browserRuntime.sourceDigest must be a 64-hex digest");
+			const runtimeFiles = Array.isArray(declaredRuntime.files) ? declaredRuntime.files : [];
+			if (runtimeFiles.length === 0) errors.push("browserRuntime.files must list the staged runtime files");
+			for (const relPath of runtimeFiles) {
+				if (!skillFiles.some((entry) => entry?.path === relPath)) errors.push(`declared browser runtime file is not in the hashed manifest: ${relPath}`);
+				if (typeof relPath === "string" && !existsSync(join(directory, relPath))) errors.push(`missing browser runtime file: ${relPath}`);
+			}
+		}
 	}
 	for (const license of LICENSE_FILES) {
 		const relPath = `${LICENSES_DIR}/${license.name}`;
@@ -611,6 +943,154 @@ async function selfTest() {
 		const preserved = await readFile(join(out, CLI_BINARY_NAME));
 		await expectReject("rejected input preserves the existing stage", stage({ binary: join(binDir, "mhc"), output: out, omoRoot: omo, repoRoot: repo, force: true }), "drifted");
 		check("existing stage survives a rejected restage", existsSync(join(out, CLI_BINARY_NAME)) && (await readFile(join(out, CLI_BINARY_NAME))).equals(preserved));
+
+		// The pinned lists were mutated above; restore them so the source-selection cases below can
+		// stage the pinned default again and prove the two modes are independent.
+		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
+		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
+
+		// The selected product staging (`--skill-source latest`) requires the git-bash sibling, so the
+		// built sibling is present before the latest cases run.
+		await writeFile(join(binDir, GIT_BASH_MCP_NAME), "#!/bin/sh\necho git-bash\n");
+
+		// --- latest source selection: the repository-owned overlay is the only latest skill source ---
+		// The overlay declares its own commit, its selection, the names it retires and each owned
+		// skill's complete file list; staging must prove that set rather than scan a directory.
+		const overlayRoot = join(repo, "assets/omo-latest");
+		const overlaySkills = join(overlayRoot, SKILLS_DIR);
+		const putOverlaySkill = async (name, marker) => {
+			await mkdir(join(overlaySkills, name, "references"), { recursive: true });
+			await writeFile(join(overlaySkills, name, "SKILL.md"), `# ${name}\n${marker}\n`);
+			await writeFile(join(overlaySkills, name, "references/note.md"), `note ${marker}\n`);
+			return [{ path: "SKILL.md", sha256: null }, { path: "references/note.md", sha256: null }];
+		};
+		const overlayFiles = { alpha: await putOverlaySkill("alpha", "latest"), delta: await putOverlaySkill("delta", "latest") };
+		const overlayCommit = "d".repeat(40);
+		const writeOverlay = async (extra = {}) => {
+			await writeFile(
+				join(overlayRoot, MANIFEST_NAME),
+				`${JSON.stringify({ schemaVersion: 1, name: "omo-latest", commit: overlayCommit, versions: { omoSenpi: "6.0.0", sharedSkills: "0.2.0" }, selection: ["alpha", "delta"], retired: ["start-work"], skills: overlayFiles, ...extra }, null, 2)}\n`,
+			);
+		};
+		await writeOverlay();
+
+		const latestOut = join(root, "latest-out");
+		const latest = await stage({ binary: join(binDir, "mhc"), output: latestOut, repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) });
+		check("latest source stages the overlay selection", latest.manifest.skills.source === "latest" && JSON.stringify(latest.manifest.skills.names) === JSON.stringify(["alpha", "delta"]));
+		check("latest source records the overlay identity", latest.manifest.sources.latestAssets.commit === overlayCommit && latest.manifest.sources.latestAssets.manifest === MANIFEST_NAME);
+		check("latest source records no pinned checkout", latest.manifest.sources.omoRoot === undefined && latest.manifest.sources.omoCommit === undefined);
+		check("latest source retires the declared and unselected names", !existsSync(join(latestOut, SKILLS_DIR, "start-work", "SKILL.md")) && !existsSync(join(latestOut, SKILLS_DIR, "beta", "SKILL.md")));
+		check("latest staged bytes equal the overlay bytes", (await readFile(join(latestOut, SKILLS_DIR, "alpha", "SKILL.md"), "utf8")) === (await readFile(join(overlaySkills, "alpha", "SKILL.md"), "utf8")));
+		check("latest overlay versions are recorded", latest.manifest.versions.omoSenpi === "6.0.0" && latest.manifest.versions.sharedSkills === "0.2.0");
+		check("latest manifest verifies", (await verify(latestOut)).ok);
+		check("selected latest staging stages the git-bash sibling", existsSync(join(latestOut, GIT_BASH_MCP_NAME)) && latest.manifest.layout.gitBashMcp === GIT_BASH_MCP_NAME);
+		check("latest records the installed loader binding", latest.manifest.sources.latestAssets.loader?.env === "OMO_SENPI_SKILLS_ROOT" && latest.manifest.sources.latestAssets.loader?.skillsRoot === SKILLS_DIR);
+
+		const pinnedDefault = await stage({ binary: join(binDir, "mhc"), output: join(root, "pinned-default"), omoRoot: omo, repoRoot: repo });
+		check("pinned remains the default source", pinnedDefault.manifest.skills.source === "pinned" && JSON.stringify(pinnedDefault.manifest.skills.names) === JSON.stringify(["alpha", "beta", "gamma"]));
+		check("pinned and latest select independently", (await verify(join(root, "pinned-default"))).ok && latest.manifest.skills.names.length !== pinnedDefault.manifest.skills.names.length);
+
+		await writeOverlay({ commit: omoCommit });
+		await expectReject("latest overlay reusing the pin is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-pin"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "must record the latest source, not the pin");
+		await writeOverlay();
+		await expectReject("an unknown skill source is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "bad-source"), repoRoot: repo, skillSource: "nightly" }), "--skill-source");
+		await writeOverlay({ selection: ["alpha", "delta", "missing-tree"] });
+		await expectReject("latest selection without a tree is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-missing"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "missing skill tree");
+		await writeOverlay();
+		await rm(join(overlaySkills, "delta/references/note.md"));
+		await expectReject("latest skill whose file set differs from its declaration is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-short"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "file set differs from its declaration");
+		await writeFile(join(overlaySkills, "delta/references/note.md"), "note latest\n");
+		await writeOverlay({ skills: { ...overlayFiles, delta: [{ path: "SKILL.md", sha256: "0".repeat(64) }, { path: "references/note.md", sha256: null }] } });
+		await expectReject("a declared overlay sha256 that disagrees with the bytes is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-hash"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "disagree with their recorded sha256");
+		await writeOverlay();
+		await rm(join(overlayRoot, MANIFEST_NAME));
+		await expectReject("a missing latest overlay manifest is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-manifest"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "overlay manifest not found");
+		await writeOverlay();
+
+		// --- git-bash MCP sibling: required in the selected latest staging, optional in pinned ---
+		await expectReject("selected latest staging without the git-bash sibling is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-gitbash"), repoRoot: repo, skillSource: "latest" }), "--git-bash-binary");
+		await writeFile(join(binDir, GIT_BASH_MCP_NAME), "#!/bin/sh\necho git-bash\n");
+		const gitBashOut = join(root, "with-git-bash");
+		const withGitBash = await stage({ binary: join(binDir, "mhc"), output: gitBashOut, omoRoot: omo, repoRoot: repo, gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) });
+		check("git-bash sibling is staged when named", existsSync(join(gitBashOut, GIT_BASH_MCP_NAME)) && withGitBash.manifest.layout.gitBashMcp === GIT_BASH_MCP_NAME);
+		check("git-bash sibling is a hashed manifest executable", withGitBash.manifest.executables.some((entry) => entry.path === GIT_BASH_MCP_NAME) && (await verify(gitBashOut)).ok);
+		check("git-bash sibling is absent when not named", !existsSync(join(out, GIT_BASH_MCP_NAME)) && result.manifest.layout.gitBashMcp === undefined);
+		const gitBashDroppedDir = join(root, "git-bash-dropped");
+		await copyTree(gitBashOut, gitBashDroppedDir);
+		const gitBashDropped = JSON.parse(await readFile(join(gitBashDroppedDir, MANIFEST_NAME), "utf8"));
+		gitBashDropped.executables = gitBashDropped.executables.filter((entry) => entry.path !== GIT_BASH_MCP_NAME);
+		await writeFile(join(gitBashDroppedDir, MANIFEST_NAME), `${JSON.stringify(gitBashDropped, null, 2)}\n`);
+		const gitBashDroppedResult = await verify(gitBashDroppedDir);
+		check("a declared git-bash sibling missing from the manifest is rejected", !gitBashDroppedResult.ok && gitBashDroppedResult.errors.some((error) => error.includes("git-bash sibling is missing") && error.includes(GIT_BASH_MCP_NAME)));
+		await expectReject("a named git-bash sibling that is not a file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "git-bash-missing"), omoRoot: omo, repoRoot: repo, gitBashBinary: join(binDir, "nope") }), "not a regular file");
+
+		// --- browser engine runtime: the selected latest staging ships a materialized runtime ---
+		// The overlay declares the runtime's immutable upstream identity; staging requires an explicit
+		// runtime directory whose own manifest proves that same identity, and refuses a content-only
+		// browser tree. The runtime is not part of the overlay's declared per-skill file set.
+		const runtimeOverlayRoot = join(root, "overlay-browser");
+		const runtimeOverlaySkills = join(runtimeOverlayRoot, SKILLS_DIR);
+		await mkdir(join(runtimeOverlaySkills, BROWSER_SKILL_NAME), { recursive: true });
+		await writeFile(join(runtimeOverlaySkills, BROWSER_SKILL_NAME, "SKILL.md"), `# ${BROWSER_SKILL_NAME}\nlatest\n`);
+		const omowrightCommit = "293ca5002cbd4c8b0c104c5934683385ef7e0d3a";
+		const runtimeOverlayCommit = "e".repeat(40);
+		const writeRuntimeOverlay = async (extra = {}) => {
+			await writeFile(
+				join(runtimeOverlayRoot, MANIFEST_NAME),
+				`${JSON.stringify({
+					schemaVersion: 1,
+					name: "omo-latest",
+					commit: runtimeOverlayCommit,
+					selection: [BROWSER_SKILL_NAME],
+					retired: [],
+					skills: { [BROWSER_SKILL_NAME]: [{ path: "SKILL.md", sha256: null }] },
+					browserRuntime: {
+						skill: BROWSER_SKILL_NAME,
+						targetDir: BROWSER_RUNTIME_TARGET_DIR,
+						materializer: `${LATEST_ASSETS_DIR}/stage-omowright-runtime.mjs`,
+						dependency: { name: "omowright", spec: `github:code-yeongyu/omowright#${omowrightCommit}`, commit: omowrightCommit, version: "0.0.0-fixture" },
+						files: BROWSER_RUNTIME_FILES,
+					},
+					...extra,
+				}, null, 2)}\n`,
+			);
+		};
+		const runtimeDir = join(root, "omowright-runtime");
+		await mkdir(runtimeDir, { recursive: true });
+		const writeRuntime = async (extra = {}) => {
+			await writeFile(join(runtimeDir, "index.js"), "export const connectBrowserSkill = () => 'fixture-session';\n");
+			await writeFile(join(runtimeDir, "page-bundle.js"), "(function(){ globalThis.__omowright = { fixture: true } })();\n");
+			await writeFile(
+				join(runtimeDir, BROWSER_RUNTIME_MANIFEST),
+				`${JSON.stringify({ name: "omowright", version: "0.0.0-fixture", commit: omowrightCommit, sourceDigest: "a".repeat(64), files: { "index.js": "b".repeat(64), "page-bundle.js": "c".repeat(64) }, ...extra }, null, 2)}\n`,
+			);
+		};
+		await writeRuntimeOverlay();
+		await writeRuntime();
+
+		const runtimeOut = join(root, "latest-runtime-out");
+		const withRuntime = await stage({ binary: join(binDir, "mhc"), output: runtimeOut, repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir });
+		check("selected latest staging stages the browser engine runtime", BROWSER_RUNTIME_FILES.every((file) => existsSync(join(runtimeOut, BROWSER_RUNTIME_TARGET_DIR, file))));
+		check("the staged runtime is hashed into the manifest", BROWSER_RUNTIME_FILES.every((file) => withRuntime.manifest.skills.files.some((entry) => entry.path === `${BROWSER_RUNTIME_TARGET_DIR}/${file}`)));
+		check("the staged runtime records the immutable omowright identity", withRuntime.manifest.sources.latestAssets.browserRuntime.dependency.commit === omowrightCommit && withRuntime.manifest.sources.latestAssets.browserRuntime.version === "0.0.0-fixture" && withRuntime.manifest.sources.latestAssets.browserRuntime.sourceDigest === "a".repeat(64));
+		check("the staged runtime bytes equal the materialized runtime", (await readFile(join(runtimeOut, BROWSER_RUNTIME_TARGET_DIR, "index.js"), "utf8")) === (await readFile(join(runtimeDir, "index.js"), "utf8")));
+		check("the latest manifest with a runtime verifies", (await verify(runtimeOut)).ok);
+
+		await expectReject("selected latest staging without the browser runtime is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), "--omowright-runtime");
+		await rm(join(runtimeDir, "page-bundle.js"));
+		await expectReject("a runtime directory missing a staged file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-short-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir }), "missing page-bundle.js");
+		await writeRuntime();
+		await writeRuntime({ commit: "f".repeat(40) });
+		await expectReject("a runtime materialized from a different omowright commit is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-foreign-runtime"), repoRoot: repo, latestAssets: runtimeOverlayRoot, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME), omowrightRuntime: runtimeDir }), "not the overlay-declared commit");
+		await writeRuntime();
+
+		const runtimeDroppedDir = join(root, "runtime-dropped");
+		await copyTree(runtimeOut, runtimeDroppedDir);
+		const runtimeDropped = JSON.parse(await readFile(join(runtimeDroppedDir, MANIFEST_NAME), "utf8"));
+		runtimeDropped.skills.files = runtimeDropped.skills.files.filter((entry) => entry.path !== `${BROWSER_RUNTIME_TARGET_DIR}/index.js`);
+		await writeFile(join(runtimeDroppedDir, MANIFEST_NAME), `${JSON.stringify(runtimeDropped, null, 2)}\n`);
+		const runtimeDroppedResult = await verify(runtimeDroppedDir);
+		check("a declared runtime file missing from the manifest is rejected", !runtimeDroppedResult.ok && runtimeDroppedResult.errors.some((error) => error.includes("browser runtime file is not in the hashed manifest") && error.includes("index.js")));
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -627,6 +1107,10 @@ async function main(argv) {
 	let astGrepMcp = null;
 	let omoRoot = null;
 	let repoRoot = null;
+	let skillSource = null;
+	let latestAssets = null;
+	let gitBashBinary = null;
+	let omowrightRuntime = null;
 	let verifyOnly = null;
 	let force = false;
 	let self = false;
@@ -643,6 +1127,10 @@ async function main(argv) {
 		else if (argument === "--ast-grep-mcp") astGrepMcp = next(argument);
 		else if (argument === "--omo-root") omoRoot = next(argument);
 		else if (argument === "--repo-root") repoRoot = next(argument);
+		else if (argument === "--skill-source") skillSource = next(argument);
+		else if (argument === "--latest-assets") latestAssets = next(argument);
+		else if (argument === "--git-bash-binary") gitBashBinary = next(argument);
+		else if (argument === "--omowright-runtime") omowrightRuntime = next(argument);
 		else if (argument === "--verify-only") verifyOnly = next(argument);
 		else if (argument === "--force") force = true;
 		else if (argument === "--self-test") self = true;
@@ -664,8 +1152,9 @@ async function main(argv) {
 		process.exit(1);
 	}
 	if (binary === null || output === null) usageError("--binary and --output are required");
-	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force });
+	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, omowrightRuntime });
 	console.log(`package-native: staged ${result.manifest.executables.length} executable(s), ${result.manifest.skills.names.length} skill(s) (${result.manifest.skills.files.length} files) and ${result.manifest.licenses.length} license(s) into ${result.output}`);
+	console.log(`package-native: skill source ${result.manifest.skills.source}`);
 	console.log(`package-native: manifest ${result.manifestPath}`);
 }
 

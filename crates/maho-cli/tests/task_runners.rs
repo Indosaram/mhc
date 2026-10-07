@@ -87,6 +87,8 @@ fn native_child_settings_forward_retry_policy_without_disk_settings() {
     let retry = RetryFallbackSettings {
         model_fallback: true,
         chains: BTreeMap::from([("provider/selected".into(), vec!["provider/fallback:low".into()])]),
+        max_retries: None,
+        base_delay_ms: None,
     };
 
     let settings = maho_cli::cli::task_runners::native_child_settings(&retry);
@@ -134,8 +136,47 @@ fn native_child_options_preserve_parent_handles_and_isolated_policy() {
     assert_eq!(options.tools, spec.tool_allowlist);
     assert_eq!(options.exclude_tools, spec.tool_denylist);
     assert_eq!(options.agent_dir, spec.agent_dir);
+    assert_eq!(
+        maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).expect("default prompt options").system_prompt,
+        None
+    );
+    child.system_prompt = Some("child-persona".into());
+    assert_eq!(
+        maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).expect("prompt options").system_prompt,
+        Some("child-persona".into())
+    );
     child.model = Some(Arc::new("foreign-model".to_owned()) as HostHandle);
     assert!(maho_cli::cli::task_runners::native_child_sdk_options(&child, Vec::new()).is_err());
+}
+
+#[test]
+fn native_child_settings_project_optional_retry_budgets_independently() {
+    use senpi_task::runners::in_process::runtime_fallback_settings::RetryFallbackSettings;
+    let both = maho_cli::cli::task_runners::native_child_settings(&RetryFallbackSettings {
+        model_fallback: false, chains: BTreeMap::new(), max_retries: Some(0), base_delay_ms: Some(250),
+    });
+    let retry = both.get_value("retry").expect("retry block");
+    assert_eq!(retry.get("maxRetries"), Some(&serde_json::json!(0)), "Some(0) is a real budget, not absent");
+    assert_eq!(retry.get("baseDelayMs"), Some(&serde_json::json!(250)));
+    assert_eq!(both.get().len(), 1, "only the retry key is set");
+
+    let max_only = maho_cli::cli::task_runners::native_child_settings(&RetryFallbackSettings {
+        model_fallback: true, chains: BTreeMap::new(), max_retries: Some(3), base_delay_ms: None,
+    });
+    let retry = max_only.get_value("retry").expect("retry block");
+    assert_eq!(retry.get("maxRetries"), Some(&serde_json::json!(3)));
+    assert!(retry.get("baseDelayMs").is_none(), "an absent base delay is omitted, independently of maxRetries");
+
+    let none = maho_cli::cli::task_runners::native_child_settings(&RetryFallbackSettings::default());
+    let retry = none.get_value("retry").expect("retry block");
+    assert!(retry.get("maxRetries").is_none() && retry.get("baseDelayMs").is_none(), "both omitted when unset");
+
+    let base_only = maho_cli::cli::task_runners::native_child_settings(&RetryFallbackSettings {
+        model_fallback: true, chains: BTreeMap::new(), max_retries: None, base_delay_ms: Some(0),
+    });
+    let retry = base_only.get_value("retry").expect("retry block");
+    assert_eq!(retry.get("baseDelayMs"), Some(&serde_json::json!(0)), "Some(0) base delay is a real value, not absent");
+    assert!(retry.get("maxRetries").is_none(), "an absent max retries is omitted, independently of baseDelayMs");
 }
 
 #[test]

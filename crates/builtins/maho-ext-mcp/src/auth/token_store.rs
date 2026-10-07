@@ -9,7 +9,6 @@ pub struct McpStoredAuth {
     #[serde(skip_serializing_if = "Option::is_none")] pub refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub client_info: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")] pub code_verifier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")] pub discovery_state: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")] pub resource: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] pub expires_at: Option<f64>,
     #[serde(flatten)] pub extra: BTreeMap<String,Value>,
@@ -29,7 +28,7 @@ impl McpTokenStore {
     pub fn dir(&self) -> PathBuf { self.root_dir().join(&self.hash) }
     pub fn tokens_path(&self) -> PathBuf { self.dir().join("tokens.json") }
     pub fn lock_path(&self) -> PathBuf { self.dir().join("tokens.json.lock") }
-    pub fn read(&self) -> Result<Option<McpStoredAuth>, TokenStoreError> { read_json(&self.tokens_path()) }
+    pub fn read(&self) -> Result<Option<McpStoredAuth>, TokenStoreError> { Ok(read_json::<McpStoredAuth>(&self.tokens_path())?.map(migrate_stored_auth)) }
     fn ensure_dir(&self) -> Result<(), TokenStoreError> {
         fs::create_dir_all(self.dir())?;
         #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(self.dir(),fs::Permissions::from_mode(0o700))?; }
@@ -58,7 +57,8 @@ impl McpTokenStore {
     }
     pub fn write(&self, record: McpStoredAuth) -> Result<(), TokenStoreError> { self.update(|_| Some(record))?; Ok(()) }
     pub fn write_unlocked(&self, record: Option<&McpStoredAuth>) -> Result<(), TokenStoreError> {
-        if let Some(record) = record { self.ensure_dir()?; atomic_json(&self.tokens_path(),record)?; self.write_index(false)?; }
+        let record = record.map(|record| migrate_stored_auth(record.clone()));
+        if let Some(record) = record.as_ref() { self.ensure_dir()?; atomic_json(&self.tokens_path(),record)?; self.write_index(false)?; }
         else { remove_file(&self.tokens_path())?; self.write_index(true)?; }
         Ok(())
     }
@@ -80,6 +80,10 @@ impl McpTokenStore {
         atomic_json(&path,&index)
     }
 }
+/// SC-U2 record migration: the pinned discovery cache is process-local and never persisted, so an
+/// older record's `discoveryState` is dropped on read/write while every other field — including
+/// unknown forward-compatible keys carried in `extra` — is preserved.
+fn migrate_stored_auth(mut record:McpStoredAuth)->McpStoredAuth {record.extra.remove("discoveryState");record}
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>,TokenStoreError> {
     let text = match fs::read_to_string(path) { Ok(s) => s, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), Err(e) => return Err(e.into()) };
     if text.trim().is_empty() { return Ok(None); }

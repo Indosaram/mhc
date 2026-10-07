@@ -122,3 +122,14 @@ async fn dynamic_hook_reinjects_changed_rule_without_cross_session_state() {
     api.registered.handlers[&EventKind::SessionStart][0](&mut reset, &ctx).await.expect("session reset");
     assert!(matches!(hook(&mut event, &ctx).await.expect("new session"), EventResult::ToolResult(_)));
 }
+
+#[tokio::test]
+async fn dynamic_hook_matches_structural_grammar_pattern(){
+    let temp=tempfile::tempdir().expect("temp");std::fs::create_dir(temp.path().join(".git")).expect("project marker");std::fs::create_dir_all(temp.path().join(".omo/rules")).expect("rule directory");std::fs::write(temp.path().join(".omo/rules/grammar.md"),"---\nglobs: '**/*.{rs,ts}'\n---\nfixture grammar rule").expect("rule");std::fs::write(temp.path().join("sample.rs"),"fn main() {}").expect("target");
+    let ctx=context(temp.path());let mut api=ExtensionApi::new(LoadedExtension::new("pi-rules",temp.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default());register_fixture(&mut api,temp.path());
+    let mut event=ExtensionEvent::ToolResult(ToolResultEvent{tool_call_id:"grammar".into(),tool_name:"read".into(),input:serde_json::json!({"path":"sample.rs"}),content:Vec::new(),details:None,is_error:false,usage:None});
+    let hook=&api.registered.handlers[&EventKind::ToolResult][0];
+    let EventResult::ToolResult(result)=hook(&mut event,&ctx).await.expect("grammar injection")else{panic!("tool result")};
+    let text=result.content.expect("content").into_iter().find_map(|content|match content{ToolContent::Text{text,..}=>Some(text),_=>None}).expect("text");
+    assert!(text.contains("fixture grammar rule"),"{text}");
+}

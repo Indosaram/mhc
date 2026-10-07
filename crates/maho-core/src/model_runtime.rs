@@ -144,6 +144,9 @@ impl ModelRuntime {
     pub fn get_providers(&self) -> Vec<Arc<dyn Provider>> {self.models.get_providers()}
     pub async fn get_available(&self,provider:Option<&str>) -> Vec<Model> {self.models.get_available(provider).await}
     pub fn get_provider_auth_status(&self,id:&str) -> AuthStatus {
+        // senpi `getProviderAuthStatus`: a non-persistent runtime API key wins, so the
+        // credential-policy runtime-key branch can fire; the stored credential is next.
+        if self.credentials.has_runtime_api_key(id) {return AuthStatus {configured:true,source:Some("runtime".into()),label:None};}
         if self.credentials.get(id).is_some() {return AuthStatus {configured:true,source:Some("stored".into()),label:None};}
         let config = self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(id).cloned();
         let extension = self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned();

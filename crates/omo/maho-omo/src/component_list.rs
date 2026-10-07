@@ -99,15 +99,31 @@ fn component(name: &'static str, extension: impl maho_ext_api::Extension + 'stat
     OmoSenpiComponent::new(name, Box::new(extension))
 }
 
-/// Upstream `createOmoSenpiComponents(taskComponent)`: always the full 17 entries in upstream order.
+/// Upstream `createOmoSenpiComponents(taskComponent)` with the selected latest additions.
 pub fn omo_components(
     task: OmoSenpiComponent,
     memory: OmoSenpiComponent,
     options: &OmoComponentOptions,
 ) -> Vec<OmoSenpiComponent> {
     let skills_root = options.skills_root.clone();
-    let mut components = Vec::with_capacity(17);
+    let mut components = Vec::with_capacity(22);
     components.push(component("config-startup", maho_omo_config_startup::ConfigStartupComponent::default()));
+    components.push(component("model-profile", maho_omo_model_profile::ModelProfileComponent::new(
+        maho_omo_model_profile::ModelProfileComponentOptions { load_config: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
+    components.push(component("bundled-skills", maho_omo_bundled_skills::BundledSkillsComponent::new(
+        maho_omo_bundled_skills::BundledSkillsComponentOptions { env: Some(options.env.clone()), skills_dir: Some(skills_root.clone()) })));
+    let skill_commands_env = options.env.clone();
+    let skill_commands_root = skills_root.clone();
+    components.push(OmoSenpiComponent::from_context_register("skill-commands", move |api, runtime| {
+        use maho_ext_api::Extension;
+        let component = maho_omo_skill_commands::SkillCommandsComponent::new(
+            maho_omo_skill_commands::SkillCommandsComponentOptions {
+                skills_dir: Some(skill_commands_root.clone()),
+                env: Some(skill_commands_env.clone()),
+                logger: Some(runtime.logger()),
+            });
+        component.register(api);
+    }));
     components.push(component("native-badge", maho_omo_native_badge::NativeBadgeComponent));
     components.push(component(
         "onboarding",
@@ -130,7 +146,7 @@ pub fn omo_components(
     ));
     components.push(component("ultrawork", maho_omo_ultrawork::UltraworkComponent::default()));
     components.push(component("mass-ulw", maho_omo_mass_ulw::MassUlwComponent { skills_root: options.skills_root_string() }));
-    components.push(component("start-work-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
+    components.push(component("ulw-execute-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
     // The loop's registration-time log has no context; bind the shared runtime logger at
     // construction (same pattern as config-watch below) so the production path logs too.
     let loop_env = options.env.clone();
@@ -141,9 +157,12 @@ pub fn omo_components(
         component.register(api);
     }));
     components.push(component("todo-fanout-reminder", maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default()));
+    components.push(component("git-master", maho_omo_git_master::GitMasterAttributionComponent::new(
+        maho_omo_git_master::GitMasterAttributionComponentOptions { load_settings: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
     components.push(component("fallback-architect", maho_omo_fallback_architect::FallbackArchitectComponent::default()));
     components.push(component("comment-checker", maho_omo_comment_checker::CommentCheckerComponent::default()));
     components.push(component("ast-grep", maho_omo_ast_grep::AstGrepComponent::default()));
+    components.push(component("builtin-mcps", maho_omo_builtin_mcps::BuiltinMcpsComponent::from_env(&options.env)));
     components.push(component("lsp", maho_omo_lsp::LspComponent));
     components.push(task);
     components.push(memory);
@@ -181,18 +200,23 @@ pub fn try_omo_components(
 pub fn omo_component_names() -> Vec<&'static str> {
     [
         "config-startup",
+        "model-profile",
+        "bundled-skills",
+        "skill-commands",
         "native-badge",
         "onboarding",
         "init-deep-advisor",
         "telemetry",
         "ultrawork",
         "mass-ulw",
-        "start-work-continuation",
+        "ulw-execute-continuation",
         "ulw-loop",
         "todo-fanout-reminder",
+        "git-master",
         "fallback-architect",
         "comment-checker",
         "ast-grep",
+        "builtin-mcps",
         "lsp",
         "task",
         "memory",

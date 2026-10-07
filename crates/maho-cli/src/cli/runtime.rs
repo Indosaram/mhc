@@ -16,6 +16,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
+    if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
+        // built from the CLI configuration, instead of the single-session command stream. It never
+        // returns until its watchdog or empty-exit policy ends it.
+        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
+        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
+    }
     if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
     let stdout_is_tty = std::io::stdout().is_terminal();
     let mut indicator = super::startup_loading_indicator::StartupLoadingIndicator::new(
@@ -62,7 +70,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     );
     base_factories.extend(super::default_extensions::async_factories(oauth.factories));
     if parsed.no_extensions { base_factories.retain(|factory| factory.source_info.source != "user"); }
-    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, Default::default())).await;
+    let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
+    let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
     indicator.during_surface_write(|| { for error in &extensions.errors { eprintln!("{}: {}", error.extension_path, error.error); } });
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
@@ -82,7 +91,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         tools: options.options.tools, exclude_tools: options.options.exclude_tools, no_tools: options.options.no_tools,
         thinking_selection: options.options.thinking_selection,
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
-        scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true, ..Default::default()
+        scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true,
+        session_profile, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;

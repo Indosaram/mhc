@@ -85,7 +85,9 @@ pub fn native_child_sdk_options(
         cwd: Some(child.cwd.clone()), agent_dir: child.agent_dir.clone(), auth_storage, model_runtime,
         model_registry, model, thinking_selection, custom_tools, minimal_resources,
         session_manager: Some(native_child_session_manager(child)), settings_manager: Some(native_child_settings(&child.settings)),
-        tools: child.tools.clone(), exclude_tools: child.exclude_tools.clone(), ..Default::default()
+        tools: child.tools.clone(), exclude_tools: child.exclude_tools.clone(),
+        system_prompt: child.system_prompt.clone(),
+        ..Default::default()
     })
 }
 
@@ -95,9 +97,18 @@ pub fn native_child_settings(
     let mut settings = maho_core::settings_manager::SettingsManager::from_storage(
         Box::<maho_core::settings_manager::InMemorySettingsStorage>::default(), false,
     );
-    settings.apply_overrides(&serde_json::Map::from_iter([("retry".into(), serde_json::json!({
-        "modelFallback": retry.model_fallback, "fallbackChains": retry.chains,
-    }))]));
+    let mut retry_block = serde_json::Map::new();
+    retry_block.insert("modelFallback".into(), serde_json::Value::Bool(retry.model_fallback));
+    retry_block.insert("fallbackChains".into(), serde_json::json!(retry.chains));
+    // `maxRetries` and `baseDelayMs` are INDEPENDENT optionals: each is written only when the child
+    // set it, and `Some(0)` is preserved (0 is a real budget, not "absent").
+    if let Some(max_retries) = retry.max_retries {
+        retry_block.insert("maxRetries".into(), serde_json::Value::from(max_retries));
+    }
+    if let Some(base_delay_ms) = retry.base_delay_ms {
+        retry_block.insert("baseDelayMs".into(), serde_json::Value::from(base_delay_ms));
+    }
+    settings.apply_overrides(&serde_json::Map::from_iter([("retry".into(), serde_json::Value::Object(retry_block))]));
     settings
 }
 

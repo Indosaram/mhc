@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use maho_ext_api::{DeliverAs, IdleInjection, IdleInjectionCoordinator, IdleInjectionSource, JsonValue};
-use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDetail, IdleInjectionMessage, TurnBarrier, WAKE_CUSTOM_TYPE};
-use crate::support::{DeliveryLog, injection, manual_coordinator};
+use maho_omo::{DeferredScheduler, Delivery, IdleInjectionDetail, IdleInjectionMessage, TurnBarrier, RETIRED_ERROR_MESSAGE, WAKE_CUSTOM_TYPE};
+use crate::support::{DeliveryLog, injection, manual_coordinator, passive_injection};
 
 fn inline_pair() -> (DeferredScheduler, DeferredScheduler) {
     (DeferredScheduler::manual(TurnBarrier::new()), DeferredScheduler::manual(TurnBarrier::new()))
@@ -186,6 +186,7 @@ async fn an_async_delivery_rejection_notifies_the_producer_and_skips_on_flushed(
         content: "member failed".to_owned(),
         display: None,
         details: None,
+        passive: Some(false),
         on_flushed: Some(Arc::new(move || flushed_events.lock().unwrap_or_else(PoisonError::into_inner).push("flushed".to_owned()))),
         on_delivery_failed: Some(Arc::new(move |error| {
             failed_events.lock().unwrap_or_else(PoisonError::into_inner).push(error.to_owned());
@@ -274,4 +275,66 @@ fn a_synchronous_delivery_failure_notifies_every_failure_callback() {
 
     assert_eq!(coordinator.flush_on_idle(), 2);
     assert_eq!(*reasons.lock().unwrap_or_else(PoisonError::into_inner), vec!["boom".to_owned(), "boom".to_owned()]);
+}
+
+/// C1: a passive-only queue is RETAINED - no delivery, no receipts - and stays pending.
+#[test]
+fn a_passive_only_queue_is_retained_and_delivers_nothing() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let receipts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut queued = passive_injection("kibitzer:1", IdleInjectionSource::Kibitzer, "hint");
+    let flushed = Arc::clone(&receipts);
+    queued.on_flushed = Some(Arc::new(move || flushed.lock().unwrap_or_else(PoisonError::into_inner).push("flushed".to_owned())));
+    coordinator.enqueue(queued);
+    assert_eq!(coordinator.flush_on_idle(), 0);
+    assert_eq!(coordinator.pending_count(), 1);
+    assert!(log.calls().is_empty());
+    assert!(receipts.lock().unwrap_or_else(PoisonError::into_inner).is_empty());
+}
+
+/// C2: a non-passive entry carries the passive batch out in source order, with one receipt each.
+#[test]
+fn a_nonpassive_entry_carries_the_passive_batch_out_in_source_order() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    let receipts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut passive = passive_injection("kibitzer:1", IdleInjectionSource::Kibitzer, "hint");
+    let passive_receipt = Arc::clone(&receipts);
+    passive.on_flushed = Some(Arc::new(move || passive_receipt.lock().unwrap_or_else(PoisonError::into_inner).push("passive".to_owned())));
+    let mut active = injection("st_1", IdleInjectionSource::TaskCompletion, "task st_1 completed");
+    let active_receipt = Arc::clone(&receipts);
+    active.on_flushed = Some(Arc::new(move || active_receipt.lock().unwrap_or_else(PoisonError::into_inner).push("active".to_owned())));
+    coordinator.enqueue(passive);
+    coordinator.enqueue(active);
+    assert_eq!(coordinator.flush_on_idle(), 2);
+    let calls = log.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].message.content, "task st_1 completed\n\nhint");
+    assert_eq!(calls[0].deliver_as, DeliverAs::Steer);
+    assert_eq!(*receipts.lock().unwrap_or_else(PoisonError::into_inner), vec!["active".to_owned(), "passive".to_owned()]);
+}
+
+/// C3: removing the only passive entry leaves nothing to deliver.
+#[test]
+fn removing_the_only_passive_entry_leaves_nothing_to_deliver() {
+    let (coordinator, log, _scheduler) = manual_coordinator();
+    coordinator.enqueue(passive_injection("kibitzer:1", IdleInjectionSource::Kibitzer, "hint"));
+    assert!(coordinator.remove("kibitzer:1"));
+    assert_eq!(coordinator.flush_on_idle(), 0);
+    assert!(log.calls().is_empty());
+}
+
+/// C4: retire hands a still-passive queue back through `on_delivery_failed` and refuses later
+/// enqueues (no receipt, ownership stays with the caller).
+#[test]
+fn retire_hands_a_still_passive_queue_back_and_refuses_later_enqueues() {
+    let (coordinator, _log, _scheduler) = manual_coordinator();
+    let failures: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut queued = passive_injection("kibitzer:1", IdleInjectionSource::Kibitzer, "hint");
+    let failed = Arc::clone(&failures);
+    queued.on_delivery_failed = Some(Arc::new(move |reason| failed.lock().unwrap_or_else(PoisonError::into_inner).push(reason.to_owned())));
+    coordinator.enqueue(queued);
+    coordinator.retire();
+    assert_eq!(*failures.lock().unwrap_or_else(PoisonError::into_inner), vec![RETIRED_ERROR_MESSAGE.to_owned()]);
+    assert!(!coordinator.enqueue(injection("st_2", IdleInjectionSource::TaskCompletion, "late")));
+    assert_eq!(coordinator.pending_count(), 0);
 }
