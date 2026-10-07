@@ -142,7 +142,7 @@ fn given_inputs_outside_a_leading_command_token_when_suggestions_are_requested_t
 #[test]
 fn given_the_wrapped_provider_when_other_members_are_used_then_they_are_the_base_providers_own() {
     let base = FakeProvider::new(None);
-    let mut wrapped = wrap_with_bare_skill_commands(Box::new(base), names(), host_commands());
+    let wrapped = wrap_with_bare_skill_commands(Box::new(base), names(), host_commands());
 
     let applied = wrapped.apply_completion(&["/ulw".to_owned()], 0, 4, &item("ulw-plan"), "/ulw");
     assert_eq!(applied.lines, ["applied-by-base"]);

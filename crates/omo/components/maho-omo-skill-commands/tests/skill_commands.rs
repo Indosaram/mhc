@@ -27,7 +27,7 @@ fn component(skills_dir: &Path) -> SkillCommandsComponent {
 }
 
 fn runner(skills_dir: &Path, commands: Option<Vec<SlashCommandInfo>>, ui: Arc<support::RecordingUi>, has_ui: bool) -> ExtensionRunner {
-    let mut runner = ExtensionRunner::from_static(vec![Box::new(component(skills_dir))], support::context(skills_dir, ui, has_ui));
+    let runner = ExtensionRunner::from_static(vec![Box::new(component(skills_dir))], support::context(skills_dir, ui, has_ui));
     if let Some(commands) = commands {
         runner.bind_session_actions(Arc::new(support::FakeSessionActions { commands })).expect("bind session actions");
     }
