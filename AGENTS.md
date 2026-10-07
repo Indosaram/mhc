@@ -36,7 +36,7 @@ Conventions for anyone (human or agent) changing this repository.
 - Work happens in one git worktree per todo (branch `lane/<N>`), merged into main in dependency order after the lane's acceptance passes. The bootstrap commit is the only commit made directly on main.
 - Each lane builds with `CARGO_TARGET_DIR=$HOME/.cargo-target/maho-code/lane-<N>`; at most 4 cargo-building lanes run at once.
 - A lane writes only its declared crates, modules and parity fragment.
-- One atomic Conventional Commit per todo, with the footer `Plan: /Users/indo/code/project/.omo/plans/omo-native-rs-tui-parity.md`.
+- One atomic Conventional Commit per todo, with the footer `Plan: .omo/plans/omo-native-rs-tui-parity.md`.
 - Evidence goes under `.omo/evidence/` in this repo. Every QA pty, daemon or browser gets a cleanup receipt. Never print keys, tokens or auth.json contents.
 
 ## Test discipline

@@ -1,6 +1,8 @@
-# maho code
+# mhc
 
-maho code (`mhc`) is a native Rust port of the senpi coding agent and its terminal interface, with the oh-my-openagent (omo) features ported on top. It aims to look, type and behave exactly like omo on senpi today: senpi is the only upstream, ported file-for-file so upstream changes stay a mechanical translation, and golden fixtures generated from senpi itself prove the output is identical. The engine contains no codex-rs code, extensions are native Rust crates registered statically, and configuration lives in `~/.maho/agent` (`mhc import-omo` copies an existing `~/.omo` setup). Source pins are in [PINS.md](PINS.md), contributor and agent conventions in [AGENTS.md](AGENTS.md), and licenses in [LICENSES/](LICENSES/).
+mhc is a native Rust port of the senpi coding agent and its terminal interface, with the oh-my-openagent (omo) features ported on top. It aims to look, type and behave exactly like omo on senpi today: senpi is the only upstream, ported file-for-file so upstream changes stay a mechanical translation, and golden fixtures generated from senpi itself prove the output is identical. The engine contains no codex-rs code, extensions are native Rust crates registered statically, and configuration lives in `~/.maho/agent` (`mhc import-omo` copies an existing `~/.omo` setup). Source pins are in [PINS.md](PINS.md), contributor and agent conventions in [AGENTS.md](AGENTS.md), and licenses in [LICENSES/](LICENSES/).
+
+Existing crate names and configuration paths are retained.
 
 ## Install
 
@@ -37,3 +39,19 @@ with `OMO_SENPI_SKILLS_ROOT`), and the ast-grep MCP server at `<dir>/ast-grep-mc
 when the skills directory is absent and skips the ast-grep server when the helper is missing, so a
 staged directory that fails `--verify-only` is not a working install. `bun tools/package-native.mjs
 --self-test` exercises the staging and verification logic against a fixture.
+
+## License
+
+This repository is **mixed-licensed**: each part keeps the license of the upstream
+project it ports.
+
+- `crates/maho-*`, `crates/builtins`, `crates/extensions` and `crates/vendor` port
+  [senpi](https://github.com/code-yeongyu/senpi) and are licensed **MIT** -
+  see [LICENSES/MIT.txt](LICENSES/MIT.txt).
+- `crates/omo/**` ports [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent)
+  and is licensed under the **Sustainable Use License 1.0** -
+  see [LICENSES/SUL-1.0.md](LICENSES/SUL-1.0.md). It permits free, non-commercial use,
+  modification and redistribution; commercial use and paid distribution are not permitted.
+
+This software is a modified derivative of both upstream projects (a Rust reimplementation
+of their TypeScript sources), which the Sustainable Use License requires to be stated.

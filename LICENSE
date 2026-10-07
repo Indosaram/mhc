@@ -1,0 +1,27 @@
+# License
+
+This repository is mixed-licensed: each directory carries the license of the upstream
+project it ports, so different parts of the tree are under different terms.
+
+## MIT
+
+Applies to `crates/maho-*`, `crates/builtins`, `crates/extensions`, `crates/vendor`,
+and every other file not listed under SUL-1.0 below. These port
+[senpi](https://github.com/code-yeongyu/senpi) (MIT).
+Full text: `LICENSES/MIT.txt`
+
+## Sustainable Use License 1.0 (SUL-1.0)
+
+Applies to `crates/omo/**`, which ports
+[oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent).
+Full text: `LICENSES/SUL-1.0.md`
+
+The SUL-1.0 portions may be used, modified, distributed and made available free of charge
+for non-commercial and personal purposes only; commercial use, paid distribution and
+relicensing are not permitted. All copyright, license and other notices must be preserved.
+
+## Modification notice
+
+This software is a modified derivative of both upstream projects: it is a Rust
+reimplementation of their TypeScript sources, not the original code. This notice is
+provided as required by the Sustainable Use License.
