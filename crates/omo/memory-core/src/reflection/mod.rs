@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod completion_validation;
 pub mod machine;
+pub mod orphan_sweep;
 pub mod reservation;
 pub mod worktree;
 pub mod worktree_integration;
@@ -17,6 +18,11 @@ pub use machine::{
     JournalSnapshot, MachineState, ReflectionEvent, ReflectionOutcome, ReflectionRequest,
     ReflectionTrigger, ReservationState, ReservedRun, TriggerConfig, complete_transition,
     evaluate_transitions, reserve_transition,
+};
+pub use orphan_sweep::{
+    OrphanKind, REFLECTION_ORPHAN_GRACE_MS, ReflectionLeftovers, ReflectionOrphanReceipt,
+    ReflectionOrphanSelection, ReflectionOrphanSweepOptions, RegisteredReflectionWorktree,
+    list_reflection_leftovers, select_reflection_orphans, sweep_reflection_orphans,
 };
 pub use reservation::{
     CompletionResult, ReflectionLauncherIdentity, ReflectionReservationStore,
