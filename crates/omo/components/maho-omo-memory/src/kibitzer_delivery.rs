@@ -28,6 +28,11 @@ pub trait KibitzerPendingPort: Send + Sync {
     fn delete(&self, session_id: &str);
 }
 
+/// The pending-nudge port for one identity (`options.pendingFor`).
+pub type KibitzerPendingFor = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
+/// Append one visible session entry (`options.appendEntry`).
+pub type AppendEntry = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// A passive entry on the `IdleInjectionCoordinator`.
 pub struct KibitzerCoordinatorEntry {
     pub key: String,
@@ -75,10 +80,10 @@ pub struct KibitzerToolResultGate {
 
 pub struct KibitzerDeliveryOptions {
     pub ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync>,
-    pub pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>,
+    pub pending_for: KibitzerPendingFor,
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
-    pub append_entry: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
+    pub append_entry: AppendEntry,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -187,7 +192,7 @@ impl KibitzerDelivery {
                     custom_type: NUDGED_ENTRY_TYPE.to_string(),
                     content: render_nudge_block(&nudge),
                     details: serde_json::json!({ "path": path }),
-                    on_flushed: Arc::new(move || { me.mark_delivered(&session, &context, &[flush_path.clone()], KibitzerDeliveryVia::Wake); }),
+                    on_flushed: Arc::new(move || { me.mark_delivered(&session, &context, std::slice::from_ref(&flush_path), KibitzerDeliveryVia::Wake); }),
                 });
                 if !accepted {
                     (self.options.warn)(&format!("omo-senpi kibitzer coordinator enqueue skipped: {key}"));
@@ -360,10 +365,10 @@ pub struct MountRecallPortsInput {
 pub struct MountRecallPorts {
     pub caps: crate::kibitzer_events::KibitzerEventCaps,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
-    pub pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>,
+    pub pending_for: KibitzerPendingFor,
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
-    pub drain_pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn crate::recall_drain::PendingNudgesPort> + Send + Sync>,
-    pub drain_queued: Option<Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<RecallNudge> + Send + Sync>>,
+    pub drain_pending_for: crate::recall_drain::DrainPendingFor,
+    pub drain_queued: Option<crate::recall_drain::DrainQueued>,
 }
 
 struct RecallPendingWrite(memory_core::recall::PendingNudges);
@@ -396,6 +401,7 @@ impl crate::recall_drain::PendingNudgesPort for RecallPendingTake {
 ///   * `coordinator` - the idle-injection coordinator is a host object the mount does not pass;
 ///   * `drain_queued` - the in-memory queue half is fed by the sidecar's accept path; the durable
 ///     half is `drain_pending_for`.
+///
 /// `executor`, `resolve_context`, `env` and `warn` are accepted for the mount's call shape; the
 /// closures below read the identity off each `MemoryIdentityContext` instead.
 pub fn mount_recall_ports(input: MountRecallPortsInput) -> MountRecallPorts {
@@ -416,11 +422,11 @@ pub fn mount_recall_ports(input: MountRecallPortsInput) -> MountRecallPorts {
                 .map_err(|error| error.to_string())
         })
     };
-    let pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync> =
+    let pending_for: KibitzerPendingFor =
         Arc::new(|identity: &MemoryIdentityContext| {
             Arc::new(RecallPendingWrite(memory_core::recall::PendingNudges::new(identity.identity_paths.recall_pending.clone()))) as Arc<dyn KibitzerPendingPort>
         });
-    let drain_pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn crate::recall_drain::PendingNudgesPort> + Send + Sync> =
+    let drain_pending_for: crate::recall_drain::DrainPendingFor =
         Arc::new(|identity: &MemoryIdentityContext| {
             Arc::new(RecallPendingTake(memory_core::recall::PendingNudges::new(identity.identity_paths.recall_pending.clone()))) as Arc<dyn crate::recall_drain::PendingNudgesPort>
         });

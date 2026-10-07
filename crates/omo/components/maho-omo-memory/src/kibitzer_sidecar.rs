@@ -35,7 +35,7 @@ use serde_json::Value;
 
 use crate::kibitzer_child::{JudgeSettle, KibitzerChildSpawner};
 use crate::kibitzer_contract::{
-    KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState, KibitzerSidecarTimers,
+    KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState, KibitzerSidecarTimers, WarnFn,
 };
 use crate::kibitzer_events::KibitzerEventCaps;
 use crate::kibitzer_session_resources::KibitzerSessionResources;
@@ -92,7 +92,7 @@ pub struct KibitzerSidecarOptions {
     /// The wake report callback; absent means the outcome is not observed (`onWake`).
     pub on_wake: Option<Arc<dyn Fn(KibitzerWakeOutcome) + Send + Sync>>,
     /// `options.logger?.warn`; absent means the sidecar stays silent.
-    pub warn: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub warn: Option<WarnFn>,
 }
 
 /// One wake-eligible batch offered to the sidecar (upstream `KibitzerOfferInput`). The composition

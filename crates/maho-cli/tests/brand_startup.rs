@@ -28,7 +28,9 @@ fn flat_brand_startup_copies_engine_state_once() {
         drop(stdin);
         let output = child.wait_with_output().expect("process exits");
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        let response: serde_json::Value = serde_json::from_slice(&output.stdout).expect("RPC response");
+        let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout).expect("RPC UTF-8")
+            .lines().map(|line| serde_json::from_str(line).expect("RPC JSONL frame")).collect();
+        let response = responses.iter().find(|response| response["id"] == "brand-probe").expect("RPC response");
         assert_eq!(response["id"], "brand-probe");
         assert_eq!(response["success"], true);
         assert_eq!(fs::read_to_string(target.join("models.json")).expect("copied models"), "{\"providers\":{}}\n");

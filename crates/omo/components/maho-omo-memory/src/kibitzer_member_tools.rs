@@ -310,7 +310,6 @@ mod tests {
     //! charged (`used()`), so no private executor stands in for the registered path.
 
     use super::*;
-    use crate::kibitzer_contract::KibitzerToolBudget;
     use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
     use crate::kibitzer_tools_caps::DEFAULT_KIBITZER_TOOL_CAPS;
 

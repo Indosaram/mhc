@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::identity::resolve::MemoryIdentity;
 use crate::journal::store::TranscriptJournal;
-use crate::locks::acquire::{AcquireLockOptions, WithLockError, with_lock};
+use crate::locks::acquire::{AcquireLockError, AcquireLockOptions, LockContentionError, WithLockError, with_lock};
 use crate::locks::domains::reflection_scheduler_lock_path;
 use crate::locks::lock_record::{CreateLockRecordOptions, create_lock_record};
 use crate::locks::process_identity::get_process_start_identity;
@@ -19,8 +19,8 @@ use crate::support::time::now_iso;
 
 use super::machine::{
     CapturedConversation, EvaluationAction, JournalSnapshot, MachineState, ReflectionEvent,
-    ReflectionOutcome, ReflectionRequest, ReservationState, ReservedRun, TriggerConfig,
-    complete_transition, evaluate_transitions, reserve_transition,
+    ReflectionOutcome, ReflectionRequest, ReflectionTrigger, ReservationState, ReservedRun,
+    TriggerConfig, complete_transition, evaluate_transitions, reserve_transition,
 };
 
 /// Resolves the transcript journal for a session id.
@@ -63,20 +63,24 @@ pub struct CompletionResult {
 #[derive(Debug)]
 pub enum ReservationError {
     Lock(String),
+    Contention(Box<LockContentionError>),
     Io(std::io::Error),
     CorruptState(String),
     TransitionFailed(String),
     Journal(String),
+    Aborted,
 }
 
 impl fmt::Display for ReservationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Lock(msg) => write!(formatter, "scheduler lock error: {msg}"),
+            Self::Contention(err) => err.fmt(formatter),
             Self::Io(err) => write!(formatter, "reservation store io error: {err}"),
             Self::CorruptState(msg) => write!(formatter, "corrupt reservation state: {msg}"),
             Self::TransitionFailed(msg) => write!(formatter, "transition failed: {msg}"),
             Self::Journal(msg) => write!(formatter, "journal error: {msg}"),
+            Self::Aborted => write!(formatter, "The operation was aborted"),
         }
     }
 }
@@ -181,17 +185,24 @@ impl ReflectionReservationStore {
             ..request
         };
 
-        self.try_reserve(full_request).map(Some)
+        self.try_reserve(full_request, None).map(Some)
     }
 
     /// Attempts to reserve an active slot or merges into the pending queue.
+    ///
+    /// `cancellation` is the pinned `AbortSignal` seam: a probe that returns true once the caller
+    /// aborted. It is checked before the lock record, before reading state, before writing state,
+    /// and while waiting for the scheduler lock, matching the pinned `throwIfAborted()` order.
     pub fn try_reserve(
         &self,
         request: ReflectionRequest,
+        cancellation: Option<&dyn Fn() -> bool>,
     ) -> Result<ReservationResult, ReservationError> {
         let run_id = (self.create_run_id)();
-        self.locked(Some(&run_id), || {
+        self.locked(Some(&run_id), cancellation, || {
+            throw_if_aborted(cancellation)?;
             let current = self.read_state_unlocked()?;
+            throw_if_aborted(cancellation)?;
             let (mut transition_state, result_kind) =
                 reserve_transition(current, request, run_id.clone());
 
@@ -201,6 +212,7 @@ impl ReflectionReservationStore {
                 self.stamp_launch_owner(active);
             }
 
+            throw_if_aborted(cancellation)?;
             self.write_state_unlocked(&transition_state)?;
 
             let run = if result_kind == "active" {
@@ -226,7 +238,7 @@ impl ReflectionReservationStore {
         run_id: &str,
         outcome: ReflectionOutcome,
     ) -> Result<CompletionResult, ReservationError> {
-        self.locked(Some(run_id), || {
+        self.locked(Some(run_id), None, || {
             let current = self.read_state_unlocked()?;
             let mut conversation_ids = BTreeSet::new();
             if let Some(a) = &current.active {
@@ -254,6 +266,13 @@ impl ReflectionReservationStore {
                 journals.insert(id, journal);
             }
 
+            // Captured before `complete_transition` consumes the state: the dream state write is
+            // driven by the completing run's trigger (pin `reservation.ts:107`).
+            let dream_trigger = current
+                .active
+                .as_ref()
+                .is_some_and(|active| active.request.trigger == ReflectionTrigger::Dream);
+
             let transition =
                 complete_transition(current, run_id, outcome, &snapshots, &self.config)
                     .map_err(ReservationError::TransitionFailed)?;
@@ -274,6 +293,12 @@ impl ReflectionReservationStore {
                 }
             }
 
+            if (outcome == ReflectionOutcome::Merged || outcome == ReflectionOutcome::NoChanges)
+                && dream_trigger
+            {
+                write_dream_state(&self.identity.paths.runtime, &(self.now_iso)(), run_id)?;
+            }
+
             let mut next_state = transition.state;
             let mut launch = transition.launch;
             if let Some(promoted) = &mut launch {
@@ -289,7 +314,12 @@ impl ReflectionReservationStore {
 
     /// Reads the current reservation state from disk under lock.
     pub fn read_state(&self) -> Result<ReservationState, ReservationError> {
-        self.locked(None, || self.read_state_unlocked())
+        self.read_state_with_wait(None)
+    }
+
+    /// Reads with an explicit scheduler wait; zero reports contention without blocking.
+    pub fn read_state_with_wait(&self, wait_timeout_ms: Option<u64>) -> Result<ReservationState, ReservationError> {
+        self.locked_with_wait(None, wait_timeout_ms, None, || self.read_state_unlocked())
     }
 
     fn stamp_launch_owner(&self, run: &mut ReservedRun) {
@@ -300,10 +330,29 @@ impl ReflectionReservationStore {
         run.launcher_process_start = launcher.process_start;
     }
 
-    fn locked<T, F>(&self, run_id: Option<&str>, task: F) -> Result<T, ReservationError>
+    fn locked<T, F>(
+        &self,
+        run_id: Option<&str>,
+        cancellation: Option<&dyn Fn() -> bool>,
+        task: F,
+    ) -> Result<T, ReservationError>
     where
         F: FnOnce() -> Result<T, ReservationError>,
     {
+        self.locked_with_wait(run_id, None, cancellation, task)
+    }
+
+    fn locked_with_wait<T, F>(
+        &self,
+        run_id: Option<&str>,
+        wait_timeout_ms: Option<u64>,
+        cancellation: Option<&dyn Fn() -> bool>,
+        task: F,
+    ) -> Result<T, ReservationError>
+    where
+        F: FnOnce() -> Result<T, ReservationError>,
+    {
+        throw_if_aborted(cancellation)?;
         let record = create_lock_record(
             "reflection-scheduler",
             CreateLockRecordOptions {
@@ -311,14 +360,18 @@ impl ReflectionReservationStore {
             },
         )
         .map_err(|e| ReservationError::Lock(e.to_string()))?;
+        throw_if_aborted(cancellation)?;
 
         let acquire_options = AcquireLockOptions {
-            wait_timeout_ms: Some(5_000),
+            wait_timeout_ms: Some(wait_timeout_ms.unwrap_or(5_000)),
+            cancellation,
             ..Default::default()
         };
 
         with_lock(&self.scheduler_lock_path, &record, &acquire_options, task).map_err(|err| {
             match err {
+                WithLockError::Acquire(AcquireLockError::Aborted) => ReservationError::Aborted,
+                WithLockError::Acquire(AcquireLockError::Contention(error)) => ReservationError::Contention(error),
                 WithLockError::Acquire(e) => ReservationError::Lock(e.to_string()),
                 WithLockError::User(e) => e,
             }
@@ -343,6 +396,31 @@ impl ReflectionReservationStore {
         write_optional_run(&self.pending_path, state.pending.as_ref())?;
         Ok(())
     }
+}
+
+/// Pinned `signal?.throwIfAborted()`: a cancellation probe that reports aborted becomes an error.
+fn throw_if_aborted(cancellation: Option<&dyn Fn() -> bool>) -> Result<(), ReservationError> {
+    if cancellation.map(|probe| probe()).unwrap_or(false) {
+        return Err(ReservationError::Aborted);
+    }
+    Ok(())
+}
+
+/// Dream bookkeeping persisted after a completed dream run (`reflection/reservation.ts:107`).
+#[derive(Debug, Serialize)]
+struct DreamState<'a> {
+    last_dream_at: &'a str,
+    #[serde(rename = "lastRunId")]
+    last_run_id: &'a str,
+}
+
+fn write_dream_state(runtime: &Path, now_iso: &str, run_id: &str) -> Result<(), ReservationError> {
+    let state = DreamState {
+        last_dream_at: now_iso,
+        last_run_id: run_id,
+    };
+    write_json_atomic(&runtime.join("dream").join("state.json"), &state)
+        .map_err(ReservationError::Io)
 }
 
 fn read_run(path: &Path) -> Result<Option<ReservedRun>, ReservationError> {

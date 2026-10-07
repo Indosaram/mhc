@@ -30,6 +30,14 @@ fn multi_session_rpc_arguments_build_an_rpc_configuration() {
 }
 
 #[test]
+fn models_narrowing_patterns_reach_the_rpc_configuration() {
+    let parsed = Args { models: Some(vec!["faux/*".to_owned(), "anthropic/*:high".to_owned()]), ..Default::default() };
+    let config = CliRuntimeConfiguration::from_parsed(&parsed, "/tmp/project", "/tmp/agent", AppMode::Rpc);
+    assert_eq!(config.models, ["faux/*".to_owned(), "anthropic/*:high".to_owned()]);
+    assert!(CliRuntimeConfiguration::default().models.is_empty());
+}
+
+#[test]
 fn a_profile_session_path_and_durable_id_reach_the_session_manager() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();

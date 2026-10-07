@@ -18,6 +18,15 @@ pub fn default_gate_resolver() -> KibitzerGateResolver {
     })
 }
 
+/// One `tool_result` event's tool identity and reported result, captured while the ctx is alive.
+pub struct KibitzerToolResultEvent<'a> {
+    pub tool_call_id: &'a str,
+    pub tool_name: &'a str,
+    pub input: &'a Value,
+    pub content: &'a [maho_ext_api::ToolContent],
+    pub is_error: bool,
+}
+
 /// The synchronous capture surface the composition implements.
 ///
 /// `entries` is the REAL branch snapshot (`context.session_manager.get_branch()`'s `data`), captured
@@ -27,7 +36,7 @@ pub fn default_gate_resolver() -> KibitzerGateResolver {
 pub trait KibitzerHookSink: Send + Sync {
     fn on_before_agent_start(&self, session_id: &str, prompt: &str, entries: &[Value]);
     fn on_tool_call(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, entries: &[Value]);
-    fn on_tool_result(&self, session_id: &str, tool_call_id: &str, tool_name: &str, input: &Value, content: &[maho_ext_api::ToolContent], is_error: bool, entries: &[Value], gate: &KibitzerToolResultGate);
+    fn on_tool_result(&self, session_id: &str, event: &KibitzerToolResultEvent<'_>, entries: &[Value], gate: &KibitzerToolResultGate);
     fn on_turn_end(&self, session_id: &str);
     fn on_agent_settled(&self, session_id: &str);
     fn on_session_shutdown(&self, session_id: &str);
@@ -74,21 +83,21 @@ pub fn register_kibitzer_hooks(api: &mut maho_ext_api::ExtensionApi, sink: Arc<d
             let gate = if kind == maho_ext_api::EventKind::ToolResult { Some(gate_resolver(context)) } else { None };
             Box::pin(async move {
                 match kind {
-                    maho_ext_api::EventKind::BeforeAgentStart => sink.on_before_agent_start(&session_id, prompt.as_deref().unwrap_or(""), &entries),
+                    maho_ext_api::EventKind::BeforeAgentStart => sink.on_before_agent_start(session_id, prompt.as_deref().unwrap_or(""), &entries),
                     maho_ext_api::EventKind::ToolCall => {
                         if let Some((tool_call_id, tool_name, input, _, _)) = captured {
-                            sink.on_tool_call(&session_id, &tool_call_id, &tool_name, &input, &entries);
+                            sink.on_tool_call(session_id, &tool_call_id, &tool_name, &input, &entries);
                         }
                     }
                     maho_ext_api::EventKind::ToolResult => {
                         if let (Some((tool_call_id, tool_name, input, content, is_error)), Some(gate)) = (captured, gate) {
-                            sink.on_tool_result(&session_id, &tool_call_id, &tool_name, &input, &content, is_error, &entries, &gate);
+                            sink.on_tool_result(session_id, &KibitzerToolResultEvent { tool_call_id: &tool_call_id, tool_name: &tool_name, input: &input, content: &content, is_error }, &entries, &gate);
                         }
                     }
-                    maho_ext_api::EventKind::TurnEnd => sink.on_turn_end(&session_id),
-                    maho_ext_api::EventKind::AgentSettled => sink.on_agent_settled(&session_id),
-                    maho_ext_api::EventKind::SessionShutdown => sink.on_session_shutdown(&session_id),
-                    maho_ext_api::EventKind::SessionCompact => sink.on_compaction_accepted(&session_id),
+                    maho_ext_api::EventKind::TurnEnd => sink.on_turn_end(session_id),
+                    maho_ext_api::EventKind::AgentSettled => sink.on_agent_settled(session_id),
+                    maho_ext_api::EventKind::SessionShutdown => sink.on_session_shutdown(session_id),
+                    maho_ext_api::EventKind::SessionCompact => sink.on_compaction_accepted(session_id),
                     _ => {}
                 }
                 Ok(maho_ext_api::EventResult::None)

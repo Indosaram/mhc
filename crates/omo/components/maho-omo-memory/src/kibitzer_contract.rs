@@ -25,6 +25,9 @@ pub const KIBITZER_REJECTED_AFTER_WAKES: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KibitzerSidecarState { Idle, TurnRunning, Reseeding, Backoff, Disposed }
 
+/// A plain warning sink (`options.logger?.warn`); absent means silent.
+pub type WarnFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Injectable timers: production uses the runtime's unref'd timers; tests fire them by hand.
 pub trait KibitzerSidecarTimers: Send + Sync {
     fn set(&self, callback: Box<dyn FnOnce() + Send>, ms: i64) -> u64;

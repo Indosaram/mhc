@@ -7,8 +7,8 @@ fn isolated_env(home: &std::path::Path) -> BTreeMap<String, String> {
     BTreeMap::from([("HOME".to_owned(), home.to_string_lossy().into_owned())])
 }
 
-#[test]
-fn for_parent_composes_retained_task_and_memory_components() {
+#[tokio::test]
+async fn for_parent_composes_retained_task_and_memory_components() {
     let dir = tempfile::tempdir().expect("isolated mount cwd");
     let parent: TaskParent = std::sync::Arc::new(std::sync::OnceLock::new());
 

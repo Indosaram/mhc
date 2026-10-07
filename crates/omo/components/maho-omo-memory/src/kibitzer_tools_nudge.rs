@@ -113,9 +113,9 @@ impl KibitzerSidecarNudgeTool {
         execute_nudge(
             KibitzerNudgeInput {
                 candidates: &candidates,
-                surfaced: &*surfaced,
+                surfaced: &surfaced,
                 max_items: self.resources.max_items(),
-                accepted: &mut *accepted,
+                accepted: &mut accepted,
             },
             params,
         )

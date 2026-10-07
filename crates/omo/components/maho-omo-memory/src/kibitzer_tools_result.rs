@@ -1,8 +1,8 @@
 //! Tool results and rejections (latest `kibitzer/tools/result.ts`).
 //!
-//! Upstream returns inline `isError` / `terminate`. This port's `ToolResult` carries only `content`
-//! + `details`, so `is_error` maps to `Err(ToolError::Message(..))` at the tool boundary and
-//! `terminate` is carried here for the caller to act on.
+//! Upstream returns inline `isError` / `terminate`. This port's `ToolResult` carries only
+//! `content` + `details`, so `is_error` maps to `Err(ToolError::Message(..))` at the tool
+//! boundary and `terminate` is carried here for the caller to act on.
 
 use memory_core::sync::redact::redact_url;
 use serde_json::Value;

@@ -88,8 +88,7 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
     fn start(&self, request: KibitzerWakeRequest) -> KibitzerWakeFuture {
         let spawner = Arc::clone(&self.spawner);
         let spawn = Arc::clone(&self.spawn);
-        let sessions = Arc::clone(&self.sessions);
-        let generations = Arc::clone(&self.generations);
+        let maps = ResidentMaps { sessions: Arc::clone(&self.sessions), generations: Arc::clone(&self.generations) };
         let warn = Arc::clone(&self.warn);
         let caps = self.caps;
         let task_summary = self.task_summary.clone();
@@ -98,7 +97,7 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
         let cancel = Arc::clone(&request.cancel);
         let max_tool_budget = request.max_tool_budget;
         Box::pin(async move {
-            let prepared = match prepare(&spawner, caps, task_summary.as_deref(), &sessions, &generations, &session_id, &candidates, max_tool_budget).await {
+            let prepared = match prepare(&spawner, caps, task_summary.as_deref(), &maps, &session_id, &candidates, max_tool_budget).await {
                 Ok(prepared) => prepared,
                 Err(_) => return KibitzerWakeResult { nudges: Vec::new(), status: KibitzerWakeStatus::Failed },
             };
@@ -112,7 +111,7 @@ impl KibitzerWakeRunner for ResidentKibitzerRunner {
             if let Err(error) = trigger {
                 // A first-trigger failure after subscription must not leak the resident or child.
                 if prepared.fresh
-                    && let Some(mut resident) = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&prepared.session_id)
+                    && let Some(mut resident) = maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&prepared.session_id)
                 {
                     Self::teardown(&spawn, &warn, &mut resident);
                 }
@@ -169,21 +168,26 @@ struct PreparedWake {
     session_id: String,
 }
 
+/// The runner's two shared per-session registries, passed together to [`prepare`].
+struct ResidentMaps {
+    sessions: Arc<Mutex<BTreeMap<String, ResidentChild>>>,
+    generations: Arc<Mutex<BTreeMap<String, u64>>>,
+}
+
 /// The async prepare. NO map guard is held across an `.await`: the resident branch clones its
 /// handles into an owned tuple and releases the guard before returning.
 async fn prepare(
     spawner: &Arc<dyn KibitzerChildSpawner>,
     caps: KibitzerEventCaps,
     task_summary: Option<&str>,
-    sessions: &Arc<Mutex<BTreeMap<String, ResidentChild>>>,
-    generations: &Arc<Mutex<BTreeMap<String, u64>>>,
+    maps: &ResidentMaps,
     session_id: &str,
     candidates: &CollectedRecallCandidates,
     max_tool_budget: usize,
 ) -> Result<PreparedWake, String> {
     // --- resident branch: clone into an owned tuple, drop the guard, then decide. ---
     let resident = {
-        let sessions = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sessions = maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         sessions.get(session_id).map(|resident| (
             Arc::clone(&resident.child),
             resident.generation,
@@ -194,20 +198,19 @@ async fn prepare(
         ))
     };
     if let Some((child, _generation, running, nudges, tool_calls, running_flag)) = resident {
-        let events = event_batch(caps, candidates, false);
+        let events = event_batch(caps, candidates, false).peek();
+        let digest = events.digest.as_ref().map(crate::kibitzer_sidecar_envelope::sidecar_digest);
         let sidecar_candidates = sidecar_candidates(candidates);
-        let cursor = candidates.transcript.len();
         let prompt = render_kibitzer_wake_prompt(&KibitzerEnvelopeInput {
             session_id,
             max_items: candidates.max_items,
-            events: &events,
+            events: &events.events,
             candidates: &sidecar_candidates,
-            digest: None,
+            digest: digest.as_ref(),
             task_summary: None,
             tool_budget: Some(max_tool_budget),
             caps: KIBITZER_FIELD_CAPS,
             event_window: None,
-            cursor_span: Some((cursor, cursor)),
         });
         let trigger = if running {
             // A steer joins the running turn: KEEP its accumulator and tool budget.
@@ -223,7 +226,7 @@ async fn prepare(
 
     // --- new child branch: monotonic generation, spawn, subscribe, REGISTER, no trigger here. ---
     let generation = {
-        let mut generations = generations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generations = maps.generations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = generations.entry(session_id.to_string()).or_insert(0);
         *entry += 1;
         *entry
@@ -251,26 +254,26 @@ async fn prepare(
     let unsubscribe_nudges = child.subscribe_nudges(nudge_listener);
     let unsubscribe_tools = child.subscribe_observations(tool_listener);
     // Register the resident BEFORE the trigger so `abort(session_id)` finds it while pending.
-    sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_string(), ResidentChild {
+    maps.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session_id.to_string(), ResidentChild {
         child: Arc::clone(&child), generation, running: Arc::clone(&running),
         nudges: Arc::clone(&nudges), tool_calls: Arc::clone(&tool_calls),
         unsubscribe_nudges: Some(unsubscribe_nudges), unsubscribe_tools: Some(unsubscribe_tools),
     });
-    let events = event_batch(caps, candidates, true);
+    let events = event_batch(caps, candidates, true).peek();
+    let digest = events.digest.as_ref().map(crate::kibitzer_sidecar_envelope::sidecar_digest);
     let sidecar_candidates = sidecar_candidates(candidates);
     let cursor = candidates.transcript.len();
     let prompt = if generation == 1 {
         render_kibitzer_seed_prompt(&KibitzerEnvelopeInput {
             session_id,
             max_items: candidates.max_items,
-            events: &events,
+            events: &events.events,
             candidates: &sidecar_candidates,
-            digest: None,
+            digest: digest.as_ref(),
             task_summary,
             tool_budget: Some(max_tool_budget),
             caps: KIBITZER_FIELD_CAPS,
             event_window: None,
-            cursor_span: Some((cursor, cursor)),
         })
     } else {
         render_kibitzer_reseed_prompt(&KibitzerReseedInput {

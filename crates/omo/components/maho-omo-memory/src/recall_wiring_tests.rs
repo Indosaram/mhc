@@ -16,24 +16,61 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::Poll;
 
 use memory_core::identity::layout::build_identity_paths;
+use memory_core::git::GitCommitAuthor;
 use memory_core::recall::{RecallCandidate, RecallNudge};
 
 use crate::binding::MemorySessionBinding;
-use crate::kibitzer_child::{JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnInput};
+use crate::kibitzer_child::{JudgeSettle, KibitzerChild, KibitzerChildObservation, KibitzerChildSpawnFuture, KibitzerChildSpawnInput};
 use crate::kibitzer_contract::{KibitzerBufferedReason, KibitzerOfferResult, KibitzerSidecarState};
-use crate::kibitzer_delivery::KibitzerCoordinatorEntry;
+use crate::kibitzer_delivery::{KibitzerCoordinatorEntry, KibitzerPendingPort};
+use crate::recall_drain::PendingNudgesPort;
 use crate::kibitzer_session_resources::KibitzerSessionResourceRegistry;
 use crate::kibitzer_sidecar_admission::{BlockingAcquire, BlockingAcquireFuture};
-use crate::kibitzer_sidecar_model::KibitzerSidecarStartError;
 
 /// The session every case binds.
 const SESSION: &str = "s1";
+
+fn tool_call_offer_harness() -> (Arc<MemoryRecallWiring>, MemoryIdentityContext, Arc<ManualSpawn>, tempfile::TempDir) {
+    let (mut wiring, context, _child, root) = capture_harness(None);
+    let repo = GitMemoryRepo::open(context.identity_paths.repo.clone(), "agent").unwrap();
+    repo.init(None).unwrap();
+    let notes = context.identity_paths.repo.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join("qa.md"), "---\ndescription: deploy gate\n---\nThe note records the canary rollback gate and the release order.\n").unwrap();
+    repo.commit_write(&["notes/qa.md"], "fixture corpus", &GitCommitAuthor { agent_id: "agent".into(), author_name: "agent".into(), author_email: None }).unwrap();
+    let repo_directory = context.identity_paths.repo.clone();
+    let spawn = Arc::new(ManualSpawn::default());
+    let options = &mut Arc::get_mut(&mut wiring).expect("fixture wiring is unshared").options;
+    options.create_repo = Arc::new(move |_identity| GitMemoryRepo::open(repo_directory.clone(), "agent").map_err(|error| error.to_string()));
+    options.spawn = spawn.spawner();
+    (wiring, context, spawn, root)
+}
+
+#[test]
+fn matching_tool_call_offers_without_a_prompt_candidate() {
+    let (wiring, context, spawn, _root) = tool_call_offer_harness();
+    let _sidecar = wiring.sidecar_for(SESSION, &context);
+    wiring.on_before_agent_start(SESSION, "unrelated chatter with no corpus token", &[]);
+    assert_eq!(spawn.queued(), 0);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &[]);
+    assert_eq!(spawn.queued(), 1);
+}
+
+#[test]
+fn matching_tool_call_after_shutdown_does_not_schedule_an_offer() {
+    let (wiring, context, spawn, _root) = tool_call_offer_harness();
+    let _sidecar = wiring.sidecar_for(SESSION, &context);
+    wiring.on_session_shutdown(SESSION);
+    assert_eq!(spawn.queued(), 1);
+    wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "canary rollback gate" }), &[]);
+    assert_eq!(spawn.queued(), 1);
+}
 
 /// One poll with a no-op waker; the caller decides whether Pending is expected.
 fn poll_once<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
     use std::task::{Context as TaskContext, Waker};
     let waker = Waker::noop();
-    let mut context = TaskContext::from_waker(&waker);
+    let mut context = TaskContext::from_waker(waker);
     future.poll(&mut context)
 }
 
@@ -69,7 +106,7 @@ impl ManualSpawn {
             let next = { self.queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pop() };
             match next {
                 Some(future) => {
-                    let _ = poll_ready_once(future);
+                    poll_ready_once(future);
                 }
                 None => break,
             }
@@ -84,7 +121,7 @@ struct CountingSpawner {
 }
 
 impl KibitzerChildSpawner for CountingSpawner {
-    fn spawn<'a>(&'a self, _input: KibitzerChildSpawnInput) -> Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, KibitzerSidecarStartError>> + Send + 'a>> {
+    fn spawn<'a>(&'a self, _input: KibitzerChildSpawnInput) -> KibitzerChildSpawnFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(Arc::new(StubChild) as Arc<dyn KibitzerChild>) })
     }
@@ -360,7 +397,7 @@ struct CapturingSpawner {
 }
 
 impl KibitzerChildSpawner for CapturingSpawner {
-    fn spawn<'a>(&'a self, _input: KibitzerChildSpawnInput) -> Pin<Box<dyn Future<Output = Result<Arc<dyn KibitzerChild>, KibitzerSidecarStartError>> + Send + 'a>> {
+    fn spawn<'a>(&'a self, _input: KibitzerChildSpawnInput) -> KibitzerChildSpawnFuture<'a> {
         let child = Arc::clone(&self.child);
         Box::pin(async move { Ok(child as Arc<dyn KibitzerChild>) })
     }
@@ -455,7 +492,7 @@ fn given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_c
     let sidecar = wiring.sidecar_for(SESSION, &context);
     wiring.on_tool_call(SESSION, "call-1", "grep", &serde_json::json!({ "pattern": "TOOL-ARG-MARKER" }), &[]);
     let gate = crate::kibitzer_delivery::KibitzerToolResultGate { has_pending_messages: false, is_idle: true };
-    wiring.on_tool_result(SESSION, "call-1", "grep", &serde_json::json!({}), &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], true, &[], &gate);
+    wiring.on_tool_result(SESSION, &KibitzerToolResultEvent { tool_call_id: "call-1", tool_name: "grep", input: &serde_json::json!({}), content: &[maho_ext_api::ToolContent::text("RESULT-BODY-MARKER")], is_error: true }, &[], &gate);
     let prompt = seeded_offer(&sidecar, &child, "cand.md");
 
     assert!(prompt.contains("kind=\"tool_call\"") && prompt.contains("tool=\"grep\""), "the tool_call event: {prompt}");

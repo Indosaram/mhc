@@ -63,17 +63,45 @@ pub async fn reconcile_run(context:&RunFinalizationContext<'_>,dir:&Path,ledger:
     if child==RunProcessVerdict::Dead{recovery.fail(dir,&ledger,true)}else{Ok(None)}
 }
 pub async fn reconcile_reflection_runs(context:&RunFinalizationContext<'_>,recovery:&dyn ReflectionRecoveryPort)->Result<Vec<(String,String)>,String> {
+    reconcile_reflection_runs_with_logger(context,recovery,None).await
+}
+pub async fn reconcile_reflection_runs_with_logger(context:&RunFinalizationContext<'_>,recovery:&dyn ReflectionRecoveryPort,logger:Option<&(dyn super::run_reconciliation_sweep::ReflectionSweepLogger+Sync)>)->Result<Vec<(String,String)>,String> {
+    reconcile_reflection_runs_with_options(context,recovery,logger,false).await
+}
+pub async fn reconcile_reflection_runs_with_options(context:&RunFinalizationContext<'_>,recovery:&dyn ReflectionRecoveryPort,logger:Option<&(dyn super::run_reconciliation_sweep::ReflectionSweepLogger+Sync)>,defer_on_scheduler_contention:bool)->Result<Vec<(String,String)>,String> {
     let mut results=vec![];
+    if defer_on_scheduler_contention {
+        match context.reservation.read_state_with_wait(Some(0)) {
+            Ok(_)=>{},
+            Err(memory_core::reflection::ReservationError::Contention(_))=>return Ok(results),
+            Err(error)=>return Err(error.to_string()),
+        }
+    }
     if let Some(result)=reconcile_prelaunch(context,recovery)?{results.push(result);}
     let dir=context.identity.paths.reflection.join("runs");
-    let entries=match std::fs::read_dir(&dir){Ok(entries)=>entries,Err(error)if error.kind()==std::io::ErrorKind::NotFound=>return Ok(results),Err(error)=>return Err(error.to_string())};
-    let mut paths=vec![];for entry in entries{let entry=entry.map_err(|error|error.to_string())?;if entry.file_type().map_err(|error|error.to_string())?.is_dir(){paths.push(entry.path());}}
+    let completions=context.identity.paths.reflection.join("completions");
+    let liveness=|pid:u32|recovery.pid_liveness(pid);
+    super::run_temporaries::sweep_stranded_run_temporaries(&completions,(context.now_ms)() as f64,&liveness)?;
+    let mut paths=vec![];
+    match std::fs::read_dir(&dir){
+        Ok(entries)=>{for entry in entries{let entry=entry.map_err(|error|error.to_string())?;if entry.file_type().map_err(|error|error.to_string())?.is_dir(){paths.push(entry.path());}}}
+        Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(error)=>return Err(error.to_string()),
+    }
     paths.sort();
     for path in paths {
+        super::run_temporaries::sweep_stranded_run_temporaries(&path,(context.now_ms)() as f64,&liveness)?;
         if path.join("final.json").exists()||path.join("abandoned.json").exists()||!path.join("ledger.json").exists(){continue;}
         let ledger=parse_reservation_run_ledger(read_run_json(&path.join("ledger.json")).map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
         if let Some(result)=reconcile_run(context,&path,ledger,recovery).await?{results.push((result.run_id,result.outcome));}
     }
+    super::run_reconciliation_sweep::sweep_reflection_run_orphans(&super::run_reconciliation_sweep::ReflectionOrphanSweepContext {
+        identity: context.identity,
+        reservation: context.reservation,
+        now_ms: (context.now_ms)() as f64,
+        logger: logger.map(|logger| logger as &dyn super::run_reconciliation_sweep::ReflectionSweepLogger),
+        defer_on_scheduler_contention,
+    })?;
     Ok(results)
 }
 pub fn reconcile_prelaunch(context:&RunFinalizationContext<'_>,recovery:&dyn ReflectionRecoveryPort)->Result<Option<(String,String)>,String> {
@@ -104,6 +132,69 @@ pub fn reconcile_prelaunch(context:&RunFinalizationContext<'_>,recovery:&dyn Ref
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ContendedReservation;
+    impl super::super::runner_types::ReflectionReservationPort for ContendedReservation {
+        fn read_state(&self)->Result<memory_core::reflection::ReservationState,String>{self.read_state_with_wait(None).map_err(|error|error.to_string())}
+        fn read_state_with_wait(&self,_:Option<u64>)->Result<memory_core::reflection::ReservationState,memory_core::reflection::ReservationError>{
+            Err(memory_core::reflection::ReservationError::Contention(Box::new(memory_core::locks::LockContentionError::new(std::path::PathBuf::from("/locks/reflection-scheduler.lock"),None))))
+        }
+        fn complete(&self,_:&str,_:memory_core::reflection::ReflectionOutcome)->Result<memory_core::reflection::CompletionResult,String>{panic!("no reservation completion")}
+    }
+    #[tokio::test]
+    async fn a_held_scheduler_lock_fails_a_non_deferred_pass() {
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        let context=RunFinalizationContext{identity:&identity,reservation:&ContendedReservation,launch:None,now_ms:&||0};
+        let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
+        let error=reconcile_reflection_runs_with_options(&context,&recovery,None,false).await.unwrap_err();
+        assert_eq!(error,"Lock is held: /locks/reflection-scheduler.lock");
+    }
+    #[tokio::test]
+    async fn a_missing_runs_directory_still_ends_the_pass_with_the_orphan_sweep() {
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        std::fs::create_dir_all(&identity.paths.worktrees).unwrap();
+        let repo=memory_core::git::GitMemoryRepo::open(&identity.paths.repo,"agent").unwrap();
+        repo.init(Some(memory_core::git::InitializeGitRepoOptions::default())).unwrap();
+        let exec=repo.exec();
+        let orphan=memory_core::reflection::create_reflection_worktree(&repo,"run-gone",&identity.paths.worktrees,exec.as_ref(),None).unwrap();
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||4_000_000_000_000};
+        let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
+        assert_eq!(reconcile_reflection_runs(&context,&recovery).await,Ok(vec![]));
+        assert!(!orphan.dir.exists());
+        let gone=exec.run_in(&repo.dir,&["show-ref","--verify",&format!("refs/heads/{}",orphan.branch)]).unwrap();
+        assert_ne!(gone.code,0);
+    }
+    #[tokio::test]
+    async fn a_held_scheduler_lock_defers_the_bind_time_pass_without_sweeping() {
+        use memory_core::journal::store::{TranscriptJournal,TranscriptJournalOptions};
+        let root=tempfile::tempdir().unwrap();
+        let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
+        std::fs::create_dir_all(&identity.paths.worktrees).unwrap();
+        std::fs::create_dir_all(&identity.paths.locks).unwrap();
+        let repo=memory_core::git::GitMemoryRepo::open(&identity.paths.repo,"agent").unwrap();
+        repo.init(Some(memory_core::git::InitializeGitRepoOptions::default())).unwrap();
+        let exec=repo.exec();
+        let orphan=memory_core::reflection::create_reflection_worktree(&repo,"run-gone",&identity.paths.worktrees,exec.as_ref(),None).unwrap();
+        let transcripts=identity.paths.transcripts.clone();
+        let store=memory_core::reflection::ReflectionReservationStore::new(memory_core::reflection::ReflectionReservationStoreOptions{
+            identity:memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:identity.paths.clone()},
+            config:Default::default(),
+            get_journal:std::sync::Arc::new(move |conversation|Ok(TranscriptJournal::new(TranscriptJournalOptions::new(transcripts.join(conversation))))),
+            create_run_id:None,now_iso:None,launcher_identity:None,
+        });
+        let held=memory_core::locks::create_lock_record("reflection-scheduler",Default::default()).unwrap();
+        let lock_path=memory_core::locks::reflection_scheduler_lock_path(&identity.paths.locks);
+        memory_core::locks::acquire_lock(&lock_path,&held,&memory_core::locks::AcquireLockOptions::default()).unwrap();
+        let context=RunFinalizationContext{identity:&identity,reservation:&store,launch:None,now_ms:&||4_000_000_000_000};
+        let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
+        let result=reconcile_reflection_runs_with_options(&context,&recovery,None,true).await;
+        memory_core::locks::release_lock(&lock_path,&held).unwrap();
+        assert_eq!(result,Ok(vec![]));
+        assert!(orphan.dir.exists());
+        let cleanup=memory_core::reflection::discard_reflection_worktree(&repo,&orphan.dir,&orphan.branch,exec.as_ref());
+        assert!(cleanup.worktree_removed&&cleanup.branch_removed);
+    }
     struct Reservation;
     impl super::super::runner_types::ReflectionReservationPort for Reservation {
         fn read_state(&self)->Result<memory_core::reflection::ReservationState,String>{Ok(Default::default())}

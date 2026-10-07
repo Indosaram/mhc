@@ -14,10 +14,11 @@ use std::sync::Arc;
 
 use maho_ext_api::{ToolDefinition, ToolError, ToolResult};
 use maho_omo_memory::kibitzer_contract::KibitzerToolBudget;
-use maho_omo_memory::kibitzer_tools::{
-    execute_grep, execute_read, session_entries_since, KibitzerToolCaps, KibitzerToolResult,
-    DEFAULT_KIBITZER_TOOL_CAPS,
-};
+use maho_omo_memory::kibitzer_tools_grep::execute_grep;
+use maho_omo_memory::kibitzer_tools_read::execute_read;
+use maho_omo_memory::kibitzer_tools_session_read::session_entries_since;
+use maho_omo_memory::kibitzer_tools_result::KibitzerToolResult;
+use maho_omo_memory::kibitzer_tools_caps::{KibitzerToolCaps, DEFAULT_KIBITZER_TOOL_CAPS};
 
 /// The bound parent session's RAW entries, oldest first; the tool applies the cursor and the caps.
 pub type SessionEntriesResolver = Arc<dyn Fn() -> Vec<serde_json::Value> + Send + Sync>;
@@ -154,7 +155,7 @@ fn session_entries_tool(input: &KibitzerHostToolsInput) -> ToolDefinition {
             charge_or_reject(budget().as_ref())?;
             let since = params.get("since").and_then(serde_json::Value::as_i64).unwrap_or(-1);
             let page = session_entries_since(&resolve(), since, caps);
-            result_of(maho_omo_memory::kibitzer_tools::ok_json(&page))
+            result_of(maho_omo_memory::kibitzer_tools_result::ok_json(&page))
         })
     }))
 }

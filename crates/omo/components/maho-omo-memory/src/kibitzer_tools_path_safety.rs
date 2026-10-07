@@ -22,7 +22,7 @@ pub fn normalize_memory_path(input: &str) -> PathCheck {
         return PathCheck::Rejected { code: KibitzerRejectionCode::PathAbsolute, message: "Memory paths are relative to the memory repo.".into() };
     }
     let segments: Vec<&str> = input.split('/').filter(|segment| !segment.is_empty() && *segment != ".").collect();
-    if segments.iter().any(|segment| *segment == "..") {
+    if segments.contains(&"..") {
         return PathCheck::Rejected { code: KibitzerRejectionCode::PathTraversal, message: "Memory paths cannot contain '..' segments.".into() };
     }
     if segments.is_empty() {

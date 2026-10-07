@@ -42,7 +42,7 @@ fn path_words(value: &str) -> Vec<String> {
     let name = basename(value);
     let mut words = vec![name.to_string()];
     words.extend(
-        name.split(|ch| ch == '-' || ch == '_' || ch == '.')
+        name.split(['-', '_', '.'])
             .filter(|word| word.chars().count() >= 3)
             .map(str::to_string),
     );
@@ -62,7 +62,7 @@ fn path_chunks(token: &str) -> Vec<String> {
         return if path_like(token) { vec![token.to_string()] } else { vec![] };
     }
     token
-        .split(|ch| ch == '\'' || ch == '"')
+        .split(['\'', '"'])
         .filter(|part| path_like(part) && !part.starts_with('-'))
         .map(str::to_string)
         .collect()

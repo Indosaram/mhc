@@ -2,7 +2,7 @@ use super::*;
 use memory_core::recall::RecallCandidate;
 
 fn candidate(path: &str) -> RecallCandidate {
-    RecallCandidate { path: path.into(), hint: String::new(), score: 1.0 }
+    RecallCandidate { path: path.into(), description: String::new(), excerpt: String::new(), score: 1.0 }
 }
 
 fn set(paths: &[&str]) -> BTreeSet<String> {

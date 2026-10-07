@@ -23,7 +23,7 @@ fn view(
     ledger_dir: std::path::PathBuf,
     pending: Vec<RecallNudge>,
     queued: Vec<RecallNudge>,
-    env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    env: EnvLookup,
 ) -> RecallDrainOptionsView {
     RecallDrainOptionsView {
         resolve_context: Arc::new(move |_| Some(context.clone())),

@@ -15,7 +15,7 @@ use maho_omo_memory::context::MemoryIdentityContext;
 use maho_omo_memory::kibitzer_child::KibitzerChildSpawner;
 use maho_omo_memory::kibitzer_contract::{KibitzerSidecarTimers, KibitzerWakeSpawn};
 use maho_omo_memory::kibitzer_delivery::{KibitzerIdleCoordinator, KibitzerPendingPort, KibitzerSteerMessage};
-use maho_omo_memory::kibitzer_delivery::KibitzerSessionResources;
+use maho_omo_memory::kibitzer_session_resources::KibitzerSessionResources;
 use maho_omo_memory::kibitzer_events::KibitzerEventCaps;
 use maho_omo_memory::kibitzer_sidecar_admission::{BlockingAcquire, BlockingAcquireFuture, KibitzerBlockingExecutor, WakeAdmissionAttempt};
 use maho_omo_memory::prompt::PromptContextResolver;
@@ -95,6 +95,13 @@ impl KibitzerBlockingExecutor for CliBlockingExecutor {
 
 /// The CLI ports one recall wiring needs. The three `kibitzer_delivery` ports (`send_message`,
 /// `pending_for`, `coordinator`) are memory-owned types and are handed in by the memory composition.
+pub type RecallEnvironment = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+pub type RecallPendingResolver = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>;
+pub type RecallDrainResolver = Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>;
+pub type RecallQueuedDrain = Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<memory_core::recall::RecallNudge> + Send + Sync>;
+type RecallEntryAppender = Arc<dyn Fn(&str, Value) + Send + Sync>;
+type RecallRepoFactory = Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync>;
+
 pub struct CliRecallWiringPorts {
     pub executor: tokio::runtime::Handle,
     pub cwd: String,
@@ -104,7 +111,7 @@ pub struct CliRecallWiringPorts {
     /// `memory.recall.category`; the resolver falls back to the pinned default when absent.
     pub category: Option<String>,
     /// The per-session registry snapshot the resident model resolver reads at child start.
-    pub registry_for: Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ModelRegistry>> + Send + Sync>,
+    pub registry_for: super::kibitzer_child::SessionModelRegistry,
     /// The per-session resources factory: called once per child, so each session binds its own
     /// workspace/session-entries/budget rather than sharing the mount's tool set.
     pub resources: KibitzerChildResourcesFactory,
@@ -115,7 +122,7 @@ pub struct CliRecallWiringPorts {
     pub actions: Arc<dyn ExtensionActions>,
     pub resolve_context: PromptContextResolver,
     pub resolve_settings: Arc<dyn Fn() -> Result<Value, String> + Send + Sync>,
-    pub env: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub env: RecallEnvironment,
     pub warn: Arc<dyn Fn(&str) + Send + Sync>,
     pub caps: KibitzerEventCaps,
     pub task_summary: Option<String>,
@@ -123,10 +130,10 @@ pub struct CliRecallWiringPorts {
     pub max_concurrent_wakes: Option<usize>,
     pub sidecar_max_tokens: Option<i64>,
     pub send_message: Arc<dyn Fn(KibitzerSteerMessage) -> Result<(), String> + Send + Sync>,
-    pub pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn KibitzerPendingPort> + Send + Sync>,
+    pub pending_for: RecallPendingResolver,
     pub coordinator: Option<Arc<dyn KibitzerIdleCoordinator>>,
-    pub drain_pending_for: Arc<dyn Fn(&MemoryIdentityContext) -> Arc<dyn PendingNudgesPort> + Send + Sync>,
-    pub drain_queued: Option<Arc<dyn Fn(&str, &MemoryIdentityContext) -> Vec<memory_core::recall::RecallNudge> + Send + Sync>>,
+    pub drain_pending_for: RecallDrainResolver,
+    pub drain_queued: Option<RecallQueuedDrain>,
 }
 
 /// Build the ONE resident recall wiring for a mount.
@@ -172,7 +179,7 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRec
     let spawner: Arc<dyn KibitzerChildSpawner> =
         CliKibitzerChildSpawner::from_agent_dir(executor, cwd, agent_dir, config, category, registry_for, resources);
 
-    let append_entry: Arc<dyn Fn(&str, Value) + Send + Sync> = {
+    let append_entry: RecallEntryAppender = {
         let actions = Arc::clone(&actions);
         let warn = Arc::clone(&warn);
         Arc::new(move |kind: &str, data: Value| {
@@ -183,7 +190,7 @@ pub fn create_memory_recall_wiring(ports: CliRecallWiringPorts) -> Arc<MemoryRec
     };
     let ledger_for: Arc<dyn Fn(&MemoryIdentityContext) -> RecallLedger + Send + Sync> =
         Arc::new(|identity: &MemoryIdentityContext| RecallLedger::new(identity.identity_paths.recall_ledger.clone()));
-    let create_repo: Arc<dyn Fn(&MemoryIdentityContext) -> Result<GitMemoryRepo, String> + Send + Sync> =
+    let create_repo: RecallRepoFactory =
         Arc::new(|identity: &MemoryIdentityContext| {
             GitMemoryRepo::new(GitMemoryRepoOptions::new(identity.identity_paths.repo.clone(), identity.identity.clone()))
                 .map_err(|error| error.to_string())
@@ -336,7 +343,7 @@ mod tests {
     }
 
     /// The production adapter PLUS the test's window onto its worker. The executor under test is `inner`
-    /// - the Handle, the eager spawn, the returned future and the dropped handle are all production's.
+    /// The Handle, the eager spawn, the returned future and the dropped handle are all production's.
     /// The wrapper only wraps the WORKER closure so the test learns the exact moment the production worker
     /// produced its verdict, and can hold the task open past that point (`gate`), which is what makes
     /// "the waiting future is dropped while the worker is still running" deterministic instead of a race.
