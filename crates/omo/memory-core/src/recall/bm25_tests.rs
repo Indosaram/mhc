@@ -20,13 +20,11 @@ fn paths(ranked: &[RankedRecallDocument]) -> Vec<String> {
 
 #[test]
 fn given_cjk_runs_when_tokenized_then_they_expand_into_bigrams_and_han_characters() {
-    let tokens = tokenize_recall_text("배포절차");
-    assert!(tokens.contains(&"배포절차".to_string()));
-    assert!(tokens.contains(&"배포".to_string()));
-    assert!(tokens.contains(&"포절".to_string()));
-    assert!(tokens.contains(&"절차".to_string()));
-    assert!(tokens.contains(&"배".to_string()));
-    assert!(tokens.contains(&"포".to_string()));
+    assert_eq!(tokenize_recall_text("배포절차"), ["배포절차", "배포", "포절", "절차"]);
+    assert_eq!(
+        tokenize_recall_text("記憶検索 メモリ"),
+        ["記憶検索", "記憶", "憶検", "検索", "記", "憶", "検", "索", "メモリ", "メモ", "モリ"]
+    );
 }
 
 #[test]
