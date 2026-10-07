@@ -31,6 +31,7 @@ pub mod facts_drain;
 pub mod facts_batch_apply;
 pub mod facts_terminal_writes;
 pub mod prompt;
+pub mod projection_pin;
 pub mod recall_wiring;
 pub mod recall_consumer;
 pub mod recall_session_read;
