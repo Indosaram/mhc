@@ -24,7 +24,10 @@ pub use domains::{
 pub use lock_record::{
     CreateLockRecordOptions, LockRecord, LockRecordError, create_lock_record, parse_lock_record,
 };
-pub use process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity};
+pub use process_identity::{
+    ProcessLiveness, get_pid_liveness, get_process_start_identity, start_identities_comparable,
+    start_identities_conflict,
+};
 pub use recall_wake_domain::{
     RECALL_WAKE_DEFAULT_SLOTS, RecallWakeBusyError, RecallWakeError, RecallWakeLease,
     RecallWakeLeaseOptions, acquire_recall_wake_lease, recall_wake_lock_path,

@@ -315,10 +315,10 @@ pub fn acquire_recall_wake_lease(
         }
     })();
 
-    if let Err(error) = unlink_if_present(&ticket_directory.join(&name)) {
-        if outcome.is_ok() {
-            return Err(error);
-        }
+    if let Err(error) = unlink_if_present(&ticket_directory.join(&name))
+        && outcome.is_ok()
+    {
+        return Err(error);
     }
     outcome
 }
