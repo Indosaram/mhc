@@ -33,6 +33,23 @@ impl<'a> Default for ValidateMemoryPathOptions<'a> {
     }
 }
 
+pub fn is_memory_content_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    if normalized.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+        return false;
+    }
+    let body = normalized.strip_prefix("memory/").unwrap_or(&normalized);
+    if let Some(rest) = body.strip_prefix("skills/") {
+        return rest.len() > "/SKILL.md".len() && rest.ends_with("/SKILL.md");
+    }
+    for prefix in ["system/", "reference/", "people/"] {
+        if let Some(rest) = body.strip_prefix(prefix) {
+            return rest.ends_with(".md");
+        }
+    }
+    false
+}
+
 /// Validate that a path input resolves to a confined location inside `memory_root`.
 pub fn validate_memory_path(
     memory_root: &Path,
