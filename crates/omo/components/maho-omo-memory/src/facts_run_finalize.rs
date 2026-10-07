@@ -1,9 +1,9 @@
 use std::path::Path;
-use memory_core::{facts::{FactsFailureReason,payload_cap::FactsPayload,extraction::{FactsExtractionRecord,parse_facts_extraction_jsonl}},git::{GitMemoryRepo,errors::GitError}};
+use memory_core::{facts::{FactsFailureReason,payload_cap::FactsPayload,extraction::{FactsExtractionRecord,parse_facts_extraction_jsonl},recovery::find_facts_batch_receipt},git::{GitMemoryRepo,errors::GitError}};
 use crate::{facts_runner_types::{FactsRunLedger,FactsLaunchResult,FactsTerminalOutcome},facts_terminal_writes::{FactsTerminalWrites,FactsTerminalError,FactsFailureWrite},worker::run_artifacts::{ArtifactError,RunOutcome,read_run_json},facts_batch_apply::Applied};
 #[derive(Debug)]pub enum FactsFinalizeError{Git(GitError),Artifact(ArtifactError),Terminal(FactsTerminalError)}
 pub fn finalize_claimed_facts_run(run_dir:&Path,repo:&GitMemoryRepo,ledger:&FactsRunLedger,terminal:&mut FactsTerminalWrites<'_>,apply:&mut impl FnMut(&[FactsExtractionRecord])->Result<Option<Applied>,String>)->Result<FactsLaunchResult,FactsFinalizeError>{
-    let receipt=repo.log(None).map_err(FactsFinalizeError::Git)?.into_iter().find(|entry|entry.trailers.get("Omo-Facts-Batch")==Some(&ledger.batch_id));
+    let receipt=find_facts_batch_receipt(repo,&ledger.batch_id).map_err(FactsFinalizeError::Git)?;
     let payload:FactsPayload=read_run_json(&run_dir.join("facts-payload.json")).map_err(FactsFinalizeError::Artifact)?;let targets=crate::facts_failure_recording::ledger_targets(&ledger.queued);
     if let Some(receipt)=receipt{terminal.succeed(run_dir,&ledger.run_id,FactsTerminalOutcome::Committed,&payload.entries,&targets,Some(&receipt.sha)).map_err(FactsFinalizeError::Terminal)?;return Ok(FactsLaunchResult::Committed{run_id:ledger.run_id.clone(),sha:receipt.sha});}
     let fail=|terminal:&mut FactsTerminalWrites<'_>,reason,detail:&str,outcome|terminal.fail(&FactsFailureWrite{run_dir,run_id:&ledger.run_id,batch_id:&ledger.batch_id,targets:&targets,reason,detail,outcome}).map_err(FactsFinalizeError::Terminal);

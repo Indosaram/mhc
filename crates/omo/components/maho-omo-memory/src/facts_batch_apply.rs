@@ -1,5 +1,5 @@
 use std::path::Path;
-use memory_core::{facts::{extraction::{FactsBatch,FactsExtractionError,FactsExtractionRecord,validate_facts_recovery},mutation_plan::{MutationPlanError,plan_facts_mutation},person_routing::FactsPeopleRouting,recovery::{FactsRecoveryResult,apply_facts_recovery}},git::{GitMemoryRepo,GitCommitAuthor,errors::GitError}};
+use memory_core::{facts::{extraction::{FactsBatch,FactsExtractionError,FactsExtractionRecord,validate_facts_recovery},mutation_plan::{MutationPlanError,plan_facts_mutation},person_routing::FactsPeopleRouting,recovery::{FactsRecoveryResult,apply_facts_recovery,find_facts_batch_receipt}},git::{GitMemoryRepo,GitCommitAuthor,errors::GitError}};
 use crate::{facts_runner_types::FactsRunLedger,worker::run_artifacts::{ArtifactError,update_run_ledger}};
 #[derive(Debug)]pub enum FactsApplyError{Git(GitError),Plan(MutationPlanError),Extraction(FactsExtractionError),Recovery(memory_core::facts::recovery::FactsRecoveryError),Artifact(ArtifactError)}
 #[derive(Debug,PartialEq,Eq)]pub enum Applied{Committed{sha:String},ParentDirty{detail:Option<String>}}
@@ -25,7 +25,7 @@ pub fn apply_facts_with_retries<T,E>(mut operation:impl FnMut(usize)->Result<T,m
     Ok(None)
 }
 pub fn apply_claimed(run_dir:&Path,ledger:&FactsRunLedger,repo:&GitMemoryRepo,records:&[FactsExtractionRecord],people:&FactsPeopleRouting,identity:&str)->Result<Applied,FactsApplyError>{
-    if let Some(receipt)=repo.log(None).map_err(FactsApplyError::Git)?.into_iter().find(|entry|entry.trailers.get("Omo-Facts-Batch")==Some(&ledger.batch_id)){return Ok(Applied::Committed{sha:receipt.sha});}
+    if let Some(receipt)=find_facts_batch_receipt(repo,&ledger.batch_id).map_err(FactsApplyError::Git)?{return Ok(Applied::Committed{sha:receipt.sha});}
     let batch=FactsBatch{batch_id:ledger.batch_id.clone(),records:records.to_vec()};
     let recovery=if let Some(recovery)=&ledger.apply_recovery{validate_facts_recovery(recovery,&batch).map_err(FactsApplyError::Extraction)?;recovery.clone()}else{
         let recovery=match plan_facts_mutation(repo,&batch,Some(people),None){Ok(recovery)=>recovery,Err(MutationPlanError::ParentDirty(_))=>return Ok(Applied::ParentDirty{detail:None}),Err(error)=>return Err(FactsApplyError::Plan(error))};
