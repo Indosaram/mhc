@@ -253,9 +253,12 @@ impl Drop for ReadClassifierSubscription {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExtensionFailure { pub message: String, pub stack: Option<String> }
+pub struct ExtensionFailure { pub message: String, pub stack: Option<String>, pub class: Option<String>, pub code: Option<String> }
 impl ExtensionFailure {
-    pub fn new(message: impl Into<String>) -> Self { Self { message: message.into(), stack: None } }
+    pub fn new(message: impl Into<String>) -> Self { Self { message: message.into(), stack: None, class: None, code: None } }
+    /// senpi `errorKind` = `${error.name}/${error.code}`: keep the machine classification (for
+    /// example `ModelsError`/`oauth`) so a caller never has to fingerprint the message for parity.
+    pub fn classified(message: impl Into<String>, class: Option<String>, code: Option<String>) -> Self { Self { message: message.into(), stack: None, class, code } }
 }
 impl fmt::Display for ExtensionFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.message) }
@@ -376,14 +379,33 @@ pub struct ResolvedRequestAuth {
     pub env: Option<maho_ai::types::ProviderEnv>,
 }
 
+/// senpi `registry.getProviderAuthStatus(provider)`: the shared, ext-api-owned status type the
+/// component reads (`.source` only). It mirrors `maho_core::provider_composer::AuthStatus`; ext-api
+/// owns it so a component never needs an ext-api -> core edge.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderAuthStatus {
+    pub configured: bool,
+    pub source: Option<String>,
+    pub label: Option<String>,
+}
+
 pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
     fn has_configured_auth(&self, model: &Model) -> bool;
+    /// senpi `registry.getProviderAuthStatus(provider)`: the configured/source status. The default
+    /// body reports an absent accessor; the production registry overrides it with the runtime source.
+    fn get_provider_auth_status(&self, _provider: &str) -> ProviderAuthStatus { ProviderAuthStatus::default() }
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> ExtensionFuture<'a, Option<String>>;
     fn get_provider_auth<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
         Box::pin(async { Err(ExtensionFailure::new("Provider auth is not supported by this model registry")) })
+    }
+    /// senpi `runtime.getAuth(provider, { slotName })`: `None` is senpi's `{}` (the flat/default
+    /// credential). The default delegates to the flat probe; the production registry overrides it to
+    /// thread the slot, so a default body can never silently reintroduce the hidden flat fallback.
+    fn get_provider_auth_for_slot<'a>(&'a self, provider: &'a str, _slot_name: Option<&'a str>) -> ExtensionFuture<'a, Option<maho_ai::models::AuthResolution>> {
+        self.get_provider_auth(provider)
     }
     fn get_stored_credential_type(&self, _provider: &str) -> Result<Option<maho_ai::auth::types::CredentialType>, ExtensionFailure> {
         Err(ExtensionFailure::new("Stored credential metadata is not supported by this model registry"))
@@ -393,6 +415,12 @@ pub trait ModelRegistry: Send + Sync {
     }
     fn get_api_key_and_headers<'a>(&'a self, _model: &'a Model) -> ExtensionFuture<'a, ResolvedRequestAuth> {
         Box::pin(async { Err(ExtensionFailure::new("Model request auth is not supported by this model registry")) })
+    }
+    /// senpi `runtime.getAuth(model, { slotName })`: the MODEL overload with the SAME slot the
+    /// provider scope resolved on, so the model's own headers resolve against that account. The
+    /// default delegates to the flat model probe; the production registry overrides it.
+    fn get_api_key_and_headers_for_slot<'a>(&'a self, model: &'a Model, _slot_name: Option<&'a str>) -> ExtensionFuture<'a, ResolvedRequestAuth> {
+        self.get_api_key_and_headers(model)
     }
     fn get_credential_accounts<'a>(&'a self, _provider: &'a str) -> ExtensionFuture<'a, Vec<CredentialAccountSummary>> {
         Box::pin(async { Err(ExtensionFailure::new("Credential account listing is not supported by this model registry")) })
@@ -700,7 +728,21 @@ pub trait ExtensionUi: Send + Sync {
 
 /// One queued idle-edge injection (upstream `IdleInjection`, idle-injection-coordinator.ts).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IdleInjectionSource { TaskCompletion, TeamMessage, TeamLiveness, BoulderContinuation, UlwContinuation, DagRun }
+/// Upstream source set. The PINNED `idle-injection-coordinator.ts` (77f3067f1) carries the first six;
+/// `WorkpoolAggregate` and `Kibitzer` are LATEST additions (audit checkout 20261006), selected for the
+/// recall production integration and recorded as latest, NOT pinned parity.
+pub enum IdleInjectionSource {
+    TaskCompletion,
+    /// Latest (`workpool-aggregate`); ranked with `TaskCompletion`.
+    WorkpoolAggregate,
+    TeamMessage,
+    TeamLiveness,
+    BoulderContinuation,
+    UlwContinuation,
+    DagRun,
+    /// Latest (`kibitzer`); ranked last, always queued `passive`.
+    Kibitzer,
+}
 /// `onFlushed` callback: runs once per injection after a successful delivery.
 pub type IdleInjectionCallback = Arc<dyn Fn() + Send + Sync>;
 /// `onDeliveryFailed` callback: receives the delivery error message.
@@ -709,6 +751,9 @@ pub type IdleInjectionFailureCallback = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct IdleInjection {
     pub key: String, pub source: IdleInjectionSource, pub custom_type: Option<String>,
     pub content: String, pub display: Option<bool>, pub details: Option<JsonValue>,
+    /// LATEST addition (absent from the pinned TS): `passive?: boolean` rides a flush carrying at
+    /// least one non-passive entry and never causes a flush by itself. `None` = non-passive.
+    pub passive: Option<bool>,
     pub on_flushed: Option<IdleInjectionCallback>, pub on_delivery_failed: Option<IdleInjectionFailureCallback>,
 }
 /// The single idle-edge injection queue. The concrete implementation lives in the composition
@@ -716,7 +761,14 @@ pub struct IdleInjection {
 /// carry it without depending on that crate. `None` means "no coordinator" and every consumer
 /// falls back to a direct send, matching upstream's optional `ComponentContext.idleCoordinator`.
 pub trait IdleInjectionCoordinator: Send + Sync {
-    fn enqueue(&self, injection: IdleInjection);
+    /// Accept an injection into the batch window. Returns `false` when the coordinator is retired:
+    /// the queue is gone, the injection is NOT queued and gets no receipt, so the caller still owns
+    /// the notification and must fail it durably (upstream `enqueue(...): boolean`).
+    fn enqueue(&self, injection: IdleInjection) -> bool;
+    /// Retire the coordinator on session shutdown (upstream `retire()`): refuse further enqueues and
+    /// fail every still-queued injection through `on_delivery_failed`. A coordinator that is never
+    /// retired keeps this default no-op and always accepts.
+    fn retire(&self) {}
     fn schedule_flush(&self);
     fn flush_soon(&self);
     fn flush_on_idle(&self) -> usize;

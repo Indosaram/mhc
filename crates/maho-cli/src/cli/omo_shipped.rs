@@ -89,6 +89,7 @@ pub fn compose_task_engine_for_session(wiring: TaskWiring, actions: Arc<dyn Exte
         actions,
         coordinator: wiring.coordinator,
         resolve_registry: wiring.resolve_registry,
+        host_transport: None,
     })
 }
 

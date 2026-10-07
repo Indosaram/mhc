@@ -36,6 +36,22 @@ pub fn shared_host_setting_enabled(settings: &maho_core::settings_manager::Setti
     settings.get_bool(EXPERIMENTAL_SHARED_HOST_SETTING).unwrap_or(false)
 }
 
+pub fn session_profile(
+    app_mode: AppMode,
+    settings: &maho_core::settings_manager::SettingsManager,
+    session_kind: Option<maho_ext_api::SessionKind>,
+    session_context: Option<maho_ext_api::SessionContext>,
+) -> maho_ext_api::ExtensionSessionProfile {
+    let enable_env = is_truthy_env_flag(
+        maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &maho_core::config::current_env()).as_deref(),
+    );
+    maho_ext_api::ExtensionSessionProfile {
+        shared_host_enabled: should_join_shared_host(app_mode, enable_env, shared_host_setting_enabled(settings)),
+        session_kind: session_kind.unwrap_or_default(),
+        session_context: session_context.unwrap_or_default(),
+    }
+}
+
 /// senpi `envValue("RPC_SOCKET") ?? resolve(agentDir, "rpc", "rpc.sock")`.
 pub fn shared_host_socket(agent_dir: &str) -> String {
     let env = maho_core::config::current_env();

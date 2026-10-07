@@ -6,8 +6,11 @@ pub fn create_mcp_transport_spec(server:&str,config:&McpServerConfig,env:Option<
     let failure=|kind,message| {let mut error=McpError::new(kind,message);error.phase=Some("create".into());error.server_name=Some(server.into());error};
     if config.transport==Some(Transport::Stdio) {
         let command=config.command.as_ref().filter(|s|!s.trim().is_empty()).ok_or_else(||failure(McpErrorKind::Connect,format!("MCP server {server} stdio command is required")))?;
-        let mut merged=env.cloned().unwrap_or_default();merged.extend(config.env.clone().unwrap_or_default());
-        return Ok(McpTransportSpec::Stdio {command:command.clone(),args:config.args.clone().unwrap_or_default(),cwd:config.cwd.clone(),env:merged});
+        // Pinned `env-cleaner.ts::createCleanMcpEnvironment`: the ambient environment minus
+        // `EXCLUDED_ENV_PATTERNS`, then the server's declared env overlaid unfiltered. The host
+        // session environment is this port's `process.env` (`index.rs` passes `std::env::vars()`).
+        let clean_env=crate::env_cleaner::create_clean_mcp_environment_from(&env.cloned().unwrap_or_default(),&config.env.clone().unwrap_or_default());
+        return Ok(McpTransportSpec::Stdio {command:command.clone(),args:config.args.clone().unwrap_or_default(),cwd:config.cwd.clone(),env:clean_env});
     }
     let url=config.url.as_ref().filter(|s|!s.trim().is_empty()).ok_or_else(||failure(McpErrorKind::Connect,format!("MCP server {server} HTTP URL is required")))?;
     let url=url::Url::parse(url).map_err(|error|failure(McpErrorKind::Connect,format!("MCP server {server} HTTP URL is invalid: {error}")))?;
@@ -24,13 +27,16 @@ pub struct McpTransportConnection {
     logger:Arc<Mutex<McpLogger>>,client:tokio::sync::OnceCell<Arc<McpClient>>,
     pub auth:Option<Arc<crate::auth::oauth_refresh::McpRefreshManager>>,
     pub elicitation_ui:Option<Arc<dyn maho_ext_api::ExtensionUi>>,
+    /// The service-owned interactive step-up handler (pinned `handleStepUpIfNeeded` re-login +
+    /// `forceReconnect`), bound by `ServerConnection::open_connection`.
+    pub step_up:Option<Arc<dyn crate::transport_sdk::McpAuthStepUp>>,
     server_requests:Mutex<Option<tokio::task::JoinHandle<()>>>,
     shutdown:tokio::sync::Mutex<bool>,
 }
 pub fn create_mcp_transport(server:&str,config:&McpServerConfig,env:Option<&BTreeMap<String,String>>,logger:Arc<Mutex<McpLogger>>)->Result<McpTransportConnection,McpError> {
     let spec=create_mcp_transport_spec(server,config,env)?;
     let timeout=config.connect_timeout_ms.unwrap_or(15000.0);
-    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,elicitation_ui:None,server_requests:Mutex::new(None),shutdown:tokio::sync::Mutex::new(false)})
+    Ok(McpTransportConnection {server_name:server.into(),spec,connect_timeout:Duration::from_secs_f64(timeout.max(0.0)/1000.0),logger,client:tokio::sync::OnceCell::new(),auth:None,step_up:None,elicitation_ui:None,server_requests:Mutex::new(None),shutdown:tokio::sync::Mutex::new(false)})
 }
 impl McpTransportConnection {
     pub async fn materialize(&self)->Result<Arc<McpClient>,McpError> {
@@ -42,6 +48,7 @@ impl McpTransportConnection {
             }
             let client=McpClient::materialize(&self.server_name,&spec,self.logger.clone()).await?;
             if let Some(auth)=&self.auth {client.set_auth(auth.clone()).await;}
+            if let Some(step_up)=&self.step_up {client.set_step_up(step_up.clone()).await;}
             *self.server_requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(client.install_elicitation(self.elicitation_ui.clone()));
             Ok::<_,McpError>(client)
         }).await.cloned()

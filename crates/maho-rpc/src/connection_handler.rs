@@ -301,6 +301,17 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireResult{output:String,exit_code:Option<i32>,cancelled:bool,truncated:bool,full_output_path:Option<std::path::PathBuf>}
             let response=serde_json::from_value::<WireResult>(result.clone()).map_err(|error|error.to_string()).map(|result|{let parsed=maho_tools::bash_executor::BashResult{output:result.output,exit_code:result.exit_code,cancelled:result.cancelled,truncated:result.truncated,full_output_path:result.full_output_path};session.record_bash_result(command,&parsed,exclude_from_context.unwrap_or(false));None});("record_bash_result",response)
         },
+        RpcCommandBody::GetCommands=>{
+            // Upstream `case "get_commands"`: `buildRpcCommandsForSession(session)` classifies each of the
+            // three groups by its real source; the session's `command_groups` reads the same three.
+            let (extensions,templates,skills)=session.command_groups();
+            let commands=crate::rpc_command_surface::build_rpc_commands(
+                &crate::rpc_command_surface::command_inputs(&extensions),
+                &crate::rpc_command_surface::command_inputs(&templates),
+                &crate::rpc_command_surface::command_inputs(&skills),
+            );
+            ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
+        },
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})

@@ -23,10 +23,10 @@ fn the_registration_order_is_the_full_upstream_list() {
 
     let names: Vec<&str> = components.iter().map(|component| component.name).collect();
     assert_eq!(names, omo_component_names());
-    assert_eq!(names.len(), 17);
-    assert_eq!(names[14], "task");
-    assert_eq!(names[15], "memory");
-    assert_eq!(names[16], "config-watch");
+    assert_eq!(names.len(), 22);
+    assert_eq!(names[19], "task");
+    assert_eq!(names[20], "memory");
+    assert_eq!(names[21], "config-watch");
 }
 
 #[test]
@@ -49,7 +49,19 @@ fn every_registered_component_has_a_distinct_name() {
     let mut names: Vec<&str> = components.iter().map(|component| component.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 22);
+}
+
+/// `documented-commands.test.ts` case 3: bare skills must be rewritten before other input handlers.
+#[test]
+fn skill_commands_precede_every_input_handler_component() {
+    let components = omo_components(slot("task"), slot("memory"), &options());
+    let names: Vec<&str> = components.iter().map(|component| component.name).collect();
+    let skill_commands = names.iter().position(|name| *name == "skill-commands").expect("skill-commands is registered");
+    for handler in ["telemetry", "ultrawork", "mass-ulw", "ulw-execute-continuation", "ulw-loop", "fallback-architect", "task", "memory"] {
+        let index = names.iter().position(|name| *name == handler).unwrap_or_else(|| panic!("{handler} is registered"));
+        assert!(skill_commands < index, "skill-commands must precede the {handler} input handler");
+    }
 }
 
 #[test]

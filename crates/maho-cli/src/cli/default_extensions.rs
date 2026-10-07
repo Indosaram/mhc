@@ -90,6 +90,9 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("rules", maho_ext_rules::Rules),
             factory("goal", maho_ext_goal::GoalExtension::default()),
             factory("codemode", Codemode),
+            // RESERVED (assembly, sequential): the builtin-mcps owner's native MCP declaration is
+            // added here once its source receipt lands; this is the MCP declaration seam the plan
+            // marks integrator-owned. Do not integrate from a summary.
             factory("mcp", Mcp { gate: mcp_gate.clone(), tool_search: tool_search_service.clone() }),
         ].into_iter().map(|factory| {
             let extension: Arc<dyn Extension> = Arc::from(factory.extension);
@@ -150,7 +153,7 @@ impl Extension for Task {
                     &maho_core::config::get_agent_dir(), environment, Vec::new()), weak.clone());
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth: 3,
-                    create_session: super::task_session::factory(executor, parent.weak_accessor()), parent_registry, rpc_options: process.clone(),
+                    create_session: super::task_session::factory(executor.clone(), parent.weak_accessor()), parent_registry, rpc_options: process.clone(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let config = parent.with_settings_manager(|settings| settings.get_value("omo").cloned().unwrap_or_else(|| serde_json::json!({})));
@@ -159,6 +162,7 @@ impl Extension for Task {
                     let engine = slot.get_or_insert_with(|| maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
                         cwd: ctx.cwd.clone(), config, runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
                         resolve_registry: Arc::new(move || Some(registry.clone())),
+                        host_transport: Some(super::host_transport::create_cli_host_transport(executor.clone())),
                     }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process))));
                     super::omo_mount::retained_engine(engine)
                 };
@@ -185,6 +189,12 @@ impl Extension for Task {
                             }).collect()).unwrap_or_default(),
                             task: Some(senpi_task::tools::task::execute_spec::TaskOmoTaskConfig {
                                 default_execution_mode: engine.config["task"]["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse),
+                                isolation: engine.config.get("task").and_then(|task| task.get("isolation")).map(|isolation| senpi_task::tools::task::execute_spec::TaskOmoIsolationConfig {
+                                    enabled: isolation.get("enabled").and_then(serde_json::Value::as_bool),
+                                    backend: isolation.get("backend").and_then(serde_json::Value::as_str).map(str::to_owned),
+                                    merge: isolation.get("merge").and_then(serde_json::Value::as_str).map(|merge| if merge == "branch" { senpi_task::state::IsolationMergeMode::Branch } else { senpi_task::state::IsolationMergeMode::Patch }),
+                                    apply: isolation.get("apply").and_then(serde_json::Value::as_bool),
+                                }),
                             }),
                         },
                     };

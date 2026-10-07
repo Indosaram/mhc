@@ -127,6 +127,24 @@ impl AgentAbortProvenance {
         self.settling_agent_end_event = None;
     }
 
+    /// Atomically take a pending late User join AND close the agent-end boundary (including the
+    /// residual `source`), under the caller's state lock. Clearing `source` matters: after the close
+    /// a later `join(User, ..)` must fall to the `source.is_none()` branch and route through
+    /// `begin_user_abort`/`finish_user_abort`, instead of being swallowed by the `source.is_some()`
+    /// second branch (which returns `user_owned` and suppresses `SessionAbort`). Returns whether a
+    /// late join was captured to emit before the final settled event.
+    pub fn take_late_join_and_close(&mut self) -> bool {
+        let late_user_join = self.late_user_join;
+        self.late_user_join = false;
+        if late_user_join {
+            self.late_user_join_delivered = true;
+        }
+        self.agent_end_boundary_open = false;
+        self.settling_agent_end_event = None;
+        self.source = None;
+        late_user_join
+    }
+
     pub fn join_open_boundary(&mut self, source: AbortSource) -> Option<JoinedAbort> {
         if !self.agent_end_boundary_open && self.agent_end_event.is_none() {
             return None;

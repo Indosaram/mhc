@@ -20,6 +20,7 @@ pub mod rules {
     pub mod matcher;
     pub mod ordering;
     pub mod parser;
+    pub mod picomatch;
     pub mod project_root;
     pub mod scanner;
     pub mod tool_paths;

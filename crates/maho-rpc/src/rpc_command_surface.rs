@@ -41,6 +41,21 @@ pub fn registered_extension_commands(commands:&[maho_ext_api::ResolvedCommand])-
         RpcCommandInput{name:resolved.invocation_name.clone(),description:resolved.command.description.clone(),source_info}
     }).collect()
 }
+/// Classifies one `get_commands` group into the RPC input shape, mirroring the source metadata
+/// `registered_extension_commands` emits so every group's `sourceInfo` serializes identically.
+pub fn command_inputs(commands: &[maho_ext_api::SlashCommandInfo]) -> Vec<RpcCommandInput> {
+    commands.iter().map(|command| {
+        let source_info = command.source_info.as_ref().map(|info| {
+            let scope = match info.scope { maho_ext_api::SourceScope::User => "user", maho_ext_api::SourceScope::Project => "project", maho_ext_api::SourceScope::Temporary => "temporary", maho_ext_api::SourceScope::System => "system" };
+            let origin = match info.origin { maho_ext_api::SourceOrigin::Package => "package", maho_ext_api::SourceOrigin::TopLevel => "top-level" };
+            let mut value = serde_json::json!({ "path": info.path, "source": info.source, "scope": scope, "origin": origin });
+            if let Some(base_dir) = &info.base_dir { value["baseDir"] = base_dir.clone().into(); }
+            value
+        }).unwrap_or_else(|| serde_json::json!({}));
+        RpcCommandInput { name: command.name.clone(), description: command.description.clone(), source_info }
+    }).collect()
+}
+
 pub fn create_commands_changed_event(previous_digest: Option<&str>, commands: &[RpcSlashCommand]) -> Result<Option<Value>,serde_json::Error> {
     let Some(previous) = previous_digest else { return Ok(None); };
     if previous == rpc_command_list_digest(commands)? { return Ok(None); }

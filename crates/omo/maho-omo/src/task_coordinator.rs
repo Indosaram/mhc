@@ -14,13 +14,17 @@ impl TaskCoordinator {
             maho_ext_api::ToolContent::Image { .. } => Err(HostError { message: "team liveness must contain text".into() }),
         }).collect::<Result<Vec<_>, _>>()?.join("\n");
         let failed = callbacks.clone();
-        self.0.enqueue(IdleInjection {
+        let queued = self.0.enqueue(IdleInjection {
             key: key.into(), source: IdleInjectionSource::TeamLiveness,
             custom_type: Some(message.custom_type), content,
             display: Some(message.display), details: message.details,
+            passive: Some(false),
             on_flushed: Some(Arc::new(move || callbacks.delivered())),
             on_delivery_failed: Some(Arc::new(move |error| failed.failed(HostError { message: error.into() }))),
         });
+        if !queued {
+            return Err(HostError { message: crate::coordinator::RETIRED_ERROR_MESSAGE.to_owned() });
+        }
         Ok(())
     }
 }
@@ -32,13 +36,17 @@ impl CompletionCoordinator for TaskCoordinator {
         }
         let details = serde_json::to_value(&message.details).map_err(|error| HostError { message: error.to_string() })?;
         let failed = callbacks.clone();
-        self.0.enqueue(IdleInjection {
+        let queued = self.0.enqueue(IdleInjection {
             key: key.into(), source: IdleInjectionSource::TaskCompletion,
             custom_type: Some(message.custom_type.into()), content: message.content.clone(),
             display: Some(message.display), details: Some(details),
+            passive: Some(false),
             on_flushed: Some(Arc::new(move || callbacks.delivered())),
             on_delivery_failed: Some(Arc::new(move |error| failed.failed(HostError { message: error.into() }))),
         });
+        if !queued {
+            return Err(HostError { message: crate::coordinator::RETIRED_ERROR_MESSAGE.to_owned() });
+        }
         Ok(())
     }
     fn schedule_flush(&self) { self.0.schedule_flush(); }
@@ -53,13 +61,18 @@ impl LeadInjectionCoordinator for TaskCoordinator {
             Err(error) => { if let Some(callback) = on_delivery_failed { callback(&error.message); } }
         });
         let failed = callbacks.clone();
-        self.0.enqueue(IdleInjection {
+        let refused = callbacks.clone();
+        let queued = self.0.enqueue(IdleInjection {
             key, source: IdleInjectionSource::TeamMessage,
             custom_type: Some(custom_type.into()), content,
             display: Some(display), details: None,
+            passive: Some(false),
             on_flushed: Some(Arc::new(move || callbacks.delivered())),
             on_delivery_failed: Some(Arc::new(move |error| failed.failed(HostError { message: error.into() }))),
         });
+        if !queued {
+            refused.failed(HostError { message: crate::coordinator::RETIRED_ERROR_MESSAGE.to_owned() });
+        }
     }
     fn schedule_flush(&self) { self.0.schedule_flush(); }
     fn flush_soon(&self) { self.0.flush_soon(); }

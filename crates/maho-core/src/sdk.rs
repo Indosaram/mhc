@@ -48,6 +48,7 @@ pub struct CreateAgentSessionOptions {
     pub additional_hook_paths: Vec<String>,
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
+    pub session_profile: maho_ext_api::ExtensionSessionProfile,
 }
 
 /// `noTools` suppression mode.
@@ -245,9 +246,9 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         };
         let context = extension_context::create(&session);
         let runner = if let Some(loaded) = options.loaded_extensions {
-            maho_ext_host::runner::ExtensionRunner::from_loaded_extensions(loaded, options.extension_factories, context, Default::default())
+            maho_ext_host::runner::ExtensionRunner::from_loaded_extensions(loaded, options.extension_factories, context, options.session_profile.clone())
         } else { match maho_ext_host::runner::ExtensionRunner::from_async_factories(
-            options.extension_factories, context, Default::default()).await {
+            options.extension_factories, context, options.session_profile.clone()).await {
                 Ok(runner) => runner,
                 Err(error) => {
                     session.dispose().await;

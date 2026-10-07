@@ -31,6 +31,15 @@ fn run() -> Result<(), String> {
             InternalProcessRole::SessionWorker => run_mini_worker_entry(&argv),
         };
     }
+    // senpi main.ts:930: the internal supervisor route is answered before anything else runs. The
+    // sentinel scan is a deliberate superset of the strict argv shape: argv that merely mentions the
+    // sentinel still falls through to the public parser exactly as before.
+    if argv.iter().any(|arg| arg == maho_rpc::supervisor_route::INTERNAL_SUPERVISOR_ROUTE_FLAG) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        if runtime.block_on(maho_rpc::supervisor_route::dispatch_internal_supervisor(&argv)) {
+            return Ok(());
+        }
+    }
     if maho_cli::cli::auth_command::is_auth_command_help(&argv) {
         return output(maho_cli::cli::auth_command::auth_command_help());
     }

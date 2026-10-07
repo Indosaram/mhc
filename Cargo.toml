@@ -85,6 +85,9 @@ members = [
     "crates/omo/team-core",
     "crates/omo/config-migration",
     "crates/omo/ast-grep-mcp",
+    "crates/omo/git-bash-mcp",
+    "crates/omo/isolation-core",
+    "crates/omo/get-worker",
     "crates/omo/senpi-task",
     "crates/omo/components/maho-omo-agent-home",
     "crates/omo/components/maho-omo-native-badge",
@@ -94,10 +97,17 @@ members = [
     "crates/omo/components/maho-omo-ultrawork",
     "crates/omo/components/maho-omo-ulw-loop",
     "crates/omo/components/maho-omo-start-work-continuation",
+    # RESERVED (todo 1008, run dag_34a6a24f): "crates/omo/components/maho-omo-git-master" is added here
+    # once its crate source and the config owner's resolve_omo_git_master_settings land.
     "crates/omo/components/maho-omo-fallback-architect",
     "crates/omo/components/maho-omo-comment-checker",
     "crates/omo/components/maho-omo-config-resolution",
     "crates/omo/components/maho-omo-config-startup",
+    "crates/omo/components/maho-omo-model-profile",
+    "crates/omo/components/maho-omo-bundled-skills",
+    "crates/omo/components/maho-omo-skill-commands",
+    "crates/omo/components/maho-omo-git-master",
+    "crates/omo/components/maho-omo-builtin-mcps",
     "crates/omo/components/maho-omo-config-watch",
     "crates/omo/components/maho-omo-memory",
     "crates/omo/components/maho-omo-task",
@@ -132,6 +142,7 @@ maho-tmux-core = { path = "crates/omo/tmux-core" }
 maho-team-core = { path = "crates/omo/team-core" }
 maho-config-migration = { path = "crates/omo/config-migration" }
 maho-ast-grep-mcp = { path = "crates/omo/ast-grep-mcp" }
+maho-isolation-core = { path = "crates/omo/isolation-core" }
 maho-senpi-task = { path = "crates/omo/senpi-task" }
 # Third-party deps of the imported crates, pinned to COMP 93b78ac Cargo.lock versions.
 chrono = { version = "=0.4.43", default-features = false }

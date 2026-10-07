@@ -92,9 +92,16 @@ pub fn injection(key: &str, source: IdleInjectionSource, content: &str) -> IdleI
         content: content.to_owned(),
         display: None,
         details: None,
+        // Upstream default: an entry is non-passive unless it says otherwise.
+        passive: Some(false),
         on_flushed: None,
         on_delivery_failed: None,
     }
+}
+
+/// A `passive: true` entry: rides a non-passive flush, never causes one.
+pub fn passive_injection(key: &str, source: IdleInjectionSource, content: &str) -> IdleInjection {
+    IdleInjection { passive: Some(true), ..injection(key, source, content) }
 }
 
 /// A coordinator whose deferred flush is captured (upstream's manual `scheduleFlush`).

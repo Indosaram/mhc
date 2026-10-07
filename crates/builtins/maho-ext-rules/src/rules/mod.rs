@@ -9,6 +9,7 @@ pub mod ordering;
 pub mod scanner;
 pub mod finder;
 pub mod formatter;
+pub mod picomatch;
 pub mod matcher;
 pub mod engine;
 pub mod errors;

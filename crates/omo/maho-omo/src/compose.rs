@@ -164,6 +164,15 @@ impl Extension for OmoExtension {
             }
         };
         *self.runtime.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&runtime));
+        // Upstream `compose.ts`: retire the shared injection queue on session shutdown, so a flush
+        // armed before a reload can never call `sendMessage` on a stale API; every still-queued
+        // injection is handed back to its producer as a delivery failure. Registered before the
+        // component loop so the runtime-binding pass below leaves it unwrapped.
+        let shutdown_runtime = Arc::clone(&runtime);
+        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+            shutdown_runtime.coordinator().retire();
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
         let _turn = runtime.enter_turn();
         let existing: std::collections::BTreeMap<_, _> = api.registered.handlers.iter()
             .map(|(kind, handlers)| (*kind, handlers.len())).collect();

@@ -254,6 +254,8 @@ impl RpcClient{
     pub async fn abort_branch_summary(&mut self)->RpcClientResult<()>{self.fire_and_forget(serde_json::json!({"type":"abort_branch_summary"}),true).await}
     pub async fn abort_retry(&mut self)->RpcClientResult<()>{self.fire_and_forget(serde_json::json!({"type":"abort_retry"}),true).await}
     pub async fn abort_bash(&mut self)->RpcClientResult<()>{self.fire_and_forget(serde_json::json!({"type":"abort_bash"}),true).await}
+    /// Address one daemon session by id: the shared host routes `abort` through its session-keyed catch-all, so an explicit `sessionId` ends THAT session's turn - the abort step of the `host_session_close` writer. The id-less `abort()` only reaches the client's own attached session.
+    pub async fn abort_session(&mut self,session_id:&str)->RpcClientResult<()>{self.fire_and_forget(serde_json::json!({"type":"abort","sessionId":session_id}),true).await}
     pub async fn clear_queue(&mut self,abort_will_follow:Option<bool>)->RpcClientResult<Value>{self.request_value(serde_json::json!({"type":"clear_queue","abortWillFollow":abort_will_follow}),true).await}
     pub async fn get_steering_messages(&mut self)->RpcClientResult<Value>{self.request_value(serde_json::json!({"type":"get_steering_messages"}),true).await}
     pub async fn get_follow_up_messages(&mut self)->RpcClientResult<Value>{self.request_value(serde_json::json!({"type":"get_follow_up_messages"}),true).await}

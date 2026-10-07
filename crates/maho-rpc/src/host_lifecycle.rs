@@ -7,6 +7,27 @@ pub const HANDOFF_GRACE_MS_ENV:&str="SENPI_RPC_HANDOFF_GRACE_MS";
 pub const DEFAULT_HANDOFF_GRACE_MS:f64=600000.;
 pub use crate::host_launch_spec::HostLifecyclePolicyInput;
 pub const INTERNAL_SUPERVISOR_FLAG:&str="--internal-rpc-host-supervisor";
+/// The stdio slot senpi gives the child's lifetime pipe (senpi `CHILD_WATCH_FD`). Rust's `Command`
+/// exposes only the three standard slots, so the pipe is inherited by descriptor instead - see
+/// `bind_child_watch_pipe`.
+pub const CHILD_WATCH_FD:u32=3;
+/// Gives `child_env` the child's lifetime binding and returns the pipe ends this process keeps
+/// alive for the whole supervisor run (senpi host-lifecycle.ts:513-544, stdio slot 3).
+///
+/// senpi duplicates the read end into stdio slot 3. Rust's `Command` exposes only the three
+/// standard slots and `pre_exec` is unavailable under this crate's `unsafe_code = "forbid"`, so the
+/// read end's close-on-exec flag is cleared instead: the child inherits the pipe at the number this
+/// process holds it at, and `HOST_WATCH_FD_ENV` carries exactly that number. The write end stays
+/// here, close-on-exec, is never inherited and is never written - only its close matters.
+#[cfg(unix)]
+fn bind_child_watch_pipe(child_env:&mut HashMap<String,String>)->std::io::Result<(std::os::fd::OwnedFd,std::os::fd::OwnedFd)>{
+    use std::os::fd::AsRawFd;
+    let (read_end,write_end)=rustix::pipe::pipe()?;
+    rustix::io::fcntl_setfd(&read_end,rustix::io::FdFlags::empty()).map_err(std::io::Error::from)?;
+    let descriptor=u64::try_from(read_end.as_raw_fd()).map_err(|_|std::io::Error::other("child watch descriptor is not representable"))?;
+    child_env.insert(crate::host_watchdog::HOST_WATCH_FD_ENV.into(),descriptor.to_string());
+    Ok((read_end,write_end))
+}
 #[derive(Clone,Copy,Default)]
 pub struct HostActivity{pub connections:u64,pub active_turns:u64}
 #[derive(Default)]pub struct ObservedHostTurns{busy:HashMap<String,u64>}
@@ -136,6 +157,20 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let mut child_env=crate::host_successor::successor_env(env.clone(),0,&instance_id,&paths.dir.to_string_lossy(),Some(&agent_dir),&std::collections::HashMap::new());
     child_env.insert(crate::host_watchdog::HOST_PUBLIC_SOCKET_ENV.into(),public_socket.clone());
     if let Some(dir)=&internal.dir{child_env.insert(crate::host_watchdog::HOST_SCRATCH_DIR_ENV.into(),dir.to_string_lossy().into_owned());}
+    // Lifetime binding: this supervisor owns the write end of a pipe the child reads, so its EOF
+    // means this process died for ANY reason, including a SIGKILL that runs no handler. The ppid
+    // fallback covers a descriptor that could not be inherited.
+    child_env.insert(crate::host_watchdog::HOST_WATCH_PPID_ENV.into(),std::process::id().to_string());
+    let mut cleanup_paths:Vec<String>=Vec::new();
+    if launch.bind_socket.is_none(){
+        let generation=crate::host_daemon_paths::generation_paths(&paths,&instance_id);
+        cleanup_paths.push(paths.pointer_file.to_string_lossy().into_owned());
+        cleanup_paths.push(generation.pid_file.to_string_lossy().into_owned());
+        cleanup_paths.push(paths.settings_file.to_string_lossy().into_owned());
+    }
+    child_env.insert(crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),cleanup_paths.join("\n"));
+    #[cfg(unix)]
+    let _watch_guard=bind_child_watch_pipe(&mut child_env)?;
     let stderr={
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&paths.stderr_log)?
@@ -163,6 +198,10 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     }
     if launch.bind_socket.is_some()&&bind_socket!=public_socket{std::fs::rename(&bind_socket,&public_socket)?;}
     let bound=if launch.bind_socket.is_some(){crate::socket_ownership::stat_socket_identity(std::path::Path::new(&public_socket))?}else{crate::socket_ownership::stat_socket_identity(std::path::Path::new(&bind_socket))?};
+    // Publish the public entry's ownership token in this supervisor's private directory (senpi
+    // `supervisorPublicOwnerFile`). The host reads it before the watchdog removes that directory, so
+    // its crash-path shutdown can unlink the public socket only while it still matches this generation.
+    if let Some(dir)=&internal.dir&&let Some(identity)=bound{let _=crate::socket_ownership::write_socket_identity_file(&dir.join(crate::socket_ownership::PUBLIC_SOCKET_IDENTITY_FILE),identity);}
     // Observer: the supervisor cannot see turns directly - it proxies the public socket - so the
     // idle decision reads them from one always-on connection to the internal hop.
     let turns=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));

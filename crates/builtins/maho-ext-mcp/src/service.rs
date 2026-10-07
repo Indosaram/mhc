@@ -247,7 +247,10 @@ impl McpService {
         if !has_ui{return Err(crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,format!("MCP server {name} needs interactive OAuth. Run senpi in a terminal, then: /mcp auth-start {name} and /mcp auth-complete {name} <redirect-url>")).into());}
         if self.config.as_ref().and_then(|config|config.settings.oauth_callback_url.as_ref()).is_some(){return self.auth_start(name).await.map(Some);}
         let port=oauth.filter(|oauth|oauth.client_id.is_some() && oauth.client_metadata_url.is_none()).and_then(|oauth|oauth.callback_port);
-        crate::auth::commands_auth::run_loopback_auth(provider,port,&reqwest::Client::new(),on_authorization).await?;self.reconnect_server(name).await?;Ok(None)
+        let config=config.ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,format!("Unknown MCP server: {name}")))?;
+        let agent_dir=self.agent_dir.clone().ok_or_else(||crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,"MCP session is not attached"))?;
+        let callback_url=self.config.as_ref().and_then(|config|config.settings.oauth_callback_url.clone());
+        crate::auth::commands_auth::run_interactive_login(crate::auth::commands_auth::InteractiveLoginOptions {name,config,agent_dir:&agent_dir,callback_url:callback_url.as_deref(),port,force:false,require_https:true,client:&reqwest::Client::new()},on_authorization).await?;self.reconnect_server(name).await?;Ok(None)
     }
     pub async fn auth_complete(&mut self,name:&str,redirect:&str)->Result<(),McpServiceError> {crate::auth::commands_auth::run_auth_complete(name,redirect,&mut self.pending_auth,&reqwest::Client::new()).await?;self.reconnect_server(name).await}
     pub async fn logout(&mut self,name:&str)->Result<(),McpServiceError> {let provider=self.auth_provider(name)?;crate::auth::commands_auth::run_logout(name,&provider,&mut self.pending_auth)?;if let Some(connection)=self.connections.get(name){let entry=connection.entry.lock().await;entry.connection.mark_failure(crate::connection::ServerConnectionState::NeedsAuth,Some(crate::errors::McpError::new(crate::errors::McpErrorKind::Auth,"MCP credentials cleared")));}Ok(())}

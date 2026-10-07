@@ -145,10 +145,28 @@ impl HostCore{
         self.bindings.lock().await.insert(session_id.to_owned(),binding);
     }
 }
+/// The supervisor-lifetime and empty-exit triggers one shared host reacts to (senpi
+/// `runSocketHost`'s watchdog binding and its `canExitWhenEmpty` window).
+#[derive(Debug,Default)]
+pub struct HostShutdownSignals{
+    pub watchdog:Option<crate::host_watchdog::HostWatchdogConfig>,
+    pub empty_exit_ms:Option<f64>,
+}
+/// The shutdown triggers a supervised host reads from its own environment: the canonical (or
+/// branded) watchdog binding the supervisor set, and the empty-exit window from the idle policy.
+pub fn host_shutdown_signals_from_env()->HostShutdownSignals{
+    let env:HashMap<String,String>=std::env::vars().collect();
+    let policy=resolve_host_idle_policy(&env,None,None);
+    HostShutdownSignals{watchdog:crate::host_watchdog::read_host_watchdog_config_from_brand_env(&env),empty_exit_ms:Some(policy.empty_exit_ms)}
+}
 /// Serve the shared host: stdio when no socket was named, otherwise the public Unix socket
 /// (senpi `runMultiSessionHost`).
 pub async fn run_multi_session_host(core:std::sync::Arc<HostCore>,listen:Option<String>)->std::io::Result<()>{
-    match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(path)=>run_socket_host(core,path.to_owned()).await}
+    run_multi_session_host_with_signals(core,listen,host_shutdown_signals_from_env()).await
+}
+/// Serve the shared host with explicit shutdown triggers: the seam the CLI entry and its tests use.
+pub async fn run_multi_session_host_with_signals(core:std::sync::Arc<HostCore>,listen:Option<String>,signals:HostShutdownSignals)->std::io::Result<()>{
+    match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(path)=>run_socket_host(core,path.to_owned(),signals).await}
 }
 async fn run_stdio_host(core:std::sync::Arc<HostCore>)->std::io::Result<()>{
     use tokio::io::AsyncReadExt;
@@ -174,38 +192,87 @@ async fn poll_host_commands(commands:&mut Vec<HostCommand>)->Result<(),String>{
     }).await;
     drop(commands.remove(index));result
 }
-async fn run_socket_host(core:std::sync::Arc<HostCore>,listen:String)->std::io::Result<()>{
+async fn run_socket_host(core:std::sync::Arc<HostCore>,listen:String,signals:HostShutdownSignals)->std::io::Result<()>{
     let path=crate::host_ensure::normalize_socket_path(&listen).to_owned();
     if let Some(parent)=std::path::Path::new(&path).parent(){crate::host_daemon_paths::create_private_directory(parent)?;}
+    let HostShutdownSignals{watchdog,empty_exit_ms}=signals;
+    let public_socket=watchdog.as_ref().and_then(|config|config.public_socket.clone());
+    // The public entry's ownership token lives in the supervisor's private directory, which the
+    // watchdog cleanup removes - so it is read BEFORE that cleanup (senpi `beforeCleanup`).
+    let public_owner:std::sync::Arc<std::sync::Mutex<Option<crate::socket_ownership::SocketFileIdentity>>>=std::sync::Arc::new(std::sync::Mutex::new(None));
+    let owner_file=watchdog.as_ref().and_then(|config|config.scratch_dir.as_ref()).map(|dir|dir.join(crate::socket_ownership::PUBLIC_SOCKET_IDENTITY_FILE));
+    let capture_slot=public_owner.clone();
+    let capture=async move{
+        if let Some(path)=owner_file&&let Ok(Some(identity))=crate::socket_ownership::read_socket_identity_file(&path){*capture_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some(identity);}
+        Ok(())
+    };
+    let callback_owner=public_owner.clone();
+    let (reason_tx,reason_rx)=tokio::sync::watch::channel::<Option<String>>(None);
+    // Armed BEFORE the listen: a supervisor death during the listen transition must still end this
+    // host and clean its private endpoint (senpi multi-session-host.ts:470-490).
+    let watchdog_task=tokio::spawn(crate::host_watchdog::arm_host_watchdog(watchdog,capture,move|reason|{
+        eprintln!("senpi rpc host: {reason}; shutting down");
+        if let Some(path)=public_socket.as_deref(){
+            let identity=callback_owner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            crate::socket_ownership::unlink_owned_socket(path,identity,if cfg!(windows){"win32"}else{std::env::consts::OS},|_|{});
+        }
+        let _=reason_tx.send(Some(reason));
+    }));
     let listener=tokio::net::UnixListener::bind(&path)?;
     {use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600))?;}
+    let bound=crate::socket_ownership::stat_socket_identity(std::path::Path::new(&path))?;
+    let connections=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut next=0u64;
+    let mut empty_since:Option<tokio::time::Instant>=None;
+    let mut reason_rx=reason_rx;
+    let tick=std::time::Duration::from_millis(250);
     loop{
-        let(socket,_)=listener.accept().await?;
-        next+=1;let connection=format!("socket-{next}");
-        let core=core.clone();
-        tokio::spawn(async move{
-            let(read,write)=socket.into_split();
-            let writer=std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(write));
-            core.register_connection(&connection,writer);
-            let mut lines=tokio::io::BufReader::new(read);
-            use tokio::io::AsyncBufReadExt;
-            let mut buffer=String::new();
-            let mut commands=Vec::new();
-            loop{
-                buffer.clear();
-                let read=tokio::select!{
-                    result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if result.is_err(){break;}continue;},
-                    read=lines.read_line(&mut buffer)=>read,
-                };
-                match read{Ok(0)|Err(_)=>break,Ok(_)=>{}}
-                let line=buffer.trim_end_matches('\n').trim_end_matches('\r').to_owned();
-                let core=core.clone();let tag=connection.clone();
-                commands.push(Box::pin(async move{core.handle(Some(&tag),&line).await}) as HostCommand);
+        tokio::select!{
+            biased;
+            changed=reason_rx.changed()=>{if changed.is_err()||reason_rx.borrow().is_some(){break;}},
+            accepted=listener.accept()=>{
+                let(socket,_)=accepted?;
+                next+=1;let connection=format!("socket-{next}");
+                connections.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                empty_since=None;
+                let core=core.clone();let counter=connections.clone();
+                tokio::spawn(async move{serve_socket_connection(core,connection,socket).await;counter.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);});
             }
-            drop(commands);
-            core.unregister_connection(&connection);
-        });
+            ()=tokio::time::sleep(tick)=>{
+                let empty=connections.load(std::sync::atomic::Ordering::SeqCst)==0&&core.registry.lock().await.size()==0;
+                match empty_exit_ms.filter(|window|window.is_finite()){
+                    Some(window) if empty=>{let since=*empty_since.get_or_insert(tokio::time::Instant::now());if since.elapsed().as_secs_f64()*1000.>=window{break;}},
+                    _=>empty_since=None,
+                }
+            }
+        }
     }
+    watchdog_task.abort();
+    // Ownership-checked: only the entry THIS process bound is removed (senpi `unlinkOwnedSocket`).
+    crate::socket_ownership::unlink_owned_socket(&path,bound,if cfg!(windows){"win32"}else{std::env::consts::OS},|_|{});
+    Ok(())
+}
+/// One accepted connection's lifetime: register its writer, pump its commands, release it.
+async fn serve_socket_connection(core:std::sync::Arc<HostCore>,connection:String,socket:tokio::net::UnixStream){
+    let(read,write)=socket.into_split();
+    let writer=std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(write));
+    core.register_connection(&connection,writer);
+    let mut lines=tokio::io::BufReader::new(read);
+    use tokio::io::AsyncBufReadExt;
+    let mut buffer=String::new();
+    let mut commands=Vec::new();
+    loop{
+        buffer.clear();
+        let read=tokio::select!{
+            result=poll_host_commands(&mut commands),if !commands.is_empty()=>{if result.is_err(){break;}continue;},
+            read=lines.read_line(&mut buffer)=>read,
+        };
+        match read{Ok(0)|Err(_)=>break,Ok(_)=>{}}
+        let line=buffer.trim_end_matches('\n').trim_end_matches('\r').to_owned();
+        let core=core.clone();let tag=connection.clone();
+        commands.push(Box::pin(async move{core.handle(Some(&tag),&line).await}) as HostCommand);
+    }
+    drop(commands);
+    core.unregister_connection(&connection);
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn explicit_policy_overrides_environment_and_bad_env_uses_defaults(){let env=HashMap::from([(RPC_SESSION_IDLE_EVICTION_MS_ENV.into(),"100".into()),(RPC_HOST_EMPTY_EXIT_MS_ENV.into(),"invalid".into())]);assert_eq!(resolve_host_idle_policy(&env,None,None),HostIdlePolicy{idle_eviction_ms:100.,empty_exit_ms:DEFAULT_HOST_EMPTY_EXIT_MS});assert_eq!(resolve_host_idle_policy(&env,Some(f64::INFINITY),Some(0.)),HostIdlePolicy{idle_eviction_ms:f64::INFINITY,empty_exit_ms:0.});}}
