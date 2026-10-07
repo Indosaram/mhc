@@ -87,8 +87,10 @@ impl Drop for ChildFixture {
             if let Some(exit) = self.exit.take() {
                 match exit.recv_timeout(BOUND) {
                     Ok(Ok(_)) => {
-                        if let Some(waiter) = self.waiter.take() {
-                            if waiter.join().is_err() { eprintln!("spawn fixture waiter panicked"); }
+                        if let Some(waiter) = self.waiter.take()
+                            && waiter.join().is_err()
+                        {
+                            eprintln!("spawn fixture waiter panicked");
                         }
                     }
                     outcome => eprintln!("spawn fixture cleanup unsettled: {outcome:?}; kill: {killed:?}"),
@@ -98,8 +100,10 @@ impl Drop for ChildFixture {
         if self.reader.is_some() {
             match self.reader_done.recv_timeout(BOUND) {
                 Ok(()) => {
-                    if let Some(reader) = self.reader.take() {
-                        if reader.join().is_err() { eprintln!("spawn fixture reader panicked"); }
+                    if let Some(reader) = self.reader.take()
+                        && reader.join().is_err()
+                    {
+                        eprintln!("spawn fixture reader panicked");
                     }
                 }
                 outcome => eprintln!("spawn fixture reader cleanup unsettled: {outcome:?}"),
