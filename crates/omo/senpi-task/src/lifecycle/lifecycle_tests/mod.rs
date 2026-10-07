@@ -66,6 +66,8 @@ pub(crate) struct Seed<'a> {
     pub pid: Option<i64>,
     pub child_session_id: Option<&'a str>,
     pub host_pid: Option<i64>,
+    pub runner_kind: Option<crate::state::RunnerKind>,
+    pub host_session: Option<crate::state::HostSessionIdentity>,
     pub killed: bool,
     pub run_epoch: Option<i64>,
     pub notify_on_terminal: bool,
@@ -99,6 +101,8 @@ pub(crate) fn seed_record(store: &TaskRecordStore, input: Seed<'_>) -> TaskRecor
     record.pid = input.pid;
     record.child_session_id = input.child_session_id.map(str::to_string);
     record.host_pid = input.host_pid;
+    record.runner_kind = input.runner_kind;
+    record.host_session = input.host_session;
     store.save(&record).expect("seed record");
     record
 }

@@ -1007,6 +1007,7 @@ fn parse_v1_minimal_spec_round_trips() {
             prompt: "Do the thing".into(),
             instructions: None,
             member_scoped_tool_names: None,
+            isolation: None,
         }))
     );
 }

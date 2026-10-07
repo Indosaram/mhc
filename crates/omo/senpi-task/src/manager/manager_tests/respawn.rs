@@ -424,6 +424,7 @@ fn given_claimed_in_process_record_when_respawned_then_resume_receives_rebuilt_s
             prompt: "persisted effective prompt".to_string(),
             instructions: Some("persisted instructions".to_string()),
             member_scoped_tool_names: Some(vec!["team_ping".to_string()]),
+            isolation: None,
         })),
         ..respawn_record()
     };
@@ -466,6 +467,7 @@ fn given_resume_context_cannot_find_model_when_respawned_then_retryable_and_no_c
             prompt: "continue safely".to_string(),
             instructions: None,
             member_scoped_tool_names: None,
+            isolation: None,
         })),
         ..respawn_record()
     };

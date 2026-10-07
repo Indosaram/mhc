@@ -61,6 +61,8 @@ fn terminal_record(project_dir: &std::path::Path, final_response: &str) -> TaskR
             notify_on_terminal: false,
             pending_steering: None,
             owner: None,
+            runner_kind: None,
+            host_session: None,
         },
         None,
     )

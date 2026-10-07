@@ -93,6 +93,7 @@ fn with_v1(store: &TaskRecordStore, record: TaskRecord) -> TaskRecord {
             prompt: format!("prompt:{}", record.task_id),
             instructions: None,
             member_scoped_tool_names: None,
+            isolation: None,
         })),
         ..record
     };

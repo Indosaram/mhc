@@ -944,6 +944,7 @@ fn spawn_spec_v1_narrows_to_rebuildable_fields() {
             prompt: "implement the south gate".into(),
             instructions: Some("keep the ledger intact".into()),
             member_scoped_tool_names: Some(vec!["task".into(), "read".into()]),
+            isolation: None,
         })
     );
 }

@@ -16,7 +16,7 @@ pub use baseline_store::{baseline_path, isolation_artifacts_dir, read_baseline, 
 pub use details::{IsolationDetails, IsolationStartedDetails, isolation_details, isolation_line};
 pub use prepare::{IsolationPreparation, PrepareIsolationInput, prepare_isolation};
 pub use runtime::{
-    EnsureInput, IsolationRuntime, IsolationRuntimeOptions, create_isolation_runtime,
+    EnsureInput, IsolationRuntime, IsolationRuntimeOptions, OwnerProbe, create_isolation_runtime,
     isolation_backends,
 };
 pub use salvage::{

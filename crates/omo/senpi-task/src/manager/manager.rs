@@ -146,7 +146,53 @@ struct Inner {
     state: Mutex<State>,
     steering: SteeringEngine,
     isolation: IsolationWiring,
+    stops_pending: PendingStops,
     this: Weak<Inner>,
+}
+
+/// Pending cancels, keyed by the EXACT run (task id + run epoch) so a signal can never be inherited
+/// by a later run of the same task. The watcher takes the entry; the cancel guard retains the same
+/// signal independently and drops any entry no watcher will consume.
+#[derive(Default)]
+struct PendingStops {
+    pending: Mutex<HashMap<(String, i64), crate::manager::outcome::PendingStop>>,
+}
+
+impl PendingStops {
+    fn request(&self, task_id: &str, epoch: i64) -> crate::manager::outcome::PendingStop {
+        Arc::clone(lock(&self.pending)
+            .entry((task_id.to_string(), epoch))
+            .or_insert_with(|| Arc::new((Mutex::new(false), std::sync::Condvar::new()))))
+    }
+
+    fn take_settlement(&self, task_id: &str, epoch: i64) -> Option<crate::manager::outcome::PendingStop> {
+        lock(&self.pending).remove(&(task_id.to_string(), epoch))
+    }
+
+    fn forget(&self, task_id: &str, epoch: i64) {
+        let _ = lock(&self.pending).remove(&(task_id.to_string(), epoch));
+    }
+}
+
+/// Settles a pending stop on every exit path of a cancel (an early `?` and a panic included) so the
+/// outcome watcher is always notified, and drops the entry when this cancel leaves no watcher to
+/// consume it.
+struct StopSettlementGuard<'a> {
+    stops: &'a PendingStops,
+    task_id: String,
+    epoch: i64,
+    pending: crate::manager::outcome::PendingStop,
+    consumed: bool,
+}
+
+impl Drop for StopSettlementGuard<'_> {
+    fn drop(&mut self) {
+        *lock(&self.pending.0) = true;
+        self.pending.1.notify_all();
+        if !self.consumed {
+            self.stops.forget(&self.task_id, self.epoch);
+        }
+    }
 }
 
 /// Cheap cloneable handle onto one manager instance.
@@ -284,6 +330,7 @@ impl TaskManager {
                 state: Mutex::new(State::default()),
                 steering: SteeringEngine::new(port),
                 isolation,
+                stops_pending: PendingStops::default(),
                 this: this.clone(),
             }
         });
@@ -459,12 +506,30 @@ impl TaskManager {
         reason: Option<&str>,
         options: CancelOptions,
     ) -> Result<CancelOutcome, SteeringError> {
+        // Only isolated live runs need settlement after cancellation releases handle ownership.
+        let armed = self.inner.resolve_cancel_id(id_or_name).and_then(|task_id| {
+            let record = self.inner.try_load(&task_id)?;
+            (record.status == TaskStatus::Running
+                && record.isolation.is_some()
+                && self.inner.live_handle(&task_id).is_some())
+            .then_some((task_id, record.notification.run_epoch))
+        });
+        let mut guard = armed.map(|(task_id, epoch)| StopSettlementGuard {
+            pending: self.inner.stops_pending.request(&task_id, epoch),
+            stops: &self.inner.stops_pending,
+            task_id,
+            epoch,
+            consumed: false,
+        });
         let outcome = self
             .inner
             .steering
             .cancel_task(id_or_name, reason, options)?;
         if let CancelOutcome::Cancelled { task_id, .. } = &outcome {
             self.inner.release_slot_for_task(task_id);
+            if let Some(guard) = guard.as_mut() {
+                guard.consumed = true;
+            }
         }
         Ok(outcome)
     }
@@ -739,6 +804,15 @@ fn steering_port(
 }
 
 impl Inner {
+    fn resolve_cancel_id(&self, id_or_name: &str) -> Option<String> {
+        if let Some(record) = self.try_load(id_or_name) {
+            return Some(record.task_id);
+        }
+        self.store.list().ok()?.records.into_iter()
+            .find(|record| record.name.as_deref() == Some(id_or_name))
+            .map(|record| record.task_id)
+    }
+
     fn arc(&self) -> Arc<Inner> {
         self.this
             .upgrade()
@@ -877,7 +951,7 @@ impl Inner {
                     handle,
                     baseline,
                     spec: isolation_spec,
-                } => Some((handle, baseline, isolation_spec)),
+                } => Some((*handle, *baseline, isolation_spec)),
                 IsolationPreparation::Refused { reason } => {
                     if Some(registration.name.as_str()) != claimed.name.as_deref() {
                         lock(&self.names).release(&spec.parent_session_id, &registration.name);
@@ -1736,6 +1810,10 @@ impl OutcomeTrackerPorts for Inner {
 
     fn settle_isolation(&self, task_id: &str, merge: bool) {
         self.isolation.settle(task_id, merge);
+    }
+
+    fn stop_settlement(&self, task_id: &str, epoch: i64) -> Option<crate::manager::outcome::PendingStop> {
+        self.stops_pending.take_settlement(task_id, epoch)
     }
 
     fn outcome_processed(&self) {
