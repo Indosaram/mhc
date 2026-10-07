@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::redact::redact_url;
 use crate::git::GitMemoryRepo;
+use crate::git::config_lock::with_serialized_git_config_mutation;
+use crate::git::errors::GitError;
 use crate::git::exec::{GitExec, GitExecOptions, GitExecResult};
 
 /// Repo-local git config key holding the mirror URL.
@@ -167,18 +169,26 @@ impl<'a> MirrorSync<'a> {
         })
     }
 
-    /// Remove the mirror configuration.
+    /// Remove the mirror configuration. Future commits stop pushing and stop logging.
+    ///
+    /// The `--unset-all` mutation runs inside `with_serialized_git_config_mutation`, the same
+    /// per-repository queue `GitMemoryRepo::config_set` uses (pin `mirror.ts:93`), so a mirror
+    /// unset can never interleave with a concurrent git-config mutation.
     pub fn unset(&self) -> Result<(), SyncError> {
-        let result = self.run(
-            &["config", "--local", "--unset-all", CONFIG_KEY],
-            QUERY_TIMEOUT_MS,
-        );
-        if result.code != 0 && result.code != 5 {
-            return Err(SyncError {
-                message: describe(&result),
-            });
-        }
-        Ok(())
+        with_serialized_git_config_mutation(&self.repo.dir, || {
+            let result = self.run(
+                &["config", "--local", "--unset-all", CONFIG_KEY],
+                QUERY_TIMEOUT_MS,
+            );
+            // Exit code 5 is "key was not there", which is the desired end state.
+            if result.code != 0 && result.code != 5 {
+                return Err(GitError::Other(describe(&result)));
+            }
+            Ok(())
+        })
+        .map_err(|error| SyncError {
+            message: error.to_string(),
+        })
     }
 
     /// Read the current mirror status, ahead count, and redacted log tail.
