@@ -338,7 +338,7 @@ pub struct NestedGitResult {
 pub fn scan_nested_git_dirs(merged: &Path) -> Result<NestedGitResult> {
     let mut result = NestedGitResult::default();
     let root = canonical(merged)?;
-    let mut walk = |dir: &Path, rel: &Path, depth: usize| -> Result<()> {
+    fn walk(dir: &Path, rel: &Path, depth: usize, root: &Path, merged: &Path, result: &mut NestedGitResult) -> Result<()> {
         if depth > 0 {
             let entry = dir.join(".git");
             if exists(&entry)? {
@@ -354,10 +354,10 @@ pub fn scan_nested_git_dirs(merged: &Path) -> Result<NestedGitResult> {
                 }
                 if meta.is_file() {
                     let target = gitdir(&entry)?;
-                    if !inside(&root, &canonical(&target)?) {
+                    if !inside(root, &canonical(&target)?) {
                         let path = rel.to_string_lossy().replace('\\', "/");
                         let replacement = merged.join(".git").join("modules").join(rel);
-                        if !exists(&replacement)? || !inside(&root, &canonical(&replacement)?) {
+                        if !exists(&replacement)? || !inside(root, &canonical(&replacement)?) {
                             return Err(IsolationError::unavailable(format!(
                                 "submodule {path} shares the source gitdir"
                             )));
@@ -378,11 +378,11 @@ pub fn scan_nested_git_dirs(merged: &Path) -> Result<NestedGitResult> {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type()?.is_dir() && name != ".git" && name != "node_modules" {
-                walk(&entry.path(), &rel.join(&name), depth + 1)?;
+                walk(&entry.path(), &rel.join(&name), depth + 1, root, merged, result)?;
             }
         }
         Ok(())
-    };
-    walk(merged, Path::new(""), 0)?;
+    }
+    walk(merged, Path::new(""), 0, &root, merged, &mut result)?;
     Ok(result)
 }

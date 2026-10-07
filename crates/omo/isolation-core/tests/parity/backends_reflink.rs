@@ -301,6 +301,6 @@ fn reflink_walk_skips_sockets_and_fifos_rather_than_opening_them() {
     assert_eq!(entries, vec!["data"]);
     assert_eq!(*clones.lock().unwrap_or_else(|poison| poison.into_inner()), 2);
     drop(listener);
-    let _ = record(&crate::fake::calls(), &[]);
+    record(&crate::fake::calls(), &[]);
     let _ = IsolationError::other("placeholder");
 }

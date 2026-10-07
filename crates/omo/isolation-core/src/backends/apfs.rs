@@ -153,20 +153,19 @@ impl ApfsBackend {
                 Err(cause) => {
                     // A missing native module is an unavailable capability; anything else
                     // (a failed dlopen, for example) is an operational failure that propagates.
-                    if let Some(code) = &cause.code {
-                        if [
+                    if let Some(code) = &cause.code
+                        && [
                             "ERR_UNSUPPORTED_ESM_URL_SCHEME",
                             "ERR_UNKNOWN_BUILTIN_MODULE",
                             "MODULE_NOT_FOUND",
                             "ERR_MODULE_NOT_FOUND",
                         ]
                         .contains(&code.as_str())
-                        {
-                            return Err(IsolationError::unavailable(format!(
-                                "APFS clonefile unavailable: {}",
-                                cause.message
-                            )));
-                        }
+                    {
+                        return Err(IsolationError::unavailable(format!(
+                            "APFS clonefile unavailable: {}",
+                            cause.message
+                        )));
                     }
                     return Err(IsolationError::other(cause.message));
                 }
@@ -231,22 +230,22 @@ impl IsolationBackend for ApfsBackend {
             }));
         }
         let _ = std::fs::remove_dir_all(merged);
-        let walk = |src: &Path, dst: &Path| -> Result<()> {
+        fn walk(symbols: &Arc<dyn CloneSymbols>, src: &Path, dst: &Path) -> Result<()> {
             let info = std::fs::symlink_metadata(src)?;
             if !info.is_dir() {
                 if info.is_file() || info.file_type().is_symlink() {
-                    clone_with_symbols(&symbols, src, dst)?;
+                    clone_with_symbols(symbols, src, dst)?;
                 }
                 return Ok(());
             }
             std::fs::create_dir(dst)?;
             for entry in std::fs::read_dir(src)? {
                 let entry = entry?;
-                walk(&entry.path(), &dst.join(entry.file_name()))?;
+                walk(symbols, &entry.path(), &dst.join(entry.file_name()))?;
             }
             Ok(())
-        };
-        walk(lower, merged)?;
+        }
+        walk(&symbols, lower, merged)?;
         mark_started(&ctx.base_dir, self.kind(), &[])?;
         Ok(Some(StartDetail {
             strategy_detail: "clone_tree".to_string(),

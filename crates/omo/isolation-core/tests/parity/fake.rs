@@ -3,15 +3,20 @@ use std::sync::{Arc, Mutex};
 
 use isolation_core::{BackendRuntime, CommandResult, IsolationResult};
 
+pub type RunFn = Arc<dyn Fn(&[String]) -> IsolationResult<CommandResult> + Send + Sync>;
+pub type DeviceFn = Arc<dyn Fn(&Path) -> IsolationResult<u64> + Send + Sync>;
+pub type PathBoolFn = Arc<dyn Fn(&Path) -> IsolationResult<bool> + Send + Sync>;
+pub type WaitMountedFn = Arc<dyn Fn(&Path) -> IsolationResult<()> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct FakeRuntime {
     pub platform: String,
     pub which: Arc<dyn Fn(&str) -> bool + Send + Sync>,
-    pub run: Arc<dyn Fn(&[String]) -> IsolationResult<CommandResult> + Send + Sync>,
-    pub device: Arc<dyn Fn(&Path) -> IsolationResult<u64> + Send + Sync>,
-    pub accessible: Arc<dyn Fn(&Path) -> IsolationResult<bool> + Send + Sync>,
-    pub mounted: Arc<dyn Fn(&Path) -> IsolationResult<bool> + Send + Sync>,
-    pub wait_mounted: Arc<dyn Fn(&Path) -> IsolationResult<()> + Send + Sync>,
+    pub run: RunFn,
+    pub device: DeviceFn,
+    pub accessible: PathBoolFn,
+    pub mounted: PathBoolFn,
+    pub wait_mounted: WaitMountedFn,
 }
 
 impl FakeRuntime {

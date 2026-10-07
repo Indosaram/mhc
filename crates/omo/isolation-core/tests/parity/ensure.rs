@@ -164,7 +164,7 @@ fn generic_start_error_propagates_and_removes_the_creating_directory() {
         ..TestBackend::new()
     });
     let error = ensure_isolation(preferred(&f, "one", vec![backend], BackendKind::Rcopy))
-        .expect_err("must fail");
+        .err().expect("must fail");
     assert!(error.to_string().contains("disk failure"));
     assert!(!error.is_unavailable());
     let entries: Vec<String> = std::fs::read_dir(f.home_dir.join(".omo/wt"))
@@ -183,7 +183,7 @@ fn generic_probe_error_propagates_without_falling_through() {
         ..TestBackend::new()
     });
     let error = ensure_isolation(preferred(&f, "one", vec![apfs, backend()], BackendKind::Apfs))
-        .expect_err("must fail");
+        .err().expect("must fail");
     assert!(error.to_string().contains("probe I/O failure"));
     assert!(!error.is_unavailable());
 }
@@ -216,7 +216,7 @@ fn a_probing_backend_whose_cli_fails_falls_through_instead_of_aborting_the_walk(
 #[test]
 fn all_unavailable_yields_a_typed_error() {
     let f = fixture();
-    let error = ensure_isolation(options(&f, "one", Vec::new())).expect_err("must fail");
+    let error = ensure_isolation(options(&f, "one", Vec::new())).err().expect("must fail");
     assert!(error.is_unavailable());
     assert_eq!(error.code(), Some("isolation_unavailable"));
 }
@@ -436,7 +436,7 @@ fn git_snapshot_inconsistency_after_retry_is_a_hard_failure_not_a_fallback_signa
         preferred: Some(BackendKind::Rcopy),
         ..options(&f, "broken", vec![backend])
     })
-    .expect_err("must fail");
+    .err().expect("must fail");
     assert!(!error.is_unavailable());
     assert!(error.to_string().contains("snapshot"));
 }

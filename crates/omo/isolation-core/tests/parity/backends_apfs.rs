@@ -94,9 +94,7 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
             .file_type()
             .is_symlink());
     }
-    for name in ["fifo"] {
-        assert!(!merged.join(name).exists());
-    }
+    assert!(!merged.join("fifo").exists());
     std::fs::write(merged.join("tracked"), "changed").expect("write");
     assert_eq!(
         std::fs::read_to_string(lower.join("tracked")).expect("source"),

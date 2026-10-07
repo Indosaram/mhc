@@ -419,19 +419,18 @@ impl BlockCloneBackend {
             match (self.load)() {
                 Ok(api) => *lock(&self.api) = Some(api),
                 Err(cause) => {
-                    if let Some(code) = &cause.code {
-                        if [
+                    if let Some(code) = &cause.code
+                        && [
                             "ERR_UNSUPPORTED_ESM_URL_SCHEME",
                             "ERR_UNKNOWN_BUILTIN_MODULE",
                             "MODULE_NOT_FOUND",
                             "ERR_MODULE_NOT_FOUND",
                         ]
                         .contains(&code.as_str())
-                        {
-                            return Ok(ProbeResult::unavailable(
-                                "Windows block clone requires native FFI",
-                            ));
-                        }
+                    {
+                        return Ok(ProbeResult::unavailable(
+                            "Windows block clone requires native FFI",
+                        ));
                     }
                     return Err(IsolationError::other(cause.message));
                 }

@@ -8,10 +8,13 @@ use isolation_core::{
 
 use crate::fake::FakeRuntime;
 
-fn linux_io(observe: Arc<dyn Fn(&[String], &Path) + Send + Sync>) -> FakeRuntime {
+type ObserveFn = Arc<dyn Fn(&[String], &Path) + Send + Sync>;
+
+fn linux_io(observe: ObserveFn) -> FakeRuntime {
+    let device_observe = Arc::clone(&observe);
     FakeRuntime {
         device: Arc::new(move |path: &Path| {
-            observe(&[], path);
+            device_observe(&[], path);
             Ok(1)
         }),
         run: Arc::new(move |argv: &[String]| {

@@ -151,7 +151,7 @@ fn btrfs_snapshots_a_subvolume_whose_st_dev_differs_from_the_parent_directory() 
     let p = paths();
     let sink = calls();
     let repo_root = p.repo_root.clone();
-    let runtime = fake(&sink, move |runtime| {
+    let runtime = fake(&Arc::clone(&sink), move |runtime| {
         runtime.device = Arc::new(move |path: &Path| Ok(if path == repo_root { 7 } else { 9 }));
     });
     let backend = BtrfsBackend::new(Arc::new(runtime));
@@ -172,9 +172,10 @@ fn zfs_dataset_root_probe_snapshot_clone_relocation_and_restart_safe_stop() {
     let p = paths();
     let sink = calls();
     let repo_root = p.repo_root.clone();
+    let callback_sink = Arc::clone(&sink);
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new({
-            let sink = Arc::clone(&sink);
+            let sink = Arc::clone(&callback_sink);
             let repo_root = repo_root.clone();
             move |argv: &[String]| {
                 record(&sink, argv);
@@ -533,9 +534,10 @@ fn zfs_failed_relocation_restores_the_source_parent_and_marker_identity() {
     let p = paths();
     let sink = calls();
     let repo_root = p.repo_root.clone();
+    let callback_sink = Arc::clone(&sink);
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new({
-            let sink = Arc::clone(&sink);
+            let sink = Arc::clone(&callback_sink);
             let repo_root = repo_root.clone();
             move |argv: &[String]| {
                 record(&sink, argv);
@@ -594,9 +596,10 @@ fn zfs_clone_failure_leaves_a_snapshot_marker_that_restart_safe_stop_reclaims() 
     let p = paths();
     let sink = calls();
     let repo_root = p.repo_root.clone();
+    let callback_sink = Arc::clone(&sink);
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new({
-            let sink = Arc::clone(&sink);
+            let sink = Arc::clone(&callback_sink);
             let repo_root = repo_root.clone();
             move |argv: &[String]| {
                 record(&sink, argv);
@@ -849,7 +852,7 @@ fn btrfs_probe_trusts_the_filesystem_uuid_over_subvolume_st_dev() {
     let runtime = fake(&sink, move |runtime| {
         runtime.device = Arc::new(move |path: &Path| Ok(if path == repo_root { 7 } else { 9 }));
         runtime.run = Arc::new(|argv: &[String]| {
-            Ok(match argv.get(0).map(String::as_str) {
+            Ok(match argv.first().map(String::as_str) {
                 Some("btrfs") => ok(),
                 Some("findmnt") if argv.get(2).map(String::as_str) == Some("FSTYPE") => {
                     result(0, "btrfs\n", "")
@@ -872,7 +875,7 @@ fn btrfs_probe_rejects_a_base_directory_on_a_different_btrfs_filesystem() {
     let repo_root = p.repo_root.clone();
     let runtime = fake(&sink, move |runtime| {
         runtime.run = Arc::new(move |argv: &[String]| {
-            Ok(match argv.get(0).map(String::as_str) {
+            Ok(match argv.first().map(String::as_str) {
                 Some("btrfs") => ok(),
                 Some("findmnt") if argv.get(2).map(String::as_str) == Some("FSTYPE") => {
                     result(0, "btrfs\n", "")

@@ -35,10 +35,8 @@ pub fn random_hex(bytes: usize) -> String {
     #[cfg(unix)]
     {
         use std::io::Read;
-        if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
-            if file.read_exact(&mut buffer).is_ok() {
-                return hex::encode(buffer);
-            }
+        if let Ok(mut file) = std::fs::File::open("/dev/urandom") && file.read_exact(&mut buffer).is_ok() {
+            return hex::encode(buffer);
         }
     }
     let nanos = std::time::SystemTime::now()

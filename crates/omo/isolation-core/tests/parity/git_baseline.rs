@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 use isolation_core::backends::git_fixture::{git, repo};
 use isolation_core::{
     capture_baseline, capture_delta_patch, capture_repo_baseline, parse_diff_git_line_paths,
-    run_git, str_args, BaselineCaptureOptions, BaselineReadRetryDetails, BaselineRunGit, GitOptions,
+    run_git, str_args, BaselineCaptureOptions, BaselineReadRetryDetails, GitOptions,
     IsolationError, RepoBaseline, ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 };
+use isolation_core::git::baseline::BaselineRunGit;
 
 fn setup() -> isolation_core::test_support::Fixture {
     let f = repo();

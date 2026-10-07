@@ -101,24 +101,29 @@ pub fn kill_tree(pid: u32) {
     }
 }
 
-fn collect(
-    mut stream: Box<dyn Read + Send>,
+#[derive(Clone)]
+struct OutputLimit {
     retained: Arc<AtomicU64>,
     max_output_bytes: Option<u64>,
     limit_error: Arc<Mutex<Option<IsolationError>>>,
     output_limit_error: Option<OutputLimitError>,
+}
+
+fn collect(
+    mut stream: Box<dyn Read + Send>,
+    limit: OutputLimit,
     pid: u32,
     sink: Arc<Mutex<Vec<u8>>>,
     done: Sender<()>,
 ) {
+    let OutputLimit { retained, max_output_bytes, limit_error, output_limit_error } = limit;
     let mut chunk = [0u8; 8192];
     loop {
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
                 let total = retained.fetch_add(read as u64, Ordering::SeqCst) + read as u64;
-                if let Some(max) = max_output_bytes {
-                    if total > max {
+                if let Some(max) = max_output_bytes && total > max {
                         let error = match &output_limit_error {
                             Some(factory) => factory(),
                             None => IsolationError::other("Git output exceeds budget"),
@@ -126,7 +131,6 @@ fn collect(
                         *lock(&limit_error) = Some(error);
                         kill_tree(pid);
                         break;
-                    }
                 }
                 lock(&sink).extend_from_slice(&chunk[..read]);
             }
@@ -166,8 +170,7 @@ pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
     if let Some(on_spawn) = &options.on_spawn {
         on_spawn(pid);
     }
-    if let Some(input) = options.input.clone() {
-        if let Some(mut stdin) = child.stdin.take() {
+    if let Some(input) = options.input.clone() && let Some(mut stdin) = child.stdin.take() {
             std::thread::spawn(move || {
                 if stdin.write_all(&input).is_err() {
                     kill_tree(pid);
@@ -175,35 +178,34 @@ pub fn run_git(args: &[String], options: &GitOptions) -> Result<GitOutput> {
                 }
                 let _ = stdin.flush();
             });
-        }
     }
     let retained = Arc::new(AtomicU64::new(0));
     let limit_error: Arc<Mutex<Option<IsolationError>>> = Arc::new(Mutex::new(None));
     let stdout_sink = Arc::new(Mutex::new(Vec::new()));
     let stderr_sink = Arc::new(Mutex::new(Vec::new()));
     let (done_tx, done_rx) = channel::<()>();
+    let output_limit = OutputLimit {
+        retained: Arc::clone(&retained),
+        max_output_bytes: options.max_output_bytes,
+        limit_error: Arc::clone(&limit_error),
+        output_limit_error: options.output_limit_error.clone(),
+    };
     if let Some(stdout) = child.stdout.take() {
         std::thread::spawn({
-            let retained = Arc::clone(&retained);
-            let limit_error = Arc::clone(&limit_error);
             let sink = Arc::clone(&stdout_sink);
-            let limit = options.output_limit_error.clone();
-            let max = options.max_output_bytes;
+            let limit = output_limit.clone();
             let done = done_tx.clone();
-            move || collect(Box::new(stdout), retained, max, limit_error, limit, pid, sink, done)
+            move || collect(Box::new(stdout), limit, pid, sink, done)
         });
     } else {
         let _ = done_tx.send(());
     }
     if let Some(stderr) = child.stderr.take() {
         std::thread::spawn({
-            let retained = Arc::clone(&retained);
-            let limit_error = Arc::clone(&limit_error);
             let sink = Arc::clone(&stderr_sink);
-            let limit = options.output_limit_error.clone();
-            let max = options.max_output_bytes;
+            let limit = output_limit.clone();
             let done = done_tx.clone();
-            move || collect(Box::new(stderr), retained, max, limit_error, limit, pid, sink, done)
+            move || collect(Box::new(stderr), limit, pid, sink, done)
         });
     } else {
         let _ = done_tx.send(());
