@@ -1349,6 +1349,7 @@ async fn prepare_resolved_tool_call(
         }
     };
     let validated_args = prepared_tool_call.args.clone();
+    let mut effective_args = validated_args.clone();
     if let Some(before_tool_call) = config.before_tool_call.clone() {
         let before_result = before_tool_call(
             crate::types::BeforeToolCallContext {
@@ -1367,16 +1368,22 @@ async fn prepare_resolved_tool_call(
                 is_error: true,
             };
         }
-        if let Some(before_result) = before_result
-            && before_result.block == Some(true)
-        {
-            let mut result = create_error_tool_result(
-                before_result.reason.as_deref().unwrap_or("Tool execution was blocked"),
-            );
-            if before_result.terminate == Some(true) {
-                result.terminate = Some(true);
+        match before_result {
+            Some(before_result) if before_result.block == Some(true) => {
+                let mut result = create_error_tool_result(
+                    before_result.reason.as_deref().unwrap_or("Tool execution was blocked"),
+                );
+                if before_result.terminate == Some(true) {
+                    result.terminate = Some(true);
+                }
+                return ToolCallPreparation::Immediate { tool_call: tool_call.clone(), result, is_error: true };
             }
-            return ToolCallPreparation::Immediate { tool_call: tool_call.clone(), result, is_error: true };
+            Some(before_result) => {
+                if let Some(replacement) = before_result.args {
+                    effective_args = replacement;
+                }
+            }
+            None => {}
         }
     }
     if signal.as_ref().is_some_and(AbortSignal::aborted) {
@@ -1389,7 +1396,7 @@ async fn prepare_resolved_tool_call(
     ToolCallPreparation::Prepared {
         tool_call: prepared_tool_call.tool_call,
         tool: tool.clone(),
-        args: validated_args,
+        args: effective_args,
         requested_name: None,
     }
 }

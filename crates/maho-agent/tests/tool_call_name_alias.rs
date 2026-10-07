@@ -208,3 +208,40 @@ fn with_tool_name_correction_prepends_a_model_only_block() {
     assert_eq!(corrected.content[0], expected_correction("LazyWeather", "lazy_weather"));
     assert_eq!(corrected.content[1], text_block("lazy_weather:Seoul"));
 }
+
+#[tokio::test]
+async fn a_hook_that_returns_replacement_args_runs_the_tool_with_them() {
+    let (tool, seen) = recording_tool("lazy_weather");
+    let outcome = call_once("lazy_weather", vec![tool], move |config| {
+        config.before_tool_call = Some(Arc::new(move |_context: BeforeToolCallContext, _signal: Option<AbortSignal>| {
+            Box::pin(async { Some(BeforeToolCallResult { args: Some(json!({ "city": "Busan" })), ..Default::default() }) })
+        }));
+    }).await;
+    assert_eq!(*seen.lock().unwrap(), vec![json!({ "city": "Busan" })]);
+    assert!(!outcome.result.is_error);
+}
+
+#[tokio::test]
+async fn a_hook_that_returns_no_args_leaves_the_validated_arguments_untouched() {
+    let (tool, seen) = recording_tool("lazy_weather");
+    let outcome = call_once("lazy_weather", vec![tool], move |config| {
+        config.before_tool_call = Some(Arc::new(move |_context: BeforeToolCallContext, _signal: Option<AbortSignal>| {
+            Box::pin(async { Some(BeforeToolCallResult::default()) })
+        }));
+    }).await;
+    assert_eq!(*seen.lock().unwrap(), vec![json!({ "city": "Seoul" })]);
+    assert!(!outcome.result.is_error);
+}
+
+#[tokio::test]
+async fn a_blocking_hook_prevents_execution_and_reports_the_reason() {
+    let (tool, seen) = recording_tool("lazy_weather");
+    let outcome = call_once("lazy_weather", vec![tool], move |config| {
+        config.before_tool_call = Some(Arc::new(move |_context: BeforeToolCallContext, _signal: Option<AbortSignal>| {
+            Box::pin(async { Some(BeforeToolCallResult { block: Some(true), reason: Some("blocked by hook".into()), ..Default::default() }) })
+        }));
+    }).await;
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(outcome.result.is_error);
+    assert!(text_of(&outcome.result).contains("blocked by hook"));
+}
