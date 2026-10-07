@@ -17,8 +17,7 @@ fn binary_stays_disabled_off_windows_and_writes_nothing() {
     let mut stdin = child.stdin.take().expect("stdin");
     writeln!(
         stdin,
-        "{}",
-        r#"{"jsonrpc":"2.0","id":"init","method":"initialize"}"#
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\"}}"
     )
     .expect("write request");
     drop(stdin);

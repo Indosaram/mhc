@@ -51,6 +51,9 @@ pub const EXEC_COMMAND_TIMEOUT_ENV_KEYS: [&str; 4] = [
     "EXEC_COMMAND_TIMEOUT_MS",
 ];
 
+/// Filesystem probe seam: reports whether a path exists, mirroring the reference `exists` option.
+pub type ExistsFn = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Server options, mirroring the reference `GitBashMcpOptions`.
 ///
 /// The seams (`exists`, `where_bash`, `run_git_bash`, `platform`, `env`) default to the real host
@@ -61,7 +64,7 @@ pub struct GitBashMcpOptions {
     pub lifecycle_log: Option<Arc<dyn McpLifecycleLog + Send + Sync>>,
     pub platform: Option<String>,
     pub env: Option<HashMap<String, String>>,
-    pub exists: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    pub exists: Option<ExistsFn>,
     pub where_bash: Option<Arc<dyn Fn() -> Vec<String> + Send + Sync>>,
     pub run_git_bash: Option<Arc<RunGitBashCommand>>,
     pub default_timeout_ms: Option<f64>,
