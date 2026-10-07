@@ -38,8 +38,9 @@ impl ExtensionUi for TestUi {
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
     fn theme(&self) -> Theme { Theme::default() }
 }
-pub fn context() -> ExtensionContext {
-    ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
+pub fn context() -> ExtensionContext { context_with_ui(true) }
+pub fn context_with_ui(has_ui: bool) -> ExtensionContext {
+    ExtensionContext { ui: Arc::new(TestUi), mode: ExtensionMode::Print, has_ui, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
         session_manager: Arc::new(TestSession), model_registry: Arc::new(TestRegistry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,
