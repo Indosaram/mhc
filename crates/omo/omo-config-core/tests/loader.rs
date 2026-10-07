@@ -1567,7 +1567,7 @@ fn unknown_keys_strip_a_retired_root_key_and_keep_the_valid_category() {
         result.config["categories"]["quick"]["model"],
         json!("user-model")
     );
-    assert_eq!(result.sources[0].loaded, true);
+    assert!(result.sources[0].loaded);
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].kind, "unknown-keys");
     assert_eq!(
@@ -1607,7 +1607,7 @@ fn unknown_keys_strip_a_prototype_pollution_key_beside_a_valid_block() {
         r#"{"__proto__":{"polluted":true},"categories":{"quick":{"model":"user-model"}}}"#,
     );
     let result = load_senpi(&home, &cwd, None);
-    assert_eq!(result.sources[0].loaded, true);
+    assert!(result.sources[0].loaded);
     assert_eq!(
         result.config["categories"]["quick"]["model"],
         json!("user-model")
@@ -1628,7 +1628,7 @@ fn unknown_keys_strip_a_nested_prototype_pollution_key() {
         r#"{"agents":{"evil":{"__proto__":{"polluted":true},"model":"user-model"}},"categories":{"quick":{"model":"user-model"}}}"#,
     );
     let result = load_senpi(&home, &cwd, None);
-    assert_eq!(result.sources[0].loaded, true);
+    assert!(result.sources[0].loaded);
     assert_eq!(result.config["agents"]["evil"]["model"], json!("user-model"));
     assert_eq!(
         result.config["categories"]["quick"]["model"],
@@ -1647,7 +1647,7 @@ fn unknown_keys_reject_a_malformed_known_value() {
     let (_root, home, cwd) = prune_fixture();
     write_user_config(&home, r#"{"categories":"nope"}"#);
     let result = load_senpi(&home, &cwd, None);
-    assert_eq!(result.sources[0].loaded, false);
+    assert!(!result.sources[0].loaded);
     assert_eq!(result.config["categories"], json!({}));
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].kind, "validation");
@@ -1894,7 +1894,7 @@ fn prune_paths_drop_a_partial_team_only_once_merged() {
     );
     let result = load_default(&home, &cwd);
     assert_eq!(result.config["task"]["default_concurrency"], json!(3));
-    assert!(result.config["teams"].get("alpha").is_none());
+    assert!(result.config.get("teams").and_then(|teams| teams.get("alpha")).is_none());
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].kind, "invalid-value");
     assert_eq!(result.diagnostics[0].path, "(merged omo config)");

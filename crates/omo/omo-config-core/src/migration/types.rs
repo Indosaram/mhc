@@ -316,13 +316,15 @@ pub type MigrationBoundaryHook<'a> = dyn Fn(MigrationBoundary) -> Result<(), Mig
 
 pub type AfterMigrationsHook<'a> = dyn Fn(&[MigrationRunResult]) + 'a;
 
+pub type MigrationShouldRun<'a> = dyn Fn(&serde_json::Value) -> bool + 'a;
+
 pub struct MigrationPlan<'a> {
     pub id: String,
     pub mode: MigrationMode,
     /// Content gate evaluated against the current target before anything is written. A plan that
     /// returns false is skipped whole: no journal, no backup, no target write, and no `_migrations`
     /// marker, so a config the migration has nothing to do to is left byte-identical.
-    pub should_run: Option<Rc<dyn Fn(&serde_json::Value) -> bool + 'a>>,
+    pub should_run: Option<Rc<MigrationShouldRun<'a>>>,
     pub sources: Vec<MigrationSourceDescriptor>,
     pub target_path: String,
     pub transform: Box<MigrationTransform<'a>>,

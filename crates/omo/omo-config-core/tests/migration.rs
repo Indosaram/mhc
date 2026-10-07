@@ -1076,7 +1076,7 @@ fn retired_codegraph_cleanup_options<'a>(
     id: &str,
     mode: MigrationMode,
     sources: Vec<MigrationSourceDescriptor>,
-    transform: Box<dyn Fn(&[LoadedMigrationSource]) -> Result<MigrationTransformResult, MigrationError> + 'a>,
+    transform: Box<MigrationTransform<'a>>,
 ) -> RunMigrationOptions<'a> {
     RunMigrationOptions {
         clock: None,

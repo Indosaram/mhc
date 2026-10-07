@@ -34,6 +34,8 @@ pub enum PruneResult {
     },
 }
 
+pub type PruneValidator<'a> = dyn Fn(&Map<String, Value>) -> Result<(), Issues> + 'a;
+
 /// Each pass drops every path the current issues name, so a real document settles in a few passes.
 pub const MAX_PRUNE_PASSES: usize = 32;
 
@@ -205,7 +207,7 @@ fn prune_pass(
 pub fn prune_invalid_config_paths(
     config: &Map<String, Value>,
     issues: &[Issue],
-    validate: &dyn Fn(&Map<String, Value>) -> Result<(), Issues>,
+    validate: &PruneValidator<'_>,
     max_passes: usize,
 ) -> PruneResult {
     let mut dropped: Vec<PrunedConfigPath> = Vec::new();
