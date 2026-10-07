@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use pretty_assertions::assert_eq;
 use tempfile::tempdir;
+
+use crate::git::GitMemoryRepoOptions;
 
 use super::*;
 
@@ -97,7 +98,7 @@ fn test_push_now_when_no_mirror_configured_then_reports_not_configured_without_t
         }
     };
 
-    assert_eq!(push_result.pushed, false);
+    assert!(!push_result.pushed);
     assert!(
         push_result
             .detail
@@ -114,4 +115,59 @@ fn test_push_detail_when_push_to_credentialed_remote_fails_then_no_credential_le
     assert!(!redacted_detail.contains("s3cr3t"));
     assert!(!redacted_detail.contains("x-token"));
     assert!(redacted_detail.contains("https://***:***@127.0.0.1:1/acme/memory.git"));
+}
+
+#[test]
+fn test_unset_when_called_twice_then_removes_the_mirror_key_and_tolerates_absence() {
+    // Pin mirror.test.ts "#when unset #then later commits produce no new log lines": the key is
+    // gone afterwards and a repeat unset is a tolerated no-op (git exit code 5).
+    let temp = tempdir().expect("tempdir");
+    let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(temp.path(), "mirror-agent"))
+        .expect("repo");
+    repo.init(None).expect("init");
+    repo.config_set(CONFIG_KEY, "https://example.com/memory.git")
+        .expect("seed mirror url");
+    let mirror = MirrorSync::new(&repo);
+
+    mirror.unset().expect("first unset");
+    assert_eq!(repo.config_get(CONFIG_KEY).expect("get"), None);
+
+    mirror.unset().expect("second unset is a no-op");
+    assert!(mirror.status().url.is_none());
+}
+
+mod serialization {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use crate::git::{GitExec, GitExecOptions, GitExecResult, system_git_exec};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct ConfigLockProbe {
+        inner: Arc<dyn GitExec>,
+        observed: AtomicBool,
+    }
+
+    impl GitExec for ConfigLockProbe {
+        fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
+            if argv.iter().any(|arg| arg == "--unset-all") {
+                assert!(crate::git::config_lock::config_mutation_lock_is_held(&options.cwd));
+                self.observed.store(true, Ordering::SeqCst);
+            }
+            self.inner.run(argv, options)
+        }
+    }
+
+    #[test]
+    fn test_unset_joins_the_serialized_config_mutation_queue() {
+        let temp = tempdir().expect("tempdir");
+        let repo = GitMemoryRepo::new(GitMemoryRepoOptions::new(temp.path(), "mirror-lock-agent"))
+            .expect("repo");
+        repo.init(None).expect("init");
+        repo.config_set(CONFIG_KEY, "https://example.com/memory.git").expect("seed mirror url");
+        let probe = ConfigLockProbe { inner: system_git_exec(), observed: AtomicBool::new(false) };
+        MirrorSync::with_exec(&repo, &probe).unset().expect("unset");
+        assert!(probe.observed.load(Ordering::SeqCst));
+        assert_eq!(repo.config_get(CONFIG_KEY).expect("get"), None);
+    }
 }

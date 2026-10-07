@@ -22,6 +22,11 @@ fn get_dir_lock(dir: &Path) -> Arc<Mutex<()>> {
         .clone()
 }
 
+#[cfg(test)]
+pub(crate) fn config_mutation_lock_is_held(dir: &Path) -> bool {
+    matches!(get_dir_lock(dir).try_lock(), Err(std::sync::TryLockError::WouldBlock))
+}
+
 /// Tests whether an error message or GitError represents Git config file lock contention.
 pub fn is_git_config_lock_error_str(text: &str) -> bool {
     let lower = text.to_lowercase();
