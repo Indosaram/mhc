@@ -11,10 +11,12 @@ use crate::isolation::settle::{SettleIsolationInput, settle_isolation};
 use crate::state::{IsolationRecord, TaskRecord};
 
 /// The ports a salvage pass writes through (TS SalvagePorts).
+pub type SalvageMutation<'a> = dyn Fn(&str, &dyn Fn(&TaskRecord) -> TaskRecord) + 'a;
+
 pub struct SalvagePorts<'a> {
     pub runtime: &'a dyn IsolationRuntime,
     pub state_dir: &'a Path,
-    pub mutate: &'a dyn Fn(&str, &dyn Fn(&TaskRecord) -> TaskRecord),
+    pub mutate: &'a SalvageMutation<'a>,
 }
 
 /// A host that died mid-run left an isolation with no merge result on a terminal record.

@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use serde_json::json;
 
 use super::fakes::{
-    FakeHandle, FakeRunner, HarnessOptions, base_spec, category_planner, config, default_manager,
-    lock, make_lifecycle_manager, make_manager, named, notify, started, status_of, wait_terminal,
-    wait_until,
+    FakeHandle, FakeRunner, HarnessOptions, WAIT, base_spec, category_planner, config,
+    default_manager, lock, make_lifecycle_manager, make_manager, named, notify, started, status_of,
+    wait_terminal, wait_until,
 };
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{
@@ -407,7 +407,14 @@ fn given_pending_task_when_slot_promoted_then_deferred_child_listener_attaches_t
     let promoted = runner.wait_handle(&queued.task_id);
     wait_until("three subscriptions", || promoted.subscribe_count() == 3);
 
+    // The third subscribe is the manager's deferred child listener: FakeHandle records the call
+    // before the launch thread installs the returned detach closure. Waiting on the count alone
+    // races that install, so `unsubscribe` can land in the manager's missing-slot branch and run
+    // the detach on the launch thread after the assertion. Arm a per-handle detach watcher first,
+    // then await the actual detach invocation with a bounded timeout.
+    let detach = promoted.watch_detach();
     unsubscribe();
+    detach.wait(WAIT);
 
     assert_eq!(promoted.unsubscribe_count(), 1);
 }

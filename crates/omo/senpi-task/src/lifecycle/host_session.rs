@@ -62,12 +62,14 @@ pub trait HostSessionProbe: Send + Sync {
 
 /// The host-owned daemon transport the probe reads (TS HostSessionProbePorts). Assembly-owned:
 /// these are the `runners/rpc-host/liveness` entry points the host owner provides.
+pub type LiveSessionPaths = Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct HostSessionProbePorts {
     /// `probeHost` for a socket; a thrown/erroring call reads as unreachable.
     pub daemon_reachable: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// `list_sessions { include_workers: true }`; `Err` means the daemon answered but could not list.
-    pub live_session_paths: Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>,
+    pub live_session_paths: LiveSessionPaths,
 }
 
 struct HostSnapshot {

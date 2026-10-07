@@ -170,7 +170,7 @@ pub fn resolve_context(deps: LifecycleDeps) -> LifecycleContext {
         isolation: deps.isolation,
         isolation_probe: deps
             .isolation_probe
-            .unwrap_or_else(isolation_core::process_owner_probe),
+            .unwrap_or_else(|| Arc::new(isolation_core::process_owner_probe())),
         host_session_probe: deps.host_session_probe.unwrap_or_else(|| {
             default_host_session_probe(host_transport.clone())
         }),

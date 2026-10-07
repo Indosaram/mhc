@@ -1,7 +1,7 @@
 //! Terminal outcome tracking (`manager/manager-outcome.ts`). Each tracked handle gets one watcher
 //! thread blocking on `wait_for_outcome`; stale epochs and detached handles are ignored.
 
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::json;
 
@@ -9,6 +9,11 @@ use crate::manager::ManagedChildHandle;
 use crate::runners::{RunnerFailure, RunnerOutcome};
 use crate::state::{ResidencyState, TaskRecord, TaskRunStats, TaskTransition};
 use crate::store::TaskRecordStore;
+
+/// A cancel's settlement signal, shared by its guard and the outcome watcher.
+pub type PendingStop = Arc<(Mutex<bool>, Condvar)>;
+
+const STOP_SETTLEMENT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub struct ErrorOutcomeInput {
     pub task_id: String,
@@ -33,6 +38,11 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     /// Merges (or retains) an isolated child's clone. Called BEFORE the terminal transition is
     /// written, so every result builder reads one record that already carries merge_result.
     fn settle_isolation(&self, task_id: &str, merge: bool);
+    /// Takes the pending cancel signal for THIS run (task id + epoch) before checking the released
+    /// live handle. Defaults to "no pending cancel" for an implementer without cancels.
+    fn stop_settlement(&self, _task_id: &str, _epoch: i64) -> Option<PendingStop> {
+        None
+    }
     /// Called once per tracked outcome after it was applied or ignored.
     fn outcome_processed(&self);
 }
@@ -80,6 +90,10 @@ fn settle_outcome(
     epoch: i64,
     outcome: RunnerOutcome,
 ) {
+    if let Some(stopped) = ports.stop_settlement(task_id, epoch) {
+        settle_stopped(ports, task_id, stopped);
+        return;
+    }
     if !owns_outcome(ports, task_id, handle, epoch) {
         return;
     }
@@ -126,6 +140,27 @@ fn settle_outcome(
         );
     }
     ports.settle_waiters(task_id);
+}
+
+/// The cancel owns the terminal transition; the watcher only settles its isolation.
+fn settle_stopped(ports: &dyn OutcomeTrackerPorts, task_id: &str, stopped: PendingStop) {
+    let (settled, wake) = &*stopped;
+    let guard = settled.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (guard, _) = wake
+        .wait_timeout_while(guard, STOP_SETTLEMENT_WAIT, |settled| !*settled)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let settled = *guard;
+    drop(guard);
+    if !settled {
+        log_failure("senpi-task cancelled run settlement timed out", task_id,
+            &"the pending cancel never settled");
+        return;
+    }
+    let Some(record) = ports.try_load(task_id) else { return; };
+    let Some(isolation) = record.isolation.as_ref() else { return; };
+    if isolation.merge_result.is_none() {
+        ports.settle_isolation(task_id, false);
+    }
 }
 
 fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInput) {

@@ -90,6 +90,7 @@ pub(crate) struct FakeHandle {
     task_id: String,
     pid: Option<i64>,
     state: Arc<Mutex<HandleState>>,
+    detach_done: Arc<Condvar>,
     outcomes: Mutex<Receiver<RunnerOutcome>>,
     settle: Mutex<Sender<RunnerOutcome>>,
 }
@@ -101,6 +102,7 @@ impl FakeHandle {
             task_id: task_id.to_string(),
             pid,
             state: Arc::default(),
+            detach_done: Arc::new(Condvar::new()),
             outcomes: Mutex::new(receiver),
             settle: Mutex::new(sender),
         })
@@ -153,6 +155,17 @@ impl FakeHandle {
         lock(&self.state).unsubscribe_calls
     }
 
+    /// Arms a watcher for the next detach on this handle. Call it before invoking the matching
+    /// `unsubscribe` so the returned watcher cannot miss the detach-completed signal.
+    pub fn watch_detach(&self) -> DetachWatcher {
+        DetachWatcher {
+            state: Arc::clone(&self.state),
+            detach_done: Arc::clone(&self.detach_done),
+            task_id: self.task_id.clone(),
+            baseline: lock(&self.state).unsubscribe_calls,
+        }
+    }
+
     pub fn steer_calls(&self) -> Vec<String> {
         lock(&self.state).steer_calls.clone()
     }
@@ -167,6 +180,38 @@ impl FakeHandle {
 
     pub fn dispose_calls(&self) -> usize {
         lock(&self.state).dispose_calls
+    }
+}
+
+/// A per-handle detach-completed signal: records the handle's detach count when armed and blocks
+/// (bounded by the caller's timeout) until a later detach has actually run. The notification is
+/// raised from inside the detach closure, so it tracks the real detach invocation rather than the
+/// subscribe call that returned the closure.
+pub(crate) struct DetachWatcher {
+    state: Arc<Mutex<HandleState>>,
+    detach_done: Arc<Condvar>,
+    task_id: String,
+    baseline: usize,
+}
+
+impl DetachWatcher {
+    /// Blocks until a detach past the armed baseline completes, or panics after `timeout`.
+    pub fn wait(self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        let mut state = lock(&self.state);
+        while state.unsubscribe_calls <= self.baseline {
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "timed out waiting for a detach on {}",
+                self.task_id
+            );
+            let (guard, _) = self
+                .detach_done
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner);
+            state = guard;
+        }
     }
 }
 
@@ -210,12 +255,14 @@ impl ManagedChildHandle for FakeHandle {
         };
         notify();
         let state = Arc::clone(&self.state);
+        let detach_done = Arc::clone(&self.detach_done);
         Box::new(move || {
             let mut state = lock(&state);
             state.unsubscribe_calls += 1;
             state
                 .listeners
                 .retain(|(listener_id, _)| *listener_id != id);
+            detach_done.notify_all();
         })
     }
 

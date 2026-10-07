@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use super::host_session::{
     HostSessionProbe, HostSessionProbePorts, create_host_session_probe,
-}
+};
 use super::host_session_close::{
     HostSessionCloseError, HostSessionCloseRequest, HostSessionCloser,
-}
+};
 
 /// The host-owned transport the lifecycle consumes (the exact adapter signature the host owner must
 /// provide). This is the ONLY surface the lifecycle needs from the rpc-host engine.

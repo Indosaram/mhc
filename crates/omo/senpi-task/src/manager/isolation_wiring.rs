@@ -148,12 +148,13 @@ impl IsolationWiring {
         let (Some(child), Some(runtime)) = (child, self.runtime.as_deref()) else {
             return;
         };
-        let binding = self.bindings();
-        let Some(binding) = binding.get(task_id) else {
-            return;
+        let base_dir = {
+            let bindings = self.bindings();
+            let Some(binding) = bindings.get(task_id) else {
+                return;
+            };
+            binding.handle.base_dir.clone()
         };
-        let base_dir = binding.handle.base_dir.clone();
-        drop(binding);
         runtime.write_owner(
             &base_dir,
             task_id,

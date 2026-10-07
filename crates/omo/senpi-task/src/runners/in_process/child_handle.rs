@@ -86,19 +86,14 @@ impl RunnerOutcome {
 }
 
 /// How a settled turn is judged (`ChildCompletionPolicy` in `runners/in-process/child-handle.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChildCompletionPolicy {
     /// `"final-text"`: a turn completes only with assistant text. The default.
+    #[default]
     FinalText,
     /// `"turn"`: any normally settled turn completes, even with no assistant text - for tool-only
     /// children whose deliverable is a side effect.
     Turn,
-}
-
-impl Default for ChildCompletionPolicy {
-    fn default() -> Self {
-        Self::FinalText
-    }
 }
 
 /// Host session events are untrusted JSON (`{ type, message? }`).

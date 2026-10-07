@@ -320,6 +320,7 @@ impl ManagedChildHandle for FakeTurnHandle {
 struct FakeManagedRunner {
     specs: Mutex<Vec<ManagedStartSpec>>,
     handles: Mutex<HashMap<String, Arc<FakeTurnHandle>>>,
+    started: Condvar,
     /// `EffectiveSpawnRunner`: the launch inputs the runner reports back on the handle.
     reported_spawn_spec: Option<RpcSpawnSpec>,
 }
@@ -343,6 +344,19 @@ impl FakeManagedRunner {
             let _ = sender.send(outcome);
         }
     }
+
+    fn wait_started(&self, task_id: &str) {
+        let deadline = Instant::now() + WAIT;
+        let mut handles = lock(&self.handles);
+        while !handles.contains_key(task_id) {
+            let now = Instant::now();
+            assert!(now < deadline, "timed out waiting for the {task_id} handle to start");
+            handles = self.started
+                .wait_timeout(handles, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
 }
 
 impl ManagedRunner for FakeManagedRunner {
@@ -357,6 +371,7 @@ impl ManagedRunner for FakeManagedRunner {
             spawn_spec: self.reported_spawn_spec.clone(),
         });
         lock(&self.handles).insert(spec.task_id.clone(), Arc::clone(&handle));
+        self.started.notify_all();
         notify();
         Ok(handle as Arc<dyn ManagedChildHandle>)
     }
@@ -1319,11 +1334,10 @@ fn given_one_concurrency_slot_and_two_queued_tasks_when_a_reattached_task_comple
     wait_until("the reattached task to complete", || {
         status_of(&harness.store, "st_00000009") == Some(Completed)
     });
-    wait_until("the first queued task to start", || {
-        status_of(&harness.store, &first_queued.task_id) == Some(Running)
-    });
+    harness.in_process.wait_started(&first_queued.task_id);
 
     // then
+    assert_eq!(status_of(&harness.store, &first_queued.task_id), Some(Running));
     assert_eq!(status_of(&harness.store, &second_queued.task_id), Some(Pending));
     harness.in_process.settle(
         &first_queued.task_id,
@@ -1331,9 +1345,8 @@ fn given_one_concurrency_slot_and_two_queued_tasks_when_a_reattached_task_comple
             final_response: "done".to_string(),
         },
     );
-    wait_until("the second queued task to start", || {
-        status_of(&harness.store, &second_queued.task_id) == Some(Running)
-    });
+    harness.in_process.wait_started(&second_queued.task_id);
+    assert_eq!(status_of(&harness.store, &second_queued.task_id), Some(Running));
 }
 
 #[test]

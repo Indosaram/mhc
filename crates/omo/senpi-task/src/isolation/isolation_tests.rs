@@ -178,10 +178,7 @@ fn prepare_refuses_a_non_git_checkout_without_touching_the_child_cwd() {
         apply: true,
         host_pid: 1,
     });
-    assert_eq!(
-        preparation,
-        IsolationPreparation::Refused { reason: "not a git checkout".to_string() }
-    );
+    assert!(matches!(preparation, IsolationPreparation::Refused { reason } if reason == "not a git checkout"));
     assert_eq!(runtime.calls(), vec!["resolve_repo_root".to_string()]);
 }
 

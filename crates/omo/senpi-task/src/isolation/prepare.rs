@@ -12,12 +12,11 @@ use crate::isolation::runtime::{EnsureInput, IsolationRuntime};
 use crate::state::{IsolationMergeMode, TaskIsolationSpec};
 
 /// The result of a prepare attempt (TS IsolationPreparation).
-#[derive(Debug, Clone, PartialEq)]
 pub enum IsolationPreparation {
     /// The sandbox exists and the baseline is persisted.
     Prepared {
-        handle: IsolationHandle,
-        baseline: WorktreeBaseline,
+        handle: Box<IsolationHandle>,
+        baseline: Box<WorktreeBaseline>,
         spec: TaskIsolationSpec,
     },
     /// The spawn must be refused with this reason.
@@ -90,7 +89,7 @@ pub fn prepare_isolation(input: &PrepareIsolationInput<'_>) -> IsolationPreparat
             mode: input.mode,
             apply: input.apply,
         },
-        handle,
-        baseline,
+        handle: Box::new(handle),
+        baseline: Box::new(baseline),
     }
 }
