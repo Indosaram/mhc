@@ -2,12 +2,15 @@
 
 pub mod compile;
 pub mod facts;
+pub mod fs;
 pub mod git;
 pub mod identity;
 pub mod journal;
 pub mod locks;
 pub mod memfs;
 pub mod people;
+pub mod personas;
+pub mod recall;
 pub mod reflection;
 pub mod reminders;
 pub mod search;

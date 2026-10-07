@@ -35,6 +35,7 @@ pub fn execute_legacy_config_migration_plan(
             vec![MigrationPlan {
                 id: plan.id.clone(),
                 mode: plan.mode,
+                should_run: plan.should_run.clone(),
                 sources: plan.sources.clone(),
                 target_path: plan.target_path.clone(),
                 transform: Box::new(move |loaded| {

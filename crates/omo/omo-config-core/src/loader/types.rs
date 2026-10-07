@@ -5,10 +5,16 @@ use serde_json::Value;
 
 use crate::internal::posix_path::to_posix_path;
 
+pub const DIAGNOSTIC_DEPRECATED_KEYS: &str = "deprecated-keys";
+pub const DIAGNOSTIC_INVALID_VALUE: &str = "invalid-value";
 pub const DIAGNOSTIC_PARSE: &str = "parse";
 pub const DIAGNOSTIC_PROFILE: &str = "profile";
 pub const DIAGNOSTIC_READ: &str = "read";
+pub const DIAGNOSTIC_UNKNOWN_KEYS: &str = "unknown-keys";
 pub const DIAGNOSTIC_VALIDATION: &str = "validation";
+
+/// The `path` of a diagnostic about the merged config rather than one file.
+pub const MERGED_OMO_CONFIG_PATH: &str = "(merged omo config)";
 
 pub const SCOPE_PROJECT: &str = "project";
 pub const SCOPE_USER: &str = "user";

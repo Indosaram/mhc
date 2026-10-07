@@ -10,14 +10,18 @@ const MILLIS_PER_DAY: i64 = 86_400_000;
 const MILLIS_PER_HOUR: i64 = 3_600_000;
 const MILLIS_PER_MINUTE: i64 = 60_000;
 
-/// Current time as `YYYY-MM-DDTHH:MM:SS.mmmZ`, matching `new Date().toISOString()`.
-pub(crate) fn now_iso_string() -> String {
-    let millis = SystemTime::now()
+/// Current Unix time in milliseconds (`Date.now()`).
+pub(crate) fn now_millis() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
-        .unwrap_or_default();
-    format_iso_millis(millis)
+        .unwrap_or_default()
+}
+
+/// Current time as `YYYY-MM-DDTHH:MM:SS.mmmZ`, matching `new Date().toISOString()`.
+pub(crate) fn now_iso_string() -> String {
+    format_iso_millis(now_millis())
 }
 
 /// Format Unix milliseconds as `YYYY-MM-DDTHH:MM:SS.mmmZ`.

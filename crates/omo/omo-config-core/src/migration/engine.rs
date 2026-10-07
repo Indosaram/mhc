@@ -23,6 +23,7 @@ pub fn run_migration<'a>(
             vec![MigrationPlan {
                 id: id.clone(),
                 mode,
+                should_run: None,
                 sources: sources.clone(),
                 target_path: target_path.clone(),
                 transform: Box::new(move |s| t(s)),

@@ -15,9 +15,10 @@ use super::repo_arguments::{
 };
 use super::repo_log::{parse_log_output, parse_nul_paths};
 use super::repo_status::assert_no_unrelated_changes;
+use super::repo_tree::{parse_cat_file_batch, parse_ls_tree_blobs, parse_ls_tree_sized};
 use super::repo_types::{
     GitCommitAuthor, GitCommitResult, GitHookInstaller, GitLogOptions, GitMemoryRepoOptions,
-    GitMergeOptions, InitializeGitRepoOptions, MemoryCommit,
+    GitMergeOptions, GitTreeBlobEntry, GitTreeSizedEntry, InitializeGitRepoOptions, MemoryCommit,
 };
 use super::worktree_mutation_queue::with_serialized_git_worktree_mutation;
 
@@ -257,6 +258,72 @@ impl GitMemoryRepo {
     pub fn show(&self, revision: &str, path: &str) -> Result<String, GitError> {
         let res = self.git(&["show".to_string(), format!("{revision}:{path}")])?;
         Ok(res.stdout)
+    }
+
+    /// Lists `ls-tree -r -l -z` entries with their byte sizes.
+    pub fn ls_tree_sized(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<Vec<GitTreeSizedEntry>, GitError> {
+        let rev = revision.unwrap_or("HEAD");
+        let res = self.git(&[
+            "ls-tree".to_string(),
+            "-r".to_string(),
+            "-l".to_string(),
+            "-z".to_string(),
+            rev.to_string(),
+        ])?;
+        Ok(parse_ls_tree_sized(&res.stdout))
+    }
+
+    /// Lists `ls-tree -r -z` blob entries with their object ids.
+    pub fn ls_tree_blobs(
+        &self,
+        revision: Option<&str>,
+    ) -> Result<Vec<GitTreeBlobEntry>, GitError> {
+        let rev = revision.unwrap_or("HEAD");
+        let res = self.git(&[
+            "ls-tree".to_string(),
+            "-r".to_string(),
+            "-z".to_string(),
+            rev.to_string(),
+        ])?;
+        Ok(parse_ls_tree_blobs(&res.stdout))
+    }
+
+    /// Reads every requested blob through one `git cat-file --batch` process.
+    ///
+    /// Object ids git reports missing are absent from the returned map. Blob content is decoded as
+    /// UTF-8, which is lossless for the memory repository's UTF-8 markdown contract.
+    pub fn read_blobs(&self, oids: &[String]) -> Result<BTreeMap<String, String>, GitError> {
+        let mut unique: Vec<String> = Vec::new();
+        for oid in oids {
+            if !unique.iter().any(|seen| seen == oid) {
+                unique.push(oid.clone());
+            }
+        }
+        if unique.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let argv = vec!["cat-file".to_string(), "--batch".to_string()];
+        let stdin = format!("{}\n", unique.join("\n")).into_bytes();
+        let res = self.git_with_stdin(&argv, &stdin)?;
+        if res.code != 0 {
+            return Err(command_error(&argv, &res));
+        }
+        parse_cat_file_batch(res.stdout.as_bytes())
+    }
+
+    fn git_with_stdin(&self, argv: &[String], stdin: &[u8]) -> Result<GitExecResult, GitError> {
+        let mut env = BTreeMap::new();
+        env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
+        let opts = GitExecOptions {
+            cwd: self.dir.clone(),
+            timeout_ms: GIT_TIMEOUT_MS,
+            env,
+            stdin: Some(stdin.to_vec()),
+        };
+        self.exec.run(argv, &opts).map_err(GitError::Io)
     }
 
     pub fn log(&self, options: Option<&GitLogOptions>) -> Result<Vec<MemoryCommit>, GitError> {

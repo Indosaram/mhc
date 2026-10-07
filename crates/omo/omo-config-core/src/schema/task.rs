@@ -18,6 +18,21 @@ fn default_warnings() -> Value {
     json!({ "unavailable_categories": true })
 }
 
+pub const ISOLATION_BACKEND_KINDS: [&str; 8] = [
+    "auto",
+    "apfs",
+    "btrfs",
+    "zfs",
+    "reflink",
+    "overlayfs",
+    "block-clone",
+    "rcopy",
+];
+
+fn default_isolation() -> Value {
+    json!({ "enabled": false, "backend": "auto", "apply": true, "merge": "patch", "commits": "generic" })
+}
+
 fn default_execution_mode() -> Value {
     json!("in-process")
 }
@@ -147,8 +162,41 @@ pub fn omo_task_dag_settings_schema() -> Node {
     ])
 }
 
+pub fn isolation_backend_kind_schema() -> Node {
+    enumeration(&ISOLATION_BACKEND_KINDS)
+}
+
+pub fn omo_task_isolation_schema() -> Node {
+    strict_object(vec![
+        defaulted("enabled", boolean(), || json!(false)),
+        defaulted("backend", isolation_backend_kind_schema(), || json!("auto")),
+        defaulted("apply", boolean(), default_true),
+        defaulted("merge", enumeration(&["patch", "branch"]), || {
+            json!("patch")
+        }),
+        defaulted("commits", enumeration(&["generic", "ai"]), || {
+            json!("generic")
+        }),
+    ])
+}
+
+pub fn omo_task_isolation_layer_schema() -> Node {
+    strict_object(vec![
+        optional("enabled", boolean()),
+        optional("backend", isolation_backend_kind_schema()),
+        optional("apply", boolean()),
+        optional("merge", enumeration(&["patch", "branch"])),
+        optional("commits", enumeration(&["generic", "ai"])),
+    ])
+}
+
 pub fn omo_task_settings_schema() -> Node {
     strict_object(vec![
+        defaulted(
+            "isolation",
+            omo_task_isolation_schema(),
+            default_isolation,
+        ),
         defaulted(
             "default_execution_mode",
             enumeration(&["in-process", "process"]),
@@ -213,6 +261,7 @@ pub fn omo_task_warnings_layer_schema() -> Node {
 
 pub fn omo_task_settings_layer_schema() -> Node {
     strict_object(vec![
+        optional("isolation", omo_task_isolation_layer_schema()),
         optional(
             "default_execution_mode",
             enumeration(&["in-process", "process"]),

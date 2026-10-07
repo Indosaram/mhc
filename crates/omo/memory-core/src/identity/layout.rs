@@ -13,7 +13,7 @@ pub const AGENTS_DIRNAME: &str = "agents";
 pub const REPO_DIRNAME: &str = "repo";
 pub const RUNTIME_DIRNAME: &str = "runtime";
 
-pub const RUNTIME_SUBDIRNAMES: [&str; 11] = [
+pub const RUNTIME_SUBDIRNAMES: [&str; 12] = [
     "locks",
     "transcripts",
     "reflection",
@@ -25,6 +25,7 @@ pub const RUNTIME_SUBDIRNAMES: [&str; 11] = [
     "facts",
     "notices",
     "tool-receipts",
+    "recall",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,10 @@ pub struct MemoryIdentityPaths {
     pub facts: PathBuf,
     pub notices: PathBuf,
     pub tool_receipts: PathBuf,
+    /// Recall runtime tree: per-session surfaced-path ledgers and pending gate nudges.
+    pub recall: PathBuf,
+    pub recall_ledger: PathBuf,
+    pub recall_pending: PathBuf,
 }
 
 /// `~/.omo/memory` (Windows: `%USERPROFILE%\.omo\memory`).
@@ -77,6 +82,9 @@ pub fn build_identity_paths(memory_root: &Path, id: &str) -> MemoryIdentityPaths
         facts: runtime.join("facts"),
         notices: runtime.join("notices"),
         tool_receipts: runtime.join("tool-receipts"),
+        recall: runtime.join("recall"),
+        recall_ledger: runtime.join("recall").join("ledger"),
+        recall_pending: runtime.join("recall").join("pending"),
         runtime,
         root,
     }

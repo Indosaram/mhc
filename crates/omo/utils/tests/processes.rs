@@ -191,11 +191,157 @@ fn spawn_rejects_empty_command() {
     assert!(spawn(&[], &SpawnOptions::default()).is_err());
 }
 
+#[cfg(target_os = "linux")]
+mod recovered_spawn_cancellation {
+    use super::sh;
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use utils::{AbortController, SpawnOptions, StdioMode, spawn, spawn_sync};
+
+    const BOUND: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn wait_with_output_observes_cancellation_after_child_readiness() {
+        let controller = AbortController::new();
+        let options = SpawnOptions {
+            stdin: Some(StdioMode::Pipe),
+            stdout: Some(StdioMode::Pipe),
+            stderr: Some(StdioMode::Pipe),
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        let mut process = spawn(
+            &sh("echo payload; echo ready >&2; while :; do read _; done"),
+            &options,
+        ).unwrap_or_else(|error| panic!("{error}"));
+        let handle = process.handle().unwrap_or_else(|error| panic!("{error}"));
+        let stderr = process.stderr.take().unwrap_or_else(|| panic!("stderr is piped"));
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let result = BufReader::new(stderr).read_line(&mut line).map(|_| line);
+            let _ = ready_sender.send(result);
+        });
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(process.wait_with_output());
+        });
+        match ready_receiver.recv_timeout(BOUND) {
+            Ok(Ok(line)) if line == "ready\n" => {}
+            outcome => {
+                let killed = handle.kill();
+                let exit = receiver.recv_timeout(BOUND);
+                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                panic!("child readiness failed: {outcome:?}; kill: {killed:?}; exit: {exit:?}");
+            }
+        }
+        reader.join().unwrap_or_else(|_| panic!("reader panicked"));
+        controller.abort();
+        let output = match receiver.recv_timeout(BOUND) {
+            Ok(output) => output.unwrap_or_else(|error| panic!("{error}")),
+            Err(error) => {
+                let killed = handle.kill();
+                let exit = receiver.recv_timeout(BOUND);
+                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                panic!("cancelled wait failed: {error}; kill: {killed:?}; exit: {exit:?}");
+            }
+        };
+        worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
+        assert_eq!(output, (1, "payload\n".to_string(), String::new()));
+    }
+
+    #[test]
+    fn signal_less_spawn_preserves_stdout_and_stderr() {
+        let options = SpawnOptions {
+            stdout: Some(StdioMode::Pipe),
+            stderr: Some(StdioMode::Pipe),
+            ..Default::default()
+        };
+        let mut process = spawn(&sh("echo plain-ok; echo plain-err >&2"), &options)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let handle = process.handle().unwrap_or_else(|error| panic!("{error}"));
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = sender.send(process.wait_with_output());
+        });
+        let output = match receiver.recv_timeout(BOUND) {
+            Ok(output) => output.unwrap_or_else(|error| panic!("{error}")),
+            Err(error) => {
+                let killed = handle.kill();
+                let exit = receiver.recv_timeout(BOUND);
+                if exit.is_ok() { worker.join().unwrap_or_else(|_| panic!("waiter panicked")); }
+                panic!("signal-less wait failed: {error}; kill: {killed:?}; exit: {exit:?}");
+            }
+        };
+        worker.join().unwrap_or_else(|_| panic!("waiter panicked"));
+        assert_eq!(output, (0, "plain-ok\n".to_string(), "plain-err\n".to_string()));
+    }
+
+    #[test]
+    fn synchronous_spawn_ignores_an_aborted_signal() {
+        let controller = AbortController::new();
+        controller.abort();
+        let options = SpawnOptions {
+            stdout: Some(StdioMode::Pipe),
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        let result = spawn_sync(&sh("echo sync-ok"), &options)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout.as_deref(), Some(b"sync-ok\n".as_slice()));
+    }
+}
+
 #[test]
 fn bun_which_constrains_lookup() {
     assert!(bun_which("sh").is_some_and(|path| path.ends_with("sh")));
     assert_eq!(bun_which("../sh"), None);
     assert_eq!(bun_which("sh\0evil"), None);
+}
+
+#[cfg(not(target_os = "linux"))]
+mod recovered_spawn_cancellation_off_linux {
+    use super::sh;
+    use utils::{AbortController, SpawnOptions, StdioMode, spawn, spawn_sync};
+
+    #[test]
+    fn signal_spawn_reports_the_unsupported_platform_boundary() {
+        let controller = AbortController::new();
+        let options = SpawnOptions {
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        let kind = spawn(&sh("echo never"), &options).err().map(|error| error.kind());
+        assert_eq!(kind, Some(std::io::ErrorKind::Unsupported));
+    }
+
+    #[test]
+    fn signal_less_spawn_preserves_the_off_linux_contract() {
+        let options = SpawnOptions {
+            stdout: Some(StdioMode::Pipe),
+            stderr: Some(StdioMode::Pipe),
+            ..Default::default()
+        };
+        let output = spawn(&sh("echo off-linux-ok"), &options)
+            .and_then(|process| process.wait_with_output())
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(output, (0, "off-linux-ok\n".to_string(), String::new()));
+    }
+
+    #[test]
+    fn synchronous_spawn_ignores_the_signal_off_linux() {
+        let controller = AbortController::new();
+        controller.abort();
+        let options = SpawnOptions {
+            signal: Some(controller.signal()),
+            ..Default::default()
+        };
+        let result = spawn_sync(&sh("echo sync-off-linux"), &options)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(result.exit_code, 0);
+    }
 }
 
 #[test]

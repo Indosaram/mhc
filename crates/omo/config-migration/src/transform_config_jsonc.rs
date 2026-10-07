@@ -36,19 +36,19 @@ pub fn transform_config_jsonc_sources(
     let senpi = record_at(&legacy, "[senpi]");
     let history = legacy_migration_history(input.discovered, input.sources);
     let diagnostics = if omo.is_some() && senpi.is_some() {
-        vec!["conflict: [senpi] legacy [omo] kept [senpi]".to_string()]
+        vec!["conflict: [native] legacy [omo] kept [native]".to_string()]
     } else {
         Vec::new()
     };
     let mut document = Map::new();
     document.insert("$schema".into(), Value::String(OMO_SCHEMA_URL.into()));
-    for key in ["codegraph", "[opencode]", "[codex]"] {
+    for key in ["[opencode]", "[codex]"] {
         if let Some(record) = record_at(&legacy, key) {
             document.insert(key.into(), Value::Object(record));
         }
     }
     if let Some(harness) = senpi.or(omo) {
-        document.insert("[senpi]".into(), Value::Object(harness));
+        document.insert("[native]".into(), Value::Object(harness));
     }
     if !history.is_empty() {
         document.insert("legacy_migrations".into(), Value::Object(history));

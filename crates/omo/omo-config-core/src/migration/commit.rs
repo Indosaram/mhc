@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde_json::{Map, Value, json};
 
 use crate::internal::jsonc::parse_jsonc_safe;
@@ -13,6 +15,9 @@ use crate::migration::types::{
     MigrationTargetWriterInput,
 };
 use crate::schema::config::omo_config_schema;
+use crate::schema::harness::{
+    OMO_CONFIG_HARNESS_IDS, OMO_CONFIG_LEGACY_HARNESS_IDS, harness_block_key,
+};
 use crate::writer::types::{OmoConfigEdit, UpdateOmoConfigOptions};
 use crate::writer::writer::update_omo_config;
 
@@ -185,26 +190,138 @@ pub struct PreparedTargetWrite {
     pub edits: Vec<OmoConfigEdit>,
 }
 
+/// Every harness block a config may carry, canonical and legacy, derived from the schema so this
+/// list cannot drift. The legacy `[senpi]` block is renamed to `[native]` by a replace-target
+/// migration whose output must be stripped too, otherwise a `[senpi].codegraph` leftover survives
+/// the rename as `[native].codegraph` and strict validation still rejects the file.
+fn omo_harness_blocks() -> Vec<String> {
+    OMO_CONFIG_HARNESS_IDS
+        .iter()
+        .chain(OMO_CONFIG_LEGACY_HARNESS_IDS.iter())
+        .map(|harness| harness_block_key(harness))
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct RetiredCodegraphCleanup {
+    pub diagnostics: Vec<String>,
+    pub document: Value,
+    pub edits: Vec<OmoConfigEdit>,
+}
+
+fn strip_codegraph_at(container: &mut Value, path: &[String], removed: &mut Vec<Vec<String>>) {
+    let Some(map) = container.as_object_mut() else {
+        return;
+    };
+    if map.remove("codegraph").is_some() {
+        let mut next = path.to_vec();
+        next.push("codegraph".to_string());
+        removed.push(next);
+    }
+}
+
+fn strip_retired_codegraph(document: &Value) -> RetiredCodegraphCleanup {
+    let mut stripped = document.clone();
+    let mut removed_paths: Vec<Vec<String>> = Vec::new();
+    let harness_blocks = omo_harness_blocks();
+
+    strip_codegraph_at(&mut stripped, &[], &mut removed_paths);
+    for harness in &harness_blocks {
+        if let Some(block) = stripped.get_mut(harness) {
+            strip_codegraph_at(block, std::slice::from_ref(harness), &mut removed_paths);
+        }
+    }
+    if let Some(profiles) = stripped.get_mut("profiles").and_then(Value::as_object_mut) {
+        let names: Vec<String> = profiles.keys().cloned().collect();
+        for name in names {
+            let Some(profile) = profiles.get_mut(&name) else {
+                continue;
+            };
+            let profile_path = vec!["profiles".to_string(), name.clone()];
+            strip_codegraph_at(profile, &profile_path, &mut removed_paths);
+            if !profile.is_object() {
+                continue;
+            }
+            for harness in &harness_blocks {
+                let mut block_path = profile_path.clone();
+                block_path.push(harness.clone());
+                if let Some(block) = profile.get_mut(harness) {
+                    strip_codegraph_at(block, &block_path, &mut removed_paths);
+                }
+            }
+        }
+    }
+
+    RetiredCodegraphCleanup {
+        diagnostics: removed_paths
+            .iter()
+            .map(|path| {
+                let joined = if path.is_empty() {
+                    "codegraph".to_string()
+                } else {
+                    path.join(".")
+                };
+                format!("removed: {joined} (retired configuration)")
+            })
+            .collect(),
+        edits: removed_paths
+            .iter()
+            .map(|path| OmoConfigEdit {
+                path: path.iter().map(PathSegment::key).collect(),
+                value: None,
+            })
+            .collect(),
+        document: stripped,
+    }
+}
+
+/// Target and transform output are stripped independently; a replace-target transform that passes the
+/// target through reports the same paths twice without this.
+fn unique_diagnostics(diagnostics: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for diagnostic in diagnostics {
+        if seen.insert(diagnostic.clone()) {
+            unique.push(diagnostic.clone());
+        }
+    }
+    unique
+}
+
 pub fn prepare_target_write(
     additions: &Value,
     migration_id: &str,
     target: &Value,
     target_path: &str,
 ) -> Result<PreparedTargetWrite, MigrationError> {
-    let merged = merge_without_clobber(target, additions);
+    let target_cleanup = strip_retired_codegraph(target);
+    let additions_cleanup = strip_retired_codegraph(additions);
+    let merged = merge_without_clobber(&target_cleanup.document, &additions_cleanup.document);
     let marker = marker_value(target, migration_id, target_path)?;
     let mut document = merged.merged;
     if let Value::Object(ref mut map) = document {
         map.insert("_migrations".to_string(), json!(marker));
     }
     validate_target(target_path, &document)?;
-    let mut edits = collect_migration_edits(&merged.additions, &[]);
+    // additionsCleanup strips codegraph from the migration transform output before merging.
+    // Its edits are intentionally omitted here: migration transforms are source-controlled and
+    // should never emit codegraph; even if they did, the merge would exclude it from the
+    // resulting document, so no explicit delete edit is needed for the additions side.
+    let mut edits = target_cleanup.edits.clone();
+    edits.extend(collect_migration_edits(&merged.additions, &[]));
     edits.push(OmoConfigEdit {
         path: vec![PathSegment::Key("_migrations".to_string())],
         value: Some(json!(marker)),
     });
     Ok(PreparedTargetWrite {
-        diagnostics: merged.diagnostics,
+        diagnostics: unique_diagnostics(
+            &[
+                merged.diagnostics.clone(),
+                target_cleanup.diagnostics.clone(),
+                additions_cleanup.diagnostics.clone(),
+            ]
+            .concat(),
+        ),
         document,
         edits,
     })
@@ -216,19 +333,22 @@ pub fn prepare_target_replacement(
     target: &Value,
     target_path: &str,
 ) -> Result<PreparedTargetWrite, MigrationError> {
+    let target_cleanup = strip_retired_codegraph(target);
+    let document_cleanup = strip_retired_codegraph(document);
     let marker = marker_value(target, migration_id, target_path)?;
-    let mut full_doc = document.clone();
+    let mut full_doc = match document_cleanup.document.clone() {
+        Value::Object(map) => Value::Object(map),
+        _ => Value::Object(Map::new()),
+    };
     if let Value::Object(ref mut map) = full_doc {
         map.insert("_migrations".to_string(), json!(marker));
     }
     validate_target(target_path, &full_doc)?;
-    let mut edits = Vec::new();
-    let target_map = target.as_object();
-    let doc_map = document.as_object();
+    let mut edits = target_cleanup.edits.clone();
 
-    if let Some(t_map) = target_map {
+    if let Some(t_map) = target_cleanup.document.as_object() {
         for key in t_map.keys() {
-            if key != "_migrations" && (doc_map.is_none() || !doc_map.unwrap().contains_key(key)) {
+            if key != "_migrations" && document_cleanup.document.get(key).is_none() {
                 edits.push(OmoConfigEdit {
                     path: vec![PathSegment::Key(key.clone())],
                     value: None,
@@ -236,7 +356,7 @@ pub fn prepare_target_replacement(
             }
         }
     }
-    if let Some(d_map) = doc_map {
+    if let Some(d_map) = document_cleanup.document.as_object() {
         for (key, value) in d_map {
             if key != "_migrations" {
                 edits.push(OmoConfigEdit {
@@ -251,7 +371,13 @@ pub fn prepare_target_replacement(
         value: Some(json!(marker)),
     });
     Ok(PreparedTargetWrite {
-        diagnostics: Vec::new(),
+        diagnostics: unique_diagnostics(
+            &[
+                target_cleanup.diagnostics.clone(),
+                document_cleanup.diagnostics.clone(),
+            ]
+            .concat(),
+        ),
         document: full_doc,
         edits,
     })

@@ -1,4 +1,5 @@
 use std::fmt;
+use std::rc::Rc;
 
 use crate::internal::posix_path::to_posix_path;
 use crate::loader::paths::process_env;
@@ -318,6 +319,10 @@ pub type AfterMigrationsHook<'a> = dyn Fn(&[MigrationRunResult]) + 'a;
 pub struct MigrationPlan<'a> {
     pub id: String,
     pub mode: MigrationMode,
+    /// Content gate evaluated against the current target before anything is written. A plan that
+    /// returns false is skipped whole: no journal, no backup, no target write, and no `_migrations`
+    /// marker, so a config the migration has nothing to do to is left byte-identical.
+    pub should_run: Option<Rc<dyn Fn(&serde_json::Value) -> bool + 'a>>,
     pub sources: Vec<MigrationSourceDescriptor>,
     pub target_path: String,
     pub transform: Box<MigrationTransform<'a>>,

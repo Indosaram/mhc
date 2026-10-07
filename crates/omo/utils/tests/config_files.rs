@@ -338,13 +338,9 @@ fn frontmatter_tolerates_extra_fields() {
 #[test]
 fn validate_omo_config_accepts_supported_overrides() {
     let config = json!({
-        "codegraph": {
-            "auto_provision": true, "enabled": true, "install_dir": "~/.omo/codegraph",
-            "excluded_roots": ["/tmp/omo-scratch"], "telemetry": false,
-            "session_start_cooldown_ms": 900_000, "watch_debounce_ms": 2_000,
-        },
-        "[codex]": {"codegraph": {"enabled": false}},
-        "[opencode]": {"codegraph": {"watch_debounce_ms": 500}},
+        "[codex]": {},
+        "[omo]": {},
+        "[opencode]": {},
     });
     assert_eq!(
         validate_omo_config(&config),
@@ -359,16 +355,20 @@ fn validate_omo_config_accepts_supported_overrides() {
 fn validate_omo_config_rejections() {
     let cases = [
         (
-            json!({"[codex]": {"codegraph": {"session_start_cooldown_ms": 59_999}}}),
-            "[codex].codegraph.session_start_cooldown_ms must be a finite number of at least 60000",
+            json!({"codegraph": {"enabled": true}}),
+            "config.codegraph is not a supported setting",
+        ),
+        (
+            json!({"[codex]": {"codegraph": {"watch_debounce_ms": 250}}}),
+            "[codex].codegraph is not a supported setting",
         ),
         (
             json!({"[android]": {}}),
             "Unknown harness override block \"[android]\"",
         ),
         (
-            json!({"[codex]": {"codegraph": {"watch_debounce_ms": 250}}}),
-            "codegraph.watch_debounce_ms is not supported for harness codex",
+            json!({"[codex]": {"[omo]": {}}}),
+            "[codex].[omo] cannot contain nested harness override blocks",
         ),
     ];
     for (config, message) in cases {

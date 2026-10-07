@@ -2,8 +2,11 @@ use serde_json::{Map, Value};
 
 use crate::loader::merge::merge_omo_config_records;
 use crate::loader::types::{DIAGNOSTIC_PROFILE, OmoConfigDiagnostic, OmoConfigEnv};
+use crate::schema::harness::{
+    OMO_CONFIG_LEGACY_HARNESS_ALIASES, canonical_harness_name, harness_block_key,
+};
 
-pub const HARNESS_KEYS: [&str; 4] = ["[codex]", "[opencode]", "[omo]", "[senpi]"];
+pub const HARNESS_KEYS: [&str; 5] = ["[codex]", "[opencode]", "[omo]", "[native]", "[senpi]"];
 
 fn profile_name(value: Option<&String>) -> Option<String> {
     match value {
@@ -59,11 +62,22 @@ fn without_control_keys(config: &Map<String, Value>) -> Map<String, Value> {
     result
 }
 
+// The legacy block is folded in FIRST so the canonical `[native]` block wins every key it also
+// sets, while a config that only ever named `[senpi]` keeps applying in full.
 fn harness_layer(config: &Map<String, Value>, harness: Option<&String>) -> Map<String, Value> {
     let Some(harness) = harness else {
         return Map::new();
     };
-    to_record(config.get(&format!("[{harness}]"))).unwrap_or_default()
+    let canonical = canonical_harness_name(harness);
+    let mut layer = Map::new();
+    for (legacy, target) in OMO_CONFIG_LEGACY_HARNESS_ALIASES {
+        if target == canonical {
+            let block = to_record(config.get(&harness_block_key(legacy))).unwrap_or_default();
+            layer = merge_omo_config_records(&layer, &block);
+        }
+    }
+    let block = to_record(config.get(&harness_block_key(&canonical))).unwrap_or_default();
+    merge_omo_config_records(&layer, &block)
 }
 
 pub struct ResolveOmoConfigViewOptions<'a> {
@@ -118,7 +132,7 @@ pub fn resolve_omo_config_view(
 
     let mut config: Map<String, Value> = Map::new();
     for layer in &layers {
-        config = merge_omo_config_records(&config, layer, None);
+        config = merge_omo_config_records(&config, layer);
     }
 
     let resolved_profile = match (options.profile, profile.as_ref()) {

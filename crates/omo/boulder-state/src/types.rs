@@ -1,5 +1,8 @@
 //! Typed values exchanged with callers: enums, plan progress, lookup inputs.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 /// How a session joined a work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoulderSessionOrigin {
@@ -207,4 +210,33 @@ pub struct EndTaskTimerInput {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkLookupOptions {
     pub worktree_path: Option<String>,
+}
+
+/// Optional knobs of [`crate::reconcile_stale_works`] (`ReconcileStaleWorksOptions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ReconcileStaleWorksOptions {
+    /// Clock override in Unix milliseconds; defaults to `Date.now()`.
+    pub now: Option<i64>,
+    /// Threshold override in milliseconds; defaults to the resolved env value.
+    pub threshold_ms: Option<i64>,
+    /// Agent sessions root holding `<encoded session cwd>/<timestamp>_<sessionId>.jsonl`
+    /// transcripts. When absent the transcript scan is skipped.
+    pub sessions_directory: Option<PathBuf>,
+    /// Environment override of the threshold knob; defaults to the process environment.
+    pub env: Option<BTreeMap<String, String>>,
+}
+
+/// One work demoted by [`crate::reconcile_stale_works`] (`StaleWorkDemotion`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleWorkDemotion {
+    pub work_id: String,
+    pub stale_since: String,
+    pub last_activity_at: Option<String>,
+}
+
+/// Result of [`crate::reconcile_stale_works`] (`StaleWorkReconcileResult`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StaleWorkReconcileResult {
+    pub demoted: Vec<StaleWorkDemotion>,
+    pub written: bool,
 }

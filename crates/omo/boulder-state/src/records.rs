@@ -27,6 +27,8 @@ macro_rules! work_fields {
             started_at,
             ended_at,
             updated_at,
+            // Stamped when a stale-work reconcile demotes the work to `paused`.
+            stale_since,
             agent,
             worktree_path
         );

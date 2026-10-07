@@ -95,7 +95,7 @@ fn merge_removes_nested_unsafe_keys_when_assigning_new_objects() {
         }
     });
     let base = Map::new();
-    let merged = merge_omo_config_records(&base, parsed.as_object().expect("object"), None);
+    let merged = merge_omo_config_records(&base, parsed.as_object().expect("object"));
     let tools = merged["categories"]["quick"]["tools"]
         .as_object()
         .expect("tools")
@@ -485,24 +485,6 @@ fn resolve_omo_config_view_diagnoses_an_absent_profile_and_uses_the_base_view() 
     assert_eq!(result.diagnostics[0].path, "profiles.ghost");
 }
 
-#[test]
-fn resolve_omo_config_view_unions_codegraph_excluded_roots() {
-    let config = config_map(json!({
-        "codegraph": { "excluded_roots": ["/tmp/omo-base", "/tmp/omo-shared"] },
-        "[codex]": { "codegraph": { "excluded_roots": ["/tmp/omo-shared", "/tmp/omo-codex"] } },
-    }));
-    let result = resolve_omo_config_view(ResolveOmoConfigViewOptions {
-        config: &config,
-        harness: Some(&"codex".to_string()),
-        profile: None,
-    });
-    assert_eq!(result.diagnostics, vec![]);
-    assert_eq!(
-        Value::Object(result.config.clone()),
-        json!({ "codegraph": { "excluded_roots": ["/tmp/omo-base", "/tmp/omo-shared", "/tmp/omo-codex"] } })
-    );
-}
-
 fn empty_options() -> LoadOmoConfigOptions<'static> {
     LoadOmoConfigOptions::default()
 }
@@ -558,7 +540,12 @@ fn load_walks_user_and_project_configs_with_the_nearest_project_winning() {
         ..empty_options()
     });
 
-    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "deprecated-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["categories.deep".to_string()]
+    );
     assert_eq!(result.config["task"]["default_concurrency"], json!(7));
     assert_eq!(result.config["task"]["wait"]["default_ms"], json!(11000));
     assert_eq!(result.config["task"]["wait"]["max_ms"], json!(90000));
@@ -571,7 +558,7 @@ fn load_walks_user_and_project_configs_with_the_nearest_project_winning() {
         json!({ "read": true, "bash": true })
     );
     assert_eq!(
-        result.config["categories"]["deep"]["model"],
+        result.config["categories"]["deep-low"]["model"],
         json!("deep-model")
     );
     assert_eq!(
@@ -871,12 +858,12 @@ fn load_resolution_contributes_every_layer_in_precedence_order() {
     write_file(
         &format!("{home}/.maho/omo.jsonc"),
         r#"{
-            "codegraph": { "enabled": false, "daemon": true },
-            "[senpi]": { "codegraph": { "auto_provision": false, "daemon": false } },
+            "task": { "default_concurrency": 1, "max_depth": 3 },
+            "[native]": { "task": { "default_concurrency": 2 } },
             "profiles": {
                 "opus": {
-                    "codegraph": { "daemon": true, "telemetry": true },
-                    "[senpi]": { "codegraph": { "daemon": false, "excluded_roots": ["/tmp/opus"] } }
+                    "task": { "default_concurrency": 3, "max_depth": 4 },
+                    "[native]": { "task": { "default_concurrency": 7 } }
                 }
             }
         }"#,
@@ -892,14 +879,10 @@ fn load_resolution_contributes_every_layer_in_precedence_order() {
 
     assert_eq!(result.diagnostics, vec![]);
     assert_eq!(result.profile, Some("opus".to_string()));
-    let codegraph = &result.config["codegraph"];
-    assert_eq!(codegraph["enabled"], json!(false));
-    assert_eq!(codegraph["auto_provision"], json!(false));
-    assert_eq!(codegraph["daemon"], json!(false));
-    assert_eq!(codegraph["telemetry"], json!(true));
-    assert_eq!(codegraph["excluded_roots"], json!(["/tmp/opus"]));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(7));
+    assert_eq!(result.config["task"]["max_depth"], json!(4));
     assert!(result.config.get("profiles").is_none());
-    assert!(result.config.get("[senpi]").is_none());
+    assert!(result.config.get("[native]").is_none());
 }
 
 #[test]
@@ -912,11 +895,11 @@ fn load_keeps_raw_layer_provenance_for_user_and_project() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
         &format!("{home}/.maho/omo.jsonc"),
-        r#"{"codegraph":{"enabled":false},"profiles":{"opus":{"codegraph":{"telemetry":true}}}}"#,
+        r#"{"task":{"default_concurrency":1},"profiles":{"opus":{"task":{"default_concurrency":3}}}}"#,
     );
     write_file(
         &format!("{project}/.omo/omo.jsonc"),
-        r#"{"[senpi]":{"codegraph":{"auto_provision":false}},"profiles":{"opus":{"[senpi]":{"codegraph":{"daemon":false}}}}}"#,
+        r#"{"[native]":{"task":{"default_concurrency":2}},"profiles":{"opus":{"[native]":{"task":{"default_concurrency":4}}}}}"#,
     );
 
     let result = load_omo_config(&LoadOmoConfigOptions {
@@ -927,11 +910,7 @@ fn load_keeps_raw_layer_provenance_for_user_and_project() {
         ..empty_options()
     });
 
-    let codegraph = &result.config["codegraph"];
-    assert_eq!(codegraph["enabled"], json!(false));
-    assert_eq!(codegraph["auto_provision"], json!(false));
-    assert_eq!(codegraph["daemon"], json!(false));
-    assert_eq!(codegraph["telemetry"], json!(true));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(4));
     let scopes: Vec<&str> = result
         .layers
         .iter()
@@ -946,10 +925,10 @@ fn load_keeps_raw_layer_provenance_for_user_and_project() {
     assert_eq!(
         configs,
         vec![
-            json!({ "codegraph": { "enabled": false }, "profiles": { "opus": { "codegraph": { "telemetry": true } } } }),
+            json!({ "task": { "default_concurrency": 1 }, "profiles": { "opus": { "task": { "default_concurrency": 3 } } } }),
             json!({
-                "[senpi]": { "codegraph": { "auto_provision": false } },
-                "profiles": { "opus": { "[senpi]": { "codegraph": { "daemon": false } } } }
+                "[native]": { "task": { "default_concurrency": 2 } },
+                "profiles": { "opus": { "[native]": { "task": { "default_concurrency": 4 } } } }
             }),
         ]
     );
@@ -964,7 +943,7 @@ fn load_codex_view_does_not_let_defaults_overwrite_base_telemetry() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
         &format!("{home}/.maho/omo.jsonc"),
-        r#"{"codegraph":{"telemetry":true},"[codex]":{"codegraph":{}}}"#,
+        r#"{"telemetry":{"enabled":false},"[codex]":{"telemetry":{}}}"#,
     );
 
     let result = load_omo_config(&LoadOmoConfigOptions {
@@ -976,39 +955,7 @@ fn load_codex_view_does_not_let_defaults_overwrite_base_telemetry() {
     });
 
     assert_eq!(result.diagnostics, vec![]);
-    assert_eq!(result.config["codegraph"]["telemetry"], json!(true));
-}
-
-#[test]
-fn load_codex_view_unions_overlapping_excluded_roots() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let root_path = root.path().to_string_lossy().to_string();
-    let home = format!("{root_path}/home");
-    let project = format!("{home}/project");
-    let cwd = format!("{project}/child");
-    std::fs::create_dir_all(&cwd).expect("cwd");
-    write_file(
-        &format!("{home}/.maho/omo.jsonc"),
-        r#"{"codegraph":{"excluded_roots":["/tmp/omo-a","/tmp/omo-b"]}}"#,
-    );
-    write_file(
-        &format!("{project}/.omo/omo.jsonc"),
-        r#"{"[codex]":{"codegraph":{"excluded_roots":["/tmp/omo-b","/tmp/omo-c"]}}}"#,
-    );
-
-    let result = load_omo_config(&LoadOmoConfigOptions {
-        cwd: Some(cwd),
-        env: Some(env_of(&[("HOME", &home)])),
-        harness: Some("codex".to_string()),
-        platform: Some("linux".to_string()),
-        ..empty_options()
-    });
-
-    assert_eq!(result.diagnostics, vec![]);
-    assert_eq!(
-        result.config["codegraph"]["excluded_roots"],
-        json!(["/tmp/omo-a", "/tmp/omo-b", "/tmp/omo-c"])
-    );
+    assert_eq!(result.config["telemetry"]["enabled"], json!(false));
 }
 
 #[test]
@@ -1020,7 +967,7 @@ fn load_reports_an_unknown_activated_profile_and_skips_its_overlay() {
     std::fs::create_dir_all(&cwd).expect("cwd");
     write_file(
         &format!("{home}/.maho/omo.jsonc"),
-        r#"{"codegraph":{"enabled":false},"[senpi]":{"codegraph":{"daemon":false}},"profiles":{"opus":{"codegraph":{"telemetry":true}}}}"#,
+        r#"{"task":{"default_concurrency":1},"[native]":{"task":{"default_concurrency":2}},"profiles":{"opus":{"task":{"default_concurrency":3}}}}"#,
     );
 
     let result = load_omo_config(&LoadOmoConfigOptions {
@@ -1032,9 +979,7 @@ fn load_reports_an_unknown_activated_profile_and_skips_its_overlay() {
     });
 
     assert_eq!(result.profile, None);
-    assert_eq!(result.config["codegraph"]["enabled"], json!(false));
-    assert_eq!(result.config["codegraph"]["daemon"], json!(false));
-    assert_eq!(result.config["codegraph"]["telemetry"], json!(false));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(2));
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].kind, "profile");
     assert_eq!(result.diagnostics[0].path, "profiles.ghost");
@@ -1080,7 +1025,8 @@ fn telemetry_resolution_lets_the_senpi_block_enable_telemetry() {
         r#"{"telemetry":{"enabled":false},"[senpi]":{"telemetry":{"enabled":true}}}"#,
     );
     let result = load_senpi(&home, &cwd, None);
-    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "deprecated-keys");
     assert!(is_omo_telemetry_enabled(&Value::Object(result.config)));
 }
 
@@ -1104,18 +1050,17 @@ fn telemetry_resolution_defaults_to_enabled_when_no_layer_sets_it() {
 }
 
 #[test]
-fn telemetry_resolution_rejects_an_unknown_sibling_inside_telemetry() {
+fn telemetry_resolution_ignores_an_unknown_sibling_inside_telemetry() {
     let (_root, home, cwd) =
         telemetry_fixture(r#"{"telemetry":{"enabled":false,"unexpected":true}}"#);
     let result = load_senpi(&home, &cwd, None);
     assert_eq!(result.diagnostics.len(), 1);
-    assert_eq!(result.diagnostics[0].kind, "validation");
-    assert!(
-        result.diagnostics[0]
-            .issue_paths
-            .contains(&"telemetry".to_string())
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["telemetry.unexpected".to_string()]
     );
-    assert!(is_omo_telemetry_enabled(&Value::Object(result.config)));
+    assert!(!is_omo_telemetry_enabled(&Value::Object(result.config)));
 }
 
 #[test]
@@ -1203,12 +1148,12 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
                 "prompt_append": QUICK_PROMPT_APPEND,
                 "reasoning": "minimal",
             },
-            "deep": { "model": "quotio-openai/gpt-5.6-terra", "reasoning": "xhigh" },
+            "deep-low": { "model": "quotio-openai/gpt-5.6-terra", "reasoning": "xhigh" },
         },
-        "codegraph": { "auto_provision": true, "daemon": true, "enabled": true, "telemetry": false },
         "task": {
             "default_concurrency": 5,
             "default_execution_mode": "in-process",
+            "isolation": { "enabled": false, "backend": "auto", "apply": true, "merge": "patch", "commits": "generic" },
             "max_depth": 1,
             "residency_max_children": residency,
             "resume_children": true,
@@ -1236,7 +1181,12 @@ EVAL-FIRST: `eval` is your default execution surface. Before acting, ask "how do
         ..empty_options()
     });
 
-    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "deprecated-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["categories.deep".to_string()]
+    );
     assert_eq!(Value::Object(result.config), expected);
 }
 
@@ -1276,4 +1226,728 @@ fn legacy_user_config_purge_audit_finds_no_xdg_appdata_or_dot_config_branch() {
         }
     }
     assert_eq!(offenders, Vec::<String>::new());
+}
+
+fn config_diagnostic(
+    kind: &'static str,
+    path: &str,
+    issue_paths: &[&str],
+) -> omo_config_core::OmoConfigDiagnostic {
+    omo_config_core::OmoConfigDiagnostic {
+        kind,
+        path: path.to_string(),
+        message: String::new(),
+        issue_paths: issue_paths
+            .iter()
+            .map(|entry| (*entry).to_string())
+            .collect(),
+    }
+}
+
+#[test]
+fn diagnostic_lines_render_every_dropped_key_and_unloaded_file() {
+    let lines = omo_config_core::omo_config_diagnostic_lines(
+        &[
+            config_diagnostic(
+                "unknown-keys",
+                "/home/user/.omo/omo.jsonc",
+                &["retired_key", "task.old"],
+            ),
+            config_diagnostic(
+                "validation",
+                "/work/.omo/omo.jsonc",
+                &["task.default_concurrency"],
+            ),
+            config_diagnostic("parse", "/home/user/.omo/omo.jsonc", &[]),
+            config_diagnostic(
+                "invalid-value",
+                "(merged omo config)",
+                &["teams.alpha.members"],
+            ),
+            config_diagnostic(
+                "deprecated-keys",
+                "/home/user/.omo/omo.jsonc",
+                &["categories.deep"],
+            ),
+        ],
+        Some("/home/user"),
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "config: ~/.omo/omo.jsonc: retired_key ignored (unknown key)".to_string(),
+            "config: ~/.omo/omo.jsonc: task.old ignored (unknown key)".to_string(),
+            "config: /work/.omo/omo.jsonc: not loaded (invalid: task.default_concurrency)"
+                .to_string(),
+            "config: ~/.omo/omo.jsonc: not loaded (JSONC parse error)".to_string(),
+            "config: merged config: teams.alpha.members ignored (invalid value)".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn diagnostic_lines_reset_the_merged_config_and_read_unreadable_files() {
+    let lines = omo_config_core::omo_config_diagnostic_lines(
+        &[
+            config_diagnostic("read", "/home/user/.omo/omo.jsonc", &[]),
+            config_diagnostic("validation", "(merged omo config)", &["teams.alpha"]),
+        ],
+        None,
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "config: /home/user/.omo/omo.jsonc: not loaded (unreadable)".to_string(),
+            "config: merged config: reset to defaults (invalid: teams.alpha)".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn diagnostic_lines_render_a_dropped_invalid_leaf() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let home = format!("{}/home", root.path().to_string_lossy());
+    let cwd = format!("{home}/project");
+    std::fs::create_dir_all(format!("{home}/.maho")).expect("config dir");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    write_file(
+        &format!("{home}/.maho/omo.jsonc"),
+        r#"{ "task": { "max_depth": -1, "default_concurrency": 3 } }"#,
+    );
+    let result = load_omo_config(&LoadOmoConfigOptions {
+        cwd: Some(cwd),
+        env: Some(env_of(&[("HOME", &home)])),
+        platform: Some("linux".to_string()),
+        ..empty_options()
+    });
+    let lines = omo_config_core::omo_config_diagnostic_lines(&result.diagnostics, Some(&home));
+    assert_eq!(
+        lines,
+        vec![
+            "config: ~/.maho/omo.jsonc: task.max_depth ignored (invalid value)".to_string()
+        ]
+    );
+}
+
+#[test]
+fn display_omo_config_path_is_home_relative_only_under_home() {
+    assert_eq!(
+        omo_config_core::display_omo_config_path("/home/user/.omo/omo.jsonc", Some("/home/user/")),
+        "~/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "/home/username/.omo/omo.jsonc",
+            Some("/home/user")
+        ),
+        "/home/username/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "C:\\Users\\me\\.omo\\omo.jsonc",
+            Some("C:\\Users\\me")
+        ),
+        "~/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "(merged omo config)",
+            Some("/home/user")
+        ),
+        "merged config"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path("/home/user/.omo/omo.jsonc", None),
+        "/home/user/.omo/omo.jsonc"
+    );
+}
+
+#[test]
+fn display_omo_config_path_normalizes_a_windows_home_to_forward_slashes() {
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "C:\\Users\\me\\.omo\\omo.jsonc",
+            Some("C:\\Users\\me\\")
+        ),
+        "~/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "C:\\Users\\me\\.omo\\profiles\\work.jsonc",
+            Some("C:\\Users\\me")
+        ),
+        "~/.omo/profiles/work.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path("C:\\Users\\me", Some("C:\\Users\\me")),
+        "~"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path("D:\\work\\omo.jsonc", Some("C:\\Users\\me")),
+        "D:\\work\\omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\h\\.omo\\omo.jsonc",
+            Some("C:/Users/RUNNER~1/AppData/Local/Temp/h")
+        ),
+        "~/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "c:\\users\\me\\.omo\\omo.jsonc",
+            Some("C:/Users/me")
+        ),
+        "~/.omo/omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::display_omo_config_path(
+            "C:\\Users\\meta\\.omo\\omo.jsonc",
+            Some("C:/Users/me")
+        ),
+        "C:\\Users\\meta\\.omo\\omo.jsonc"
+    );
+    assert_eq!(
+        omo_config_core::omo_config_diagnostic_lines(
+            &[config_diagnostic(
+                "invalid-value",
+                "C:\\Users\\me\\.omo\\omo.jsonc",
+                &["task.host_engine_policy"],
+            )],
+            Some("C:\\Users\\me"),
+        ),
+        vec!["config: ~/.omo/omo.jsonc: task.host_engine_policy ignored (invalid value)".to_string()]
+    );
+}
+
+fn raw_layer(config: Value) -> omo_config_core::OmoConfigRawLayer {
+    omo_config_core::OmoConfigRawLayer {
+        config,
+        source: omo_config_core::OmoConfigSource {
+            exists: true,
+            loaded: true,
+            path: "/tmp/omo.jsonc".to_string(),
+            scope: "user",
+        },
+    }
+}
+
+fn collect_disabled(
+    harness: Option<&str>,
+    profile: Option<&str>,
+    layers: &[omo_config_core::OmoConfigRawLayer],
+) -> Vec<String> {
+    omo_config_core::collect_disabled_skills(&omo_config_core::CollectDisabledSkillsOptions {
+        harness,
+        layers,
+        profile,
+    })
+}
+
+#[test]
+fn disabled_skills_reads_a_canonical_native_denylist() {
+    let layers = [raw_layer(
+        json!({ "[native]": { "disabled_skills": ["native-scoped"] } }),
+    )];
+    assert_eq!(
+        collect_disabled(Some("native"), None, &layers),
+        vec!["native-scoped".to_string()]
+    );
+}
+
+#[test]
+fn disabled_skills_reads_a_legacy_senpi_denylist_for_native() {
+    let layers = [raw_layer(
+        json!({ "[senpi]": { "disabled_skills": ["legacy-scoped"] } }),
+    )];
+    assert_eq!(
+        collect_disabled(Some("native"), None, &layers),
+        vec!["legacy-scoped".to_string()]
+    );
+}
+
+#[test]
+fn disabled_skills_honors_a_native_denylist_for_a_senpi_caller() {
+    let layers = [raw_layer(
+        json!({ "[native]": { "disabled_skills": ["native-scoped"] } }),
+    )];
+    assert_eq!(
+        collect_disabled(Some("senpi"), None, &layers),
+        vec!["native-scoped".to_string()]
+    );
+}
+
+#[test]
+fn disabled_skills_unions_both_spellings_and_a_profile_copy() {
+    let layers = [raw_layer(json!({
+        "disabled_skills": ["base"],
+        "[native]": { "disabled_skills": ["native-scoped"] },
+        "[senpi]": { "disabled_skills": ["legacy-scoped"] },
+        "profiles": { "kimi": { "[senpi]": { "disabled_skills": ["profile-legacy"] } } },
+    }))];
+    let mut names = collect_disabled(Some("native"), Some("kimi"), &layers);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "base".to_string(),
+            "legacy-scoped".to_string(),
+            "native-scoped".to_string(),
+            "profile-legacy".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn disabled_skills_ignores_another_harness_scope() {
+    let layers = [raw_layer(
+        json!({ "[codex]": { "disabled_skills": ["codex-scoped"] } }),
+    )];
+    assert_eq!(
+        collect_disabled(Some("native"), None, &layers),
+        Vec::<String>::new()
+    );
+}
+
+fn prune_fixture() -> (tempfile::TempDir, String, String) {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root_path = root.path().to_string_lossy().to_string();
+    let home = format!("{root_path}/home");
+    let cwd = format!("{home}/project/child");
+    std::fs::create_dir_all(format!("{home}/.maho")).expect("config dir");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+    (root, home, cwd)
+}
+
+fn write_user_config(home: &str, content: &str) -> String {
+    let path = format!("{home}/.maho/omo.json");
+    write_file(&path, content);
+    path
+}
+
+fn write_project_config(home: &str, content: &str) -> String {
+    let path = format!("{home}/project/.omo/omo.jsonc");
+    write_file(&path, content);
+    path
+}
+
+fn load_default(home: &str, cwd: &str) -> omo_config_core::LoadOmoConfigResult {
+    load_omo_config(&LoadOmoConfigOptions {
+        cwd: Some(cwd.to_string()),
+        env: Some(env_of(&[("HOME", home)])),
+        platform: Some("linux".to_string()),
+        ..empty_options()
+    })
+}
+
+fn invalid_value_keys(result: &omo_config_core::LoadOmoConfigResult) -> Vec<String> {
+    result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == "invalid-value")
+        .map(|diagnostic| {
+            diagnostic
+                .issue_paths
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+#[test]
+fn unknown_keys_strip_a_retired_root_key_and_keep_the_valid_category() {
+    let (_root, home, cwd) = prune_fixture();
+    let path = write_user_config(
+        &home,
+        r#"{"categories":{"quick":{"model":"user-model"}},"retired_key":{}}"#,
+    );
+    let result = load_senpi(&home, &cwd, None);
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("user-model")
+    );
+    assert_eq!(result.sources[0].loaded, true);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["retired_key".to_string()]
+    );
+    assert_eq!(result.diagnostics[0].path, path);
+}
+
+#[test]
+fn unknown_keys_strip_nested_profile_and_native_block_keys() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"profiles":{"opus":{"retired_key":{},"telemetry":{"enabled":false}}},"[native]":{"retired_key":{},"task":{"default_concurrency":3}}}"#,
+    );
+    let result = load_senpi(&home, &cwd, Some("opus"));
+    assert_eq!(result.profile, Some("opus".to_string()));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(3));
+    assert_eq!(result.config["telemetry"]["enabled"], json!(false));
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec![
+            "[native].retired_key".to_string(),
+            "profiles.opus.retired_key".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn unknown_keys_strip_a_prototype_pollution_key_beside_a_valid_block() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"__proto__":{"polluted":true},"categories":{"quick":{"model":"user-model"}}}"#,
+    );
+    let result = load_senpi(&home, &cwd, None);
+    assert_eq!(result.sources[0].loaded, true);
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("user-model")
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["__proto__".to_string()]
+    );
+}
+
+#[test]
+fn unknown_keys_strip_a_nested_prototype_pollution_key() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"agents":{"evil":{"__proto__":{"polluted":true},"model":"user-model"}},"categories":{"quick":{"model":"user-model"}}}"#,
+    );
+    let result = load_senpi(&home, &cwd, None);
+    assert_eq!(result.sources[0].loaded, true);
+    assert_eq!(result.config["agents"]["evil"]["model"], json!("user-model"));
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("user-model")
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["agents.evil.__proto__".to_string()]
+    );
+}
+
+#[test]
+fn unknown_keys_reject_a_malformed_known_value() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(&home, r#"{"categories":"nope"}"#);
+    let result = load_senpi(&home, &cwd, None);
+    assert_eq!(result.sources[0].loaded, false);
+    assert_eq!(result.config["categories"], json!({}));
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "validation");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["categories".to_string()]
+    );
+}
+
+#[test]
+fn prune_keeps_a_valid_agent_beside_an_unknown_sibling_key() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":"kimi-k3","bogus_key":1}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert_eq!(result.config["agents"]["oracle"]["model"], json!("kimi-k3"));
+    assert!(result.sources.iter().any(|source| source.loaded));
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "unknown-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["agents.oracle.bogus_key".to_string()]
+    );
+}
+
+#[test]
+fn prune_drops_a_wrong_typed_agent_model_and_keeps_the_sibling() {
+    let (_root, home, cwd) = prune_fixture();
+    let project_path = write_project_config(
+        &home,
+        r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":123}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert!(result.config["agents"].get("oracle").is_none());
+    assert!(result.sources.iter().any(|source| source.loaded));
+    let dropped: Vec<&omo_config_core::OmoConfigDiagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.kind == "invalid-value")
+        .collect();
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].path, project_path);
+    assert_eq!(
+        dropped[0].issue_paths,
+        vec!["agents.oracle.model".to_string()]
+    );
+}
+
+#[test]
+fn prune_drops_every_invalid_agent_leaf_with_one_diagnostic_each() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"agents":{"sisyphus":{"model":"anthropic/"},"oracle":{"model":123},"explore":{"model":456}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert!(result.config["agents"].get("oracle").is_none());
+    assert!(result.config["agents"].get("explore").is_none());
+    let mut dropped = invalid_value_keys(&result);
+    dropped.sort();
+    assert_eq!(
+        dropped,
+        vec![
+            "agents.explore.model".to_string(),
+            "agents.oracle.model".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn prune_is_symmetric_for_categories() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"categories":{"quick":{"model":"gpt-5.6"},"deep":{"model":123}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["categories"]["quick"]["model"], json!("gpt-5.6"));
+    assert!(result.config["categories"].get("deep").is_none());
+    assert_eq!(
+        invalid_value_keys(&result),
+        vec!["categories.deep.model".to_string()]
+    );
+}
+
+#[test]
+fn prune_rejects_a_file_whose_every_value_is_invalid() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"agents":{"oracle":{"model":123}},"task":{"default_concurrency":"not-a-number"}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert!(result.config["agents"].get("oracle").is_none());
+    assert_eq!(result.config["task"]["default_concurrency"], json!(5));
+    assert!(result.sources.iter().all(|source| !source.loaded));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "validation")
+    );
+}
+
+#[test]
+fn prune_rejects_a_file_whose_only_value_is_a_malformed_task_field() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"task":{"default_concurrency":"not-a-number"}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["task"]["default_concurrency"], json!(5));
+    assert!(result.sources.iter().all(|source| !source.loaded));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "validation")
+    );
+}
+
+#[test]
+fn prune_rejects_a_prototype_pollution_payload_fail_closed() {
+    let (_root, home, cwd) = prune_fixture();
+    write_project_config(
+        &home,
+        r#"{"agents":{"evil":{"__proto__":{"x":1},"model":123}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert!(result.config["agents"].get("evil").is_none());
+    assert!(result.sources.iter().all(|source| !source.loaded));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "validation")
+    );
+}
+
+#[test]
+fn prune_paths_drop_only_the_invalid_task_leaf_beside_a_valid_sibling() {
+    let (_root, home, cwd) = prune_fixture();
+    let user_path = write_user_config(
+        &home,
+        r#"{"task":{"default_concurrency":"many","max_depth":3},"agents":{"sisyphus":{"model":"anthropic/"}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["task"]["max_depth"], json!(3));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(5));
+    assert_eq!(result.config["agents"]["sisyphus"]["model"], json!("anthropic/"));
+    assert!(
+        result
+            .sources
+            .iter()
+            .find(|source| source.path == user_path)
+            .is_some_and(|source| source.loaded)
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "invalid-value");
+    assert_eq!(result.diagnostics[0].path, user_path);
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["task.default_concurrency".to_string()]
+    );
+}
+
+#[test]
+fn prune_paths_drop_one_field_inside_an_agent_and_keep_its_siblings() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"agents":{"oracle":{"model":"openai/gpt-6","temperature":"hot","max_turns":7}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["agents"]["oracle"]["model"], json!("openai/gpt-6"));
+    assert_eq!(result.config["agents"]["oracle"]["max_turns"], json!(7));
+    assert!(result.config["agents"]["oracle"].get("temperature").is_none());
+    assert_eq!(
+        invalid_value_keys(&result),
+        vec!["agents.oracle.temperature".to_string()]
+    );
+}
+
+#[test]
+fn prune_paths_keep_a_canonical_category_beside_an_invalid_legacy_leaf() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"categories":{"quick":{"model":"provider/quick","max_tokens":4096,"maxTokens":"bad"}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("provider/quick")
+    );
+    assert_eq!(
+        result.config["categories"]["quick"]["max_tokens"],
+        json!(4096)
+    );
+    assert_eq!(
+        invalid_value_keys(&result),
+        vec!["categories.quick.maxTokens".to_string()]
+    );
+}
+
+#[test]
+fn prune_paths_drop_only_the_invalid_keys_in_a_harness_block_and_a_profile() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"[senpi]":{"task":{"max_depth":-1,"default_concurrency":2}},"profiles":{"fast":{"task":{"ttl_ms":-1},"agents":{"explore":{"model":"openai/gpt-6-luna"}}}}}"#,
+    );
+    let result = load_senpi(&home, &cwd, Some("fast"));
+    assert_eq!(result.config["task"]["default_concurrency"], json!(2));
+    assert_eq!(result.config["task"]["max_depth"], json!(1));
+    assert_eq!(result.config["task"]["ttl_ms"], json!(86_400_000));
+    assert_eq!(
+        result.config["agents"]["explore"]["model"],
+        json!("openai/gpt-6-luna")
+    );
+    let mut dropped = invalid_value_keys(&result);
+    dropped.sort();
+    assert_eq!(
+        dropped,
+        vec![
+            "[senpi].task.max_depth".to_string(),
+            "profiles.fast.task.ttl_ms".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn prune_paths_drop_a_partial_team_only_once_merged() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(
+        &home,
+        r#"{"teams":{"alpha":{"description":"no members yet"}},"task":{"default_concurrency":3}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["task"]["default_concurrency"], json!(3));
+    assert!(result.config["teams"].get("alpha").is_none());
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "invalid-value");
+    assert_eq!(result.diagnostics[0].path, "(merged omo config)");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["teams.alpha".to_string()]
+    );
+}
+
+#[test]
+fn prune_paths_drop_an_all_invalid_project_file_beside_a_valid_user_file() {
+    let (_root, home, cwd) = prune_fixture();
+    write_user_config(&home, r#"{"task":{"default_concurrency":4}}"#);
+    let project_path = write_project_config(
+        &home,
+        r#"{"task":{"default_concurrency":"many"},"agents":{"oracle":{"model":1}}}"#,
+    );
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.config["task"]["default_concurrency"], json!(4));
+    assert!(result.config["agents"].get("oracle").is_none());
+    assert!(
+        result
+            .sources
+            .iter()
+            .find(|source| source.path == project_path)
+            .is_some_and(|source| !source.loaded)
+    );
+    assert!(
+        !result
+            .layers
+            .iter()
+            .any(|layer| layer.source.path == project_path)
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "validation");
+    assert_eq!(result.diagnostics[0].path, project_path);
+}
+
+#[test]
+fn prune_paths_keep_the_diagnostic_for_a_non_object_root_and_a_parse_error() {
+    let (_root, home, cwd) = prune_fixture();
+    let user_path = write_user_config(&home, "[1, 2]");
+    let project_path = write_project_config(&home, "{ \"task\": ");
+    let result = load_default(&home, &cwd);
+    assert_eq!(result.layers.len(), 0);
+    assert_eq!(result.config["task"]["default_concurrency"], json!(5));
+    let pairs: Vec<(&str, String)> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.kind, diagnostic.path.clone()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![("validation", user_path), ("parse", project_path)]
+    );
 }

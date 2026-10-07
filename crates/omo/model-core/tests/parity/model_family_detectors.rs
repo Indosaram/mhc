@@ -1,3 +1,4 @@
+use model_core::DEVIN_SWE2_SERVED_LANES;
 use model_core::is_claude_fable_or_mythos_model;
 use model_core::is_claude_fable5_model;
 use model_core::is_claude_opus5_model;
@@ -14,6 +15,8 @@ use model_core::is_kimi_k2_model;
 use model_core::is_kimi_k3_model;
 use model_core::is_kimi_k27_model;
 use model_core::is_mini_max_model;
+use model_core::is_swe2_model;
+use model_core::is_unserved_devin_swe2_selector;
 
 fn check(detector: fn(&str) -> bool, cases: &[(&str, bool)]) {
     for (model, expected) in cases {
@@ -91,6 +94,47 @@ fn kimi_k3_model_ids_detect_k3_only_not_k2_x() {
             ("kimi-for-coding/k2p7", false),
             ("kimi-for-coding/k2p5", false),
             ("anthropic/claude-opus-4-7", false),
+        ],
+    );
+}
+
+#[test]
+fn devin_selectors_only_an_explicit_devin_swe2_id_outside_the_served_lanes_is_unserved() {
+    assert_eq!(DEVIN_SWE2_SERVED_LANES, ["swe-2-medium", "swe-2-high", "swe-2-max"]);
+    check(
+        is_unserved_devin_swe2_selector,
+        &[
+            ("devin/swe-2-medium", false),
+            ("devin/swe-2-high", false),
+            ("devin/swe-2-max", false),
+            ("Devin/SWE-2-High", false),
+            ("devin/swe-2-high:max", false),
+            ("devin/swe-2-medium (high)", false),
+            ("devin/swe-2", true),
+            ("devin/swe-2-low", true),
+            ("devin/swe-2-high-lite", true),
+            ("devin/swe-2.0", true),
+            ("devin/swe-2-low:high", true),
+            ("swe-2-low", false),
+            ("gateway/swe-2-low", false),
+            ("devin/swe-1-6", false),
+            ("devin/swe-20", false),
+            ("devin/adaptive", false),
+        ],
+    );
+}
+
+#[test]
+fn devin_swe2_model_ids_detect_swe2_effort_lanes_only() {
+    check(
+        is_swe2_model,
+        &[
+            ("devin/swe-2-low", true),
+            ("devin/swe-2-high", true),
+            ("devin/swe-2-max", true),
+            ("swe-2", true),
+            ("devin/swe-1-7", false),
+            ("devin/swe-20", false),
         ],
     );
 }

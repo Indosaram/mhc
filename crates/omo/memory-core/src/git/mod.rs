@@ -11,6 +11,7 @@ pub mod repo;
 pub mod repo_arguments;
 pub mod repo_log;
 pub mod repo_status;
+pub mod repo_tree;
 pub mod repo_types;
 pub mod worktree_mutation_queue;
 
@@ -23,6 +24,7 @@ pub use repo::*;
 pub use repo_arguments::*;
 pub use repo_log::*;
 pub use repo_status::*;
+pub use repo_tree::*;
 pub use repo_types::*;
 
 #[cfg(test)]

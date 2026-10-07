@@ -12,5 +12,10 @@ pub use git_bash::{
     resolve_git_bash, resolve_git_bash_for_current_process,
 };
 pub use platform::{node_arch, node_platform};
-pub use spawn::{SpawnOptions, SpawnSyncResult, SpawnedProcess, StdioMode, spawn, spawn_sync};
+pub use spawn::{
+    AbortController, AbortRegistration, AbortSignal, SpawnOptions, SpawnSyncResult, SpawnedProcess,
+    StdioMode, spawn, spawn_sync,
+};
+#[cfg(target_os = "linux")]
+pub use spawn::ProcessHandle;
 pub use which::bun_which;

@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::error::BoulderStateError;
 use crate::js::{Js, JsObj};
 use crate::records::BoulderState;
-use crate::shared::{find_work, normalize_session_id, project_work_to_mirror, works_by_id};
+use crate::shared::{
+    find_work, normalize_session_id, project_work_to_mirror, restore_demoted_work, works_by_id,
+};
 use crate::storage::read_state::{read_boulder_state, work_docs};
 use crate::storage::write_state::write_boulder_state;
 use crate::time::now_iso_string;
@@ -76,7 +78,7 @@ pub fn append_session_id_for_work(
         return Ok(None);
     };
 
-    let mut updated = target.clone();
+    let mut updated = restore_demoted_work(target);
     let mut ids = updated
         .get("session_ids")
         .and_then(Js::as_array)

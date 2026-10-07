@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use super::lock_record::{LockRecord, parse_lock_record};
+use super::candidate_sweep::{CandidateSweepOptions, sweep_stale_lock_candidates};
 use super::process_identity::{ProcessLiveness, get_pid_liveness, get_process_start_identity};
 
 /// Error raised when an exclusive lock is currently held by another owner.
@@ -279,6 +280,18 @@ pub fn acquire_lock(
 
     let deadline = crate::support::time::now_millis() + wait_timeout_ms as i64;
 
+    // Advisory reclamation of crashed contenders' leaked candidates; a sweep failure never blocks
+    // or fails the acquisition itself.
+    if let Some(directory) = lock_path.parent() {
+        let options = CandidateSweepOptions::default();
+        let _ = sweep_stale_lock_candidates(
+            directory,
+            || crate::support::time::now_millis().max(0) as u64,
+            &options,
+        );
+    }
+
+
     loop {
         if options.cancellation.map(|f| f()).unwrap_or(false) {
             return Err(AcquireLockError::Aborted);
@@ -328,6 +341,26 @@ pub fn acquire_lock(
         } else {
             std::thread::sleep(sleep_dur);
         }
+    }
+}
+
+/// Proof-based verdict that a lock owner is dead: pid liveness first, then start identity (never age).
+pub fn is_lock_owner_proven_dead(owner: &LockRecord) -> bool {
+    is_proven_dead(owner)
+}
+
+/// Sleeps for `duration_ms`, returning false early when `cancellation` reports an abort.
+pub fn delay(duration_ms: u64, cancellation: Option<&dyn Fn() -> bool>) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(duration_ms);
+    loop {
+        if cancellation.map(|probe| probe()).unwrap_or(false) {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5).min(remaining));
     }
 }
 

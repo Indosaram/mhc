@@ -203,6 +203,16 @@ pub fn execute_plan(input: ExecutePlanInput<'_, '_>) -> Result<MigrationRunResul
         .collect();
 
     let target = target_document(&plan.target_path, file_system)?;
+    if let Some(should_run) = &plan.should_run
+        && !should_run(&target)
+    {
+        return Ok(MigrationRunResult {
+            diagnostics: Vec::new(),
+            journal_resumed,
+            preview: None,
+            status: MigrationStatus::Skipped,
+        });
+    }
     let replace_target = plan.mode == MigrationMode::ReplaceTarget;
     let legacy_sources_exist = if replace_target {
         file_system.exists(&plan.target_path)

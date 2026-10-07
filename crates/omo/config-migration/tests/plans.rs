@@ -131,6 +131,7 @@ fn executor_with_a_false_predicate_creates_no_directories_or_files() {
         id: "already-migrated".into(),
         inspect: transform.clone(),
         mode: omo_config_core::MigrationMode::Merge,
+        should_run: None,
         sources: vec![MigrationSourceDescriptor::with_backup(
             text(&source_path),
             text(&backup_path),
@@ -288,7 +289,7 @@ fn overlapping_omo_and_senpi_blocks_report_the_conflict_in_preview_and_migration
     let migrated = execute(plan, &home_dir, false);
 
     // then
-    let conflict = "conflict: [senpi] legacy [omo] kept [senpi]".to_string();
+    let conflict = "conflict: [native] legacy [omo] kept [native]".to_string();
     assert!(
         dry_run.diagnostics.contains(&conflict),
         "{:?}",
@@ -455,5 +456,103 @@ fn typed_harness_blocks_and_profiles_recurse_while_opencode_rewrites_only_known_
                 "focused": { "categories": { "deep": { "model": "p/m:xhigh", "max_tokens": 1 } } },
             },
         })
+    );
+}
+
+fn since_pin_ids() -> [&'static str; 3] {
+    [
+        config_migration::CATEGORY_DEEP_SPLIT_MIGRATION_ID,
+        config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID,
+        config_migration::SUBSCRIPTION_PROVIDER_RENAME_MIGRATION_ID,
+    ]
+}
+
+#[test]
+fn since_pin_plans_are_registered_for_an_existing_omo_target() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".maho/omo.jsonc");
+    write(
+        &target,
+        r#"{"categories":{"deep":{"model":"legacy/model"}},"[senpi]":{"model_profile":"kimi"},"default_model":"openai-codex/gpt-6-astra"}"#,
+    );
+    let canonical_target = text(&fs::canonicalize(&target).expect("target"));
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    for id in since_pin_ids() {
+        let plan = plans
+            .iter()
+            .find(|plan| plan.id == id)
+            .unwrap_or_else(|| panic!("expected {id} plan"));
+        assert_eq!(plan.target_path, canonical_target);
+        assert!(plan.should_run.is_some(), "{id} must be content gated");
+    }
+}
+
+#[test]
+fn since_pin_plans_skip_a_clean_target_without_writing() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".maho/omo.jsonc");
+    let clean = json!({
+        "categories": { "quick": { "model": "a/b" } },
+        "default_model": "anthropic-subscription/",
+    });
+    write(&target, &serde_json::to_string(&clean).expect("json"));
+    let before = tree(fixture_root.path());
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    for id in since_pin_ids() {
+        let plan = plans.iter().find(|plan| plan.id == id).expect("plan");
+        let result = execute(plan, &home_dir, false);
+        assert_eq!(result.status, MigrationStatus::Skipped, "{id}");
+    }
+    assert_eq!(tree(fixture_root.path()), before);
+    assert_eq!(parse_jsonc(&target), clean);
+}
+
+#[test]
+fn harness_native_rename_plan_rewrites_an_existing_target_through_the_engine() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".maho/omo.jsonc");
+    write(&target, r#"{"[senpi]":{"model_profile":"kimi"}}"#);
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID)
+        .expect("harness rename plan");
+    let result = execute(plan, &home_dir, false);
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    let document = parse_jsonc(&target);
+    assert_eq!(document["[native]"], json!({ "model_profile": "kimi" }));
+    assert_eq!(
+        document["_migrations"],
+        json!([config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID])
+    );
+}
+
+#[test]
+fn category_deep_split_plan_rewrites_an_existing_target_through_the_engine() {
+    let fixture_root = tempfile::tempdir().expect("tempdir");
+    let home = fixture_root.path().join("home");
+    let target = home.join(".maho/omo.jsonc");
+    write(
+        &target,
+        r#"{"categories":{"deep":{"model":"legacy/model"}}}"#,
+    );
+    let home_dir = text(&home);
+    let plans = plans_for(&home_dir, &home_dir, None, "2026-10-06T00-00-00-000Z");
+    let plan = plans
+        .iter()
+        .find(|plan| plan.id == config_migration::CATEGORY_DEEP_SPLIT_MIGRATION_ID)
+        .expect("category plan");
+    let result = execute(plan, &home_dir, false);
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    let document = parse_jsonc(&target);
+    assert_eq!(
+        document["categories"],
+        json!({ "deep-low": { "model": "legacy/model" } })
     );
 }

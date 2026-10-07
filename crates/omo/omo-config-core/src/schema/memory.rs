@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use crate::internal::validate::{
     Field, Node, boolean, defaulted, enumeration, integer, integer_between, non_empty_string,
-    optional, positive_integer, record, strict_object,
+    nonnegative_integer, optional, positive_integer, record, strict_object,
 };
 
 fn default_reflection_trigger() -> Value {
@@ -53,6 +53,27 @@ fn default_people() -> Value {
 
 fn default_soul() -> Value {
     json!({ "edit_notice": true })
+}
+
+fn default_write_notice() -> Value {
+    json!({ "enabled": true })
+}
+
+fn default_recall_event_caps() -> Value {
+    json!({ "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 })
+}
+
+fn default_recall() -> Value {
+    json!({
+        "enabled": true,
+        "max_items": 2,
+        "category": "quick",
+        "event_caps": { "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 },
+        "sidecar_max_tokens": 48000,
+        "max_concurrent_wakes": 2,
+        "tool_budget": 8,
+        "query_expansion": false,
+    })
 }
 
 fn default_true() -> Value {
@@ -233,6 +254,62 @@ pub fn omo_memory_soul_schema() -> Node {
     strict_object(vec![defaulted("edit_notice", boolean(), default_true)])
 }
 
+pub fn omo_memory_write_notice_layer_schema() -> Node {
+    strict_object(vec![optional_field("enabled", boolean())])
+}
+
+pub fn omo_memory_write_notice_schema() -> Node {
+    strict_object(vec![defaulted("enabled", boolean(), default_true)])
+}
+
+pub fn omo_memory_recall_event_caps_layer_schema() -> Node {
+    strict_object(vec![
+        optional_field("tool_args", nonnegative_integer()),
+        optional_field("result_head", nonnegative_integer()),
+        optional_field("assistant", nonnegative_integer()),
+        optional_field("prompt", nonnegative_integer()),
+    ])
+}
+
+pub fn omo_memory_recall_event_caps_schema() -> Node {
+    strict_object(vec![
+        defaulted("tool_args", nonnegative_integer(), || json!(400)),
+        defaulted("result_head", nonnegative_integer(), || json!(600)),
+        defaulted("assistant", nonnegative_integer(), || json!(1500)),
+        defaulted("prompt", nonnegative_integer(), || json!(4000)),
+    ])
+}
+
+pub fn omo_memory_recall_layer_schema() -> Node {
+    strict_object(vec![
+        optional_field("enabled", boolean()),
+        optional_field("max_items", integer_between(1, 5)),
+        optional_field("category", non_empty_string()),
+        optional_field("event_caps", omo_memory_recall_event_caps_layer_schema()),
+        optional_field("sidecar_max_tokens", positive_integer()),
+        optional_field("max_concurrent_wakes", positive_integer()),
+        optional_field("tool_budget", positive_integer()),
+        optional_field("query_expansion", boolean()),
+    ])
+}
+
+pub fn omo_memory_recall_schema() -> Node {
+    strict_object(vec![
+        defaulted("enabled", boolean(), default_true),
+        defaulted("max_items", integer_between(1, 5), || json!(2)),
+        defaulted("category", non_empty_string(), default_quick),
+        defaulted(
+            "event_caps",
+            omo_memory_recall_event_caps_schema(),
+            default_recall_event_caps,
+        ),
+        defaulted("sidecar_max_tokens", positive_integer(), || json!(48000)),
+        defaulted("max_concurrent_wakes", positive_integer(), || json!(2)),
+        defaulted("tool_budget", positive_integer(), || json!(8)),
+        defaulted("query_expansion", boolean(), || json!(false)),
+    ])
+}
+
 pub fn omo_memory_agent_overrides_schema() -> Node {
     strict_object(vec![
         optional_field("enabled", boolean()),
@@ -243,8 +320,10 @@ pub fn omo_memory_agent_overrides_schema() -> Node {
         optional_field("dream", omo_memory_dream_layer_schema()),
         optional_field("people", omo_memory_people_layer_schema()),
         optional_field("soul", omo_memory_soul_layer_schema()),
+        optional_field("write_notice", omo_memory_write_notice_layer_schema()),
         optional_field("sync", omo_memory_sync_layer_schema()),
         optional_field("search", omo_memory_search_layer_schema()),
+        optional_field("recall", omo_memory_recall_layer_schema()),
         optional_field("compile_warn_tokens", positive_integer()),
     ])
 }
@@ -268,8 +347,14 @@ pub fn omo_memory_settings_schema() -> Node {
         defaulted("dream", omo_memory_dream_schema(), default_dream),
         defaulted("people", omo_memory_people_schema(), default_people),
         defaulted("soul", omo_memory_soul_schema(), default_soul),
+        defaulted(
+            "write_notice",
+            omo_memory_write_notice_schema(),
+            default_write_notice,
+        ),
         defaulted("sync", omo_memory_sync_schema(), default_sync),
         defaulted("search", omo_memory_search_schema(), default_search),
+        defaulted("recall", omo_memory_recall_schema(), default_recall),
         defaulted(
             "compile_warn_tokens",
             positive_integer(),
@@ -294,8 +379,10 @@ pub fn omo_memory_settings_layer_schema() -> Node {
         optional_field("dream", omo_memory_dream_layer_schema()),
         optional_field("people", omo_memory_people_layer_schema()),
         optional_field("soul", omo_memory_soul_layer_schema()),
+        optional_field("write_notice", omo_memory_write_notice_layer_schema()),
         optional_field("sync", omo_memory_sync_layer_schema()),
         optional_field("search", omo_memory_search_layer_schema()),
+        optional_field("recall", omo_memory_recall_layer_schema()),
         optional_field("compile_warn_tokens", positive_integer()),
         optional_field("agents", record(omo_memory_agent_overrides_schema())),
     ])

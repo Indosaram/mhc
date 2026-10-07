@@ -19,20 +19,9 @@ fn sanitize_omo_config_value(value: &Value) -> Value {
     }
 }
 
-fn merge_codegraph_excluded_roots(base: &[Value], override_values: &[Value]) -> Vec<Value> {
-    let mut merged: Vec<Value> = Vec::new();
-    for entry in base.iter().chain(override_values.iter()) {
-        if !merged.contains(entry) {
-            merged.push(entry.clone());
-        }
-    }
-    merged
-}
-
 pub fn merge_omo_config_records(
     base: &Map<String, Value>,
     override_records: &Map<String, Value>,
-    parent_key: Option<&str>,
 ) -> Map<String, Value> {
     let mut result = base.clone();
 
@@ -43,13 +32,8 @@ pub fn merge_omo_config_records(
         let safe_value = sanitize_omo_config_value(value);
         let base_value = result.get(key).cloned();
         let merged = match (&base_value, &safe_value) {
-            (Some(Value::Array(base_items)), Value::Array(override_items))
-                if key == "excluded_roots" && parent_key == Some("codegraph") =>
-            {
-                Value::Array(merge_codegraph_excluded_roots(base_items, override_items))
-            }
             (Some(Value::Object(base_map)), Value::Object(override_map)) => {
-                Value::Object(merge_omo_config_records(base_map, override_map, Some(key)))
+                Value::Object(merge_omo_config_records(base_map, override_map))
             }
             _ => safe_value,
         };

@@ -103,6 +103,38 @@ pub fn is_kimi_k3_model(model: &str) -> bool {
 }
 
 #[must_use]
+pub fn is_swe2_model(model: &str) -> bool {
+    static SWE2: LazyLock<Regex> = LazyLock::new(|| regex(r"^swe-2(?:[-.]|$)"));
+    SWE2.is_match(&extract_model_name(model).to_lowercase())
+}
+
+/// The SWE-2 lanes Devin's Cascade serves. It answers every other SWE-2 uid - the bare `swe-2`, and
+/// the `swe-2-low` / `swe-2-high-lite` strings that appear only inside the Devin CLI binary - with
+/// `permission_denied`, so a config naming one fails every request.
+pub const DEVIN_SWE2_SERVED_LANES: [&str; 3] = ["swe-2-medium", "swe-2-high", "swe-2-max"];
+
+/// An explicit `devin/` selector naming a SWE-2 id outside [`DEVIN_SWE2_SERVED_LANES`].
+#[must_use]
+pub fn is_unserved_devin_swe2_selector(selector: &str) -> bool {
+    let Some(separator) = selector.find('/') else {
+        return false;
+    };
+    if separator == 0 || !selector[..separator].eq_ignore_ascii_case("devin") {
+        return false;
+    }
+    // A reasoning suffix (`:high`, ` (high)`) rides on the selector, never on the uid Cascade sees.
+    let selector_model = selector[separator + 1..].trim().to_lowercase();
+    let model_id = selector_model
+        .split(|c: char| c == ':' || c == '(' || c.is_whitespace())
+        .next()
+        .unwrap_or("");
+    if !is_swe2_model(model_id) {
+        return false;
+    }
+    !DEVIN_SWE2_SERVED_LANES.contains(&model_id)
+}
+
+#[must_use]
 pub fn is_mini_max_model(model: &str) -> bool {
     extract_model_name(model).to_lowercase().contains("minimax")
 }

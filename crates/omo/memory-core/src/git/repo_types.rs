@@ -53,6 +53,20 @@ pub struct GitLogOptions {
     pub include_paths: bool,
 }
 
+/// One `git ls-tree -l` entry with its blob byte size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTreeSizedEntry {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// One `git ls-tree` blob entry with its object id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTreeBlobEntry {
+    pub path: String,
+    pub oid: String,
+}
+
 /// Hook installer callback type executed on repository setup and write boundaries.
 pub type GitHookInstaller = Arc<dyn Fn(&Path) -> Result<(), GitError> + Send + Sync>;
 

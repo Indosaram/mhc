@@ -53,7 +53,7 @@ fn object(value: Value) -> Map<String, Value> {
 }
 
 #[test]
-fn config_jsonc_with_both_omo_and_senpi_keeps_senpi_and_reports_the_overlap() {
+fn config_jsonc_with_both_omo_and_senpi_emits_native_and_reports_the_overlap() {
     // given
     let config = source(
         LegacyConfigSourceKind::ConfigJsonc,
@@ -63,9 +63,8 @@ fn config_jsonc_with_both_omo_and_senpi_keeps_senpi_and_reports_the_overlap() {
         &config,
         json!({
             "$schema": "https://legacy.example/config.schema.json",
-            "codegraph": { "excluded_roots": ["/generated"] },
             "[opencode]": { "nested": { "value": true } },
-            "[codex]": { "codegraph": { "daemon": false } },
+            "[codex]": { "disabled_hooks": ["startup-toast"] },
             "[omo]": { "agents": { "oracle": { "model": "legacy" } } },
             "[senpi]": { "agents": { "oracle": { "model": "current" } } },
             "_migrations": ["legacy-file-marker"],
@@ -84,10 +83,9 @@ fn config_jsonc_with_both_omo_and_senpi_keeps_senpi_and_reports_the_overlap() {
         Value::Object(result.document),
         json!({
             "$schema": SCHEMA_URL,
-            "codegraph": { "excluded_roots": ["/generated"] },
             "[opencode]": { "nested": { "value": true } },
-            "[codex]": { "codegraph": { "daemon": false } },
-            "[senpi]": { "agents": { "oracle": { "model": "current" } } },
+            "[codex]": { "disabled_hooks": ["startup-toast"] },
+            "[native]": { "agents": { "oracle": { "model": "current" } } },
             "legacy_migrations": {
                 "/home/alice/.maho/config.jsonc": ["legacy-file-marker", "legacy-top-level-marker"],
             },
@@ -95,7 +93,7 @@ fn config_jsonc_with_both_omo_and_senpi_keeps_senpi_and_reports_the_overlap() {
     );
     assert_eq!(
         result.diagnostics,
-        vec!["conflict: [senpi] legacy [omo] kept [senpi]".to_string()]
+        vec!["conflict: [native] legacy [omo] kept [native]".to_string()]
     );
 }
 
@@ -198,9 +196,8 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
             config_jsonc,
             json!({
                 "$schema": "https://legacy.example/config.schema.json",
-                "codegraph": { "excluded_roots": ["/generated", "/vendor"] },
                 "[opencode]": { "background_task": { "enabled": true } },
-                "[codex]": { "codegraph": { "daemon": false } },
+                "[codex]": { "disabled_hooks": ["startup-toast"] },
                 "[omo]": { "agents": { "oracle": { "model": "senpi-model" } } },
             }),
         )],
@@ -239,14 +236,13 @@ fn root_profile_config_jsonc_and_project_sources_produce_golden_documents_that_p
     actual.sort_keys();
     let mut expected = object(json!({
         "$schema": SCHEMA_URL,
-        "codegraph": { "excluded_roots": ["/generated", "/vendor"] },
         "[opencode]": {
             "agents": { "oracle": { "model": "old-model" } },
             "background_task": { "enabled": true },
             "categories": { "deep": { "model": "old-model" } },
         },
-        "[codex]": { "codegraph": { "daemon": false } },
-        "[senpi]": { "agents": { "oracle": { "model": "senpi-model" } } },
+        "[codex]": { "disabled_hooks": ["startup-toast"] },
+        "[native]": { "agents": { "oracle": { "model": "senpi-model" } } },
         "profiles": {
             "focused": { "[opencode]": { "categories": { "deep": { "model": "focused-model" } } } },
             "kimi": { "[opencode]": { "agents": { "oracle": { "model": "kimi-model" } } } },
@@ -356,4 +352,215 @@ fn legacy_config_keys_are_rewritten_to_their_current_omo_equivalents() {
         })
     );
     assert!(!result.document.contains_key("legacy_migrations"));
+}
+
+#[test]
+fn category_deep_split_renames_every_reference_and_reports_it() {
+    let document = json!({
+        "categories": { "deep": { "model": "openai/gpt-6-astra", "reasoning": "high" } },
+        "[senpi]": { "memory": { "reflection": { "category": "deep" } } },
+        "teams": { "r": { "members": [{ "name": "one", "kind": "category", "category": "deep", "prompt": "go" }] } },
+    });
+    let result = config_migration::transform_category_deep_split(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({
+            "categories": { "deep-low": { "model": "openai/gpt-6-astra", "reasoning": "high" } },
+            "[senpi]": { "memory": { "reflection": { "category": "deep-low" } } },
+            "teams": { "r": { "members": [{ "name": "one", "kind": "category", "category": "deep-low", "prompt": "go" }] } },
+        })
+    );
+    assert_eq!(
+        result.diagnostics,
+        vec![
+            "categories.deep renamed to deep-low".to_string(),
+            "[senpi].memory.reflection.category renamed to deep-low".to_string(),
+            "teams.r.members.0.category renamed to deep-low".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn category_deep_split_keeps_the_canonical_entry_and_reports_the_drop() {
+    let document = json!({ "categories": { "deep": { "model": "legacy/model" }, "deep-low": { "model": "canonical/model" } } });
+    let result = config_migration::transform_category_deep_split(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({ "categories": { "deep-low": { "model": "canonical/model" } } })
+    );
+    assert_eq!(
+        result.diagnostics,
+        vec!["categories.deep removed: deep-low is already configured".to_string()]
+    );
+}
+
+#[test]
+fn category_deep_split_leaves_a_clean_document_untouched() {
+    let document = json!({ "categories": { "deep-high": { "model": "openai/gpt-6-astra" } }, "task": { "default_concurrency": 4 } });
+    let result = config_migration::transform_category_deep_split(&document);
+    assert_eq!(Value::Object(result.document), document);
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn category_deep_split_migration_id_stays_the_shipped_value() {
+    assert_eq!(
+        config_migration::CATEGORY_DEEP_SPLIT_MIGRATION_ID,
+        "2026-09-category-deep-split"
+    );
+}
+
+#[test]
+fn harness_native_rename_renames_the_legacy_block_and_keeps_every_value() {
+    let document = json!({
+        "categories": { "quick": { "model": "openai/gpt-6-astra" } },
+        "[senpi]": {
+            "categories": { "quick": { "reasoning": "high" } },
+            "git_master": { "commit_footer": true },
+            "telemetry": { "enabled": false },
+        },
+        "profiles": { "opus": { "[senpi]": { "model_profile": "opus" } } },
+    });
+    let result = config_migration::transform_harness_native_rename(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({
+            "categories": { "quick": { "model": "openai/gpt-6-astra" } },
+            "[native]": {
+                "categories": { "quick": { "reasoning": "high" } },
+                "git_master": { "commit_footer": true },
+                "telemetry": { "enabled": false },
+            },
+            "profiles": { "opus": { "[native]": { "model_profile": "opus" } } },
+        })
+    );
+    assert_eq!(
+        result.diagnostics,
+        vec![
+            "[senpi] renamed to [native]".to_string(),
+            "profiles.opus.[senpi] renamed to [native]".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn harness_native_rename_keeps_the_canonical_block_and_reports_the_drop() {
+    let document = json!({
+        "[native]": { "model_profile": "canonical" },
+        "[senpi]": { "model_profile": "legacy" },
+    });
+    let result = config_migration::transform_harness_native_rename(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({ "[native]": { "model_profile": "canonical" } })
+    );
+    assert_eq!(
+        result.diagnostics,
+        vec!["[senpi] removed: [native] is already configured".to_string()]
+    );
+}
+
+#[test]
+fn harness_native_rename_leaves_a_clean_document_untouched() {
+    let document = json!({
+        "categories": { "deep-low": { "model": "openai/gpt-6-astra" } },
+        "[native]": { "telemetry": { "enabled": false } },
+        "[codex]": { "model_profile": "codex" },
+    });
+    let result = config_migration::transform_harness_native_rename(&document);
+    assert_eq!(Value::Object(result.document), document);
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn harness_native_rename_migration_id_stays_a_stable_dated_value() {
+    assert_eq!(
+        config_migration::HARNESS_NATIVE_RENAME_MIGRATION_ID,
+        "2026-09-harness-native-rename"
+    );
+}
+
+#[test]
+fn subscription_provider_rename_canonicalizes_every_legacy_id() {
+    let input = json!({
+        "categories": {
+            "unspecified-low": { "models": ["openai-codex/gpt-5.6-luna-fast", "anthropic/"] },
+            "my-custom-lane": { "models": ["claude-sdk-oauth/", "openai/gpt-6-astra"] },
+        },
+        "default_model": "claude-sdk-oauth/",
+        "disabled_providers": ["openai-codex"],
+        "retry": { "fallback_chains": { "claude-sdk-oauth/": ["claude-sdk-oauth/", "anthropic/"] } },
+        "some_unrelated_key": { "keep": "me", "nested": [1, 2, { "untouched": true }] },
+    });
+    let expected = json!({
+        "categories": {
+            "unspecified-low": { "models": ["chatgpt-subscription/gpt-5.6-luna-fast", "anthropic/"] },
+            "my-custom-lane": { "models": ["anthropic-subscription/", "openai/gpt-6-astra"] },
+        },
+        "default_model": "anthropic-subscription/",
+        "disabled_providers": ["chatgpt-subscription"],
+        "retry": { "fallback_chains": { "anthropic-subscription/": ["anthropic-subscription/", "anthropic/"] } },
+        "some_unrelated_key": { "keep": "me", "nested": [1, 2, { "untouched": true }] },
+    });
+    let result = config_migration::transform_subscription_provider_rename(&input);
+    assert_eq!(Value::Object(result.document), expected);
+}
+
+#[test]
+fn subscription_provider_rename_leaves_the_metered_api_key_lanes_alone() {
+    let document = json!({
+        "a": "openai/gpt-6-astra",
+        "b": "anthropic/",
+        "c": { "openai": { "x": 1 }, "anthropic": { "y": 2 } },
+    });
+    let result = config_migration::transform_subscription_provider_rename(&document);
+    assert_eq!(Value::Object(result.document), document);
+}
+
+#[test]
+fn subscription_provider_rename_carries_unrelated_keys_through_verbatim() {
+    let untouched = json!({ "deep": { "nested": [1, "two", { "three": true }] }, "keep": "me" });
+    let document = json!({ "deep": { "nested": [1, "two", { "three": true }] }, "keep": "me", "model": "openai-codex/gpt-6-astra" });
+    let result = config_migration::transform_subscription_provider_rename(&document);
+    assert_eq!(result.document["deep"], untouched["deep"]);
+    assert_eq!(result.document["keep"], json!("me"));
+}
+
+#[test]
+fn subscription_provider_rename_gates_on_the_legacy_ids() {
+    let canonical = json!({ "default_model": "anthropic-subscription/" });
+    let legacy = json!({ "default_model": "claude-sdk-oauth/" });
+    assert!(!config_migration::has_legacy_subscription_provider_ids(&canonical));
+    assert!(config_migration::has_legacy_subscription_provider_ids(&legacy));
+}
+
+#[test]
+fn subscription_provider_rename_renames_a_legacy_id_used_as_a_key() {
+    let document = json!({ "claude-sdk-oauth": { "tokenInjection": "config-dir" } });
+    let result = config_migration::transform_subscription_provider_rename(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({ "anthropic-subscription": { "tokenInjection": "config-dir" } })
+    );
+}
+
+#[test]
+fn subscription_provider_rename_diagnostics_name_the_path_and_both_ids() {
+    let document = json!({ "default_model": "openai-codex/gpt-6-astra" });
+    let result = config_migration::transform_subscription_provider_rename(&document);
+    assert_eq!(
+        result.diagnostics,
+        vec![
+            "$.default_model: openai-codex/gpt-6-astra renamed to chatgpt-subscription/gpt-6-astra"
+                .to_string()
+        ]
+    );
+}
+
+#[test]
+fn subscription_provider_rename_migration_id_stays_the_recorded_value() {
+    assert_eq!(
+        config_migration::SUBSCRIPTION_PROVIDER_RENAME_MIGRATION_ID,
+        "2026-09-subscription-provider-rename"
+    );
 }

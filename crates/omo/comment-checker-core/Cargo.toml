@@ -19,7 +19,11 @@ url.workspace = true
 [dev-dependencies]
 pretty_assertions.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "rt", "test-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "test-util", "time"] }
+
+# Real-subprocess integration (`tests/runner_process.rs`) sends SIGTERM to the child it spawns.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "=0.28.0", features = ["signal", "process"] }
 
 # Imported from COMP 93b78ac: this crate does not opt into `[lints] workspace = true`.
 # The table mirrors the workspace lints; "allow" entries are the lints it trips (todo 2 allow list).

@@ -16,6 +16,7 @@ pub mod loader;
 pub mod migration;
 pub mod models;
 pub mod schema;
+pub mod schema_json;
 pub mod writer;
 
 pub use internal::{is_plain_object, is_unsafe_object_key, parse_jsonc_safe, to_posix_path};
@@ -28,4 +29,12 @@ pub use loader::*;
 pub use migration::*;
 pub use models::*;
 pub use schema::*;
+// Explicit cross-owner re-export: the git-master component imports this from the crate root, so it
+// must not depend on the `schema::*` glob staying transitive.
+pub use schema::git_master::{
+    GIT_MASTER_HARNESS_SUPPORT, git_master_setting_harness_support,
+    omo_git_master_settings_layer_schema, omo_git_master_settings_schema,
+    resolve_omo_git_master_settings,
+};
+pub use schema_json::*;
 pub use writer::*;

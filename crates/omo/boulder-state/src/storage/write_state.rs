@@ -10,8 +10,8 @@ use crate::error::BoulderStateError;
 use crate::js::{Js, JsObj};
 use crate::records::BoulderState;
 use crate::shared::{
-    find_work, get_elapsed_ms, normalize_session_id, project_work_to_mirror, spread_array,
-    spread_or_empty, works_by_id,
+    find_work, get_elapsed_ms, normalize_session_id, project_work_to_mirror, restore_demoted_work,
+    spread_array, spread_or_empty, works_by_id,
 };
 use crate::storage::path::get_boulder_file_path;
 use crate::storage::plan_progress::get_plan_name;
@@ -217,15 +217,16 @@ pub fn select_active_work(
         return Ok(None);
     };
     let works = work_docs(&state.doc);
-    let Some(next_work) = find_work(&works, &Js::string(work_id)).cloned() else {
+    let Some(selected_work) = find_work(&works, &Js::string(work_id)).cloned() else {
         return Ok(None);
     };
+    let next_work = restore_demoted_work(&selected_work);
+    let mut all_works = works_by_id(&works);
+    all_works.set(work_id, Js::Object(next_work.clone()));
     let mut next_state = state.doc;
     next_state.set("schema_version", Js::int(2));
     next_state.set("active_work_id", Js::string(work_id));
-    if next_state.coalesce("works").is_none() {
-        next_state.set("works", Js::Object(works_by_id(&works)));
-    }
+    next_state.set("works", Js::Object(all_works));
     project_work_to_mirror(&mut next_state, &next_work);
     let next_state = BoulderState::from_doc(next_state);
     write_boulder_state(directory, &next_state)?;

@@ -72,8 +72,6 @@ fn model_ref_object_rejects_out_of_range_tuning_and_unknown_keys() {
 
 #[test]
 fn telemetry_harness_support_names_senpi_for_the_enabled_setting() {
-    let supported = omo_config_core::codegraph_setting_harness_support("codegraph.enabled");
-    assert!(supported.is_some());
     assert_eq!(
         omo_config_core::TELEMETRY_HARNESS_SUPPORT[0].0,
         "telemetry.enabled"
@@ -311,7 +309,7 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
                 "disable": false,
             }
         },
-        "codegraph": { "daemon": true },
+        "git_master": { "include_co_authored_by": false },
         "task": {},
         "teams": {
             "builders": {
@@ -321,7 +319,7 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
         },
     });
     let value = parsed(&omo_config_core::omo_config_schema(), config);
-    assert_eq!(value["codegraph"]["daemon"], json!(true));
+    assert_eq!(value["git_master"]["include_co_authored_by"], json!(false));
     assert_eq!(value["task"]["default_execution_mode"], json!("in-process"));
     assert_eq!(value["task"]["default_concurrency"], json!(5));
     assert_eq!(value["task"]["residency_max_children"], json!(8));
@@ -334,15 +332,6 @@ fn config_schema_normalizes_defaults_and_deprecated_category_keys() {
 }
 
 #[test]
-fn config_schema_defaults_the_empty_codegraph_block_on() {
-    let value = parsed(
-        &omo_config_core::omo_config_schema(),
-        json!({ "codegraph": {} }),
-    );
-    assert_eq!(value["codegraph"]["daemon"], json!(true));
-}
-
-#[test]
 fn config_schema_rejects_an_unknown_root_key() {
     assert!(
         safe_parse(
@@ -351,15 +340,6 @@ fn config_schema_rejects_an_unknown_root_key() {
         )
         .is_err()
     );
-}
-
-#[test]
-fn config_schema_reports_the_bad_codegraph_field_path() {
-    let reported = issues(
-        &omo_config_core::omo_config_schema(),
-        json!({ "codegraph": { "daemon": "yes" } }),
-    );
-    assert!(issue_paths(&reported).contains(&"codegraph.daemon".to_string()));
 }
 
 #[test]
@@ -377,14 +357,14 @@ fn unified_config_keeps_every_supported_section() {
         "models": { "sol": { "model": "openai/gpt-5.6-sol", "variant": "high", "reasoningEffort": "xhigh" } },
         "[opencode]": { "background_task": { "enabled": true } },
         "[senpi]": { "agents": { "oracle": { "model": "sol" } } },
-        "[codex]": { "codegraph": { "daemon": false } },
+        "[codex]": { "telemetry": { "enabled": false } },
         "profiles": {
             "focused": {
                 "categories": { "deep": { "model": "sol" } },
                 "models": { "sol": { "model": "openai/gpt-5.6-sol", "reasoningEffort": "high" } },
                 "[opencode]": { "background_task": { "enabled": false } },
                 "[senpi]": { "task": { "default_concurrency": 2 } },
-                "[codex]": { "codegraph": { "enabled": false } },
+                "[codex]": { "telemetry": { "enabled": true } },
             }
         },
         "_migrations": ["2026-07-opencode-config-unification"],
@@ -400,10 +380,10 @@ fn unified_config_keeps_every_supported_section() {
         json!({ "background_task": { "enabled": true } })
     );
     assert_eq!(value["[senpi]"]["agents"]["oracle"]["model"], json!("sol"));
-    assert_eq!(value["[codex]"]["codegraph"]["daemon"], json!(false));
+    assert_eq!(value["[codex]"]["telemetry"]["enabled"], json!(false));
     assert_eq!(
-        value["profiles"]["focused"]["[codex]"]["codegraph"]["enabled"],
-        json!(false)
+        value["profiles"]["focused"]["[codex]"]["telemetry"]["enabled"],
+        json!(true)
     );
     assert_eq!(
         value["_migrations"],
@@ -474,38 +454,13 @@ fn unified_config_rejects_an_array_opencode_block_at_its_path() {
 }
 
 #[test]
-fn unified_config_parses_the_legacy_codegraph_setting_set_with_legacy_defaults() {
-    let config = json!({
-        "codegraph": {
-            "enabled": false,
-            "auto_provision": false,
-            "daemon": false,
-            "telemetry": true,
-            "install_dir": "/tmp/omo-codegraph",
-            "watch_debounce_ms": 250,
-            "excluded_roots": ["/tmp/generated", "/tmp/vendor"],
-        }
-    });
-    let explicit = parsed(&omo_config_core::omo_config_schema(), config.clone());
-    let defaults = parsed(
-        &omo_config_core::omo_config_schema(),
-        json!({ "codegraph": {} }),
-    );
-    assert_eq!(explicit["codegraph"], config["codegraph"]);
-    assert_eq!(
-        defaults["codegraph"],
-        json!({ "enabled": true, "auto_provision": true, "daemon": true, "telemetry": false })
-    );
-}
-
-#[test]
 fn unified_config_keeps_the_empty_codex_block_default_free() {
     let value = parsed(
         &omo_config_core::omo_config_schema(),
-        json!({ "codegraph": { "telemetry": true }, "[codex]": { "codegraph": {} } }),
+        json!({ "telemetry": { "enabled": true }, "[codex]": { "telemetry": {} } }),
     );
-    assert_eq!(value["codegraph"]["telemetry"], json!(true));
-    assert!(value["[codex]"]["codegraph"].get("telemetry").is_none());
+    assert_eq!(value["telemetry"]["enabled"], json!(true));
+    assert!(value["[codex]"]["telemetry"].get("enabled").is_none());
 }
 
 #[test]
@@ -697,8 +652,19 @@ fn full_memory_defaults() -> Value {
         },
         "people": { "enabled": true, "max_entries": 40, "max_entry_chars": 200 },
         "soul": { "edit_notice": true },
+        "write_notice": { "enabled": true },
         "sync": { "enabled": true },
         "search": { "enabled": true },
+        "recall": {
+            "enabled": true,
+            "max_items": 2,
+            "category": "quick",
+            "event_caps": { "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 },
+            "sidecar_max_tokens": 48000,
+            "max_concurrent_wakes": 2,
+            "tool_budget": 8,
+            "query_expansion": false,
+        },
         "compile_warn_tokens": 30000,
         "agents": {},
     })
@@ -736,8 +702,19 @@ fn memory_settings_preserve_a_fully_specified_block() {
         },
         "people": { "enabled": false, "max_entries": 20, "max_entry_chars": 100 },
         "soul": { "edit_notice": false },
+        "write_notice": { "enabled": false },
         "sync": { "remote": "file:///tmp/memory-mirror.git", "enabled": true },
         "search": { "enabled": false },
+        "recall": {
+            "enabled": false,
+            "max_items": 4,
+            "category": "deep",
+            "event_caps": { "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 },
+            "sidecar_max_tokens": 48000,
+            "max_concurrent_wakes": 2,
+            "tool_budget": 8,
+            "query_expansion": false,
+        },
         "compile_warn_tokens": 50000,
         "agents": {
             "backend-lead": { "enabled": true, "reflection": { "trigger": { "step_count": 10 }, "category": "quick" } }
@@ -1210,4 +1187,986 @@ fn team_spec_rejects_a_member_name_outside_the_slug_alphabet() {
         &json!({ "members": [{ "name": "One Two", "kind": "category", "category": "quick", "prompt": "go" }] })
     )
     .is_err());
+}
+
+fn load_user_config(
+    home: &std::path::Path,
+    config: &str,
+    harness: Option<&str>,
+) -> omo_config_core::LoadOmoConfigResult {
+    std::fs::create_dir_all(home.join(".maho")).expect("config dir");
+    std::fs::create_dir_all(home.join("project")).expect("project dir");
+    std::fs::write(home.join(".maho/omo.jsonc"), config).expect("write config");
+    let home_dir = home.to_string_lossy().into_owned();
+    omo_config_core::load_omo_config(&omo_config_core::LoadOmoConfigOptions {
+        cwd: Some(home.join("project").to_string_lossy().into_owned()),
+        env: Some(std::collections::BTreeMap::from([(
+            "HOME".to_string(),
+            home_dir,
+        )])),
+        harness: harness.map(str::to_string),
+        platform: Some("linux".to_string()),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn computer_settings_round_trip_every_key() {
+    let block = json!({
+        "enabled": true,
+        "display": "all",
+        "max_width": 1920,
+        "max_height": 1080,
+        "screenshot_max_bytes": 1_000_000,
+        "stop_hotkey": "ctrl+alt+shift+escape",
+        "allow_host_relay_only_stop": false,
+        "macos_canary": "off",
+        "audit_log": { "enabled": false },
+        "screenshot_gc": { "enabled": true, "stale_ms": 0, "scan_interval_ms": 60_000 },
+        "engine_path": "/opt/engine",
+        "cua_adapter": true,
+    });
+    assert_eq!(
+        parsed(
+            &omo_config_core::omo_computer_settings_schema(),
+            block.clone()
+        ),
+        block
+    );
+}
+
+#[test]
+fn computer_settings_reject_an_unknown_or_camel_case_key() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_computer_settings_schema(),
+            &json!({ "cuaAdapter": true })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn computer_root_config_keeps_the_block() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "computer": { "enabled": false } }),
+    );
+    assert_eq!(value["computer"], json!({ "enabled": false }));
+}
+
+#[test]
+fn computer_harness_support_is_native_only() {
+    for setting_path in [
+        "computer.enabled",
+        "computer.display",
+        "computer.max_width",
+        "computer.max_height",
+        "computer.screenshot_max_bytes",
+        "computer.stop_hotkey",
+        "computer.allow_host_relay_only_stop",
+        "computer.macos_canary",
+        "computer.audit_log",
+        "computer.screenshot_gc",
+        "computer.engine_path",
+        "computer.cua_adapter",
+    ] {
+        let supported = omo_config_core::computer_setting_harness_support(setting_path);
+        assert_eq!(
+            supported.map(<[&str]>::to_vec),
+            Some(vec!["native"]),
+            "{setting_path}"
+        );
+    }
+}
+
+#[test]
+fn gateway_key_is_accepted_by_the_root_layer_and_native_harness_schemas() {
+    let section = json!({
+        "scopes": [{ "id": "qa", "surfaces": [{ "platform": "slack", "account_id": "T000TEST", "options": { "token_kind": "app" } }] }],
+        "stt": { "provider": "p" },
+    });
+    let document = json!({ "gateway": section, "[native]": { "gateway": section } });
+    let root = parsed(&omo_config_core::omo_config_schema(), document.clone());
+    let layer = parsed(&omo_config_core::omo_config_layer_schema(), document.clone());
+    assert_eq!(root["gateway"], section);
+    assert_eq!(layer["gateway"], section);
+    assert_eq!(root["[native]"]["gateway"], section);
+}
+
+#[test]
+fn gateway_non_object_is_rejected_at_its_path() {
+    let reported = issues(
+        &omo_config_core::omo_config_layer_schema(),
+        json!({ "gateway": ["not", "an", "object"] }),
+    );
+    assert_eq!(issue_paths(&reported), vec!["gateway".to_string()]);
+}
+
+#[test]
+fn gateway_user_config_loads_without_diagnostics() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let section = json!({ "scopes": [{ "id": "qa" }], "stt": { "provider": "p" } });
+    let result = load_user_config(
+        home.path(),
+        &format!(
+            "// user config\n{}",
+            json!({ "gateway": section, "disabled_skills": ["kept"] })
+        ),
+        None,
+    );
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(result.config["gateway"], section);
+    assert_eq!(result.config["disabled_skills"], json!(["kept"]));
+}
+
+#[test]
+fn config_schema_defaults_an_empty_format_on_mutation_block() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "formatOnMutation": {} }),
+    );
+    assert_eq!(
+        value["formatOnMutation"],
+        json!({ "mode": "best-effort", "maxFileBytes": 1_048_576, "timeoutMs": 3_000 })
+    );
+}
+
+#[test]
+fn config_schema_keeps_format_on_mutation_overrides_and_languages() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "formatOnMutation": { "mode": "required", "languages": { "python": false }, "timeoutMs": 1000 } }),
+    );
+    assert_eq!(
+        value["formatOnMutation"],
+        json!({ "mode": "required", "languages": { "python": false }, "maxFileBytes": 1_048_576, "timeoutMs": 1000 })
+    );
+}
+
+#[test]
+fn config_schema_rejects_a_format_on_mutation_mode_outside_the_enum() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_config_schema(),
+            &json!({ "formatOnMutation": { "mode": "sometimes" } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn git_master_empty_section_defaults_attribution_off() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "git_master": {} }),
+    );
+    assert_eq!(
+        value["git_master"],
+        json!({ "commit_footer": false, "include_co_authored_by": false })
+    );
+}
+
+#[test]
+fn git_master_preserves_a_custom_footer_and_disabled_co_author() {
+    let value = parsed(
+        &omo_config_core::omo_config_schema(),
+        json!({ "git_master": { "commit_footer": "Shipped with omo", "include_co_authored_by": false } }),
+    );
+    assert_eq!(
+        value["git_master"]["commit_footer"],
+        json!("Shipped with omo")
+    );
+    assert_eq!(value["git_master"]["include_co_authored_by"], json!(false));
+}
+
+#[test]
+fn git_master_accepts_harness_and_profile_layer_overrides() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_config_schema(),
+            &json!({ "[senpi]": { "git_master": { "include_co_authored_by": false } } })
+        )
+        .is_ok()
+    );
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_config_schema(),
+            &json!({ "profiles": { "work": { "git_master": { "commit_footer": false } } } })
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn git_master_layer_injects_no_defaults() {
+    let value = parsed(
+        &omo_config_core::omo_config_layer_schema(),
+        json!({ "git_master": {} }),
+    );
+    assert_eq!(value["git_master"], json!({}));
+}
+
+#[test]
+fn git_master_rejects_an_unknown_key() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_config_schema(),
+            &json!({ "git_master": { "co_author": "someone" } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn git_master_resolver_always_returns_both_keys() {
+    let resolved = omo_config_core::resolve_omo_git_master_settings(&json!({}));
+    assert_eq!(
+        resolved,
+        json!({ "commit_footer": false, "include_co_authored_by": false })
+    );
+    let explicit = omo_config_core::resolve_omo_git_master_settings(
+        &json!({ "git_master": { "commit_footer": true } }),
+    );
+    assert_eq!(
+        explicit,
+        json!({ "commit_footer": true, "include_co_authored_by": false })
+    );
+    let custom = omo_config_core::resolve_omo_git_master_settings(
+        &json!({ "git_master": { "commit_footer": "Shipped with omo", "include_co_authored_by": true } }),
+    );
+    assert_eq!(
+        custom,
+        json!({ "commit_footer": "Shipped with omo", "include_co_authored_by": true })
+    );
+}
+
+#[test]
+fn git_master_harness_support_is_native_only() {
+    for setting_path in ["git_master.commit_footer", "git_master.include_co_authored_by"] {
+        let supported = omo_config_core::git_master_setting_harness_support(setting_path);
+        assert_eq!(
+            supported.map(<[&str]>::to_vec),
+            Some(vec!["native"]),
+            "{setting_path}"
+        );
+    }
+}
+
+#[test]
+fn model_profile_accepts_a_display_name_only_entry() {
+    let value = parsed(
+        &omo_config_core::omo_model_profile_schema(),
+        json!({ "display_name": "Capable" }),
+    );
+    assert_eq!(value, json!({ "display_name": "Capable" }));
+}
+
+#[test]
+fn model_profile_keeps_catalog_names_and_tuned_entries() {
+    let entry = json!({ "display_name": "Deep work", "models": ["astra", { "model": "openai/gpt-5.6-sol", "reasoning": "medium" }] });
+    assert_eq!(
+        parsed(&omo_config_core::omo_model_profile_schema(), entry.clone()),
+        entry
+    );
+}
+
+#[test]
+fn model_profile_normalizes_a_legacy_variant_on_a_chain_entry() {
+    let value = parsed(
+        &omo_config_core::omo_model_profile_schema(),
+        json!({ "models": [{ "model": "openai/gpt-6-astra", "variant": "high" }] }),
+    );
+    assert_eq!(
+        value["models"],
+        json!([{ "model": "openai/gpt-6-astra", "reasoning": "high" }])
+    );
+}
+
+#[test]
+fn model_profile_rejects_an_unknown_sibling_key() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_model_profile_schema(),
+            &json!({ "display_name": "Capable", "model": "anthropic/" })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn model_profiles_record_parses_every_named_profile() {
+    let value = parsed(
+        &omo_config_core::omo_model_profiles_schema(),
+        json!({ "capable": { "display_name": "Capable", "models": ["anthropic/"] }, "simple-work": { "models": ["openai/gpt-5.6-luna-fast"] } }),
+    );
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, vec!["capable", "simple-work"]);
+}
+
+#[test]
+fn model_profile_layer_accepts_partial_entries_and_rejects_unknown_keys() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_model_profile_layer_schema(),
+            &json!({ "display_name": "Capable" })
+        )
+        .is_ok()
+    );
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_model_profiles_layer_schema(),
+            &json!({ "capable": { "models": [], "reasoning": "high" } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn config_schema_accepts_model_profiles_and_a_selected_profile() {
+    let block = json!({
+        "model_profiles": { "capable": { "display_name": "Capable", "family": "daily", "tier": "normal", "models": ["anthropic/", { "model": "openai/gpt-6-astra", "reasoning": "high" }] } },
+        "model_profile": "capable",
+    });
+    let value = parsed(&omo_config_core::omo_config_schema(), block.clone());
+    assert_eq!(value["model_profile"], json!("capable"));
+    assert_eq!(
+        value["model_profiles"]["capable"]["display_name"],
+        json!("Capable")
+    );
+    assert!(safe_parse(&omo_config_core::omo_typed_harness_config_schema(), &block).is_ok());
+    assert!(safe_parse(&omo_config_core::omo_config_layer_schema(), &block).is_ok());
+    assert!(safe_parse(&omo_config_core::omo_config_profile_schema(), &block).is_ok());
+}
+
+#[test]
+fn config_schema_rejects_a_non_string_model_profile_at_its_path() {
+    let reported = issues(
+        &omo_config_core::omo_config_schema(),
+        json!({ "model_profile": 123 }),
+    );
+    assert!(issue_paths(&reported).contains(&"model_profile".to_string()));
+}
+
+#[test]
+fn config_schema_reports_a_bad_git_master_field_path() {
+    let reported = issues(
+        &omo_config_core::omo_config_schema(),
+        json!({ "git_master": { "include_co_authored_by": "yes" } }),
+    );
+    assert!(issue_paths(&reported).contains(&"git_master.include_co_authored_by".to_string()));
+}
+
+#[test]
+fn model_profile_display_name_only_override_survives_a_user_config_load() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{"categories":{"quick":{"model":"user-model"}},"model_profiles":{"capable":{"display_name":"Fast and capable"}},"model_profile":"capable"}"#,
+        Some("senpi"),
+    );
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(
+        result.config["categories"]["quick"]["model"],
+        json!("user-model")
+    );
+    assert_eq!(
+        result.config["model_profiles"]["capable"],
+        json!({ "display_name": "Fast and capable" })
+    );
+    assert_eq!(result.config["model_profile"], json!("capable"));
+}
+
+#[test]
+fn model_profile_inside_a_native_block_selects_the_profile() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{"model_profile":"simple-work","[native]":{"model_profile":"deep-work","model_profiles":{"deep-work":{"models":["openai/gpt-6-astra"]}}}}"#,
+        Some("senpi"),
+    );
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(result.config["model_profile"], json!("deep-work"));
+    assert_eq!(
+        result.config["model_profiles"]["deep-work"]["models"],
+        json!(["openai/gpt-6-astra"])
+    );
+}
+
+#[test]
+fn canonical_category_name_renames_deep_to_deep_low() {
+    assert_eq!(omo_config_core::canonical_category_name("deep"), "deep-low");
+}
+
+#[test]
+fn canonical_category_name_keeps_live_names() {
+    for name in [
+        "deep-low",
+        "deep-high",
+        "quick",
+        "ultrabrain",
+        "my-custom-lane",
+    ] {
+        assert_eq!(omo_config_core::canonical_category_name(name), name);
+    }
+}
+
+#[test]
+fn canonicalize_legacy_category_names_renames_every_layer_and_reports() {
+    let document = json!({
+        "categories": { "deep": { "model": "a/b" }, "quick": { "model": "c/d" } },
+        "[senpi]": { "categories": { "deep": { "reasoning": "high" } } },
+        "[opencode]": { "categories": { "deep": { "model": "e/f" } } },
+        "[codex]": { "categories": { "deep": { "model": "g/h" } } },
+        "profiles": {
+            "kimi": {
+                "categories": { "deep": { "model": "i/j" } },
+                "[senpi]": { "categories": { "deep": { "model": "k/l" } } },
+            },
+        },
+    });
+    let result = omo_config_core::canonicalize_legacy_category_names(&document);
+    assert_eq!(
+        Value::Object(result.document.clone()),
+        json!({
+            "categories": { "deep-low": { "model": "a/b" }, "quick": { "model": "c/d" } },
+            "[senpi]": { "categories": { "deep-low": { "reasoning": "high" } } },
+            "[opencode]": { "categories": { "deep-low": { "model": "e/f" } } },
+            "[codex]": { "categories": { "deep-low": { "model": "g/h" } } },
+            "profiles": {
+                "kimi": {
+                    "categories": { "deep-low": { "model": "i/j" } },
+                    "[senpi]": { "categories": { "deep-low": { "model": "k/l" } } },
+                },
+            },
+        })
+    );
+    let paths: Vec<&str> = result
+        .renames
+        .iter()
+        .map(|rename| rename.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "categories.deep",
+            "[senpi].categories.deep",
+            "[opencode].categories.deep",
+            "[codex].categories.deep",
+            "profiles.kimi.categories.deep",
+            "profiles.kimi.[senpi].categories.deep",
+        ]
+    );
+}
+
+#[test]
+fn canonicalize_legacy_category_names_renames_a_category_value() {
+    let document = json!({
+        "teams": {
+            "reviewers": {
+                "leadAgentId": "lead",
+                "members": [
+                    { "name": "one", "kind": "category", "category": "deep", "prompt": "go" },
+                    { "name": "two", "kind": "category", "category": "quick", "prompt": "go" },
+                ],
+            },
+        },
+        "[senpi]": { "memory": { "reflection": { "category": "deep" } } },
+    });
+    let result = omo_config_core::canonicalize_legacy_category_names(&document);
+    assert_eq!(
+        Value::Object(result.document.clone()),
+        json!({
+            "teams": {
+                "reviewers": {
+                    "leadAgentId": "lead",
+                    "members": [
+                        { "name": "one", "kind": "category", "category": "deep-low", "prompt": "go" },
+                        { "name": "two", "kind": "category", "category": "quick", "prompt": "go" },
+                    ],
+                },
+            },
+            "[senpi]": { "memory": { "reflection": { "category": "deep-low" } } },
+        })
+    );
+    let paths: Vec<&str> = result
+        .renames
+        .iter()
+        .map(|rename| rename.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "teams.reviewers.members.0.category",
+            "[senpi].memory.reflection.category",
+        ]
+    );
+}
+
+#[test]
+fn canonicalize_legacy_category_names_keeps_the_canonical_entry() {
+    let document = json!({ "categories": { "deep": { "model": "legacy/model" }, "deep-low": { "model": "canonical/model" } } });
+    let result = omo_config_core::canonicalize_legacy_category_names(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({ "categories": { "deep-low": { "model": "canonical/model" } } })
+    );
+    assert_eq!(result.renames.len(), 1);
+    assert!(result.renames[0].dropped);
+    assert_eq!(result.renames[0].path, "categories.deep");
+}
+
+#[test]
+fn canonicalize_legacy_category_names_leaves_a_clean_document_untouched() {
+    let document = json!({
+        "categories": { "deep-low": { "model": "a/b" }, "deep-high": { "model": "c/d" } },
+        "teams": { "r": { "members": [{ "name": "one", "kind": "category", "category": "deep-high", "prompt": "go" }] } },
+    });
+    let result = omo_config_core::canonicalize_legacy_category_names(&document);
+    assert_eq!(Value::Object(result.document), document);
+    assert!(result.renames.is_empty());
+    assert!(!omo_config_core::has_legacy_category_names(&document));
+}
+
+#[test]
+fn canonicalize_legacy_category_names_never_rewrites_free_text() {
+    let document = json!({ "categories": { "deep-low": { "prompt_append": "route deep work here; deep means deep" } } });
+    let result = omo_config_core::canonicalize_legacy_category_names(&document);
+    assert_eq!(Value::Object(result.document), document);
+    assert!(result.renames.is_empty());
+}
+
+#[test]
+fn canonical_harness_name_renames_senpi_to_native() {
+    assert_eq!(omo_config_core::canonical_harness_name("senpi"), "native");
+}
+
+#[test]
+fn canonical_harness_name_keeps_live_ids() {
+    for id in ["native", "opencode", "codex", "omo"] {
+        assert_eq!(omo_config_core::canonical_harness_name(id), id);
+    }
+}
+
+#[test]
+fn canonicalize_legacy_harness_blocks_renames_root_and_profile() {
+    let document = json!({
+        "categories": { "quick": { "model": "a/b" } },
+        "[senpi]": { "categories": { "quick": { "reasoning": "high" } } },
+        "[opencode]": { "categories": { "quick": { "model": "e/f" } } },
+        "profiles": {
+            "kimi": {
+                "[senpi]": { "model_profile": "kimi" },
+            },
+        },
+    });
+    let result = omo_config_core::canonicalize_legacy_harness_blocks(&document);
+    assert_eq!(
+        Value::Object(result.document.clone()),
+        json!({
+            "categories": { "quick": { "model": "a/b" } },
+            "[native]": { "categories": { "quick": { "reasoning": "high" } } },
+            "[opencode]": { "categories": { "quick": { "model": "e/f" } } },
+            "profiles": {
+                "kimi": {
+                    "[native]": { "model_profile": "kimi" },
+                },
+            },
+        })
+    );
+    let paths: Vec<&str> = result
+        .renames
+        .iter()
+        .map(|rename| rename.path.as_str())
+        .collect();
+    assert_eq!(paths, vec!["[senpi]", "profiles.kimi.[senpi]"]);
+}
+
+#[test]
+fn canonicalize_legacy_harness_blocks_keeps_the_canonical_block() {
+    let document = json!({
+        "[native]": { "model_profile": "canonical" },
+        "[senpi]": { "model_profile": "legacy" },
+    });
+    let result = omo_config_core::canonicalize_legacy_harness_blocks(&document);
+    assert_eq!(
+        Value::Object(result.document),
+        json!({ "[native]": { "model_profile": "canonical" } })
+    );
+    assert_eq!(result.renames.len(), 1);
+    assert!(result.renames[0].dropped);
+    assert_eq!(result.renames[0].path, "[senpi]");
+}
+
+#[test]
+fn canonicalize_legacy_harness_blocks_leaves_a_clean_document_untouched() {
+    let document = json!({
+        "categories": { "quick": { "model": "a/b" } },
+        "[native]": { "model_profile": "kimi" },
+        "profiles": { "kimi": { "[codex]": { "model_profile": "kimi" } } },
+    });
+    let result = omo_config_core::canonicalize_legacy_harness_blocks(&document);
+    assert_eq!(Value::Object(result.document), document);
+    assert!(result.renames.is_empty());
+    assert!(!omo_config_core::has_legacy_harness_blocks(&document));
+}
+
+#[test]
+fn has_legacy_harness_blocks_reports_the_legacy_spelling() {
+    assert!(omo_config_core::has_legacy_harness_blocks(
+        &json!({ "[senpi]": { "model_profile": "kimi" } })
+    ));
+    assert!(omo_config_core::has_legacy_harness_blocks(
+        &json!({ "profiles": { "kimi": { "[senpi]": { "model_profile": "kimi" } } } })
+    ));
+}
+
+#[test]
+fn native_harness_block_applies_to_the_native_view() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{
+            "categories": { "quick": { "model": "base/model" } },
+            "[native]": {
+                "categories": { "quick": { "model": "native/model" } },
+                "model_profile": "native-profile"
+            }
+        }"#,
+        Some("native"),
+    );
+    assert_eq!(result.diagnostics, Vec::new());
+    assert_eq!(result.config["categories"]["quick"]["model"], json!("native/model"));
+    assert_eq!(result.config["model_profile"], json!("native-profile"));
+}
+
+#[test]
+fn legacy_senpi_harness_block_survives_and_is_reported() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{
+            "categories": { "quick": { "model": "base/model" } },
+            "[senpi]": {
+                "categories": { "quick": { "model": "legacy/model", "reasoningEffort": "high" } },
+                "git_master": { "commit_footer": true },
+                "telemetry": { "enabled": false },
+                "model_profile": "legacy-profile"
+            }
+        }"#,
+        Some("native"),
+    );
+    assert_eq!(result.config["categories"]["quick"]["model"], json!("legacy/model"));
+    assert_eq!(result.config["categories"]["quick"]["reasoning"], json!("high"));
+    assert_eq!(result.config["git_master"]["commit_footer"], json!(true));
+    assert_eq!(result.config["telemetry"]["enabled"], json!(false));
+    assert_eq!(result.config["model_profile"], json!("legacy-profile"));
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "deprecated-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["[senpi]".to_string()]
+    );
+}
+
+#[test]
+fn native_block_wins_over_the_legacy_senpi_block() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{
+            "[native]": { "model_profile": "canonical" },
+            "[senpi]": { "model_profile": "legacy" }
+        }"#,
+        Some("native"),
+    );
+    assert_eq!(result.config["model_profile"], json!("canonical"));
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].kind, "deprecated-keys");
+    assert_eq!(
+        result.diagnostics[0].issue_paths,
+        vec!["[senpi]".to_string()]
+    );
+    assert!(result.diagnostics[0].message.contains("[native]"));
+}
+
+#[test]
+fn senpi_caller_applies_the_native_block() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let result = load_user_config(
+        home.path(),
+        r#"{ "[native]": { "model_profile": "native-profile" } }"#,
+        Some("senpi"),
+    );
+    assert_eq!(result.config["model_profile"], json!("native-profile"));
+}
+
+#[test]
+fn memory_write_notice_defaults_enabled() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["write_notice"], json!({ "enabled": true }));
+}
+
+#[test]
+fn memory_write_notice_preserves_an_explicit_false() {
+    let value = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "write_notice": { "enabled": false } }),
+    );
+    assert_eq!(value["write_notice"]["enabled"], json!(false));
+}
+
+#[test]
+fn memory_write_notice_rejects_an_unknown_key() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_schema(),
+            &json!({ "write_notice": { "bogus": true } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn memory_write_notice_layer_accepts_a_per_agent_override() {
+    let input = json!({ "write_notice": { "enabled": false }, "agents": { "backend-lead": { "write_notice": { "enabled": true } } } });
+    assert_eq!(
+        parsed(&omo_config_core::omo_memory_settings_layer_schema(), input.clone()),
+        input
+    );
+}
+
+#[test]
+fn memory_recall_defaults_apply_when_omitted() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(
+        value["recall"],
+        json!({
+            "enabled": true,
+            "max_items": 2,
+            "category": "quick",
+            "event_caps": { "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 },
+            "sidecar_max_tokens": 48000,
+            "max_concurrent_wakes": 2,
+            "tool_budget": 8,
+            "query_expansion": false,
+        })
+    );
+}
+
+#[test]
+fn memory_recall_empty_block_materializes_nested_defaults() {
+    let value = parsed(
+        &omo_config_core::omo_memory_settings_schema(),
+        json!({ "recall": {} }),
+    );
+    assert_eq!(value["recall"]["enabled"], json!(true));
+    assert_eq!(value["recall"]["max_items"], json!(2));
+    assert_eq!(value["recall"]["category"], json!("quick"));
+    assert_eq!(
+        value["recall"]["event_caps"],
+        json!({ "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 })
+    );
+}
+
+#[test]
+fn memory_recall_preserves_an_explicit_override() {
+    let input = json!({
+        "recall": {
+            "enabled": false,
+            "max_items": 4,
+            "category": "deep",
+            "event_caps": { "tool_args": 400, "result_head": 600, "assistant": 1500, "prompt": 4000 },
+            "sidecar_max_tokens": 48000,
+            "max_concurrent_wakes": 2,
+            "tool_budget": 8,
+            "query_expansion": false,
+        },
+    });
+    assert_eq!(
+        parsed(&omo_config_core::omo_memory_settings_schema(), input.clone())["recall"],
+        input["recall"]
+    );
+}
+
+#[test]
+fn memory_recall_rejects_max_items_outside_one_through_five() {
+    let node = omo_config_core::omo_memory_settings_schema();
+    assert!(safe_parse(&node, &json!({ "recall": { "max_items": 0 } })).is_err());
+    assert!(safe_parse(&node, &json!({ "recall": { "max_items": 6 } })).is_err());
+}
+
+#[test]
+fn memory_recall_rejects_invalid_field_types() {
+    let node = omo_config_core::omo_memory_settings_schema();
+    assert!(safe_parse(&node, &json!({ "recall": { "enabled": "yes" } })).is_err());
+    assert!(safe_parse(&node, &json!({ "recall": { "max_items": 2.5 } })).is_err());
+}
+
+#[test]
+fn memory_recall_rejects_a_mode_field() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_schema(),
+            &json!({ "recall": { "mode": "lexical" } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn memory_recall_rejects_the_removed_knobs() {
+    let root = omo_config_core::omo_memory_settings_schema();
+    let layer = omo_config_core::omo_memory_settings_layer_schema();
+    for recall in [
+        json!({ "budget_tokens": 600 }),
+        json!({ "excerpt_chars": 200 }),
+        json!({ "min_score": 0.1 }),
+        json!({ "exclude": ["notes/scratch.md"] }),
+    ] {
+        assert!(safe_parse(&root, &json!({ "recall": recall.clone() })).is_err());
+        assert!(safe_parse(&layer, &json!({ "recall": recall.clone() })).is_err());
+        assert!(
+            safe_parse(
+                &layer,
+                &json!({ "agents": { "backend-lead": { "recall": recall.clone() } } })
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn memory_recall_rejects_a_malformed_event_cap() {
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_schema(),
+            &json!({ "recall": { "event_caps": { "tool_args": -1 } } })
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn memory_recall_layer_accepts_a_per_agent_override() {
+    let input = json!({ "recall": { "enabled": false }, "agents": { "backend-lead": { "recall": { "max_items": 1 } } } });
+    assert_eq!(
+        parsed(&omo_config_core::omo_memory_settings_layer_schema(), input.clone()),
+        input
+    );
+}
+
+#[test]
+fn memory_recall_query_expansion_defaults_off() {
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), json!({}));
+    assert_eq!(value["recall"]["query_expansion"], json!(false));
+}
+
+#[test]
+fn memory_recall_query_expansion_keeps_root_and_agent_values() {
+    let input = json!({ "recall": { "query_expansion": true }, "agents": { "research": { "recall": { "query_expansion": false } } } });
+    let value = parsed(&omo_config_core::omo_memory_settings_schema(), input);
+    assert_eq!(value["recall"]["query_expansion"], json!(true));
+    assert_eq!(
+        value["agents"]["research"]["recall"],
+        json!({ "query_expansion": false })
+    );
+}
+
+#[test]
+fn memory_recall_query_expansion_rejects_a_non_boolean() {
+    let recall = json!({ "query_expansion": "on" });
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_schema(),
+            &json!({ "recall": recall.clone() })
+        )
+        .is_err()
+    );
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_recall_layer_schema(),
+            &recall
+        )
+        .is_err()
+    );
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_layer_schema(),
+            &json!({ "recall": recall.clone() })
+        )
+        .is_err()
+    );
+    assert!(
+        safe_parse(
+            &omo_config_core::omo_memory_settings_layer_schema(),
+            &json!({ "agents": { "research": { "recall": recall } } })
+        )
+        .is_err()
+    );
+}
+
+fn isolation_defaults() -> Value {
+    json!({
+        "enabled": false,
+        "backend": "auto",
+        "apply": true,
+        "merge": "patch",
+        "commits": "generic",
+    })
+}
+
+#[test]
+fn task_isolation_defaults_disable_isolation() {
+    let node = omo_config_core::omo_task_settings_schema();
+    assert_eq!(parsed(&node, json!({}))["isolation"], isolation_defaults());
+    assert_eq!(
+        parsed(&node, json!({ "isolation": {} }))["isolation"],
+        isolation_defaults()
+    );
+}
+
+#[test]
+fn task_isolation_layers_preserve_omission() {
+    let node = omo_config_core::omo_task_settings_layer_schema();
+    assert_eq!(parsed(&node, json!({})), json!({}));
+    assert_eq!(
+        parsed(&node, json!({ "isolation": { "apply": false } })),
+        json!({ "isolation": { "apply": false } })
+    );
+}
+
+#[test]
+fn task_isolation_root_accepts_overrides_and_rejects_an_invalid_backend() {
+    let node = omo_config_core::omo_task_settings_schema();
+    assert_eq!(
+        parsed(
+            &node,
+            json!({ "isolation": { "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" } })
+        )["isolation"],
+        json!({ "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" })
+    );
+    assert!(
+        safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err()
+    );
+}
+
+#[test]
+fn task_isolation_layer_accepts_overrides_and_rejects_an_invalid_backend() {
+    let node = omo_config_core::omo_task_settings_layer_schema();
+    assert_eq!(
+        parsed(
+            &node,
+            json!({ "isolation": { "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" } })
+        ),
+        json!({ "isolation": { "enabled": true, "backend": "rcopy", "apply": false, "merge": "branch", "commits": "ai" } })
+    );
+    assert!(
+        safe_parse(&node, &json!({ "isolation": { "backend": "projfs" } })).is_err()
+    );
 }

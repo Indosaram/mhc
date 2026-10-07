@@ -29,6 +29,15 @@ pub fn normalize_session_id_with_platform(session_id: &str, platform: SessionPla
     format!("{}:{session_id}", platform.as_str())
 }
 
+/// `stripSessionPlatform`: drop a leading `codex:` / `opencode:` / `senpi:` prefix.
+pub(crate) fn strip_session_platform(session_id: &str) -> String {
+    SESSION_ID_PREFIXES
+        .iter()
+        .find_map(|prefix| session_id.strip_prefix(prefix))
+        .map(str::to_string)
+        .unwrap_or_else(|| session_id.to_string())
+}
+
 /// `parseIsoToMs`: falsy or unparsable values yield `None`.
 pub(crate) fn parse_iso_to_ms(value: Option<&Js>) -> Option<i64> {
     value.and_then(Js::as_str).and_then(parse_iso_to_millis)
@@ -81,6 +90,21 @@ pub(crate) fn build_work_from_mirror(state: &JsObj) -> JsObj {
         ("worktree_path".to_string(), state.field("worktree_path")),
         ("task_sessions".to_string(), state.field("task_sessions")),
     ])
+}
+
+/// A work the stale reconcile demoted returns to `active` the moment a session resumes it; a
+/// work paused any other way (no `stale_since`) keeps its status.
+///
+/// The dropped `stale_since` is set to `undefined` rather than removed, so its slot survives and
+/// the serialized bytes omit it exactly like the TypeScript destructuring spread.
+pub(crate) fn restore_demoted_work(work: &JsObj) -> JsObj {
+    if work.get_str("status") != Some("paused") || work.get("stale_since").is_none() {
+        return work.clone();
+    }
+    let mut restored = work.clone();
+    restored.set("stale_since", Js::Undefined);
+    restored.set("status", Js::string("active"));
+    restored
 }
 
 /// `[...value]` for the id arrays; `None` when the value is not iterable.

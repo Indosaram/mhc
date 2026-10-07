@@ -3,7 +3,7 @@ use std::cell::Cell;
 use omo_config_core::internal::posix_path::posix_dirname;
 use omo_config_core::migration::*;
 use omo_config_core::writer::types::{FsError, OmoConfigWriteFileSystem};
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn predicate_no_legacy_sources_does_not_trigger_migration() {
@@ -605,6 +605,7 @@ fn batch_stale_live_owner_reclaimed_and_completed() {
             vec![MigrationPlan {
                 id: "stale-live-owner".to_string(),
                 mode: MigrationMode::Merge,
+                should_run: None,
                 sources: vec![MigrationSourceDescriptor::new(&source_path_clone)],
                 target_path: target_path_clone.clone(),
                 transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
@@ -668,6 +669,7 @@ fn batch_recovery_finishes_before_discovery_and_dry_run_prevents_writes() {
             vec![MigrationPlan {
                 id: "preview".to_string(),
                 mode: MigrationMode::Merge,
+                should_run: None,
                 sources: vec![MigrationSourceDescriptor::new("/legacy/preview.jsonc")],
                 target_path: target_path_clone.clone(),
                 transform: Box::new(|_| Ok(json!({ "task": { "default_concurrency": 4 } }).into())),
@@ -1015,4 +1017,206 @@ fn transaction_false_predicate_and_no_journal_does_not_write() {
     );
     assert!(!no_source_fs.exists("/home/alice/.maho/.migration-journal.json"));
     assert!(!marked_fs.exists("/home/alice/.maho/.migration-journal.json"));
+}
+
+/// Every harness block the schema accepts (canonical `[opencode]`, `[native]`, `[codex]` plus the legacy `[senpi]` spelling), listed explicitly so a dropped block shows up here.
+const HARNESS_BLOCKS: [&str; 4] = ["[opencode]", "[native]", "[codex]", "[senpi]"];
+
+/// Every location `strip_retired_codegraph` is expected to clean: root, each harness block, each profile, each profile harness block.
+fn retired_codegraph_target() -> Value {
+    json!({
+        "codegraph": { "enabled": true },
+        "[opencode]": { "codegraph": { "enabled": true } },
+        "[native]": { "codegraph": { "enabled": true } },
+        "[codex]": { "codegraph": { "enabled": true } },
+        "[senpi]": { "codegraph": { "enabled": true } },
+        "profiles": {
+            "default": {
+                "codegraph": { "enabled": true },
+                "[opencode]": { "codegraph": { "enabled": true } },
+                "[native]": { "codegraph": { "enabled": true } },
+                "[codex]": { "codegraph": { "enabled": true } },
+                "[senpi]": { "codegraph": { "enabled": true } },
+            },
+        },
+    })
+}
+
+const RETIRED_CODEGRAPH_DIAGNOSTICS: [&str; 10] = [
+    "removed: codegraph (retired configuration)",
+    "removed: [opencode].codegraph (retired configuration)",
+    "removed: [native].codegraph (retired configuration)",
+    "removed: [codex].codegraph (retired configuration)",
+    "removed: [senpi].codegraph (retired configuration)",
+    "removed: profiles.default.codegraph (retired configuration)",
+    "removed: profiles.default.[opencode].codegraph (retired configuration)",
+    "removed: profiles.default.[native].codegraph (retired configuration)",
+    "removed: profiles.default.[codex].codegraph (retired configuration)",
+    "removed: profiles.default.[senpi].codegraph (retired configuration)",
+];
+
+/// Asserts each section still exists (the migration must strip codegraph, not the whole block) and no longer carries codegraph.
+fn assert_codegraph_stripped_from_every_section(target: &Value) {
+    for harness in HARNESS_BLOCKS {
+        assert!(target[harness].is_object(), "{harness} survives as an object");
+        assert!(target[harness].get("codegraph").is_none(), "{harness}");
+    }
+    let profile = &target["profiles"]["default"];
+    assert!(profile.is_object(), "profiles.default survives as an object");
+    assert!(profile.get("codegraph").is_none());
+    for harness in HARNESS_BLOCKS {
+        assert!(profile[harness].is_object(), "profiles.default.{harness}");
+        assert!(profile[harness].get("codegraph").is_none(), "profiles.default.{harness}");
+    }
+}
+
+fn retired_codegraph_cleanup_options<'a>(
+    fixture: &'a MigrationFixture,
+    file_system: &'a MemoryMigrationFileSystem,
+    id: &str,
+    mode: MigrationMode,
+    sources: Vec<MigrationSourceDescriptor>,
+    transform: Box<dyn Fn(&[LoadedMigrationSource]) -> Result<MigrationTransformResult, MigrationError> + 'a>,
+) -> RunMigrationOptions<'a> {
+    RunMigrationOptions {
+        clock: None,
+        env: Some(fixture.env.clone()),
+        file_system: Some(file_system),
+        id: id.to_string(),
+        is_process_alive: None,
+        lease_duration_ms: None,
+        mode,
+        on_boundary: None,
+        pid: Some(100),
+        sources,
+        target_path: fixture.target_path.to_string(),
+        transform,
+        write_target: None,
+    }
+}
+
+#[test]
+fn retired_codegraph_cleanup_strips_every_location_before_a_merge() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    file_system.write(fixture.source_path, "{}").unwrap();
+    file_system
+        .write(fixture.target_path, &retired_codegraph_target().to_string())
+        .unwrap();
+
+    let result = run_migration(retired_codegraph_cleanup_options(
+        &fixture,
+        &file_system,
+        "legacy-codegraph",
+        MigrationMode::Merge,
+        vec![MigrationSourceDescriptor::new(fixture.source_path)],
+        Box::new(|_| Ok(json!({ "task": { "default_concurrency": 3 } }).into())),
+    ))
+    .expect("run migration");
+
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    assert_eq!(
+        result.diagnostics,
+        RETIRED_CODEGRAPH_DIAGNOSTICS.map(str::to_string).to_vec()
+    );
+    let target = parse_file(&file_system, fixture.target_path);
+    assert_eq!(target["task"]["default_concurrency"], json!(3));
+    assert_eq!(target["_migrations"], json!(["legacy-codegraph"]));
+    assert!(target.get("codegraph").is_none());
+    assert_codegraph_stripped_from_every_section(&target);
+}
+
+#[test]
+fn retired_codegraph_cleanup_strips_every_location_before_a_replacement() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    file_system
+        .write(fixture.target_path, &retired_codegraph_target().to_string())
+        .unwrap();
+
+    let result = run_migration(retired_codegraph_cleanup_options(
+        &fixture,
+        &file_system,
+        "retire-codegraph",
+        MigrationMode::ReplaceTarget,
+        vec![],
+        Box::new(|loaded| {
+            let current = loaded
+                .first()
+                .map(|source| source.value.clone())
+                .unwrap_or(Value::Null);
+            let mut document = current.as_object().cloned().unwrap_or_default();
+            document.insert("task".to_string(), json!({ "default_concurrency": 4 }));
+            Ok(Value::Object(document).into())
+        }),
+    ))
+    .expect("run migration");
+
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    // the transform passed the target through, so target and document cleanup see the same paths: each is reported once
+    assert_eq!(
+        result.diagnostics,
+        RETIRED_CODEGRAPH_DIAGNOSTICS.map(str::to_string).to_vec()
+    );
+    let target = parse_file(&file_system, fixture.target_path);
+    assert_eq!(target["task"]["default_concurrency"], json!(4));
+    assert_eq!(target["_migrations"], json!(["retire-codegraph"]));
+    assert!(target.get("codegraph").is_none());
+    assert_codegraph_stripped_from_every_section(&target);
+}
+
+#[test]
+fn retired_codegraph_is_stripped_from_a_renamed_harness_block() {
+    let file_system = MemoryMigrationFileSystem::new();
+    let fixture = migration_fixture();
+    file_system
+        .write(
+            fixture.target_path,
+            &json!({
+                "[senpi]": { "codegraph": { "enabled": true } },
+                "profiles": { "default": { "[senpi]": { "codegraph": { "enabled": true } } } },
+                "_migrations": ["earlier-merge"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+    let result = run_migration(retired_codegraph_cleanup_options(
+        &fixture,
+        &file_system,
+        "harness-native-rename",
+        MigrationMode::ReplaceTarget,
+        vec![],
+        Box::new(|loaded| {
+            let value = loaded
+                .first()
+                .map(|source| source.value.clone())
+                .unwrap_or(Value::Null);
+            Ok(Value::Object(
+                omo_config_core::canonicalize_legacy_harness_blocks(&value).document,
+            )
+            .into())
+        }),
+    ))
+    .expect("run migration");
+
+    assert_eq!(result.status, MigrationStatus::Migrated);
+    assert_eq!(
+        result.diagnostics,
+        vec![
+            "removed: [senpi].codegraph (retired configuration)".to_string(),
+            "removed: profiles.default.[senpi].codegraph (retired configuration)".to_string(),
+            "removed: [native].codegraph (retired configuration)".to_string(),
+            "removed: profiles.default.[native].codegraph (retired configuration)".to_string(),
+        ]
+    );
+    let target = parse_file(&file_system, fixture.target_path);
+    assert_eq!(
+        target,
+        json!({
+            "[native]": {},
+            "profiles": { "default": { "[native]": {} } },
+            "_migrations": ["earlier-merge", "harness-native-rename"],
+        })
+    );
 }

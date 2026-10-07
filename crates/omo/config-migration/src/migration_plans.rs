@@ -4,19 +4,30 @@ use std::rc::Rc;
 
 use omo_config_core::{
     LoadedMigrationSource, MigrationError, MigrationMode, MigrationSourceDescriptor,
+    has_legacy_category_names, has_legacy_harness_blocks,
 };
-use serde_json::Map;
+use serde_json::{Map, Value};
 
+use crate::category_deep_split::{
+    CATEGORY_DEEP_SPLIT_MIGRATION_ID, transform_category_deep_split,
+};
 use crate::discovery::{
     CONFIG_JSONC_MIGRATION_ID, OPENCODE_CONFIG_MIGRATION_ID, discover_legacy_config_groups,
 };
 use crate::discovery_paths::{
     canonical_path, discovery_file_system, host_path_operations, path_key, project_directories,
 };
+use crate::harness_native_rename::{
+    HARNESS_NATIVE_RENAME_MIGRATION_ID, transform_harness_native_rename,
+};
 use crate::reasoning_unification::{
     REASONING_UNIFICATION_MIGRATION_ID, transform_reasoning_unification,
 };
 use crate::record_values::merge_records;
+use crate::subscription_provider_rename::{
+    SUBSCRIPTION_PROVIDER_RENAME_MIGRATION_ID, has_legacy_subscription_provider_ids,
+    transform_subscription_provider_rename,
+};
 use crate::transform_config_jsonc::transform_config_jsonc_sources;
 use crate::transform_opencode::transform_open_code_sources;
 use crate::transform_types::{
@@ -35,6 +46,7 @@ pub struct LegacyConfigMigrationPlan {
     pub id: String,
     pub inspect: LegacyConfigMigrationTransform,
     pub mode: MigrationMode,
+    pub should_run: Option<Rc<dyn Fn(&Value) -> bool>>,
     pub sources: Vec<MigrationSourceDescriptor>,
     pub target_path: String,
     pub transform: LegacyConfigMigrationTransform,
@@ -170,6 +182,7 @@ fn open_code_plan(
         id: OPENCODE_CONFIG_MIGRATION_ID.to_string(),
         inspect: Rc::clone(&transform),
         mode: MigrationMode::Merge,
+        should_run: None,
         sources,
         target_path,
         transform,
@@ -219,6 +232,7 @@ fn config_jsonc_plan(
         id: CONFIG_JSONC_MIGRATION_ID.to_string(),
         inspect: Rc::clone(&transform),
         mode: MigrationMode::Merge,
+        should_run: None,
         sources,
         target_path,
         transform,
@@ -234,6 +248,70 @@ fn reasoning_plan(target_path: String) -> LegacyConfigMigrationPlan {
         id: REASONING_UNIFICATION_MIGRATION_ID.to_string(),
         inspect: Rc::clone(&transform),
         mode: MigrationMode::ReplaceTarget,
+        should_run: None,
+        sources: Vec::new(),
+        target_path,
+        transform,
+    }
+}
+
+// Gated on content, unlike the reasoning plan: a config that never named a retired category is left
+// untouched - no backup, no journal, no `_migrations` marker - instead of being rewritten to itself.
+fn category_deep_split_plan(target_path: String) -> LegacyConfigMigrationPlan {
+    let transform: LegacyConfigMigrationTransform = Rc::new(|loaded| {
+        let value = loaded
+            .first()
+            .map(|source| source.value.clone())
+            .unwrap_or(Value::Null);
+        Ok(transform_category_deep_split(&value))
+    });
+    LegacyConfigMigrationPlan {
+        id: CATEGORY_DEEP_SPLIT_MIGRATION_ID.to_string(),
+        inspect: Rc::clone(&transform),
+        mode: MigrationMode::ReplaceTarget,
+        should_run: Some(Rc::new(has_legacy_category_names as fn(&Value) -> bool)),
+        sources: Vec::new(),
+        target_path,
+        transform,
+    }
+}
+
+// Gated on content like the category plan: a config that never named the legacy harness block is
+// left untouched - no backup, no journal, no `_migrations` marker.
+fn harness_native_rename_plan(target_path: String) -> LegacyConfigMigrationPlan {
+    let transform: LegacyConfigMigrationTransform = Rc::new(|loaded| {
+        let value = loaded
+            .first()
+            .map(|source| source.value.clone())
+            .unwrap_or(Value::Null);
+        Ok(transform_harness_native_rename(&value))
+    });
+    LegacyConfigMigrationPlan {
+        id: HARNESS_NATIVE_RENAME_MIGRATION_ID.to_string(),
+        inspect: Rc::clone(&transform),
+        mode: MigrationMode::ReplaceTarget,
+        should_run: Some(Rc::new(has_legacy_harness_blocks as fn(&Value) -> bool)),
+        sources: Vec::new(),
+        target_path,
+        transform,
+    }
+}
+
+fn subscription_provider_rename_plan(target_path: String) -> LegacyConfigMigrationPlan {
+    let transform: LegacyConfigMigrationTransform = Rc::new(|loaded| {
+        let value = loaded
+            .first()
+            .map(|source| source.value.clone())
+            .unwrap_or(Value::Null);
+        Ok(transform_subscription_provider_rename(&value))
+    });
+    LegacyConfigMigrationPlan {
+        id: SUBSCRIPTION_PROVIDER_RENAME_MIGRATION_ID.to_string(),
+        inspect: Rc::clone(&transform),
+        mode: MigrationMode::ReplaceTarget,
+        should_run: Some(Rc::new(
+            has_legacy_subscription_provider_ids as fn(&Value) -> bool,
+        )),
         sources: Vec::new(),
         target_path,
         transform,
@@ -340,10 +418,17 @@ pub fn create_legacy_config_migration_plans(
         add_reasoning_target(Some(plan.target_path.clone()))?;
     }
 
+    let in_place_targets: Vec<String> = reasoning_targets
+        .into_iter()
+        .map(|(_, target_path)| target_path)
+        .collect();
+    plans.extend(in_place_targets.iter().cloned().map(reasoning_plan));
+    plans.extend(in_place_targets.iter().cloned().map(category_deep_split_plan));
+    plans.extend(in_place_targets.iter().cloned().map(harness_native_rename_plan));
     plans.extend(
-        reasoning_targets
+        in_place_targets
             .into_iter()
-            .map(|(_, target_path)| reasoning_plan(target_path)),
+            .map(subscription_provider_rename_plan),
     );
     Ok(plans)
 }
