@@ -75,15 +75,15 @@ async fn mcp(State(state): State<InteractiveState>, headers: HeaderMap, body: St
             .header(header::WWW_AUTHENTICATE, CHALLENGE_403)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(json!({"error":"challenge"}).to_string()))
-            .unwrap();
+            .expect("fixture operation must succeed");
     }
     Json(json!({"jsonrpc":"2.0","id":value["id"],"result":{"content":[{"type":"text","text":"ok"}],"isError":false}})).into_response()
 }
 
 #[tokio::test]
 async fn interactive_step_up_logs_in_reconnects_and_retries_on_the_renewed_connection() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture operation must succeed");
+    let address = listener.local_addr().expect("fixture operation must succeed");
     let base = format!("http://{address}");
     let state = InteractiveState { base: base.clone(), ..Default::default() };
     let app = Router::new()
@@ -94,12 +94,12 @@ async fn interactive_step_up_logs_in_reconnects_and_retries_on_the_renewed_conne
         .route("/mcp", post(mcp))
         .with_state(state.clone());
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap(); });
+    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.expect("fixture operation must succeed"); });
 
     let mcp_url = format!("{base}/mcp");
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
     let store = McpTokenStore::new(root.path(), "interactive", &mcp_url);
-    store.write(McpStoredAuth { access_token: Some("fixture-access".into()), expires_at: Some(chrono::Utc::now().timestamp_millis() as f64 + 3_600_000.0), ..Default::default() }).unwrap();
+    store.write(McpStoredAuth { access_token: Some("fixture-access".into()), expires_at: Some(chrono::Utc::now().timestamp_millis() as f64 + 3_600_000.0), ..Default::default() }).expect("fixture operation must succeed");
     let mut provider = McpOAuthProvider::new(store);
     provider.require_https = false;
     let provider = Arc::new(provider);
@@ -111,26 +111,26 @@ async fn interactive_step_up_logs_in_reconnects_and_retries_on_the_renewed_conne
         oauth: Some(OAuthConfig { client_id: Some("fixture-client".into()), scopes: Some(vec!["mcp:read".into()]), ..Default::default() }),
         ..Default::default()
     };
-    let logger = Arc::new(Mutex::new(McpLogger::new("interactive", root.path(), None).unwrap()));
+    let logger = Arc::new(Mutex::new(McpLogger::new("interactive", root.path(), None).expect("fixture operation must succeed")));
     let connection = ServerConnection::new("interactive", config.clone(), None, logger);
     connection.set_auth(Arc::new(McpRefreshManager::new(provider, reqwest::Client::new())));
     let mut step_up = McpInteractiveStepUp::new("interactive", &config, root.path(), None, Arc::downgrade(&connection));
     step_up.require_https = false;
-    let browser = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    let browser = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().expect("fixture operation must succeed");
     step_up.set_browser(Arc::new(move |url: &str| {
         let browser = browser.clone();
         let url = url.to_owned();
-        let _ = tokio::spawn(async move {
+        drop(tokio::spawn(async move {
             if let Ok(response) = browser.get(&url).send().await
                 && let Some(location) = response.headers().get("location").and_then(|value| value.to_str().ok())
             {
                 let _ = browser.get(location).send().await;
             }
-        });
+        }));
     }));
     connection.set_step_up(Arc::new(step_up));
 
-    let client = connection.connect().await.unwrap();
+    let client = connection.connect().await.expect("fixture operation must succeed");
     let result = client.request("tools/call", json!({"name":"tool","arguments":{}}), Duration::from_secs(5)).await;
     assert!(result.is_ok(), "the interactive step-up must re-login, reconnect and retry: {result:?}");
 
@@ -144,9 +144,9 @@ async fn interactive_step_up_logs_in_reconnects_and_retries_on_the_renewed_conne
     assert_eq!(scopes[0], "mcp:read mcp:write", "the challenge scopes must merge into the configured scopes");
 
     assert_eq!(connection.generation(), 1, "the step-up must perform a real reconnect");
-    assert_eq!(McpTokenStore::new(root.path(), "interactive", &mcp_url).read().unwrap().unwrap().access_token.as_deref(), Some("fresh-access"));
+    assert_eq!(McpTokenStore::new(root.path(), "interactive", &mcp_url).read().expect("fixture operation must succeed").expect("fixture operation must succeed").access_token.as_deref(), Some("fresh-access"));
 
-    connection.dispose().await.unwrap();
-    stop.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    connection.dispose().await.expect("fixture operation must succeed");
+    stop.send(()).expect("fixture operation must succeed");
+    tokio::time::timeout(Duration::from_secs(2), server).await.expect("fixture operation must succeed").expect("fixture operation must succeed");
 }

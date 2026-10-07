@@ -77,7 +77,7 @@ async fn challenge_mcp(State(state): State<ChallengeState>, headers: HeaderMap, 
             .header(header::WWW_AUTHENTICATE, state.challenge)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(json!({"error":"challenge"}).to_string()))
-            .unwrap();
+            .expect("fixture operation must succeed");
     }
     state.record(method, authorization, None);
     Json(json!({"jsonrpc":"2.0","id":value["id"],"result":{"content":[{"type":"text","text":"ok"}],"isError":false}})).into_response()
@@ -95,43 +95,43 @@ fn stored_auth() -> McpStoredAuth {
 
 fn provider(root: &Path, name: &str, server: &str) -> Arc<McpOAuthProvider> {
     let store = McpTokenStore::new(root, name, server);
-    store.write(stored_auth()).unwrap();
+    store.write(stored_auth()).expect("fixture operation must succeed");
     let mut provider = McpOAuthProvider::new(store);
     provider.require_https = false;
     Arc::new(provider)
 }
 
 async fn step_up_client(server: &str, provider: Arc<McpOAuthProvider>, root: &Path) -> Arc<McpClient> {
-    let logger = Arc::new(Mutex::new(McpLogger::new("step-up", root, None).unwrap()));
-    let spec = McpTransportSpec::Http { url: server.parse().unwrap(), headers: Default::default() };
-    let client = McpClient::materialize("step-up", &spec, logger).await.unwrap();
+    let logger = Arc::new(Mutex::new(McpLogger::new("step-up", root, None).expect("fixture operation must succeed")));
+    let spec = McpTransportSpec::Http { url: server.parse().expect("fixture operation must succeed"), headers: Default::default() };
+    let client = McpClient::materialize("step-up", &spec, logger).await.expect("fixture operation must succeed");
     client.set_auth(Arc::new(McpRefreshManager::new(provider, reqwest::Client::new()))).await;
-    client.initialize(Duration::from_secs(2)).await.unwrap();
+    client.initialize(Duration::from_secs(2)).await.expect("fixture operation must succeed");
     client
 }
 
 async fn spawn_challenge_server(state: ChallengeState) -> (String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture operation must succeed");
+    let address = listener.local_addr().expect("fixture operation must succeed");
     let app = Router::new().route("/mcp", post(challenge_mcp)).with_state(state);
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap(); });
+    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.expect("fixture operation must succeed"); });
     (format!("http://{address}/mcp"), stop, server)
 }
 
 async fn shutdown(stop: tokio::sync::oneshot::Sender<()>, server: tokio::task::JoinHandle<()>) {
-    stop.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    stop.send(()).expect("fixture operation must succeed");
+    tokio::time::timeout(Duration::from_secs(2), server).await.expect("fixture operation must succeed").expect("fixture operation must succeed");
 }
 
 #[test]
 fn www_authenticate_challenges_parse_to_the_pinned_step_up_info() {
-    let unauthorized = parse_www_authenticate(CHALLENGE_401).unwrap();
+    let unauthorized = parse_www_authenticate(CHALLENGE_401).expect("fixture operation must succeed");
     assert_eq!(unauthorized.required_scopes, vec!["mcp:read".to_owned()]);
     assert_eq!(unauthorized.error.as_deref(), Some("invalid_token"));
     assert_eq!(unauthorized.error_description.as_deref(), Some("access token expired"));
 
-    let forbidden = parse_www_authenticate(CHALLENGE_403).unwrap();
+    let forbidden = parse_www_authenticate(CHALLENGE_403).expect("fixture operation must succeed");
     assert_eq!(forbidden.required_scopes, vec!["mcp:write".to_owned(), "mcp:admin".to_owned()]);
     assert_eq!(forbidden.error.as_deref(), Some("insufficient_scope"));
     assert!(forbidden.error_description.is_none());
@@ -142,7 +142,7 @@ fn www_authenticate_requires_bearer_and_a_non_empty_scope() {
     for header in ["Basic realm=\"x\"", "Bearer error=\"invalid_token\"", "Bearer scope=\"\"", "Bearer", ""] {
         assert!(parse_www_authenticate(header).is_none(), "{header}");
     }
-    let bare = parse_www_authenticate("Bearer scope=mcp:read error=invalid_token").unwrap();
+    let bare = parse_www_authenticate("Bearer scope=mcp:read error=invalid_token").expect("fixture operation must succeed");
     assert_eq!(bare.required_scopes, vec!["mcp:read".to_owned()]);
     assert_eq!(bare.error.as_deref(), Some("invalid_token"));
 }
@@ -166,7 +166,7 @@ fn merged_scopes_keep_the_existing_order_and_deduplicate() {
 async fn forbidden_challenge_escalates_the_scopes_and_retries() {
     let state = ChallengeState::new(StatusCode::FORBIDDEN, CHALLENGE_403);
     let (server, stop, task) = spawn_challenge_server(state.clone()).await;
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
     let provider = provider(root.path(), "step-up-403", &server);
     let client = step_up_client(&server, provider.clone(), root.path()).await;
 
@@ -180,7 +180,7 @@ async fn forbidden_challenge_escalates_the_scopes_and_retries() {
     assert_eq!(calls[1].emitted_challenge, None);
     assert_eq!(calls[1].authorization.as_deref(), Some("Bearer fixture-access"));
 
-    client.close().await.unwrap();
+    client.close().await.expect("fixture operation must succeed");
     drop(client);
     shutdown(stop, task).await;
 }
@@ -188,8 +188,8 @@ async fn forbidden_challenge_escalates_the_scopes_and_retries() {
 #[tokio::test]
 async fn post_request_401_refreshes_once_and_retries() {
     let state = ChallengeState::new(StatusCode::UNAUTHORIZED, CHALLENGE_401);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture operation must succeed");
+    let address = listener.local_addr().expect("fixture operation must succeed");
     let base = format!("http://{address}");
     let (sender, mut token_requests) = tokio::sync::mpsc::unbounded_channel();
     let protected = json!({"resource": format!("{base}/mcp"), "authorization_servers": [base.clone()]});
@@ -198,19 +198,19 @@ async fn post_request_401_refreshes_once_and_retries() {
         .route("/mcp", post(challenge_mcp))
         .route("/.well-known/oauth-protected-resource", get(move || { let protected = protected.clone(); async move { Json(protected) } }))
         .route("/.well-known/oauth-authorization-server", get(move || { let metadata = metadata.clone(); async move { Json(metadata) } }))
-        .route("/token", post(move |Form(form): Form<BTreeMap<String, String>>| { let sender = sender.clone(); async move { sender.send(form).unwrap(); Json(json!({"access_token":"refreshed-access","token_type":"Bearer","expires_in":3600})) } }))
+        .route("/token", post(move |Form(form): Form<BTreeMap<String, String>>| { let sender = sender.clone(); async move { sender.send(form).expect("fixture operation must succeed"); Json(json!({"access_token":"refreshed-access","token_type":"Bearer","expires_in":3600})) } }))
         .with_state(state.clone());
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap(); });
+    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.expect("fixture operation must succeed"); });
 
     let mcp_url = format!("{base}/mcp");
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
     let provider = provider(root.path(), "step-up-401", &mcp_url);
     let client = step_up_client(&mcp_url, provider.clone(), root.path()).await;
 
     let result = client.request("tools/call", json!({"name":"tool","arguments":{}}), Duration::from_secs(5)).await;
     assert!(result.is_ok(), "the refreshed retry must succeed: {result:?}");
-    let form = tokio::time::timeout(Duration::from_secs(2), token_requests.recv()).await.unwrap().unwrap();
+    let form = tokio::time::timeout(Duration::from_secs(2), token_requests.recv()).await.expect("fixture operation must succeed").expect("fixture operation must succeed");
     assert_eq!(form["grant_type"], "refresh_token");
     assert_eq!(form["refresh_token"], "fixture-refresh");
 
@@ -218,9 +218,9 @@ async fn post_request_401_refreshes_once_and_retries() {
     assert_eq!(calls.len(), 2, "a 401 must refresh once and retry");
     assert_eq!(calls[0].authorization.as_deref(), Some("Bearer fixture-access"));
     assert_eq!(calls[1].authorization.as_deref(), Some("Bearer refreshed-access"));
-    assert_eq!(provider.store.read().unwrap().unwrap().access_token.as_deref(), Some("refreshed-access"));
+    assert_eq!(provider.store.read().expect("fixture operation must succeed").expect("fixture operation must succeed").access_token.as_deref(), Some("refreshed-access"));
 
-    client.close().await.unwrap();
+    client.close().await.expect("fixture operation must succeed");
     drop(client);
     shutdown(stop, server).await;
 }
@@ -264,18 +264,18 @@ impl McpAuthStepUp for FailingStepUp {
 async fn bound_step_up_logs_in_reconnects_and_retries_on_the_renewed_client() {
     let state = ChallengeState::new(StatusCode::FORBIDDEN, CHALLENGE_403);
     let (server, stop, task) = spawn_challenge_server(state.clone()).await;
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
     let provider = provider(root.path(), "step-up-bound", &server);
     let client = step_up_client(&server, provider.clone(), root.path()).await;
 
-    let renewed_root = tempfile::tempdir().unwrap();
-    let renewed_provider = provider(renewed_root.path(), "step-up-renewed", &server);
-    renewed_provider.store.write(McpStoredAuth { access_token: Some("renewed-access".into()), ..Default::default() }).unwrap();
-    let logger = Arc::new(Mutex::new(McpLogger::new("step-up-renewed", renewed_root.path(), None).unwrap()));
-    let spec = McpTransportSpec::Http { url: server.parse().unwrap(), headers: Default::default() };
-    let renewed = McpClient::materialize("step-up-renewed", &spec, logger).await.unwrap();
+    let renewed_root = tempfile::tempdir().expect("fixture operation must succeed");
+    let renewed_provider = self::provider(renewed_root.path(), "step-up-renewed", &server);
+    renewed_provider.store.write(McpStoredAuth { access_token: Some("renewed-access".into()), ..Default::default() }).expect("fixture operation must succeed");
+    let logger = Arc::new(Mutex::new(McpLogger::new("step-up-renewed", renewed_root.path(), None).expect("fixture operation must succeed")));
+    let spec = McpTransportSpec::Http { url: server.parse().expect("fixture operation must succeed"), headers: Default::default() };
+    let renewed = McpClient::materialize("step-up-renewed", &spec, logger).await.expect("fixture operation must succeed");
     renewed.set_auth(Arc::new(McpRefreshManager::new(renewed_provider, reqwest::Client::new()))).await;
-    renewed.initialize(Duration::from_secs(2)).await.unwrap();
+    renewed.initialize(Duration::from_secs(2)).await.expect("fixture operation must succeed");
 
     let logins: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
     let reconnects = Arc::new(AtomicUsize::new(0));
@@ -293,8 +293,8 @@ async fn bound_step_up_logs_in_reconnects_and_retries_on_the_renewed_client() {
     assert_eq!(calls[0].authorization.as_deref(), Some("Bearer fixture-access"));
     assert_eq!(calls[1].authorization.as_deref(), Some("Bearer renewed-access"), "the retry must run on the client the reconnect produced");
 
-    client.close().await.unwrap();
-    renewed.close().await.unwrap();
+    client.close().await.expect("fixture operation must succeed");
+    renewed.close().await.expect("fixture operation must succeed");
     drop(client);
     drop(renewed);
     shutdown(stop, task).await;
@@ -304,9 +304,9 @@ async fn bound_step_up_logs_in_reconnects_and_retries_on_the_renewed_client() {
 async fn a_failed_step_up_login_never_retries_with_stale_auth() {
     let state = ChallengeState::new(StatusCode::FORBIDDEN, CHALLENGE_403);
     let (server, stop, task) = spawn_challenge_server(state.clone()).await;
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
     let store = McpTokenStore::new(root.path(), "step-up-fail", &server);
-    store.write(McpStoredAuth { access_token: Some("fixture-access".into()), expires_at: Some(chrono::Utc::now().timestamp_millis() as f64 + 3_600_000.0), ..Default::default() }).unwrap();
+    store.write(McpStoredAuth { access_token: Some("fixture-access".into()), expires_at: Some(chrono::Utc::now().timestamp_millis() as f64 + 3_600_000.0), ..Default::default() }).expect("fixture operation must succeed");
     let mut provider = McpOAuthProvider::new(store);
     provider.require_https = false;
     let client = step_up_client(&server, Arc::new(provider), root.path()).await;
@@ -316,7 +316,7 @@ async fn a_failed_step_up_login_never_retries_with_stale_auth() {
     assert!(result.is_err(), "a refused re-login with no refresh token must fail");
     assert_eq!(state.tool_calls().len(), 1, "the transport must not retry with the stale token");
 
-    client.close().await.unwrap();
+    client.close().await.expect("fixture operation must succeed");
     drop(client);
     shutdown(stop, task).await;
 }

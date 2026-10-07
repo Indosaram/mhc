@@ -43,13 +43,14 @@ pub async fn discover(provider:&McpOAuthProvider,client:&reqwest::Client)->Resul
 /// start the walk and register it), with the pinned `finally` clearing the pending entry.
 async fn discover_cached(resource_key:&str,require_https:bool,client:&reqwest::Client)->Result<OAuthServerInfo,OAuthRequestError> {
     if let Some(cached)=DISCOVERY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(resource_key).cloned() {return Ok(cached);}
-    let mut pending=PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let existing=pending.get(resource_key).map(|entry|(entry.id,entry.future.clone()));
-    let (id,shared)=match existing {Some(pair)=>pair,None=>{
-        let id=NEXT_DISCOVERY_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);let key=resource_key.to_owned();let client=client.clone();
-        let future:SharedDiscovery=async move {discover_uncached(&key,require_https,&client).await}.boxed().shared();
-        pending.insert(resource_key.to_owned(),PendingDiscovery {id,future:future.clone()});(id,future)}};
-    drop(pending);
+    let (id,shared)={
+        let mut pending=PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let existing=pending.get(resource_key).map(|entry|(entry.id,entry.future.clone()));
+        match existing {Some(pair)=>pair,None=>{
+            let id=NEXT_DISCOVERY_ID.fetch_add(1,std::sync::atomic::Ordering::Relaxed);let key=resource_key.to_owned();let client=client.clone();
+            let future:SharedDiscovery=async move {discover_uncached(&key,require_https,&client).await}.boxed().shared();
+            pending.insert(resource_key.to_owned(),PendingDiscovery {id,future:future.clone()});(id,future)}}
+    };
     let result=shared.await;
     {let mut pending=PENDING_DISCOVERY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if pending.get(resource_key).is_some_and(|current|current.id==id) {pending.remove(resource_key);}}

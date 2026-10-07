@@ -72,34 +72,34 @@ async fn mcp(State(state): State<TraceState>, headers: HeaderMap, body: String) 
     };
     state.record(method, authorization, challenge);
     match challenge {
-        Some(challenge) => Response::builder().status(status).header(header::WWW_AUTHENTICATE, challenge).header(header::CONTENT_TYPE, "application/json").body(Body::from(json!({"error":"challenge"}).to_string())).unwrap(),
+        Some(challenge) => Response::builder().status(status).header(header::WWW_AUTHENTICATE, challenge).header(header::CONTENT_TYPE, "application/json").body(Body::from(json!({"error":"challenge"}).to_string())).expect("fixture operation must succeed"),
         None => Json(json!({"jsonrpc":"2.0","id":value["id"],"result":{"content":[{"type":"text","text":"ok"}],"isError":false}})).into_response(),
     }
 }
 
 async fn spawn_trace_server() -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>, TraceState) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture operation must succeed");
+    let address = listener.local_addr().expect("fixture operation must succeed");
     let state = TraceState::default();
     let app = Router::new().route("/mcp", post(mcp)).with_state(state.clone());
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.unwrap(); });
+    let server = tokio::spawn(async move { axum::serve(listener, app).with_graceful_shutdown(async { let _ = stopped.await; }).await.expect("fixture operation must succeed"); });
     (address, stop, server, state)
 }
 
 async fn shutdown(stop: tokio::sync::oneshot::Sender<()>, server: tokio::task::JoinHandle<()>) {
-    stop.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), server).await.unwrap().unwrap();
+    stop.send(()).expect("fixture operation must succeed");
+    tokio::time::timeout(Duration::from_secs(2), server).await.expect("fixture operation must succeed").expect("fixture operation must succeed");
 }
 
 #[tokio::test]
 async fn transport_trace_records_the_pinned_401_and_403_challenges() {
     let (address, stop, server, state) = spawn_trace_server().await;
-    let root = tempfile::tempdir().unwrap();
-    let logger = Arc::new(Mutex::new(McpLogger::new("trace", root.path(), None).unwrap()));
-    let spec = McpTransportSpec::Http { url: format!("http://{address}/mcp").parse().unwrap(), headers: Default::default() };
-    let client = McpClient::materialize("trace", &spec, logger).await.unwrap();
-    client.initialize(Duration::from_secs(2)).await.unwrap();
+    let root = tempfile::tempdir().expect("fixture operation must succeed");
+    let logger = Arc::new(Mutex::new(McpLogger::new("trace", root.path(), None).expect("fixture operation must succeed")));
+    let spec = McpTransportSpec::Http { url: format!("http://{address}/mcp").parse().expect("fixture operation must succeed"), headers: Default::default() };
+    let client = McpClient::materialize("trace", &spec, logger).await.expect("fixture operation must succeed");
+    client.initialize(Duration::from_secs(2)).await.expect("fixture operation must succeed");
 
     let unauthorized = client.request("tools/call", json!({"name":"tool","arguments":{}}), Duration::from_secs(2)).await.unwrap_err();
     let _forbidden = client.request("tools/call", json!({"name":"tool","arguments":{}}), Duration::from_secs(2)).await.unwrap_err();
@@ -111,12 +111,12 @@ async fn transport_trace_records_the_pinned_401_and_403_challenges() {
     assert_eq!(calls[1].emitted_challenge.as_deref(), Some(CHALLENGE_403));
     assert!(calls.iter().all(|call| call.authorization.is_none()));
 
-    assert_eq!(parse_www_authenticate(CHALLENGE_401).unwrap().required_scopes, vec!["mcp:read".to_owned()]);
-    assert_eq!(parse_www_authenticate(CHALLENGE_403).unwrap().required_scopes, vec!["mcp:write".to_owned(), "mcp:admin".to_owned()]);
+    assert_eq!(parse_www_authenticate(CHALLENGE_401).expect("fixture operation must succeed").required_scopes, vec!["mcp:read".to_owned()]);
+    assert_eq!(parse_www_authenticate(CHALLENGE_403).expect("fixture operation must succeed").required_scopes, vec!["mcp:write".to_owned(), "mcp:admin".to_owned()]);
     assert!(is_step_up_required(403, Some(CHALLENGE_403)).is_some());
     assert!(is_step_up_required(401, Some(CHALLENGE_401)).is_none());
 
-    client.close().await.unwrap();
+    client.close().await.expect("fixture operation must succeed");
     drop(client);
     shutdown(stop, server).await;
 }
