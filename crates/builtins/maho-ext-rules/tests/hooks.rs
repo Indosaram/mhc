@@ -1,6 +1,17 @@
 use maho_ext_api::*;
 use std::{path::Path, sync::Arc};
 
+#[derive(Default)]
+struct RecordingActions(std::sync::Mutex<Vec<(String, Option<JsonValue>)>>);
+impl ExtensionActions for RecordingActions {
+ fn send_message(&self, _: CustomMessage, _: SendMessageOptions) -> Result<(), ExtensionFailure> { Err("unexpected message".into()) }
+ fn send_user_message(&self, _: UserMessageContent, _: SendUserMessageOptions) -> Result<(), ExtensionFailure> { Err("unexpected user message".into()) }
+ fn append_entry(&self, kind: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> {
+  self.0.lock().expect("entries").push((kind.into(), data)); Ok(())
+ }
+ fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(Vec::new()) }
+}
+
 struct TestSession;
 impl ToolSessionManager for TestSession {
     fn session_id(&self) -> &str { "session" }
@@ -76,10 +87,11 @@ async fn dynamic_hook_injects_structural_grammar_matched_rule() {
  let root = tempfile::tempdir().unwrap();
  std::fs::write(root.path().join("Cargo.toml"), "").unwrap();
  std::fs::create_dir_all(root.path().join(".omo/rules")).unwrap();
- std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: '**/*.{rs,ts}'\n---\nfixture grammar rule").unwrap();
+ std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: ['**/*.{rs,ts}']\n---\nfixture grammar rule").unwrap();
  std::fs::write(root.path().join("sample.rs"), "fn main() {}").unwrap();
  let mut ctx = context(); ctx.cwd = root.path().into();
  let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ api.runtime.bind(Arc::new(RecordingActions::default()));
  let home = tempfile::tempdir().unwrap();
  maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
  let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "call".into(), input: serde_json::json!({"path": "sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
@@ -88,4 +100,25 @@ async fn dynamic_hook_injects_structural_grammar_matched_rule() {
  let EventResult::ToolResult(result) = result else { panic!("expected dynamic rule injection") };
  let text = result.content.expect("injected content").into_iter().find_map(|content| match content { ToolContent::Text { text, .. } => Some(text), _ => None }).expect("injected text");
  assert!(text.contains("fixture grammar rule"), "{text}");
+}
+
+#[tokio::test]
+async fn dynamic_hook_injects_extglob_rule_for_matching_target() {
+ let root = tempfile::tempdir().expect("project");
+ std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
+ std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
+ std::fs::write(root.path().join(".omo/rules/grammar.md"), "---\nglobs: '**/*.@(rs|ts)'\n---\nfixture").expect("rule");
+ std::fs::write(root.path().join("sample.rs"), "fn main() {}").expect("target");
+ let mut ctx = context(); ctx.cwd = root.path().into();
+ let mut api = ExtensionApi::new(LoadedExtension::new("rules", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ let actions = Arc::new(RecordingActions::default());
+ api.runtime.bind(actions.clone());
+ let home = tempfile::tempdir().expect("home");
+ maho_ext_rules::Rules::register_with_config(&mut api, maho_ext_rules::config::config_from_environment(|_| None), home.path().into());
+ let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "call".into(), input: serde_json::json!({"path": "sample.rs"}), content: Vec::new(), details: None, is_error: false, usage: None });
+ let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx).await.expect("dispatch");
+ assert!(matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if !content.is_empty()));
+ let entries = actions.0.lock().expect("activation entries");
+ assert_eq!(entries.len(), 1);
+ assert_eq!(entries[0].0, maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE);
 }

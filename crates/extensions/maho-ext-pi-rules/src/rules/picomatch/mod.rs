@@ -39,7 +39,7 @@ impl MaxExtglobRecursion {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Options {
     pub dot: bool,
     pub bash: bool,
@@ -65,34 +65,6 @@ pub struct Options {
     pub max_extglob_recursion: MaxExtglobRecursion,
 }
 
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            dot: false,
-            bash: false,
-            capture: false,
-            contains: false,
-            windows: false,
-            noext: None,
-            noextglob: None,
-            nonegate: false,
-            noglobstar: false,
-            nobrace: false,
-            nobracket: false,
-            posix: None,
-            strict_slashes: None,
-            strict_brackets: false,
-            literal_brackets: None,
-            unescape: false,
-            keep_quotes: false,
-            regex: None,
-            fastpaths: None,
-            max_length: None,
-            prepend: None,
-            max_extglob_recursion: MaxExtglobRecursion::default(),
-        }
-    }
-}
 
 impl Options {
     #[must_use]
@@ -179,17 +151,23 @@ fn js_regex_expression(value: &str) -> String {
                 index += consumed;
             }
             '[' => {
+                if class { result.push('\\'); }
                 class = true;
                 result.push(ch);
                 index += 1;
             }
             ']' => {
+                if !class { result.push('\\'); }
                 class = false;
                 result.push(ch);
                 index += 1;
             }
             '.' if !class => {
                 result.push_str("[^\\n\\r\\u{2028}\\u{2029}]");
+                index += 1;
+            }
+            '&' | '~' if class => {
+                result.push_str(&format!("\\x{{{:X}}}", u32::from(ch)));
                 index += 1;
             }
             _ => {
@@ -232,6 +210,15 @@ fn js_escape(chars: &[char], start: usize) -> (String, usize) {
             _ => ("x".to_string(), 2),
         },
         'u' => {
+            // Brace escapes are generated mapped-unit regex source, not raw JS escapes.
+            if chars.get(start + 2) == Some(&'{') {
+                let mut end = start + 3;
+                while end < chars.len() && chars[end] != '}' { end += 1; }
+                if end < chars.len() {
+                    let body: String = chars[start + 2..=end].iter().collect();
+                    return (format!("\\u{body}"), end - start + 1);
+                }
+            }
             let hex: Option<String> = chars
                 .get(start + 2..start + 6)
                 .filter(|digits| digits.iter().all(char::is_ascii_hexdigit))
@@ -284,7 +271,6 @@ fn to_regex(source: &str) -> Regex {
     }
 }
 
-#[must_use]
 pub fn compile(pattern: &str, options: &Options) -> Result<Compiled, PicomatchError> {
     if pattern.is_empty() {
         return Err(PicomatchError::Type("Expected pattern to be a non-empty string".into()));

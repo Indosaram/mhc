@@ -121,7 +121,7 @@ pub struct ExtglobChars {
 #[must_use]
 pub fn extglob_chars(value: char, chars: &GlobChars) -> Option<ExtglobChars> {
     Some(match value {
-        '!' => ExtglobChars { open: "(?:(?!(?:".into(), close: format!(")){}", chars.star) },
+        '!' => ExtglobChars { open: "(?:(?!(?:".into(), close: format!(")){})", chars.star) },
         '?' => ExtglobChars { open: "(?:".into(), close: ")?".into() },
         '+' => ExtglobChars { open: "(?:".into(), close: ")+".into() },
         '*' => ExtglobChars { open: "(?:".into(), close: ")*".into() },

@@ -11,11 +11,41 @@ fn pinned_nested_brace_and_class_boundaries_match(){
     }
 }
 fn patterns(values:&[&str])->Option<PatternList>{Some(PatternList::Multiple(values.iter().map(|v|(*v).into()).collect()))}
-#[test]fn negative_extglob_slash_body_anchors_before_suffix(){let f=RuleFrontmatter{globs:patterns(&["**","!!(foo/bar).ts"]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"foo/bar.ts",scope_relative:None,basename:"foo/bar.ts"}).expect("slash body extglob");assert!(!result.matched);}
-#[test]fn bash_negative_extglob_consumes_slashes(){let f=RuleFrontmatter{globs:patterns(&["**","!!(foo).ts"]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"dir/bar.ts",scope_relative:None,basename:"dir/bar.ts"}).expect("bash negative matcher");assert!(!result.matched);}
+#[test]
+fn negative_extglob_slash_body_anchors_before_suffix(){
+    // Pinned picomatch 4.0.5 uses a segment-local star after this negative lookahead.
+    let f=RuleFrontmatter{globs:patterns(&["**","!!(foo/bar).ts"]),..Default::default()};
+    let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"foo/bar.ts",scope_relative:None,basename:"foo/bar.ts"}).expect("slash body extglob");
+    assert!(result.matched);
+    let boundary=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"bar.ts",scope_relative:None,basename:"bar.ts"}).expect("slash body extglob");
+    assert!(!boundary.matched);
+}
+#[test]
+fn bash_negative_extglob_consumes_slashes(){
+    // Pinned picomatch crosses slashes only when the extglob's star body selects globstar.
+    let f=RuleFrontmatter{globs:patterns(&["**","!!(foo).ts"]),..Default::default()};
+    let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"dir/bar.ts",scope_relative:None,basename:"dir/bar.ts"}).expect("bash negative matcher");
+    assert!(result.matched);
+    let star=RuleFrontmatter{globs:patterns(&["**","!!(*.d).ts"]),..Default::default()};
+    let boundary=Matcher::default().match_rule(MatcherInput{frontmatter:&star,is_single_file:false,project_relative:"dir/a.ts",scope_relative:None,basename:"dir/a.ts"}).expect("bash negative matcher");
+    assert!(!boundary.matched);
+}
 #[test]fn oversized_patterns_retain_source_exception(){let pattern="a".repeat(65537);let f=RuleFrontmatter{globs:patterns(&[&pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects oversized pattern");assert_eq!(error.to_string(),"Input length: 65537, exceeds maximum allowed length: 65536");}
 #[test]fn invalid_empty_patterns_retain_source_exception(){for pattern in ["","!"]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let error=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:"a",scope_relative:None,basename:"a"}).expect_err("source rejects empty compiled pattern");assert_eq!(error.to_string(),"Expected pattern to be a non-empty string");}}
-#[test]fn matcher_matches_generated_extglob_and_malformed_matrix(){let cases:serde_json::Value=serde_json::from_str(include_str!("../../../../.omo/evidence/task-39-rules-matcher.json")).expect("generated matrix");for case in cases.as_array().expect("cases"){let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");let f=RuleFrontmatter{globs:if case["exclusion"]==true{patterns(&["**",pattern])}else{patterns(&[pattern])},..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");}}
+#[test]
+fn matcher_matches_generated_extglob_and_malformed_matrix(){
+    let path=concat!(env!("CARGO_MANIFEST_DIR"),"/tests/latest-omo-rules-matcher.json");
+    let text=std::fs::read_to_string(path).unwrap_or_else(|error|panic!("run `bun tools/golden/latest-omo-rules-matcher.mjs` to generate {path}: {error}"));
+    let corpus:serde_json::Value=serde_json::from_str(&text).expect("owned generated corpus");
+    let cases=corpus["cases"].as_array().expect("cases");
+    assert!(!cases.is_empty(),"source-generated corpus must not be empty");
+    for case in cases{
+        let pattern=case["pattern"].as_str().expect("pattern");let path=case["path"].as_str().expect("path");
+        let f=RuleFrontmatter{globs:if case["exclusion"]==true{patterns(&["**",pattern])}else{patterns(&[pattern])},..Default::default()};
+        let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("matcher");
+        assert_eq!(result.matched,case["matched"].as_bool().expect("matched"),"{pattern}: {path}");
+    }
+}
 #[test]fn character_brace_ranges_match_source(){for (pattern,path) in [("{1..3}","2"),("{3..1}","2"),("{a..c}","b")]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:path,scope_relative:None,basename:path}).expect("brace range");assert!(result.matched,"{pattern}");}}
 #[test]fn malformed_and_single_alternative_braces_are_literal(){for pattern in ["a{b","a{b,c","a{b}","a}b"]{let f=RuleFrontmatter{globs:patterns(&[pattern]),..Default::default()};let result=Matcher::default().match_rule(MatcherInput{frontmatter:&f,is_single_file:false,project_relative:pattern,scope_relative:None,basename:pattern}).expect("literal brace");assert!(result.matched,"{pattern}");}}
 fn run(frontmatter:&RuleFrontmatter,single:bool)->MatchResult {Matcher::default().match_rule(MatcherInput{frontmatter,is_single_file:single,project_relative:"src/rules/foo.ts",scope_relative:Some("rules/foo.ts"),basename:"foo.ts"}).unwrap_or_else(|error|panic!("matcher: {error}"))}

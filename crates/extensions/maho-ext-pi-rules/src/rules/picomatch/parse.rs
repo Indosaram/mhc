@@ -8,7 +8,7 @@
 //! the pattern contains astral characters.
 
 use super::constants::{
-    DEFAULT_MAX_EXTGLOB_RECURSION, ExtglobChars, MAX_LENGTH, extglob_chars, glob_chars, posix_regex_source,
+    ExtglobChars, MAX_LENGTH, extglob_chars, glob_chars, posix_regex_source,
     replacement,
 };
 use super::utils::{escape_regex, has_regex_chars, js_length, js_unit_order, js_units, remove_prefix, unit_value};
@@ -77,7 +77,7 @@ fn prefix_chars(value: &str, count: usize) -> String {
 }
 
 fn rfind_char(value: &str, ch: char) -> Option<usize> {
-    value.chars().enumerate().filter(|(_, c)| *c == ch).map(|(i, _)| i).next_back()
+    value.chars().enumerate().filter(|(_, c)| *c == ch).map(|(i, _)| i).last()
 }
 
 fn non_special_chars_len(value: &str) -> usize {
@@ -448,7 +448,7 @@ fn translate_unit_class(body: &str) -> UnitClass {
             index += 3;
             continue;
         }
-        out.push_str(&format!("\\u{{{:X}}}", atoms[index].value));
+        out.push_str(&map_unit_range(atoms[index].value, atoms[index].value));
         index += 1;
     }
     UnitClass::Body(out)
@@ -458,7 +458,6 @@ fn translate_unit_class(body: &str) -> UnitClass {
 /// spans, and whether it is a raw (unescaped) `-`.
 struct ClassAtom {
     value: u32,
-    len: usize,
     dash: bool,
 }
 
@@ -470,7 +469,7 @@ fn class_atoms(chars: &[char]) -> Option<Vec<ClassAtom>> {
     while index < chars.len() {
         let ch = chars[index];
         if ch != '\\' {
-            atoms.push(ClassAtom { value: unit_value(ch), len: 1, dash: ch == '-' });
+            atoms.push(ClassAtom { value: unit_value(ch), dash: ch == '-' });
             index += 1;
             continue;
         }
@@ -501,7 +500,7 @@ fn class_atoms(chars: &[char]) -> Option<Vec<ClassAtom>> {
             },
             _ => (u32::from(escaped), 2),
         };
-        atoms.push(ClassAtom { value, len, dash: false });
+        atoms.push(ClassAtom { value, dash: false });
         index += len;
     }
     Some(atoms)
@@ -1137,6 +1136,7 @@ impl<'a> Parser<'a> {
                             range.insert(0, snapshot[i].value.clone());
                         }
                     }
+                    self.prev = self.tokens.len().saturating_sub(1);
                     output = expand_range(&range);
                     self.backtrack = true;
                 }
@@ -1324,7 +1324,7 @@ impl<'a> Parser<'a> {
                 let is_start = self.tokens[prior].kind == "slash" || self.tokens[prior].kind == "bos";
                 let after_star = before.is_some_and(|idx| self.tokens[idx].kind == "star" || self.tokens[idx].kind == "globstar");
 
-                if self.options.bash && (!is_start || (rest.chars().next().is_some() && rest.chars().next() != Some('/'))) {
+                if self.options.bash && (!is_start || (rest.chars().next().is_some() && !rest.starts_with('/'))) {
                     self.push(Token { kind: "star".into(), value, output: Some(String::new()), ..Token::default() });
                     continue;
                 }
@@ -1658,7 +1658,6 @@ pub fn fastpaths(input: &str, options: &Options) -> Option<String> {
     Some(source)
 }
 
-#[must_use]
 pub fn parse(input: &str, options: &Options) -> Result<ParseState, PicomatchError> {
     Parser::new(input, options)?.run()
 }
