@@ -1,6 +1,7 @@
 //! Tools for interacting with git-backed memory files.
 
 pub mod memfs;
+pub mod leaked_arguments;
 pub mod memory;
 pub mod memory_apply_patch;
 pub mod patch_parser;
@@ -8,6 +9,7 @@ pub mod soul;
 pub mod tool_errors;
 
 pub use memfs::*;
+pub use leaked_arguments::*;
 pub use memory::*;
 pub use memory_apply_patch::*;
 pub use patch_parser::*;
@@ -25,6 +27,10 @@ mod patch_parser_tests;
 #[cfg(test)]
 #[path = "memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "leaked_arguments_tests.rs"]
+mod leaked_arguments_tests;
 
 #[cfg(test)]
 #[path = "memory_validation_tests.rs"]
