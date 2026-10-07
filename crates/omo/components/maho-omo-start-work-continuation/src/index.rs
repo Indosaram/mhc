@@ -52,7 +52,7 @@ impl Extension for StartWorkContinuationComponent {
             state.last_signature=Some(signature);
             state.consecutive+=1;
             let content=render_directive(&work,&run.cwd,&session_id);
-            deliver(&ctx,&runtime,content)?;
+            deliver(ctx,&runtime,content)?;
             Ok(EventResult::None)
         }) }));
     }

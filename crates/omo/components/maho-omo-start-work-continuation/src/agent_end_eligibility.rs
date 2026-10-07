@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-pub use maho_omo_fallback_architect::is_refusal_like_message;
+pub use maho_omo_fallback_architect::detection::is_refusal_like_message;
 
 /// `EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC`: the diagnostic `demoteToolUseWithoutToolCalls` leaves
 /// behind, the only surviving evidence that a `toolUse` stop was malformed rather than a clean stop.
