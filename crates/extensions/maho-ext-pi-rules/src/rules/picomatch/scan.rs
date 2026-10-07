@@ -82,7 +82,6 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
     let mut negated_extglob = false;
     let mut finished = false;
     let mut braces = 0i64;
-    let mut prev: Option<u32> = None;
     let mut code: Option<u32> = None;
     let mut token = ScanToken::default();
 
@@ -90,7 +89,7 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
     let peek = |index: isize| code_at(&chars, (index + 1).max(0) as usize);
 
     while index < length as isize {
-        prev = code;
+        let prev = code;
         index += 1;
         code = code_at(&chars, index.max(0) as usize);
 
@@ -358,9 +357,8 @@ pub fn scan(input: &str, options: &ScanOptions) -> ScanState {
 
     if options.parts || options.tokens {
         let mut prev_index: Option<usize> = None;
-        for idx in 0..slashes.len() {
+        for (idx, &i) in slashes.iter().enumerate() {
             let n = prev_index.map_or(start, |value| value + 1);
-            let i = slashes[idx];
             let units: Vec<char> = input.chars().collect();
             let value: String = units[n.min(units.len())..i.min(units.len())].iter().collect();
             if options.tokens {

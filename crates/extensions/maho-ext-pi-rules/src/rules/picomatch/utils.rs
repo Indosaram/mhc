@@ -157,7 +157,7 @@ pub fn wrap_output(input: &str, negated: bool, contains: bool) -> String {
 #[must_use]
 pub fn basename(path: &str, windows: bool) -> String {
     let segments: Vec<&str> = if windows {
-        path.split(|ch| ch == '\\' || ch == '/').collect()
+        path.split(['\\', '/']).collect()
     } else {
         path.split('/').collect()
     };

@@ -2,7 +2,7 @@ use maho_ext_rules::rules::{matcher::{MatcherCache, MatcherInput, normalize_glob
 
 fn match_patterns(patterns: &[&str], path: &str) -> bool {
     let frontmatter = RuleFrontmatter { globs: patterns.iter().map(|pattern| (*pattern).to_string()).collect(), ..Default::default() };
-    MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).unwrap().matched
+    MatcherCache::default().match_rule(MatcherInput { frontmatter: &frontmatter, is_single_file: false, project_relative: path, scope_relative: None, basename: path }).expect("compile fixture patterns").matched
 }
 
 fn match_one(pattern: &str, path: &str) -> bool {
