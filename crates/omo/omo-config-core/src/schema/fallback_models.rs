@@ -119,7 +119,6 @@ pub fn normalize_legacy_model_fields(value: &Value) -> Value {
         "reasoningEffort",
         "thinking",
         "textVerbosity",
-        "maxTokens",
         "providerOptions",
     ] {
         normalized.shift_remove(key);
@@ -171,8 +170,14 @@ pub fn normalize_legacy_model_fields(value: &Value) -> Value {
 
     if let Some(max_tokens) = entry.get("max_tokens") {
         normalized.insert("max_tokens".into(), max_tokens.clone());
-    } else if let Some(max_tokens) = entry.get("maxTokens") {
+        if entry.get("maxTokens").is_none_or(Value::is_number) {
+            normalized.shift_remove("maxTokens");
+        }
+    } else if let Some(max_tokens) = entry.get("maxTokens")
+        && max_tokens.is_number()
+    {
         normalized.insert("max_tokens".into(), max_tokens.clone());
+        normalized.shift_remove("maxTokens");
     }
 
     Value::Object(normalized)
