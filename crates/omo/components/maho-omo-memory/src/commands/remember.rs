@@ -73,7 +73,15 @@ mod tests {
     async fn given_a_bound_identity_when_invoked_with_text_then_wait_for_idle_precedes_a_remember_turn() {
         let (_root, identity) = temp_identity();
         let fake = fake_deps(Some(identity), FakeDepsOverrides::default());
-        let context = fake_command_context(FakeContextOptions::default());
+        let mut context = fake_command_context(FakeContextOptions::default());
+        let order = fake.actions.order.clone();
+        context.order = order.clone();
+        context.ctx.wait_for_idle = Some(Arc::new(move || {
+            let order = order.clone();
+            Box::pin(async move {
+                order.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("waitForIdle".to_owned());
+            })
+        }));
 
         let response = handle_remember(&fake.deps, &context.ctx, "I prefer tabs over spaces").await;
 

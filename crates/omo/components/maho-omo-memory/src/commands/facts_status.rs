@@ -229,7 +229,7 @@ mod tests {
     use super::*;
     use memory_core::facts::failures_schema::{FactsFailureReason, FactsFailureState};
 
-    const NOW_MS: i64 = 1_786_968_000_000;
+    const NOW_MS: i64 = 1_786_881_600_000;
 
     fn backoff_record(end_message_id: &str) -> FactsFailureRecord {
         FactsFailureRecord {
