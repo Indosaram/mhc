@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use maho_ext_api::{ExtensionFailure, ExtensionRuntime, ResourcesDiscoverEvent, SlashCommandInfo};
-use maho_omo_config_core::{
+use omo_config_core::{
     CollectDisabledSkillsOptions, LoadOmoConfigOptions, collect_disabled_skills, load_omo_config,
 };
 

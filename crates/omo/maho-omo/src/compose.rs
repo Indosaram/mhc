@@ -186,7 +186,7 @@ impl Extension for OmoExtension {
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| component.register(api, &runtime))) {
                 let details = serde_json::json!({
                     "component": component.name,
-                    "error": panic_reason(&payload),
+                    "error": panic_reason(payload.as_ref()),
                 });
                 runtime.logger().error("omo-senpi component registration failed", Some(&details));
             }
