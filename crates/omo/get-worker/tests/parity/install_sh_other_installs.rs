@@ -81,7 +81,10 @@ fn fixture(failing_removal: bool) -> Fixture {
     };
     write_file(&tools.join("bun"), bun_body, true);
 
-    let unrelated = package_dir.join("../unrelated-package/keep.txt");
+    let unrelated = package_dir
+        .parent()
+        .expect("node_modules directory")
+        .join("unrelated-package/keep.txt");
     write_file(&unrelated, "keep\n", false);
     fs::create_dir_all(&work).expect("work dir");
 

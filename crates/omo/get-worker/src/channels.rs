@@ -96,7 +96,7 @@ pub fn serve_channel(
                     format!("public, max-age={POINTER_TTL_SECONDS}"),
                 )
                 .with_header("X-Omo-Source", resolved.source.as_str());
-            ctx.wait_until(CachePopulation {
+            ctx.wait_until.wait_until(CachePopulation {
                 key: cache_key,
                 response: fresh.clone(),
             });

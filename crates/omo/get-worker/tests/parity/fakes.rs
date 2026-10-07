@@ -81,14 +81,14 @@ impl ReleaseStore for MemoryReleaseStore {
     fn head(&self, key: &str) -> Result<Option<ObjectMeta>, StoreError> {
         Ok(self.read(key)?.map(|stored| ObjectMeta {
             key: key.to_string(),
-            size: stored.body.len(),
+            size: stored.body.len() as u64,
         }))
     }
 
     fn get(&self, key: &str) -> Result<Option<StoredObject>, StoreError> {
         Ok(self.read(key)?.map(|stored| StoredObject {
             key: key.to_string(),
-            size: stored.body.len(),
+            size: stored.body.len() as u64,
             http_etag: format!("\"{key}\""),
             body: Body::Bytes(stored.body),
             http_metadata: stored.metadata,
@@ -132,15 +132,6 @@ impl MemoryEdgeCache {
         Self::default()
     }
 
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.entries.borrow().len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.entries.borrow().is_empty()
-    }
 }
 
 impl EdgeCache for MemoryEdgeCache {
@@ -170,11 +161,6 @@ impl PendingWork {
         for population in queued {
             cache.put(&population.key, population.response);
         }
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.populations.borrow().len()
     }
 
     #[must_use]
@@ -210,10 +196,6 @@ impl StaticFetcher {
         self
     }
 
-    #[must_use]
-    pub fn calls(&self) -> Vec<FetchRequest> {
-        self.calls.borrow().clone()
-    }
 }
 
 impl HttpFetcher for StaticFetcher {

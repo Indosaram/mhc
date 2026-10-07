@@ -118,7 +118,7 @@ pub fn serve_release_asset(
                 return response.without_body();
             }
             if !ranged {
-                ctx.wait_until(CachePopulation {
+                ctx.wait_until.wait_until(CachePopulation {
                     key: cache_key,
                     response: response.clone(),
                 });

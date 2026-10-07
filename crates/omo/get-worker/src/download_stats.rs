@@ -81,7 +81,7 @@ pub fn serve_download_stats(ctx: &RequestContext<'_>) -> Result<Response, DbErro
             format!("public, max-age={STATS_TTL_SECONDS}"),
         )
         .with_header("Access-Control-Allow-Origin", "*");
-    ctx.wait_until(CachePopulation {
+    ctx.wait_until.wait_until(CachePopulation {
         key: cache_key,
         response: response.clone(),
     });

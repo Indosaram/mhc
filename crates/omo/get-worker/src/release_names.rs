@@ -40,7 +40,7 @@ pub fn is_release_version(value: &str) -> bool {
 
 #[must_use]
 pub fn is_channel(value: &str) -> bool {
-    CHANNELS.iter().any(|channel| *channel == value)
+    CHANNELS.contains(&value)
 }
 
 /// Resolves a channel name to its static identity, mirroring `isChannel`'s narrowing.
