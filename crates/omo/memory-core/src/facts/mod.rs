@@ -45,6 +45,9 @@ pub use person_routing::{
     ObservationBucket, facts_routing_paths, normalize_observation_text, plan_facts_routing,
     render_card_skeleton, render_person_targets, resolve_person_slug,
 };
+pub use recovery::{
+    FactsRecoveryError, FactsRecoveryResult, apply_facts_recovery, find_facts_batch_receipt,
+};
 pub use schema::{
     FACTS_QUEUE_VERSION, FactsConsumedRecord, FactsConsumedWatermark, FactsCursor, FactsQueueEntry,
     FactsQueueLayout, FactsQueueRange, canonical_position, facts_queue_paths, initial_cursor,

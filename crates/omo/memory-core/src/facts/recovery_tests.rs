@@ -8,7 +8,7 @@ use crate::facts::extraction::{
     ApplyFactsBatchOptions, FactsBatch, FactsExtractionRecord, apply_facts_batch,
 };
 use crate::facts::mutation_plan::{FactsApplyRecovery, plan_facts_mutation};
-use crate::facts::recovery::apply_facts_recovery;
+use crate::facts::recovery::{apply_facts_recovery, find_facts_batch_receipt};
 
 fn author() -> GitCommitAuthor {
     GitCommitAuthor {
@@ -26,6 +26,32 @@ fn sample_batch() -> FactsBatch {
             date: "2026-08-10".to_string(),
         }],
     }
+}
+
+#[test]
+fn test_find_facts_batch_receipt_matches_the_batch_trailer_and_ignores_unknown_batches() {
+    let dir = tempdir().expect("tempdir");
+    let repo = crate::support::test_repo::init_test_repo(dir.path());
+    apply_facts_batch(
+        &repo,
+        sample_batch(),
+        &author(),
+        ApplyFactsBatchOptions::default(),
+    )
+    .expect("apply batch");
+
+    let receipt = find_facts_batch_receipt(&repo, &sample_batch().batch_id)
+        .expect("receipt lookup")
+        .expect("receipt commit");
+    assert_eq!(
+        receipt.trailers.get("Omo-Facts-Batch").map(String::as_str),
+        Some(sample_batch().batch_id.as_str())
+    );
+    assert!(
+        find_facts_batch_receipt(&repo, "00000000-0000-4000-8000-000000000000")
+            .expect("receipt lookup")
+            .is_none()
+    );
 }
 
 #[test]
@@ -210,7 +236,7 @@ mod race_ports {
         ApplyFactsBatchOptions, FactsBatch, FactsExtractionRecord, apply_facts_batch,
     };
     use crate::facts::mutation_plan::plan_facts_mutation;
-    use crate::facts::recovery::apply_facts_recovery;
+    use crate::facts::recovery::{apply_facts_recovery, find_facts_batch_receipt};
     use crate::git::{
         GitExec, GitExecOptions, GitExecResult, GitMemoryRepo, GitMemoryRepoOptions,
         GitWorktreeIdentity, InitializeGitRepoOptions, system_git_exec,
@@ -270,11 +296,11 @@ mod race_ports {
     }
 
     fn receipts(repo: &GitMemoryRepo, batch_id: &str) -> usize {
-        repo.log(None)
-            .expect("log")
-            .iter()
-            .filter(|c| c.trailers.get("Omo-Facts-Batch").map(String::as_str) == Some(batch_id))
-            .count()
+        usize::from(
+            find_facts_batch_receipt(repo, batch_id)
+                .expect("receipt lookup")
+                .is_some(),
+        )
     }
 
     #[test]

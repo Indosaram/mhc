@@ -1,6 +1,6 @@
 //! Application and boundary verification of facts recovery plans.
 
-use crate::git::{GitCommitAuthor, GitError, GitMemoryRepo};
+use crate::git::{GitCommitAuthor, GitError, GitMemoryRepo, MemoryCommit};
 
 use super::mutation_plan::FactsApplyRecovery;
 use super::recovery_mutation::{
@@ -98,6 +98,19 @@ impl From<FactsMutationError> for FactsRecoveryError {
             FactsMutationError::Git(e) => Self::Git(e),
         }
     }
+}
+
+/// Locate the commit that records a facts batch receipt, matched by its `Omo-Facts-Batch` trailer.
+///
+/// Port of `findFactsBatchReceipt` (`facts/recovery.ts:10`): the batch id is the trailer value, so
+/// the lookup is a linear scan over the repository log and the first match is the receipt.
+pub fn find_facts_batch_receipt(
+    repo: &GitMemoryRepo,
+    batch_id: &str,
+) -> Result<Option<MemoryCommit>, GitError> {
+    Ok(repo.log(None)?.into_iter().find(|commit| {
+        commit.trailers.get("Omo-Facts-Batch").map(String::as_str) == Some(batch_id)
+    }))
 }
 
 /// Apply a pre-computed facts recovery plan to the repository.
