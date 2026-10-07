@@ -200,23 +200,23 @@ fn has_decision_language(hint: &str) -> bool {
                 (Some("unrelated"), Some("to")) | (Some("not"), Some("about")) => return true,
                 _ => {}
             },
-            Some("does") | Some("do") => {
+            Some("does") | Some("do")
                 if words.get(index + 2).is_some_and(|next| next == "not")
                     && matches!(
                         words.get(index + 3).map(String::as_str),
                         Some("cover") | Some("address") | Some("pertain")
                     )
-                {
-                    return true;
-                }
+                =>
+            {
+                return true;
             }
-            Some("cover") | Some("covers") => {
+            Some("cover") | Some("covers")
                 if words.get(index + 2..).is_some_and(|rest| {
                     rest.windows(2)
                         .any(|pair| pair[0] == "not" && pair[1] == "the")
-                }) {
-                    return true;
-                }
+                }) =>
+            {
+                return true;
             }
             _ => {}
         }

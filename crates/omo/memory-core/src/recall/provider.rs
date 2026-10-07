@@ -43,12 +43,13 @@ pub fn load_recall_corpus(repo: &GitMemoryRepo) -> Result<RecallCorpus, GitError
 
 /// A parsed file keyed by the blob it came from; `None` records an unparseable blob.
 type LoadedBlob = Option<RecallDocument>;
+type LoadedBlobs = BTreeMap<String, (String, LoadedBlob)>;
 
 fn load_corpus_at_revision(
     repo: &GitMemoryRepo,
     revision: &str,
-    previous: &BTreeMap<String, (String, LoadedBlob)>,
-) -> Result<(RecallCorpus, BTreeMap<String, (String, LoadedBlob)>), GitError> {
+    previous: &LoadedBlobs,
+) -> Result<(RecallCorpus, LoadedBlobs), GitError> {
     let entries: Vec<_> = repo
         .ls_tree_blobs(Some(revision))?
         .into_iter()
@@ -125,7 +126,7 @@ struct RecallCorpusCacheEntry {
 pub struct RecallCorpusCache {
     entry: Option<RecallCorpusCacheEntry>,
     probe: Option<(PathBuf, String)>,
-    blobs: Option<(PathBuf, BTreeMap<String, (String, LoadedBlob)>)>,
+    blobs: Option<(PathBuf, LoadedBlobs)>,
     resolve_head: RecallHeadResolver,
 }
 
