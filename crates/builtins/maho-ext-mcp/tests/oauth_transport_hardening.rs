@@ -45,7 +45,7 @@ fn metadata_endpoints_are_validated_and_normalized() {
 async fn discovery_rejects_an_http_resource_url_in_production() {
     let root = tempfile::tempdir().unwrap();
     let provider = McpOAuthProvider::new(McpTokenStore::new(root.path(), "https-required", "http://127.0.0.1:1/mcp"));
-    assert_eq!(discover(&provider, &reqwest::Client::new()).await.unwrap_err().to_string(), "Resource server URL must use https");
+    assert_eq!(discover(&provider, &reqwest::Client::new()).await.err().expect("discovery must fail").to_string(), "Resource server URL must use https");
 }
 
 #[test]

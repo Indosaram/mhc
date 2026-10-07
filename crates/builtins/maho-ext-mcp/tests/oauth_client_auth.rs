@@ -75,7 +75,7 @@ async fn discovery_requires_authorization_servers_in_protected_resource_metadata
     let (stop,stopped)=tokio::sync::oneshot::channel();
     let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/.well-known/oauth-protected-resource",get(||async {Json(json!({"resource":"https://mcp.example/mcp"}))}))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let mut provider=McpOAuthProvider::new(McpTokenStore::new(root.path(),"missing-servers",&format!("http://{address}/mcp")));provider.require_https=false;
-    let client=reqwest::Client::new();let error=discover(&provider,&client).await.unwrap_err();
+    let client=reqwest::Client::new();let error=discover(&provider,&client).await.err().expect("discovery must fail");
     assert_eq!(error.to_string(),"OAuth protected resource metadata missing authorization_servers");
     drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }
@@ -88,7 +88,7 @@ async fn discovery_reports_the_protected_resource_status() {
     let (stop,stopped)=tokio::sync::oneshot::channel();
     let server=tokio::spawn(async move {axum::serve(listener,Router::new().route("/.well-known/oauth-protected-resource",get(||async {(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":"boom"}))) }))).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let mut provider=McpOAuthProvider::new(McpTokenStore::new(root.path(),"prm-status",&format!("http://{address}/mcp")));provider.require_https=false;
-    let client=reqwest::Client::new();let error=discover(&provider,&client).await.unwrap_err();
+    let client=reqwest::Client::new();let error=discover(&provider,&client).await.err().expect("discovery must fail");
     assert_eq!(error.to_string(),"OAuth protected resource metadata fetch failed (500)");
     drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }
@@ -106,7 +106,7 @@ async fn discovery_requires_the_authorization_and_token_endpoints() {
         .route("/.well-known/oauth-authorization-server",get(move ||{let metadata=metadata.clone();async move {Json(metadata)}}));
     let server=tokio::spawn(async move {axum::serve(listener,app).with_graceful_shutdown(async {let _=stopped.await;}).await.unwrap();});
     let root=tempfile::tempdir().unwrap();let mut provider=McpOAuthProvider::new(McpTokenStore::new(root.path(),"missing-endpoint",&format!("http://{address}/mcp")));provider.require_https=false;
-    let client=reqwest::Client::new();let error=discover(&provider,&client).await.unwrap_err();
+    let client=reqwest::Client::new();let error=discover(&provider,&client).await.err().expect("discovery must fail");
     assert_eq!(error.to_string(),"OAuth metadata missing token_endpoint");
     drop(client);stop.send(()).unwrap();tokio::time::timeout(Duration::from_secs(2),server).await.unwrap().unwrap();
 }

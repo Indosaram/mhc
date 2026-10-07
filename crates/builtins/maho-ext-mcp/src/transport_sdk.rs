@@ -198,7 +198,7 @@ impl McpClient {
                 ChallengeRetry::Retry=>continue,
                 // Pinned `withOperationRetry` retries the operation on the client `forceReconnect`
                 // produced; the shared attempt budget bounds the recursion like the pinned `maxRetries`.
-                ChallengeRetry::Reconnected(next)=>if attempts>1 {return next.http_send_with_attempts(value,attempts-1).await;}else{return Err(self.http_failure(status,challenge.as_deref()));},
+                ChallengeRetry::Reconnected(next)=>if attempts>1 {return Box::pin(next.http_send_with_attempts(value,attempts-1)).await;}else{return Err(self.http_failure(status,challenge.as_deref()));},
                 ChallengeRetry::None=>return Err(self.http_failure(status,challenge.as_deref())),
             }
         };
