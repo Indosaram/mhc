@@ -188,6 +188,16 @@ pub fn to_child_spec(spec: &ManagedStartSpec, context: InProcessSessionContext) 
         parent_session_id: spec.parent_session_id.clone(),
         root_session_id: spec.root_session_id.clone(),
         prompt: spec.prompt.clone(),
+        // `ManagedStartSpec` carries no system prompt (upstream `toChildSpec` maps none), so a
+        // manager-routed child keeps the engine's own default; the direct `ChildSpec` callers set
+        // `system_prompt` on the spec themselves.
+        system_prompt: None,
+        // `ManagedStartSpec` carries no prompt envelope (upstream `toChildSpec` maps none), so a
+        // manager-routed child keeps the default subagent envelope.
+        prompt_envelope: None,
+        // `ManagedStartSpec` carries no completion policy (upstream `toChildSpec` maps none), so a
+        // manager-routed child keeps the default `FinalText` judgment.
+        completion: None,
         agent_dir: context.agent_dir,
         auth_storage: context.auth_storage,
         model_registry: context.model_registry,
@@ -198,6 +208,10 @@ pub fn to_child_spec(spec: &ManagedStartSpec, context: InProcessSessionContext) 
         requested_model: spec.requested_model.clone(),
         fallback_models: spec.fallback_models.clone(),
         resolved_model: spec.resolved_model.clone(),
+        // `ManagedStartSpec` carries no retry override (upstream `toChildSpec` maps none), so a
+        // manager-routed child keeps the engine's own budget; the direct `ChildSpec` callers (the
+        // memory/kibitzer launch sites) set it on the spec themselves.
+        retry: None,
         agent_type: spec.agent_type.clone(),
         instructions: spec.instructions.clone(),
         tool_allowlist: spec.tool_allowlist.clone(),

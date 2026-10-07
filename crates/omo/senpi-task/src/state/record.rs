@@ -34,6 +34,8 @@ pub fn create_task_record(
         notify_on_terminal,
         pending_steering,
         owner,
+        runner_kind,
+        host_session,
     } = input;
     Ok(TaskRecord {
         task_id: task_id.to_string(),
@@ -69,5 +71,8 @@ pub fn create_task_record(
         error_message: None,
         killed: None,
         run_stats: None,
+        isolation: None,
+        runner_kind,
+        host_session,
     })
 }

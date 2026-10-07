@@ -1,0 +1,27 @@
+[package]
+name = "maho-git-bash-mcp"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+description = "Windows Git Bash stdio MCP server and command runner (port of @oh-my-opencode/git-bash-mcp)"
+
+[lib]
+name = "git_bash_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omo-git-bash"
+path = "src/main.rs"
+
+[dependencies]
+maho-mcp-stdio-core.workspace = true
+maho-utils.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+tempfile.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+
+[lints]
+workspace = true

@@ -14,9 +14,10 @@ maho-senpi-task = { path = "../../senpi-task", version = "=0.0.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha1 = "=0.10.6"
+regress = { version = "=0.12.0", features = ["utf16"] }
 chrono = { workspace = true, features = ["std"] }
 notify = "=8.2.0"
-tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net", "sync"] }
 
 [dev-dependencies]
 maho-rpc = { path = "../../../maho-rpc", version = "=0.0.0" }

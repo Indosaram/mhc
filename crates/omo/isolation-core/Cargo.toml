@@ -1,0 +1,39 @@
+[package]
+name = "maho-isolation-core"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "isolation_core"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { version = "=0.4.43", default-features = false, features = ["clock", "std"] }
+filetime.workspace = true
+hex = "=0.4.3"
+libc = "=0.2.186"
+maho-memory-core.workspace = true
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+sha1 = "=0.10.6"
+thiserror = "=2.0.18"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[[test]]
+name = "parity"
+path = "tests/parity/main.rs"
+
+# Imported from oh-my-openagent (see PINS.md): this crate does not opt into
+# `[lints] workspace = true`. The table mirrors the workspace lints; the "allow"
+# entry is the lint it trips. `unsafe_code` is allowed because the APFS
+# clonefile, Linux FICLONE and Windows FSCTL block-clone backends are native
+# syscalls (bun:ffi has no Rust equivalent), exactly as in the ported source.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"

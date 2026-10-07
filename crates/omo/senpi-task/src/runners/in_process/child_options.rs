@@ -38,6 +38,10 @@ pub struct ChildSessionOptions {
     pub cwd: String,
     pub session_manager: Arc<ChildSessionManager>,
     pub resource_loader: ChildResourceLoader,
+    /// The minimal child loader's `getSystemPrompt()` value; `None` leaves the host's own default
+    /// in place. Set from `ChildSpec.system_prompt` (upstream passes `systemPrompt` into
+    /// `createChildResourceLoader`).
+    pub system_prompt: Option<String>,
     pub custom_tools: Vec<ChildToolRef>,
     pub agent_dir: Option<String>,
     pub auth_storage: Option<HostHandle>,
@@ -140,6 +144,7 @@ pub fn build_child_session_options(
         cwd: spec.cwd.clone(),
         session_manager: Arc::new(session_manager),
         resource_loader: ChildResourceLoader::Minimal,
+        system_prompt: spec.system_prompt.clone(),
         custom_tools,
         agent_dir: spec.agent_dir.clone(),
         auth_storage: spec.auth_storage.clone(),
@@ -150,6 +155,7 @@ pub fn build_child_session_options(
         settings: create_runtime_fallback_settings(
             spec.selected_model.as_deref(),
             spec.fallback_models.as_deref(),
+            spec.retry.as_ref(),
         ),
         tools: spec.tool_allowlist.clone(),
         exclude_tools: spec.tool_denylist.clone(),

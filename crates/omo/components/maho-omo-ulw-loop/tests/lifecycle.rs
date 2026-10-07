@@ -221,7 +221,7 @@ struct RecordingCoordinator {
     scheduled: std::sync::atomic::AtomicUsize,
 }
 impl IdleInjectionCoordinator for RecordingCoordinator {
-    fn enqueue(&self, injection: IdleInjection) { self.enqueued.lock().expect("enqueued").push(injection); }
+    fn enqueue(&self, injection: IdleInjection) -> bool { self.enqueued.lock().expect("enqueued").push(injection); true }
     fn schedule_flush(&self) { self.scheduled.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
     fn flush_soon(&self) {}
     fn flush_on_idle(&self) -> usize { 0 }
@@ -264,7 +264,7 @@ async fn coordinator_routes_the_continuation_instead_of_a_direct_message() {
 #[tokio::test]
 async fn queued_completion_and_continuation_share_one_coordinator_queue() {
     let (api, actions, coordinator) = coordinator_harness(Some(active_runner()));
-    coordinator.enqueue(IdleInjection { key: "st_done".into(), source: IdleInjectionSource::TaskCompletion, custom_type: Some("senpi-task:completion".into()), content: "task st_done completed".into(), display: Some(false), details: None, on_flushed: None, on_delivery_failed: None });
+    coordinator.enqueue(IdleInjection { key: "st_done".into(), source: IdleInjectionSource::TaskCompletion, custom_type: Some("senpi-task:completion".into()), content: "task st_done completed".into(), display: Some(false), details: None, passive: Some(false), on_flushed: None, on_delivery_failed: None });
     let mut ctx = support::context();
     ctx.idle_coordinator = Some(Arc::clone(&coordinator) as Arc<dyn IdleInjectionCoordinator>);
     let mut event = ExtensionEvent::AgentEnd { messages: Vec::new(), aborted: Some(false), abort_source: None, will_retry: Some(false) };

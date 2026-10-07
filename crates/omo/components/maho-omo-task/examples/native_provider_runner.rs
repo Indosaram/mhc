@@ -67,7 +67,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     let runner=maho_omo_task::engine_runners::build_process_runner(options.clone());
     let engine=maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
         cwd:home.clone().into(), config:serde_json::json!({"task":{"default_execution_mode":"process"},"agents":{"native-proof":{"execution_mode":"process","model":"task44/native"}}}),
-        runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:Arc::new(Actions),coordinator:None,resolve_registry:Arc::new(|| None),
+        runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:Arc::new(Actions),coordinator:None,resolve_registry:Arc::new(|| None),host_transport:None,
     },Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(options)));
     let manager_cleanup=ManagerCleanup(engine.manager.clone());
     let (sender,receiver)=mpsc::channel(); let launching=engine.manager.clone();

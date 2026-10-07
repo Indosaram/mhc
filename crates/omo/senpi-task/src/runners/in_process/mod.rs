@@ -10,7 +10,9 @@ pub mod session_manager;
 pub mod shared_tool_filter;
 pub mod subagent_prompt;
 
-pub use runner::{ChildSpec, InProcessRunner, InProcessRunnerOptions};
+pub use runner::{ChildPromptEnvelope, ChildSpec, InProcessRunner, InProcessRunnerOptions};
+pub use child_handle::ChildCompletionPolicy;
+pub use runtime_fallback_settings::ChildRetryOverride;
 
 #[cfg(test)]
 mod in_process_tests;

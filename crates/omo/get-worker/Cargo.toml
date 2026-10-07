@@ -1,0 +1,32 @@
+[package]
+name = "maho-get-worker"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "get_worker"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+thiserror = "=2.0.18"
+
+[dev-dependencies]
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+tempfile = "=3.27.0"
+
+[[test]]
+name = "parity"
+path = "tests/parity/main.rs"
+
+# Imported from oh-my-openagent (see PINS.md): this crate does not opt into
+# `[lints] workspace = true`. The table mirrors the workspace lints; this crate
+# trips no lint, so there is no crate-level allow entry.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"

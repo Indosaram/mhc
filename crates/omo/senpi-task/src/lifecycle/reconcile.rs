@@ -16,6 +16,9 @@ use super::reconcile_revival::reconcile_scoped_revival;
 use super::residency::{ResidencyClaimResult, is_suspended_residency, reclaim_orphaned_resident};
 use super::ttl::parse_iso_ms;
 use super::types::{ReconcileOutcome, ReconcileOutcomeKind, ReconcileResult};
+use crate::isolation::{
+    SalvagePorts, needs_crash_salvage, salvage_crashed_isolation, sweep_isolations,
+};
 use crate::state::{ResidencyState, TaskRecord, TaskStatus, mark_record_lost_for_reconciliation};
 use crate::store::PersistedTaskEvent;
 
@@ -60,6 +63,7 @@ pub fn reconcile_on_session_start(
                 outcomes.push(reconcile_legacy_record(context, record)?);
             }
         }
+        reclaim_isolations(context);
         return Ok(ReconcileResult { outcomes });
     };
     for record in &candidates {
@@ -88,7 +92,40 @@ pub fn reconcile_on_session_start(
         &scoped,
         &resolver,
     )?);
+    reclaim_isolations(context);
     Ok(ReconcileResult { outcomes })
+}
+
+/// Crash salvage FIRST, then the sweep: a dead host's clone must have its delta captured while the
+/// clone still exists, and only then may the sweep reclaim clones whose owner is provably gone.
+/// Reversing salvage and sweep would delete unreviewed work.
+fn reclaim_isolations(context: &LifecycleContext) {
+    let Some(runtime) = context.isolation.as_deref() else {
+        return;
+    };
+    let Ok(listed) = context.store.list() else {
+        return;
+    };
+    let records = listed.records;
+    let terminal = |record: &TaskRecord| record.status.is_terminal();
+    let mutate = |task_id: &str, mutation: &dyn Fn(&TaskRecord) -> TaskRecord| {
+        let mut apply = |record: &TaskRecord| mutation(record);
+        let _ = context.store.mutate(task_id, &mut apply);
+    };
+    for record in &records {
+        if !needs_crash_salvage(record, &terminal) {
+            continue;
+        }
+        salvage_crashed_isolation(
+            &SalvagePorts {
+                runtime,
+                state_dir: context.store.state_dir(),
+                mutate: &mutate,
+            },
+            record,
+        );
+    }
+    let _ = sweep_isolations(runtime, &records, std::sync::Arc::clone(&context.isolation_probe));
 }
 
 fn reconcile_legacy_record(

@@ -70,7 +70,7 @@ async fn registered_send_observes_late_team_routing_and_propagates_resolver_fail
     let engine = compose_task_engine(ComposeTaskEngineDeps {
         cwd: root.path().into(), config: serde_json::json!({}),
         runners: ManagedRunners { in_process: runner.clone(), process: runner },
-        actions: Arc::new(Actions::default()), coordinator: None, resolve_registry: Arc::new(|| None),
+        actions: Arc::new(Actions::default()), coordinator: None, resolve_registry: Arc::new(|| None), host_transport: None,
     });
     let mut api = support::api();
     let ownership = TeamMemberOwnershipDeps {
@@ -132,7 +132,7 @@ async fn recovery(case: Case) {
     let engine = compose_task_engine_with_clock(ComposeTaskEngineDeps {
         cwd: root.path().into(), config: serde_json::json!({"task":{"ttl_ms":1}}),
         runners: ManagedRunners { in_process: runner.clone(), process: runner }, actions: actions.clone(),
-        coordinator: None, resolve_registry: Arc::new(|| None),
+        coordinator: None, resolve_registry: Arc::new(|| None), host_transport: None,
     }, None, Some(clock.now_fn()));
     // The member task id is a FIXED fixture value (tests/fixtures/liveness-session.jsonl ->
     // team-member-liveness:st_00000001:0). Reserve its floor BEFORE the completion's monotonic

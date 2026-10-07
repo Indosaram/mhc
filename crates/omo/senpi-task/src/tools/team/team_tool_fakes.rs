@@ -1,5 +1,6 @@
 //! Recording fakes for the team-tools service (TS `tools/team/__fixtures__/team-tool-fakes.ts`).
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -11,7 +12,8 @@ use crate::team::member_map::MemberTaskMap;
 use crate::team::runtime_types::{CreateTeamResult, CreatedMemberInfo, CreatedMemberRole, DeleteTeamResult};
 use crate::tools::team::types::{
     ActiveTeamScope, ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput,
-    TeamServiceResult, TeamTaskListFilter, TeamToolServiceError, TeamToolsService, UpdateTeamTaskServiceInput,
+    DiscoveredTeamSpec, TeamServiceResult, TeamStatus, TeamTaskListFilter, TeamToolServiceError,
+    TeamToolsService, UpdateTeamTaskServiceInput,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +36,11 @@ pub(crate) type UpdateTaskStub = Box<dyn Fn(&UpdateTeamTaskServiceInput) -> Team
 pub(crate) type GetTaskStub = Box<dyn Fn(&str, &str) -> TeamServiceResult<Task> + Send + Sync>;
 pub(crate) type ShutdownStub = Box<dyn Fn(&str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
 pub(crate) type RejectShutdownStub = Box<dyn Fn(&str, &str, &str) -> TeamServiceResult<RuntimeState> + Send + Sync>;
+pub(crate) type AggregateStatusStub = Box<dyn Fn(&str) -> TeamServiceResult<TeamStatus> + Send + Sync>;
+pub(crate) type DiscoverSpecsStub =
+    Box<dyn Fn(&Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> + Send + Sync>;
+pub(crate) type LoadSpecCountStub =
+    Box<dyn Fn(&str, &Path) -> TeamServiceResult<usize> + Send + Sync>;
 
 /// `Partial<TeamToolsService>`: only the stubbed methods succeed; the rest fail as "not stubbed".
 #[derive(Default)]
@@ -50,6 +57,9 @@ pub(crate) struct FakeTeamServiceOverrides {
     pub(crate) request_shutdown: Option<ShutdownStub>,
     pub(crate) approve_shutdown: Option<ShutdownStub>,
     pub(crate) reject_shutdown: Option<RejectShutdownStub>,
+    pub(crate) aggregate_status: Option<AggregateStatusStub>,
+    pub(crate) discover_team_specs: Option<DiscoverSpecsStub>,
+    pub(crate) load_team_spec_member_count: Option<LoadSpecCountStub>,
 }
 
 // A recording fake for the team-tools service. Every method fails "not stubbed" by default so a tool
@@ -201,6 +211,30 @@ impl TeamToolsService for FakeTeamService {
         match &self.overrides.reject_shutdown {
             Some(stub) => stub(team_run_id, member, reason),
             None => Err(not_stubbed("rejectShutdown")),
+        }
+    }
+
+    fn aggregate_status(&self, team_run_id: &str) -> TeamServiceResult<TeamStatus> {
+        self.record("aggregateStatus", vec![json!(team_run_id)]);
+        match &self.overrides.aggregate_status {
+            Some(stub) => stub(team_run_id),
+            None => Err(not_stubbed("aggregateStatus")),
+        }
+    }
+
+    fn discover_team_specs(&self, project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
+        self.record("discoverTeamSpecs", vec![json!(project_root.display().to_string())]);
+        match &self.overrides.discover_team_specs {
+            Some(stub) => stub(project_root),
+            None => Err(not_stubbed("discoverTeamSpecs")),
+        }
+    }
+
+    fn load_team_spec_member_count(&self, name: &str, project_root: &Path) -> TeamServiceResult<usize> {
+        self.record("loadTeamSpec", vec![json!(name), json!(project_root.display().to_string())]);
+        match &self.overrides.load_team_spec_member_count {
+            Some(stub) => stub(name, project_root),
+            None => Err(not_stubbed("loadTeamSpec")),
         }
     }
 }

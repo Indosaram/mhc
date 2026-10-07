@@ -5,13 +5,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::DelegateFallbackEntry;
+use crate::isolation::IsolationRuntime;
 use crate::lifecycle::DestroyCause;
 use crate::manager::ManagedChildHandle;
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;
+use crate::manager::isolation_wiring::IsolationSettings;
 use crate::runners::RunnerFailure;
 use crate::runners::in_process::shared_tool_filter::ChildToolRef;
-use crate::state::{ResolvedModelRecord, TaskRecord, TaskStatus};
+use crate::state::{IsolationMergeMode, ResolvedModelRecord, TaskRecord, TaskStatus};
 use crate::steering::DestructionPort;
 
 /// What the manager hands a runner (`ManagedStartSpec`).
@@ -97,6 +99,12 @@ pub struct ManagerStartSpec {
     pub member_scoped_tools: Option<Vec<ChildToolRef>>,
     pub extensions: Option<Vec<String>>,
     pub member_env: Option<BTreeMap<String, String>>,
+    /// Per-spawn isolation override (TS spec.isolated); `None` falls back to the config block.
+    pub isolated: Option<bool>,
+    /// Per-spawn merge strategy (TS spec.merge).
+    pub merge: Option<IsolationMergeMode>,
+    /// Per-spawn apply flag (TS spec.apply).
+    pub apply: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -310,6 +318,10 @@ pub struct TaskManagerOptions {
     pub rpc_respawn_runner: Option<Arc<dyn RpcRespawnRunner>>,
     /// Overrides the claim saver (TS tests wrap `store.save`); defaults to the store.
     pub record_saver: Option<Arc<dyn crate::store::TaskRecordSaver + Send + Sync>>,
+    /// The isolation runtime the manager drives; `None` disables isolation for this session.
+    pub isolation: Option<Arc<dyn IsolationRuntime>>,
+    /// The isolation settings block (port of OmoTaskSettings.isolation).
+    pub isolation_settings: IsolationSettings,
 }
 
 impl TaskManagerOptions {
@@ -333,6 +345,8 @@ impl TaskManagerOptions {
             host_pid: None,
             rpc_respawn_runner: None,
             record_saver: None,
+            isolation: None,
+            isolation_settings: IsolationSettings::default(),
         }
     }
 }

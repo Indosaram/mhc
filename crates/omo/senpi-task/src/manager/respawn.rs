@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::lifecycle::RespawnResult;
+use crate::lifecycle::host_session_resume_path;
 use crate::lifecycle::port::{RespawnDisposition, RespawnFailureCode};
 use crate::manager::ManagedChildHandle;
 use crate::manager::child_handle::discard_managed_handle;
@@ -32,7 +33,10 @@ pub struct RespawnInput<'a> {
 }
 
 pub fn respawn_managed_task(input: &RespawnInput<'_>) -> RespawnResult {
-    match input.session_path {
+    // A daemon-hosted child resumes its RECORDED session path; the recorded identity wins over the
+    // caller-supplied path (TS manager-respawn.ts `hostSessionResumePath(record) ?? input.sessionPath`).
+    let recorded_path = host_session_resume_path(input.record).map(std::path::PathBuf::from);
+    match recorded_path.as_deref().or(input.session_path) {
         None => respawn_fresh(input),
         Some(path) if input.record.execution_mode == "in-process" => {
             respawn_in_process(input, path)

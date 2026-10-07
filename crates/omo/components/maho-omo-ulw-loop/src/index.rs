@@ -80,7 +80,7 @@ impl Extension for UlwLoopComponent {
             state.previous=Some(raw);state.consecutive+=1;
             drop(state);
             if let Some(coordinator)=&ctx.idle_coordinator {
-                coordinator.enqueue(IdleInjection{key:ULW_CONTINUATION_INJECTION_KEY.into(),source:IdleInjectionSource::UlwContinuation,custom_type:Some(ULW_CONTINUATION_CUSTOM_TYPE.into()),content:CONTINUATION_PROMPT.into(),display:Some(false),details:None,on_flushed:None,on_delivery_failed:None});
+                coordinator.enqueue(IdleInjection{key:ULW_CONTINUATION_INJECTION_KEY.into(),source:IdleInjectionSource::UlwContinuation,custom_type:Some(ULW_CONTINUATION_CUSTOM_TYPE.into()),content:CONTINUATION_PROMPT.into(),display:Some(false),details:None,passive:Some(false),on_flushed:None,on_delivery_failed:None});
                 coordinator.schedule_flush();
                 return Ok(EventResult::None);
             }

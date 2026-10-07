@@ -4,6 +4,9 @@ use maho_omo_config_resolution::{SenpiConfigDiagnostic,load_senpi_omo_config};
 pub const MERGED_OMO_CONFIG_DIAGNOSTIC_PATH:&str="(merged omo config)";
 fn parts(d:&SenpiConfigDiagnostic)->(&str,&str,&str) { match d { SenpiConfigDiagnostic::Config(d)=>(d.kind,&d.path,&d.message),SenpiConfigDiagnostic::Model(d)=>(d.kind,&d.path,&d.message) } }
 fn fingerprint(d:&SenpiConfigDiagnostic)->String { let (kind,path,message)=parts(d);format!("{:x}",Sha256::digest(format!("{kind}\0{path}\0{message}"))) }
+// A deprecated key still loads and still applies, so it is a notice, not a reason to reject: renaming
+// one alias rewrites the whole notice, and its new fingerprint would otherwise block the reload.
+fn is_rejectable_diagnostic(d:&SenpiConfigDiagnostic)->bool { parts(d).0!="deprecated-keys" }
 fn config_directory(path:&Path,user:&Path)->Option<PathBuf> { if path.starts_with(user) { return Some(user.to_owned()); } path.ancestors().find(|p|p.file_name().is_some_and(|s|s==".omo")).map(Path::to_owned) }
 fn attributable(d:&SenpiConfigDiagnostic,changed:&[PathBuf],user:&Path)->bool {
     let (kind,path,_)=parts(d);if path==MERGED_OMO_CONFIG_DIAGNOSTIC_PATH||kind=="model_catalog_cycle" { return true; }
@@ -20,11 +23,11 @@ impl OmoConfigValidator {
     }
     pub fn with_loader(cwd:String,env:BTreeMap<String,String>,load_config:ConfigDiagnosticLoader)->Self {
         let user=PathBuf::from(omo_config_core::resolve_user_omo_config_directory(&env));
-        let diagnostics=load_config(&cwd,&env);
+        let diagnostics:Vec<_>=load_config(&cwd,&env).into_iter().filter(is_rejectable_diagnostic).collect();
         Self{cwd,env,user,baseline:diagnostics.iter().map(fingerprint).collect(),unresolved:Vec::new(),load_config}
     }
     pub fn validate(&mut self,changed:&[PathBuf])->ConfigWatchValidation {
-        let diagnostics=(self.load_config)(&self.cwd,&self.env);
+        let diagnostics:Vec<_>=(self.load_config)(&self.cwd,&self.env).into_iter().filter(is_rejectable_diagnostic).collect();
         let by_fingerprint:BTreeMap<_,_>=diagnostics.iter().map(|d|(fingerprint(d),d)).collect();
         self.unresolved.retain(|f|by_fingerprint.contains_key(f));
         for d in &diagnostics { let f=fingerprint(d);if !self.baseline.contains(&f)&&attributable(d,changed,&self.user)&&!self.unresolved.contains(&f) { self.unresolved.push(f); } }

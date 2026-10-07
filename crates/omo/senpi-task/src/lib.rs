@@ -8,6 +8,7 @@ pub mod completion;
 pub mod dag;
 mod delegate_adapter;
 pub mod host;
+pub mod isolation;
 pub mod lifecycle;
 pub mod manager;
 pub mod model_chain;
@@ -28,3 +29,5 @@ mod test_support;
 pub mod tools;
 
 pub use delegate_adapter::DelegateFallbackEntry;
+pub use isolation::{IsolationRuntime, create_isolation_runtime, isolation_backends};
+pub use isolation::OwnerProbe;

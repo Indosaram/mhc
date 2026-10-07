@@ -1,10 +1,11 @@
 //! Service seam and value types shared by the lead team tools.
 
+use std::path::Path;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use team_core::types::{RuntimeState, Task, TaskStatus};
+use team_core::types::{MemberStatus, RuntimeBounds, RuntimeState, ShutdownRequest, Task, TaskStatus};
 
 use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
 use crate::team::runtime_types::{CreateTeamResult, DeleteTeamResult};
@@ -151,6 +152,15 @@ pub trait TeamToolsService: Send + Sync {
     fn request_shutdown(&self, team_run_id: &str, member: &str) -> TeamServiceResult<RuntimeState>;
     fn approve_shutdown(&self, team_run_id: &str, member: &str) -> TeamServiceResult<RuntimeState>;
     fn reject_shutdown(&self, team_run_id: &str, member: &str, reason: &str) -> TeamServiceResult<RuntimeState>;
+    /// `aggregateStatus`: the full status projection of one team run (`team_status`).
+    fn aggregate_status(&self, team_run_id: &str) -> TeamServiceResult<TeamStatus>;
+    /// `discoverTeamSpecs`: every declared spec under `project_root/.omo/teams` and the user dir.
+    fn discover_team_specs(&self, project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>>;
+    /// `loadTeamSpec(...).members.length`: the declared member count of one named spec.
+    fn load_team_spec_member_count(&self, name: &str, project_root: &Path) -> TeamServiceResult<usize>;
+    fn project_root(&self) -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default()
+    }
 }
 
 #[derive(Clone)]
@@ -159,3 +169,102 @@ pub struct TeamToolDeps {
 }
 
 pub type LeadTeamToolDeps = TeamToolDeps;
+
+/// The `scope` argument of `team_list` (`TeamListScope`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TeamListScope {
+    User,
+    Project,
+    All,
+}
+
+impl TeamListScope {
+    /// The spec scope this filter selects, or `None` for `all`.
+    #[must_use]
+    pub fn spec_scope(self) -> Option<ActiveTeamScope> {
+        match self {
+            Self::User => Some(ActiveTeamScope::User),
+            Self::Project => Some(ActiveTeamScope::Project),
+            Self::All => None,
+        }
+    }
+}
+
+/// One entry of the `team_list` result (`TeamListEntry`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamListEntry {
+    pub name: String,
+    pub scope: ActiveTeamScope,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_run_id: Option<String>,
+    pub member_count: usize,
+}
+
+/// A declared team spec as `discoverTeamSpecs` returns it (`TeamSpecEntry`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredTeamSpec {
+    pub name: String,
+    pub scope: ActiveTeamScope,
+    pub path: String,
+}
+
+/// One member row of the `team_status` aggregate (`TeamStatus["members"][number]`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStatusMember {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub status: MemberStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    pub unread_messages: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+}
+
+/// The tasklist counts of `team_status` (`TeamStatus["tasks"]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStatusTasks {
+    pub pending: usize,
+    pub claimed: usize,
+    pub in_progress: usize,
+    pub completed: usize,
+    pub deleted: usize,
+    pub total: usize,
+}
+
+/// The concurrency block of `team_status` (`TeamStatus["concurrency"]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStatusConcurrency {
+    pub running_on_same_model: usize,
+    pub queued_on_same_model: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_run_id_specific: Option<usize>,
+}
+
+/// The `aggregateStatus` projection of a team run (`TeamStatus`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamStatus {
+    pub team_name: String,
+    pub team_run_id: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_session_id: Option<String>,
+    pub created_at: i64,
+    pub members: Vec<TeamStatusMember>,
+    pub tasks: TeamStatusTasks,
+    pub shutdown_requests: Vec<ShutdownRequest>,
+    pub concurrency: TeamStatusConcurrency,
+    pub bounds: RuntimeBounds,
+    pub stale_locks: Vec<String>,
+}

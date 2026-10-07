@@ -240,6 +240,7 @@ fn seed_mutation_record(state: &ChaosState, task_id: &str, overrides: impl FnOnc
             prompt: "mutation".to_string(),
             instructions: None,
             member_scoped_tool_names: None,
+            isolation: None,
         })),
         task_summary: None,
         description: None,
@@ -260,6 +261,9 @@ fn seed_mutation_record(state: &ChaosState, task_id: &str, overrides: impl FnOnc
         error_message: None,
         killed: None,
         run_stats: None,
+        isolation: None,
+        runner_kind: None,
+        host_session: None,
     };
     overrides(&mut record);
     let _ = state.harness.store.save(&record);

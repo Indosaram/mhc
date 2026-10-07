@@ -2,9 +2,10 @@ use serde_json::{Map, Value};
 
 use crate::shared::{DagOwnerKind, DagTaskOwner};
 use crate::state::{
-    DeliverAs, PendingSteeringEntry, RESIDENCY_STATES, RESOLVED_MODEL_SOURCES, ResidencyState,
-    ResolvedModelRecord, ResolvedModelSource, SpawnSpecV1, TASK_STATUSES, TaskNotification,
-    TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, parse_task_id,
+    DeliverAs, HostSessionIdentity, IsolationRecord, PendingSteeringEntry, RESIDENCY_STATES,
+    RESOLVED_MODEL_SOURCES, ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind,
+    SpawnSpecV1, TASK_STATUSES, TaskIsolationSpec, TaskNotification, TaskRecord, TaskRunStats,
+    TaskSpawnSpec, TaskStatus, parse_task_id,
 };
 
 type Object = Map<String, Value>;
@@ -42,6 +43,9 @@ pub fn parse_task_record(
     let owner = read_optional_owner(record)?;
     let pending_steering = read_optional_pending_steering(record, path, warnings)?;
     let run_stats = read_optional_run_stats(record)?;
+    let isolation = read_optional_isolation(record)?;
+    let runner_kind = read_optional_runner_kind(record)?;
+    let host_session = read_optional_host_session(record)?;
 
     let task_id =
         parse_task_id(&read_string(record, "task_id")?).map_err(|error| error.to_string())?;
@@ -80,6 +84,9 @@ pub fn parse_task_record(
         error_message,
         killed,
         run_stats,
+        isolation,
+        runner_kind,
+        host_session,
     })
 }
 
@@ -97,6 +104,42 @@ fn read_optional_owner(record: &Object) -> ParseResult<Option<DagTaskOwner>> {
         node_id: read_string(owner, "nodeId")?,
         fingerprint: read_string(owner, "fingerprint")?,
     }))
+}
+
+fn read_optional_isolation_spec(record: &Object) -> ParseResult<Option<TaskIsolationSpec>> {
+    let Some(value) = record.get("isolation") else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| format!("isolation is invalid: {error}"))
+}
+
+fn read_optional_isolation(record: &Object) -> ParseResult<Option<IsolationRecord>> {
+    let Some(value) = record.get("isolation") else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| format!("isolation is invalid: {error}"))
+}
+
+fn read_optional_runner_kind(record: &Object) -> ParseResult<Option<RunnerKind>> {
+    let Some(value) = record.get("runner_kind") else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| format!("runner_kind is invalid: {error}"))
+}
+
+fn read_optional_host_session(record: &Object) -> ParseResult<Option<HostSessionIdentity>> {
+    let Some(value) = record.get("host_session") else {
+        return Ok(None);
+    };
+    serde_json::from_value(value.clone())
+        .map(Some)
+        .map_err(|error| format!("host_session is invalid: {error}"))
 }
 
 fn read_optional_run_stats(record: &Object) -> ParseResult<Option<TaskRunStats>> {
@@ -131,6 +174,7 @@ fn read_optional_spawn_spec(record: &Object) -> ParseResult<Option<TaskSpawnSpec
             prompt: read_string(spec, "prompt")?,
             instructions: read_optional_string(spec, "instructions")?,
             member_scoped_tool_names: read_optional_string_array(spec, "member_scoped_tool_names")?,
+            isolation: read_optional_isolation_spec(spec)?,
         })));
     }
     Ok(Some(TaskSpawnSpec::LegacyProcess {

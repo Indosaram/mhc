@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::state::{ResolvedModelRecord, TaskRunStats};
+use crate::state::{IsolationMergeMode, ResolvedModelRecord, TaskRunStats};
 
 /// The resolved target of one spawn item: category XOR subagent_type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +19,10 @@ pub struct ResolvedSpawnItem {
     pub description: Option<String>,
     pub name: Option<String>,
     pub model: Option<String>,
+    /// The isolation flags after item-over-params inheritance; `None` means "not requested here".
+    pub isolated: Option<bool>,
+    pub apply: Option<bool>,
+    pub merge: Option<IsolationMergeMode>,
     pub load_skills: Vec<String>,
     pub target: SpawnTarget,
 }

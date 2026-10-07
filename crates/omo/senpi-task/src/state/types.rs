@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::shared::DagTaskOwner;
 
+use super::isolation::{IsolationRecord, TaskIsolationSpec};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -228,6 +230,8 @@ pub struct SpawnSpecV1 {
     pub prompt: String,
     pub instructions: Option<String>,
     pub member_scoped_tool_names: Option<Vec<String>>,
+    /// The isolation spec of a sandboxed child (TS SpawnSpecV1.isolation).
+    pub isolation: Option<TaskIsolationSpec>,
 }
 
 impl TaskSpawnSpec {
@@ -275,6 +279,9 @@ impl Serialize for TaskSpawnSpec {
                 if let Some(names) = &spec.member_scoped_tool_names {
                     map.serialize_entry("member_scoped_tool_names", names)?;
                 }
+                if let Some(isolation) = &spec.isolation {
+                    map.serialize_entry("isolation", isolation)?;
+                }
             }
         }
         map.end()
@@ -317,6 +324,10 @@ pub struct TaskRecordInput {
     pub notify_on_terminal: bool,
     pub pending_steering: Option<Vec<PendingSteeringEntry>>,
     pub owner: Option<DagTaskOwner>,
+    /// The runner kind of the child (TS TaskRecordInput.runner_kind).
+    pub runner_kind: Option<RunnerKind>,
+    /// The daemon identity of a host-session child (TS TaskRecordInput.host_session).
+    pub host_session: Option<HostSessionIdentity>,
 }
 
 /// The durable task record; field order mirrors what the TypeScript store writes.
@@ -376,6 +387,15 @@ pub struct TaskRecord {
     pub killed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_stats: Option<TaskRunStats>,
+    /// The isolation record of an isolated child (TS TaskRecord.isolation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<IsolationRecord>,
+    /// The runner kind of the child (TS TaskRecord.runner_kind).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runner_kind: Option<RunnerKind>,
+    /// The daemon identity of a host-session child (TS TaskRecord.host_session).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_session: Option<HostSessionIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -477,4 +497,25 @@ pub struct TaskTransitionResult {
     pub applied: bool,
     pub record: TaskRecord,
     pub audit: TaskTransitionAudit,
+}
+
+/// The identity of a child that runs as a SESSION of the shared rpc-host daemon rather than a
+/// process (upstream `state/types.ts` HostSessionIdentity). A host session has no pid of its own:
+/// its liveness is the daemon answering plus the daemon still listing its session path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSessionIdentity {
+    pub socket: String,
+    pub routing_id: String,
+    pub session_path: String,
+    pub instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daemon_pid: Option<i64>,
+}
+
+/// The runner kind of a task: a child process, or a session of the shared daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunnerKind {
+    ChildProcess,
+    HostSession,
 }

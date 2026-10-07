@@ -1,5 +1,6 @@
 //! `tools/task/validation.ts`: category XOR subagent_type target selection and batch shape.
 
+use crate::state::IsolationMergeMode;
 use crate::tools::task::types::{ResolvedSpawnItem, SpawnTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,6 +52,9 @@ pub struct SpawnItemInput {
     pub description: Option<String>,
     pub name: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub isolated: Option<bool>,
+    pub apply: Option<bool>,
+    pub merge: Option<IsolationMergeMode>,
 }
 
 /// The spawn-shaped subset of the task tool params.
@@ -64,6 +68,9 @@ pub struct SpawnParamsInput {
     pub description: Option<String>,
     pub name: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub isolated: Option<bool>,
+    pub apply: Option<bool>,
+    pub merge: Option<IsolationMergeMode>,
     pub run_in_background: Option<bool>,
     pub tasks: Option<Vec<SpawnItemInput>>,
 }
@@ -196,6 +203,10 @@ fn single_item(params: &SpawnParamsInput, prompt: &str) -> SpawnItemInput {
         task_summary: params.task_summary.clone(),
         description: params.description.clone(),
         name: params.name.clone(),
+        // A single spawn carries no item level, so the top-level isolation flags ARE its item flags.
+        isolated: params.isolated,
+        apply: params.apply,
+        merge: params.merge,
         ..SpawnItemInput::default()
     }
 }
@@ -220,6 +231,11 @@ pub fn resolve_spawn_items(
             (category, subagent) => (category.as_deref(), subagent.as_deref()),
         };
         let model = input.model.clone().or_else(|| params.model.clone());
+        // `input.isolated ?? params.isolated` (and apply/merge) - an item overrides the top level,
+        // including an explicit `false`/`None` distinction the caller relies on for the refusal.
+        let isolated = input.isolated.or(params.isolated);
+        let apply = input.apply.or(params.apply);
+        let merge = input.merge.or(params.merge);
         let target = match validate_task_target(TargetInput {
             category,
             subagent_type,
@@ -240,6 +256,9 @@ pub fn resolve_spawn_items(
             description: input.description,
             name: input.name,
             model,
+            isolated,
+            apply,
+            merge,
             load_skills: input
                 .load_skills
                 .or_else(|| params.load_skills.clone())

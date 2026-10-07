@@ -37,6 +37,19 @@ fn build_task_tool_params() -> Value {
                 "type": "boolean",
                 "description": "true returns a child task id immediately; false (default) waits and returns the final response."
             },
+            "isolated": {
+                "type": "boolean",
+                "description": "Run the child in a copy-on-write clone of the checkout and merge its changes back on completion; defaults to task.isolation.enabled."
+            },
+            "apply": {
+                "type": "boolean",
+                "description": "Merge the child's changes into this checkout when it completes; false keeps the patch/branch artifacts only."
+            },
+            "merge": {
+                "type": "string",
+                "enum": ["patch", "branch"],
+                "description": "Merge strategy for an isolated child; defaults to task.isolation.merge."
+            },
             "name": {
                 "type": "string",
                 "description": "Optional stable name for this task within the current session; must be unique within the session."
@@ -67,6 +80,19 @@ fn build_task_tool_params() -> Value {
                         "description": {
                             "type": "string",
                             "description": "Short human label for this task."
+                        },
+                        "isolated": {
+                            "type": "boolean",
+                            "description": "Run the child in a copy-on-write clone of the checkout and merge its changes back on completion; defaults to task.isolation.enabled."
+                        },
+                        "apply": {
+                            "type": "boolean",
+                            "description": "Merge the child's changes into this checkout when it completes; false keeps the patch/branch artifacts only."
+                        },
+                        "merge": {
+                            "type": "string",
+                            "enum": ["patch", "branch"],
+                            "description": "Merge strategy for an isolated child; defaults to task.isolation.merge."
                         },
                         "category": {
                             "type": "string",

@@ -612,9 +612,6 @@
    "type": "qa_migration_document",
    "document": {
     "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
-    "codegraph": {
-     "daemon": false
-    },
     "_migrations": [
      "2026-07-codex-config-jsonc",
      "2026-08-reasoning-unification"

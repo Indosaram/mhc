@@ -17,3 +17,65 @@ fn rejects_parse_error_and_stays_sticky_until_repair()->Result<(),std::io::Error
     std::fs::write(&config,"{}")?;
     assert!(matches!(validator.validate(&[config]),ConfigWatchValidation::Ok));Ok(())
 }
+
+#[test]
+fn deprecated_key_notices_never_reject_a_reload() -> Result<(), std::io::Error> {
+    use std::sync::{Arc, Mutex};
+    let path = "/home/test/project/.omo/omo.jsonc";
+    let notice = |message: &str, issue_path: &str| {
+        maho_omo_config_resolution::SenpiConfigDiagnostic::Config(
+            omo_config_core::OmoConfigDiagnostic {
+                kind: "deprecated-keys",
+                path: path.into(),
+                message: message.into(),
+                issue_paths: vec![issue_path.into()],
+            },
+        )
+    };
+    let diagnostics = Arc::new(Mutex::new(vec![notice("Deprecated harness block", "[senpi]")]));
+    let current = diagnostics.clone();
+    let env = std::collections::BTreeMap::from([("HOME".into(), "/home/test".into())]);
+    let mut validator = OmoConfigValidator::with_loader(
+        "/home/test/project".into(),
+        env,
+        Box::new(move |_, _| {
+            current
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }),
+    );
+    let changed = [std::path::PathBuf::from(path)];
+    assert!(matches!(
+        validator.validate(&changed),
+        ConfigWatchValidation::Ok
+    ));
+    *diagnostics
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![notice(
+        "Deprecated harness block renamed",
+        "[native]",
+    )];
+    assert!(matches!(
+        validator.validate(&changed),
+        ConfigWatchValidation::Ok
+    ));
+    *diagnostics
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![
+        notice("Deprecated category name", "categories.deep"),
+        maho_omo_config_resolution::SenpiConfigDiagnostic::Config(
+            omo_config_core::OmoConfigDiagnostic {
+                kind: "validation",
+                path: path.into(),
+                message: "Invalid omo config".into(),
+                issue_paths: vec!["task.default_concurrency".into()],
+            },
+        ),
+    ];
+    let ConfigWatchValidation::Rejected { errors } = validator.validate(&changed) else {
+        panic!("expected the schema diagnostic to reject");
+    };
+    assert_eq!(errors, vec!["Invalid omo config".to_string()]);
+    Ok(())
+}

@@ -30,6 +30,9 @@ pub trait OutcomeTrackerPorts: Send + Sync {
     fn release_slot(&self, task_id: &str, model: &str, epoch: i64);
     fn settle_waiters(&self, task_id: &str);
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool;
+    /// Merges (or retains) an isolated child's clone. Called BEFORE the terminal transition is
+    /// written, so every result builder reads one record that already carries merge_result.
+    fn settle_isolation(&self, task_id: &str, merge: bool);
     /// Called once per tracked outcome after it was applied or ignored.
     fn outcome_processed(&self);
 }
@@ -82,6 +85,11 @@ fn settle_outcome(
     }
     let timestamp = ports.now_iso();
     let run_stats = ports.run_stats_snapshot(task_id);
+    // Only a completed child with assistant output earns a merge; every other terminal retains.
+    let merge = match &outcome {
+        RunnerOutcome::Completed { final_response } => !final_response.is_empty(),
+        _ => false,
+    };
     let transition = match outcome {
         RunnerOutcome::Error { failure, killed } => {
             let input = ErrorOutcomeInput {
@@ -109,6 +117,7 @@ fn settle_outcome(
         },
     };
     ports.release_slot(task_id, model, epoch);
+    settle_isolation_for(ports, task_id, merge);
     if let Err(error) = ports.store().transition(task_id, &transition) {
         log_failure(
             "senpi-task manager outcome tracking failed",
@@ -127,6 +136,7 @@ fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInp
         return;
     }
     ports.release_slot(&input.task_id, &input.model, input.epoch);
+    settle_isolation_for(ports, &input.task_id, false);
     let transition = TaskTransition::Fail {
         timestamp: input.timestamp.clone(),
         error_message: input.failure.message.clone(),
@@ -141,6 +151,18 @@ fn settle_error_outcome(ports: &dyn OutcomeTrackerPorts, input: &ErrorOutcomeInp
         );
     }
     ports.settle_waiters(&input.task_id);
+}
+
+/// Settle an isolated child's clone before the terminal record is written. A non-isolated child is
+/// untouched, so its terminal path is unchanged.
+fn settle_isolation_for(ports: &dyn OutcomeTrackerPorts, task_id: &str, merge: bool) {
+    let isolated = ports
+        .try_load(task_id)
+        .is_some_and(|record| record.isolation.is_some());
+    if !isolated {
+        return;
+    }
+    ports.settle_isolation(task_id, merge);
 }
 
 fn log_failure(message: &str, task_id: &str, error: &dyn std::fmt::Display) {

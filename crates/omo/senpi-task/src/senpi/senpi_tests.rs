@@ -79,6 +79,7 @@ mod api_tripwire {
             cwd,
             session_manager: Arc::clone(&session_manager),
             resource_loader: ChildResourceLoader::Minimal,
+            system_prompt: None,
             custom_tools: Vec::new(),
             agent_dir: None,
             auth_storage: None,
