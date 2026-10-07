@@ -23,7 +23,7 @@ futures.workspace = true
 getrandom = "=0.3.4"
 subtle = "=2.6.1"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
-tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macros", "net", "time", "fs"] }
+tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macros", "net", "time", "fs", "signal"] }
 
 [dev-dependencies]
 tempfile.workspace = true
