@@ -127,12 +127,10 @@ fn tokenize(text: &str) -> RecallTokens {
         for piece in run.pieces {
             tokens.push(piece);
         }
+        standalone_han_characters += run.han_characters.len();
         for character in run.han_characters {
             tokens.push(character);
         }
-        standalone_han_characters += run
-            .han_characters
-            .len();
     }
     RecallTokens {
         tokens,
@@ -186,9 +184,11 @@ fn build_index(documents: &[RecallDocument]) -> RecallBm25Index {
     index
 }
 
+type RecallBm25IndexCache = Mutex<Option<Vec<(usize, usize, std::sync::Arc<RecallBm25Index>)>>>;
+
 /// One index per corpus, keyed by the documents slice pointer (the pin keys its `WeakMap` by array).
 fn index_for(documents: &[RecallDocument]) -> std::sync::Arc<RecallBm25Index> {
-    static CACHE: Mutex<Option<Vec<(usize, usize, std::sync::Arc<RecallBm25Index>)>>> = Mutex::new(None);
+    static CACHE: RecallBm25IndexCache = Mutex::new(None);
     let key = (documents.as_ptr() as usize, documents.len());
     let mut guard = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let entries = guard.get_or_insert_with(Vec::new);
