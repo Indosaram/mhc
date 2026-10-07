@@ -131,7 +131,7 @@ fn team_list_scope_filters_the_declared_specs() {
             ])
         })),
         load_team_spec_member_count: Some(Box::new(|_name, _project_root| Ok(2))),
-        list_teams: Some(Box::new(Vec::new)),
+        list_teams: Some(Box::new(|| Ok(Vec::new()))),
         ..Default::default()
     }));
 

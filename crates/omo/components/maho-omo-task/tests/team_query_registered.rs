@@ -21,7 +21,7 @@ use senpi_task::{
     store::{StateDirConfig, TaskRecordStore},
     team::{runtime_types::*, runtime_config::{TeamTaskBounds, to_team_core_config}, storage::team_storage_base_dir, normalize::normalize_senpi_team_spec, member_projection::ResidentSessionRef},
     lifecycle::DestroyCause,
-    tools::team::{index::{build_lead_team_tools, LeadTeamTool, LeadTeamToolDeps}, types::TeamToolsService},
+    tools::team::{index::{build_lead_team_tools, LeadTeamTool}, types::{LeadTeamToolDeps, TeamToolsService}},
 };
 use team_core::{team_state_store::{create_runtime_state, transition_runtime_state}, types::{SpecSource, RuntimeStatus}};
 use serde_json::json;
@@ -48,9 +48,11 @@ fn fixture() -> Fixture {
         root.path().to_string_lossy(),
     ));
     let config = to_team_core_config(&bounds, &team_storage_base_dir(&state_dir).to_string_lossy()).expect("config");
+    // Declared specs are validated by team-core on load: a category member needs a prompt of at
+    // least 8 characters, and a multi-member spec must name its lead (leadAgentId = a member name).
     let declared = root.path().join(".omo/teams/declared-only");
     std::fs::create_dir_all(&declared).expect("declared spec directory");
-    std::fs::write(declared.join("config.json"), json!({"members": [{"name": "declared", "kind": "category", "category": "quick", "prompt": "work"}]}).to_string()).expect("declared spec");
+    std::fs::write(declared.join("config.json"), json!({"name": "declared-only", "members": [{"name": "declared", "kind": "category", "category": "quick", "prompt": "implement the assigned task"}]}).to_string()).expect("declared spec");
     let project_teams = root.path().join(".omo/teams");
     let user_teams = team_storage_base_dir(&state_dir).join("teams");
     for (directory, name, count) in [
@@ -60,8 +62,8 @@ fn fixture() -> Fixture {
     ] {
         let path = directory.join(name);
         std::fs::create_dir_all(&path).expect("spec directory");
-        let members = (0..count).map(|index| json!({"name": format!("m{index}"), "kind": "category", "category": "quick", "prompt": "work"})).collect::<Vec<_>>();
-        std::fs::write(path.join("config.json"), json!({"members": members}).to_string()).expect("spec file");
+        let members = (0..count).map(|index| json!({"name": format!("m{index}"), "kind": "category", "category": "quick", "prompt": "implement the assigned task"})).collect::<Vec<_>>();
+        std::fs::write(path.join("config.json"), json!({"name": name, "leadAgentId": "m0", "members": members}).to_string()).expect("spec file");
     }
     let spec = normalize_senpi_team_spec(&json!({"members": [{"name": "beta", "kind": "category", "category": "quick", "prompt": "work"}]}), "squad", None).expect("spec");
     let state = create_runtime_state(&spec, Some("lead"), SpecSource::Project, &config).expect("runtime");
