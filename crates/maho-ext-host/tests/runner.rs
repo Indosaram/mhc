@@ -436,6 +436,17 @@ fn context_print_mode_and_tool_context_contract() { let ctx = context(); assert_
 #[test]
 fn invalidated_runner_rejects_new_context() { let runner = runner(vec![]); runner.invalidate("stale"); assert_eq!(runner.create_context().err().unwrap().message, "stale"); }
 
+#[test]
+fn set_extension_mode_reflects_mode_and_ui_presence_in_created_context() {
+    let mut runner = runner(vec![]);
+    for (mode, has_ui) in [(ExtensionMode::Rpc, true), (ExtensionMode::Print, false), (ExtensionMode::Json, false), (ExtensionMode::Tui, true), (ExtensionMode::AppServer, true)] {
+        runner.set_extension_mode(mode, has_ui).expect("active runtime");
+        let context = runner.create_context().expect("context");
+        assert_eq!(context.mode, mode);
+        assert_eq!(context.has_ui, has_ui);
+    }
+}
+
 #[tokio::test]
 async fn retained_api_event_registration_updates_an_existing_runner() {
     let mut runner = runner(vec![]);
@@ -1536,6 +1547,70 @@ async fn replaced_session_callback_messages_reject_stale_context() {
     assert_eq!(context.send_user_message(UserMessageContent::Text("late".into()), Default::default()).await.unwrap_err().message, "replaced");
     assert_eq!(context.send_message(CustomMessage { custom_type: "late".into(), content: vec![], display: false, details: None }, Default::default()).await.unwrap_err().message, "replaced");
 }
+#[tokio::test]
+async fn late_registration_keeps_loaded_commands_coherent_for_catalog_dispatch_and_completions() {
+    let runtime = ExtensionRuntime::default();
+    let events = EventBus::default();
+    let profile = ExtensionSessionProfile::default();
+    let api_for = |runtime: &ExtensionRuntime, events: &EventBus| ExtensionApi::new(
+        LoadedExtension::new("<builtin:omo>", "/tmp".into(), SourceInfo { path: "<builtin:omo>".into(), source: "builtin".into(), ..Default::default() }),
+        profile.clone(), events.clone(), runtime.clone());
+    let invoked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let handler = |label: &'static str, invoked: &Arc<Mutex<Vec<String>>>| -> CommandHandler {
+        let invoked = invoked.clone();
+        Arc::new(move |_args: &str, _context: &ExtensionContext| {
+            let invoked = invoked.clone();
+            Box::pin(async move { invoked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(label.to_owned()); Ok(()) })
+        })
+    };
+    let context_handler = |label: &'static str, invoked: &Arc<Mutex<Vec<String>>>| -> CommandContextHandler {
+        let invoked = invoked.clone();
+        Arc::new(move |_args: &str, _context: &ExtensionCommandContext| {
+            let invoked = invoked.clone();
+            Box::pin(async move { invoked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(label.to_owned()); Ok(()) })
+        })
+    };
+    let completions = |label: &'static str| -> CommandArgumentCompletions {
+        Arc::new(move |prefix: &str| {
+            let prefix = prefix.to_owned();
+            Box::pin(async move { Ok(Some(vec![AutocompleteItem { value: prefix, label: label.to_owned(), description: None }])) })
+        })
+    };
+
+    // Load-time registration: `recompile` is untouched by the late publish, `reflect` is replaced.
+    let mut loaded = api_for(&runtime, &events);
+    loaded.register_command_with_completions("recompile", Some("Recompile the memory block.".to_owned()), Some(String::new()), handler("loaded-recompile", &invoked), completions("loaded-recompile-completion"));
+    loaded.register_command_with_context_and_completions("reflect", Some("Reflect.".to_owned()), Some(String::new()), context_handler("stale-loaded-context", &invoked), completions("stale-loaded-completion"));
+    let loaded = loaded.registered;
+
+    // The task component's late registration for the same path.
+    let mut late = api_for(&runtime, &events);
+    late.register_command("task", Some("Task command.".to_owned()), Some(String::new()), handler("late-task", &invoked));
+    late.register_command("reflect", Some("Reflect.".to_owned()), Some(String::new()), handler("late-reflect", &invoked));
+    assert_eq!(runtime.live_commands("<builtin:omo>").expect("the late publish landed").0.len(), 2, "the late publish replaced the whole live list");
+
+    let runner = ExtensionRunner::new(vec![loaded], runtime, events, context());
+    let names: Vec<String> = runner.get_registered_commands().into_iter().map(|resolved| resolved.invocation_name).collect();
+    assert_eq!(names, ["recompile", "reflect", "task"], "the union keeps loaded order, replaces in place and appends the late name once");
+
+    let command_context = runner.create_command_context(Arc::new(CommandActions(Mutex::new(vec![])))).expect("command context");
+    runner.invoke_command("recompile", "", &command_context).await.expect("the untouched loaded command dispatches");
+    runner.invoke_command("task", "", &command_context).await.expect("the late command dispatches");
+    runner.invoke_command("reflect", "", &command_context).await.expect("the replaced command dispatches");
+    assert_eq!(
+        *invoked.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        ["loaded-recompile", "late-task", "late-reflect"],
+        "both the untouched loaded command and the late command ran; the replaced name ran the late handler, never the stale loaded context handler"
+    );
+
+    let recompile = runner.get_command_argument_completions("recompile", "pre").await.expect("completions resolve").expect("the untouched loaded completions survive");
+    assert_eq!(recompile[0].label, "loaded-recompile-completion");
+    assert!(
+        runner.get_command_argument_completions("reflect", "pre").await.expect("completions resolve").is_none(),
+        "a late command registered without completions must not keep the loaded ones"
+    );
+}
+
 #[tokio::test]
 async fn legacy_command_replacement_removes_prior_context_handler() {
     let mut api = ExtensionApi::new(LoadedExtension::new("commands", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());

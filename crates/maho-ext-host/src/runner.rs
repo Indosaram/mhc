@@ -354,6 +354,12 @@ impl ExtensionRunner {
         *self.context_session_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         Ok(())
     }
+    pub fn set_extension_mode(&mut self, mode: ExtensionMode, has_ui: bool) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        self.context.mode = mode;
+        self.context.has_ui = has_ui;
+        Ok(())
+    }
     pub fn bind_session_actions(&self, actions: Arc<dyn ExtensionSessionActions>) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         for extension in &self.extensions {
@@ -389,7 +395,7 @@ impl ExtensionRunner {
         let commands = self.get_registered_commands();
         let resolved = commands.iter().find(|command| command.invocation_name == name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
         let handlers = self.extensions.iter().find_map(|extension| {
-            let (commands, handlers) = self.runtime.live_commands(&extension.identity.path).unwrap_or_else(|| (extension.commands.clone(), extension.command_context_handlers.clone()));
+            let (commands, handlers) = self.live_command_snapshot(extension);
             commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler)).then_some(handlers)
         }).ok_or_else(|| ExtensionFailure::new("Command owner is unavailable"))?;
         match handlers.get(&resolved.command.name) {
@@ -570,8 +576,47 @@ impl ExtensionRunner {
             self.get_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers))
         }).collect()
     }
+    /// The ONE coherent command snapshot for an extension path: the registrations the loader
+    /// committed, unioned with anything a late registration published for the SAME path (the OMO
+    /// task component registers its commands at SessionStart through a clone whose
+    /// `LoadedExtension` starts empty, and `publish_commands` replaces the whole live list for a
+    /// path). A load publishes no commands at all - `commit_registration` flushes only flags,
+    /// providers and tool executors - so the loaded commands exist only in
+    /// `LoadedExtension.commands` and reading either half alone hides the other. A late entry wins
+    /// by name and drops the loaded context handler of that name, so a replaced command can never
+    /// dispatch through a stale handler.
+    fn live_command_snapshot(&self, extension: &LoadedExtension) -> (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>) {
+        let mut commands = extension.commands.clone();
+        let mut handlers = extension.command_context_handlers.clone();
+        if let Some((live, live_handlers)) = self.runtime.live_commands(&extension.identity.path) {
+            for command in live {
+                let name = command.name.clone();
+                match commands.iter_mut().find(|existing| existing.name == name) {
+                    Some(existing) => { *existing = command; handlers.remove(&name); }
+                    None => commands.push(command),
+                }
+            }
+            for (name, handler) in live_handlers { handlers.insert(name, handler); }
+        }
+        (commands, handlers)
+    }
+
+    /// The coherent argument-completion map for an extension path, derived the same way as the
+    /// command snapshot: a late registration that replaces a command also replaces that command's
+    /// completions (`register_command` clears them), so the loaded map drops every name the live
+    /// list carries before the live map is merged in; otherwise a replaced command with no
+    /// completions would keep serving the loaded ones.
+    fn command_argument_completions_for(&self, extension: &LoadedExtension) -> BTreeMap<String, CommandArgumentCompletions> {
+        let mut completions = extension.command_argument_completions.clone();
+        if let Some((live, _)) = self.runtime.live_commands(&extension.identity.path) {
+            for command in &live { completions.remove(&command.name); }
+        }
+        if let Some(live) = self.runtime.live_command_argument_completions(&extension.identity.path) { completions.extend(live); }
+        completions
+    }
+
     pub fn get_registered_commands(&self) -> Vec<ResolvedCommand> {
-        let commands: Vec<_> = self.extensions.iter().flat_map(|e| self.runtime.live_commands(&e.identity.path).map_or_else(|| e.commands.clone(), |(commands, _)| commands)).collect();
+        let commands: Vec<_> = self.extensions.iter().flat_map(|e| self.live_command_snapshot(e).0).collect();
         let mut counts = BTreeMap::new();
         for command in &commands { *counts.entry(command.name.clone()).or_insert(0usize) += 1; }
         let mut seen = BTreeMap::new(); let mut taken = BTreeSet::new();
@@ -588,8 +633,8 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         let resolved = self.get_command(name).ok_or_else(|| ExtensionFailure::new(format!("Unknown extension command: {name}")))?;
         let completions = self.extensions.iter().find_map(|extension| {
-            let commands = self.runtime.live_commands(&extension.identity.path).map_or_else(|| extension.commands.clone(), |(commands, _)| commands);
-            commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler)).then(|| self.runtime.live_command_argument_completions(&extension.identity.path).unwrap_or_else(|| extension.command_argument_completions.clone()))
+            let commands = self.live_command_snapshot(extension).0;
+            commands.iter().any(|command| Arc::ptr_eq(&command.handler, &resolved.command.handler)).then(|| self.command_argument_completions_for(extension))
         }).and_then(|completions| completions.get(&resolved.command.name).cloned());
         let result = match completions { Some(completions) => completions(prefix).await?, None => None };
         self.runtime.assert_active()?;
