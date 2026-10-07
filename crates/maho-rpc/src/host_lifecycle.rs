@@ -23,6 +23,7 @@ pub const CHILD_WATCH_FD:u32=3;
 fn bind_child_watch_pipe(child_env:&mut HashMap<String,String>)->std::io::Result<(std::os::fd::OwnedFd,std::os::fd::OwnedFd)>{
     use std::os::fd::AsRawFd;
     let (read_end,write_end)=rustix::pipe::pipe()?;
+    rustix::io::fcntl_setfd(&write_end,rustix::io::FdFlags::CLOEXEC).map_err(std::io::Error::from)?;
     rustix::io::fcntl_setfd(&read_end,rustix::io::FdFlags::empty()).map_err(std::io::Error::from)?;
     let descriptor=u64::try_from(read_end.as_raw_fd()).map_err(|_|std::io::Error::other("child watch descriptor is not representable"))?;
     child_env.insert(crate::host_watchdog::HOST_WATCH_FD_ENV.into(),descriptor.to_string());
@@ -208,6 +209,16 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let (activity_tx,activity_rx)=tokio::sync::watch::channel(HostActivity::default());
     let (draining_tx,draining_rx)=tokio::sync::watch::channel(false);
     let (connections_tx,connections_rx)=tokio::sync::watch::channel(0usize);
+    // Drain (senpi `drainForHandoff`/`registerSupervisorSignals`): SIGUSR1 asks the child to park
+    // its sessions and leave; the supervisor keeps serving the public path until the child exits,
+    // which is what ends this generation. The grace timer only re-asks - it never kills a busy child.
+    let (drain_tx,mut drain_rx)=tokio::sync::watch::channel(false);
+    #[cfg(unix)]
+    let mut shutdown_rx=register_supervisor_signals(drain_tx.clone())?;
+    #[cfg(not(unix))]
+    let mut shutdown_rx=tokio::sync::watch::channel::<Option<i32>>(None).1;
+    // Losing the public entry IS a drain request (senpi `watchForSupersession`, #1893/#1961).
+    let supersession=crate::host_supersession::watch_for_supersession(public_socket.clone(),bound,||false,{let drain_tx=drain_tx.clone();move|_loss|{let _=drain_tx.send(true);}});
     let observer_busy=turns.clone();
     let observer_socket=internal.socket.clone();
     let observer_draining=draining_rx.clone();
@@ -244,12 +255,36 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     tokio::pin!(proxy);
     let idle=wait_for_idle_exit(policy.idle_exit_ms,activity_rx);
     tokio::pin!(idle);
-    tokio::select!{
-        result=&mut proxy=>{result?;},
-        result=&mut idle=>{let _=result;},
+    let mut draining=false;
+    let mut signal_code:Option<i32>=None;
+    let mut handoff_grace:Option<tokio::task::JoinHandle<()>>=None;
+    // Only proxy/idle completion, the child exiting, or a shutdown signal ends the supervisor. A
+    // drain starts the grace and loops again, so busy sessions keep running until the child exits.
+    loop{
+        tokio::select!{
+            result=&mut proxy=>{result?;break;},
+            result=&mut idle=>{let _=result;break;},
+            status=child.wait()=>{let _=status;break;},
+            _changed=shutdown_rx.changed()=>{if let Some(code)=*shutdown_rx.borrow(){signal_code=Some(code);break;}},
+            changed=drain_rx.changed()=>{
+                if changed.is_ok()&&*drain_rx.borrow()&&!draining{
+                    draining=true;
+                    eprintln!("senpi rpc host supervisor: draining into the next generation");
+                    if let Err(error)=crate::host_stop::signal_generation(child_pid,rustix::process::Signal::USR1){eprintln!("senpi rpc host supervisor: could not ask the host to drain: {error}");}
+                    let grace_ms=resolve_handoff_grace_ms(&std::env::vars().collect::<HashMap<String,String>>());
+                    handoff_grace=Some(tokio::spawn(async move{
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(grace_ms/1000.)).await;
+                        eprintln!("senpi rpc host supervisor: {}",serde_json::json!({"event":"handoff_grace_expired","graceMs":grace_ms}));
+                        if let Err(error)=crate::host_stop::signal_generation(child_pid,rustix::process::Signal::USR1){eprintln!("senpi rpc host supervisor: handoff grace rescan could not signal the host: {error}");}
+                    }));
+                }
+            },
+        }
     }
     // Teardown: stop accepting, let the host exit, then remove only the entries this generation
     // still owns so a replacement's freshly published socket survives.
+    supersession.stop();
+    if let Some(task)=handoff_grace{task.abort();}
     draining_tx.send_replace(true);
     publisher.abort();observer.abort();
     crate::host_stop::signal_generation(child_pid,rustix::process::Signal::TERM).ok();
@@ -261,7 +296,9 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     }
     crate::socket_ownership::unlink_owned_socket(&public_socket,bound,platform,|_|{});
     crate::host_daemon_registration::release_generation(&paths,&instance_id,child_pid)?;
+    crate::host_daemon_registration::release_generation(&paths,&instance_id,std::process::id())?;
     if let Some(dir)=internal.dir{let _=std::fs::remove_dir_all(dir);}
+    if let Some(code)=signal_code{std::process::exit(code);}
     Ok(())
 }
 #[derive(Debug,PartialEq)]
@@ -311,6 +348,33 @@ pub fn spawnable_child_launch(launch:&crate::host_launch::HostLaunch,platform:&s
 }
 pub fn parse_cold_start(value:Option<&str>)->Option<&str>{value.filter(|value|matches!(*value,"transient"|"persistent"))}
 pub fn parse_idle_exit_ms(value:Option<&str>)->Option<f64>{let value=value?.trim();if value.is_empty()||!value.bytes().all(|byte|byte.is_ascii_digit()){return None;}value.parse::<f64>().ok().filter(|number|number.is_finite()&&*number>0.)}
+/// The soft handoff deadline the supervisor owns from the moment it drains (senpi
+/// `HANDOFF_GRACE_MS_ENV` over `DEFAULT_HANDOFF_GRACE_MS`): expiry re-asks the child to drain and
+/// never kills a busy one.
+pub fn resolve_handoff_grace_ms(env:&HashMap<String,String>)->f64{parse_idle_exit_ms(env.get(HANDOFF_GRACE_MS_ENV).map(String::as_str)).unwrap_or(DEFAULT_HANDOFF_GRACE_MS)}
+/// Installs the supervisor's process signals (senpi `registerSupervisorSignals`): SIGTERM/SIGHUP
+/// shut the supervisor down (143/129) and SIGUSR1 drains this generation into its successor. The
+/// returned receiver carries the shutdown code; the drain trigger is the caller's channel. POSIX
+/// only: win32 has no gentle signal, so it is never wired.
+#[cfg(unix)]
+fn register_supervisor_signals(drain_tx:tokio::sync::watch::Sender<bool>)->std::io::Result<tokio::sync::watch::Receiver<Option<i32>>>{
+    use tokio::signal::unix::{signal,SignalKind};
+    let mut terminate=signal(SignalKind::terminate())?;
+    let mut hangup=signal(SignalKind::hangup())?;
+    let mut user1=signal(SignalKind::user_defined1())?;
+    let (shutdown_tx,shutdown_rx)=tokio::sync::watch::channel::<Option<i32>>(None);
+    tokio::spawn(async move{
+        loop{
+            tokio::select!{
+                _=terminate.recv()=>{if shutdown_tx.send(Some(143)).is_err(){break;}},
+                _=hangup.recv()=>{if shutdown_tx.send(Some(129)).is_err(){break;}},
+                _=user1.recv()=>{if drain_tx.send(true).is_err(){break;}},
+                else=>break,
+            }
+        }
+    });
+    Ok(shutdown_rx)
+}
 pub fn resolve_host_policy(settings:&serde_json::Value,env:&HashMap<String,String>)->HostLifecyclePolicy{
     let cold_start=parse_cold_start(env.get(HOST_COLD_START_ENV).map(String::as_str)).or_else(||parse_cold_start(settings.get("coldStart").and_then(serde_json::Value::as_str))).unwrap_or("transient").into();
     let setting_idle=settings.get("idleExitMs").and_then(|value|if value.is_string(){value.as_str().map(str::to_owned)}else if value.is_number(){Some(value.to_string())}else{None});
@@ -333,4 +397,5 @@ impl IdleExitDecider{
     #[test]fn continuous_idle_resets_on_activity(){let mut decider=IdleExitDecider::new(100.);assert_eq!(decider.update(0,0,0.),IdleExitDecision::Idle);assert_eq!(decider.update(0,1,99.),IdleExitDecision::Active);assert_eq!(decider.update(0,0,100.),IdleExitDecision::Idle);assert_eq!(decider.update(0,0,200.),IdleExitDecision::Exit);}
     #[test]fn policy_precedence_and_invalid_fallback(){let settings=serde_json::json!({"coldStart":"persistent","idleExitMs":1000});let env=HashMap::from([(HOST_COLD_START_ENV.into(),"invalid".into()),(HOST_IDLE_EXIT_MS_ENV.into()," 2000 ".into())]);assert_eq!(resolve_host_policy(&settings,&env),HostLifecyclePolicy{cold_start:"persistent".into(),idle_exit_ms:2000.});assert!(parse_idle_exit_ms(Some("1e3")).is_none());}
     #[test]fn persistent_never_idle_exits(){assert_eq!(IdleExitDecider::new(f64::INFINITY).update(0,0,100000000.),IdleExitDecision::Idle);}
+    #[test]fn handoff_grace_prefers_the_environment_and_falls_back_to_ten_minutes(){assert_eq!(resolve_handoff_grace_ms(&HashMap::new()),DEFAULT_HANDOFF_GRACE_MS);assert_eq!(resolve_handoff_grace_ms(&HashMap::from([(HANDOFF_GRACE_MS_ENV.into(),"1000".into())])),1000.);assert_eq!(resolve_handoff_grace_ms(&HashMap::from([(HANDOFF_GRACE_MS_ENV.into(),"bad".into())])),DEFAULT_HANDOFF_GRACE_MS);}
 }
