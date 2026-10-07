@@ -1,4 +1,4 @@
-mod support;
+pub mod support;
 
 use maho_omo_model_profile::builtin_profiles::builtin_model_profiles;
 

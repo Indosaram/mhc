@@ -191,7 +191,7 @@ static SHELL_COMMAND: LazyLock<Regex> =
 static BODY_OR_STACK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(body|stack|details)=.*$").expect("valid expression"));
 static BEARER_SCHEME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(bearer|basic)\s+[^\s,;\"']+").expect("valid expression"));
+    LazyLock::new(|| Regex::new(r#"(?i)\b(bearer|basic)\s+[^\s,;"']+"#).expect("valid expression"));
 static URL_USERINFO: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]*@").expect("valid expression")
 });
