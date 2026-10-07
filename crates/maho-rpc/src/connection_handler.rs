@@ -429,7 +429,10 @@ impl RpcConnectionHandler{
         let ui=std::sync::Arc::new(RpcExtensionUi::new(out.clone(),pending.clone(),questions.clone(),capabilities));
         let shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>=Default::default();
         let sink=out.clone();
-        session.bind_extensions(maho_core::agent_session::ExtensionBindings{ui_context:Some(ui.clone()),mode:Some(maho_ext_api::ExtensionMode::Rpc),on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{(sink)(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}));})),..Default::default()}).await;
+        let bindings=maho_core::agent_session::ExtensionBindings{ui_context:Some(ui.clone()),mode:Some(maho_ext_api::ExtensionMode::Rpc),on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{(sink)(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}));})),..Default::default()};
+        // The CLI mount already starts host sessions; attach only replaces the connection context.
+        if session.has_started_extension_lifecycle() {session.rebind_extension_context(bindings).await;}
+        else {session.bind_extensions(bindings).await;}
         Self{session,ui,pending,questions,shutdown_requested}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}

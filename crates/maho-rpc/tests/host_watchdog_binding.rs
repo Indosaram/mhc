@@ -82,7 +82,7 @@ async fn a_gone_supervisor_pid_fires_the_watchdog_on_the_next_tick() {
     // u32::MAX is never a live pid, so this is the reparenting path with no timing luck.
     let config = HostWatchdogConfig {
         fd: None,
-        ppid: Some(u32::MAX),
+        ppid: Some(u64::from(u32::MAX)),
         scratch_dir: Some(scratch.clone()),
         cleanup_paths: None,
         public_socket: None,

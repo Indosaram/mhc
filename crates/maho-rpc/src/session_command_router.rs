@@ -1,5 +1,30 @@
 pub struct IdleSession{pub session_id:String,pub open:bool,pub busy:bool,pub last_command_at:f64}
 pub struct IdleSweep{pub evict:Vec<String>,pub exit:bool}
+/// How often a draining host re-checks whether the work it is waiting for has settled
+/// (senpi `SessionCommandRouter`'s `DRAIN_SWEEP_MS`).
+pub const DRAIN_SWEEP_MS:u64=50;
+/// What one drain pass should do next (senpi `beginDrain`/`sweepDrain`).
+#[derive(Debug,PartialEq,Eq)]pub enum DrainStep{Idle,Sweep,Exit}
+/// The drain gate a shared host keeps while parking itself for a generation handoff. Pure: the
+/// host supplies the occupancy numbers and the gate decides whether to sweep again or leave.
+#[derive(Default)]pub struct HandoffDrain{draining:bool,exit_requested:bool}
+impl HandoffDrain{
+    pub fn begin(&mut self){self.draining=true;}
+    pub fn is_draining(&self)->bool{self.draining}
+    /// Park what has settled, and exit once the host holds nothing. A busy accepted open
+    /// (`active_open`) blocks the pass, exactly as senpi's `activeRequests.has(undefined)` guard
+    /// does; a non-empty registry or an in-flight park keeps sweeping.
+    pub fn step(&mut self,active_open:bool,registry_size:usize,handoff_parks:usize)->DrainStep{
+        if !self.draining{return DrainStep::Idle;}
+        if active_open{return DrainStep::Sweep;}
+        if registry_size>0||handoff_parks>0{return DrainStep::Sweep;}
+        if self.exit_requested{return DrainStep::Exit;}
+        self.exit_requested=true;DrainStep::Exit
+    }
+}
+#[cfg(test)]mod drain_tests{use super::*;
+    #[test]fn drain_waits_for_settled_work_then_exits_once(){let mut drain=HandoffDrain::default();assert_eq!(drain.step(false,0,0),DrainStep::Idle);drain.begin();assert_eq!(drain.step(true,1,0),DrainStep::Sweep);assert_eq!(drain.step(false,1,0),DrainStep::Sweep);assert_eq!(drain.step(false,0,1),DrainStep::Sweep);assert_eq!(drain.step(false,0,0),DrainStep::Exit);assert_eq!(drain.step(false,0,0),DrainStep::Exit);}
+}
 #[derive(Default)]pub struct ConnectionAttachments{owned:std::collections::BTreeMap<String,std::collections::BTreeMap<String,usize>>}
 impl ConnectionAttachments{
     pub fn attach(&mut self,owner:&str,session:&str){*self.owned.entry(owner.into()).or_default().entry(session.into()).or_default()+=1;}
