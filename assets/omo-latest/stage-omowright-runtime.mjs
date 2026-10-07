@@ -52,7 +52,7 @@ function usage() {
   --source <dir>     the omowright package checkout to bundle (or $OMO_OMOWRIGHT_SOURCE)
   --target <dir>     where the materialized runtime is written (default: <overlay>/runtime/browser/omowright)
   --identity <commit>  the immutable omowright commit the source must be at (default: the overlay manifest's browserRuntime.dependency.commit)
-  --bun <path>       the bun executable used for `bun build` (or $BUN; default: bun)
+  --bun <path>       the bun executable used for bun build (or $BUN; default: bun)
   --check            freshness gate: fail when the staged runtime does not match the source`);
 }
 

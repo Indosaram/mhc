@@ -322,7 +322,7 @@ async function connectHost(socketPath, timeoutMs) {
 					} catch {
 						continue;
 					}
-					if (message && typeof message.id === "number" && client.waiters.has(message.id)) {
+					if (message && typeof message.id === "string" && client.waiters.has(message.id)) {
 						const settle = client.waiters.get(message.id);
 						client.waiters.delete(message.id);
 						settle(message);
@@ -338,7 +338,7 @@ async function connectHost(socketPath, timeoutMs) {
 	});
 	client.request = (fields, ms = timeoutMs) =>
 		new Promise((resolve) => {
-			const id = client.nextId++;
+			const id = String(client.nextId++);
 			const timer = setTimeout(() => {
 				client.waiters.delete(id);
 				resolve(null);
@@ -435,6 +435,7 @@ async function scenarioIdleExit(ctx) {
 	const agent = env.MAHO_CODING_AGENT_DIR;
 	const receipt = { home, socket, agent, exitCode: null, hostChildPid: null, cleanup: {} };
 	let proc = null;
+	let death = null;
 	let ok = false;
 	let detail = "";
 	try {
@@ -449,6 +450,7 @@ async function scenarioIdleExit(ctx) {
 		const stderrText = drain(proc.stderr);
 		const ready = await appeared;
 		receipt.hostChildPid = readRegistrationPid(socket, agent);
+		if (receipt.hostChildPid !== null) death = await armHostDeath(receipt.hostChildPid);
 		const exited = await Promise.race([proc.exited.then((code) => code), delay(READY_TIMEOUT_MS).then(() => null)]);
 		receipt.exitCode = exited;
 		const [stdout, stderr] = await Promise.all([
@@ -459,11 +461,9 @@ async function scenarioIdleExit(ctx) {
 		receipt.stderr = stderr === null ? null : stderr.trim();
 		receipt.streamsComplete = stdout !== null && stderr !== null;
 		const selfExited = exited === 0;
-		// The host child is foreign; socket removal proves the endpoint was unlinked, so the scenario
-		// records `hostDeath: "unproved"` rather than claiming process death.
+		receipt.hostDeath = death !== null && await death.exited ? "pidfd-exit" : "unproved";
 		const socketGone = !existsSync(socket);
-		receipt.hostDeath = "unproved";
-		ok = ready && selfExited && socketGone && receipt.streamsComplete === true;
+		ok = ready && selfExited && socketGone && receipt.streamsComplete === true && receipt.hostDeath === "pidfd-exit";
 		detail = `ready=${ready} exit=${exited} socketGone=${socketGone} streamsComplete=${receipt.streamsComplete} hostDeath=${receipt.hostDeath}`;
 	} catch (error) {
 		detail = `driver error ${error.message}`;
@@ -473,6 +473,7 @@ async function scenarioIdleExit(ctx) {
 			// the owned exit; only force under a bound if it is still alive.
 			await shutdownOwnedHost(receipt, { proc, socket });
 		}
+		if (death !== null) await death.close();
 		rmSync(home, { recursive: true, force: true });
 		receipt.cleanup.homeRemoved = !existsSync(home);
 	}
@@ -480,11 +481,34 @@ async function scenarioIdleExit(ctx) {
 	artifacts.push("idle-exit-receipt.json");
 	const cleanupOk = receipt.cleanup.gracefulExit === true && receipt.cleanup.socketGone === true && receipt.cleanup.homeRemoved === true && receipt.streamsComplete === true;
 	return {
-		status: "inconclusive",
-		blocker: `idle-exit: ${detail} supervisorFacts=${ok} cleanup=${JSON.stringify(receipt.cleanup)} (the supervised host child is foreign; socket removal proves unlink only, so the required child-gone observable is unproved and this scenario is not a pass)`,
+		status: ok && cleanupOk ? "pass" : "inconclusive",
+		blocker: ok && cleanupOk ? null : `idle-exit: ${detail} cleanup=${JSON.stringify(receipt.cleanup)}`,
 		artifacts,
 		cleanup_ok: cleanupOk,
 	};
+}
+
+async function armHostDeath(pid) {
+	if (process.platform !== "linux") throw new Error("pidfd host-death proof requires Linux");
+	const helper = Bun.spawn(["python3", join(import.meta.dir, "host-pidfd-watch.py"), String(pid), String(DEATH_TIMEOUT_MS)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+	const lines = helper.stdout.getReader();
+	const decoder = new TextDecoder();
+	const stderr = new Response(helper.stderr).text();
+	let output = "";
+	while (!output.includes("ARMED\n")) {
+		const chunk = await lines.read();
+		if (chunk.done) throw new Error(`pidfd subscription failed: ${await stderr}`);
+		output += decoder.decode(chunk.value, { stream: true });
+	}
+	const exited = (async () => {
+		for (;;) {
+			const chunk = await lines.read();
+			if (chunk.done) break;
+			output += decoder.decode(chunk.value, { stream: true });
+		}
+		return await helper.exited === 0 && output.includes("EXITED\n");
+	})();
+	return { exited, close: async () => { helper.kill(); await helper.exited; await stderr; lines.releaseLock(); } };
 }
 
 async function scenarioWatchdog(ctx) {
@@ -496,6 +520,7 @@ async function scenarioWatchdog(ctx) {
 	const receipt = { home, socket, agent, supervisorPid: null, hostChildPid: null, aliveBeforeKill: false, pointerGoneAfterKill: false, cleanup: {} };
 	let ok = false;
 	let detail = "";
+	let death = null;
 	try {
 		const ensure = await run(ctx.binary, ["host", "ensure", "--socket", socket, "--json"], { cwd: home, env });
 		const line = oneJsonLine(ensure.stdout);
@@ -507,9 +532,7 @@ async function scenarioWatchdog(ctx) {
 		// "gone after" proves nothing.
 		receipt.aliveBeforeKill = started && pidAlive(receipt.hostChildPid);
 		if (started) {
-			// The host child is foreign; its death is evidenced by the OWNED lifecycle signal the
-			// watchdog produces: the daemon registration pointer the cleanup removes. Subscribe
-			// BEFORE the trigger.
+			death = await armHostDeath(receipt.hostChildPid);
 			const pointerGone = waitForPathGone(registrationPointer(socket, agent), DEATH_TIMEOUT_MS);
 			// SIGKILL runs no handler anywhere: only the OS lifetime binding can end the host.
 			try {
@@ -519,16 +542,14 @@ async function scenarioWatchdog(ctx) {
 			}
 			receipt.pointerGoneAfterKill = await pointerGone;
 		}
+		receipt.hostDeath = death !== null && await death.exited ? "pidfd-exit" : "unproved";
 		const socketGone = !existsSync(socket);
-		// The registration-pointer removal proves the pointer was UNLINKED, never that the foreign
-		// host process died, and a foreign pid poll is not a verdict. With no registered owned
-		// lifetime proof available, the scenario is INCONCLUSIVE rather than a proxy pass.
-		receipt.hostDeath = "unproved";
-		ok = false;
-		detail = detail || `started=${started} aliveBeforeKill=${receipt.aliveBeforeKill} pointerGoneAfterKill=${receipt.pointerGoneAfterKill} socketGone=${socketGone} hostDeath=unproved (no registered owned lifetime signal can prove the foreign host died)`;
+		ok = started && receipt.aliveBeforeKill && receipt.pointerGoneAfterKill && socketGone && receipt.hostDeath === "pidfd-exit";
+		detail = detail || `started=${started} aliveBeforeKill=${receipt.aliveBeforeKill} pointerGoneAfterKill=${receipt.pointerGoneAfterKill} socketGone=${socketGone} hostDeath=${receipt.hostDeath}`;
 	} catch (error) {
 		detail = `driver error ${error.message}`;
 	} finally {
+		if (death !== null) await death.close();
 		// Best-effort orphan sweep of a foreign group; never the verdict.
 		if (receipt.supervisorPid !== null && pidAlive(receipt.supervisorPid)) killGroup(receipt.supervisorPid);
 		if (receipt.hostChildPid !== null && pidAlive(receipt.hostChildPid)) {
@@ -547,8 +568,8 @@ async function scenarioWatchdog(ctx) {
 	artifacts.push("watchdog-receipt.json");
 	const cleanupOk = receipt.cleanup.pointerGone === true && receipt.cleanup.socketGone === true && receipt.cleanup.homeRemoved === true;
 	return {
-		status: "inconclusive",
-		blocker: `watchdog: ${detail} cleanup=${JSON.stringify(receipt.cleanup)} (the registration-pointer removal proves unlink only; no registered owned lifetime signal proves the foreign host died)`,
+		status: ok && cleanupOk ? "pass" : "inconclusive",
+		blocker: ok && cleanupOk ? null : `watchdog: ${detail} cleanup=${JSON.stringify(receipt.cleanup)}`,
 		artifacts,
 		cleanup_ok: cleanupOk,
 	};
@@ -570,12 +591,23 @@ async function scenarioMountedSkills(ctx) {
 	const env = isolatedEnv(home);
 	// The packaged root is the ONLY source: the isolated agent dir holds no skills of its own.
 	env.OMO_SENPI_SKILLS_ROOT = skillsRoot;
+	const body = [
+		'data: {"id":"offline","object":"chat.completion.chunk","created":0,"model":"offline","choices":[{"index":0,"delta":{"role":"assistant","content":"offline"},"finish_reason":null}]}',
+		"",
+		'data: {"id":"offline","object":"chat.completion.chunk","created":0,"model":"offline","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+		"", "data: [DONE]", "",
+	].join("\n");
+	const provider = Bun.serve({ port: 0, fetch: () => new Response(body, { headers: { "content-type": "text/event-stream" } }) });
+	writeFileSync(join(home, "agent", "models.json"), JSON.stringify({ providers: { offline: {
+		api: "openai-completions", baseUrl: `http://127.0.0.1:${provider.port}/v1`, apiKey: "offline-fixture",
+		models: [{ id: "offline", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096 }],
+	} } }));
 	const socket = join(home, "host.sock");
 	const project = join(home, "project");
 	mkdirSync(project, { recursive: true });
 	// Subscribe BEFORE the spawn: readiness is the socket appearing, not a poll.
 	const appeared = waitForPathAppear(socket, READY_TIMEOUT_MS);
-	const host = Bun.spawn([ctx.binary, "--mode", "rpc", "--multi-session", "--listen", `unix://${socket}`], {
+	const host = Bun.spawn([ctx.binary, "--mode", "rpc", "--multi-session", "--listen", `unix://${socket}`, "--offline", "--provider", "offline", "--model", "offline"], {
 		cwd: home,
 		env,
 		detached: true,
@@ -598,6 +630,7 @@ async function scenarioMountedSkills(ctx) {
 			detail = "the host socket did not accept a bounded connection";
 		} else {
 		const opened = await client.request({ type: "open_session", cwd: project });
+		receipt.openResponse = opened;
 		receipt.session = opened?.data?.sessionId ?? null;
 		if (receipt.session) {
 			await client.request({ type: "prompt", sessionId: receipt.session, message: "mass ulw: add a tiny feature" });
@@ -605,7 +638,7 @@ async function scenarioMountedSkills(ctx) {
 			const pointer = (entries?.data?.entries ?? []).find((entry) => entry?.customType === "omo-mass-ulw:skill-pointer");
 			receipt.pointer = pointer ? JSON.stringify(pointer).slice(0, 2000) : null;
 			const text = pointer ? JSON.stringify(pointer) : "";
-			ok = text.includes(`${skillsRoot}/mass-ulw/SKILL.md`) || text.includes(`${skillsRoot}mass-ulw/SKILL.md`);
+			ok = text.includes(`${skillsRoot}/mass-ulw/SKILL.md`) && existsSync(join(skillsRoot, "mass-ulw", "SKILL.md"));
 			detail = `session=${receipt.session} pointer=${pointer ? "present" : "absent"} namesRoot=${ok}`;
 		} else {
 			detail = "the host answered no sessionId to open_session";
@@ -625,6 +658,8 @@ async function scenarioMountedSkills(ctx) {
 		receipt.streamsComplete = stdout !== null && stderr !== null;
 		receipt.stdoutBytes = stdout === null ? null : stdout.length;
 		receipt.stderr = stderr === null ? null : stderr.trim();
+		await provider.stop(true);
+		receipt.cleanup.providerStopped = true;
 		rmSync(home, { recursive: true, force: true });
 		receipt.cleanup.homeRemoved = !existsSync(home);
 	}
