@@ -248,7 +248,7 @@ mod tests {
         store::{TranscriptJournal, TranscriptJournalOptions},
     };
 
-    const NOW_MS: i64 = 1_786_424_400_000;
+    const NOW_MS: i64 = 1_786_363_200_000;
 
     fn harness() -> (tempfile::TempDir, MemoryCommandIdentity, FakeDeps) {
         let (root, identity) = temp_identity();
