@@ -36,7 +36,7 @@ fn exists_only(paths: &'static [&'static str]) -> Arc<dyn Fn(&str) -> bool + Sen
 }
 
 fn no_paths() -> Arc<dyn Fn() -> Vec<String> + Send + Sync> {
-    Arc::new(|| Vec::new())
+    Arc::new(Vec::new)
 }
 
 fn listed(paths: &'static [&'static str]) -> Arc<dyn Fn() -> Vec<String> + Send + Sync> {
@@ -307,7 +307,8 @@ fn stdio_server_stays_disabled_on_windows_without_git_bash() {
 
 #[test]
 fn stdio_server_serves_on_windows_with_git_bash_and_disables_idle_timeout() {
-    let lifecycle: Arc<Mutex<Vec<(String, Option<McpLogFields>)>>> = Arc::default();
+    type LifecycleEvents = Arc<Mutex<Vec<(String, Option<McpLogFields>)>>>;
+    let lifecycle: LifecycleEvents = Arc::default();
     let sink = Arc::clone(&lifecycle);
     let log: Arc<dyn McpLifecycleLog + Send + Sync> =
         Arc::new(move |event: &str, fields: Option<&McpLogFields>| {
