@@ -1,7 +1,7 @@
 mod support;
 use std::{collections::BTreeMap, sync::{Arc, Mutex, Condvar, mpsc}, time::Duration};
 use maho_ext_api::*;
-use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine, ComposeTaskEngineDeps}, dag_engine::TaskDagEngine};
+use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine, ComposeTaskEngineDeps}};
 use senpi_task::{host::HostError, manager::{ManagedChildHandle, ManagedChildListener, Unsubscribe, types::{ManagedRunner, ManagedRunnerResult, ManagedStartSpec, ManagedRunners}}, runners::RunnerOutcome};
 use serde_json::json;
 
@@ -90,13 +90,12 @@ async fn registered_terminal_node_releases_activity_while_peer_remains_live() {
 }
 async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
     let root=tempfile::tempdir().expect("root"); let (created,children)=mpsc::channel(); let runner=Arc::new(Runner(created));
-    let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:Arc::new(Actions),coordinator:None,resolve_registry:Arc::new(|| None) });
-    let dag=Arc::new(TaskDagEngine::compose(&engine,None).expect("dag")); let mut api=support::api();
-    let task_timers=Arc::new(Timers::default());
-    let component=TaskComponent::register_with_status_timers(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false,task_timers.clone()).expect("register").expect("component");
+    let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:Arc::new(Actions),coordinator:None,resolve_registry:Arc::new(|| None),host_transport:None });
+    let mut api=support::api();
+    let task_timers=Arc::new(Timers::default()); let status_timers=Arc::new(Timers::default()); let rpc_timers=Arc::new(Timers::default());
+    let component=TaskComponent::register_with_dag_timers(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false,task_timers.clone(),status_timers.clone(),rpc_timers.clone()).expect("register").expect("component");
+    let dag=component.dag_engine().expect("component owns the dag engine");
     let mut ctx=support::context(); ctx.cwd=root.path().into(); dispatch(&api,EventKind::SessionStart,&mut start_event(),&ctx).await;
-    let status_timers=Arc::new(Timers::default()); let rpc_timers=Arc::new(Timers::default());
-    dag.register_rpc_with_timers(&mut api,&component,status_timers.clone(),rpc_timers.clone());
     let activity=Arc::new(Mutex::new(Vec::<JsonValue>::new())); let received=activity.clone();
     let activity_subscription=api.events.on("senpi:extension-rpc-event",Arc::new(move |event| { if event["name"]=="omo.dag.activity" { received.lock().expect("activity").push(event["data"].clone()); } }));
     let mut definition=senpi_task::dag::graph::DagDefinition { key:"held".into(),name:"held".into(),nodes:vec![senpi_task::dag::graph::DagNodeInput { id:"one".into(),prompt:"hold".into(),target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(),model:Some("faux/native".into()) },label:None,depends_on:None,task_summary:None,description:None,load_skills:None }] };

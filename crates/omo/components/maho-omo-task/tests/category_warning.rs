@@ -23,7 +23,7 @@ pub mod support;
         fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
     }
     let root=tempfile::tempdir().expect("state"); let actions=Arc::new(Actions::default()); let runner=Arc::new(NeverStarts);
-    let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| Some(Arc::new(EmptyRegistry))) });
+    let engine=compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(),config:json!({}),runners:ManagedRunners { in_process:runner.clone(),process:runner },actions:actions.clone(),coordinator:None,resolve_registry:Arc::new(|| Some(Arc::new(EmptyRegistry))),host_transport:None });
     let mut api=support::api(); api.runtime.bind(actions.clone());
     let component=TaskComponent::register(&mut api,engine,Default::default(),senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:root.path().into(),task_state_dir:None },team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4,max_parallel_members:2,max_wall_clock_minutes:10 },load_runtime_state:None },false).expect("register").expect("enabled");
     assert!(api.registered.handlers.contains_key(&EventKind::ModelSelect),"assembled task component must capture model-select context and sync status");

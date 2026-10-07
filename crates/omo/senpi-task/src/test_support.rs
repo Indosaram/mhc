@@ -43,6 +43,9 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         error_message: None,
         killed: None,
         run_stats: None,
+        isolation: None,
+        runner_kind: None,
+        host_session: None,
     }
 }
 

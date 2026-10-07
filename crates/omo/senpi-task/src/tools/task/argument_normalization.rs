@@ -1,11 +1,38 @@
 //! `tools/task/argument-normalization.ts`: tolerant normalization of raw task tool arguments.
 //! Produces the normalized params as a JSON object (same keys and order as the TS spread).
+//!
+//! `isolationArguments` (TS lines 35-46) THROWS on a wrong-typed `isolated`/`apply`/`merge`; it
+//! never drops the flag, because a dropped flag reads as the config default (`task.isolation.*`)
+//! at the manager boundary. The native port keeps the failure in the same place: normalization
+//! returns `Err(TaskArgumentError)`.
+
+use std::fmt;
 
 use serde_json::{Map, Value};
 
 use crate::task_summary::clamp_task_summary;
 
 const PROVIDER_PADDING_PROMPTS: [&str; 4] = ["unused", "placeholder", "not used", "n/a"];
+
+/// The `TypeError` `isolationArguments` throws, surfaced as a typed error at normalization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskArgumentError {
+    pub message: String,
+}
+
+impl TaskArgumentError {
+    fn new(message: &str) -> Self {
+        Self { message: message.to_string() }
+    }
+}
+
+impl fmt::Display for TaskArgumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for TaskArgumentError {}
 
 fn non_blank_text(value: Option<&Value>) -> Option<String> {
     value
@@ -50,11 +77,50 @@ fn put_list(map: &mut Map<String, Value>, key: &str, value: Option<Vec<String>>)
     }
 }
 
-fn task_item(value: &Value) -> Option<Map<String, Value>> {
-    let record = value.as_object()?;
-    let prompt = non_blank_text(record.get("prompt"))?;
+/// `isolationArguments`: validate the three isolation flags and return the ones that are present.
+/// `isolated` and `apply` must be booleans; `merge` must be `"patch"` or `"branch"`. An explicit
+/// `null` is wrong-typed too (TS `typeof null !== "boolean"`), so only a real boolean passes.
+fn isolation_arguments(
+    record: &Map<String, Value>,
+) -> Result<Vec<(&'static str, Value)>, TaskArgumentError> {
+    let mut arguments = Vec::new();
+    if let Some(value) = record.get("isolated") {
+        if !value.is_boolean() {
+            return Err(TaskArgumentError::new("isolated must be a boolean"));
+        }
+        arguments.push(("isolated", value.clone()));
+    }
+    if let Some(value) = record.get("apply") {
+        if !value.is_boolean() {
+            return Err(TaskArgumentError::new("apply must be a boolean"));
+        }
+        arguments.push(("apply", value.clone()));
+    }
+    if let Some(value) = record.get("merge") {
+        if !matches!(value.as_str(), Some("patch" | "branch")) {
+            return Err(TaskArgumentError::new("merge must be patch or branch"));
+        }
+        arguments.push(("merge", value.clone()));
+    }
+    Ok(arguments)
+}
+
+fn put_isolation(map: &mut Map<String, Value>, arguments: Vec<(&'static str, Value)>) {
+    for (key, value) in arguments {
+        map.insert(key.to_string(), value);
+    }
+}
+
+fn task_item(value: &Value) -> Result<Option<Map<String, Value>>, TaskArgumentError> {
+    let Some(record) = value.as_object() else {
+        return Ok(None);
+    };
+    let Some(prompt) = non_blank_text(record.get("prompt")) else {
+        return Ok(None);
+    };
     let mut item = Map::new();
     item.insert("prompt".to_string(), Value::String(prompt));
+    put_isolation(&mut item, isolation_arguments(record)?);
     put_text(&mut item, "task_summary", summary_text(record.get("task_summary")));
     put_text(&mut item, "description", non_blank_text(record.get("description")));
     put_text(&mut item, "category", identifier(record.get("category")));
@@ -62,11 +128,23 @@ fn task_item(value: &Value) -> Option<Map<String, Value>> {
     put_text(&mut item, "name", identifier(record.get("name")));
     put_text(&mut item, "model", identifier(record.get("model")));
     put_list(&mut item, "load_skills", string_list(record.get("load_skills")));
-    Some(item)
+    if let Some(value) = record.get("run_in_background").and_then(Value::as_bool) {
+        item.insert("run_in_background".to_string(), Value::Bool(value));
+    }
+    Ok(Some(item))
 }
 
-fn task_items(value: Option<&Value>) -> Option<Vec<Map<String, Value>>> {
-    Some(value?.as_array()?.iter().filter_map(task_item).collect())
+fn task_items(value: Option<&Value>) -> Result<Option<Vec<Map<String, Value>>>, TaskArgumentError> {
+    let Some(entries) = value.and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    let mut items = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Some(item) = task_item(entry)? {
+            items.push(item);
+        }
+    }
+    Ok(Some(items))
 }
 
 fn is_provider_padding_task(item: &Map<String, Value>) -> bool {
@@ -79,13 +157,16 @@ fn is_provider_padding_task(item: &Map<String, Value>) -> bool {
     PROVIDER_PADDING_PROMPTS.contains(&prompt.as_str())
 }
 
-pub fn normalize_task_tool_arguments(raw: &Value) -> Value {
+pub fn normalize_task_tool_arguments(raw: &Value) -> Result<Value, TaskArgumentError> {
     let Some(raw) = raw.as_object() else {
-        return Value::Object(Map::new());
+        return Ok(Value::Object(Map::new()));
     };
 
     let prompt = non_blank_text(raw.get("prompt"));
-    let normalized_tasks = task_items(raw.get("tasks"));
+    // `taskItems(raw.tasks)` is evaluated before `isolationArguments(raw)` in the TS body, so an
+    // item-level type error wins over a top-level one; the evaluation order is preserved here.
+    let normalized_tasks = task_items(raw.get("tasks"))?;
+    let isolation = isolation_arguments(raw)?;
     let tasks_are_single_padding = prompt.is_some()
         && normalized_tasks
             .as_ref()
@@ -99,6 +180,7 @@ pub fn normalize_task_tool_arguments(raw: &Value) -> Value {
 
     let mut out = Map::new();
     put_text(&mut out, "prompt", prompt);
+    put_isolation(&mut out, isolation);
     put_text(&mut out, "task_summary", summary_text(raw.get("task_summary")));
     put_text(&mut out, "description", non_blank_text(raw.get("description")));
     put_text(&mut out, "category", identifier(raw.get("category")));
@@ -109,11 +191,12 @@ pub fn normalize_task_tool_arguments(raw: &Value) -> Value {
     put_text(&mut out, "name", identifier(raw.get("name")));
     put_text(&mut out, "model", identifier(raw.get("model")));
     put_list(&mut out, "load_skills", string_list(raw.get("load_skills")));
+    put_list(&mut out, "tools", string_list(raw.get("tools")));
     if let Some(tasks) = tasks {
         out.insert(
             "tasks".to_string(),
             Value::Array(tasks.into_iter().map(Value::Object).collect()),
         );
     }
-    Value::Object(out)
+    Ok(Value::Object(out))
 }

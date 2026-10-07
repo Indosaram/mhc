@@ -14,6 +14,7 @@ use crate::lifecycle::{
     DestroyCause, LifecycleReattachPorts, ReattachResult, RespawnResult,
     register_lifecycle_reattach_ports,
 };
+use crate::isolation::IsolationPreparation;
 use crate::manager::child_handle::{
     ManagedChildHandle, ManagedChildListener, Unsubscribe, discard_managed_handle,
 };
@@ -25,6 +26,7 @@ use crate::manager::helpers::{
     build_managed_spec, build_record_input, build_spawn_spec_v1, in_session, is_terminal_record,
     now_iso, record_spawned_pid,
 };
+use crate::manager::isolation_wiring::{IsolationWiring, IsolationWiringPorts, create_isolation_wiring};
 use crate::manager::names::NameRegistry;
 use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outcome};
 use crate::manager::respawn::{RespawnInput, respawn_managed_task};
@@ -39,8 +41,8 @@ use crate::runners::RunnerFailureKind;
 use crate::runners::types::RpcRunnerSpec;
 use crate::shared::DagTaskOwner;
 use crate::state::{
-    ResidencyState, TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus, TaskTransition,
-    create_task_record, parse_task_id, resolved_reasoning_fields, sync_task_id_floor,
+    IsolationRecord, ResidencyState, SpawnSpecV1, TaskRecord, TaskRunStats, TaskSpawnSpec, TaskStatus,
+    TaskTransition, create_task_record, parse_task_id, resolved_reasoning_fields, sync_task_id_floor,
 };
 use crate::steering::{
     CancelOptions, CancelOutcome, DestructionPort, InterruptOutcome, SendInput, SendOutcome,
@@ -57,6 +59,13 @@ pub const ID_CONTENTION_MESSAGE: &str =
 pub const SPAWN_BOOKKEEPING_FAILED: &str = "spawn bookkeeping failed";
 
 type Tracker = RunStatsTracker<Box<dyn Fn() -> u64 + Send>>;
+
+/// A prepared sandbox carried from the start path to the bind (TS PreparedIsolation).
+type PreparedIsolation = (
+    isolation_core::IsolationHandle,
+    isolation_core::WorktreeBaseline,
+    crate::state::TaskIsolationSpec,
+);
 
 struct LiveTask {
     handle: Arc<dyn ManagedChildHandle>,
@@ -136,6 +145,7 @@ struct Inner {
     concurrency: Mutex<TaskConcurrency>,
     state: Mutex<State>,
     steering: SteeringEngine,
+    isolation: IsolationWiring,
     this: Weak<Inner>,
 }
 
@@ -237,6 +247,15 @@ impl TaskManager {
             .record_saver
             .unwrap_or_else(|| Arc::new(options.store.clone()));
         let store = options.store;
+        let isolation = create_isolation_wiring(IsolationWiringPorts {
+            runtime: options.isolation,
+            store: store.clone(),
+            cwd: options.cwd.clone(),
+            host_pid: options
+                .host_pid
+                .unwrap_or_else(|| i64::from(std::process::id())),
+            settings: options.isolation_settings,
+        });
         let inner = Arc::new_cyclic(|this: &Weak<Inner>| {
             let port = steering_port(
                 this.clone(),
@@ -264,6 +283,7 @@ impl TaskManager {
                 names: Mutex::new(NameRegistry::default()),
                 state: Mutex::new(State::default()),
                 steering: SteeringEngine::new(port),
+                isolation,
                 this: this.clone(),
             }
         });
@@ -848,10 +868,77 @@ impl Inner {
                 ..claimed.clone()
             }
         };
+        // Isolation is built BEFORE the record is committed to a launch: a repository that cannot be
+        // cloned must refuse the spawn, never silently run the child against the parent checkout,
+        // because "isolated" is a safety promise the caller relies on.
+        let prepared: Option<PreparedIsolation> = if self.isolation.isolates(spec) {
+            match self.isolation.prepare(spec, &claimed.task_id) {
+                IsolationPreparation::Prepared {
+                    handle,
+                    baseline,
+                    spec: isolation_spec,
+                } => Some((handle, baseline, isolation_spec)),
+                IsolationPreparation::Refused { reason } => {
+                    if Some(registration.name.as_str()) != claimed.name.as_deref() {
+                        lock(&self.names).release(&spec.parent_session_id, &registration.name);
+                    }
+                    lock(&self.state).background.remove(&claimed.task_id);
+                    let message = format!("isolation_unavailable: {reason}");
+                    let timestamp = self.now_iso();
+                    let started = self.transition(
+                        &claimed.task_id,
+                        &TaskTransition::Start {
+                            timestamp: timestamp.clone(),
+                            pid: None,
+                            child_session_id: None,
+                        },
+                    );
+                    let failed = self.transition(
+                        &claimed.task_id,
+                        &TaskTransition::Fail {
+                            timestamp,
+                            error_message: message.clone(),
+                            killed: false,
+                            run_stats: None,
+                        },
+                    );
+                    assert!(
+                        started && failed,
+                        "isolation refusal transitions were not applied"
+                    );
+                    return StartResult::StartFailed(StartFailure {
+                        task_id: claimed.task_id.clone(),
+                        name: registration.name.clone(),
+                        category: claimed.category.clone(),
+                        subagent_type: claimed.agent_type.clone(),
+                        execution_mode,
+                        model: claimed.model.clone(),
+                        resolved_model: claimed.resolved_model.clone(),
+                        run_in_background: spec.run_in_background,
+                        error_message: message,
+                    });
+                }
+            }
+        } else {
+            None
+        };
+        let isolation_cwd = prepared
+            .as_ref()
+            .map_or_else(|| self.cwd.clone(), |(_, _, spec)| spec.merged_dir.clone());
         let managed_spec =
-            build_managed_spec(&renamed, spec, plan, &self.cwd, self.store.state_dir());
+            build_managed_spec(&renamed, spec, plan, &isolation_cwd, self.store.state_dir());
+        let spawn_spec = match &prepared {
+            Some((_, _, isolation_spec)) => SpawnSpecV1 {
+                isolation: Some(isolation_spec.clone()),
+                ..build_spawn_spec_v1(&managed_spec)
+            },
+            None => build_spawn_spec_v1(&managed_spec),
+        };
         let final_record = TaskRecord {
-            spawn_spec: Some(TaskSpawnSpec::V1(build_spawn_spec_v1(&managed_spec))),
+            isolation: prepared
+                .as_ref()
+                .map(|(_, _, isolation_spec)| IsolationRecord::new(isolation_spec.clone())),
+            spawn_spec: Some(TaskSpawnSpec::V1(spawn_spec)),
             ..renamed
         };
         if let Err(error) = self.store.replace(&final_record) {
@@ -860,7 +947,13 @@ impl Inner {
                 &claimed.task_id,
                 &error,
             );
+            if prepared.is_some() {
+                self.isolation.discard(&claimed.task_id);
+            }
             return self.bookkeeping_failed(spec, &claimed, &registration.name, execution_mode);
+        }
+        if let Some((handle, baseline, _)) = prepared {
+            self.isolation.bind(&final_record.task_id, handle, baseline);
         }
         if spec.run_in_background {
             lock(&self.state)
@@ -1022,6 +1115,7 @@ impl Inner {
             Err(error) => {
                 let message = public_start_failure_message(&error);
                 self.release_slot(&record.task_id, &context.model, epoch);
+                self.isolation.discard(&record.task_id);
                 self.transition(
                     &record.task_id,
                     &TaskTransition::Fail {
@@ -1103,6 +1197,8 @@ impl Inner {
         );
         self.attach_child_subscribers(task_id, handle);
         self.record_spawn_facts(task_id, handle.as_ref());
+        // Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
+        self.isolation.stamp(task_id, handle.as_ref());
         track_outcome(
             self.arc(),
             task_id.clone(),
@@ -1525,6 +1621,8 @@ impl Inner {
             },
         );
         self.attach_child_subscribers(&fresh.task_id, &handle);
+        // Stamp the child's own identity onto the clone so a sweep can tell a live child from a dead host.
+        self.isolation.stamp(&fresh.task_id, handle.as_ref());
         let pid = handle.pid().or(fresh.pid);
         if is_terminal_record(&fresh) {
             let updated = TaskRecord {
@@ -1634,6 +1732,10 @@ impl OutcomeTrackerPorts for Inner {
 
     fn try_runtime_fallback(&self, input: &ErrorOutcomeInput) -> bool {
         Inner::try_runtime_fallback(self, input)
+    }
+
+    fn settle_isolation(&self, task_id: &str, merge: bool) {
+        self.isolation.settle(task_id, merge);
     }
 
     fn outcome_processed(&self) {

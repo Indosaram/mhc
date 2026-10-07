@@ -98,6 +98,27 @@ impl TaskExecute<'_> {
         let Some(first) = items.first() else {
             return Ok(invalid_arguments("Provide at least one task item."));
         };
+        // `apply`/`merge` are isolation-only: asking to merge a child that never ran in a clone is a
+        // caller mistake, refused BEFORE any spawn so zero child sessions are created.
+        for item in &items {
+            let isolated = item
+                .isolated
+                .or_else(|| {
+                    self.deps.tool
+                        .omo_config
+                        .task
+                        .as_ref()
+                        .and_then(|task| task.isolation.as_ref())
+                        .and_then(|isolation| isolation.enabled)
+                })
+                .unwrap_or(false);
+            if !isolated && (item.apply.is_some() || item.merge.is_some()) {
+                return Ok(invalid_arguments(
+                    "apply and merge require isolated: true or task.isolation.enabled.",
+                ));
+            }
+        }
+
         if items.len() == 1 {
             return run_spawn(
                 self.deps,

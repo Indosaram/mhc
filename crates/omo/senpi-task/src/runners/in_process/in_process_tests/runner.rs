@@ -1,29 +1,36 @@
 //! `in-process.test.ts`, `in-process-model-runtime.test.ts`, `shared-tool-filter.test.ts`,
 //! `runtime-fallback-settings.test.ts`, `in-process-runtime-fallback.test.ts`, `marker-suppression.test.ts`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use serde_json::json;
 
 use super::fake_session::FakeSession;
 use super::support::{
-    base_spec, capturing_runner, fake_runner, last_options, make_tool, make_tracked_tool, strings,
-    tmp, tool_names,
+    base_spec, capturing_runner, fake_runner, last_options, make_tool, make_tracked_tool,
+    session_dir_in, session_header, strings, tmp, tool_names, write_session_file,
 };
 use crate::category::{CategoryResolutionResult, ResolveCategoryOptions, resolve_category};
 use crate::host::HostError;
 use crate::host::fake::{model, registry};
 use crate::manager::child_handle::ManagedChildHandle;
-use crate::runners::in_process::child_handle::{ChildSession, RunnerFailureKind, RunnerOutcome};
+use crate::manager::child_handle::Unsubscribe;
+use crate::runners::in_process::ChildCompletionPolicy;
+use crate::runners::in_process::child_handle::{
+    ChildSession, ChildSessionListener, RunnerFailureKind, RunnerOutcome,
+};
 use crate::runners::in_process::child_options::HostHandle;
-use crate::runners::in_process::runner::{ChildSpec, InProcessRunner, InProcessRunnerOptions};
+use crate::runners::in_process::runner::{
+    ChildPromptEnvelope, ChildSpec, InProcessRunner, InProcessRunnerOptions,
+};
 use crate::runners::in_process::runtime_fallback_settings::{
-    RetryFallbackSettings, create_runtime_fallback_settings,
+    ChildRetryOverride, RetryFallbackSettings, create_runtime_fallback_settings,
 };
 use crate::runners::in_process::shared_tool_filter::{
     filter_shared_parent_tools, is_task_or_team_family_tool, merge_child_custom_tools,
 };
+use crate::runners::in_process::subagent_prompt::{SubagentPromptInput, build_subagent_prompt};
 use crate::state::{ResolvedModelRecord, ResolvedModelSource};
 
 fn started(
@@ -404,7 +411,7 @@ fn record(
 fn given_no_child_fallback_chain_when_settings_are_created_then_global_model_fallback_is_disabled()
 {
     assert_eq!(
-        create_runtime_fallback_settings(Some("vendor/primary"), None),
+        create_runtime_fallback_settings(Some("vendor/primary"), None, None),
         RetryFallbackSettings::default()
     );
 }
@@ -415,6 +422,7 @@ fn given_an_explicit_child_fallback_chain_when_settings_are_created_then_only_th
     let settings = create_runtime_fallback_settings(
         Some("vendor/primary"),
         Some(&[record("vendor", "fallback", None, None)]),
+        None,
     );
     assert!(settings.model_fallback);
     assert_eq!(settings.chains.len(), 1);
@@ -422,6 +430,72 @@ fn given_an_explicit_child_fallback_chain_when_settings_are_created_then_only_th
         settings.chains["vendor/primary"],
         strings(&["vendor/fallback"])
     );
+}
+
+/// A child-owned retry override; each field is optional and independent (upstream spreads a key
+/// only when it is defined, so `None` keeps the engine's own default for that key).
+fn child_retry(max_retries: Option<u32>, base_delay_ms: Option<u64>) -> ChildRetryOverride {
+    ChildRetryOverride {
+        max_retries,
+        base_delay_ms,
+    }
+}
+
+#[test]
+fn given_a_child_retry_budget_beside_the_chain_when_settings_are_created_then_the_budget_is_set_and_the_chain_stays_enabled()
+{
+    let settings = create_runtime_fallback_settings(
+        Some("vendor/primary"),
+        Some(&[record("vendor", "fallback", None, None)]),
+        Some(&child_retry(Some(1), None)),
+    );
+    assert!(settings.model_fallback);
+    assert_eq!(settings.max_retries, Some(1));
+    assert_eq!(settings.base_delay_ms, None);
+    assert_eq!(
+        settings.chains["vendor/primary"],
+        strings(&["vendor/fallback"])
+    );
+}
+
+#[test]
+fn given_a_child_retry_budget_without_a_chain_when_settings_are_created_then_the_budget_is_kept_while_model_fallback_stays_disabled()
+{
+    let settings = create_runtime_fallback_settings(
+        Some("vendor/primary"),
+        None,
+        Some(&child_retry(Some(1), None)),
+    );
+    assert!(!settings.model_fallback);
+    assert!(settings.chains.is_empty());
+    assert_eq!(settings.max_retries, Some(1));
+    assert_eq!(settings.base_delay_ms, None);
+}
+
+#[test]
+fn given_only_a_base_delay_override_when_settings_are_created_then_the_delay_is_set_independently_of_max_retries()
+{
+    let settings = create_runtime_fallback_settings(
+        Some("vendor/primary"),
+        Some(&[record("vendor", "fallback", None, None)]),
+        Some(&child_retry(None, Some(250))),
+    );
+    assert_eq!(settings.max_retries, None);
+    assert_eq!(settings.base_delay_ms, Some(250));
+    assert!(settings.model_fallback);
+}
+
+#[test]
+fn given_a_zero_max_retries_override_when_settings_are_created_then_zero_is_kept_distinct_from_absent()
+{
+    let settings = create_runtime_fallback_settings(
+        Some("vendor/primary"),
+        None,
+        Some(&child_retry(Some(0), None)),
+    );
+    assert_eq!(settings.max_retries, Some(0));
+    assert_ne!(settings.max_retries, None);
+    assert_eq!(settings.base_delay_ms, None);
 }
 
 fn retry_settings_for(fallbacks: Vec<ResolvedModelRecord>) -> RetryFallbackSettings {
@@ -572,4 +646,277 @@ fn given_no_runtime_fallbacks_when_the_child_session_is_created_then_global_mode
     assert_eq!(settings, RetryFallbackSettings::default());
     assert!(!settings.model_fallback);
     assert!(settings.chains.is_empty());
+}
+
+#[test]
+fn given_no_child_system_prompt_when_the_child_session_is_created_then_the_options_leave_it_absent()
+{
+    let dir = tmp();
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
+        FakeSession::immediate("system-prompt-child", None)
+    });
+    let spec = ChildSpec {
+        system_prompt: None,
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    runner.start(&spec).expect("start").wait_for_idle();
+    assert_eq!(last_options(&captured).system_prompt, None);
+}
+
+#[test]
+fn given_a_supplied_system_prompt_beside_instructions_when_the_child_session_is_created_then_the_options_carry_the_exact_separate_persona()
+{
+    let dir = tmp();
+    let persona = "# Kibitzer\n\nYou judge turns.";
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
+        FakeSession::immediate("system-prompt-child", None)
+    });
+    let spec = ChildSpec {
+        system_prompt: Some(persona.to_string()),
+        instructions: Some("work carefully".to_string()),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    runner.start(&spec).expect("start").wait_for_idle();
+    let options = last_options(&captured);
+    assert_eq!(options.system_prompt.as_deref(), Some(persona));
+    assert_ne!(options.system_prompt.as_deref(), spec.instructions.as_deref());
+}
+
+#[test]
+fn given_a_supplied_system_prompt_when_the_child_is_resumed_then_the_options_carry_it_unchanged()
+{
+    let dir = tmp();
+    let persona = "# Kibitzer\n\nYou judge turns.";
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, || {
+        FakeSession::immediate("system-prompt-child", None)
+    });
+    let spec = ChildSpec {
+        system_prompt: Some(persona.to_string()),
+        ..base_spec(&session_dir_in(&dir, "task-system-prompt"))
+    };
+    let session_file_dir = tmp();
+    let session_path =
+        write_session_file(&session_file_dir, &session_header("system-prompt-session"));
+    runner.start(&spec).expect("start").wait_for_idle();
+    runner.resume(&spec, &session_path).expect("resume");
+    let all = captured.lock().expect("captured").clone();
+    let resume_options = all.last().expect("resume options");
+    assert_eq!(resume_options.system_prompt.as_deref(), Some(persona));
+}
+
+/// A session that records every prompt text it receives, so a test can assert the EXACT initial
+/// user message the runner delivers through the real `runner.start` path (never a re-derived copy).
+#[derive(Default)]
+struct RecordingSession {
+    session_id: String,
+    prompts: Mutex<Vec<String>>,
+}
+
+impl RecordingSession {
+    fn new(session_id: &str) -> Arc<Self> {
+        Arc::new(Self {
+            session_id: session_id.to_string(),
+            prompts: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.prompts.lock().expect("recorded prompts").clone()
+    }
+}
+
+impl ChildSession for RecordingSession {
+    fn session_id(&self) -> String {
+        self.session_id.clone()
+    }
+
+    fn prompt(&self, text: &str) -> Result<(), HostError> {
+        self.prompts
+            .lock()
+            .expect("recorded prompts")
+            .push(text.to_string());
+        Ok(())
+    }
+
+    fn steer(&self, _text: &str) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn follow_up(&self, _text: &str) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn abort(&self) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    fn subscribe(&self, _listener: ChildSessionListener) -> Unsubscribe {
+        Box::new(|| {})
+    }
+
+    fn get_last_assistant_text(&self) -> Option<String> {
+        None
+    }
+
+    fn dispose(&self) {}
+}
+
+fn recording_runner() -> (InProcessRunner, Arc<RecordingSession>) {
+    let recorder = RecordingSession::new("envelope-child");
+    let returned: Arc<dyn ChildSession> = recorder.clone();
+    let (runner, _captured) =
+        capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    (runner, recorder)
+}
+
+fn subagent_renderer(spec: &ChildSpec) -> String {
+    build_subagent_prompt(&SubagentPromptInput {
+        task_id: &spec.task_id,
+        parent_session_id: &spec.parent_session_id,
+        root_session_id: &spec.root_session_id,
+        depth: spec.depth,
+        agent_type: spec.agent_type.as_deref(),
+        instructions: spec.instructions.as_deref(),
+        prompt: &spec.prompt,
+    })
+}
+
+#[test]
+fn given_an_absent_prompt_envelope_when_the_child_starts_then_the_delivered_prompt_equals_the_subagent_renderer()
+{
+    let dir = tmp();
+    let spec = ChildSpec {
+        prompt: "framed payload".to_string(),
+        instructions: Some("be careful".to_string()),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let (runner, recorder) = recording_runner();
+    runner.start(&spec).expect("start").wait_for_idle();
+    assert_eq!(recorder.prompts(), vec![subagent_renderer(&spec)]);
+}
+
+#[test]
+fn given_an_explicit_subagent_envelope_when_the_child_starts_then_the_delivered_prompt_equals_the_absent_case_and_the_renderer()
+{
+    let dir = tmp();
+    let absent = ChildSpec {
+        prompt: "framed payload".to_string(),
+        instructions: Some("be careful".to_string()),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let explicit = ChildSpec {
+        prompt_envelope: Some(ChildPromptEnvelope::Subagent),
+        ..absent.clone()
+    };
+
+    let (runner, recorder) = recording_runner();
+    runner.start(&absent).expect("start").wait_for_idle();
+    let absent_prompt = recorder.prompts();
+
+    let (runner, recorder) = recording_runner();
+    runner.start(&explicit).expect("start").wait_for_idle();
+    let explicit_prompt = recorder.prompts();
+
+    assert_eq!(absent_prompt, vec![subagent_renderer(&absent)]);
+    assert_eq!(explicit_prompt, vec![subagent_renderer(&explicit)]);
+    assert_eq!(explicit_prompt, absent_prompt);
+}
+
+#[test]
+fn given_a_bare_prompt_envelope_when_the_child_starts_then_the_initial_user_message_is_the_prompt_byte_for_byte_without_instructions()
+{
+    let dir = tmp();
+    let sentinel = "\n  <kibitzer-input>\npayload line\n</kibitzer-input>\n  ".to_string();
+    let spec = ChildSpec {
+        prompt: sentinel.clone(),
+        prompt_envelope: Some(ChildPromptEnvelope::Bare),
+        instructions: Some("INSTRUCTIONS_SENTINEL_MUST_NOT_APPEAR".to_string()),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let (runner, recorder) = recording_runner();
+    runner.start(&spec).expect("start").wait_for_idle();
+    let prompts = recorder.prompts();
+    assert_eq!(prompts, vec![spec.prompt.clone()]);
+    assert!(!prompts[0].contains("INSTRUCTIONS_SENTINEL_MUST_NOT_APPEAR"));
+}
+
+#[test]
+fn given_a_bare_prompt_envelope_when_the_child_is_resumed_then_no_new_prompt_is_delivered()
+{
+    let dir = tmp();
+    let spec = ChildSpec {
+        prompt: "self-contained block".to_string(),
+        prompt_envelope: Some(ChildPromptEnvelope::Bare),
+        ..base_spec(&session_dir_in(&dir, "task-bare-resume"))
+    };
+    let session_file_dir = tmp();
+    let session_path =
+        write_session_file(&session_file_dir, &session_header("bare-resume-session"));
+    let (runner, recorder) = recording_runner();
+    runner.resume(&spec, &session_path).expect("resume");
+    assert!(recorder.prompts().is_empty());
+}
+
+fn textless_turn_end() -> serde_json::Value {
+    json!({ "type": "message_end", "message": { "role": "assistant", "content": [], "stopReason": "stop" } })
+}
+
+#[test]
+fn given_a_child_spec_with_the_turn_completion_policy_when_its_textless_turn_settles_then_the_runner_handle_reports_a_completed_empty_turn()
+{
+    let dir = tmp();
+    let fake = FakeSession::new("completion-child");
+    let returned: Arc<dyn ChildSession> = fake.clone();
+    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let spec = ChildSpec {
+        completion: Some(ChildCompletionPolicy::Turn),
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let handle = runner.start(&spec).expect("start");
+    fake.wait_prompt_calls(1);
+    fake.emit(&textless_turn_end());
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+}
+
+#[test]
+fn given_a_child_spec_without_a_completion_policy_when_its_textless_turn_settles_then_the_runner_handle_reports_a_child_turn_failed_error()
+{
+    let dir = tmp();
+    let fake = FakeSession::new("completion-child");
+    let returned: Arc<dyn ChildSession> = fake.clone();
+    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let spec = ChildSpec {
+        completion: None,
+        ..base_spec(&dir.path().to_string_lossy())
+    };
+    let handle = runner.start(&spec).expect("start");
+    fake.wait_prompt_calls(1);
+    fake.emit(&textless_turn_end());
+    fake.resolve_prompt();
+    match handle.wait_for_idle() {
+        RunnerOutcome::Error { failure, .. } => {
+            assert_eq!(failure.kind, RunnerFailureKind::ChildTurnFailed);
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_a_child_spec_with_the_turn_completion_policy_when_the_child_is_resumed_then_the_restored_handle_drains_a_completed_empty_turn()
+{
+    let dir = tmp();
+    let fake = FakeSession::new("completion-child");
+    let returned: Arc<dyn ChildSession> = fake.clone();
+    let (runner, _captured) = capturing_runner(Vec::new(), &[], None, move || Arc::clone(&returned));
+    let spec = ChildSpec {
+        completion: Some(ChildCompletionPolicy::Turn),
+        ..base_spec(&session_dir_in(&dir, "task-completion-resume"))
+    };
+    let session_file_dir = tmp();
+    let session_path =
+        write_session_file(&session_file_dir, &session_header("completion-resume-session"));
+    let handle = runner.resume(&spec, &session_path).expect("resume");
+    assert_eq!(fake.prompt_calls(), 0);
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
 }

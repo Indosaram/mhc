@@ -21,6 +21,7 @@ pub struct TaskComponent {
     team_routing: Arc<Mutex<Option<senpi_task::tools::control::send_shutdown::TaskSendTeamRouting>>>,
     mutation_sync: Mutex<Option<u64>>,
     before_suspend: Mutex<Option<BeforeSuspendCallback>>,
+    dag: Mutex<Option<Arc<crate::dag_engine::TaskDagEngine>>>,
 }
 impl TaskComponent {
     pub fn register_with_process_sweep(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, sweep: crate::process_sweep::SessionStartProcessSweepOptions) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
@@ -32,15 +33,19 @@ impl TaskComponent {
         Self::register_with_status_timers(api, engine, spawn, ownership, member_process, Arc::new(HostTimers::default()))
     }
     pub fn register_with_status_timers(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, timers: Arc<dyn crate::status_ui::StatusUiTimers>) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
+        Self::register_with_dag_timers(api, engine, spawn, ownership, member_process, timers, Arc::new(HostTimers::default()))
+    }
+    pub fn register_with_dag_timers(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, timers: Arc<dyn crate::status_ui::StatusUiTimers>, rpc_timers: Arc<dyn crate::status_ui::StatusUiTimers>) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
         if member_process { return Ok(None); }
         crate::registration::register_task_flags(api);
         if api.get_flag("omo-task") == Some(FlagValue::Boolean(false)) { return Ok(None); }
         let state = engine.runtime.clone();
         let session = Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
         let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let dag_status_timers = Arc::clone(&timers);
         let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None) });
+        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None), dag:Mutex::new(None) });
         let weak = Arc::downgrade(&component);
         component.engine.store.set_mutation_listener(Some(Arc::new(move || {
             if let Some(component) = weak.upgrade() {
@@ -71,6 +76,11 @@ impl TaskComponent {
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
         crate::event_bridge::wire_task_usage_guidance(api, Arc::new(move || usage));
+        let dag = Arc::new(crate::dag_engine::TaskDagEngine::compose(&component.engine, None).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?);
+        dag.register_queries(api, &component);
+        dag.register_rpc_with_status_timers(api, &component, dag_status_timers, rpc_timers);
+        dag.register_tool(api, component.clone());
+        *component.dag.lock().unwrap_or_else(PoisonError::into_inner) = Some(dag);
         for kind in [EventKind::SessionStart, EventKind::SessionBeforeSwitch, EventKind::SessionBeforeCompact, EventKind::SessionCompact, EventKind::SessionShutdown, EventKind::ModelSelect, EventKind::AgentEnd, EventKind::ToolResult] {
             let component = component.clone();
             api.on(kind, Arc::new(move |event, context| { let component = component.clone(); Box::pin(async move {
@@ -163,6 +173,9 @@ impl TaskComponent {
     }
     pub fn set_before_suspend(&self, callback: BeforeSuspendCallback) {
         *self.before_suspend.lock().unwrap_or_else(PoisonError::into_inner) = Some(callback);
+    }
+    pub fn dag_engine(&self) -> Option<Arc<crate::dag_engine::TaskDagEngine>> {
+        self.dag.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
     fn notify_owned_terminal(&self, record: &senpi_task::state::TaskRecord) {
         if crate::member_liveness::liveness_details(record).is_none() { return; }

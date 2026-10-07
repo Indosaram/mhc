@@ -65,6 +65,8 @@ fn given_the_lead_team_tools_w2lead_when_built_then_the_injection_only_surface_h
             "task_get".to_string(),
             "task_list".to_string(),
             "task_update".to_string(),
+            "team_status".to_string(),
+            "team_list".to_string(),
         ]
     );
 }

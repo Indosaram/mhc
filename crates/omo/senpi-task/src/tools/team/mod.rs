@@ -14,6 +14,9 @@ mod lifecycle_tests;
 pub mod messaging;
 #[cfg(test)]
 mod messaging_tests;
+pub mod query;
+#[cfg(test)]
+mod query_tests;
 pub mod shutdown;
 #[cfg(test)]
 mod shutdown_tests;

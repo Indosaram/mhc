@@ -11,6 +11,7 @@ pub struct ComposeTaskEngineDeps {
     pub actions: Arc<dyn maho_ext_api::ExtensionActions>,
     pub coordinator: Option<Arc<dyn CompletionCoordinator>>,
     pub resolve_registry: crate::planner::ResolveModelRegistry,
+    pub host_transport: Option<Arc<dyn senpi_task::lifecycle::HostTransport>>,
 }
 pub struct TaskEngine {
     pub manager: Arc<TaskManager>,
@@ -34,6 +35,8 @@ pub fn compose_task_engine_with_rpc_respawn(deps: ComposeTaskEngineDeps, rpc_res
 /// never race the wall clock.
 pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: Option<Arc<dyn senpi_task::manager::types::RpcRespawnRunner>>, now: Option<senpi_task::lifecycle::context::NowFn>) -> TaskEngine {
     let settings = deps.config.get("task").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let isolation_settings = senpi_task::manager::isolation_wiring::IsolationSettings::from_config(&settings);
+    let isolation_runtime = senpi_task::isolation::create_isolation_runtime(&senpi_task::isolation::IsolationRuntimeOptions::default());
     let store = TaskRecordStore::new(&StateDirConfig { project_dir: deps.cwd.clone(), task_state_dir: settings["state_dir"].as_str().map(PathBuf::from) });
     let runtime = Arc::new(Mutex::new(TaskRuntimeContext::new(deps.cwd.clone())));
     let state = runtime.clone();
@@ -51,6 +54,8 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     let registry = Arc::new(ManagerResidencyRegistry { get_manager: Arc::new(move || match registry_ref.get().and_then(std::sync::Weak::upgrade) { Some(manager) => (*manager).clone(), None => panic!("task manager accessed outside composed lifetime") }) });
     let mut lifecycle_deps = LifecycleDeps::new(Arc::new(store.clone()), registry, TaskSettings::from_resolved(&settings));
     lifecycle_deps.now = now;
+    lifecycle_deps.host_transport = deps.host_transport;
+    lifecycle_deps.isolation = Some(isolation_runtime.clone());
     let lifecycle = Arc::new(create_task_lifecycle(lifecycle_deps));
     let agents = resolve_task_agents(&deps.config);
     let planner = create_task_child_planner(deps.config.clone(), agents.clone().into_iter().collect(), deps.resolve_registry);
@@ -62,6 +67,8 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     }));
     let mut options = TaskManagerOptions::new(store.clone(), deps.runners, planner, deps.cwd.to_string_lossy());
     options.rpc_respawn_runner = rpc_respawn;
+    options.isolation = Some(isolation_runtime);
+    options.isolation_settings = isolation_settings;
     options.config = ManagerConfig { max_depth: settings["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1), default_execution_mode: settings["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse).unwrap_or_default(), ..ManagerConfig::default() };
     let concurrency = &deps.config["background_task"];
     options.config.concurrency = senpi_task::manager::concurrency::TaskConcurrencyConfig {

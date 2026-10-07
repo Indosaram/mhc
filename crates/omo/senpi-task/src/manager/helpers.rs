@@ -102,6 +102,7 @@ pub fn build_spawn_spec_v1(spec: &ManagedStartSpec) -> SpawnSpecV1 {
         prompt: spec.prompt.clone(),
         instructions: spec.instructions.clone(),
         member_scoped_tool_names: spec.member_scoped_tool_names.clone(),
+        isolation: None,
     }
 }
 

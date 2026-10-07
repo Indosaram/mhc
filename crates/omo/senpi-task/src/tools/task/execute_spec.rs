@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::manager::execution_mode::{ExecutionMode, ExecutionModeSources, resolve_execution_mode};
 use crate::manager::types::ManagerStartSpec;
+use crate::state::IsolationMergeMode;
 use crate::tools::task::skill_result::task_skill_summary;
 use crate::tools::task::skills::{FsSkillLoaderOptions, create_fs_skill_loader};
 use crate::tools::task::spawn_policy::SpawnPolicyDeps;
@@ -35,6 +36,18 @@ pub struct TaskOmoAgentConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskOmoTaskConfig {
     pub default_execution_mode: Option<ExecutionMode>,
+    pub isolation: Option<TaskOmoIsolationConfig>,
+}
+
+/// `omoConfig.task.isolation`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskOmoIsolationConfig {
+    pub enabled: Option<bool>,
+    /// The config schema's backend name ("auto" | "apfs" | ...); the task tool itself does not read
+    /// it - the manager wiring does - but it rides the same resolved block.
+    pub backend: Option<String>,
+    pub merge: Option<IsolationMergeMode>,
+    pub apply: Option<bool>,
 }
 
 /// The slice of omo.json the task tool reads.
@@ -83,6 +96,9 @@ pub struct SingleSpawnParams {
     pub name: Option<String>,
     pub model: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub isolated: Option<bool>,
+    pub apply: Option<bool>,
+    pub merge: Option<IsolationMergeMode>,
 }
 
 /// `ManagerStartSpec & { execution_mode, skills? }`.
@@ -111,6 +127,39 @@ pub fn build_start_spec(
     let skills = load_skills(&requested, cwd);
     let skill_summary = task_skill_summary(&requested, &skills);
     let execution_mode = resolved_task_execution_mode(target, deps);
+    // `isolated = params.isolated ?? isolation?.enabled ?? false`; when it resolves true the merge
+    // options default (`apply ?? true`, `merge ?? "patch"`), and when the caller only said
+    // `isolated: false` that explicit false is carried, never dropped.
+    let isolation = deps
+        .omo_config
+        .task
+        .as_ref()
+        .and_then(|task| task.isolation.as_ref());
+    let isolated = params
+        .isolated
+        .or_else(|| isolation.and_then(|block| block.enabled))
+        .unwrap_or(false);
+    let (isolated_field, apply_field, merge_field) = if isolated {
+        (
+            Some(true),
+            Some(
+                params
+                    .apply
+                    .or_else(|| isolation.and_then(|block| block.apply))
+                    .unwrap_or(true),
+            ),
+            Some(
+                params
+                    .merge
+                    .or_else(|| isolation.and_then(|block| block.merge))
+                    .unwrap_or(IsolationMergeMode::Patch),
+            ),
+        )
+    } else if let Some(explicit) = params.isolated {
+        (Some(explicit), None, None)
+    } else {
+        (None, None, None)
+    };
     let depth: u64 = ancestry.as_ref().map_or(0, |ancestry| ancestry.depth) + 1;
     let root_session_id = ancestry.map_or_else(
         || parent_session_id.to_string(),
@@ -132,6 +181,9 @@ pub fn build_start_spec(
         name: params.name.clone(),
         description: params.description.clone(),
         run_in_background: params.run_in_background.unwrap_or(false),
+        isolated: isolated_field,
+        apply: apply_field,
+        merge: merge_field,
         ..Default::default()
     };
     ResolvedManagerStartSpec {
@@ -197,5 +249,8 @@ pub fn single_spawn_params(
         name: item.name.clone(),
         model: item.model.clone(),
         load_skills: Some(item.load_skills.clone()),
+        isolated: item.isolated,
+        apply: item.apply,
+        merge: item.merge,
     }
 }

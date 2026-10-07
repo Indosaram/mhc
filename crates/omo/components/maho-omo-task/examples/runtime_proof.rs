@@ -119,7 +119,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let child_slot = Arc::new(Mutex::new(None));
     let runner = Arc::new(Runner(child_slot.clone()));
     for member in [true, false] {
-        let engine = compose_task_engine(ComposeTaskEngineDeps { cwd:path.clone(), config:json!({}), runners:ManagedRunners { in_process:runner.clone(), process:runner.clone() }, actions:actions.clone(), coordinator:None, resolve_registry:Arc::new(|| None) });
+        let engine = compose_task_engine(ComposeTaskEngineDeps { cwd:path.clone(), config:json!({}), runners:ManagedRunners { in_process:runner.clone(), process:runner.clone() }, actions:actions.clone(), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
         let mut gated = support::api();
         if !member { gated.set_flag("omo-task", FlagValue::Boolean(false)); }
         assert!(TaskComponent::register(&mut gated, engine, Default::default(), senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps { state_dir:senpi_task::store::StateDirConfig { project_dir:path.clone(), task_state_dir:None }, team_bounds:senpi_task::team::runtime_config::TeamTaskBounds { max_members:4, max_parallel_members:2, max_wall_clock_minutes:10 }, load_runtime_state:None }, member)?.is_none());
@@ -127,7 +127,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
         assert!(gated.registered.handlers.is_empty());
     }
     println!("PASS member early return and disabled component register no task surfaces");
-    let engine = compose_task_engine(ComposeTaskEngineDeps { cwd:path.clone(), config:json!({}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:actions.clone(), coordinator:None, resolve_registry:Arc::new(|| None) });
+    let engine = compose_task_engine(ComposeTaskEngineDeps { cwd:path.clone(), config:json!({}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:actions.clone(), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
     let mut api = support::api();
     api.runtime.bind(actions);
     let channels = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -188,7 +188,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     drop(subscription); drop(api); drop(component); drop(child);
     let (entered, first_event) = mpsc::channel();
     let runner = Arc::new(ImmediateRunner(Mutex::new(Some(first_event))));
-    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None) });
+    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
     let dag = Arc::new(maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?);
     let started = dag.manager.start(senpi_task::dag::manager::DagStartParams {
         definition: senpi_task::dag::graph::DagDefinition { key:"configured-ring".into(), name:"configured ring".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {

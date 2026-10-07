@@ -1,0 +1,26 @@
+[package]
+name = "maho-omo-skill-commands"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "LicenseRef-SUL-1.0"
+
+[dependencies]
+maho-ext-api = { path = "../../../maho-ext-api" }
+maho-omo-bundled-skills = { path = "../maho-omo-bundled-skills" }
+maho-tui = { path = "../../../maho-tui" }
+serde_json = "=1.0.149"
+
+[dev-dependencies]
+maho-core = { path = "../../../maho-core" }
+maho-ext-host = { path = "../../../maho-ext-host" }
+maho-omo-memory = { path = "../maho-omo-memory" }
+maho-omo-task = { path = "../maho-omo-task" }
+maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
+regex = "=1.12.3"
+senpi-task = { package = "maho-senpi-task", path = "../../senpi-task" }
+tempfile = "=3.27.0"
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
+
+[lints]
+workspace = true

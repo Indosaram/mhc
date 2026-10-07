@@ -20,7 +20,12 @@ use crate::tools::team::tasks::{
     TeamTaskListInput, TeamTaskUpdateDetails, TeamTaskUpdateInput, create_team_task_create_tool,
     create_team_task_get_tool, create_team_task_list_tool, create_team_task_update_tool,
 };
-use crate::tools::team::types::{LeadTeamToolDeps, TeamToolServiceError, TeamToolsService};
+use crate::tools::team::query::{
+    TeamListInput, TeamStatusInput, create_team_list_tool, create_team_status_tool,
+};
+use crate::tools::team::types::{
+    LeadTeamToolDeps, TeamListEntry, TeamStatus, TeamToolServiceError, TeamToolsService,
+};
 
 /// Runner signature shared by every lead team tool (the TS `execute` body).
 pub type TeamRunFn<P, D> = fn(&dyn TeamToolsService, &P) -> Result<AgentToolResult<D>, TeamToolServiceError>;
@@ -70,6 +75,8 @@ pub enum LeadTeamTool {
     TaskGet(TeamTool<TeamTaskGetInput, TeamTaskGetDetails>),
     TaskList(TeamTool<TeamTaskListInput, TeamTaskListDetails>),
     TaskUpdate(TeamTool<TeamTaskUpdateInput, TeamTaskUpdateDetails>),
+    Status(TeamTool<TeamStatusInput, TeamStatus>),
+    List(TeamTool<TeamListInput, Vec<TeamListEntry>>),
 }
 
 macro_rules! with_tool {
@@ -81,6 +88,8 @@ macro_rules! with_tool {
             LeadTeamTool::TaskGet($tool) => $body,
             LeadTeamTool::TaskList($tool) => $body,
             LeadTeamTool::TaskUpdate($tool) => $body,
+            LeadTeamTool::Status($tool) => $body,
+            LeadTeamTool::List($tool) => $body,
         }
     };
 }
@@ -115,5 +124,7 @@ pub fn build_lead_team_tools(deps: &LeadTeamToolDeps) -> Vec<LeadTeamTool> {
         LeadTeamTool::TaskGet(create_team_task_get_tool(deps)),
         LeadTeamTool::TaskList(create_team_task_list_tool(deps)),
         LeadTeamTool::TaskUpdate(create_team_task_update_tool(deps)),
+        LeadTeamTool::Status(create_team_status_tool(deps)),
+        LeadTeamTool::List(create_team_list_tool(deps)),
     ]
 }

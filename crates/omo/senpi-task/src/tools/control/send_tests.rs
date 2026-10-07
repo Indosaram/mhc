@@ -1,5 +1,6 @@
 //! `tools/control/send.test.ts`
 
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pretty_assertions::assert_eq;
@@ -20,8 +21,9 @@ use crate::tools::control::types::{
     SendToolResult,
 };
 use crate::tools::team::types::{
-    ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput, TeamServiceResult,
-    TeamTaskListFilter, TeamToolServiceError, TeamToolsService, UpdateTeamTaskServiceInput,
+    ActiveTeamSummary, CreateTeamTaskServiceInput, CreateTeamToolInput, DeleteTeamToolInput, DiscoveredTeamSpec,
+    TeamServiceResult, TeamStatus, TeamTaskListFilter, TeamToolServiceError, TeamToolsService,
+    UpdateTeamTaskServiceInput,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -254,6 +256,15 @@ impl TeamToolsService for FakeTeamToolsService {
     }
     fn reject_shutdown(&self, _team_run_id: &str, _member: &str, _reason: &str) -> TeamServiceResult<RuntimeState> {
         fail("rejectShutdown")
+    }
+    fn aggregate_status(&self, _team_run_id: &str) -> TeamServiceResult<TeamStatus> {
+        fail("aggregateStatus")
+    }
+    fn discover_team_specs(&self, _project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
+        fail("discoverTeamSpecs")
+    }
+    fn load_team_spec_member_count(&self, _name: &str, _project_root: &Path) -> TeamServiceResult<usize> {
+        fail("loadTeamSpec")
     }
 }
 

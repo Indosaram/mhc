@@ -85,6 +85,22 @@ impl RunnerOutcome {
     }
 }
 
+/// How a settled turn is judged (`ChildCompletionPolicy` in `runners/in-process/child-handle.ts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildCompletionPolicy {
+    /// `"final-text"`: a turn completes only with assistant text. The default.
+    FinalText,
+    /// `"turn"`: any normally settled turn completes, even with no assistant text - for tool-only
+    /// children whose deliverable is a side effect.
+    Turn,
+}
+
+impl Default for ChildCompletionPolicy {
+    fn default() -> Self {
+        Self::FinalText
+    }
+}
+
 /// Host session events are untrusted JSON (`{ type, message? }`).
 pub type ChildSessionListener = Arc<dyn Fn(&Value) + Send + Sync>;
 
@@ -147,7 +163,11 @@ impl Tracked {
     }
 }
 
-fn turn_outcome(session: &dyn ChildSession, observation: &TurnObservation) -> RunnerOutcome {
+fn turn_outcome(
+    session: &dyn ChildSession,
+    observation: &TurnObservation,
+    completion: ChildCompletionPolicy,
+) -> RunnerOutcome {
     if let Some(reason @ ("error" | "aborted")) = observation.stop_reason.as_deref() {
         let message = observation
             .error_message
@@ -162,6 +182,10 @@ fn turn_outcome(session: &dyn ChildSession, observation: &TurnObservation) -> Ru
         Some(last) if !last.is_empty() && Some(&last) != observation.baseline.as_ref() => {
             RunnerOutcome::completed(last)
         }
+        // `turn` judges any normally settled turn as completion, even without assistant text
+        // (upstream `completion === "turn"`); `error`/`aborted` stopReasons were handled above, so
+        // a genuine failure still wins.
+        _ if completion == ChildCompletionPolicy::Turn => RunnerOutcome::completed(""),
         _ => RunnerOutcome::error(
             RunnerFailureKind::ChildTurnFailed,
             observation
@@ -172,9 +196,14 @@ fn turn_outcome(session: &dyn ChildSession, observation: &TurnObservation) -> Ru
     }
 }
 
-fn settled_session_outcome(session: &dyn ChildSession) -> RunnerOutcome {
+fn settled_session_outcome(
+    session: &dyn ChildSession,
+    completion: ChildCompletionPolicy,
+) -> RunnerOutcome {
     match session.get_last_assistant_text() {
         Some(last) if !last.is_empty() => RunnerOutcome::completed(last),
+        // A restored `turn` child drains as a completed empty turn instead of a no-output error.
+        _ if completion == ChildCompletionPolicy::Turn => RunnerOutcome::completed(""),
         _ => RunnerOutcome::error(
             RunnerFailureKind::ChildTurnFailed,
             "restored session has no assistant output",
@@ -188,17 +217,22 @@ pub struct InProcessChildHandle {
     task_id: String,
     session: Arc<dyn ChildSession>,
     tracked: Arc<Tracked>,
+    completion: ChildCompletionPolicy,
     unsubscribe_observer: Mutex<Option<Unsubscribe>>,
 }
 
 impl InProcessChildHandle {
-    fn tracked(task_id: &str, session: Arc<dyn ChildSession>) -> Arc<Self> {
+    fn tracked(
+        task_id: &str,
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> Arc<Self> {
         let tracked = Arc::new(Tracked {
             state: Mutex::new(TrackedState {
                 aborted: false,
                 disposed: false,
                 turn: 0,
-                outcome: Some(settled_session_outcome(session.as_ref())),
+                outcome: Some(settled_session_outcome(session.as_ref(), completion)),
                 observation: TurnObservation::default(),
             }),
             settled: Condvar::new(),
@@ -211,20 +245,41 @@ impl InProcessChildHandle {
             task_id: task_id.to_string(),
             session,
             tracked,
+            completion,
             unsubscribe_observer: Mutex::new(Some(unsubscribe)),
         })
     }
 
-    /// `createChildHandle`: start tracking and immediately run the initial prompt.
+    /// `createChildHandle` with the DEFAULT `FinalText` policy; other callers keep this signature.
     pub fn start(task_id: &str, session: Arc<dyn ChildSession>, prompt_text: &str) -> Arc<Self> {
-        let handle = Self::tracked(task_id, session);
+        Self::start_with_completion(task_id, session, prompt_text, ChildCompletionPolicy::FinalText)
+    }
+
+    /// `createChildHandle`: start tracking and immediately run the initial prompt.
+    pub fn start_with_completion(
+        task_id: &str,
+        session: Arc<dyn ChildSession>,
+        prompt_text: &str,
+        completion: ChildCompletionPolicy,
+    ) -> Arc<Self> {
+        let handle = Self::tracked(task_id, session, completion);
         handle.begin_turn(prompt_text);
         handle
     }
 
-    /// `createRestoredChildHandle`: no prompt is replayed; idle drains the transcript outcome.
+    /// `createRestoredChildHandle` with the DEFAULT `FinalText` policy; other callers keep this
+    /// signature.
     pub fn restored(task_id: &str, session: Arc<dyn ChildSession>) -> Arc<Self> {
-        Self::tracked(task_id, session)
+        Self::restored_with_completion(task_id, session, ChildCompletionPolicy::FinalText)
+    }
+
+    /// `createRestoredChildHandle`: no prompt is replayed; idle drains the transcript outcome.
+    pub fn restored_with_completion(
+        task_id: &str,
+        session: Arc<dyn ChildSession>,
+        completion: ChildCompletionPolicy,
+    ) -> Arc<Self> {
+        Self::tracked(task_id, session, completion)
     }
 
     fn begin_turn(&self, text: &str) {
@@ -241,6 +296,7 @@ impl InProcessChildHandle {
         };
         let session = Arc::clone(&self.session);
         let tracked = Arc::clone(&self.tracked);
+        let completion = self.completion;
         let text = text.to_string();
         thread::spawn(move || {
             let prompted = session.prompt(&text);
@@ -253,7 +309,7 @@ impl InProcessChildHandle {
                 Err(error) => {
                     RunnerOutcome::error(RunnerFailureKind::ChildPromptFailed, error.message)
                 }
-                Ok(()) => turn_outcome(session.as_ref(), &state.observation),
+                Ok(()) => turn_outcome(session.as_ref(), &state.observation, completion),
             };
             state.outcome = Some(outcome);
             tracked.settled.notify_all();

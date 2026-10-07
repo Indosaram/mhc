@@ -51,3 +51,60 @@ async fn real_conflict_diagnostic_reaches_ui_once() -> Result<(), Box<dyn std::e
     assert_eq!(notices.lock().expect("notices").len(), 2);
     Ok(())
 }
+
+#[tokio::test]
+async fn registered_session_start_reports_an_unserved_devin_selector_once() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut api = ExtensionApi::new(LoadedExtension::new("startup", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    ConfigStartupComponent {
+        run_migration: Some(Arc::new(|_| SenpiStartupMigrationResult::default())),
+        load_config: Some(Arc::new(|_| maho_omo_config_resolution::SenpiOmoConfigResult {
+            loaded: omo_config_core::LoadOmoConfigResult {
+                config: serde_json::Map::new(), diagnostics: Vec::new(), layers: Vec::new(),
+                profile: None, sources: Vec::new(),
+            },
+            config: serde_json::json!({ "categories": { "quick": { "model": "devin/swe-2-low" } } }),
+            diagnostics: Vec::new(),
+        })),
+    }.register(&mut api);
+    let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut ctx = support::context(); ctx.has_ui = true;
+    ctx.ui = Arc::new(support::TestUi(notices.clone()));
+    for _ in 0..2 {
+        let mut event = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup,
+            initial_model_provenance: None, previous_session_file: None });
+        api.registered.handlers[&EventKind::SessionStart][0](&mut event, &ctx).await?;
+    }
+    let reported = notices.lock().expect("notices");
+    assert_eq!(reported.len(), 1, "the Devin clause reports exactly once across repeated SessionStart");
+    assert!(reported[0].contains("devin/swe-2-low"));
+    assert!(reported[0].contains("categories.quick.model"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn registered_session_start_stays_silent_for_a_served_devin_lane() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut api = ExtensionApi::new(LoadedExtension::new("startup", root.path().into(), SourceInfo::default()),
+        ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+    ConfigStartupComponent {
+        run_migration: Some(Arc::new(|_| SenpiStartupMigrationResult::default())),
+        load_config: Some(Arc::new(|_| maho_omo_config_resolution::SenpiOmoConfigResult {
+            loaded: omo_config_core::LoadOmoConfigResult {
+                config: serde_json::Map::new(), diagnostics: Vec::new(), layers: Vec::new(),
+                profile: None, sources: Vec::new(),
+            },
+            config: serde_json::json!({ "categories": { "quick": { "model": "devin/swe-2-medium" } } }),
+            diagnostics: Vec::new(),
+        })),
+    }.register(&mut api);
+    let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut ctx = support::context(); ctx.has_ui = true;
+    ctx.ui = Arc::new(support::TestUi(notices.clone()));
+    let mut event = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup,
+        initial_model_provenance: None, previous_session_file: None });
+    api.registered.handlers[&EventKind::SessionStart][0](&mut event, &ctx).await?;
+    assert!(notices.lock().expect("notices").is_empty(), "a served SWE-2 lane is not a boundary violation");
+    Ok(())
+}

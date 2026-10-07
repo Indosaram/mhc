@@ -170,6 +170,7 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
                 prompt: format!("mass {index}"),
                 instructions: None,
                 member_scoped_tool_names: None,
+                isolation: None,
             })),
             task_summary: None,
             description: None,
@@ -190,6 +191,9 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             error_message: None,
             killed: None,
             run_stats: None,
+            isolation: None,
+            runner_kind: None,
+            host_session: None,
         };
         if terminal {
             record.final_response = Some("already done".to_string());

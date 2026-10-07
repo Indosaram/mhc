@@ -1,7 +1,7 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, path::Path, sync::Arc};
 use serde_json::Value;
 use senpi_task::{manager::TaskManager, store::{StateDirConfig, TaskRecordStore, PersistedTaskEvent}, team::{member_projection::{refresh_team_member_statuses, RefreshTeamMemberStatusesDeps}, messaging::{types::{MessagingEngineDeps, SendTeamMessageInput, SendTeamMessageResult}, send::send_team_message, session_start_reconcile::{ReconcileTeamMailboxDeps, reconcile_team_mailbox_on_session_start}}, normalize::TEAM_LEAD_SENTINEL, runtime::{create_team, delete_team, TeamRuntimeError}, runtime_config::{TeamCoreConfig, TeamTaskBounds, to_team_core_config}, runtime_types::{CreateTeamDeps, CreateTeamResult, DeleteTeamDeps, DeleteTeamResult, TeamRuntimeManagerPort, TeamMemberDestructionPort, TeamMemberExtensionConfig}, shutdown::{request_shutdown, approve_shutdown, reject_shutdown, RequestShutdownDeps, ApproveShutdownDeps, ShutdownFailure}, storage::{team_storage_base_dir, resolve_team_runtime_dirs}, tasks::{TeamTasklistContext, CreateTeamTaskInput, TeamTaskFilter, create_team_task, list_team_tasks, claim_team_task, update_team_task_status, get_team_task}}, tools::team::types::*};
-use team_core::{team_state_store::{list_active_teams, load_runtime_state}, types::{RuntimeState, Task, TaskStatus, SpecSource}};
+use team_core::{team_mailbox::list_unread_messages, team_registry::{discover_team_specs, get_task_claims_dir, load_team_spec, resolve_base_dir}, team_state_store::{list_active_teams, load_runtime_state, locks::detect_stale_lock}, team_tasklist::list_tasks, types::{RuntimeState, Task, TaskStatus, SpecSource}};
 use crate::team_service_support::{build_member_ports, resolve_team_spec, make_shutdown_messenger, make_cancel_member_task};
 
 pub type TeamEventAppender = Arc<dyn Fn(&str, PersistedTaskEvent) + Send + Sync>;
@@ -110,4 +110,60 @@ impl TeamToolsService for TeamService {
         self.assert_owned(run)?; let send = make_shutdown_messenger(&self.deps.manager, &self.deps.state_dir, run); let now = || self.deps.now.as_ref().map_or_else(|| chrono::Utc::now().timestamp_millis(), |now| now());
         reject_shutdown(run, member, reason, &RequestShutdownDeps { config: &self.config, send_message: &send, now: self.deps.now.as_ref().map(|_| &now as &dyn Fn() -> i64) }).map_err(shutdown_error)
     }
+    fn aggregate_status(&self, run: &str) -> TeamServiceResult<TeamStatus> {
+        self.assert_owned(run)?;
+        let state = load_runtime_state(run, &self.config).map_err(core_error)?;
+        let members = state.members.iter().map(|member| {
+            let unread_messages = list_unread_messages(run, &member.name, &self.config).map_or(0, |messages| messages.len());
+            TeamStatusMember { name: member.name.clone(), session_id: member.session_id.clone(), status: member.status, color: member.color.clone(), worktree_path: member.worktree_path.clone(), unread_messages, pane_id: member.tmux_pane_id.clone() }
+        }).collect();
+        let tasks = list_tasks(run, &self.config, None).map_or_else(|_| TeamStatusTasks::default(), |tasks| count_tasks(&tasks));
+        let base_dir = resolve_base_dir(&self.config);
+        Ok(TeamStatus {
+            team_name: state.team_name, team_run_id: state.team_run_id, status: state.status.as_str().to_owned(),
+            lead_session_id: state.lead_session_id, created_at: state.created_at, members, tasks,
+            shutdown_requests: state.shutdown_requests, concurrency: TeamStatusConcurrency::default(), bounds: state.bounds,
+            stale_locks: stale_lock_paths(&base_dir, run),
+        })
+    }
+    fn discover_team_specs(&self, project_root: &Path) -> TeamServiceResult<Vec<DiscoveredTeamSpec>> {
+        Ok(discover_team_specs(&self.config, project_root).into_iter().map(|entry| DiscoveredTeamSpec {
+            name: entry.name, scope: match entry.scope { SpecSource::Project => ActiveTeamScope::Project, SpecSource::User => ActiveTeamScope::User }, path: entry.path.to_string_lossy().into_owned(),
+        }).collect())
+    }
+    fn load_team_spec_member_count(&self, name: &str, project_root: &Path) -> TeamServiceResult<usize> {
+        Ok(load_team_spec(name, &self.config, project_root, None).map_err(core_error)?.members.len())
+    }
+    fn project_root(&self) -> std::path::PathBuf {
+        self.deps.state_dir.project_dir.clone()
+    }
+}
+
+fn count_tasks(tasks: &[Task]) -> TeamStatusTasks {
+    let mut counts = TeamStatusTasks::default();
+    for task in tasks {
+        counts.total += 1;
+        match task.status {
+            TaskStatus::Pending => counts.pending += 1,
+            TaskStatus::Claimed => counts.claimed += 1,
+            TaskStatus::InProgress => counts.in_progress += 1,
+            TaskStatus::Completed => counts.completed += 1,
+            TaskStatus::Deleted => counts.deleted += 1,
+        }
+    }
+    counts
+}
+
+fn stale_lock_paths(base_dir: &Path, run: &str) -> Vec<String> {
+    const CLAIM_STALE_AFTER_MS: i64 = 300_000;
+    let Ok(claims_dir) = get_task_claims_dir(base_dir, run) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&claims_dir) else { return Vec::new() };
+    let mut paths: Vec<String> = entries.flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()) && entry.file_name().to_string_lossy().ends_with(".lock"))
+        .map(|entry| entry.path())
+        .filter(|path| detect_stale_lock(path, CLAIM_STALE_AFTER_MS))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths
 }

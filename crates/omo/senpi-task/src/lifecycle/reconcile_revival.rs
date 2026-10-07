@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::context::{LifecycleContext, is_terminal};
 use super::errors::LifecycleError;
+use super::host_session::host_session_resume_path;
 use super::reconcile_reclamation::{
     SessionPathResolver, deferred, is_claim_held, is_orphan, reclaim_resident, revive_claimed,
 };
@@ -47,7 +48,7 @@ pub fn reconcile_scoped_revival(
             || !is_terminal(observed.status)
             || observed.status == TaskStatus::Lost
             || observed.killed == Some(true)
-            || session_path_for(&observed.task_id).is_some()
+            || transcript_for(observed, session_path_for).is_some()
         {
             continue;
         }
@@ -111,7 +112,7 @@ pub fn reconcile_scoped_revival(
             outcomes.push(deferred(task_id, "foreign_live_owner"));
             continue;
         };
-        let session_path = session_path_for(&claimed.task_id);
+        let session_path = transcript_for(&claimed, session_path_for);
         outcomes.push(revive_claimed(
             context,
             &claimed,
@@ -125,6 +126,18 @@ pub fn reconcile_scoped_revival(
         }
     }
     Ok(outcomes)
+}
+
+/// A daemon-hosted child NAMES its transcript on the record; the disk scan only knows the child's
+/// own session dir, so preferring the record keeps a parked host session from reading as
+/// transcript-less and being disposed (TS reconcile-revival.ts `transcriptFor`).
+fn transcript_for(
+    record: &TaskRecord,
+    session_path_for: &SessionPathResolver<'_>,
+) -> Option<std::path::PathBuf> {
+    host_session_resume_path(record)
+        .map(std::path::PathBuf::from)
+        .or_else(|| session_path_for(&record.task_id))
 }
 
 fn dispose_suspended_terminal_without_transcript(

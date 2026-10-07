@@ -9,6 +9,7 @@ use serde_json::json;
 use super::context::{LifecycleContext, is_terminal};
 use super::destroy::{destroy_resident_task, term_then_kill};
 use super::errors::LifecycleError;
+use super::host_session::host_session_resume_path;
 use super::port::{
     DestroyCause, ReattachFailureKind, ReattachResult, RespawnDisposition, RespawnFailureCode,
     RespawnResult, get_lifecycle_reattach_ports,
@@ -120,7 +121,11 @@ fn reclaim_resident_exclusive(
             "non-revivable orphan disposed",
         ));
     }
-    let session_path = session_path_for(&claimed.task_id);
+    // A daemon-hosted child names its transcript on the record; the disk scan only knows the child's
+    // own session dir, so preferring the record keeps a parked session from reading as transcript-less.
+    let session_path = host_session_resume_path(&claimed)
+        .map(PathBuf::from)
+        .or_else(|| session_path_for(&claimed.task_id));
     if is_terminal(claimed.status) && session_path.is_none() {
         dispose(context, &claimed.task_id)?;
         return Ok(outcome(
@@ -177,6 +182,17 @@ pub fn revive_claimed(
             "foreign_live_owner",
         ));
     };
+    // An isolated record is NEVER revived: respawning the child against the parent checkout would
+    // defeat the sandbox the caller relies on, so the record is marked lost - which makes its delta
+    // salvageable by the crash-salvage pass - and the clone is left for that pass.
+    if fresh.isolation.is_some() {
+        mark_lost(context, &fresh, "isolated_not_revivable")?;
+        return Ok(outcome(
+            &fresh.task_id,
+            ReconcileOutcomeKind::Lost,
+            "isolated_not_revivable",
+        ));
+    }
     if fresh.execution_mode == "process"
         && let Some(pid) = fresh.pid
         && !term_then_kill(context, &fresh.task_id, pid)?

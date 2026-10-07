@@ -189,6 +189,9 @@ fn given_legacy_single_prompt_params_when_resolved_then_yields_exactly_one_item(
             description: None,
             name: None,
             model: Some("anthropic/claude-opus-4".to_string()),
+            isolated: None,
+            apply: None,
+            merge: None,
             load_skills: strings(&["a"]),
             target: SpawnTarget::SubagentType("momus".to_string()),
         }]
@@ -377,6 +380,9 @@ fn given_the_batch_types_when_constructed_then_resolved_item_and_item_detail_hav
         description: None,
         name: None,
         model: None,
+        isolated: None,
+        apply: None,
+        merge: None,
         load_skills: Vec::new(),
         target: SpawnTarget::Category("quick".to_string()),
     };

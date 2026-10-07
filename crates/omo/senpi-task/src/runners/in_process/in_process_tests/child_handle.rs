@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use super::fake_session::FakeSession;
 use crate::manager::child_handle::ManagedChildHandle;
 use crate::runners::in_process::child_handle::{
-    InProcessChildHandle, RunnerFailureKind, RunnerOutcome,
+    ChildCompletionPolicy, InProcessChildHandle, RunnerFailureKind, RunnerOutcome,
 };
 
 fn assistant_end(text: &str, stop_reason: &str, error_message: Option<&str>) -> Value {
@@ -212,4 +212,155 @@ fn given_in_process_handle_when_disposed_via_seam_then_dispose_succeeds_and_outc
         RunnerOutcome::Cancelled
     );
     assert_eq!(fake.disposed(), 1);
+}
+
+#[test]
+fn given_an_explicit_final_text_policy_and_a_textless_turn_when_it_settles_then_the_outcome_is_a_child_turn_failed_error()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "review this",
+        ChildCompletionPolicy::FinalText,
+    );
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("", "stop", None));
+    fake.resolve_prompt();
+    match handle.wait_for_idle() {
+        RunnerOutcome::Error { failure, .. } => {
+            assert_eq!(failure.kind, RunnerFailureKind::ChildTurnFailed);
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_the_turn_policy_and_a_textless_normally_settled_turn_when_it_settles_then_the_outcome_is_a_completed_empty_turn()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("", "stop", None));
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+}
+
+#[test]
+fn given_the_turn_policy_when_a_restored_handle_with_no_transcript_text_drains_then_the_outcome_is_a_completed_empty_turn()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::restored_with_completion(
+        "task-1",
+        fake.clone(),
+        ChildCompletionPolicy::Turn,
+    );
+    assert_eq!(fake.prompt_calls(), 0);
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+}
+
+#[test]
+fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_error_when_it_settles_then_the_failure_still_wins()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("", "error", Some("provider exploded")));
+    fake.resolve_prompt();
+    match handle.wait_for_idle() {
+        RunnerOutcome::Error { failure, .. } => {
+            assert_eq!(failure.kind, RunnerFailureKind::ChildTurnFailed);
+            assert!(failure.message.contains("provider exploded"));
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_the_turn_policy_and_a_live_turn_that_emits_a_stop_reason_aborted_when_it_settles_then_the_failure_still_wins()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("", "aborted", None));
+    fake.resolve_prompt();
+    match handle.wait_for_idle() {
+        RunnerOutcome::Error { failure, .. } => {
+            assert_eq!(failure.kind, RunnerFailureKind::ChildTurnFailed);
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_the_turn_policy_and_a_prompt_that_rejects_when_the_turn_settles_then_the_outcome_is_a_child_prompt_failed_error()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    fake.reject_prompt("prompt transport failed");
+    match handle.wait_for_idle() {
+        RunnerOutcome::Error { failure, .. } => {
+            assert_eq!(failure.kind, RunnerFailureKind::ChildPromptFailed);
+            assert!(failure.message.contains("prompt transport failed"));
+        }
+        other => panic!("expected error, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_the_turn_policy_and_an_aborted_turn_when_the_prompt_resolves_then_cancellation_wins_over_the_turn_policy()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    handle.abort_turn().expect("abort");
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::Cancelled);
+}
+
+#[test]
+fn given_the_turn_policy_when_an_idle_child_is_revived_with_a_follow_up_then_the_new_textless_turn_is_also_completed_empty()
+{
+    let fake = FakeSession::new("child-session-1");
+    let handle = InProcessChildHandle::start_with_completion(
+        "task-1",
+        fake.clone(),
+        "run the tool",
+        ChildCompletionPolicy::Turn,
+    );
+    fake.wait_prompt_calls(1);
+    fake.emit(&assistant_end("", "stop", None));
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
+    handle.follow_up_turn("run it again").expect("follow up");
+    fake.wait_prompt_calls(2);
+    fake.emit(&assistant_end("", "stop", None));
+    fake.resolve_prompt();
+    assert_eq!(handle.wait_for_idle(), RunnerOutcome::completed(""));
 }
