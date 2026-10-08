@@ -453,28 +453,28 @@ fn a_work_paused_without_a_stale_stamp_keeps_its_status() {
 
 #[test]
 fn activity_exactly_at_the_threshold_is_stale() {
-    assert!(is_work_stale(Some(1000), 1000 + HOUR_MS, HOUR_MS));
+    assert!(is_work_stale(Some(1000), 1000 + HOUR_MS, HOUR_MS as f64));
 }
 
 #[test]
 fn activity_one_millisecond_inside_the_threshold_is_not_stale() {
-    assert!(!is_work_stale(Some(1001), 1000 + HOUR_MS, HOUR_MS));
+    assert!(!is_work_stale(Some(1001), 1000 + HOUR_MS, HOUR_MS as f64));
 }
 
 #[test]
 fn no_activity_evidence_is_stale() {
-    assert!(is_work_stale(None, 1000, HOUR_MS));
+    assert!(is_work_stale(None, 1000, HOUR_MS as f64));
 }
 
 #[test]
 fn activity_stamped_in_the_future_is_not_stale() {
-    assert!(!is_work_stale(Some(2000 + HOUR_MS), 2000, HOUR_MS));
+    assert!(!is_work_stale(Some(2000 + HOUR_MS), 2000, HOUR_MS as f64));
 }
 
 #[test]
 fn no_env_knob_uses_the_six_hour_default() {
     assert_eq!(resolve_stale_work_threshold_ms(&Default::default()), DEFAULT_STALE_WORK_THRESHOLD_MS);
-    assert_eq!(DEFAULT_STALE_WORK_THRESHOLD_MS, 6 * HOUR_MS);
+    assert_eq!(DEFAULT_STALE_WORK_THRESHOLD_MS, (6 * HOUR_MS) as f64);
 }
 
 #[test]
@@ -483,7 +483,7 @@ fn env_knob_overrides_the_default() {
         STALE_WORK_THRESHOLD_ENV_KEY.to_string(),
         " 900000 ".to_string(),
     )]);
-    assert_eq!(resolve_stale_work_threshold_ms(&env), 900_000);
+    assert_eq!(resolve_stale_work_threshold_ms(&env), 900_000.0);
 }
 
 #[test]
@@ -494,6 +494,28 @@ fn non_positive_or_unparsable_env_knob_uses_the_default() {
             raw.to_string(),
         )]);
         assert_eq!(resolve_stale_work_threshold_ms(&env), DEFAULT_STALE_WORK_THRESHOLD_MS);
+    }
+}
+
+#[test]
+fn fractional_env_threshold_is_not_truncated() {
+    let env = std::collections::BTreeMap::from([(
+        STALE_WORK_THRESHOLD_ENV_KEY.to_string(),
+        "0.5".to_string(),
+    )]);
+    let threshold = resolve_stale_work_threshold_ms(&env);
+    assert_eq!(threshold, 0.5);
+    assert!(!is_work_stale(Some(1000), 1000, threshold));
+    assert!(is_work_stale(Some(1000), 1001, threshold));
+}
+
+#[test]
+fn radix_env_threshold_matches_javascript_number() {
+    for (raw, expected) in [("0x10", 16.0), ("0b10", 2.0), ("0o10", 8.0)] {
+        let env = std::collections::BTreeMap::from([(
+            STALE_WORK_THRESHOLD_ENV_KEY.to_string(), raw.to_string(),
+        )]);
+        assert_eq!(resolve_stale_work_threshold_ms(&env), expected);
     }
 }
 
