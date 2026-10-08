@@ -11,6 +11,7 @@
 //   <staging>/mhc             the CLI binary
 //   <staging>/ast-grep-mcp    the native ast-grep MCP server (AstGrepComponent entry: exe sibling)
 //   <staging>/omo-git-bash    the git-bash MCP sibling (required by --skill-source latest, optional in pinned)
+//   <staging>/senpi-desktop-engine  the native desktop engine binary (desktop-service child entry: exe sibling)
 //   <staging>/skills/<name>/  the builtin skills (builtin_skills_root: exe parent + "skills")
 //   <staging>/skills/browser/runtime/omowright/  the browser skill's materialized engine runtime
 //                            (latest only: staged from --omowright-runtime, never committed)
@@ -40,6 +41,12 @@
 // pinned baseline it stays optional (absent means no sibling and no placeholder). Either way its
 // source path and sha256 are recorded.
 //
+// The native desktop engine sibling is staged from --desktop-engine-binary (default: <binary dir>/senpi-desktop-engine).
+// In the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
+// the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
+// pinned baseline it stays optional (absent means no sibling and no placeholder). Either way its
+// source path and sha256 are recorded.
+//
 // The browser skill's engine runtime (upstream `skills/browser/runtime/omowright/`: the bundled
 // omowright entry, its page bundle and the materializer manifest) is build-materialized and never
 // committed, so the selected latest staging REQUIRES --omowright-runtime <dir> and records the
@@ -57,6 +64,7 @@
 //   --skill-source <mode>  skills source: pinned (default) or latest (repository-owned overlay)
 //   --latest-assets <dir>  repository-owned latest overlay root (default: <repo-root>/assets/omo-latest)
 //   --git-bash-binary <p>  git-bash MCP sibling to stage as `omo-git-bash` (required by --skill-source latest)
+//   --desktop-engine-binary <p> native desktop engine sibling to stage as `senpi-desktop-engine` (default: <binary dir>/senpi-desktop-engine)
 //   --omowright-runtime <p>  materialized browser engine runtime directory to stage (required by --skill-source latest)
 //   --schema <path>        published config JSON Schema to stage (default: <repo-root>/assets/omo.schema.json)
 //   --force                overwrite an existing non-empty staging directory
@@ -95,6 +103,14 @@ const SCHEMA_ASSET_SOURCE = `assets/${SCHEMA_ASSET_NAME}`;
 // staging (`--skill-source latest`) requires it, the pinned baseline stages it optionally, and its
 // source path + sha256 are recorded in the manifest either way (no guess, no placeholder).
 const GIT_BASH_MCP_NAME = "omo-git-bash";
+
+// Binary sibling: the native desktop engine. Upstream resolves it via desktop-service child
+// (`crates/omo/senpi-desktop-service/src/child.rs`), which looks for `senpi-desktop-engine` beside
+// the running executable. It is staged from `--desktop-engine-binary` (default: <binary dir>/senpi-desktop-engine):
+// in the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
+// the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
+// pinned baseline it stays optional (absent means no sibling and no placeholder).
+const DESKTOP_ENGINE_NAME = "senpi-desktop-engine";
 
 // The browser skill's engine runtime. Upstream materializes it at build/prepack time from the root
 // `omowright` devDependency into `skills/browser/runtime/omowright/` (gitignored, shipped through the
@@ -135,8 +151,8 @@ const IGNORED_DIR_NAMES = new Set([".git", ".omo", ".mypy_cache", ".pytest_cache
 const IGNORED_FILE_NAMES = new Set([".gitignore", ".npmignore", "pyrightconfig.json", "openai.yaml"]);
 
 function usage() {
-	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
-       bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> --omowright-runtime <dir> [--latest-assets <dir>]
+	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
+       bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> [--desktop-engine-binary <path>] --omowright-runtime <dir> [--latest-assets <dir>]
        bun tools/package-native.mjs --verify-only <dir>
        bun tools/package-native.mjs --self-test`);
 }
@@ -544,6 +560,25 @@ export async function stage(options) {
 	if (skillSource === "latest" && gitBashMcp === null) {
 		throw new Error(`--skill-source latest is the selected product staging and requires --git-bash-binary <built ${GIT_BASH_MCP_NAME}>; the pinned baseline stages the sibling optionally`);
 	}
+	// Sibling: native desktop engine binary. The workspace crate `maho-senpi-desktop-engine` emits
+	// `senpi-desktop-engine` beside `mhc`. Staged from `--desktop-engine-binary` or its default sibling
+	// path `<binary dir>/senpi-desktop-engine`. In the selected product staging (`--skill-source latest`)
+	// it is REQUIRED: an absent sibling refuses the selected delivery. The pinned baseline stages it optionally.
+	const defaultDesktopEngine = join(dirname(binary), DESKTOP_ENGINE_NAME);
+	let desktopEngine = null;
+	if (options.desktopEngineBinary !== undefined && options.desktopEngineBinary !== null) {
+		const candidate = resolve(options.desktopEngineBinary);
+		if (!existsSync(candidate) || !(await stat(candidate)).isFile()) {
+			throw new Error(`--desktop-engine-binary is not a regular file: ${candidate}`);
+		}
+		desktopEngine = candidate;
+	} else if (existsSync(defaultDesktopEngine) && (await stat(defaultDesktopEngine)).isFile()) {
+		desktopEngine = resolve(defaultDesktopEngine);
+	} else if (skillSource === "latest") {
+		throw new Error(
+			`--skill-source latest is the selected product staging and requires the native desktop engine sibling at ${defaultDesktopEngine}: build the workspace bins (cargo build --workspace --bins) so ${DESKTOP_ENGINE_NAME} sits beside ${CLI_BINARY_NAME}, or pass --desktop-engine-binary`,
+		);
+	}
 	// Refuse an unsafe or non-empty destination before anything is written. The destination is not
 	// removed here: every input is resolved and read first, so a refused run leaves an existing
 	// stage intact.
@@ -633,6 +668,10 @@ export async function stage(options) {
 		await copyExecutable(gitBashMcp, join(output, GIT_BASH_MCP_NAME));
 		executables.push(await fileEntry(output, GIT_BASH_MCP_NAME, gitBashMcp));
 	}
+	if (desktopEngine !== null) {
+		await copyExecutable(desktopEngine, join(output, DESKTOP_ENGINE_NAME));
+		executables.push(await fileEntry(output, DESKTOP_ENGINE_NAME, desktopEngine));
+	}
 
 	const licenses = [];
 	for (const license of LICENSE_FILES) {
@@ -667,6 +706,7 @@ export async function stage(options) {
 
 	const layout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
 	if (gitBashMcp !== null) layout.gitBashMcp = GIT_BASH_MCP_NAME;
+	if (desktopEngine !== null) layout.desktopEngine = DESKTOP_ENGINE_NAME;
 
 	const manifest = {
 		schemaVersion: SCHEMA_VERSION,
@@ -720,6 +760,12 @@ export async function verify(directory) {
 	if (manifest.layout?.gitBashMcp !== undefined && manifest.layout.gitBashMcp !== GIT_BASH_MCP_NAME) {
 		errors.push(`layout.gitBashMcp must be ${JSON.stringify(GIT_BASH_MCP_NAME)} (found ${JSON.stringify(manifest.layout.gitBashMcp)})`);
 	}
+	if (manifest.layout?.desktopEngine !== undefined && manifest.layout.desktopEngine !== DESKTOP_ENGINE_NAME) {
+		errors.push(`layout.desktopEngine must be ${JSON.stringify(DESKTOP_ENGINE_NAME)} (found ${JSON.stringify(manifest.layout.desktopEngine)})`);
+	}
+	if (manifest.skills?.source === "latest" && manifest.layout?.desktopEngine === undefined) {
+		errors.push(`layout.desktopEngine is required for --skill-source latest: must declare ${JSON.stringify(DESKTOP_ENGINE_NAME)}`);
+	}
 	// Provenance: the manifest must record both expected upstream pins as full commits, and the
 	// staging source it actually used must prove its identity. `pinned` requires the recorded checkout
 	// commit to equal the OMO pin; `latest` requires the repository-owned overlay's declared latest
@@ -769,6 +815,12 @@ export async function verify(directory) {
 	// The optional git-bash sibling is required exactly when the manifest declares it.
 	if (manifest.layout?.gitBashMcp !== undefined && !executables.some((entry) => entry?.path === GIT_BASH_MCP_NAME)) {
 		errors.push(`declared git-bash sibling is missing from the manifest executables: ${GIT_BASH_MCP_NAME}`);
+	}
+	if (manifest.layout?.desktopEngine !== undefined && !executables.some((entry) => entry?.path === DESKTOP_ENGINE_NAME)) {
+		errors.push(`declared desktop engine sibling is missing from the manifest executables: ${DESKTOP_ENGINE_NAME}`);
+	}
+	if (manifest.skills?.source === "latest" && !executables.some((entry) => entry?.path === DESKTOP_ENGINE_NAME)) {
+		errors.push(`required desktop engine sibling is missing from latest manifest executables: ${DESKTOP_ENGINE_NAME}`);
 	}
 	// The browser engine runtime is required exactly when the manifest declares it: a declared
 	// runtime whose files are not hashed would ship a `browser` skill whose loader throws.
@@ -996,9 +1048,10 @@ async function selfTest() {
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
 		await writeFile(join(omo, "packages/omo-senpi/src/components/telemetry/product-identity.ts"), `export const BUILTIN_SKILL_NAMES = Object.freeze([\n  ${names.map((name) => `"${name}"`).join(", ")},\n] as const)\n`);
 
-		// The selected product staging (`--skill-source latest`) requires the git-bash sibling, so the
-		// built sibling is present before the latest cases run.
+		// The selected product staging (`--skill-source latest`) requires both the git-bash and
+		// desktop engine siblings, so the built siblings are present before the latest cases run.
 		await writeFile(join(binDir, GIT_BASH_MCP_NAME), "#!/bin/sh\necho git-bash\n");
+		await writeFile(join(binDir, DESKTOP_ENGINE_NAME), "#!/bin/sh\necho desktop-engine\n");
 
 		// --- latest source selection: the repository-owned overlay is the only latest skill source ---
 		// The overlay declares its own commit, its selection, the names it retires and each owned
@@ -1031,6 +1084,8 @@ async function selfTest() {
 		check("latest overlay versions are recorded", latest.manifest.versions.omoSenpi === "6.0.0" && latest.manifest.versions.sharedSkills === "0.2.0");
 		check("latest manifest verifies", (await verify(latestOut)).ok);
 		check("selected latest staging stages the git-bash sibling", existsSync(join(latestOut, GIT_BASH_MCP_NAME)) && latest.manifest.layout.gitBashMcp === GIT_BASH_MCP_NAME);
+		check("selected latest staging stages the desktop engine sibling", existsSync(join(latestOut, DESKTOP_ENGINE_NAME)) && latest.manifest.layout.desktopEngine === DESKTOP_ENGINE_NAME);
+		check("desktop engine sibling is a hashed manifest executable", latest.manifest.executables.some((entry) => entry.path === DESKTOP_ENGINE_NAME));
 		check("latest records the installed loader binding", latest.manifest.sources.latestAssets.loader?.env === "OMO_SENPI_SKILLS_ROOT" && latest.manifest.sources.latestAssets.loader?.skillsRoot === SKILLS_DIR);
 
 		const pinnedDefault = await stage({ binary: join(binDir, "mhc"), output: join(root, "pinned-default"), omoRoot: omo, repoRoot: repo });
@@ -1070,6 +1125,47 @@ async function selfTest() {
 		const gitBashDroppedResult = await verify(gitBashDroppedDir);
 		check("a declared git-bash sibling missing from the manifest is rejected", !gitBashDroppedResult.ok && gitBashDroppedResult.errors.some((error) => error.includes("git-bash sibling is missing") && error.includes(GIT_BASH_MCP_NAME)));
 		await expectReject("a named git-bash sibling that is not a file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "git-bash-missing"), omoRoot: omo, repoRoot: repo, gitBashBinary: join(binDir, "nope") }), "not a regular file");
+
+		// --- desktop engine sibling: required in the selected latest staging, optional in pinned ---
+		await rm(join(binDir, DESKTOP_ENGINE_NAME));
+		await expectReject("selected latest staging without the desktop engine sibling is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-engine"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), DESKTOP_ENGINE_NAME);
+		await writeFile(join(binDir, DESKTOP_ENGINE_NAME), "#!/bin/sh\necho desktop-engine\n");
+		await expectReject("a named desktop engine sibling that is not a file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "engine-missing"), omoRoot: omo, repoRoot: repo, desktopEngineBinary: join(binDir, "nope") }), "not a regular file");
+
+		const desktopEngineOut = join(root, "with-desktop-engine");
+		const withDesktopEngine = await stage({ binary: join(binDir, "mhc"), output: desktopEngineOut, omoRoot: omo, repoRoot: repo, desktopEngineBinary: join(binDir, DESKTOP_ENGINE_NAME) });
+		check("desktop engine sibling is staged when named", existsSync(join(desktopEngineOut, DESKTOP_ENGINE_NAME)) && withDesktopEngine.manifest.layout.desktopEngine === DESKTOP_ENGINE_NAME);
+		check("desktop engine sibling is a hashed manifest executable", withDesktopEngine.manifest.executables.some((entry) => entry.path === DESKTOP_ENGINE_NAME) && (await verify(desktopEngineOut)).ok);
+		check("desktop engine sibling is absent when not named and absent from binDir", !existsSync(join(out, DESKTOP_ENGINE_NAME)) && result.manifest.layout.desktopEngine === undefined);
+
+		const desktopEngineDroppedDir = join(root, "desktop-engine-dropped");
+		await copyTree(desktopEngineOut, desktopEngineDroppedDir);
+		const desktopEngineDropped = JSON.parse(await readFile(join(desktopEngineDroppedDir, MANIFEST_NAME), "utf8"));
+		desktopEngineDropped.executables = desktopEngineDropped.executables.filter((entry) => entry.path !== DESKTOP_ENGINE_NAME);
+		await writeFile(join(desktopEngineDroppedDir, MANIFEST_NAME), `${JSON.stringify(desktopEngineDropped, null, 2)}\n`);
+		const desktopEngineDroppedResult = await verify(desktopEngineDroppedDir);
+		check("a declared desktop engine sibling missing from the manifest is rejected", !desktopEngineDroppedResult.ok && desktopEngineDroppedResult.errors.some((error) => error.includes("desktop engine sibling is missing") && error.includes(DESKTOP_ENGINE_NAME)));
+
+		const latestDroppedBothDir = join(root, "latest-dropped-both");
+		await copyTree(latestOut, latestDroppedBothDir);
+		const latestDroppedBoth = JSON.parse(await readFile(join(latestDroppedBothDir, MANIFEST_NAME), "utf8"));
+		delete latestDroppedBoth.layout.desktopEngine;
+		latestDroppedBoth.executables = latestDroppedBoth.executables.filter((entry) => entry.path !== DESKTOP_ENGINE_NAME);
+		await writeFile(join(latestDroppedBothDir, MANIFEST_NAME), `${JSON.stringify(latestDroppedBoth, null, 2)}\n`);
+		const latestDroppedBothResult = await verify(latestDroppedBothDir);
+		check("latest manifest dropping both layout and executable is rejected", !latestDroppedBothResult.ok && latestDroppedBothResult.errors.some((error) => error.includes("desktop engine") || error.includes("desktopEngine")));
+
+		const desktopEngineTamperedDir = join(root, "desktop-engine-tampered");
+		await copyTree(desktopEngineOut, desktopEngineTamperedDir);
+		await writeFile(join(desktopEngineTamperedDir, DESKTOP_ENGINE_NAME), "#!/bin/sh\necho tampered\n");
+		const desktopEngineTamperedResult = await verify(desktopEngineTamperedDir);
+		check("tampered desktop engine binary fails verification", !desktopEngineTamperedResult.ok && desktopEngineTamperedResult.errors.some((error) => error.includes("sha256 mismatch") && error.includes(DESKTOP_ENGINE_NAME)));
+
+		const desktopEngineModeDir = join(root, "desktop-engine-mode");
+		await copyTree(desktopEngineOut, desktopEngineModeDir);
+		await chmod(join(desktopEngineModeDir, DESKTOP_ENGINE_NAME), 0o644);
+		const desktopEngineModeResult = await verify(desktopEngineModeDir);
+		check("changed desktop engine file mode fails verification", !desktopEngineModeResult.ok && desktopEngineModeResult.errors.some((error) => error.includes("mode mismatch") && error.includes(DESKTOP_ENGINE_NAME)));
 
 		// --- browser engine runtime: the selected latest staging ships a materialized runtime ---
 		// The overlay declares the runtime's immutable upstream identity; staging requires an explicit
@@ -1157,6 +1253,7 @@ async function main(argv) {
 	let skillSource = null;
 	let latestAssets = null;
 	let gitBashBinary = null;
+	let desktopEngineBinary = null;
 	let omowrightRuntime = null;
 	let schema = null;
 	let verifyOnly = null;
@@ -1178,6 +1275,7 @@ async function main(argv) {
 		else if (argument === "--skill-source") skillSource = next(argument);
 		else if (argument === "--latest-assets") latestAssets = next(argument);
 		else if (argument === "--git-bash-binary") gitBashBinary = next(argument);
+		else if (argument === "--desktop-engine-binary") desktopEngineBinary = next(argument);
 		else if (argument === "--omowright-runtime") omowrightRuntime = next(argument);
 		else if (argument === "--schema") schema = next(argument);
 		else if (argument === "--verify-only") verifyOnly = next(argument);
@@ -1201,7 +1299,7 @@ async function main(argv) {
 		process.exit(1);
 	}
 	if (binary === null || output === null) usageError("--binary and --output are required");
-	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, omowrightRuntime, schema });
+	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, desktopEngineBinary, omowrightRuntime, schema });
 	console.log(`package-native: staged ${result.manifest.executables.length} executable(s), ${result.manifest.skills.names.length} skill(s) (${result.manifest.skills.files.length} files) and ${result.manifest.licenses.length} license(s) into ${result.output}`);
 	console.log(`package-native: skill source ${result.manifest.skills.source}`);
 	console.log(`package-native: manifest ${result.manifestPath}`);
