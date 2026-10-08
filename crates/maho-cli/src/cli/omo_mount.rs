@@ -46,7 +46,16 @@ impl OmoMount {
         // with `cwd`; `..Default::default()` keeps the library's own resolution.
         Ok(Self::shipped(task, memory, &maho_omo::OmoComponentOptions {
             skills_root, env: environment, ..Default::default()
-        }, Default::default(), provisioning))
+        }, OmoRuntimeOptions {
+            logger: Some(Arc::new(maho_omo::logger::SinkLogger::new(Arc::new(|level, message, details| {
+                let diagnostic = match details {
+                    Some(details) => format!("maho-omo {}: {message} {details}\n", level.as_str()),
+                    None => format!("maho-omo {}: {message}\n", level.as_str()),
+                };
+                maho_core::output_guard::maho_write_stderr(&diagnostic);
+            })))),
+            ..Default::default()
+        }, provisioning))
     }
     pub fn shipped(
         task: OmoSenpiComponent,
