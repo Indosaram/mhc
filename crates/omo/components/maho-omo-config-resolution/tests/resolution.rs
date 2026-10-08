@@ -16,9 +16,9 @@ fn resolve(config: Value, profile: Option<&str>) -> Result<maho_omo_config_resol
 
 #[test]
 fn preserves_top_level_configuration() -> Result<(), std::io::Error> {
-    let result = resolve(json!({"categories":{"quick":{"model":"provider/fast","reasoningEffort":"minimal"},"deep":{"fallback_models":["provider/deep"]}},"agents":{"explore":{"model":"provider/explore","models":["provider/other"]},"oracle":{"model":"provider/oracle","reasoningEffort":"max"}}}), None)?;
-    assert!(result.diagnostics.is_empty());
-    assert_eq!(result.config["categories"], json!({"quick":{"model":"provider/fast","reasoning":"minimal"},"deep":{"fallback_models":["provider/deep"]}}));
+    let result = resolve(json!({"categories":{"quick":{"model":"provider/fast","reasoningEffort":"minimal"},"deep-low":{"fallback_models":["provider/deep"]}},"agents":{"explore":{"model":"provider/explore","models":["provider/other"]},"oracle":{"model":"provider/oracle","reasoningEffort":"max"}}}), None)?;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.config["categories"], json!({"quick":{"model":"provider/fast","reasoning":"minimal"},"deep-low":{"fallback_models":["provider/deep"]}}));
     assert_eq!(result.config["agents"], json!({"explore":{"model":"provider/explore","models":["provider/other"]},"oracle":{"model":"provider/oracle","reasoning":"max"}}));
     Ok(())
 }
