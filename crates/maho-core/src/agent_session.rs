@@ -414,6 +414,7 @@ struct AgentSessionState {
     shown_high_reasoning_warning_keys: BTreeSet<String>,
     extension_mode: ExtensionMode,
     extension_ui_context: Option<Arc<dyn ExtensionUi>>,
+    extension_bound_ui: Option<(Arc<dyn ExtensionUi>, Arc<dyn ExtensionUi>)>,
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
     /// Tracks startup dispatch so RPC attach can install UI without repeating the lifecycle.
@@ -1568,6 +1569,7 @@ impl AgentSession {
             shown_high_reasoning_warning_keys: BTreeSet::new(),
             extension_mode: ExtensionMode::Print,
             extension_ui_context: None,
+            extension_bound_ui: None,
             extension_abort_handler: None,
             extension_error_listener: None,
             extension_lifecycle_started: false,
@@ -4986,6 +4988,7 @@ impl AgentSession {
             name: command.invocation_name, description: command.command.description,
             argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
         }).collect()));
+        self.state().extension_bound_ui = None;
         *self.extension_runner.lock().await = Some(runner);
         self.apply_extension_bindings().await;
         if self.state().uses_default_stream_function {
@@ -5583,11 +5586,18 @@ impl AgentSession {
         let sender = self.state().extension_event_sender.clone();
         let mut guard = self.extension_runner.lock().await;
         let Some(runner) = guard.as_mut() else { return Ok(()); };
+        if self.state().extension_bound_ui.as_ref()
+            .is_some_and(|(source, _)| Arc::ptr_eq(source, &ui)) {
+            return Ok(());
+        }
+        let source = ui.clone();
         let bound: Arc<dyn ExtensionUi> = match sender {
             Some(events) => Arc::new(maho_ext_host::ui::LifecycleUi::new(ui, runner.runtime.clone(), Arc::new(move |event| { let _ = events.send(event); }))),
             None => ui,
         };
-        runner.bind_ui(bound).map_err(|error| error.message)
+        runner.bind_ui(bound.clone()).map_err(|error| error.message)?;
+        self.state().extension_bound_ui = Some((source, bound));
+        Ok(())
     }
 
     /// Append a transport-provided entry and publish it on the RPC event stream.
