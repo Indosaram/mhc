@@ -213,12 +213,12 @@ pub struct WorkLookupOptions {
 }
 
 /// Optional knobs of [`crate::reconcile_stale_works`] (`ReconcileStaleWorksOptions`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReconcileStaleWorksOptions {
     /// Clock override in Unix milliseconds; defaults to `Date.now()`.
     pub now: Option<i64>,
     /// Threshold override in milliseconds; defaults to the resolved env value.
-    pub threshold_ms: Option<i64>,
+    pub threshold_ms: Option<f64>,
     /// Agent sessions root holding `<encoded session cwd>/<timestamp>_<sessionId>.jsonl`
     /// transcripts. When absent the transcript scan is skipped.
     pub sessions_directory: Option<PathBuf>,

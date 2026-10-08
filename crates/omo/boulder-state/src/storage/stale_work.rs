@@ -20,7 +20,7 @@ use crate::types::{
 };
 
 /// A ulw-execute session that dies abnormally never completes its work, so activity decides.
-pub const DEFAULT_STALE_WORK_THRESHOLD_MS: i64 = 6 * 60 * 60 * 1000;
+pub const DEFAULT_STALE_WORK_THRESHOLD_MS: f64 = 21_600_000.0;
 pub const STALE_WORK_THRESHOLD_ENV_KEY: &str = "OMO_BOULDER_STALE_WORK_THRESHOLD_MS";
 
 const SESSION_TRANSCRIPT_SUFFIX: &str = ".jsonl";
@@ -35,7 +35,7 @@ fn no_changes() -> StaleWorkReconcileResult {
 
 /// `resolveStaleWorkThresholdMs(env)`: the six-hour default unless the env knob holds a
 /// positive, parsable number.
-pub fn resolve_stale_work_threshold_ms(env: &BTreeMap<String, String>) -> i64 {
+pub fn resolve_stale_work_threshold_ms(env: &BTreeMap<String, String>) -> f64 {
     let raw = env
         .get(STALE_WORK_THRESHOLD_ENV_KEY)
         .map(|value| value.trim())
@@ -44,19 +44,28 @@ pub fn resolve_stale_work_threshold_ms(env: &BTreeMap<String, String>) -> i64 {
         return DEFAULT_STALE_WORK_THRESHOLD_MS;
     }
 
-    // `Number(raw)`: `""` is 0 and whitespace-only is 0; anything else parses or is NaN.
-    match raw.parse::<f64>() {
-        Ok(parsed) if parsed.is_finite() && parsed > 0.0 => parsed as i64,
-        _ => DEFAULT_STALE_WORK_THRESHOLD_MS,
-    }
+    // Number accepts unsigned radix prefixes as well as decimal fractions/exponents.
+    let radix = [("0x", "0X", 16), ("0b", "0B", 2), ("0o", "0O", 8)]
+        .into_iter()
+        .find_map(|(lower, upper, radix)| raw.strip_prefix(lower)
+            .or_else(|| raw.strip_prefix(upper)).map(|digits| (digits, radix)));
+    let parsed = match radix {
+        Some((digits, radix)) if !digits.is_empty() => digits.chars().try_fold(0.0, |value, digit| {
+            digit.to_digit(radix).map(|digit| value * f64::from(radix) + f64::from(digit))
+        }),
+        Some(_) => None,
+        None => raw.parse::<f64>().ok(),
+    };
+    parsed.filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(DEFAULT_STALE_WORK_THRESHOLD_MS)
 }
 
 /// Pure staleness rule: a work with no activity evidence at all is stale, and recorded activity
 /// older than the threshold is stale. A stamp in the future (clock skew) counts as activity.
-pub fn is_work_stale(last_activity_ms: Option<i64>, now_ms: i64, threshold_ms: i64) -> bool {
+pub fn is_work_stale(last_activity_ms: Option<i64>, now_ms: i64, threshold_ms: f64) -> bool {
     match last_activity_ms {
         None => true,
-        Some(last) => now_ms - last >= threshold_ms,
+        Some(last) => now_ms as f64 - last as f64 >= threshold_ms,
     }
 }
 
@@ -173,7 +182,7 @@ fn resolve_last_activity_ms(
     work: &JsObj,
     directory: &Path,
     now_ms: i64,
-    threshold_ms: i64,
+    threshold_ms: f64,
     sessions_directory: Option<&Path>,
 ) -> Option<i64> {
     let recorded_ms = newest_ms([
@@ -183,7 +192,7 @@ fn resolve_last_activity_ms(
     // Recorded activity inside the window already proves the work is not stale, so the transcript
     // scan only runs for works that would otherwise be demoted.
     if let Some(recorded_ms) = recorded_ms
-        && now_ms - recorded_ms < threshold_ms
+        && now_ms as f64 - (recorded_ms as f64) < threshold_ms
     {
         return Some(recorded_ms);
     }
