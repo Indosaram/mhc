@@ -67,6 +67,8 @@ for (const site of spec.sites)
 	if (!compCounts.has(site.file)) errors.push(`COMP ${site.file}: listed but has no ".omo" literal`);
 
 // (2) crates/omo in this repo.
+const nativeAdditions = spec.native_additions ?? [];
+const nativeListed = new Map([...spec.sites, ...nativeAdditions].map((site) => [site.file, site]));
 const cratesDir = join(root, "crates/omo");
 const walk = (dir) =>
 	readdirSync(dir).flatMap((name) => {
@@ -86,7 +88,7 @@ for (const path of walk(cratesDir)) {
 	renameTotal += maho;
 	if (omo === 0 && maho === 0) continue;
 	seen.add(file);
-	const site = listed.get(file);
+	const site = nativeListed.get(file);
 	if (!site) {
 		errors.push(`crates/omo/${file}: ".omo"=${omo} ".maho"=${maho} but file is not listed in omo-sites.json`);
 		continue;
@@ -94,20 +96,22 @@ for (const path of walk(cratesDir)) {
 	if (omo !== site.keep) errors.push(`crates/omo/${file}: ".omo"=${omo}, expected keep=${site.keep}`);
 	if (maho !== site.rename) errors.push(`crates/omo/${file}: ".maho"=${maho}, expected rename=${site.rename}`);
 }
-for (const site of spec.sites)
+for (const site of nativeListed.values())
 	if (!seen.has(site.file)) errors.push(`crates/omo/${site.file}: listed but has no ".omo"/".maho" literal`);
 
 // (3) Totals.
 const expected = spec.expected_totals;
+const expectedKeep = expected.keep + nativeAdditions.reduce((sum, site) => sum + site.keep, 0);
+const expectedRename = expected.rename + nativeAdditions.reduce((sum, site) => sum + site.rename, 0);
 console.log(`COMP ${spec.comp_commit.slice(0, 7)} ".omo" total: ${compTotal} (expected ${expected.comp})`);
-console.log(`crates/omo ".omo" (keep) total: ${keepTotal} (expected ${expected.keep})`);
-console.log(`crates/omo ".maho" (rename) total: ${renameTotal} (expected ${expected.rename})`);
+console.log(`crates/omo ".omo" (keep) total: ${keepTotal} (expected ${expectedKeep})`);
+console.log(`crates/omo ".maho" (rename) total: ${renameTotal} (expected ${expectedRename})`);
 if (compTotal !== expected.comp) errors.push(`COMP total ${compTotal} != ${expected.comp}`);
-if (keepTotal !== expected.keep) errors.push(`keep total ${keepTotal} != ${expected.keep}`);
-if (renameTotal !== expected.rename) errors.push(`rename total ${renameTotal} != ${expected.rename}`);
+if (keepTotal !== expectedKeep) errors.push(`keep total ${keepTotal} != ${expectedKeep}`);
+if (renameTotal !== expectedRename) errors.push(`rename total ${renameTotal} != ${expectedRename}`);
 
 if (errors.length > 0) {
 	for (const error of errors) console.error(`FAIL ${error}`);
 	process.exit(1);
 }
-console.log(`OK ${spec.sites.length} files match omo-sites.json`);
+console.log(`OK ${nativeListed.size} files match omo-sites.json`);
