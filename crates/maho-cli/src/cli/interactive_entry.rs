@@ -97,6 +97,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
     screen.before_terminal_start(&mut terminal, false, false);
+    maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
     let result = async {
         if let Some(text) = initial.initial_message { mode.enqueue_submission(&text, initial.initial_images); }
@@ -137,6 +138,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     screen.before_terminal_stop(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
     drop(shared_host);
     result.and(stopped)
 }

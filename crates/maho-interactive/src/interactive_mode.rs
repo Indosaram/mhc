@@ -435,7 +435,7 @@ impl InteractiveMode {
         let submissions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let captured = submissions.clone();
         let keys = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).inner().clone());
-        let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions::default());
+        let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
         let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
         Self::setup_autocomplete(&session, &mut editor);
@@ -2773,7 +2773,13 @@ impl InteractiveMode {
     }
     pub(crate) fn render_dock(&mut self,width:usize)->Vec<String> {
         let mut lines=Vec::new();
-        if let Some(frame) = self.working_frame(self.clock.elapsed().as_secs_f64() * 1000.0) { lines.extend(maho_tui::components::text::Text::with_padding(frame, 1, 0).render(width)); }
+        let now = self.clock.elapsed().as_secs_f64() * 1000.0;
+        let indicator = self.working_frame(now).map(|frame| {
+            let mut indicator = crate::components::status_indicator::StatusIndicator::working(&frame, self.theme.clone(), self.working_started_ms.unwrap_or(now).max(0.0) as u64);
+            indicator.tick(now.max(0.0) as u64);
+            Rc::new(RefCell::new(indicator))
+        });
+        self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
