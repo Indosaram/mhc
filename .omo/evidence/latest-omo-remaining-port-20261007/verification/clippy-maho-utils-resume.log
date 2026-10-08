@@ -1,0 +1,9 @@
+    Checking smallvec v1.15.1
+    Checking serde v1.0.228
+    Checking parking_lot_core v0.9.12
+    Checking parking_lot v0.12.5
+    Checking serde_yaml v0.9.34+deprecated
+    Checking tokio v1.52.3
+    Checking maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+    Checking maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+    Finished `dev` profile [unoptimized] target(s) in 6.92s

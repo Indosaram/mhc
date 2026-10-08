@@ -1,0 +1,12 @@
+tests=437 passed, 0 failed, 0 skipped
+test_log=repair-acceptance-tests.log
+clippy=exit 0
+clippy_log=repair-clippy.log
+workspace_bins_build=exit 0
+build_log=repair-workspace-build.log
+parity_maho_core=PASS 69 files
+parity_maho_interactive=PASS 29 files
+install=exit 0; pinned source; 24 skills
+verify_install=exit 0; 437 files
+installed_residual_qa=pending
+preexisting_lsp_lifecycle_test=failed; unchanged

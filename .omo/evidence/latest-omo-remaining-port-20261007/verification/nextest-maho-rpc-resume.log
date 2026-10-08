@@ -1,0 +1,513 @@
+   Compiling syn v2.0.117
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.15.1
+   Compiling indexmap v2.14.0
+   Compiling futures-util v0.3.34
+   Compiling synstructure v0.13.2
+   Compiling displaydoc v0.2.5
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.6
+   Compiling tokio-macros v2.7.0
+   Compiling yoke v0.8.3
+   Compiling tokio v1.52.3
+   Compiling zerovec v0.11.8
+   Compiling tinystr v0.8.4
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.4
+   Compiling zerotrie v0.2.5
+   Compiling icu_provider v2.3.1
+   Compiling icu_collections v2.3.0
+   Compiling prost-derive v0.14.4
+   Compiling num-traits v0.2.19
+   Compiling tracing v0.1.44
+   Compiling tokio-util v0.7.18
+   Compiling serde_core v1.0.228
+   Compiling prost v0.14.4
+   Compiling h2 v0.4.19
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling serde_derive v1.0.228
+   Compiling hyper v1.8.1
+   Compiling serde v1.0.228
+   Compiling idna_adapter v1.2.1
+   Compiling prost-types v0.14.4
+   Compiling prettyplease v0.2.37
+   Compiling serde_json v1.0.149
+   Compiling getrandom v0.3.4
+   Compiling rustix v1.1.4
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling prost-build v0.14.4
+   Compiling bit-set v0.8.0
+   Compiling idna v1.1.0
+   Compiling tokio-rustls v0.26.4
+   Compiling crypto-common v0.1.7
+   Compiling thiserror-impl v1.0.69
+   Compiling linux-raw-sys v0.12.1
+   Compiling tower-http v0.6.8
+   Compiling thiserror v1.0.69
+   Compiling digest v0.10.7
+   Compiling hyper-rustls v0.27.7
+   Compiling url v2.5.8
+   Compiling fancy-regex v0.16.2
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling tree-sitter v0.25.10
+   Compiling serde_urlencoded v0.7.1
+   Compiling futures-executor v0.3.34
+   Compiling thiserror-impl v2.0.18
+   Compiling chrono v0.4.43
+   Compiling thiserror v2.0.18
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling sha2 v0.10.9
+   Compiling futures v0.3.34
+   Compiling reqwest v0.12.28
+   Compiling derive_more-impl v2.1.1
+   Compiling uuid v1.20.0
+   Compiling filedescriptor v0.8.3
+   Compiling parking_lot_core v0.9.12
+   Compiling either v1.18.0
+   Compiling moxcms v0.8.1
+   Compiling portable-pty v0.9.0
+   Compiling rayon v1.12.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_locale_fallback v2.3.0
+   Compiling derive_more v2.1.1
+   Compiling image v0.25.10
+   Compiling maho-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-grep)
+   Compiling tempfile v3.27.0
+   Compiling icu_segmenter v2.3.0
+   Compiling crossterm v0.29.0
+   Compiling maho-pty v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-pty)
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling rusqlite v0.40.2
+   Compiling similar v2.7.0
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+    Finished `test` profile [unoptimized] target(s) in 1m 35s
+────────────
+ Nextest run ID bf53040c-c4e2-46b2-b7b4-c1ea74eb4393 with nextest profile: default
+    Starting 416 tests across 49 binaries
+        PASS [   0.007s] (  1/416) maho-rpc child_reaper_syscalls::tests::wildcard_is_never_waited_on
+        PASS [   0.007s] (  2/416) maho-rpc child_reaper_syscalls::tests::unsupported_platform_does_not_load
+        PASS [   0.007s] (  3/416) maho-rpc custom_capability::tests::capable_client_receives_trimmed_extension_notice
+        PASS [   0.007s] (  4/416) maho-rpc child_reaper::tests::warning_is_rate_limited_and_top_three_are_stable
+        PASS [   0.007s] (  5/416) maho-rpc child_reaper::tests::never_reaps_live_child
+        PASS [   0.008s] (  6/416) maho-rpc child_reaper::tests::waits_full_window_across_ticks
+        PASS [   0.008s] (  7/416) maho-rpc child_reaper::tests::start_reports_unavailable_platforms_and_honors_optout
+        PASS [   0.007s] (  8/416) maho-rpc child_reaper_syscalls::tests::stat_names_can_contain_spaces_and_parentheses
+        PASS [   0.008s] (  9/416) maho-rpc child_reaper_syscalls::tests::current_process_is_not_waitable
+        PASS [   0.009s] ( 10/416) maho-rpc child_reaper::tests::optout_and_default_window
+        PASS [   0.010s] ( 11/416) maho-rpc connection_question_bridge::tests::typed_extension_request_settles_from_rpc_response
+        PASS [   0.011s] ( 12/416) maho-rpc connection_question_bridge::tests::progress_rearms_idle_timeout_and_retains_draft
+        PASS [   0.006s] ( 13/416) maho-rpc handoff_activity::tests::owned_work_keeps_handoff_busy
+        PASS [   0.006s] ( 14/416) maho-rpc custom_capability::tests::empty_name_uses_fallback_label
+        PASS [   0.006s] ( 15/416) maho-rpc custom_capability::tests::parser_trims_and_preserves_duplicates
+        PASS [   0.006s] ( 16/416) maho-rpc handoff_activity::tests::durable_wake_source_does_not_hold_handoff
+        PASS [   0.008s] ( 17/416) maho-rpc event_output_buffer::tests::one_schedule_coalesces_events
+        PASS [   0.007s] ( 18/416) maho-rpc host_child_exit::tests::only_zero_without_signal_is_clean
+        PASS [   0.006s] ( 19/416) maho-rpc host_crash_record::tests::clean_idle_exit_writes_nothing
+        PASS [   0.008s] ( 20/416) maho-rpc event_output_buffer::tests::response_cannot_overtake_events
+        PASS [   0.009s] ( 21/416) maho-rpc event_output_buffer::tests::empty_flush_writes_nothing_and_new_batch_schedules
+        PASS [   0.009s] ( 22/416) maho-rpc custom_capability::tests::default_client_receives_no_custom_notice
+        PASS [   0.007s] ( 23/416) maho-rpc host_crash_record::tests::first_crash_survives_replacement_state
+        PASS [   0.006s] ( 24/416) maho-rpc host_crash_record::tests::unusable_directory_does_not_interrupt_shutdown
+        PASS [   0.007s] ( 25/416) maho-rpc host_crash_record::tests::nonzero_exit_records_code_not_signal
+        PASS [   0.006s] ( 26/416) maho-rpc host_daemon_paths::tests::endpoint_and_generation_paths
+        PASS [   0.008s] ( 27/416) maho-rpc host_crash_record::tests::torn_final_line_is_skipped
+        PASS [   0.007s] ( 28/416) maho-rpc host_daemon_env::tests::persisted_keys_ignore_non_strings
+        PASS [   0.007s] ( 29/416) maho-rpc host_daemon_env::tests::posix_is_case_sensitive_and_windows_keeps_wiring
+        PASS [   0.009s] ( 30/416) maho-rpc host_crash_record::tests::repeated_crashes_accumulate_in_order
+        PASS [   0.008s] ( 31/416) maho-rpc host_daemon_env::tests::exact_provider_and_credential_patterns
+        PASS [   0.007s] ( 32/416) maho-rpc host_daemon_paths::tests::hash_matches_sha256_prefix
+        PASS [   0.009s] ( 33/416) maho-rpc host_daemon_env::tests::explicit_spec_wins_and_unknown_values_are_dropped
+        PASS [   0.009s] ( 34/416) maho-rpc host_daemon_paths::tests::legacy_registration_and_mode_are_preserved
+        PASS [   0.007s] ( 35/416) maho-rpc host_daemon_registration::tests::predecessor_release_preserves_successor_pointer_and_settings
+        PASS [   0.007s] ( 36/416) maho-rpc host_daemon_registration::tests::legacy_record_is_read_and_liveness_requires_the_recorded_start_time
+        PASS [   0.006s] ( 37/416) maho-rpc host_daemon_state::tests::missing_and_not_directory_are_absent
+        PASS [   0.006s] ( 38/416) maho-rpc host_daemon_state::tests::malformed_array_and_null_are_not_records
+        PASS [   0.006s] ( 39/416) maho-rpc host_decision::tests::absent_client_profile_reuses_with_warning
+        PASS [   0.006s] ( 40/416) maho-rpc host_decision::tests::absent_host_ordinal_never_wins_upgrade
+        PASS [   0.007s] ( 41/416) maho-rpc host_daemon_registration::tests::registration_requires_guard_shape_and_owner_matches_live_process
+        PASS [   0.007s] ( 42/416) maho-rpc host_decision::tests::equal_engine_reuses_without_warning
+        PASS [   0.009s] ( 43/416) maho-rpc host_daemon_registration::tests::writer_requires_current_process_start_guard
+        PASS [   0.009s] ( 44/416) maho-rpc host_daemon_state::tests::settings_published_in_both_locations
+        PASS [   0.007s] ( 45/416) maho-rpc host_decision::tests::host_without_handoff_reuses
+        PASS [   0.007s] ( 46/416) maho-rpc host_decision::tests::missing_capability_falls_back
+        PASS [   0.008s] ( 47/416) maho-rpc host_decision::tests::fallback_rejects_different_build
+        PASS [   0.007s] ( 48/416) maho-rpc host_decision::tests::missing_capability_upgrade_refuses
+        PASS [   0.009s] ( 49/416) maho-rpc host_decision::tests::fallback_reuses_same_build
+        PASS [   0.007s] ( 50/416) maho-rpc host_decision::tests::narrower_profile_never_hands_off
+        PASS [   0.006s] ( 51/416) maho-rpc host_decision::tests::no_host_starts
+        PASS [   0.007s] ( 52/416) maho-rpc host_decision::tests::newer_engine_hands_off
+        PASS [   0.010s] ( 53/416) maho-rpc host_decision::tests::never_policy_gates_newer_engine
+        PASS [   0.012s] ( 54/416) maho-rpc host_decision::tests::missing_capability_never_refuses
+        PASS [   0.032s] ( 55/416) maho-rpc host_crash_record::tests::crash_loop_keeps_newest_fifty
+        PASS [   0.007s] ( 56/416) maho-rpc host_decision::tests::older_wider_client_reuses_with_warning
+        PASS [   0.007s] ( 57/416) maho-rpc host_decision::tests::own_dead_host_starts_with_own_reason
+        PASS [   0.007s] ( 58/416) maho-rpc host_decision::tests::one_unknown_epoch_reuses
+        PASS [   0.006s] ( 59/416) maho-rpc host_decision::tests::protocol_mismatch_refuses
+        PASS [   0.010s] ( 60/416) maho-rpc host_decision::tests::older_engine_reuses
+        PASS [   0.007s] ( 61/416) maho-rpc host_decision::tests::same_release_newer_epoch_hands_off_profile
+        PASS [   0.006s] ( 62/416) maho-rpc host_decision::tests::windows_attaches_only
+        PASS [   0.009s] ( 63/416) maho-rpc host_ensure::tests::ensure_options_default_to_never_upgrade_and_bounded_readiness
+        PASS [   0.007s] ( 64/416) maho-rpc host_ensure::tests::ensure_supervisor_argv_names_endpoint_and_agent_dir
+        PASS [   0.006s] ( 65/416) maho-rpc host_ensure::tests::fixed_host_wiring_wins_over_nullable_overrides
+        PASS [   0.006s] ( 66/416) maho-rpc host_launch::tests::executable_reenters_through_internal_route
+        PASS [   0.013s] ( 67/416) maho-rpc host_decision::tests::required_capabilities_are_exact
+        PASS [   0.006s] ( 68/416) maho-rpc host_launch_spec::tests::absolute_extension_args_and_symlink_escape
+        PASS [   0.009s] ( 69/416) maho-rpc host_ensure::tests::logical_socket_scheme_and_child_profile_args_match
+        PASS [   0.007s] ( 70/416) maho-rpc host_launch_spec::tests::keeps_core_tunables_and_env
+        PASS [   0.010s] ( 71/416) maho-rpc host_handoff::tests::platform_and_capability_refusals_precede_owner_check
+        PASS [   0.008s] ( 72/416) maho-rpc host_launch_spec::tests::rejects_invalid_documents
+        PASS [   0.006s] ( 73/416) maho-rpc host_lifecycle::tests::persistent_never_idle_exits
+        PASS [   0.006s] ( 74/416) maho-rpc host_lifecycle::tests::supervisor_parser_keeps_forwarded_args_and_replacement_identity
+        PASS [   0.007s] ( 75/416) maho-rpc host_lifecycle::tests::handoff_grace_prefers_the_environment_and_falls_back_to_ten_minutes
+        PASS [   0.008s] ( 76/416) maho-rpc host_lifecycle::tests::continuous_idle_resets_on_activity
+        PASS [   0.007s] ( 77/416) maho-rpc host_lifecycle::tests::policy_precedence_and_invalid_fallback
+        PASS [   0.009s] ( 78/416) maho-rpc host_launch_spec::tests::rejects_permissions_missing_extension_and_env_denial
+        PASS [   0.008s] ( 79/416) maho-rpc host_lifecycle::tests::supervisor_route_skips_only_complete_injected_prefix
+        PASS [   0.008s] ( 80/416) maho-rpc host_memory_sampler::tests::idle_episode_restarts_after_a_session_or_pressure_recovery
+        PASS [   0.007s] ( 81/416) maho-rpc host_memory_sampler::tests::logs_are_throttled_but_records_are_not
+        PASS [   0.018s] ( 82/416) maho-rpc host_generations::tests::prune_preserves_live_and_malformed_records
+        PASS [   0.006s] ( 83/416) maho-rpc host_memory_sampler::tests::thresholds_are_strict_and_critical_transitions_are_independent
+        PASS [   0.006s] ( 84/416) maho-rpc host_process_metrics::tests::includes_descendants_and_counts_partial_fd_reads
+        PASS [   0.009s] ( 85/416) maho-rpc host_memory_sampler::tests::malformed_thresholds_use_default
+        PASS [   0.008s] ( 86/416) maho-rpc host_probe::tests::absent_endpoint_is_not_reachable
+        PASS [   0.008s] ( 87/416) maho-rpc host_probe::tests::actual_socket_ignores_broadcast_and_unrelated_reply
+        PASS [   0.008s] ( 88/416) maho-rpc host_probe::tests::reply_matches_id_and_success
+        PASS [   0.007s] ( 89/416) maho-rpc host_process_metrics::tests::unavailable_descriptor_reader_is_not_zero
+        PASS [   0.006s] ( 90/416) maho-rpc host_process_table::tests::linux_parent_and_rss_after_complex_name
+        PASS [   0.007s] ( 91/416) maho-rpc host_process_table::tests::darwin_self_check_fails_closed
+        PASS [   0.007s] ( 92/416) maho-rpc host_protocol_info::tests::malformed_required_fields_reject_the_reply
+        PASS [   0.007s] ( 93/416) maho-rpc host_protocol_info::tests::unsafe_generation_is_omitted
+        PASS [   0.008s] ( 94/416) maho-rpc host_protocol_info::tests::ordinal_accepts_numeric_parts_without_integer_coercion
+        PASS [   0.009s] ( 95/416) maho-rpc host_protocol_info::tests::old_host_keeps_identity_absent_and_protocol_zero
+        PASS [   0.006s] ( 96/416) maho-rpc host_protocol_info::tests::valid_identity_and_launch_profile_are_preserved
+        PASS [   0.012s] ( 97/416) maho-rpc host_protocol_info::tests::malformed_identity_fields_are_dropped_not_defaulted
+        PASS [   0.007s] ( 98/416) maho-rpc host_reservations::tests::bound_reservations_claim_republish_and_release_through_the_reporter
+        PASS [   0.007s] ( 99/416) maho-rpc host_reservations::tests::claims_republish_and_release
+        PASS [   0.020s] (100/416) maho-rpc host_process_metrics::tests::real_process_surface_has_memory_and_fds
+        PASS [   0.007s] (101/416) maho-rpc host_reservations::tests::endpoint_reservations_need_a_socket_or_a_daemon_directory
+        PASS [   0.018s] (102/416) maho-rpc host_process_table::tests::actual_kernel_reader_sees_current_process
+        PASS [   0.007s] (103/416) maho-rpc host_reservations::tests::superseded_detached_claim_is_reclaimable_but_current_stands
+        PASS [   0.006s] (104/416) maho-rpc host_runner::tests::refusal_preserves_body_and_exit_code
+        PASS [   0.007s] (105/416) maho-rpc host_runner::tests::ensure_labels_distinguish_identity_replacement_from_start
+        PASS [   0.009s] (106/416) maho-rpc host_runner::tests::status_request_reports_an_absent_host_as_refused
+        PASS [   0.007s] (107/416) maho-rpc host_stop::tests::guards_owner_before_signal_and_live_sessions_before_hard_stop
+        PASS [   0.007s] (108/416) maho-rpc host_status::tests::defaults_malformed_rows_and_counts_foreign_occupancy
+        PASS [   0.008s] (109/416) maho-rpc host_status::tests::absent_endpoint_has_complete_nullable_status
+        PASS [   0.021s] (110/416) maho-rpc host_process_table::tests::only_linux_has_a_reader_and_it_sees_this_process
+        PASS [   0.006s] (111/416) maho-rpc host_stop::tests::process_gone_is_already_stopped
+        PASS [   0.006s] (112/416) maho-rpc host_successor::env_tests::successor_identity_replaces_parent_and_nullable_overrides_apply_last
+        PASS [   0.006s] (113/416) maho-rpc host_successor::tests::abort_reason_observes_real_socket_entry
+        PASS [   0.006s] (114/416) maho-rpc host_successor::tests::public_answer_must_name_different_instance
+        PASS [   0.006s] (115/416) maho-rpc host_supersession::tests::unknown_resets_consecutive_absence_and_loss_latches
+        PASS [   0.006s] (116/416) maho-rpc host_supersession::tests::settled_observation_is_ignored
+        PASS [   0.007s] (117/416) maho-rpc host_watchdog::tests::requires_lifetime_binding_and_filters_empty_paths
+        PASS [   0.006s] (118/416) maho-rpc json_event::tests::tool_start_retains_id_and_name
+        PASS [   0.007s] (119/416) maho-rpc host_watchdog::tests::self_binding_is_live_and_reparenting_is_loss
+        PASS [   0.006s] (120/416) maho-rpc json_event::tests::refuses_invalid_tool_start
+        PASS [   0.005s] (121/416) maho-rpc json_event::tests::unrelated_event_is_borrowed
+        PASS [   0.008s] (122/416) maho-rpc host_watchdog::tests::capture_runs_before_cleanup_even_when_it_fails
+        PASS [   0.006s] (123/416) maho-rpc json_event::tests::removes_snapshots_and_preserves_usage
+        PASS [   0.007s] (124/416) maho-rpc jsonl::tests::attached_reader_frames_lf_lines_and_discards_an_oversized_record
+        PASS [   0.008s] (125/416) maho-rpc jsonl::tests::attached_reader_flushes_an_unterminated_record_at_eof
+        PASS [   0.006s] (126/416) maho-rpc jsonl::tests::attached_reader_rejects_a_zero_limit
+        PASS [   0.006s] (127/416) maho-rpc jsonl::tests::split_utf8_is_decoded_before_counting_utf16
+        PASS [   0.006s] (128/416) maho-rpc jsonl::tests::resynchronizes_once_after_oversized_record
+        PASS [   0.006s] (129/416) maho-rpc jsonl::tests::splits_only_lf
+        PASS [   0.006s] (130/416) maho-rpc jsonl::tests::handles_crlf
+        PASS [   0.006s] (131/416) maho-rpc jsonl::tests::serializes_unicode_separators
+        PASS [   0.007s] (132/416) maho-rpc jsonl::tests::emits_unterminated_record_at_eof
+        PASS [   0.005s] (133/416) maho-rpc jsonl::tests::unfinished_utf8_becomes_replacement_at_eof
+        PASS [   0.006s] (134/416) maho-rpc jsonl::tests::utf16_limit_rejects_astral_scalar_and_recovers
+        PASS [   0.006s] (135/416) maho-rpc login_prompts::tests::already_aborted_source_is_observed
+        PASS [   0.005s] (136/416) maho-rpc login_prompts::tests::either_abort_source_releases_dialog
+        PASS [   0.006s] (137/416) maho-rpc loop_lag_watchdog::tests::records_drift_and_attributes_errors_even_when_warning_throttled
+        PASS [   0.006s] (138/416) maho-rpc media_placeholders::tests::direct_tool_execution_images_are_scrubbed
+        PASS [   0.006s] (139/416) maho-rpc loop_lag_watchdog::tests::first_manual_tick_only_sets_baseline
+        PASS [   0.006s] (140/416) maho-rpc loop_blocked_time::tests::only_positive_drift_counts_since_mark
+        PASS [   0.006s] (141/416) maho-rpc media_placeholders::tests::base64_length_handles_padding
+        PASS [   0.006s] (142/416) maho-rpc media_placeholders::tests::earlier_changed_sibling_does_not_skip_content_subtree
+        PASS [   0.006s] (143/416) maho-rpc media_placeholders::tests::hot_delta_path_is_never_walked
+        PASS [   0.065s] (144/416) maho-rpc host_ensure::tests::ensure_refuses_a_foreign_writer_without_starting
+        PASS [   0.006s] (145/416) maho-rpc media_placeholders::tests::snapshot_tool_images_become_fetchable_references
+        PASS [   0.006s] (146/416) maho-rpc media_placeholders::tests::unchanged_graph_is_borrowed
+        PASS [   0.006s] (147/416) maho-rpc media_placeholders::tests::user_images_stay_inline
+        PASS [   0.006s] (148/416) maho-rpc multi_session_host::tests::explicit_policy_overrides_environment_and_bad_env_uses_defaults
+        PASS [   0.007s] (149/416) maho-rpc multi_session_host::handoff_tests::an_empty_host_drains_to_exit_once
+        PASS [   0.006s] (150/416) maho-rpc observer_link::tests::unknown_activity_is_busy_only_for_bounded_window
+        PASS [   0.008s] (151/416) maho-rpc multi_session_host::handoff_tests::handoff_is_advertised_only_after_its_handler_is_installed
+        PASS [   0.009s] (152/416) maho-rpc observer_link::tests::duplicate_loss_is_collapsed_and_failed_retry_can_rearm
+        PASS [   0.007s] (153/416) maho-rpc ownership_safe_lock::tests::directory_artifact_is_typed_and_never_removed
+        PASS [   0.008s] (154/416) maho-rpc ownership_safe_lock::tests::sqlite_exclusive_lock_blocks_contender_and_release_is_idempotent
+        PASS [   0.006s] (155/416) maho-rpc print_mode::tests::prints_text_blocks_with_newlines
+        PASS [   0.006s] (156/416) maho-rpc print_mode::tests::missing_error_uses_terminal_status
+        PASS [   0.006s] (157/416) maho-rpc print_mode::tests::provider_native_uses_summary_and_body
+        PASS [   0.006s] (158/416) maho-rpc protocol_identity::tests::canonical_profile_sorts_and_deduplicates
+        PASS [   0.008s] (159/416) maho-rpc print_mode::tests::absent_assistant_outputs_nothing
+        PASS [   0.006s] (160/416) maho-rpc protocol_identity::tests::generation_rejects_sign_whitespace_decimal_and_empty
+        PASS [   0.006s] (161/416) maho-rpc protocol_identity::tests::instance_value_preserves_nonempty_spelling
+        PASS [   0.006s] (162/416) maho-rpc protocol_identity::tests::launch_profile_derives_from_argv_and_resolves_extensions
+        PASS [   0.006s] (163/416) maho-rpc provider_native_rendering::tests::collapsed_sources_limit_to_three
+        PASS [   0.006s] (164/416) maho-rpc provider_native_rendering::tests::tool_search_error_remains_visible
+        PASS [   0.007s] (165/416) maho-rpc provider_native_rendering::tests::tool_search_deduplicates_and_limits_results
+        PASS [   0.007s] (166/416) maho-rpc provider_native_rendering::tests::unknown_subtype_uses_raw_json_and_generic_summary
+        PASS [   0.008s] (167/416) maho-rpc provider_native_rendering::tests::image_generation_does_not_expose_payload
+        PASS [   0.006s] (168/416) maho-rpc provider_native_rendering::tests::web_search_queries_are_deduplicated
+        PASS [   0.011s] (169/416) maho-rpc provider_native_rendering::tests::empty_anthropic_search_reports_zero
+        PASS [   0.011s] (170/416) maho-rpc provider_native_rendering::tests::grounding_sources_use_nested_web_record
+        PASS [   0.007s] (171/416) maho-rpc rpc_client::tests::client_event_union_classifies_known_records_only
+        PASS [   0.007s] (172/416) maho-rpc rpc_client::tests::request_value_returns_data_and_dispatches_events_to_listeners
+        PASS [   0.010s] (173/416) maho-rpc rpc_client::tests::get_data_surfaces_the_typed_refusal_and_success_data
+        PASS [   0.007s] (174/416) maho-rpc rpc_client::tests::unsubscribe_stops_delivery_and_stopped_client_reports_transport_gone
+        PASS [   0.007s] (175/416) maho-rpc rpc_client::tests::ui_reply_keeps_host_id_and_session_route_is_not_overwritten
+        PASS [   0.025s] (176/416) maho-rpc print_mode::tests::failed_turn_strips_internal_marker_and_exits_one
+        PASS [   0.008s] (177/416) maho-rpc rpc_command_invocation::tests::extracts_only_canonical_invocation_payload
+        PASS [   0.011s] (178/416) maho-rpc rpc_client::tests::transport_gone_and_default_endpoint
+        PASS [   0.012s] (179/416) maho-rpc rpc_client::tests::startup_events_replay_only_for_selected_lease
+        PASS [   0.007s] (180/416) maho-rpc rpc_command_surface::tests::baseline_does_not_emit
+        PASS [   0.013s] (181/416) maho-rpc rpc_client::tests::retention_drops_oldest_at_record_budget
+        PASS [   0.006s] (182/416) maho-rpc rpc_command_surface::tests::changed_surface_emits_new_snapshot
+        PASS [   0.006s] (183/416) maho-rpc rpc_command_surface::tests::unchanged_surface_does_not_emit
+        PASS [   0.006s] (184/416) maho-rpc rpc_command_surface::tests::command_surface_preserves_order_and_skill_syntax
+        PASS [   0.006s] (185/416) maho-rpc rpc_input_validation::tests::accepts_object_input
+        PASS [   0.007s] (186/416) maho-rpc rpc_command_surface::tests::merged_command_registration_uses_resolved_invocation_and_source_metadata
+        PASS [   0.007s] (187/416) maho-rpc rpc_input_validation::tests::accepts_refused_model_entry_only_with_detail
+        PASS [   0.007s] (188/416) maho-rpc rpc_input_validation::tests::context_limits_struct_matches_the_constants
+        PASS [   0.008s] (189/416) maho-rpc rpc_input_validation::tests::kind_rejects_unknown_and_null
+        PASS [   0.008s] (190/416) maho-rpc rpc_input_validation::tests::context_rejects_invalid_keys
+        PASS [   0.011s] (191/416) maho-rpc rpc_input_validation::tests::context_counts_utf8_bytes
+        PASS [   0.010s] (192/416) maho-rpc rpc_input_validation::tests::context_preserves_absent_versus_null
+        PASS [   0.006s] (193/416) maho-rpc rpc_input_validation::tests::title_preserves_false_and_omitted
+        PASS [   0.008s] (194/416) maho-rpc rpc_input_validation::tests::rejects_nonobject_input
+        PASS [   0.007s] (195/416) maho-rpc rpc_mode::drain_tests::response_completes_when_each_event_write_synchronously_replenishes_queue
+        PASS [   0.006s] (196/416) maho-rpc rpc_mode::tests::empty_chunks_do_not_emit_and_records_remain_individual_jsonl
+        PASS [   0.006s] (197/416) maho-rpc rpc_mode::tests::stdio_message_updates_remove_snapshots
+        PASS [   0.008s] (198/416) maho-rpc rpc_types::tests::cleared_widget_omits_undefined_lines
+        PASS [   0.007s] (199/416) maho-rpc rpc_types::tests::list_workers_remains_snake_case
+        PASS [   0.007s] (200/416) maho-rpc rpc_types::tests::prompt_roundtrip_preserves_correlation_and_routing
+        PASS [   0.011s] (201/416) maho-rpc rpc_types::tests::close_uses_envelope_routing_handle
+        PASS [   0.006s] (202/416) maho-rpc rpc_types::tests::queue_mode_uses_hyphenated_wire_value
+        PASS [   0.007s] (203/416) maho-rpc rpc_types::tests::question_response_and_progress_are_inbound_records
+        PASS [   0.006s] (204/416) maho-rpc rpc_types::tests::response_failure_preserves_error_code_and_data
+        PASS [   0.006s] (205/416) maho-rpc rpc_types::tests::widget_wire_names_preserve_mixed_conventions
+        PASS [   0.014s] (206/416) maho-rpc rpc_types::tests::open_preserves_mixed_case_wire_names
+        PASS [   0.009s] (207/416) maho-rpc rpc_types::tests::response_success_is_boolean_and_absent_data_is_omitted
+        PASS [   0.007s] (208/416) maho-rpc session_attribution::tests::async_context_and_activity_live_until_exact_completion
+        PASS [   0.005s] (209/416) maho-rpc session_attribution::tests::span_inherits_only_session_id
+        PASS [   0.009s] (210/416) maho-rpc session_attribution::tests::finished_activity_wins_over_open_and_close_is_idempotent
+        PASS [   0.010s] (211/416) maho-rpc session_attribution::tests::settled_turn_closes_tool_spans
+        PASS [   0.006s] (212/416) maho-rpc session_binding::tests::malformed_record_stops_stream_before_later_publication
+        PASS [   0.006s] (213/416) maho-rpc session_command_router::tests::busy_work_resets_idle_window_and_pressure_halves_it
+        PASS [   0.008s] (214/416) maho-rpc session_command_router::attachment_tests::public_handle_does_not_authorize_another_connections_close
+        PASS [   0.007s] (215/416) maho-rpc session_command_router::drain_tests::drain_waits_for_settled_work_then_exits_once
+        PASS [   0.052s] (216/416) maho-rpc rpc_client::tests::startup_retention_counts_utf8_bytes_and_releases_debt_after_replay
+        PASS [   0.007s] (217/416) maho-rpc session_command_router::width_tests::narrowest_live_connection_controls_render_width
+        PASS [   0.009s] (218/416) maho-rpc session_command_router::tests::connected_client_resets_empty_exit_and_exit_fires_once
+        PASS [   0.013s] (219/416) maho-rpc session_binding::tests::attribution_commits_before_event_publication_and_dispose_closes_spans
+        PASS [   0.007s] (220/416) maho-rpc session_event_decode::tests::agent_end_collision_prefers_the_session_shape_only_when_marked
+        PASS [   0.007s] (221/416) maho-rpc session_event_decode::tests::the_agent_union_roundtrips_through_serde
+        PASS [   0.008s] (222/416) maho-rpc session_event_decode::tests::session_only_variants_roundtrip_field_by_field
+        PASS [   0.007s] (223/416) maho-rpc session_event_fanout::tests::message_end_discards_replay_and_rendered_requires_capability
+        PASS [   0.048s] (224/416) maho-rpc rpc_input_validation::tests::accepts_maximum_and_ignores_nonmessage_command
+        PASS [   0.007s] (225/416) maho-rpc session_event_fanout::tests::question_replay_uses_updated_deadline_and_resolution_removes_it
+        PASS [   0.008s] (226/416) maho-rpc session_event_fanout::tests::pending_questions_replay_in_registration_order_after_update
+        PASS [   0.012s] (227/416) maho-rpc session_event_decode::tests::unknown_records_are_ignored
+        PASS [   0.009s] (228/416) maho-rpc session_event_writer::tests::compact_snapshots_merge_deltas_but_keep_latest_full
+        PASS [   0.009s] (229/416) maho-rpc session_event_fanout::tests::targets_keep_connection_order_and_lifecycle_broadcast
+        PASS [   0.009s] (230/416) maho-rpc session_event_writer::tests::incomplete_delta_is_an_ordering_barrier_for_snapshots_and_tool_updates
+        PASS [   0.006s] (231/416) maho-rpc session_event_writer::tests::tool_updates_replace_only_same_key_until_barrier
+        PASS [   0.009s] (232/416) maho-rpc session_event_writer::tests::ordering_barrier_prevents_compaction_across_response
+        PASS [   0.009s] (233/416) maho-rpc session_event_writer::tests::scheduler_round_robins_only_after_current_record_drains
+        PASS [   0.009s] (234/416) maho-rpc session_extension_ui_requests::tests::deleted_request_is_not_resolved
+        PASS [   0.008s] (235/416) maho-rpc session_extension_ui_requests::tests::response_resolves_only_matching_session_request
+        PASS [   0.007s] (236/416) maho-rpc session_path_reservations::tests::owner_can_reacquire_at_cap
+        PASS [   0.007s] (237/416) maho-rpc session_extension_ui_requests::tests::session_close_rejects_pending_request
+        PASS [   0.006s] (238/416) maho-rpc session_path_reservations::tests::reservation_denial_codes_match_the_enum
+        PASS [   0.006s] (239/416) maho-rpc session_path_reservations::tests::reconcile_and_release_never_remove_other_owners
+        PASS [   0.008s] (240/416) maho-rpc session_path_reservations::tests::reservation_denials_distinguish_budget_from_ownership
+        PASS [   0.009s] (241/416) maho-rpc session_path_reservations::tests::superseded_paths_release_budget_at_cap
+        PASS [   0.015s] (242/416) maho-rpc session_extension_ui_requests::tests::cancellation_resolves_all_requests_with_cancelled_records
+        PASS [   0.007s] (243/416) maho-rpc session_registry::tests::only_open_failed_appends_reason
+        PASS [   0.008s] (244/416) maho-rpc session_registry::tests::durable_collision_is_live_only_and_same_reserved_path_may_attach
+        PASS [   0.008s] (245/416) maho-rpc session_registry::tests::frozen_profile_isolates_the_caller_copy
+        PASS [   0.010s] (246/416) maho-rpc session_registry::tests::launch_paths_must_be_absolute_before_creation
+        PASS [   0.011s] (247/416) maho-rpc session_registry::tests::canonical_missing_leaf_uses_real_parent
+        PASS [   0.011s] (248/416) maho-rpc session_registry::tests::identity_defaults_and_context_do_not_alias_client_inputs
+        PASS [   0.007s] (249/416) maho-rpc session_teardown::tests::retained_detach_keeps_writing_claim_and_explicit_close_finalizes
+        PASS [   0.007s] (250/416) maho-rpc session_worker::tests::display_rejects_stale_revision_but_accepts_equal
+        PASS [   0.009s] (251/416) maho-rpc session_teardown::tests::only_last_idle_retained_attachment_marks_detached
+        PASS [   0.010s] (252/416) maho-rpc session_worker::tests::replacement_and_question_records_carry_snapshot_not_regular_events
+        PASS [   0.007s] (253/416) maho-rpc session_worker_client::tests::handoff_uses_specific_busy_field_but_request_debt_always_holds
+        PASS [   0.007s] (254/416) maho-rpc session_worker_credit::tests::generic_exchange_denies_conflict_and_treats_limit_as_timeout
+        PASS [   0.015s] (255/416) maho-rpc session_worker_client::tests::control_debt_coalesces_latest_display_and_cancel_independently
+        PASS [   0.013s] (256/416) maho-rpc session_worker_credit::tests::credit_exchange_builds_the_host_envelope_and_reports_denials
+        PASS [   0.015s] (257/416) maho-rpc session_worker_client::tests::output_activity_updates_identity_before_publication_without_creating_runtime
+        PASS [   0.016s] (258/416) maho-rpc session_worker_credit::tests::credit_reserve_write_maps_grants_and_denials
+        PASS [   0.015s] (259/416) maho-rpc session_worker_credit::tests::reservation_denials_are_domain_failures
+        PASS [   0.011s] (260/416) maho-rpc session_worker_protocol::tests::credit_codes_struct_matches_the_grant_encoding
+        PASS [   0.008s] (261/416) maho-rpc session_worker_requests::tests::replies_and_failed_sends_retire_debt
+        PASS [   0.014s] (262/416) maho-rpc session_worker_requests::tests::control_debt_is_independent_and_commands_have_no_deadline
+        PASS [   0.016s] (263/416) maho-rpc session_worker_protocol::tests::optional_snapshot_fields_are_omitted
+        PASS [   0.009s] (264/416) maho-rpc session_worker_signals::tests::blocked_worker_is_released_by_host
+        PASS [   0.014s] (265/416) maho-rpc session_worker_requests::tests::opening_budget_starts_on_use_and_does_not_reset
+        PASS [   0.008s] (266/416) maho-rpc shutdown::tests::failure_then_eof_joins_disposal
+        PASS [   0.010s] (267/416) maho-rpc session_worker_signals::tests::grant_is_retained_before_wait_and_display_published_before_release
+        PASS [   0.008s] (268/416) maho-rpc socket_event_fanout::tests::deadline_rearms_for_host_blocked_time_before_cutting_peer
+        PASS [   0.011s] (269/416) maho-rpc shutdown::tests::eof_then_failure_preserves_failure
+        PASS [   0.007s] (270/416) maho-rpc socket_event_fanout::tests::snapshots_demote_without_losing_deltas
+        PASS [   0.010s] (271/416) maho-rpc socket_event_fanout::tests::overflow_is_utf8_bytes_and_closed_admission_is_inert
+        PASS [   0.007s] (272/416) maho-rpc socket_ownership::tests::close_is_shielded_then_restored
+        PASS [   0.009s] (273/416) maho-rpc socket_event_fanout::tests::undemotable_snapshots_stay_fifo
+        PASS [   0.007s] (274/416) maho-rpc socket_ownership::tests::own_entry_removed_and_absence_distinguished
+        PASS [   0.007s] (275/416) maho-rpc socket_ownership::tests::owner_token_roundtrip_and_truncation
+        PASS [   0.007s] (276/416) maho-rpc socket_transport::tests::existing_secret_is_reused_and_bad_length_replaced
+        PASS [   0.011s] (277/416) maho-rpc socket_ownership::tests::newer_socket_survives_teardown
+        PASS [   0.009s] (278/416) maho-rpc socket_sink::tests::real_socket_half_close_delivers_notice_and_ignores_later_writes
+        PASS [   0.007s] (279/416) maho-rpc socket_transport::tests::transport_address_passes_through_off_windows_and_validates_win32_paths
+        PASS [   0.006s] (280/416) maho-rpc supervisor_route::tests::sentinel_is_equal_and_value_cannot_dispatch
+        PASS [   0.007s] (281/416) maho-rpc socket_transport::tests::wrong_secret_is_rejected
+        PASS [   0.008s] (282/416) maho-rpc socket_transport::tests::handshake_leaves_protocol_bytes_unconsumed
+        PASS [   0.107s] (283/416) maho-rpc rpc_input_validation::tests::rejects_oversized_prompt_text
+        PASS [   0.006s] (284/416) maho-rpc widget_line_renderer::tests::equal_lines_deduplicate_but_fault_forces_republication
+        PASS [   0.006s] (285/416) maho-rpc worker_session_registry::tests::opening_cannot_release_claims_from_incomplete_snapshot
+        PASS [   0.008s] (286/416) maho-rpc widget_line_renderer::tests::requested_renders_coalesce_and_dispose_cancels_once
+        PASS [   0.008s] (287/416) maho-rpc widget_line_renderer::tests::absent_component_yields_no_renderer
+        PASS [   0.006s] (288/416) maho-rpc::close_admission admitted_close_claims_one_finalizer_and_joins_later_closes
+        PASS [   0.006s] (289/416) maho-rpc::close_admission close_router_checks_connection_ownership_before_reserving_or_detaching
+        PASS [   0.007s] (290/416) maho-rpc worker_session_registry::tests::quarantine_retains_existing_writer_claim_until_actual_exit
+        PASS [   0.007s] (291/416) maho-rpc::close_admission failed_close_claim_releases_debt_without_sealing_the_writer
+        PASS [   0.009s] (292/416) maho-rpc::close_response_reservations joined_close_reserves_only_its_noncompactable_response
+        PASS [   0.008s] (293/416) maho-rpc::close_response_reservations terminal_close_reserves_lifecycle_and_response_before_mutation
+        PASS [   0.007s] (294/416) maho-rpc::ensure_endpoint host_runner_reuse_reports_identity_without_recording_spawn_environment
+        PASS [   0.008s] (295/416) maho-rpc::ensure_endpoint managed_stop_never_signals_a_live_process_with_unknown_identity
+        PASS [   0.010s] (296/416) maho-rpc::ensure_endpoint ensure_preflight_probes_under_the_shared_ownership_lock
+        PASS [   0.010s] (297/416) maho-rpc::ensure_endpoint endpoint_ownership_depends_on_acceptance_not_a_protocol_response
+        PASS [   0.007s] (298/416) maho-rpc::extension_dialogs login_maps_labels_to_ids_and_missing_prompt_to_cancellation
+        PASS [   0.007s] (299/416) maho-rpc::extension_dialogs question_fallback_uses_native_select_input_and_unanswered_status
+        PASS [   0.006s] (300/416) maho-rpc::host_handoff windows_refuses_before_creating_state
+        PASS [   0.008s] (301/416) maho-rpc::host_handoff absent_host_preflight_preserves_typed_refusal
+        PASS [   0.006s] (302/416) maho-rpc::host_memory_timer memory_timer_samples_at_the_pinned_interval_and_stops_on_signal
+        PASS [   0.010s] (303/416) maho-rpc::host_monitors host_monitors_publish_pressure_recovery_even_without_a_wire_record
+        PASS [   0.006s] (304/416) maho-rpc::host_observed_turns observer_counts_busy_sessions_and_unknown_grace_not_individual_starts
+        PASS [   0.006s] (305/416) maho-rpc::host_proxy installed_idle_timer_exits_after_a_continuous_idle_window
+        PASS [   0.007s] (306/416) maho-rpc::host_proxy draining_proxy_preserves_attached_connection_and_authenticates_internal_hop
+        PASS [   0.008s] (307/416) maho-rpc::host_observed_turns observer_reader_tracks_strict_jsonl_until_transport_eof
+        PASS [   0.010s] (308/416) maho-rpc::host_monitors host_monitors_run_together_and_stop_without_leaving_a_timer
+        PASS [   0.006s] (309/416) maho-rpc::host_registration registration_publishes_complete_pointer_with_writer_guard
+        PASS [   0.007s] (310/416) maho-rpc::host_registration clearing_registration_removes_only_pointed_generation_and_is_idempotent
+        PASS [   0.006s] (311/416) maho-rpc::host_runner absent_endpoint_reports_refused_status_and_unknown_owner_stop
+        PASS [   0.007s] (312/416) maho-rpc::host_stop unknown_owner_is_refused_without_creating_shared_state
+        PASS [   0.008s] (313/416) maho-rpc::host_stop live_sessions_refuse_real_stop_and_preserve_registration
+        PASS [   0.007s] (314/416) maho-rpc::host_successor overlong_successor_path_refuses_before_writing_state
+        PASS [   0.006s] (315/416) maho-rpc::host_successor preparing_successor_inherits_policy_and_does_not_replace_public_socket
+        PASS [   0.008s] (316/416) maho-rpc::host_watchdog_binding a_launch_profile_carries_the_session_cwd
+        PASS [   0.012s] (317/416) maho-rpc::host_watchdog_binding a_gone_supervisor_pid_fires_the_watchdog_on_the_next_tick
+        PASS [   0.008s] (318/416) maho-rpc::lag_watchdog_timer timer_publishes_attributed_stall_and_stops_when_cancelled
+        PASS [   0.010s] (319/416) maho-rpc::host_watchdog_binding the_watchdog_binding_is_read_from_the_supervisor_handoff_names
+        PASS [   0.013s] (320/416) maho-rpc::host_watchdog_binding inherited_pipe_eof_fires_before_the_private_directory_is_removed
+        PASS [   0.006s] (321/416) maho-rpc::lifecycle_wire host_lifecycle_wire_preserves_null_successor_and_optional_attribution
+        PASS [   0.009s] (322/416) maho-rpc::lifecycle_wire closed_reason_remains_open_to_future_members
+        PASS [   0.006s] (323/416) maho-rpc::lifecycle_wire queued_notice_correlates_without_a_response_id
+        PASS [   0.006s] (324/416) maho-rpc::lifecycle_wire replacement_identity_does_not_use_the_routing_handle_field
+        PASS [   0.006s] (325/416) maho-rpc::loop_lag_shared installed_watchdog_publishes_drift_to_the_socket_actor_ledger
+        PASS [   0.006s] (326/416) maho-rpc::loop_lag_shared unchanged_stop_signal_does_not_restart_the_watchdog_interval
+        PASS [   0.006s] (327/416) maho-rpc::memory_sampler_timer sampling_timer_publishes_pressure_after_one_period
+        PASS [   0.006s] (328/416) maho-rpc::observer_reactor failed_retries_continue_until_replacement_socket_opens
+        PASS [   0.006s] (329/416) maho-rpc::observer_reactor initial_connection_failure_remains_the_callers_error
+        PASS [   0.071s] (330/416) maho-rpc::ensure_endpoint early_spawn_failure_reaps_child_and_removes_its_registration
+        PASS [   0.020s] (331/416) maho-rpc::parser_diagnostics malformed_json_diagnostics_equal_bun
+        PASS [   0.020s] (332/416) maho-rpc::parser_diagnostics malformed_wire_preserves_javascript_lone_surrogate_error
+        PASS [   0.008s] (333/416) maho-rpc::prompt_hooks collection_completes_on_settled_not_agent_end
+        PASS [   0.008s] (334/416) maho-rpc::prompt_hooks collection_has_a_bounded_deadline
+        PASS [   0.008s] (335/416) maho-rpc::prompt_hooks lost_transport_reports_failed_preflight_once
+        PASS [   0.043s] (336/416) maho-rpc::native_extension_wire rpc_faux_native_extension_events_survive_wire_transformation
+        PASS [   0.007s] (337/416) maho-rpc::prompt_hooks prompt_hooks_settle_before_the_following_message_start
+        PASS [   0.007s] (338/416) maho-rpc::prompt_hooks rejected_prompt_reports_failed_preflight_once
+        PASS [   0.007s] (339/416) maho-rpc::reaper_timer timer_reaps_only_after_the_full_waitable_window
+        PASS [   0.010s] (340/416) maho-rpc::registry_admission memory_pressure_refuses_only_new_workers_and_never_caps_interactive_count
+        PASS [   0.013s] (341/416) maho-rpc::registry_admission pending_open_owns_path_and_durable_id_before_runtime_creation
+        PASS [   0.009s] (342/416) maho-rpc::registry_admission worker_listing_and_retained_detach_preserve_visibility_and_path_ownership
+        PASS [   0.065s] (343/416) maho-rpc::parser_diagnostics deeply_nested_malformed_diagnostics_equal_bun_without_recursive_stack_growth
+        PASS [   0.066s] (344/416) maho-rpc::ownership_lock_bun bun_and_native_contenders_share_kernel_sqlite_lock
+        PASS [   0.288s] (345/416) maho-rpc jsonl::tests::accepts_fully_escaped_maximum_message
+        PASS [   0.078s] (346/416) maho-rpc::print_runner print_runner_drives_real_session_and_drains_native_json_events
+        PASS [   0.056s] (347/416) maho-rpc::registry_admission native_runtime_install_command_and_disposal_keep_scope_until_settled
+        PASS [   0.055s] (348/416) maho-rpc::rpc_event_stream invalid_prompt_and_switch_preserve_deterministic_response_ids
+        PASS [   0.059s] (349/416) maho-rpc::rpc_event_stream idle_eof_releases_the_stream_and_its_output
+        PASS [   0.009s] (350/416) maho-rpc::rpc_event_stream wire_fields_match_the_pinned_serializer_for_optional_fields
+        PASS [   0.059s] (351/416) maho-rpc::rpc_event_stream prompt_admission_and_abort_are_correlated_before_provider_completion
+        PASS [   0.007s] (352/416) maho-rpc::rpc_socket_client authenticated_client_sends_secret_before_correlated_protocol_request
+        PASS [   0.005s] (353/416) maho-rpc::rpc_socket_client failed_socket_write_retires_request_debt
+        PASS [   0.007s] (354/416) maho-rpc::rpc_socket_client opening_replays_only_selected_lease_then_routes_next_command
+        PASS [   0.005s] (355/416) maho-rpc::rpc_socket_client real_socket_correlates_response_before_following_event
+        PASS [   0.005s] (356/416) maho-rpc::rpc_socket_client response_hook_runs_before_next_frame_from_same_socket_read
+        PASS [   0.006s] (357/416) maho-rpc::rpc_socket_client refused_open_discards_prelease_events_and_preserves_current_lease
+        PASS [   0.007s] (358/416) maho-rpc::rpc_socket_close close_response_clears_only_matching_lease
+        PASS [   0.032s] (359/416) maho-rpc::rpc_faux_native rpc_faux_native_prompt_events_survive_rpc_jsonl_and_print_formatting
+        PASS [   0.086s] (360/416) maho-rpc::rpc_event_stream output_failure_during_a_pending_command_ends_the_stream
+        PASS [   0.051s] (361/416) maho-rpc::rpc_event_stream switch_session_applies_cwd_override_and_returns_correlated_success
+        PASS [   0.089s] (362/416) maho-rpc::rpc_event_stream pending_command_eof_releases_the_stream_and_its_output
+        PASS [   0.012s] (363/416) maho-rpc::session_binding_writer binding_commits_attribution_and_routes_records_through_stdio_actor
+        PASS [   0.006s] (364/416) maho-rpc::session_fanout_actor absent_socket_connections_return_the_stdio_destination_record
+        PASS [   0.008s] (365/416) maho-rpc::session_binding_writer typed_session_events_preserve_optional_fields_and_flattened_budget
+        PASS [   0.007s] (366/416) maho-rpc::session_fanout_actor enabling_rendered_capability_replays_only_rendered_records
+        PASS [   0.009s] (367/416) maho-rpc::session_fanout_actor attached_peer_replays_then_receives_live_records_while_other_peer_stalls
+        PASS [   0.006s] (368/416) maho-rpc::session_fanout_actor overflowed_peer_does_not_prevent_delivery_to_the_next_peer
+        PASS [   0.008s] (369/416) maho-rpc::session_fanout_actor incomplete_delta_metadata_does_not_demote_a_queued_snapshot
+        PASS [   0.007s] (370/416) maho-rpc::session_fanout_actor worker_close_lifecycle_reaches_only_attached_connections
+        PASS [   0.007s] (371/416) maho-rpc::session_idle_timer installed_idle_policy_timer_exits_once_after_continuous_empty_window
+        PASS [   0.006s] (372/416) maho-rpc::session_writer_drain failed_writer_rejects_flush_and_later_admission
+        PASS [   0.007s] (373/416) maho-rpc::session_writer_drain reserved_terminal_close_is_final_after_existing_session_records
+        PASS [   0.006s] (374/416) maho-rpc::session_writer_drain transport_drain_preserves_round_robin_record_boundaries
+        PASS [   0.098s] (375/416) maho-rpc::rpc_event_stream session_events_stream_while_a_command_is_pending
+        PASS [   0.006s] (376/416) maho-rpc::session_writer_drain writer_actor_admits_more_sessions_while_peer_is_blocked
+        PASS [   0.005s] (377/416) maho-rpc::socket_actor close_releases_flush_and_a_blocked_transport_without_waiting_for_deadline
+        PASS [   0.006s] (378/416) maho-rpc::socket_actor admission_is_independent_of_peer_drain_and_flush_preserves_fifo
+        PASS [   0.053s] (379/416) maho-rpc::session_entry_wire entries_export_and_cleanup_use_the_real_session
+        PASS [   0.005s] (380/416) maho-rpc::socket_actor host_blocked_time_extends_the_live_actor_deadline
+        PASS [   0.056s] (381/416) maho-rpc::session_binding_writer rpc_attach_installs_its_ui_without_repeating_session_start
+        PASS [   0.007s] (382/416) maho-rpc::socket_actor overflow_is_retained_by_flush_and_closed_admission_is_inert
+        PASS [   0.007s] (383/416) maho-rpc::socket_actor overflow_notice_drains_before_eof_and_failure_is_reported_once
+        PASS [   0.006s] (384/416) maho-rpc::socket_actor stalled_peer_fails_flush_at_the_served_deadline
+        PASS [   0.006s] (385/416) maho-rpc::socket_actor stalled_record_finishes_before_notice_when_reader_returns
+        PASS [   0.007s] (386/416) maho-rpc::socket_identity_wait absent_identity_stops_at_the_bounded_deadline
+        PASS [   0.006s] (387/416) maho-rpc::socket_identity_wait published_identity_is_read_without_waiting
+        PASS [   0.053s] (388/416) maho-rpc::session_state_wire state_publishes_the_queued_input_order
+        PASS [   0.052s] (389/416) maho-rpc::session_state_wire state_publishes_the_session_manager_usage_totals
+        PASS [   0.007s] (390/416) maho-rpc::socket_identity_wait truncated_identity_is_not_an_ownership_token
+        PASS [   0.052s] (391/416) maho-rpc::session_state_wire state_reads_the_project_trust_store_not_a_cached_setting
+        PASS [   0.006s] (392/416) maho-rpc::supersession_timer missing_socket_requires_three_timer_observations
+        PASS [   0.005s] (393/416) maho-rpc::watchdog_reactor reparenting_is_detected_on_the_next_tick
+        PASS [   0.006s] (394/416) maho-rpc::supersession_timer replacement_is_observed_through_the_public_socket
+        PASS [   0.005s] (395/416) maho-rpc::supersession_timer unknown_identity_does_not_install_a_watcher
+        PASS [   0.005s] (396/416) maho-rpc::watchdog_reactor supervisor_pipe_observes_eof_after_ignoring_payload
+        PASS [   0.005s] (397/416) maho-rpc::worker_controls typed_control_ack_releases_latest_display_envelope
+        PASS [   0.005s] (398/416) maho-rpc::worker_output_credit output_credit_is_released_only_after_consumption
+        PASS [   0.004s] (399/416) maho-rpc::worker_output_credit output_failure_denies_credit_before_failure_callback
+        PASS [   0.005s] (400/416) maho-rpc::worker_protocol worker_signal_survives_thread_envelope_transfer
+        PASS [   0.005s] (401/416) maho-rpc::worker_protocol host_envelopes_preserve_tags_and_optional_connection
+        PASS [   0.005s] (402/416) maho-rpc::worker_requests channel_replies_and_close_settle_admitted_request_promises
+        PASS [   0.005s] (403/416) maho-rpc::worker_requests failed_send_never_installs_a_timer
+        PASS [   0.005s] (404/416) maho-rpc::worker_requests failed_send_rejects_its_promise_and_retires_debt
+        PASS [   0.005s] (405/416) maho-rpc::worker_requests opening_timer_fires_without_retiring_request_debt
+        PASS [   0.005s] (406/416) maho-rpc::worker_requests reply_cancels_its_timer_before_the_deadline
+        PASS [   0.005s] (407/416) maho-rpc::worker_requests typed_prepared_reply_settles_registered_promise
+        PASS [   0.005s] (408/416) maho-rpc::worker_reservation host_reservation_limit_releases_worker_with_domain_code
+        PASS [   0.004s] (409/416) maho-rpc::worker_reservation stopped_host_denies_blocked_reservation_without_callback
+        PASS [   0.004s] (410/416) maho-rpc::worker_snapshot reconcile_precedes_credit_and_settled_listener_follows_release
+        PASS [   0.397s] (411/416) maho-rpc::connection_queue real_session_queue_commands_preserve_recovery_order
+        PASS [   0.846s] (412/416) maho-rpc session_worker::tests::output_limit_counts_utf8_json_bytes
+        PASS [   1.009s] (413/416) maho-rpc host_supersession::tests::watch_reports_a_replaced_endpoint_once
+        PASS [   1.569s] (414/416) maho-rpc::close_admission rejected_close_does_not_mutate_attachment_ownership
+        PASS [   2.009s] (415/416) maho-rpc::successor_launch failed_successor_preserves_predecessor_registration_and_socket
+        PASS [   2.273s] (416/416) maho-rpc::host_watchdog_binding a_shared_host_answers_the_protocol_then_exits_on_its_empty_window
+────────────
+     Summary [   2.556s] 416 tests run: 416 passed, 0 skipped

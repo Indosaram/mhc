@@ -1,0 +1,45 @@
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-ext-prompt-preset v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-prompt-preset)
+    Finished `test` profile [unoptimized] target(s) in 52.57s
+────────────
+ Nextest run ID 0a9208b9-760c-4920-98ed-46f22f6ceb23 with nextest profile: default
+    Starting 27 tests across 8 binaries
+        PASS [   0.005s] ( 1/27) maho-ext-prompt-preset::execution_tooling kimi_eval_routing_is_untagged_and_paragraph_adds_gap
+        PASS [   0.005s] ( 2/27) maho-ext-prompt-preset::deepseek_v4 preset_rules_route_distinct_reasoning_policies
+        PASS [   0.005s] ( 3/27) maho-ext-prompt-preset::file_operations apply_patch_takes_precedence_over_edit_and_write
+        PASS [   0.005s] ( 4/27) maho-ext-prompt-preset::file_operations no_mutation_tools_has_no_routing
+        PASS [   0.005s] ( 5/27) maho-ext-prompt-preset::execution_tooling absent_eval_suppresses_both_dialects
+        PASS [   0.005s] ( 6/27) maho-ext-prompt-preset::execution_tooling claude_eval_routing_uses_tagged_envelope
+        PASS [   0.006s] ( 7/27) maho-ext-prompt-preset::file_operations unselected_file_tools_produce_no_tuning
+        PASS [   0.007s] ( 8/27) maho-ext-prompt-preset::execution_tooling machine_rule_ids_remain_unique_and_eval_scoped
+        PASS [   0.005s] ( 9/27) maho-ext-prompt-preset::hooks custom_prompt_truthiness_and_append_preservation
+        PASS [   0.005s] (10/27) maho-ext-prompt-preset::hooks registers_prompt_and_model_hooks
+        PASS [   0.011s] (11/27) maho-ext-prompt-preset::dispatch all_explicit_presets_dispatch_to_nonempty_prompts
+        PASS [   0.005s] (12/27) maho-ext-prompt-preset::routing explicit_setting_overrides_model_metadata
+        PASS [   0.005s] (13/27) maho-ext-prompt-preset::routing invalid_settings_default_to_auto
+        PASS [   0.006s] (14/27) maho-ext-prompt-preset::routing invalid_project_setting_falls_back_to_global
+        PASS [   0.006s] (15/27) maho-ext-prompt-preset::routing model_metadata_overrides_family
+        PASS [   0.005s] (16/27) maho-ext-prompt-preset::routing settings_project_override_wins
+        PASS [   0.020s] (17/27) maho-ext-prompt-preset::file_operations edit_and_write_use_stable_order
+        PASS [   0.024s] (18/27) maho-ext-prompt-preset::routing display_name_routes_family_when_id_has_no_signal
+        PASS [   0.042s] (19/27) maho-ext-prompt-preset::routing gpt6_family_aliases_route_to_astra
+        PASS [   0.059s] (20/27) maho-ext-prompt-preset::routing dated_deepseek_snapshot_precedes_retired_alias
+        PASS [   0.060s] (21/27) maho-ext-prompt-preset::routing specific_claude_release_precedes_generic_family
+        PASS [   0.061s] (22/27) maho-ext-prompt-preset::routing rolling_kimi_product_aliases_route_by_version
+        PASS [   0.068s] (23/27) maho-ext-prompt-preset::routing official_retired_deepseek_alias_routes_to_v41
+        PASS [   0.070s] (24/27) maho-ext-prompt-preset::routing other_provider_preserves_deepseek_v4
+        PASS [   0.086s] (25/27) maho-ext-prompt-preset::dispatch unknown_auto_model_has_no_preset
+        PASS [   0.172s] (26/27) maho-ext-prompt-preset::faux_session faux_registered_builtin_completes_headless_turn
+        PASS [   0.424s] (27/27) maho-ext-prompt-preset::routing unknown_gpt6_siblings_are_not_routed
+────────────
+     Summary [   0.440s] 27 tests run: 27 passed, 0 skipped

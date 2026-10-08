@@ -1,0 +1,5 @@
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+    Checking maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+    Checking maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+    Finished `dev` profile [unoptimized] target(s) in 2.94s

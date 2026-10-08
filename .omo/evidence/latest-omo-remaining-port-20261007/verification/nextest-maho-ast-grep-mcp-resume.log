@@ -1,0 +1,203 @@
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling maho-ast-grep-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/ast-grep-mcp)
+    Finished `test` profile [unoptimized] target(s) in 2.52s
+────────────
+ Nextest run ID 3ee3d74e-16d8-42ef-b2b6-f0ab8f4f8dec with nextest profile: default
+    Starting 195 tests across 10 binaries
+        PASS [   0.006s] (  1/195) maho-ast-grep-mcp::mcp known_tools_dispatch_to_matching_executor_with_sg_path
+        PASS [   0.006s] (  2/195) maho-ast-grep-mcp::mcp initialize_without_protocol_version_falls_back
+        PASS [   0.006s] (  3/195) maho-ast-grep-mcp::mcp later_call_receives_fresh_unaborted_signal
+        PASS [   0.006s] (  4/195) maho-ast-grep-mcp::mcp empty_search_arguments_are_invalid_argument_preflight
+        PASS [   0.006s] (  5/195) maho-ast-grep-mcp::mcp initialize_pins_server_info_and_capabilities
+        PASS [   0.007s] (  6/195) maho-ast-grep-mcp::mcp malformed_stdio_line_writes_parse_error_envelope
+        PASS [   0.008s] (  7/195) maho-ast-grep-mcp::binary_stdio binary_dispatches_search_to_real_sg_over_stdio
+        PASS [   0.008s] (  8/195) maho-ast-grep-mcp::mcp missing_sg_binary_still_answers_protocol
+        PASS [   0.009s] (  9/195) maho-ast-grep-mcp::mcp code_point_properties_keep_numeric_max_length
+        PASS [   0.009s] ( 10/195) maho-ast-grep-mcp::mcp initialize_echoes_newer_protocol_version
+        PASS [   0.009s] ( 11/195) maho-ast-grep-mcp::mcp executor_failure_becomes_sg_failed
+        PASS [   0.005s] ( 12/195) maho-ast-grep-mcp::mcp notifications_initialized_produces_no_response
+        PASS [   0.006s] ( 13/195) maho-ast-grep-mcp::mcp oversize_search_pattern_is_invalid_argument
+        PASS [   0.013s] ( 14/195) maho-ast-grep-mcp::binary_stdio binary_serves_handshake_list_and_domain_errors_over_stdio
+        PASS [   0.008s] ( 15/195) maho-ast-grep-mcp::mcp non_object_request_is_invalid_request
+        PASS [   0.009s] ( 16/195) maho-ast-grep-mcp::mcp omitted_arguments_reach_self_parsing_tool_as_empty_object
+        PASS [   0.009s] ( 17/195) maho-ast-grep-mcp::mcp ok_false_payload_sets_is_error_and_keeps_code
+        PASS [   0.008s] ( 18/195) maho-ast-grep-mcp::mcp ping_returns_empty_result
+        PASS [   0.007s] ( 19/195) maho-ast-grep-mcp::mcp scan_args_without_rule_source_are_schema_invalid
+        PASS [   0.007s] ( 20/195) maho-ast-grep-mcp::mcp scan_args_with_one_rule_source_are_schema_valid
+        PASS [   0.010s] ( 21/195) maho-ast-grep-mcp::mcp scan_args_with_both_rule_sources_are_schema_invalid
+        PASS [   0.006s] ( 22/195) maho-ast-grep-mcp::mcp search_pattern_publishes_16_kib_byte_budget
+        PASS [   0.006s] ( 23/195) maho-ast-grep-mcp::mcp smoke_initialize_through_package_entry
+        PASS [   0.008s] ( 24/195) maho-ast-grep-mcp::mcp scan_schema_publishes_rule_source_one_of
+        PASS [   0.006s] ( 25/195) maho-ast-grep-mcp::mcp stdio_initialize_answers_with_server_info_and_no_idle_timeout
+        PASS [   0.010s] ( 26/195) maho-ast-grep-mcp::mcp scan_inline_rules_publishes_64_kib_byte_budget
+        PASS [   0.005s] ( 27/195) maho-ast-grep-mcp::mcp tools_call_without_name_is_invalid_params
+        PASS [   0.005s] ( 28/195) maho-ast-grep-mcp::mcp unknown_method_is_method_not_found
+        PASS [   0.015s] ( 29/195) maho-ast-grep-mcp::mcp rewrite_publishes_pattern_and_rewrite_byte_budgets
+        PASS [   0.008s] ( 30/195) maho-ast-grep-mcp::mcp taxonomy_holds_19_documented_codes
+        PASS [   0.005s] ( 31/195) maho-ast-grep-mcp::mcp unknown_search_property_is_rejected
+        PASS [   0.005s] ( 32/195) maho-ast-grep-mcp::normalize multibyte_multi_capture_uses_utf8_byte_offsets
+        PASS [   0.006s] ( 33/195) maho-ast-grep-mcp::mcp unknown_tool_name_is_domain_invalid_argument
+        PASS [   0.005s] ( 34/195) maho-ast-grep-mcp::normalize pinned_record_normalizes_to_stable_contract
+        PASS [   0.007s] ( 35/195) maho-ast-grep-mcp::mcp unresolvable_sg_binary_is_binary_not_found_with_hints
+        PASS [   0.007s] ( 36/195) maho-ast-grep-mcp::normalize unsorted_records_sort_by_path_and_byte_offset
+        PASS [   0.022s] ( 37/195) maho-ast-grep-mcp::mcp parent_exit_aborts_the_active_hung_call
+        PASS [   0.011s] ( 38/195) maho-ast-grep-mcp::normalize inside_outside_and_windows_paths_are_stable
+        PASS [   0.014s] ( 39/195) maho-ast-grep-mcp::mcp tools_list_returns_exact_raw_names
+        PASS [   0.009s] ( 40/195) maho-ast-grep-mcp::pattern_hints always_reject_rules_reject_without_force
+        PASS [   0.011s] ( 41/195) maho-ast-grep-mcp::pattern_hints always_reject_rules_not_bypassed_by_force
+        PASS [   0.012s] ( 42/195) maho-ast-grep-mcp::pattern_hints bare_alternation_warns_even_with_force
+        PASS [   0.013s] ( 43/195) maho-ast-grep-mcp::pattern_hints bare_alternation_warns_but_does_not_reject
+        PASS [   0.011s] ( 44/195) maho-ast-grep-mcp::pattern_hints bare_pipe_between_metavars_warns
+        PASS [   0.011s] ( 45/195) maho-ast-grep-mcp::pattern_hints double_pipe_is_not_flagged
+        PASS [   0.015s] ( 46/195) maho-ast-grep-mcp::pattern_hints char_class_force_bypasses
+        PASS [   0.016s] ( 47/195) maho-ast-grep-mcp::pattern_hints bare_pipe_between_calls_warns
+        PASS [   0.015s] ( 48/195) maho-ast-grep-mcp::pattern_hints char_class_round3_external_caret_and_mixed_range
+        PASS [   0.013s] ( 49/195) maho-ast-grep-mcp::pattern_hints extract_metavars_cases
+        PASS [   0.017s] ( 50/195) maho-ast-grep-mcp::pattern_hints char_class_detection_breadth
+        PASS [   0.012s] ( 51/195) maho-ast-grep-mcp::pattern_hints js_function_with_body_is_accepted
+        PASS [   0.021s] ( 52/195) maho-ast-grep-mcp::pattern_hints happy_paths_are_accepted
+        PASS [   0.019s] ( 53/195) maho-ast-grep-mcp::pattern_hints hard_reject_rules_reject_without_force
+        PASS [   0.018s] ( 54/195) maho-ast-grep-mcp::pattern_hints incomplete_forms_with_params_force_bypasses
+        PASS [   0.010s] ( 55/195) maho-ast-grep-mcp::pattern_hints rewrite_empty_pattern_always_rejected
+        PASS [   0.022s] ( 56/195) maho-ast-grep-mcp::pattern_hints hard_reject_rules_bypassed_by_force
+        PASS [   0.013s] ( 57/195) maho-ast-grep-mcp::pattern_hints metavar_name_validation_mixed_case
+        PASS [   0.020s] ( 58/195) maho-ast-grep-mcp::pattern_hints incomplete_forms_with_params_rejected_without_force
+        PASS [   0.013s] ( 59/195) maho-ast-grep-mcp::pattern_hints rewrite_force_bypasses_pattern_hints_but_not_unbound
+        PASS [   0.016s] ( 60/195) maho-ast-grep-mcp::pattern_hints rewrite_empty_replacement_is_ok
+        PASS [   0.019s] ( 61/195) maho-ast-grep-mcp::pattern_hints mixed_case_metavar_force_bypasses
+        PASS [   0.013s] ( 62/195) maho-ast-grep-mcp::pattern_hints rewrite_force_bypasses_pattern_hints_with_valid_rewrite
+        PASS [   0.013s] ( 63/195) maho-ast-grep-mcp::pattern_hints rewrite_happy_multi_is_ok
+        PASS [   0.015s] ( 64/195) maho-ast-grep-mcp::pattern_hints rewrite_happy_is_ok
+        PASS [   0.005s] ( 65/195) maho-ast-grep-mcp::rewrite apply_after_fixture_changes_reports_stale_preview
+        PASS [   0.006s] ( 66/195) maho-ast-grep-mcp::rewrite apply_after_deadline_expires_between_passes_times_out
+        PASS [   0.005s] ( 67/195) maho-ast-grep-mcp::rewrite apply_clean_preview_mutates_files
+        PASS [   0.013s] ( 68/195) maho-ast-grep-mcp::pattern_hints rewrite_propagates_pattern_hint_rejection
+        PASS [   0.014s] ( 69/195) maho-ast-grep-mcp::pattern_hints rewrite_multi_to_single_mismatch_rejected
+        PASS [   0.012s] ( 70/195) maho-ast-grep-mcp::pattern_hints unicode_in_pattern_is_handled
+        PASS [   0.013s] ( 71/195) maho-ast-grep-mcp::pattern_hints unicode_adjacent_to_metavar_is_handled
+        PASS [   0.016s] ( 72/195) maho-ast-grep-mcp::pattern_hints rewrite_single_to_multi_mismatch_rejected_even_with_force
+        PASS [   0.015s] ( 73/195) maho-ast-grep-mcp::pattern_hints rewrite_unbound_metavar_rejected_even_with_force
+        PASS [   0.005s] ( 74/195) maho-ast-grep-mcp::rewrite apply_zero_matches_skips_second_pass
+        PASS [   0.005s] ( 75/195) maho-ast-grep-mcp::rewrite astral_character_is_one_code_point_but_two_utf16_units
+        PASS [   0.005s] ( 76/195) maho-ast-grep-mcp::rewrite apply_malformed_pattern_reports_parse_failure
+        PASS [   0.031s] ( 77/195) maho-ast-grep-mcp::pattern_hints long_pattern_does_not_crash
+        PASS [   0.006s] ( 78/195) maho-ast-grep-mcp::rewrite astral_exact_limit_is_accepted
+        PASS [   0.008s] ( 79/195) maho-ast-grep-mcp::rewrite apply_empty_rewrite_deletes_matched_node
+        PASS [   0.006s] ( 80/195) maho-ast-grep-mcp::rewrite astral_limit_plus_one_rejects
+        PASS [   0.008s] ( 81/195) maho-ast-grep-mcp::rewrite apply_truncated_preview_is_refused
+        PASS [   0.005s] ( 82/195) maho-ast-grep-mcp::rewrite cli_apply_emits_update_all_and_never_json_stream
+        PASS [   0.005s] ( 83/195) maho-ast-grep-mcp::rewrite cli_both_passes_share_scope_flags
+        PASS [   0.006s] ( 84/195) maho-ast-grep-mcp::rewrite astral_mixed_straddling_limit_only_limit_plus_one_rejects
+        PASS [   0.006s] ( 85/195) maho-ast-grep-mcp::rewrite astral_over_limit_rejects_before_spawn_when_executed
+        PASS [   0.005s] ( 86/195) maho-ast-grep-mcp::rewrite dry_run_multi_metavariable_expands_captured_nodes
+        PASS [   0.008s] ( 87/195) maho-ast-grep-mcp::rewrite description_is_verbatim
+        PASS [   0.006s] ( 88/195) maho-ast-grep-mcp::rewrite exports_raw_tool_name
+        PASS [   0.008s] ( 89/195) maho-ast-grep-mcp::rewrite cli_preview_emits_json_stream_and_never_update_all
+        PASS [   0.008s] ( 90/195) maho-ast-grep-mcp::rewrite dry_run_empty_rewrite_previews_deletion
+        PASS [   0.006s] ( 91/195) maho-ast-grep-mcp::rewrite per_string_bounds_accept_exact_limits
+        PASS [   0.005s] ( 92/195) maho-ast-grep-mcp::rewrite per_string_bounds_reject_when_parsed
+        PASS [   0.010s] ( 93/195) maho-ast-grep-mcp::rewrite dry_run_previews_and_never_mutates
+        PASS [   0.009s] ( 94/195) maho-ast-grep-mcp::rewrite per_string_bounds_reject_before_spawn_when_executed
+        PASS [   0.005s] ( 95/195) maho-ast-grep-mcp::rewrite schema_accepts_empty_rewrite_as_deletion
+        PASS [   0.005s] ( 96/195) maho-ast-grep-mcp::rewrite schema_rejects_more_than_64_paths
+        PASS [   0.007s] ( 97/195) maho-ast-grep-mcp::rewrite schema_defaults
+        PASS [   0.006s] ( 98/195) maho-ast-grep-mcp::rewrite schema_rejects_non_boolean_apply
+        PASS [   0.009s] ( 99/195) maho-ast-grep-mcp::rewrite schema_rejects_max_matches_above_500
+        PASS [   0.006s] (100/195) maho-ast-grep-mcp::rewrite schema_rejects_pattern_over_16kib
+        PASS [   0.014s] (101/195) maho-ast-grep-mcp::rewrite preflight_regex_misuse_with_force_bypasses_heuristic
+        PASS [   0.014s] (102/195) maho-ast-grep-mcp::rewrite preflight_cardinality_mismatch_with_force
+        PASS [   0.015s] (103/195) maho-ast-grep-mcp::rewrite preflight_regex_misuse_without_force_is_rejected
+        PASS [   0.014s] (104/195) maho-ast-grep-mcp::rewrite preflight_unbound_metavariable_with_force
+        PASS [   0.005s] (105/195) maho-ast-grep-mcp::scan apply_matrix_json_update_does_not_mutate_but_plain_update_does
+        PASS [   0.011s] (106/195) maho-ast-grep-mcp::rewrite schema_rejects_missing_rewrite
+        PASS [   0.008s] (107/195) maho-ast-grep-mcp::rewrite schema_rejects_rewrite_over_64kib
+        PASS [   0.006s] (108/195) maho-ast-grep-mcp::rewrite schema_rejects_unknown_property
+        PASS [   0.006s] (109/195) maho-ast-grep-mcp::scan apply_runs_preview_then_plain_update_all
+        PASS [   0.007s] (110/195) maho-ast-grep-mcp::scan astral_character_is_one_code_point_two_utf16_units
+        PASS [   0.006s] (111/195) maho-ast-grep-mcp::scan astral_exact_limit_is_accepted
+        PASS [   0.006s] (112/195) maho-ast-grep-mcp::scan astral_limit_plus_one_is_rejected
+        PASS [   0.005s] (113/195) maho-ast-grep-mcp::scan one_of_violation_returns_invalid_argument_before_spawn
+        PASS [   0.006s] (114/195) maho-ast-grep-mcp::scan no_matching_rule_is_valid_empty_success
+        PASS [   0.008s] (115/195) maho-ast-grep-mcp::scan inline_rule_dry_scan_carries_nested_rule_block
+        PASS [   0.006s] (116/195) maho-ast-grep-mcp::scan metadata_present_only_when_requested
+        PASS [   0.006s] (117/195) maho-ast-grep-mcp::scan schema_defaults
+        PASS [   0.007s] (118/195) maho-ast-grep-mcp::scan inline_rules_args_stay_explicit_and_use_metadata_flag
+        PASS [   0.007s] (119/195) maho-ast-grep-mcp::scan rule_file_args_keep_json_preview_only
+        PASS [   0.006s] (120/195) maho-ast-grep-mcp::scan schema_rejects_both_rule_sources
+        PASS [   0.010s] (121/195) maho-ast-grep-mcp::scan hostile_parent_sgconfig_is_isolated
+        PASS [   0.006s] (122/195) maho-ast-grep-mcp::scan schema_rejects_values_outside_shared_bounds
+        PASS [   0.007s] (123/195) maho-ast-grep-mcp::scan schema_rejects_oversized_rule_sources
+        PASS [   0.008s] (124/195) maho-ast-grep-mcp::scan schema_rejects_neither_rule_source
+        PASS [   0.005s] (125/195) maho-ast-grep-mcp::search cli_args_all_optional_flags
+        PASS [   0.005s] (126/195) maho-ast-grep-mcp::search cli_args_minimal
+        PASS [   0.006s] (127/195) maho-ast-grep-mcp::scan truncated_preview_refuses_mutation
+        PASS [   0.006s] (128/195) maho-ast-grep-mcp::scan unparseable_yaml_returns_rule_parse_failed
+        PASS [   0.007s] (129/195) maho-ast-grep-mcp::search cli_args_never_include_context_flag
+        PASS [   0.006s] (130/195) maho-ast-grep-mcp::search description_is_verbatim
+        PASS [   0.006s] (131/195) maho-ast-grep-mcp::search cli_args_without_globs_omit_globs
+        PASS [   0.005s] (132/195) maho-ast-grep-mcp::search live_include_hidden_returns_hidden_files
+        PASS [   0.008s] (133/195) maho-ast-grep-mcp::search cli_args_without_include_hidden_omit_no_ignore
+        PASS [   0.005s] (134/195) maho-ast-grep-mcp::search live_max_matches_1_truncates_with_limit_warning
+        PASS [   0.006s] (135/195) maho-ast-grep-mcp::search live_malformed_pattern_returns_error_payload
+        PASS [   0.005s] (136/195) maho-ast-grep-mcp::search live_success_payload_contract
+        PASS [   0.005s] (137/195) maho-ast-grep-mcp::search live_no_matches_returns_empty_success
+        PASS [   0.005s] (138/195) maho-ast-grep-mcp::search schema_accepts_astral_glob_at_1024_code_points
+        PASS [   0.005s] (139/195) maho-ast-grep-mcp::search schema_accepts_astral_path_at_4096_code_points
+        PASS [   0.005s] (140/195) maho-ast-grep-mcp::search schema_accepts_astral_workdir_at_4096_code_points
+        PASS [   0.006s] (141/195) maho-ast-grep-mcp::search schema_accepts_astral_selector_at_128_code_points
+        PASS [   0.005s] (142/195) maho-ast-grep-mcp::search schema_accepts_max_matches_1
+        PASS [   0.005s] (143/195) maho-ast-grep-mcp::search schema_accepts_max_matches_500
+        PASS [   0.005s] (144/195) maho-ast-grep-mcp::search schema_defaults_max_matches_to_50
+        PASS [   0.005s] (145/195) maho-ast-grep-mcp::search schema_accepts_strictness_signature
+        PASS [   0.006s] (146/195) maho-ast-grep-mcp::search schema_accepts_strictness_cst
+        PASS [   0.005s] (147/195) maho-ast-grep-mcp::search schema_accepts_timeout_1000
+        PASS [   0.005s] (148/195) maho-ast-grep-mcp::search schema_defaults_strictness_to_smart
+        PASS [   0.007s] (149/195) maho-ast-grep-mcp::search schema_accepts_valid_input
+        PASS [   0.007s] (150/195) maho-ast-grep-mcp::search schema_accepts_timeout_300000
+        PASS [   0.006s] (151/195) maho-ast-grep-mcp::search schema_pattern_limit_message_counts_bytes
+        PASS [   0.007s] (152/195) maho-ast-grep-mcp::search schema_defaults_timeout_to_300000
+        PASS [   0.007s] (153/195) maho-ast-grep-mcp::search schema_rejects_33_globs
+        PASS [   0.006s] (154/195) maho-ast-grep-mcp::search schema_rejects_65_paths
+        PASS [   0.005s] (155/195) maho-ast-grep-mcp::search schema_rejects_astral_selector_at_129_code_points
+        PASS [   0.006s] (156/195) maho-ast-grep-mcp::search schema_rejects_additional_properties
+        PASS [   0.005s] (157/195) maho-ast-grep-mcp::search schema_rejects_astral_workdir_at_4097_code_points
+        PASS [   0.005s] (158/195) maho-ast-grep-mcp::search schema_rejects_astral_glob_at_1025_code_points
+        PASS [   0.006s] (159/195) maho-ast-grep-mcp::search schema_rejects_astral_path_at_4097_code_points
+        PASS [   0.006s] (160/195) maho-ast-grep-mcp::search schema_rejects_empty_pattern
+        PASS [   0.005s] (161/195) maho-ast-grep-mcp::search schema_rejects_empty_selector
+        PASS [   0.006s] (162/195) maho-ast-grep-mcp::search schema_rejects_empty_paths
+        PASS [   0.005s] (163/195) maho-ast-grep-mcp::search schema_rejects_invalid_language
+        PASS [   0.006s] (164/195) maho-ast-grep-mcp::search schema_rejects_fractional_timeout
+        PASS [   0.007s] (165/195) maho-ast-grep-mcp::search schema_rejects_empty_workdir
+        PASS [   0.028s] (166/195) maho-ast-grep-mcp::scan sg_deprecation_banner_is_tolerated_as_warning
+        PASS [   0.006s] (167/195) maho-ast-grep-mcp::search schema_rejects_glob_over_1024_chars
+        PASS [   0.005s] (168/195) maho-ast-grep-mcp::search schema_rejects_max_matches_0
+        PASS [   0.005s] (169/195) maho-ast-grep-mcp::search schema_rejects_missing_paths
+        PASS [   0.005s] (170/195) maho-ast-grep-mcp::search schema_rejects_path_over_4096_chars
+        PASS [   0.006s] (171/195) maho-ast-grep-mcp::search schema_rejects_strictness_template
+        PASS [   0.008s] (172/195) maho-ast-grep-mcp::search schema_rejects_max_matches_501
+        PASS [   0.005s] (173/195) maho-ast-grep-mcp::search schema_rejects_timeout_0
+        PASS [   0.005s] (174/195) maho-ast-grep-mcp::search schema_rejects_timeout_300001
+        PASS [   0.005s] (175/195) maho-ast-grep-mcp::search schema_rejects_timeout_999
+        PASS [   0.009s] (176/195) maho-ast-grep-mcp::search schema_rejects_selector_over_128_chars
+        PASS [   0.010s] (177/195) maho-ast-grep-mcp::search schema_rejects_pattern_over_16kib
+        PASS [   0.008s] (178/195) maho-ast-grep-mcp::search tool_name_is_search
+        PASS [   0.009s] (179/195) maho-ast-grep-mcp::search schema_rejects_workdir_over_4096_chars
+        PASS [   0.008s] (180/195) maho-ast-grep-mcp::sg_runner exit_1_with_warning_only_is_valid_no_match
+        PASS [   0.008s] (181/195) maho-ast-grep-mcp::sg_runner exit_1_without_matches_is_successful
+        PASS [   0.008s] (182/195) maho-ast-grep-mcp::sg_runner exit_2_rejects_as_sg_failed
+        PASS [   0.015s] (183/195) maho-ast-grep-mcp::sg_runner complete_chunked_ndjson_is_fully_parsed
+        PASS [   0.012s] (184/195) maho-ast-grep-mcp::sg_runner excessive_stderr_is_capped_by_bytes
+        PASS [   0.014s] (185/195) maho-ast-grep-mcp::sg_runner error_line_after_stderr_cap_rejects
+        PASS [   0.005s] (186/195) maho-ast-grep-mcp::sg_runner missing_binary_is_a_clear_error_not_a_panic
+        PASS [   0.006s] (187/195) maho-ast-grep-mcp::sg_runner partial_final_line_salvages_complete_records
+        PASS [   0.018s] (188/195) maho-ast-grep-mcp::sg_runner exit_1_with_operational_diagnostic_rejects
+        PASS [   0.020s] (189/195) maho-ast-grep-mcp::sg_runner error_prefix_split_across_writes_rejects
+        PASS [   0.015s] (190/195) maho-ast-grep-mcp::sg_runner invalid_and_split_utf8_stderr_stays_within_cap
+        PASS [   0.018s] (191/195) maho-ast-grep-mcp::sg_runner match_limit_terminates_with_honest_lower_bound
+        PASS [   0.064s] (192/195) maho-ast-grep-mcp::sg_runner stream_failures_are_classified
+        PASS [   0.663s] (193/195) maho-ast-grep-mcp::sg_runner aggregate_payload_cap_truncates_and_terminates_child
+        PASS [   1.033s] (194/195) maho-ast-grep-mcp::sg_runner abort_escalates_to_sigkill_after_grace_and_no_process_remains
+        PASS [   1.535s] (195/195) maho-ast-grep-mcp::sg_runner whole_call_budget_expiry_terminates_hung_child
+────────────
+     Summary [   1.676s] 195 tests run: 195 passed, 0 skipped

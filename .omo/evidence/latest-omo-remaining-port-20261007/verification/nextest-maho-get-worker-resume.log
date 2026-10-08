@@ -1,0 +1,60 @@
+   Compiling libsqlite3-sys v0.38.2
+   Compiling serde_json v1.0.149
+   Compiling rusqlite v0.40.2
+   Compiling maho-get-worker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/get-worker)
+    Finished `test` profile [unoptimized] target(s) in 1.80s
+────────────
+ Nextest run ID e095fca0-6e86-4861-a97e-2a3015253a10 with nextest profile: default
+    Starting 50 tests across 2 binaries
+        PASS [   0.006s] ( 1/50) maho-get-worker::parity downloads::rollup_query_covers_whole_utc_days_only_and_weights_by_the_sample_interval
+        PASS [   0.007s] ( 2/50) maho-get-worker::parity http_driver::tests::a_never_mirrored_version_redirects_to_github
+        PASS [   0.007s] ( 3/50) maho-get-worker::parity http_driver::tests::a_channel_falls_back_to_the_npm_dist_tag_over_http
+        PASS [   0.007s] ( 4/50) maho-get-worker::parity http_driver::tests::a_range_get_serves_the_object_and_never_populates_the_cache
+        PASS [   0.007s] ( 5/50) maho-get-worker::parity http_driver::tests::a_channel_with_no_pointer_and_a_failing_registry_is_unavailable
+        PASS [   0.007s] ( 6/50) maho-get-worker::parity downloads::github_redirects_never_add_to_the_uncounted_total_and_adjustments_subtract_qa_installs
+        PASS [   0.008s] ( 7/50) maho-get-worker::parity http_driver::tests::a_channel_pointer_is_served_and_counted
+        PASS [   0.008s] ( 8/50) maho-get-worker::parity http_driver::tests::a_browser_root_redirects_to_the_docs_and_a_curl_root_serves_the_script
+        PASS [   0.010s] ( 9/50) maho-get-worker::parity downloads::upserts_per_day_so_an_hourly_rerun_replaces_counts_instead_of_adding_them
+        PASS [   0.011s] (10/50) maho-get-worker::parity downloads::rejects_a_malformed_analytics_engine_payload_instead_of_storing_zeros
+        PASS [   0.012s] (11/50) maho-get-worker::parity downloads::a_failed_analytics_engine_call_leaves_the_stored_counts_untouched
+        PASS [   0.007s] (12/50) maho-get-worker::parity http_driver::tests::mirrored_get_serves_the_object_and_its_headers_over_http
+        PASS [   0.008s] (13/50) maho-get-worker::parity http_driver::tests::download_stats_are_served_as_json_and_cached
+        PASS [   0.010s] (14/50) maho-get-worker::parity http_driver::tests::health_and_method_and_unknown_routes
+        PASS [   0.011s] (15/50) maho-get-worker::parity http_driver::tests::a_route_level_database_failure_maps_to_500
+        PASS [   0.011s] (16/50) maho-get-worker::parity http_driver::tests::head_returns_the_same_headers_with_no_body_and_records_nothing
+        PASS [   0.011s] (17/50) maho-get-worker::parity http_driver::tests::an_invalid_asset_is_refused_before_any_storage_read
+        PASS [   0.018s] (18/50) maho-get-worker::parity http_driver::tests::a_repeat_get_is_served_from_the_edge_cache
+        PASS [   0.015s] (19/50) maho-get-worker::parity http_driver::tests::a_rollup_over_http_evidence_is_stored_and_exposed
+        PASS [   0.006s] (20/50) maho-get-worker::parity install_sh_preamble::dash_prints_one_bash_hint_and_never_parses_the_bash_body_when_bash_is_unavailable
+        PASS [   0.006s] (21/50) maho-get-worker::parity metadata::a_get_serves_the_stored_http_metadata_and_the_service_overrides_win
+        PASS [   0.011s] (22/50) maho-get-worker::parity install_sh_preamble::sh_prints_one_bash_hint_and_never_parses_the_bash_body_when_bash_is_unavailable
+        PASS [   0.006s] (23/50) maho-get-worker::parity metadata::a_head_returns_the_same_metadata_headers_with_no_body
+        PASS [   0.006s] (24/50) maho-get-worker::parity metadata::the_metadata_survives_the_edge_cache_boundary
+        PASS [   0.010s] (25/50) maho-get-worker::parity metadata::an_object_without_stored_metadata_writes_no_metadata_headers
+        PASS [   0.007s] (26/50) maho-get-worker::parity routes::counts_checksums_and_desktop_engines_under_their_own_kinds
+        PASS [   0.007s] (27/50) maho-get-worker::parity routes::falls_back_to_the_npm_dist_tag_and_maps_the_npm_pre_release_form
+        PASS [   0.005s] (28/50) maho-get-worker::parity routes::redirects_to_github_when_storage_errors
+        PASS [   0.006s] (29/50) maho-get-worker::parity routes::reads_the_mirrored_channel_pointer_and_caches_it_for_a_minute
+        PASS [   0.028s] (30/50) maho-get-worker::parity install_sh_other_installs::an_unverified_look_alike_omo_is_never_removed
+        PASS [   0.030s] (31/50) maho-get-worker::parity install_sh_preamble::bash_still_parses_the_wrapper_and_the_complete_installer_body
+        PASS [   0.006s] (32/50) maho-get-worker::parity routes::redirects_to_the_github_asset_when_the_version_was_never_marked_complete
+        PASS [   0.009s] (33/50) maho-get-worker::parity routes::repeat_downloads_are_cache_hits_that_never_read_storage
+        PASS [   0.009s] (34/50) maho-get-worker::parity routes::rejects_an_unknown_channel
+        PASS [   0.037s] (35/50) maho-get-worker::parity install_sh_other_installs::declining_the_prompt_changes_nothing_on_disk
+        PASS [   0.010s] (36/50) maho-get-worker::parity routes::refuses_names_outside_the_release_allowlist_so_the_redirect_cannot_be_steered
+        PASS [   0.034s] (37/50) maho-get-worker::parity install_sh_preamble::sh_hands_every_unread_line_and_every_argument_to_bash
+        PASS [   0.007s] (38/50) maho-get-worker::parity routes::serves_a_mirrored_binary_from_storage_with_an_immutable_cache_and_counts_it
+        PASS [   0.006s] (39/50) maho-get-worker::parity wrangler::the_deploy_config_keeps_its_bindings_routes_and_cron
+        PASS [   0.010s] (40/50) maho-get-worker::parity routes::root_serves_the_script_to_curl_and_powershell_and_sends_browsers_to_the_docs
+        PASS [   0.006s] (41/50) maho-get-worker::parity wrangler::the_served_install_scripts_are_the_shipped_wrapper_and_bash_body
+        PASS [   0.007s] (42/50) maho-get-worker::parity routes::tags_installer_qa_downloads_so_the_rollup_can_leave_them_out
+        PASS [   0.007s] (43/50) maho-get-worker::parity wrangler::the_migration_declares_the_rollup_and_adjustment_tables
+        PASS [   0.008s] (44/50) maho-get-worker::parity routes::serves_install_scripts_as_text_with_a_short_cache_and_counts_them
+        PASS [   0.051s] (45/50) maho-get-worker::parity install_sh_other_installs::a_non_interactive_run_never_deletes_without_the_explicit_flag
+        PASS [   0.051s] (46/50) maho-get-worker::parity install_sh_other_installs::a_prior_standalone_receipt_permits_removing_only_that_old_launcher
+        PASS [   0.006s] (47/50) maho-get-worker::parity wrangler::the_text_loader_rules_keep_the_install_scripts_importable_as_strings
+        PASS [   0.056s] (48/50) maho-get-worker::parity install_sh_other_installs::a_failed_removal_leaves_the_new_install_working_and_prints_the_exact_command
+        PASS [   0.057s] (49/50) maho-get-worker::parity install_sh_other_installs::accepting_the_interactive_prompt_removes_the_bun_global_install_and_leaves_one_omo_on_path
+        PASS [   0.054s] (50/50) maho-get-worker::parity install_sh_other_installs::the_explicit_flag_removes_only_the_verified_omo_package_and_shim
+────────────
+     Summary [   0.071s] 50 tests run: 50 passed, 0 skipped

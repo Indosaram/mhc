@@ -1,0 +1,1030 @@
+   Compiling h2 v0.4.19
+   Compiling tower v0.5.3
+   Compiling tower-http v0.6.8
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.7
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling reqwest v0.12.28
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+   Compiling maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+   Compiling maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+   Compiling maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+   Compiling maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+    Finished `test` profile [unoptimized] target(s) in 1m 03s
+────────────
+ Nextest run ID 7de916c0-e276-4bc4-b72a-1ba06c1ffa95 with nextest profile: default
+    Starting 998 tests across 2 binaries
+        PASS [   0.007s] (  1/998) maho-omo-memory bindings::entry_renderer::tests::persisted_binding_stays_hidden
+        PASS [   0.008s] (  2/998) maho-omo-memory bindings::tests::binding_renderer_is_registered_and_hidden
+        PASS [   0.008s] (  3/998) maho-omo-memory commands::args::tests::given_positionals_and_a_valued_flag_when_parsed_then_flag_captures_the_next_token
+        PASS [   0.008s] (  4/998) maho-omo-memory commands::args::tests::given_an_equals_style_flag_when_parsed_then_the_inline_value_is_used
+        PASS [   0.008s] (  5/998) maho-omo-memory commands::args::tests::equals_values_and_boolean_flags_do_not_consume_focus
+        PASS [   0.008s] (  6/998) maho-omo-memory binding::tests::latest_valid_binding_wins
+        PASS [   0.008s] (  7/998) maho-omo-memory commands::args::tests::given_a_declared_boolean_before_a_positional_when_parsed_then_it_is_not_swallowed
+        PASS [   0.009s] (  8/998) maho-omo-memory commands::args::tests::given_empty_input_when_parsed_then_positionals_and_flags_are_empty
+        PASS [   0.009s] (  9/998) maho-omo-memory capabilities::tests::native_api_has_required_memory_surface
+        PASS [   0.010s] ( 10/998) maho-omo-memory binding::tests::stable_hash_hides_path
+        PASS [   0.010s] ( 11/998) maho-omo-memory commands::args::tests::given_a_flag_at_the_end_of_input_when_parsed_then_it_degrades_to_a_boolean
+        PASS [   0.009s] ( 12/998) maho-omo-memory commands::doctor::tests::given_an_unbound_session_when_doctor_runs_then_an_actionable_error_is_returned
+        PASS [   0.134s] ( 13/998) maho-omo-memory commands::doctor::tests::given_a_missing_persona_file_when_doctor_runs_then_a_persona_warning_is_reported
+        PASS [   0.009s] ( 14/998) maho-omo-memory commands::doctor::tests::given_no_repository_when_doctor_runs_then_the_repository_check_fails_with_an_actionable_hint
+        PASS [   0.148s] ( 15/998) maho-omo-memory commands::doctor::tests::given_a_memory_file_with_invalid_frontmatter_when_doctor_runs_then_the_sweep_fails_and_names_the_file
+        PASS [   0.149s] ( 16/998) maho-omo-memory commands::doctor::tests::given_a_skill_missing_name_frontmatter_when_doctor_runs_then_the_repair_helper_reports_the_fix
+        PASS [   0.152s] ( 17/998) maho-omo-memory commands::doctor::tests::given_a_lock_owned_by_a_dead_pid_when_doctor_runs_then_the_stale_lock_is_reported_with_its_path
+        PASS [   0.160s] ( 18/998) maho-omo-memory commands::doctor::tests::given_a_healthy_repository_when_doctor_runs_then_every_deterministic_check_passes
+        PASS [   0.153s] ( 19/998) maho-omo-memory commands::doctor::tests::given_a_persona_that_diverged_from_the_v1_seed_when_doctor_runs_then_no_soul_seed_advisory_fires
+        PASS [   0.153s] ( 20/998) maho-omo-memory commands::doctor::tests::given_a_lock_owned_by_a_live_pid_when_doctor_runs_then_no_stale_lock_is_reported
+        PASS [   0.153s] ( 21/998) maho-omo-memory commands::doctor::tests::given_a_system_estimate_over_the_warn_threshold_when_doctor_runs_then_a_token_advisory_is_reported
+        PASS [   0.157s] ( 22/998) maho-omo-memory commands::doctor::tests::given_an_abandoned_reservation_run_when_doctor_runs_then_manual_disposal_paths_are_reported
+        PASS [   0.007s] ( 23/998) maho-omo-memory commands::dream::tests::given_auto_and_focus_when_invoked_then_manual_dream_selection_is_delegated_without_explicit_ids
+        PASS [   0.147s] ( 24/998) maho-omo-memory commands::doctor::tests::given_no_facts_failures_when_doctor_runs_then_no_facts_advisory_line_is_rendered
+        PASS [   0.010s] ( 25/998) maho-omo-memory commands::dream::tests::given_a_senpi_jsonl_transcript_with_a_malformed_line_when_imported_twice_then_message_ids_are_staged_once
+        PASS [   0.007s] ( 26/998) maho-omo-memory commands::dream::tests::given_explicit_conversation_ids_when_invoked_then_their_parsed_selection_is_submitted_unchanged
+        PASS [   0.006s] ( 27/998) maho-omo-memory commands::dream::tests::given_the_fixed_letta_parity_scoring_vector_when_scored_then_the_exact_operands_and_total_are_reproduced
+        PASS [   0.160s] ( 28/998) maho-omo-memory commands::doctor::tests::given_a_persona_still_equal_to_the_v1_seed_when_doctor_runs_then_a_soul_seed_advisory_is_reported
+        PASS [   0.010s] ( 29/998) maho-omo-memory commands::dream::tests::given_non_session_jsonl_when_imported_then_it_is_rejected_without_submitting_a_dream
+        PASS [   0.161s] ( 30/998) maho-omo-memory commands::doctor::tests::given_an_unregistered_worktree_directory_when_doctor_runs_then_the_orphan_is_reported
+        PASS [   0.009s] ( 31/998) maho-omo-memory commands::dream::tests::given_three_conversations_when_recent_two_is_invoked_then_two_conversations_are_chosen_by_last_activity
+        PASS [   0.008s] ( 32/998) maho-omo-memory commands::dream_staging::tests::sha1_hex_matches_node_crypto_lowercase_hex_vectors
+        PASS [   0.009s] ( 33/998) maho-omo-memory commands::dream_staging::tests::given_an_unreadable_journal_when_staging_then_the_read_error_propagates_without_appending
+        PASS [   0.008s] ( 34/998) maho-omo-memory commands::facts::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.008s] ( 35/998) maho-omo-memory commands::facts::tests::given_a_corrupt_failures_json_when_invoked_then_the_status_view_says_corrupt_rather_than_zeros
+        PASS [   0.010s] ( 36/998) maho-omo-memory commands::facts::tests::given_parked_and_backoff_records_when_invoked_then_the_status_view_reports_both_plus_queue_depth
+        PASS [   0.011s] ( 37/998) maho-omo-memory commands::facts::tests::given_no_records_for_the_requested_conversation_when_retrying_then_it_is_a_noop_with_a_clear_message
+        PASS [   0.007s] ( 38/998) maho-omo-memory commands::facts_status::tests::given_a_clean_ledger_when_asking_for_the_hint_then_there_is_no_hint
+        PASS [   0.011s] ( 39/998) maho-omo-memory commands::facts::tests::given_parked_records_when_retrying_without_a_filter_then_all_conversations_are_named_and_one_launch_triggers
+        PASS [   0.007s] ( 40/998) maho-omo-memory commands::facts_status::tests::given_a_corrupt_ledger_when_rendering_the_status_view_then_it_reports_corruption_and_no_counts
+        PASS [   0.007s] ( 41/998) maho-omo-memory commands::facts_status::tests::given_a_healthy_queue_when_rendering_the_status_view_then_no_failure_section_is_shown
+        PASS [   0.011s] ( 42/998) maho-omo-memory commands::facts::tests::given_records_for_two_conversations_when_retrying_one_then_only_its_records_are_cleared
+        PASS [   0.009s] ( 43/998) maho-omo-memory commands::facts_status::tests::given_a_corrupt_ledger_when_rendering_the_advisory_then_it_says_corrupt_instead_of_zeros
+        PASS [   0.007s] ( 44/998) maho-omo-memory commands::facts_status::tests::given_no_failure_records_when_rendering_the_advisory_then_nothing_is_shown
+        PASS [   0.014s] ( 45/998) maho-omo-memory commands::facts::tests::given_queue_files_and_watermarks_when_retrying_then_every_queue_artifact_is_byte_identical
+        PASS [   0.007s] ( 46/998) maho-omo-memory commands::facts_status::tests::given_failing_conversations_when_rendering_the_status_view_then_counts_and_bounded_reasons_appear
+        PASS [   0.007s] ( 47/998) maho-omo-memory commands::facts_status::tests::given_parked_and_backoff_records_when_rendering_the_advisory_then_one_bounded_line_names_both_counts
+        PASS [   0.008s] ( 48/998) maho-omo-memory commands::facts_status::tests::given_only_backoff_records_when_asking_for_the_hint_then_it_reports_the_wait_instead_of_a_remedy
+        PASS [   0.007s] ( 49/998) maho-omo-memory commands::facts_status::tests::given_parked_records_when_asking_for_the_hint_then_it_names_the_retry_command_and_count
+        PASS [   0.008s] ( 50/998) maho-omo-memory commands::init::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.107s] ( 51/998) maho-omo-memory commands::init::tests::given_no_repository_when_invoked_then_the_repo_is_initialized_and_an_instruction_turn_follows_idle
+        PASS [   0.137s] ( 52/998) maho-omo-memory commands::doctor::tests::given_repeated_model_not_found_reflection_failures_when_doctor_runs_then_health_and_remediation_are_reported
+        PASS [   0.143s] ( 53/998) maho-omo-memory commands::doctor::tests::given_parked_facts_batches_when_doctor_runs_then_one_bounded_advisory_line_names_facts_retry
+        PASS [   0.132s] ( 54/998) maho-omo-memory commands::dream::tests::given_valid_and_escaping_to_paths_when_invoked_then_only_the_memory_relative_document_is_accepted
+        PASS [   0.149s] ( 55/998) maho-omo-memory commands::memfs::tests::given_a_declined_confirmation_when_reset_runs_then_nothing_is_destroyed_and_no_backup_is_written
+        PASS [   0.146s] ( 56/998) maho-omo-memory commands::memfs::tests::given_a_noninteractive_session_without_force_when_reset_runs_then_it_refuses_and_preserves_the_repo
+        PASS [   0.147s] ( 57/998) maho-omo-memory commands::memfs::tests::given_a_skill_missing_name_frontmatter_when_repair_runs_then_hooks_are_reinstalled_and_the_skill_is_repaired
+        PASS [   0.146s] ( 58/998) maho-omo-memory commands::memfs::tests::given_an_existing_repository_when_init_runs_then_it_reports_idempotently_without_error
+        PASS [   0.008s] ( 59/998) maho-omo-memory commands::memfs::tests::given_no_repository_when_status_runs_then_an_actionable_error_is_returned
+        PASS [   0.164s] ( 60/998) maho-omo-memory commands::memfs::tests::given_a_clean_repo_when_status_runs_then_head_and_a_clean_tree_are_reported_at_info_level
+        PASS [   0.175s] ( 61/998) maho-omo-memory commands::init::tests::given_an_existing_repository_when_invoked_then_it_refuses_without_overwriting_and_sends_nothing
+        PASS [   0.191s] ( 62/998) maho-omo-memory commands::memfs::tests::given_a_reachable_mirror_when_sync_runs_then_the_push_is_reported_as_successful
+        PASS [   0.106s] ( 63/998) maho-omo-memory commands::memfs::tests::given_an_unbound_session_with_a_config_resolved_identity_when_init_runs_then_it_still_initializes
+        PASS [   0.135s] ( 64/998) maho-omo-memory commands::memfs::tests::given_an_unknown_subcommand_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.242s] ( 65/998) maho-omo-memory commands::memfs::tests::given_a_noninteractive_session_with_force_when_reset_runs_then_the_repo_is_backed_up_and_reset
+        PASS [   0.142s] ( 66/998) maho-omo-memory commands::memfs::tests::given_no_configured_mirror_when_sync_runs_then_an_actionable_error_names_memory_repository
+        PASS [   0.109s] ( 67/998) maho-omo-memory commands::memfs::tests::given_no_repository_when_init_runs_then_the_repository_is_created
+        PASS [   0.008s] ( 68/998) maho-omo-memory commands::memfs_extra::tests::given_no_repository_when_tokens_runs_then_an_actionable_error_is_returned
+        PASS [   0.127s] ( 69/998) maho-omo-memory commands::memfs::tests::given_no_subcommand_when_invoked_then_usage_lists_every_subcommand
+        PASS [   0.135s] ( 70/998) maho-omo-memory commands::memfs_extra::tests::given_a_backup_already_exists_for_the_same_clock_when_backup_runs_again_then_the_existing_backup_is_not_clobbered
+        PASS [   0.139s] ( 71/998) maho-omo-memory commands::memfs_extra::tests::given_a_clean_tree_when_diff_runs_then_no_changes_are_reported_at_info_level
+        PASS [   0.161s] ( 72/998) maho-omo-memory commands::memfs::tests::given_uncommitted_changes_when_status_runs_then_the_dirty_state_is_reported_as_a_warning
+        PASS [   0.143s] ( 73/998) maho-omo-memory commands::memfs_extra::tests::given_a_named_backup_when_restore_runs_then_repo_content_is_replaced_and_a_safety_backup_is_kept
+        PASS [   0.008s] ( 74/998) maho-omo-memory commands::memory::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.007s] ( 75/998) maho-omo-memory commands::memory::tests::given_no_repository_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.136s] ( 76/998) maho-omo-memory commands::memfs_extra::tests::given_a_repository_when_backup_runs_then_a_sibling_memory_backup_dir_holds_a_copy
+        PASS [   0.137s] ( 77/998) maho-omo-memory commands::memfs_extra::tests::given_an_unknown_backup_name_when_restore_runs_then_an_actionable_error_is_returned
+        PASS [   0.245s] ( 78/998) maho-omo-memory commands::memfs::tests::given_interactive_confirmation_when_reset_runs_then_a_backup_is_taken_first_and_the_repo_is_reinitialized
+        PASS [   0.009s] ( 79/998) maho-omo-memory commands::memory_repository::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.133s] ( 80/998) maho-omo-memory commands::memfs_extra::tests::given_backups_and_a_noninteractive_session_when_restore_runs_without_a_name_then_available_backups_are_listed
+        PASS [   0.137s] ( 81/998) maho-omo-memory commands::memfs_extra::tests::given_backups_and_an_interactive_session_when_restore_runs_without_a_name_then_the_user_selects_one
+        PASS [   0.133s] ( 82/998) maho-omo-memory commands::memfs_extra::tests::given_no_backups_when_restore_runs_then_an_actionable_error_is_returned
+        PASS [   0.124s] ( 83/998) maho-omo-memory commands::memfs_extra::tests::given_system_files_when_tokens_runs_then_a_bytes_four_estimate_and_per_file_rows_render
+        PASS [   0.007s] ( 84/998) maho-omo-memory commands::people::tests::given_a_collected_graph_when_resolved_then_the_carrier_passes_through_unchanged
+        PASS [   0.006s] ( 85/998) maho-omo-memory commands::people::tests::given_a_collector_error_when_the_graph_is_resolved_then_the_error_propagates_instead_of_an_empty_roster
+        PASS [   0.006s] ( 86/998) maho-omo-memory commands::people::tests::given_a_disabled_collector_when_the_graph_is_resolved_then_it_defaults_to_an_empty_graph
+        PASS [   0.135s] ( 87/998) maho-omo-memory commands::memfs_extra::tests::given_tracked_modifications_when_diff_runs_then_the_diff_is_returned_as_a_warning
+        PASS [   0.144s] ( 88/998) maho-omo-memory commands::memory_repository::tests::given_a_configured_mirror_when_unset_runs_then_the_config_key_is_removed
+        PASS [   0.186s] ( 89/998) maho-omo-memory commands::memory::tests::given_a_clean_committed_repo_when_invoked_then_the_viewer_lists_head_system_bodies_and_external_names
+        PASS [   0.157s] ( 90/998) maho-omo-memory commands::memory_repository::tests::given_a_configured_mirror_when_status_runs_then_the_redacted_url_and_ahead_count_render
+        PASS [   0.180s] ( 91/998) maho-omo-memory commands::memory::tests::given_a_dirty_working_tree_when_invoked_then_uncommitted_changes_render_in_a_separate_section
+        PASS [   0.131s] ( 92/998) maho-omo-memory commands::memory_repository::tests::given_an_unknown_subcommand_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.170s] ( 93/998) maho-omo-memory commands::memory_repository::tests::given_a_credentialed_url_when_set_runs_then_config_is_written_and_output_is_redacted
+        PASS [   0.132s] ( 94/998) maho-omo-memory commands::memory_repository::tests::given_no_configured_mirror_when_status_runs_then_it_reports_the_unconfigured_state
+        PASS [   0.141s] ( 95/998) maho-omo-memory commands::memory_repository::tests::given_no_configured_mirror_when_push_runs_then_an_actionable_error_is_returned
+        PASS [   0.131s] ( 96/998) maho-omo-memory commands::memory_repository::tests::given_set_without_a_url_when_invoked_then_a_usage_error_is_returned
+        PASS [   0.168s] ( 97/998) maho-omo-memory commands::memory_repository::tests::given_an_unreachable_mirror_when_push_runs_then_the_failure_is_reported_with_a_redacted_detail
+        PASS [   0.179s] ( 98/998) maho-omo-memory commands::people::tests::given_a_person_with_observations_when_people_name_runs_then_card_fields_and_capped_selection_are_surfaced
+        PASS [   0.146s] ( 99/998) maho-omo-memory commands::people::tests::given_a_real_repo_with_a_failing_ls_tree_when_people_runs_then_it_reports_an_error_and_no_roster
+        PASS [   0.008s] (100/998) maho-omo-memory commands::recompile::tests::given_a_bound_identity_when_invoked_then_the_prompt_cache_is_busted_for_the_next_run
+        PASS [   0.147s] (101/998) maho-omo-memory commands::people::tests::given_a_repository_without_any_card_when_the_graph_is_derived_then_it_holds_no_node_and_no_edge
+        PASS [   0.010s] (102/998) maho-omo-memory commands::recompile::tests::given_an_unbound_session_when_invoked_then_nothing_is_busted_and_an_error_is_returned
+        PASS [   0.222s] (103/998) maho-omo-memory commands::people::tests::given_a_fixture_repository_when_people_runs_then_the_roster_is_surfaced_through_one_notification
+        PASS [   0.009s] (104/998) maho-omo-memory commands::reflect::tests::given_a_non_numeric_recent_when_invoked_then_a_usage_error_is_returned_and_no_request_is_made
+        PASS [   0.009s] (105/998) maho-omo-memory commands::reflect::tests::given_an_active_run_when_the_sink_queues_the_request_then_the_pending_disposition_is_reported
+        PASS [   0.009s] (106/998) maho-omo-memory commands::reflect::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.008s] (107/998) maho-omo-memory commands::reflect::tests::given_conversation_with_ids_when_invoked_then_the_ids_are_split_into_the_request
+        PASS [   0.010s] (108/998) maho-omo-memory commands::reflect::tests::given_free_text_focus_when_invoked_then_a_manual_request_is_reserved_and_reported_with_its_run_id
+        PASS [   0.010s] (109/998) maho-omo-memory commands::reflect::tests::given_recent_n_when_invoked_then_the_journal_filter_carries_the_count
+        PASS [   0.010s] (110/998) maho-omo-memory commands::reflect::tests::given_no_reflection_sink_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.179s] (111/998) maho-omo-memory commands::people::tests::given_an_alias_when_the_query_resolves_then_it_hits_the_owning_slug
+        PASS [   0.008s] (112/998) maho-omo-memory commands::reflect::tests::given_reflection_enabled_in_base_but_disabled_by_per_agent_override_when_invoked_then_an_error_is_returned
+        PASS [   0.008s] (113/998) maho-omo-memory commands::reflect::tests::given_reflection_disabled_when_invoked_then_an_error_is_returned_and_no_request_is_submitted
+        PASS [   0.151s] (114/998) maho-omo-memory commands::people::tests::given_more_observations_than_the_per_level_cap_when_selected_then_each_level_keeps_the_newest_twenty
+        PASS [   0.007s] (115/998) maho-omo-memory commands::register::tests::given_a_fresh_extension_api_when_the_suite_registers_then_exactly_the_documented_commands_appear
+        PASS [   0.007s] (116/998) maho-omo-memory commands::register::tests::given_the_registered_suite_when_each_registration_is_inspected_then_every_command_is_dispatchable
+        PASS [   0.182s] (117/998) maho-omo-memory commands::people::tests::given_an_unknown_name_when_the_query_resolves_then_it_misses_with_close_slugs
+        PASS [   0.007s] (118/998) maho-omo-memory commands::remember::tests::given_a_bound_identity_when_invoked_with_text_then_wait_for_idle_precedes_a_remember_turn
+        PASS [   0.186s] (119/998) maho-omo-memory commands::people::tests::given_an_unknown_name_when_people_runs_then_the_miss_preserves_close_slugs_and_errors
+        PASS [   0.007s] (120/998) maho-omo-memory commands::remember::tests::given_an_unbound_session_when_invoked_then_an_actionable_error_is_returned_and_nothing_is_sent
+        PASS [   0.007s] (121/998) maho-omo-memory commands::remember::tests::given_empty_text_when_invoked_then_a_usage_error_is_returned_and_nothing_is_sent
+        PASS [   0.007s] (122/998) maho-omo-memory commands::search::tests::given_a_missing_sessions_directory_when_invoked_then_an_actionable_error_is_returned
+        PASS [   0.007s] (123/998) maho-omo-memory commands::search::tests::given_a_hidden_session_when_queried_with_include_hidden_then_hidden_results_appear
+        PASS [   0.153s] (124/998) maho-omo-memory commands::people::tests::given_people_disabled_when_people_runs_then_it_refuses_without_reading_any_record
+        PASS [   0.009s] (125/998) maho-omo-memory commands::search::tests::given_an_empty_query_when_invoked_then_a_usage_error_is_returned
+        PASS [   0.151s] (126/998) maho-omo-memory commands::people::tests::given_the_all_flag_when_observations_are_selected_then_every_entry_survives
+        PASS [   0.008s] (127/998) maho-omo-memory commands::search::tests::given_no_matching_documents_when_queried_then_a_no_results_message_is_returned
+        PASS [   0.009s] (128/998) maho-omo-memory commands::search::tests::given_sessions_on_disk_when_queried_then_numbered_results_carry_session_date_role_snippet_and_entry
+        PASS [   0.007s] (129/998) maho-omo-memory commands::skill_frontmatter::tests::given_a_name_needing_quoting_when_repaired_then_the_scalar_is_quoted
+        PASS [   0.008s] (130/998) maho-omo-memory commands::skill_frontmatter::tests::given_a_repaired_file_and_a_skipped_file_when_the_report_is_formatted_then_both_sections_render
+        PASS [   0.007s] (131/998) maho-omo-memory commands::skill_frontmatter::tests::given_an_empty_name_value_when_repaired_then_the_line_is_replaced_in_place
+        PASS [   0.006s] (132/998) maho-omo-memory commands::skill_frontmatter::tests::given_an_existing_non_empty_name_when_repaired_then_the_content_is_untouched
+        PASS [   0.007s] (133/998) maho-omo-memory commands::skill_frontmatter::tests::given_frontmatter_without_a_name_key_when_repaired_then_the_directory_name_is_inserted_first
+        PASS [   0.007s] (134/998) maho-omo-memory commands::skill_frontmatter::tests::given_no_skills_directory_when_repaired_then_nothing_is_scanned
+        PASS [   0.008s] (135/998) maho-omo-memory commands::skill_frontmatter::tests::given_no_frontmatter_at_all_when_repaired_then_the_file_is_skipped_with_a_reason
+        PASS [   0.008s] (136/998) maho-omo-memory commands::skill_frontmatter::tests::given_skill_files_in_nested_directories_when_repaired_then_only_name_less_files_change
+        PASS [   0.008s] (137/998) maho-omo-memory commands::sleeptime::tests::given_an_unbound_session_when_invoked_then_the_command_surfaces_a_structured_error_notification
+        PASS [   0.186s] (138/998) maho-omo-memory commands::people::tests::given_card_and_observation_evidence_when_ask_runs_then_the_quick_child_receives_that_evidence
+        PASS [   0.007s] (139/998) maho-omo-memory commands::sleeptime::tests::given_default_settings_when_resolved_and_invoked_then_machine_values_use_defaults_without_override_flags
+        PASS [   0.008s] (140/998) maho-omo-memory commands::sleeptime::tests::given_per_agent_overrides_when_resolved_and_invoked_then_override_values_and_flags_win_field_by_field
+        PASS [   0.008s] (141/998) maho-omo-memory commands::tokens::tests::given_a_file_whose_byte_length_is_not_divisible_by_four_when_estimated_then_the_file_rounds_up
+        PASS [   0.007s] (142/998) maho-omo-memory commands::tokens::tests::given_no_system_directory_when_estimated_then_the_total_is_zero
+        PASS [   0.007s] (143/998) maho-omo-memory context::tests::first_write_ensures_only_runtime_idempotently
+        PASS [   0.007s] (144/998) maho-omo-memory context::tests::reading_context_creates_no_storage
+        PASS [   0.007s] (145/998) maho-omo-memory dream_scoring::tests::rank_ties_by_steps_activity_and_id
+        PASS [   0.009s] (146/998) maho-omo-memory commands::tokens::tests::given_system_files_including_nested_paths_when_estimated_then_tokens_are_bytes_per_four_sorted_by_size
+        PASS [   0.008s] (147/998) maho-omo-memory dream_scoring::tests::fixed_scoring_vector
+        PASS [   0.009s] (148/998) maho-omo-memory dream_scoring::tests::oversized_candidate_skipped
+        PASS [   0.010s] (149/998) maho-omo-memory dream_selector::tests::missing_directory_is_empty
+        PASS [   0.011s] (150/998) maho-omo-memory dream_selector::tests::error_tail_does_not_set_recency
+        PASS [   0.011s] (151/998) maho-omo-memory dream_selector::tests::reasoning_tail_does_not_set_recency
+        PASS [   0.008s] (152/998) maho-omo-memory dream_trigger::tests::absent_active_session_never_launches
+        PASS [   0.008s] (153/998) maho-omo-memory dream_trigger::tests::aborted_shutdown_does_not_start_and_live_shutdown_preserves_budget
+        PASS [   0.010s] (154/998) maho-omo-memory dream_selector::tests::tool_tail_does_not_set_recency
+        PASS [   0.008s] (155/998) maho-omo-memory dream_trigger::tests::idle_wait_does_not_wait_for_armed_timers
+        PASS [   0.009s] (156/998) maho-omo-memory dream_trigger::tests::dropping_shutdown_evaluation_aborts_the_launched_dream_signal
+        PASS [   0.011s] (157/998) maho-omo-memory dream_selector::tests::utf8_volume_and_ranking_deterministic
+        PASS [   0.008s] (158/998) maho-omo-memory dream_trigger_fire::tests::aborted_capture_does_not_reserve
+        PASS [   0.010s] (159/998) maho-omo-memory dream_trigger::tests::manual_preserves_focus_sources_and_target
+        PASS [   0.009s] (160/998) maho-omo-memory dream_trigger::tests::native_registration_uses_source_timer_events_only
+        PASS [   0.007s] (161/998) maho-omo-memory dream_trigger_fire::tests::deadline_boundary_stops_before_capture
+        PASS [   0.007s] (162/998) maho-omo-memory dream_trigger_fire::tests::empty_snapshots_reject_without_reservation
+        PASS [   0.007s] (163/998) maho-omo-memory dream_trigger_gates::tests::durable_state_missing_malformed_and_valid
+        PASS [   0.008s] (164/998) maho-omo-memory dream_trigger_fire::tests::launch_error_warns_without_losing_reservation
+        PASS [   0.008s] (165/998) maho-omo-memory dream_trigger_gates::tests::agent_dream_overrides_preserve_unmodified_base_fields
+        PASS [   0.007s] (166/998) maho-omo-memory dream_trigger_gates::tests::errors_propagate_without_later_probe
+        PASS [   0.007s] (167/998) maho-omo-memory dream_trigger_gates::tests::early_rejections_are_lazy
+        PASS [   0.006s] (168/998) maho-omo-memory dream_trigger_gates::tests::spacing_and_volume_are_strict
+        PASS [   0.011s] (169/998) maho-omo-memory dream_trigger_fire::tests::manual_bypasses_disabled_and_launches_only_active
+        PASS [   0.011s] (170/998) maho-omo-memory dream_trigger_gates::tests::manual_bypasses_all_probes
+        PASS [   0.008s] (171/998) maho-omo-memory engine_session::tests::mutation_error_releases_lock
+        PASS [   0.008s] (172/998) maho-omo-memory facts_batch_apply::tests::contention_exhaustion_stops_after_three_attempts
+        PASS [   0.008s] (173/998) maho-omo-memory engine_session::tests::unsupported_domain_does_not_run_mutation
+        PASS [   0.206s] (174/998) maho-omo-memory commands::people::tests::given_no_evidence_for_the_person_when_ask_runs_then_it_abstains_without_launching_a_child
+        PASS [   0.008s] (175/998) maho-omo-memory facts_batch_apply::tests::contention_retries_with_injected_jitter_before_success
+        PASS [   0.007s] (176/998) maho-omo-memory facts_batch_apply::tests::noncontention_error_never_retries
+        PASS [   0.008s] (177/998) maho-omo-memory facts_batch_apply::tests::people_routing_resolves_agent_then_global_then_defaults
+        PASS [   0.008s] (178/998) maho-omo-memory facts_drain::tests::attempt_errors_propagate
+        PASS [   0.009s] (179/998) maho-omo-memory facts_drain::tests::failure_active_and_skip_stop_drain
+        PASS [   0.008s] (180/998) maho-omo-memory facts_failure_recording::tests::injected_preflight_identifier_keeps_namespace
+        PASS [   0.008s] (181/998) maho-omo-memory facts_drain::tests::successful_batches_continue_and_return_first
+        PASS [   0.010s] (182/998) maho-omo-memory facts_drain::tests::cancellation_prevents_followup_not_first_attempt
+        PASS [   0.010s] (183/998) maho-omo-memory facts_failure_recording::tests::legacy_ledger_target_retains_zero_boundary
+        PASS [   0.007s] (184/998) maho-omo-memory facts_launch_selection::tests::unreadable_is_refused_and_read_once
+        PASS [   0.008s] (185/998) maho-omo-memory facts_oversize::tests::envelope_refuses_launch_and_charges_frontiers
+        PASS [   0.006s] (186/998) maho-omo-memory facts_oversize::tests::newest_frontier_preserves_first_conversation_order
+        PASS [   0.006s] (187/998) maho-omo-memory facts_people_payload::tests::missing_people_and_human_are_empty
+        PASS [   0.007s] (188/998) maho-omo-memory facts_people_payload::tests::valid_cards_sort_and_human_is_separate
+        PASS [   0.010s] (189/998) maho-omo-memory facts_oversize::tests::entry_oversize_records_each_without_global_refusal
+        PASS [   0.006s] (190/998) maho-omo-memory facts_run_cleanup::tests::deletion_does_not_follow_symlink
+        PASS [   0.006s] (191/998) maho-omo-memory facts_run_cleanup::tests::missing_artifacts_do_not_warn
+        PASS [   0.007s] (192/998) maho-omo-memory facts_run_cleanup::tests::removal_errors_warn_and_do_not_rewrite_sentinel
+        PASS [   0.008s] (193/998) maho-omo-memory facts_run_cleanup::tests::terminal_sweep_retains_diagnostics_and_live_payload
+        PASS [   0.006s] (194/998) maho-omo-memory facts_run_prune::tests::abandoned_runs_are_terminal_candidates
+        PASS [   0.006s] (195/998) maho-omo-memory facts_run_prune::tests::apparent_size_does_not_follow_symlink
+        PASS [   0.007s] (196/998) maho-omo-memory facts_run_prune::tests::byte_cap_keeps_newest_prefix
+        PASS [   0.007s] (197/998) maho-omo-memory facts_run_prune::tests::equal_timestamps_use_descending_run_names
+        PASS [   0.012s] (198/998) maho-omo-memory facts_run_prune::tests::busy_finalization_lock_skips_without_waiting
+        PASS [   0.007s] (199/998) maho-omo-memory facts_run_prune::tests::invalid_finished_time_is_retained
+        PASS [   0.006s] (200/998) maho-omo-memory facts_run_prune::tests::leftover_tombstone_sweep_keeps_terminal_run
+        PASS [   0.006s] (201/998) maho-omo-memory facts_run_prune::tests::mismatched_ledger_is_retained
+        PASS [   0.007s] (202/998) maho-omo-memory facts_run_prune::tests::mismatched_sentinel_is_retained
+        PASS [   0.009s] (203/998) maho-omo-memory facts_run_prune::tests::newest_always_survives_and_malformed_live_are_ignored
+        PASS [   0.011s] (204/998) maho-omo-memory facts_run_prune::tests::newest_twenty_survive_and_delete_is_outside_runs_lock
+        PASS [   0.007s] (205/998) maho-omo-memory facts_run_prune::tests::removed_tombstone_is_reported_as_pruned
+        PASS [   0.007s] (206/998) maho-omo-memory facts_run_reconcile::tests::deadline_boundary_and_terminal_skip
+        PASS [   0.007s] (207/998) maho-omo-memory facts_run_reconcile::tests::expired_dead_fails_unknown_abandons_alive_keeps
+        PASS [   0.006s] (208/998) maho-omo-memory facts_run_reconcile::tests::matching_outcome_finalizes_and_error_remains_active
+        PASS [   0.006s] (209/998) maho-omo-memory facts_run_storage::tests::committed_without_sha_degrades_to_failed
+        PASS [   0.006s] (210/998) maho-omo-memory facts_run_storage::tests::final_sentinel_precedes_disposable_cleanup
+        PASS [   0.194s] (211/998) maho-omo-memory commands::people::tests::given_three_cards_with_four_relationship_lines_when_the_graph_is_derived_then_nodes_and_edges_match
+        PASS [   0.007s] (212/998) maho-omo-memory facts_run_storage::tests::reserves_monotonic_names_with_tombstone_high_water
+        PASS [   0.007s] (213/998) maho-omo-memory facts_runner::tests::abandoned_sentinel_replays_without_outcome_or_payload
+        PASS [   0.007s] (214/998) maho-omo-memory facts_runner::tests::empty_queue_does_not_initialize_repository
+        PASS [   0.006s] (215/998) maho-omo-memory facts_runner::tests::native_extractor_adapter_preserves_shared_active_latch_and_cancellation
+        PASS [   0.007s] (216/998) maho-omo-memory facts_runner::tests::launch_latch_spans_drain_and_releases_after_error
+        PASS [   0.010s] (217/998) maho-omo-memory facts_runner::tests::assembled_native_attempt_preserves_empty_and_unavailable_preflight
+        PASS [   0.006s] (218/998) maho-omo-memory facts_terminal_writes::tests::failure_store_precedes_sentinel_and_deletion
+        PASS [   0.006s] (219/998) maho-omo-memory facts_terminal_writes::tests::record_or_sentinel_failure_retains_payload
+        PASS [   0.006s] (220/998) maho-omo-memory facts_terminal_writes::tests::success_consumes_before_clear_and_clear_error_does_not_veto
+        PASS [   0.006s] (221/998) maho-omo-memory facts_wiring::tests::aborted_signal_prevents_enqueue_and_threshold_launch
+        PASS [   0.162s] (222/998) maho-omo-memory commands::register::tests::given_a_bound_identity_with_a_repository_when_the_registered_memory_handler_runs_then_it_dispatches_through_the_shared_seams
+        PASS [   0.010s] (223/998) maho-omo-memory facts_wiring::tests::cancellation_during_threshold_probe_prevents_spawn
+        PASS [   0.010s] (224/998) maho-omo-memory facts_wiring::tests::debounce_counts_settles_even_without_new_entries
+        PASS [   0.010s] (225/998) maho-omo-memory facts_wiring::tests::disabled_never_launches_or_reconciles
+        PASS [   0.010s] (226/998) maho-omo-memory facts_wiring::tests::lowered_threshold_allows_shutdown_launch_once
+        PASS [   0.012s] (227/998) maho-omo-memory facts_wiring::tests::real_journal_delta_enqueues_once_and_consumes
+        PASS [   0.011s] (228/998) maho-omo-memory facts_wiring::tests::reconcile_returns_before_extractor_and_reports_async_failure
+        PASS [   0.014s] (229/998) maho-omo-memory facts_wiring::tests::shutdown_launch_waits_for_extractor_completion
+        PASS [   0.014s] (230/998) maho-omo-memory guard::tests::agents_root_and_ancestors_deny_enumeration
+        PASS [   0.019s] (231/998) maho-omo-memory guard::tests::bash_advisory_once_per_session
+        PASS [   0.014s] (232/998) maho-omo-memory guard::tests::enumeration_ancestors_block_but_reads_allowed
+        PASS [   0.023s] (233/998) maho-omo-memory guard::tests::captured_patch_tool_blocks_foreign_move
+        PASS [   0.012s] (234/998) maho-omo-memory guard::tests::file_paths_and_patch_directives_block
+        PASS [   0.009s] (235/998) maho-omo-memory guard::tests::foreign_read_has_stable_reason
+        PASS [   0.009s] (236/998) maho-omo-memory guard::tests::missing_symlink_descendant_blocked
+        PASS [   0.010s] (237/998) maho-omo-memory guard::tests::own_unbound_unknown_and_no_path_allowed
+        PASS [   0.011s] (238/998) maho-omo-memory guard::tests::own_worktree_edit_is_allowed
+        PASS [   0.010s] (239/998) maho-omo-memory guard::tests::unbound_foreign_read_is_allowed
+        PASS [   0.007s] (240/998) maho-omo-memory identity_runtime::tests::identity_preserves_paths_and_normalizes_slug
+        PASS [   0.012s] (241/998) maho-omo-memory guard::tests::relative_traversal_from_workspace_is_blocked
+        PASS [   0.008s] (242/998) maho-omo-memory identity_runtime::tests::invalid_trigger_settings_fail_before_store_construction
+        PASS [   0.010s] (243/998) maho-omo-memory identity_runtime::tests::native_store_reserves_manual_run_and_adapts_state
+        PASS [   0.197s] (244/998) maho-omo-memory engine_session::tests::first_write_seeds_real_repo_and_preserves_existing_head
+        PASS [   0.010s] (245/998) maho-omo-memory index::tests::disabled_boot_loads_once_without_registering
+        PASS [   0.009s] (246/998) maho-omo-memory index::tests::only_exact_child_sentinels_disable_memory
+        PASS [   0.011s] (247/998) maho-omo-memory journal_wiring::tests::assistant_error_remains_journal_projection
+        PASS [   0.010s] (248/998) maho-omo-memory journal_wiring::tests::block_user_and_split_assistant_text_are_preserved
+        PASS [   0.011s] (249/998) maho-omo-memory journal_wiring::tests::crash_partial_branch_appends_only_missing_rows
+        PASS [   0.009s] (250/998) maho-omo-memory journal_wiring::tests::empty_session_never_creates_journal
+        PASS [   0.009s] (251/998) maho-omo-memory journal_wiring::tests::malformed_entries_and_missing_session_are_noop
+        PASS [   0.008s] (252/998) maho-omo-memory journal_wiring::tests::native_journal_registers_only_start_and_settled
+        PASS [   0.008s] (253/998) maho-omo-memory journal_wiring::tests::projection_joins_tool_result_and_redacts_reasoning
+        PASS [   0.233s] (254/998) maho-omo-memory facts_batch_apply::tests::foreign_dirty_worktree_is_retained
+        PASS [   0.213s] (255/998) maho-omo-memory facts_run_finalize::tests::actual_failure_ledger_recorded_once_across_sentinel_crash_replay
+        PASS [   0.010s] (256/998) maho-omo-memory journal_wiring::tests::real_journal_restart_reconciles_once
+        PASS [   0.008s] (257/998) maho-omo-memory journal_wiring::tests::three_completed_turns_advance_three_steps
+        PASS [   0.009s] (258/998) maho-omo-memory journal_wiring::tests::tool_only_assistant_adds_no_step
+        PASS [   0.008s] (259/998) maho-omo-memory journal_wiring::tests::visible_and_redacted_reasoning_preserve_order
+        PASS [   0.222s] (260/998) maho-omo-memory facts_run_finalize::tests::empty_extraction_consumes_and_publishes_no_facts
+        PASS [   0.007s] (261/998) maho-omo-memory kibitzer_backoff::tests::given_a_deep_streak_when_computed_then_the_cap_is_never_passed
+        PASS [   0.223s] (262/998) maho-omo-memory facts_run_finalize::tests::extraction_replaces_non_utf8_bytes_before_parsing
+        PASS [   0.008s] (263/998) maho-omo-memory kibitzer_backoff::tests::given_a_non_finite_jitter_when_computed_then_it_defaults_to_the_midpoint
+        PASS [   0.008s] (264/998) maho-omo-memory kibitzer_backoff::tests::given_the_first_attempt_when_jitter_is_zero_then_the_floor_is_used
+        PASS [   0.007s] (265/998) maho-omo-memory kibitzer_bounds::tests::given_a_fresh_wake_when_armed_then_the_deadline_is_now_plus_the_quiet_period
+        PASS [   0.007s] (266/998) maho-omo-memory kibitzer_bounds::tests::given_a_long_running_wake_when_a_steer_re_arms_then_the_ceiling_clamps_it
+        PASS [   0.011s] (267/998) maho-omo-memory kibitzer_backoff::tests::given_a_second_attempt_when_computed_then_the_band_doubled
+        PASS [   0.009s] (268/998) maho-omo-memory kibitzer_bounds::tests::given_the_ceiling_when_reached_then_it_is_reported
+        PASS [   0.010s] (269/998) maho-omo-memory kibitzer_delivery::tests::given_a_compaction_when_accepted_then_held_and_pending_are_retracted
+        PASS [   0.008s] (270/998) maho-omo-memory kibitzer_delivery::tests::given_a_coordinator_that_flushes_synchronously_when_accepting_then_no_phantom_key_survives
+        PASS [   0.008s] (271/998) maho-omo-memory kibitzer_delivery::tests::given_a_held_set_when_drained_for_prompt_then_it_is_returned_and_retracted
+        PASS [   0.008s] (272/998) maho-omo-memory kibitzer_delivery::tests::given_a_refusing_coordinator_when_accepting_then_the_nudge_survives_without_a_tracked_key
+        PASS [   0.010s] (273/998) maho-omo-memory kibitzer_delivery::tests::given_a_reentrant_accept_during_drain_when_it_finishes_then_the_new_accept_is_not_lost
+        PASS [   0.010s] (274/998) maho-omo-memory kibitzer_delivery::tests::given_a_reentrant_coordinator_when_accepting_then_it_does_not_deadlock
+        PASS [   0.010s] (275/998) maho-omo-memory kibitzer_delivery::tests::given_a_running_session_with_a_tool_in_flight_when_accepting_then_it_steers_at_once
+        PASS [   0.010s] (276/998) maho-omo-memory kibitzer_delivery::tests::given_a_session_shutdown_when_called_then_held_and_coordinator_are_retracted
+        PASS [   0.011s] (277/998) maho-omo-memory kibitzer_delivery::tests::given_a_tool_call_that_never_reports_when_the_turn_ends_then_it_is_dropped
+        PASS [   0.009s] (278/998) maho-omo-memory kibitzer_delivery::tests::given_an_idle_session_when_accepting_then_it_does_not_steer
+        PASS [   0.008s] (279/998) maho-omo-memory kibitzer_delivery::tests::given_pending_messages_or_idle_when_on_tool_result_runs_then_it_stays_held
+        PASS [   0.194s] (280/998) maho-omo-memory facts_runner::tests::reservation_clock_is_sampled_after_model_resolution
+        PASS [   0.012s] (281/998) maho-omo-memory kibitzer_delivery::tests::given_delivered_paths_when_marked_then_pending_is_rewritten_and_a_nudged_entry_is_appended
+        PASS [   0.007s] (282/998) maho-omo-memory kibitzer_judge_outcome::tests::given_a_bounded_503_when_classified_then_it_is_upstream
+        PASS [   0.009s] (283/998) maho-omo-memory kibitzer_delivery::tests::given_two_accepts_before_a_drain_when_pending_is_read_then_it_holds_the_merged_map
+        PASS [   0.008s] (284/998) maho-omo-memory kibitzer_judge_outcome::tests::given_a_long_reason_when_normalized_then_it_is_capped_with_the_ellipsis
+        PASS [   0.012s] (285/998) maho-omo-memory kibitzer_delivery::tests::given_the_gate_open_when_on_tool_result_runs_then_it_steers
+        PASS [   0.010s] (286/998) maho-omo-memory kibitzer_delivery::tests::given_two_steers_overlapping_when_the_first_is_mid_dispatch_then_only_one_message_is_sent
+        PASS [   0.008s] (287/998) maho-omo-memory kibitzer_judge_outcome::tests::given_an_auth_failure_with_one_separator_when_classified_then_it_is_upstream
+        PASS [   0.009s] (288/998) maho-omo-memory kibitzer_judge_outcome::tests::given_overloaded_when_classified_then_it_is_upstream
+        PASS [   0.012s] (289/998) maho-omo-memory kibitzer_member_tools::tests::admitted_nudge_consumes_exactly_one_charge_through_the_wrapper
+        PASS [   0.013s] (290/998) maho-omo-memory kibitzer_member_tools::tests::query_expansion_off_exposes_only_the_base_memory_keys
+        PASS [   0.014s] (291/998) maho-omo-memory kibitzer_member_tools::tests::exhausted_budget_refuses_memory_without_repository_effect
+        PASS [   0.015s] (292/998) maho-omo-memory kibitzer_member_tools::tests::query_expansion_on_adds_the_bounded_added_term_keys
+        PASS [   0.017s] (293/998) maho-omo-memory kibitzer_member_tools::tests::retained_closure_follows_a_replaced_budget
+        PASS [   0.013s] (294/998) maho-omo-memory kibitzer_notice::tests::given_a_bad_cause_when_rendered_then_nothing_is_drawn
+        PASS [   0.016s] (295/998) maho-omo-memory kibitzer_member_tools::tests::undecodable_invoked_nudge_consumes_exactly_one_charge
+        PASS [   0.008s] (296/998) maho-omo-memory kibitzer_notice::tests::given_a_dropped_or_streakless_gate_record_when_rendered_then_nothing_is_drawn
+        PASS [   0.011s] (297/998) maho-omo-memory kibitzer_notice::tests::given_a_gate_record_when_rendered_then_the_failure_streak_and_fix_are_named
+        PASS [   0.009s] (298/998) maho-omo-memory kibitzer_notice::tests::given_a_nudged_record_when_rendered_then_the_title_is_the_fixed_kibitzer_line
+        PASS [   0.010s] (299/998) maho-omo-memory kibitzer_notice::tests::given_a_malformed_nudged_record_when_rendered_then_nothing_is_drawn
+        PASS [   0.007s] (300/998) maho-omo-memory kibitzer_notice::tests::given_multiple_nudges_when_rendered_then_the_rest_are_extra_lines_with_their_paths
+        PASS [   0.008s] (301/998) maho-omo-memory kibitzer_notice::tests::given_an_unavailable_record_when_rendered_then_the_fix_lists_providers
+        PASS [   0.009s] (302/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_bearer_authorization_hint_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.009s] (303/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_blank_hint_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.008s] (304/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_multiline_hint_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.008s] (305/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_key_shaped_hint_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.009s] (306/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_hint_over_the_character_budget_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.009s] (307/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_duplicate_path_below_the_cap_when_nudged_then_the_base_records_both_without_a_duplicate_policy
+        PASS [   0.008s] (308/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_password_assignment_hint_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.008s] (309/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_path_already_surfaced_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.008s] (310/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_path_outside_the_candidate_set_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.007s] (311/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_system_path_among_the_candidates_when_nudged_then_it_is_rejected_and_nothing_is_recorded
+        PASS [   0.008s] (312/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_secret_bearing_hint_when_nudged_then_the_secret_rule_precedes_the_invalid_hint_rule
+        PASS [   0.008s] (313/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_zero_cap_when_nudged_then_nothing_is_recorded_and_the_rejection_terminates
+        PASS [   0.008s] (314/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_valid_candidate_and_hint_when_nudged_then_it_is_recorded_unchanged_and_reported
+        PASS [   0.009s] (315/998) maho-omo-memory kibitzer_nudge_tool::tests::given_a_rejected_nudge_below_the_cap_when_inspected_then_the_loop_stays_open
+        PASS [   0.007s] (316/998) maho-omo-memory kibitzer_nudge_tool::tests::given_max_items_one_when_the_accepting_nudge_reaches_the_cap_then_the_result_terminates
+        PASS [   0.008s] (317/998) maho-omo-memory kibitzer_nudge_tool::tests::given_max_items_two_when_the_first_nudge_is_accepted_then_the_loop_stays_open
+        PASS [   0.009s] (318/998) maho-omo-memory kibitzer_nudge_tool::tests::given_nudge_params_when_serialized_then_only_path_and_hint_are_emitted
+        PASS [   0.008s] (319/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_first_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands
+        PASS [   0.008s] (320/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_first_factual_hint_when_nudged_then_it_is_accepted_unchanged
+        PASS [   0.008s] (321/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_cap_already_reached_when_a_further_nudge_is_rejected_then_the_rejection_also_terminates
+        PASS [   0.008s] (322/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_budget_already_spent_when_nudged_again_then_it_is_rejected_and_the_accepted_set_is_unchanged
+        PASS [   0.009s] (323/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_first_meta_hint_when_nudged_then_it_is_rejected_and_a_factual_correction_still_uses_the_cap
+        PASS [   0.009s] (324/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_fourth_factual_hint_when_nudged_then_it_is_accepted_unchanged
+        PASS [   0.006s] (325/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_tool_definition_when_inspected_then_the_name_and_required_parameters_are_machine_consumed
+        PASS [   0.009s] (326/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_korean_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands
+        PASS [   0.008s] (327/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_second_meta_hint_when_nudged_then_it_is_rejected_and_a_factual_correction_still_uses_the_cap
+        PASS [   0.009s] (328/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_second_factual_hint_when_nudged_then_it_is_accepted_unchanged
+        PASS [   0.008s] (329/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_third_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands
+        PASS [   0.007s] (330/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_third_factual_hint_when_nudged_then_it_is_accepted_unchanged
+        PASS [   0.009s] (331/998) maho-omo-memory kibitzer_nudge_tool::tests::given_the_second_agent_addressing_hint_when_nudged_then_it_is_rejected_and_one_correction_lands
+        PASS [   0.006s] (332/998) maho-omo-memory kibitzer_prompt_blocks::tests::given_a_newline_run_when_single_lined_then_it_collapses_to_one_space
+        PASS [   0.006s] (333/998) maho-omo-memory kibitzer_prompt_blocks::tests::given_empty_overrides_when_resolved_then_defaults_are_returned
+        PASS [   0.006s] (334/998) maho-omo-memory kibitzer_prompt_blocks::tests::given_partial_overrides_when_resolved_then_only_named_fields_change
+        PASS [   0.008s] (335/998) maho-omo-memory kibitzer_prompt_blocks::tests::given_a_field_over_its_cap_when_capped_then_the_ellipsis_replaces_one_unit
+        PASS [   0.007s] (336/998) maho-omo-memory kibitzer_prompt_blocks::tests::given_cap_one_when_capped_then_a_single_unit_is_returned
+        PASS [   0.008s] (337/998) maho-omo-memory kibitzer_runner::tests::given_a_dispose_error_when_reseeded_then_the_dispose_is_still_attempted
+        PASS [   0.008s] (338/998) maho-omo-memory kibitzer_runner::tests::given_a_cancel_flag_when_run_then_status_is_cancelled
+        PASS [   0.175s] (339/998) maho-omo-memory identity_runtime::tests::the_component_reconcile_leaves_an_in_grace_orphan_untouched
+        PASS [   0.009s] (340/998) maho-omo-memory kibitzer_runner::tests::given_a_failed_settle_when_run_then_status_is_failed
+        PASS [   0.009s] (341/998) maho-omo-memory kibitzer_runner::tests::given_a_first_trigger_failure_when_run_then_the_child_is_disposed_and_unsubscribed
+        PASS [   0.010s] (342/998) maho-omo-memory kibitzer_runner::tests::given_a_disposed_child_when_a_tool_event_arrives_then_the_listener_is_gone
+        PASS [   0.010s] (343/998) maho-omo-memory kibitzer_runner::tests::given_a_live_turn_when_only_non_start_observations_arrive_then_no_charge_until_the_second_start
+        PASS [   0.010s] (344/998) maho-omo-memory kibitzer_runner::tests::given_a_first_wake_when_run_then_settle_is_armed_before_the_trigger
+        PASS [   0.009s] (345/998) maho-omo-memory kibitzer_runner::tests::given_a_reseed_when_the_next_wake_runs_then_the_generation_is_monotonic
+        PASS [   0.010s] (346/998) maho-omo-memory kibitzer_runner::tests::given_the_tool_budget_exceeded_when_a_tool_event_arrives_then_the_child_is_aborted_at_once
+        PASS [   0.013s] (347/998) maho-omo-memory kibitzer_runner::tests::given_a_running_turn_when_steered_then_the_accumulator_is_preserved
+        PASS [   0.007s] (348/998) maho-omo-memory kibitzer_sidecar_connected_order::tests::given_an_empty_availability_list_when_ordered_then_availability_is_unknown
+        PASS [   0.009s] (349/998) maho-omo-memory kibitzer_sidecar_admission::tests::given_a_pending_admit_when_dropped_then_it_aborts_its_probe_and_removes_only_its_own_handle
+        PASS [   0.008s] (350/998) maho-omo-memory kibitzer_sidecar_connected_order::tests::given_a_malformed_availability_container_when_ordered_then_availability_is_unknown
+        PASS [   0.010s] (351/998) maho-omo-memory kibitzer_sidecar_admission::tests::given_a_closing_core_when_admitted_then_no_blocking_worker_starts
+        PASS [   0.010s] (352/998) maho-omo-memory kibitzer_sidecar_connected_order::tests::given_a_connected_pin_when_ordered_then_the_pin_leads_with_its_thinking
+        PASS [   0.011s] (353/998) maho-omo-memory kibitzer_sidecar_admission::tests::given_an_unconsumed_pending_lease_when_dropped_then_the_real_slot_frees_and_the_outcome_is_reported
+        PASS [   0.007s] (354/998) maho-omo-memory kibitzer_sidecar_connected_order::tests::given_connected_and_disconnected_candidates_when_ordered_then_connected_lead_keeps_order_and_thinking
+        PASS [   0.011s] (355/998) maho-omo-memory kibitzer_sidecar_connected_order::tests::given_no_connected_candidate_when_ordered_then_missing_providers_are_pinned_then_builtin_deduped
+        PASS [   0.008s] (356/998) maho-omo-memory kibitzer_sidecar_core::tests::given_a_clone_when_the_shared_unsubscribes_are_drained_then_each_runs_exactly_once
+        PASS [   0.009s] (357/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_a_batch_when_payload_of_then_absent_options_stay_absent_and_present_ones_map_through
+        PASS [   0.007s] (358/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_duplicate_candidate_paths_when_merged_then_first_value_wins_and_order_is_kept
+        PASS [   0.008s] (359/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_duplicate_and_out_of_order_seqs_when_merged_then_last_wins_and_events_sort_by_seq
+        PASS [   0.008s] (360/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_carried_and_fresh_payloads_when_merged_then_the_passed_inputs_are_unchanged_and_outcomes_are_ordered
+        PASS [   0.010s] (361/998) maho-omo-memory kibitzer_sidecar_core::tests::given_a_child_when_cloned_then_every_shared_handle_is_the_same_allocation
+        PASS [   0.010s] (362/998) maho-omo-memory kibitzer_sidecar_core::tests::given_a_clone_when_a_counter_is_written_then_the_other_snapshot_observes_it
+        PASS [   0.377s] (363/998) maho-omo-memory facts_batch_apply::tests::durable_recovery_precedes_commit_and_receipt_makes_replay_idempotent
+        PASS [   0.007s] (364/998) maho-omo-memory kibitzer_sidecar_model::tests::given_registry_snapshot_unavailable_with_a_category_when_classified_then_it_is_not_a_configuration
+        PASS [   0.009s] (365/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_no_parts_when_merged_then_every_field_is_empty_or_absent
+        PASS [   0.009s] (366/998) maho-omo-memory kibitzer_sidecar_model::tests::given_a_category_refusal_with_missing_providers_when_classified_then_the_providers_are_preserved
+        PASS [   0.009s] (367/998) maho-omo-memory kibitzer_sidecar_envelope::tests::given_multiple_digests_and_spans_when_merged_then_first_digest_wins_and_span_widens
+        PASS [   0.009s] (368/998) maho-omo-memory kibitzer_sidecar_model::tests::given_category_unavailable_with_a_category_when_classified_then_it_is_a_structured_configuration
+        PASS [   0.009s] (369/998) maho-omo-memory kibitzer_sidecar_model::tests::given_a_model_refusal_without_a_category_when_classified_then_it_is_not_a_configuration
+        PASS [   0.010s] (370/998) maho-omo-memory kibitzer_sidecar_model::tests::given_beyond_category_when_classified_then_the_cause_is_beyond_category
+        PASS [   0.010s] (371/998) maho-omo-memory kibitzer_sidecar_turn::tests::a_rearmed_deadline_ignores_the_old_callback
+        PASS [   0.008s] (372/998) maho-omo-memory kibitzer_sidecar_turn::tests::an_immediate_callback_is_valid
+        PASS [   0.008s] (373/998) maho-omo-memory kibitzer_sidecar_turn::tests::quiet_deadline_is_clamped_to_the_total_ceiling
+        PASS [   0.008s] (374/998) maho-omo-memory kibitzer_sidecar_turn::tests::clear_invalidates_a_queued_callback
+        PASS [   0.011s] (375/998) maho-omo-memory kibitzer_tools_budget::tests::given_a_zero_budget_when_charged_then_it_refuses_and_never_counts_a_call
+        PASS [   0.010s] (376/998) maho-omo-memory kibitzer_tools_budget::tests::given_the_counter_at_usize_max_when_charged_then_it_refuses_without_overflow
+        PASS [   0.013s] (377/998) maho-omo-memory kibitzer_tools_budget::tests::given_more_contenders_than_the_limit_when_they_race_then_exactly_the_limit_is_admitted
+        PASS [   0.014s] (378/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_binary_file_when_grep_runs_then_it_counts_the_read_bytes_but_yields_no_match
+        PASS [   0.016s] (379/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_backreference_pattern_when_grep_runs_then_it_matches_like_javascript
+        PASS [   0.017s] (380/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_byte_budget_smaller_than_the_tree_when_grep_runs_then_it_stops_at_bytes_after_the_file_it_already_read
+        PASS [   0.019s] (381/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_candidate_enumeration_stop_when_the_scan_also_hits_a_later_limit_then_the_earlier_reason_survives
+        PASS [   0.016s] (382/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_clock_past_the_time_budget_when_grep_runs_then_it_stops_at_time_with_the_matches_found_so_far
+        PASS [   0.017s] (383/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_directory_symlink_when_grep_runs_then_the_walk_never_traverses_it
+        PASS [   0.020s] (384/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_file_over_one_mib_when_grep_runs_then_it_is_skipped_without_contributing_read_bytes
+        PASS [   0.008s] (385/998) maho-omo-memory kibitzer_tools_grep::tests::given_an_already_aborted_turn_when_grep_runs_then_it_stops_at_aborted_without_reading_a_file
+        PASS [   0.015s] (386/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_lookaround_pattern_when_grep_runs_then_it_matches_like_javascript
+        PASS [   0.014s] (387/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_tree_inside_every_budget_when_grep_runs_then_the_result_is_byte_identical_to_the_pre_change_output
+        PASS [   0.338s] (388/998) maho-omo-memory facts_runner::tests::real_extraction_commits_under_writer_lock_and_replays_receipt
+        PASS [   0.014s] (389/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_turn_aborted_mid_scan_when_grep_runs_then_it_stops_at_aborted_and_keeps_the_matches_found_so_far
+        PASS [   0.026s] (390/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_git_listed_file_symlink_when_grep_runs_then_it_is_skipped
+        PASS [   0.238s] (391/998) maho-omo-memory identity_runtime::tests::the_component_reconcile_reclaims_an_orphan_and_preserves_the_reserved_live_run
+        PASS [   0.008s] (392/998) maho-omo-memory kibitzer_tools_grep::tests::given_an_invalid_pattern_when_grep_runs_then_it_rejects_with_invalid_pattern
+        PASS [   0.027s] (393/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_git_workspace_when_a_file_is_gitignored_then_grep_never_reports_a_match_inside_it
+        PASS [   0.025s] (394/998) maho-omo-memory kibitzer_tools_grep::tests::given_a_git_workspace_with_nothing_ignored_when_grep_runs_then_the_result_is_byte_identical_to_the_walk_output
+        PASS [   0.019s] (395/998) maho-omo-memory kibitzer_tools_grep::tests::given_an_astral_character_when_a_dot_matches_then_it_counts_utf16_code_units
+        PASS [   0.014s] (396/998) maho-omo-memory kibitzer_tools_grep::tests::given_an_explicitly_named_gitignored_file_when_grep_runs_then_it_is_scanned_as_given
+        PASS [   0.013s] (397/998) maho-omo-memory kibitzer_tools_grep::tests::given_exactly_the_match_cap_when_grep_runs_then_the_result_is_not_truncated
+        PASS [   0.013s] (398/998) maho-omo-memory kibitzer_tools_grep::tests::given_git_failing_on_the_workspace_when_grep_runs_then_it_falls_back_to_the_plain_walk
+        PASS [   0.014s] (399/998) maho-omo-memory kibitzer_tools_grep::tests::given_more_files_than_the_file_budget_when_grep_runs_then_it_stops_at_files_and_keeps_the_matches_scanned_so_far
+        PASS [   0.013s] (400/998) maho-omo-memory kibitzer_tools_grep::tests::given_more_matching_lines_in_one_file_than_the_cap_when_grep_runs_then_it_reports_matches_at_the_next_line
+        PASS [   0.409s] (401/998) maho-omo-memory facts_run_finalize::tests::invalid_extraction_and_writer_exhaustion_are_durable
+        PASS [   0.015s] (402/998) maho-omo-memory kibitzer_tools_grep::tests::given_more_matches_than_the_match_cap_when_grep_runs_then_it_stops_at_matches
+        PASS [   0.008s] (403/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_a_dot_dot_segment_when_lexically_resolved_then_it_folds_before_realpath
+        PASS [   0.008s] (404/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_a_missing_root_when_resolved_then_it_is_a_rejection_not_a_fallback
+        PASS [   0.008s] (405/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_a_plain_relative_path_when_normalized_then_it_is_accepted
+        PASS [   0.019s] (406/998) maho-omo-memory kibitzer_tools_grep::tests::given_ignore_case_when_grep_runs_then_matching_folds_case
+        PASS [   0.007s] (407/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_a_traversal_memory_path_when_normalized_then_it_is_rejected
+        PASS [   0.007s] (408/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_a_symlink_escaping_the_root_when_resolved_then_it_is_rejected
+        PASS [   0.007s] (409/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_an_absolute_path_inside_the_root_when_resolved_then_it_is_accepted
+        PASS [   0.006s] (410/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_the_system_tree_when_normalized_then_it_is_rejected
+        PASS [   0.007s] (411/998) maho-omo-memory kibitzer_tools_path_safety::tests::given_an_absolute_path_outside_the_root_when_resolved_then_it_is_rejected
+        PASS [   0.008s] (412/998) maho-omo-memory kibitzer_tools_read::tests::a_limit_takes_that_many_lines_from_the_start
+        PASS [   0.008s] (413/998) maho-omo-memory kibitzer_tools_read::tests::a_usize_max_offset_returns_empty_text_without_panicking
+        PASS [   0.010s] (414/998) maho-omo-memory kibitzer_tools_read::tests::a_zero_offset_starts_at_the_first_line
+        PASS [   0.007s] (415/998) maho-omo-memory kibitzer_tools_read::tests::an_offset_past_the_end_returns_empty_text
+        PASS [   0.007s] (416/998) maho-omo-memory kibitzer_tools_read::tests::the_whole_file_is_returned_without_offset_or_limit
+        PASS [   0.008s] (417/998) maho-omo-memory kibitzer_tools_read::tests::offset_two_with_a_usize_max_limit_does_not_overflow_start_plus_limit
+        PASS [   0.009s] (418/998) maho-omo-memory kibitzer_tools_read::tests::an_offset_windows_from_that_one_based_line
+        PASS [   0.009s] (419/998) maho-omo-memory kibitzer_tools_read::tests::offset_and_limit_together_return_that_window
+        PASS [   0.007s] (420/998) maho-omo-memory kibitzer_tools_result::tests::given_a_rejection_when_built_then_it_is_an_error_carrying_code_and_path
+        PASS [   0.008s] (421/998) maho-omo-memory kibitzer_tools_result::tests::given_an_astral_character_when_bounded_then_the_cut_counts_utf16_units
+        PASS [   0.007s] (422/998) maho-omo-memory kibitzer_tools_result::tests::given_text_at_the_cap_when_bounded_then_it_is_unchanged
+        PASS [   0.008s] (423/998) maho-omo-memory kibitzer_tools_result::tests::given_text_over_the_cap_when_bounded_then_it_is_cut_with_the_marker
+        PASS [   0.008s] (424/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_filled_page_when_hidden_rows_precede_the_next_visible_row_then_they_are_still_counted
+        PASS [   0.008s] (425/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_since_cursor_when_listing_then_only_entries_after_the_cursor_are_returned
+        PASS [   0.008s] (426/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_message_with_a_non_string_role_when_listing_then_the_row_omits_role_but_keeps_text
+        PASS [   0.008s] (427/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_tool_call_without_arguments_when_listing_then_its_arguments_render_empty
+        PASS [   0.010s] (428/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_long_entry_with_a_secret_when_listing_then_the_text_is_redacted_before_it_is_capped
+        PASS [   0.007s] (429/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_zero_page_cap_when_listing_then_no_rows_return_and_the_input_cursor_is_preserved
+        PASS [   0.009s] (430/998) maho-omo-memory kibitzer_tools_session_read::tests::given_a_visible_custom_message_when_listing_then_its_top_level_content_is_the_row_text
+        PASS [   0.008s] (431/998) maho-omo-memory kibitzer_tools_session_read::tests::given_exactly_the_page_cap_when_listing_then_the_page_is_not_truncated
+        PASS [   0.010s] (432/998) maho-omo-memory kibitzer_tools_session_read::tests::given_assistant_tool_calls_and_tool_results_when_listing_then_they_are_summarized_as_bounded_text
+        PASS [   0.008s] (433/998) maho-omo-memory kibitzer_tools_session_read::tests::given_hidden_memory_channels_when_listing_then_every_hidden_type_is_omitted_and_counted
+        PASS [   0.008s] (434/998) maho-omo-memory kibitzer_tools_session_read::tests::given_malformed_entries_when_listing_then_they_are_skipped_without_counting_as_hidden
+        PASS [   0.007s] (435/998) maho-omo-memory kibitzer_wake_policy::tests::given_a_cooldown_when_charged_to_the_limit_then_it_is_exhausted_until_the_window_slides
+        PASS [   0.006s] (436/998) maho-omo-memory kibitzer_wake_policy::tests::given_a_fresh_candidate_under_cooldown_when_deciding_then_cooldown_wins
+        PASS [   0.008s] (437/998) maho-omo-memory kibitzer_tools_session_read::tests::given_more_entries_than_the_page_cap_when_listing_then_the_page_is_bounded_and_reports_the_continuation_cursor
+        PASS [   0.007s] (438/998) maho-omo-memory kibitzer_wake_policy::tests::given_fresh_candidates_when_deciding_then_they_return_in_batch_order_deduped
+        PASS [   0.006s] (439/998) maho-omo-memory kibitzer_wake_policy::tests::given_max_items_zero_when_deciding_then_silent
+        PASS [   0.007s] (440/998) maho-omo-memory kibitzer_wake_policy::tests::given_system_paths_when_classified_then_only_the_prefix_matches
+        PASS [   0.007s] (441/998) maho-omo-memory kibitzer_wake_policy::tests::given_no_candidates_when_deciding_then_silent
+        PASS [   0.006s] (442/998) maho-omo-memory kibitzer_wake_policy::tests::given_the_default_constructor_when_charged_twice_then_the_default_band_applies
+        PASS [   0.009s] (443/998) maho-omo-memory kibitzer_wake_policy::tests::given_only_seen_or_system_paths_when_deciding_then_no_new_candidate
+        PASS [   0.008s] (444/998) maho-omo-memory kibitzer_wake_slot::tests::given_a_released_slot_when_acquired_again_then_it_succeeds
+        PASS [   0.009s] (445/998) maho-omo-memory kibitzer_wake_slot::tests::given_a_free_domain_when_acquired_then_a_slot_is_taken_and_released_once
+        PASS [   0.007s] (446/998) maho-omo-memory kibitzer_wake_slot::tests::given_zero_concurrency_when_constructed_then_it_is_rejected
+        PASS [   0.007s] (447/998) maho-omo-memory memory_notice_spec::tests::a_backlogged_timeline_turns_warning_toned
+        PASS [   0.007s] (448/998) maho-omo-memory memory_notice_spec::tests::a_committed_write_renders_the_accent_remembered_row
+        PASS [   0.007s] (449/998) maho-omo-memory memory_notice_spec::tests::a_degraded_notice_keeps_the_title_and_drops_the_stat_lines
+        PASS [   0.006s] (450/998) maho-omo-memory memory_notice_spec::tests::a_delete_says_what_was_let_go
+        PASS [   0.013s] (451/998) maho-omo-memory kibitzer_wake_slot::tests::given_every_slot_held_when_acquired_with_no_wait_then_busy
+        PASS [   0.007s] (452/998) maho-omo-memory memory_notice_spec::tests::a_pure_insertion_reads_as_growth
+        PASS [   0.008s] (453/998) maho-omo-memory memory_notice_spec::tests::a_refused_delete_says_could_not_let_go
+        PASS [   0.007s] (454/998) maho-omo-memory memory_notice_spec::tests::a_rename_says_where_it_moved
+        PASS [   0.008s] (455/998) maho-omo-memory memory_notice_spec::tests::a_refused_write_is_dim_and_keeps_the_raw_message_expanded
+        PASS [   0.006s] (456/998) maho-omo-memory memory_notice_spec::tests::format_bytes_uses_one_decimal_below_ten_k
+        PASS [   0.007s] (457/998) maho-omo-memory memory_notice_spec::tests::entries_today_appends_the_ordinal_to_the_title
+        PASS [   0.006s] (458/998) maho-omo-memory memory_notice_spec::tests::friendly_failure_rewrites_the_known_refusals
+        PASS [   0.007s] (459/998) maho-omo-memory memory_notice_spec::tests::ordinal_handles_the_teens_exception
+        PASS [   0.007s] (460/998) maho-omo-memory memory_notice_spec::tests::parse_numstat_reads_plain_records_and_renames
+        PASS [   0.007s] (461/998) maho-omo-memory memory_notice_spec::tests::parse_numstat_reports_binary_counts_as_zero_and_skips_empty_fields
+        PASS [   0.007s] (462/998) maho-omo-memory memory_notice_spec::tests::short_sha_takes_seven_characters_and_drops_empty
+        PASS [   0.007s] (463/998) maho-omo-memory memory_notice_spec::tests::the_size_line_reads_system_total_and_files
+        PASS [   0.007s] (464/998) maho-omo-memory memory_notice_spec::tests::remembered_title_joins_the_detail
+        PASS [   0.007s] (465/998) maho-omo-memory memory_notice_spec::tests::the_pending_line_names_the_command_target
+        PASS [   0.095s] (466/998) maho-omo-memory kibitzer_tools_memory::tests::given_an_unknown_operation_when_called_then_the_rejection_names_unsupported_operation
+        PASS [   0.140s] (467/998) maho-omo-memory kibitzer_tools_memory::tests::given_a_path_that_is_not_committed_when_read_then_it_is_rejected_as_not_committed
+        PASS [   0.144s] (468/998) maho-omo-memory kibitzer_tools_memory::tests::given_a_committed_memory_with_a_dirty_working_tree_when_read_then_the_head_body_is_returned
+        PASS [   0.006s] (469/998) maho-omo-memory memory_rpc_bridge::tests::no_rpc_does_no_git_and_unbound_is_unavailable
+        PASS [   0.143s] (470/998) maho-omo-memory memory_notice_spec::tests::gather_write_notice_reads_the_committed_affected_files
+        PASS [   0.012s] (471/998) maho-omo-memory memory_rpc_snapshot_state::tests::journal_counts_floor_and_pending_is_or
+        PASS [   0.177s] (472/998) maho-omo-memory memory_rpc_bridge::tests::detached_pull_is_unavailable_without_reading_repository
+        PASS [   0.007s] (473/998) maho-omo-memory model_registry_resolver::tests::complete_native_registry_returned_by_identity
+        PASS [   0.183s] (474/998) maho-omo-memory memory_rpc_bridge::tests::missing_rpc_never_builds_bound_snapshot
+        PASS [   0.009s] (475/998) maho-omo-memory model_registry_resolver::tests::missing_capability_rejected
+        PASS [   0.008s] (476/998) maho-omo-memory nudge_wiring::tests::disabled_nudge_does_not_inspect_repository
+        PASS [   0.007s] (477/998) maho-omo-memory nudge_wiring::tests::hydration_ignores_invalid_and_unrelated_records
+        PASS [   0.007s] (478/998) maho-omo-memory nudge_wiring::tests::handled_input_never_counts_and_removes_pending
+        PASS [   0.006s] (479/998) maho-omo-memory nudge_wiring::tests::malformed_turn_trailers_rejected
+        PASS [   0.007s] (480/998) maho-omo-memory nudge_wiring::tests::only_accepted_interactive_and_rpc_turns_count
+        PASS [   0.007s] (481/998) maho-omo-memory nudge_wiring::tests::unbound_provenance_is_noop
+        PASS [   0.215s] (482/998) maho-omo-memory memory_rpc_bridge::tests::native_registered_status_handler_matches_rpc_wire_snapshot
+        PASS [   0.284s] (483/998) maho-omo-memory kibitzer_tools_memory::tests::given_more_matching_memories_than_the_cap_when_search_runs_then_the_page_is_bounded_and_only_returned_paths_are_recorded
+        PASS [   0.238s] (484/998) maho-omo-memory memory_rpc_bridge::tests::detach_reattach_and_dispose
+        PASS [   0.237s] (485/998) maho-omo-memory memory_rpc_bridge::tests::journal_change_pushes_fresh_snapshot
+        PASS [   0.242s] (486/998) maho-omo-memory memory_rpc_bridge::tests::attach_resets_snapshot_fingerprint
+        PASS [   0.006s] (487/998) maho-omo-memory palace::command::tests::registration_exposes_description_and_handler
+        PASS [   0.243s] (488/998) maho-omo-memory memory_rpc_bridge::tests::dirty_repository_changes_push_fingerprint
+        PASS [   0.007s] (489/998) maho-omo-memory palace::command::tests::unbound_identity_reports_without_generating
+        PASS [   0.234s] (490/998) maho-omo-memory memory_rpc_bridge::tests::native_rpc_push_uses_host_bus_and_dedupes
+        PASS [   0.218s] (491/998) maho-omo-memory memory_rpc_bridge::tests::pull_does_not_consume_next_push
+        PASS [   0.260s] (492/998) maho-omo-memory memory_rpc_bridge::tests::real_snapshot_dedupes_and_pull_does_not_emit
+        PASS [   0.142s] (493/998) maho-omo-memory nudge_wiring::tests::pending_turn_and_committed_save_reset_threshold
+        PASS [   0.210s] (494/998) maho-omo-memory memory_rpc_snapshot_state::tests::real_repo_estimates_committed_system_only_and_cache_by_sha
+        PASS [   0.153s] (495/998) maho-omo-memory palace::collectors::tests::collectors_barrel_exposes_the_established_collector_modules
+        PASS [   0.152s] (496/998) maho-omo-memory palace::entry_collector::tests::committed_core_entries_carry_projection_and_body
+        PASS [   0.165s] (497/998) maho-omo-memory palace::entry_collector::tests::committed_binaries_report_size_only
+        PASS [   0.152s] (498/998) maho-omo-memory palace::entry_collector::tests::dirty_working_tree_labels_uncommitted
+        PASS [   0.219s] (499/998) maho-omo-memory palace::command::tests::darwin_opens_the_generated_file
+        PASS [   0.221s] (500/998) maho-omo-memory palace::command::tests::headless_context_returns_output_path
+        PASS [   0.006s] (501/998) maho-omo-memory palace::history_collector::tests::only_reflection_scoped_subjects_match
+        PASS [   0.218s] (502/998) maho-omo-memory palace::generator::tests::committed_binary_lists_size_only
+        PASS [   0.304s] (503/998) maho-omo-memory palace::command::tests::linux_and_windows_use_platform_openers
+        PASS [   0.305s] (504/998) maho-omo-memory palace::command::tests::remote_session_prints_the_path
+        PASS [   0.202s] (505/998) maho-omo-memory palace::generator::tests::disabled_people_keeps_four_tabs
+        PASS [   0.218s] (506/998) maho-omo-memory palace::generator::tests::default_people_gate_has_matching_panels
+        PASS [   0.007s] (507/998) maho-omo-memory palace::people::tests::git_failure_on_ls_tree_propagates_instead_of_masking_it
+        PASS [   0.217s] (508/998) maho-omo-memory palace::generator::tests::inline_data_pins_persona_head_and_identity
+        PASS [   0.176s] (509/998) maho-omo-memory palace::history_collector::tests::reflection_commits_are_tagged_and_caps_declared
+        PASS [   0.258s] (510/998) maho-omo-memory palace::generator::tests::line_separators_are_escaped
+        PASS [   0.222s] (511/998) maho-omo-memory palace::generator::tests::script_breakout_payload_is_escaped
+        PASS [   0.222s] (512/998) maho-omo-memory palace::generator::tests::viewer_file_is_0600_inside_0700_directory
+        PASS [   0.220s] (513/998) maho-omo-memory palace::generator::tests::viewer_is_self_contained
+        PASS [   0.192s] (514/998) maho-omo-memory palace::people::tests::committed_cards_carry_slug_name_and_kind
+        PASS [   0.007s] (515/998) maho-omo-memory policy_guard::tests::enumeration_of_agents_and_foreign_root_denied
+        PASS [   0.007s] (516/998) maho-omo-memory policy_guard::tests::foreign_and_new_sibling_denied_own_and_outside_allowed
+        PASS [   0.006s] (517/998) maho-omo-memory policy_guard::tests::foreign_read_write_have_stable_reasons
+        PASS [   0.007s] (518/998) maho-omo-memory policy_guard::tests::native_api_registers_live_policy_and_denied_roots
+        PASS [   0.007s] (519/998) maho-omo-memory policy_guard::tests::outside_agents_path_allowed
+        PASS [   0.006s] (520/998) maho-omo-memory policy_guard::tests::own_repo_and_worktree_operations_allowed
+        PASS [   0.166s] (521/998) maho-omo-memory palace::people::tests::disabled_people_produces_no_section
+        PASS [   0.007s] (522/998) maho-omo-memory policy_guard::tests::registration_unbound_and_unsupported
+        PASS [   0.013s] (523/998) maho-omo-memory policy_guard::tests::sibling_created_after_registration_is_denied
+        PASS [   0.012s] (524/998) maho-omo-memory policy_guard::tests::symlinked_missing_identity_roots_match_canonical_targets
+        PASS [   0.007s] (525/998) maho-omo-memory policy_guard::tests::unbound_native_api_registers_no_policy
+        PASS [   0.197s] (526/998) maho-omo-memory palace::people::tests::oversize_entry_surfaces_diagnostic_with_card_path
+        PASS [   0.202s] (527/998) maho-omo-memory palace::people::tests::non_relationship_lines_produce_no_edge
+        PASS [   0.195s] (528/998) maho-omo-memory palace::people::tests::relationship_lines_become_edges
+        PASS [   0.135s] (529/998) maho-omo-memory palace::reflection_collector::tests::only_newest_limit_is_kept
+        PASS [   0.159s] (530/998) maho-omo-memory palace::people::tests::repo_without_people_directory_has_only_human
+        PASS [   0.143s] (531/998) maho-omo-memory palace::reflection_collector::tests::cursor_and_recent_outcomes_are_newest_first
+        PASS [   0.269s] (532/998) maho-omo-memory palace::people::tests::disabled_people_strips_panel_and_tab
+        PASS [   0.194s] (533/998) maho-omo-memory palace::people::tests::uncommitted_card_is_labelled
+        PASS [   0.292s] (534/998) maho-omo-memory palace::people::tests::enabled_people_reaches_inline_payload
+        PASS [   0.152s] (535/998) maho-omo-memory projection_pin::tests::a_commit_this_session_wrote_is_not_announced
+        PASS [   0.006s] (536/998) maho-omo-memory projection_pin::tests::the_notice_line_caps_the_listed_paths
+        PASS [   0.109s] (537/998) maho-omo-memory projection_pin::tests::a_first_turn_pins_at_head_and_records_once
+        PASS [   0.195s] (538/998) maho-omo-memory projection_pin::tests::a_body_only_edit_of_an_external_file_is_not_announced
+        PASS [   0.120s] (539/998) maho-omo-memory projection_pin::tests::a_pinned_revision_that_no_longer_resolves_repins_to_head
+        PASS [   0.146s] (540/998) maho-omo-memory projection_pin::tests::a_compaction_repins_to_head
+        PASS [   0.286s] (541/998) maho-omo-memory palace::people::tests::script_breakout_payload_never_reaches_document
+        PASS [   0.146s] (542/998) maho-omo-memory projection_pin::tests::a_fork_carrying_the_parent_record_pins_fresh
+        PASS [   0.146s] (543/998) maho-omo-memory projection_pin::tests::a_new_session_compiles_the_new_head
+        PASS [   0.115s] (544/998) maho-omo-memory projection_pin::tests::peek_reports_head_unpinned_and_the_pin_once_settled
+        PASS [   0.179s] (545/998) maho-omo-memory projection_pin::tests::a_persisted_pin_reproduces_the_bytes_and_announces_the_change_once
+        PASS [   0.146s] (546/998) maho-omo-memory projection_pin::tests::a_requested_refresh_repins_to_head
+        PASS [   0.097s] (547/998) maho-omo-memory prompt::tests::missing_session_passes_through
+        PASS [   0.119s] (548/998) maho-omo-memory prompt::tests::bound_projection_and_late_metadata
+        PASS [   0.205s] (549/998) maho-omo-memory projection_pin::tests::another_sessions_change_keeps_the_bytes_and_is_announced_once
+        PASS [   0.007s] (550/998) maho-omo-memory prompt::tests::template_is_machine_cache_key
+        PASS [   0.006s] (551/998) maho-omo-memory prompt::tests::unbound_passes_through
+        PASS [   0.119s] (552/998) maho-omo-memory prompt::tests::foreign_prompt_survives
+        PASS [   0.006s] (553/998) maho-omo-memory recall_consumer::tests::given_a_matching_corpus_when_collecting_then_candidates_and_transcript_return
+        PASS [   0.130s] (554/998) maho-omo-memory prompt::tests::existing_block_is_replaced
+        PASS [   0.006s] (555/998) maho-omo-memory recall_consumer::tests::given_a_surfaced_path_when_collecting_then_it_is_not_offered_again
+        PASS [   0.180s] (556/998) maho-omo-memory prompt::tests::a_commit_this_session_wrote_is_not_announced
+        PASS [   0.006s] (557/998) maho-omo-memory recall_consumer::tests::given_delivered_nudges_when_marking_surfaced_then_the_ledger_records_the_gate_hash
+        PASS [   0.005s] (558/998) maho-omo-memory recall_consumer::tests::given_no_nudges_when_building_an_injection_then_none_returns
+        PASS [   0.005s] (559/998) maho-omo-memory recall_consumer::tests::given_no_user_texts_and_no_extra_texts_when_collecting_then_nothing_returns
+        PASS [   0.005s] (560/998) maho-omo-memory recall_consumer::tests::given_nudges_when_building_an_injection_then_blocks_join_and_paths_are_listed
+        PASS [   0.006s] (561/998) maho-omo-memory recall_consumer::tests::given_queued_and_pending_nudges_when_unioned_then_the_queued_copy_wins_and_order_is_kept
+        PASS [   0.006s] (562/998) maho-omo-memory recall_consumer::tests::given_recall_disabled_when_collecting_then_nothing_returns
+        PASS [   0.006s] (563/998) maho-omo-memory recall_drain::tests::given_a_child_sentinel_when_delivered_then_nothing_is_built
+        PASS [   0.206s] (564/998) maho-omo-memory prompt::tests::a_change_after_the_pin_keeps_the_prompt_bytes_and_is_announced_once
+        PASS [   0.007s] (565/998) maho-omo-memory recall_drain::tests::given_no_nudges_when_delivered_then_nothing_is_built
+        PASS [   0.176s] (566/998) maho-omo-memory prompt::tests::a_compaction_repins_the_session_to_head
+        PASS [   0.008s] (567/998) maho-omo-memory recall_drain::tests::given_pending_nudges_when_delivered_then_one_message_is_built_and_the_ledger_is_marked
+        PASS [   0.008s] (568/998) maho-omo-memory recall_drain::tests::given_queued_and_pending_nudges_when_delivered_then_the_queued_copy_wins
+        PASS [   0.008s] (569/998) maho-omo-memory recall_drain::tests::given_recall_disabled_when_delivered_then_nothing_is_built
+        PASS [   0.174s] (570/998) maho-omo-memory prompt::tests::a_new_session_compiles_the_new_head
+        PASS [   0.008s] (571/998) maho-omo-memory recall_notice::tests::given_a_registered_renderer_when_the_entry_renders_then_the_notice_component_is_returned
+        PASS [   0.009s] (572/998) maho-omo-memory recall_notice::tests::given_blank_paths_when_rendered_then_nothing_is_drawn
+        PASS [   0.122s] (573/998) maho-omo-memory prompt::tests::nudge_is_late_metadata
+        PASS [   0.009s] (574/998) maho-omo-memory recall_notice::tests::given_paths_when_rendered_then_the_title_names_them
+        PASS [   0.008s] (575/998) maho-omo-memory recall_planner_tools::tests::given_a_path_key_when_harvested_then_its_file_words_are_used
+        PASS [   0.120s] (576/998) maho-omo-memory prompt::tests::soul_notice_is_late_metadata
+        PASS [   0.008s] (577/998) maho-omo-memory recall_planner_tools::tests::given_a_summary_when_harvested_then_the_value_and_its_path_words_are_used
+        PASS [   0.009s] (578/998) maho-omo-memory recall_planner_tools::tests::given_a_command_when_harvested_then_path_words_precede_the_command_name
+        PASS [   0.008s] (579/998) maho-omo-memory recall_planner_tools::tests::given_a_window_when_pushed_past_the_cap_then_only_the_last_pushes_remain
+        PASS [   0.009s] (580/998) maho-omo-memory recall_planner_tools::tests::given_an_array_key_when_harvested_then_each_item_contributes_words
+        PASS [   0.007s] (581/998) maho-omo-memory recall_session_read::tests::given_entries_when_user_texts_are_read_then_assistant_and_hidden_entries_are_skipped
+        PASS [   0.008s] (582/998) maho-omo-memory recall_session_read::tests::given_array_content_when_text_is_read_then_text_blocks_join_with_newlines
+        PASS [   0.009s] (583/998) maho-omo-memory recall_session_read::tests::given_a_blank_id_when_a_snapshot_is_built_then_none_returns
+        PASS [   0.012s] (584/998) maho-omo-memory recall_planner_tools::tests::given_more_than_the_cap_when_harvested_then_the_result_is_capped
+        PASS [   0.008s] (585/998) maho-omo-memory recall_session_read::tests::given_hidden_and_non_message_entries_when_the_transcript_is_read_then_they_are_excluded
+        PASS [   0.012s] (586/998) maho-omo-memory recall_session_read::tests::given_a_snapshot_when_entries_are_read_then_both_roles_are_kept_oldest_first
+        PASS [   0.013s] (587/998) maho-omo-memory recall_planner_tools::tests::given_secret_like_material_when_harvested_then_it_is_dropped
+        PASS [   0.008s] (588/998) maho-omo-memory recall_session_read::tests::given_more_than_the_window_when_read_then_only_the_newest_window_is_kept
+        PASS [   0.009s] (589/998) maho-omo-memory recall_transcript_mentions::tests::given_a_moved_corpus_when_indexing_then_the_session_cache_is_dropped_and_rebuilt
+        PASS [   0.008s] (590/998) maho-omo-memory recall_transcript_mentions::tests::given_a_path_followed_by_a_word_character_when_scanned_then_it_is_not_a_mention
+        PASS [   0.011s] (591/998) maho-omo-memory recall_transcript_mentions::tests::given_a_mention_when_the_window_is_scanned_then_only_the_mentioned_path_is_excluded
+        PASS [   0.010s] (592/998) maho-omo-memory recall_transcript_mentions::tests::given_a_path_at_the_end_of_an_entry_when_scanned_then_it_is_a_mention
+        PASS [   0.009s] (593/998) maho-omo-memory recall_transcript_mentions::tests::given_a_streaming_newest_entry_when_it_grows_then_the_next_scan_sees_the_new_text
+        PASS [   0.010s] (594/998) maho-omo-memory recall_transcript_mentions::tests::given_a_seam_unsafe_path_when_scanned_then_the_whole_window_fallback_is_used
+        PASS [   0.016s] (595/998) maho-omo-memory recall_transcript_mentions::tests::given_an_incremental_index_when_compared_then_it_matches_the_window_scan
+        PASS [   0.010s] (596/998) maho-omo-memory recall_wiring::tests::given_a_resident_sidecar_when_shutdown_is_requested_then_a_late_offer_is_buffered_disposed_without_spawning
+        PASS [   0.011s] (597/998) maho-omo-memory recall_wiring::tests::given_a_held_nudge_when_shutdown_runs_then_delivery_is_retracted_only_after_the_sidecar_is_disposed
+        PASS [   0.015s] (598/998) maho-omo-memory recall_transcript_mentions::tests::given_more_than_the_session_cap_when_indexing_then_old_sessions_are_evicted
+        PASS [   0.008s] (599/998) maho-omo-memory reflection_settings::tests::absent_settings_use_imported_schema_defaults
+        PASS [   0.014s] (600/998) maho-omo-memory recall_wiring::tests::given_the_context_is_no_longer_resolvable_when_shutdown_fires_then_the_cleanup_still_runs
+        PASS [   0.033s] (601/998) maho-omo-memory recall_wiring::tests::given_a_shut_down_session_when_a_tool_hook_fires_then_no_sidecar_is_resurrected
+        PASS [   0.015s] (602/998) maho-omo-memory reflection_settings::tests::agent_overrides_every_field_preserving_trigger_defaults
+        PASS [   0.033s] (603/998) maho-omo-memory recall_wiring::tests::given_a_small_tool_args_cap_when_the_tool_hook_runs_then_the_wiring_forwards_it_and_the_args_are_truncated
+        PASS [   0.013s] (604/998) maho-omo-memory reflection_settings::tests::agent_recall_override_wins_and_keeps_the_other_event_caps
+        PASS [   0.179s] (605/998) maho-omo-memory prompt::tests::projection_matches_pinned_ts_golden
+        PASS [   0.035s] (606/998) maho-omo-memory recall_wiring::tests::given_a_tool_call_and_result_when_the_tool_hooks_run_then_the_real_args_and_content_reach_the_seed_prompt
+        PASS [   0.039s] (607/998) maho-omo-memory recall_wiring::tests::given_a_branch_snapshot_when_the_prompt_hook_runs_then_the_assistant_event_precedes_the_prompt_event
+        PASS [   0.008s] (608/998) maho-omo-memory reflection_settings::tests::partial_root_recall_block_keeps_every_pinned_default
+        PASS [   0.008s] (609/998) maho-omo-memory reflection_settings::tests::recall_defaults_apply_when_the_schema_carries_no_recall_block
+        PASS [   0.011s] (610/998) maho-omo-memory reflection_settings::tests::partial_root_event_caps_merge_per_cap_before_the_agent_layer
+        PASS [   0.008s] (611/998) maho-omo-memory sandbox::tests::facts_linux_required_fails_auto_warns
+        PASS [   0.008s] (612/998) maho-omo-memory sandbox::tests::facts_spawn_darwin_transforms_only_execution_fields
+        PASS [   0.008s] (613/998) maho-omo-memory reflection_settings::tests::write_notice_defaults_on_and_honours_the_agent_override
+        PASS [   0.008s] (614/998) maho-omo-memory sandbox::tests::facts_spawn_auto_warns_with_original_metadata
+        PASS [   0.009s] (615/998) maho-omo-memory sandbox::tests::reflection_wraps_both_repo_and_common_directory
+        PASS [   0.007s] (616/998) maho-omo-memory sandbox_platform::tests::darwin_grants_only_absent_lock_entries
+        PASS [   0.008s] (617/998) maho-omo-memory sandbox_platform::tests::linux_cannot_grant_absent_lock_entry
+        PASS [   0.007s] (618/998) maho-omo-memory sandbox_platform::tests::off_skips_detection
+        PASS [   0.008s] (619/998) maho-omo-memory sandbox_platform::tests::required_and_auto_missing_or_unsupported
+        PASS [   0.008s] (620/998) maho-omo-memory sandbox_platform::tests::unresolved_inner_degrades_even_required
+        PASS [   0.010s] (621/998) maho-omo-memory sandbox_platform::tests::linux_wraps_command_and_preserves_environment
+        PASS [   0.007s] (622/998) maho-omo-memory session_model_resolver::tests::resolves_provider_and_id_only
+        PASS [   0.008s] (623/998) maho-omo-memory session_model_resolver::tests::malformed_context_or_model_is_absent
+        PASS [   0.007s] (624/998) maho-omo-memory shutdown_drain::tests::budget_is_1500
+        PASS [   0.009s] (625/998) maho-omo-memory session_context_resolver::tests::positive_usage_and_cache_and_nonempty_file
+        PASS [   0.011s] (626/998) maho-omo-memory session_context_resolver::tests::absent_and_malformed_fail_closed
+        PASS [   0.008s] (627/998) maho-omo-memory shutdown_drain::tests::evaluator_receives_reason_session_and_absolute_deadline
+        PASS [   0.008s] (628/998) maho-omo-memory shutdown_drain::tests::expired_deadline_starts_no_work
+        PASS [   0.007s] (629/998) maho-omo-memory shutdown_drain::tests::facts_signal_shares_abort_state_with_shutdown_clone
+        PASS [   0.008s] (630/998) maho-omo-memory shutdown_drain::tests::failed_step_continues
+        PASS [   0.007s] (631/998) maho-omo-memory shutdown_drain::tests::quit_order_and_return_abort
+        PASS [   0.008s] (632/998) maho-omo-memory shutdown_drain::tests::nonquit_runs_only_flush_and_enqueue
+        PASS [   0.007s] (633/998) maho-omo-memory shutdown_drain::tests::reload_skips_registered_evaluators
+        PASS [   0.007s] (634/998) maho-omo-memory shutdown_drain::tests::shared_budget_blocks_next_step_at_boundary
+        PASS [   0.009s] (635/998) maho-omo-memory shutdown_drain::tests::stalled_step_exhausts_exact_budget_without_later_work
+        PASS [   0.007s] (636/998) maho-omo-memory skills_scope::tests::discovery_contributes_only_additional_paths
+        PASS [   0.007s] (637/998) maho-omo-memory skills_scope::tests::discovery_tracks_directory_appearance
+        PASS [   0.007s] (638/998) maho-omo-memory skills_scope::tests::discovery_tracks_directory_removal
+        PASS [   0.007s] (639/998) maho-omo-memory skills_scope::tests::missing_directory_passes_through_without_creation
+        PASS [   0.007s] (640/998) maho-omo-memory skills_scope::tests::registers_native_resources_handler
+        PASS [   0.009s] (641/998) maho-omo-memory skills_scope::tests::absent_or_empty_session_never_resolves_context
+        PASS [   0.008s] (642/998) maho-omo-memory skills_scope::tests::reload_contributes_bound_path
+        PASS [   0.007s] (643/998) maho-omo-memory skills_scope::tests::repeated_discovery_is_stable
+        PASS [   0.007s] (644/998) maho-omo-memory skills_scope::tests::resolves_repo_skills_directory
+        PASS [   0.006s] (645/998) maho-omo-memory skills_scope::tests::unbound_session_passes_through
+        PASS [   0.007s] (646/998) maho-omo-memory skills_scope::tests::resolves_by_event_session
+        PASS [   0.008s] (647/998) maho-omo-memory skills_scope::tests::startup_contributes_bound_path
+        PASS [   0.008s] (648/998) maho-omo-memory skills_scope::tests::unrelated_event_never_resolves_context
+        PASS [   0.156s] (649/998) maho-omo-memory prompt::tests::unchanged_head_uses_cached_block
+        PASS [   0.007s] (650/998) maho-omo-memory skills_usage_ledger::tests::valid_entries_are_parsed
+        PASS [   0.009s] (651/998) maho-omo-memory skills_usage_ledger::tests::aborted_batch_does_not_publish
+        PASS [   0.007s] (652/998) maho-omo-memory skills_usage_ledger::tests::corrupted_ledger_is_empty
+        PASS [   0.008s] (653/998) maho-omo-memory skills_usage_ledger::tests::batch_merges_and_releases_lock
+        PASS [   0.008s] (654/998) maho-omo-memory skills_usage_tracker::tests::cancelled_flush_retains_batch_and_path_escape_is_ignored
+        PASS [   0.011s] (655/998) maho-omo-memory skills_usage_ledger::tests::missing_ledger_is_empty
+        PASS [   0.009s] (656/998) maho-omo-memory skills_usage_tracker::tests::multiple_skills_persist_together
+        PASS [   0.158s] (657/998) maho-omo-memory prompt::tests::volatile_metadata_preserves_system_bytes
+        PASS [   0.009s] (658/998) maho-omo-memory skills_usage_tracker::tests::non_skill_read_does_not_create_ledger
+        PASS [   0.008s] (659/998) maho-omo-memory skills_usage_wiring::tests::aborted_flush_does_not_write
+        PASS [   0.009s] (660/998) maho-omo-memory skills_usage_tracker::tests::single_read_persists_under_ledger_lock
+        PASS [   0.009s] (661/998) maho-omo-memory skills_usage_wiring::tests::read_skill_persists
+        PASS [   0.013s] (662/998) maho-omo-memory skills_usage_tracker::tests::repeated_reads_share_first_deadline_and_accumulate
+        PASS [   0.010s] (663/998) maho-omo-memory skills_usage_wiring::tests::unbound_creates_no_tracker
+        PASS [   0.012s] (664/998) maho-omo-memory skills_usage_wiring::tests::namespaced_read_names_match
+        PASS [   0.009s] (665/998) maho-omo-memory skills_usage_wiring::tests::write_creates_no_tracker
+        PASS [   0.008s] (666/998) maho-omo-memory soul_notice::tests::absent_receipt_has_no_notice
+        PASS [   0.014s] (667/998) maho-omo-memory skills_usage_wiring::tests::non_skill_read_creates_no_tracker
+        PASS [   0.008s] (668/998) maho-omo-memory soul_notice::tests::actual_mcp_receipt_is_consumed_once
+        PASS [   0.010s] (669/998) maho-omo-memory soul_notice::tests::disabled_is_silent
+        PASS [   0.007s] (670/998) maho-omo-memory soul_notice::tests::renderer_registration_uses_entry_type
+        PASS [   0.007s] (671/998) maho-omo-memory soul_notice::tests::nonsoul_is_silent
+        PASS [   0.008s] (672/998) maho-omo-memory soul_notice::tests::nonmemory_tool_leaves_receipt_untouched
+        PASS [   0.009s] (673/998) maho-omo-memory soul_notice::tests::mismatched_receipt_is_consumed_without_notice
+        PASS [   0.007s] (674/998) maho-omo-memory soul_notice::tests::soul_commit_emits_metadata_only_when_enabled
+        PASS [   0.010s] (675/998) maho-omo-memory status::tests::age_boundaries
+        PASS [   0.008s] (676/998) maho-omo-memory status::tests::backlog_without_dirty_has_space
+        PASS [   0.007s] (677/998) maho-omo-memory status::tests::dirty_marker_follows_age_without_space
+        PASS [   0.008s] (678/998) maho-omo-memory status::tests::day_bucket_floors_partial_days
+        PASS [   0.006s] (679/998) maho-omo-memory status::tests::hour_bucket_floors_partial_hours
+        PASS [   0.006s] (680/998) maho-omo-memory status::tests::infinite_timestamp_suppresses_age
+        PASS [   0.006s] (681/998) maho-omo-memory status::tests::minute_bucket_floors_partial_minutes
+        PASS [   0.006s] (682/998) maho-omo-memory status::tests::over_budget_base_drops_every_optional_segment
+        PASS [   0.237s] (683/998) maho-omo-memory prompt::tests::soul_watermark_notice_consumed_once_at_same_head
+        PASS [   0.145s] (684/998) maho-omo-memory recall_wiring::tests::matching_tool_call_after_shutdown_does_not_schedule_an_offer
+        PASS [   0.170s] (685/998) maho-omo-memory recall_wiring::tests::matching_tool_call_offers_without_a_prompt_candidate
+        PASS [   0.006s] (686/998) maho-omo-memory status::tests::segments_drop_right_to_left_with_utf16_width
+        PASS [   0.005s] (687/998) maho-omo-memory status::tests::streak_at_threshold_renders
+        PASS [   0.199s] (688/998) maho-omo-memory status::tests::corrupt_journal_uses_zero_backlog
+        PASS [   0.201s] (689/998) maho-omo-memory status::tests::future_committed_timestamp_suppresses_footer
+        PASS [   0.207s] (690/998) maho-omo-memory status::tests::already_notified_suppresses_advisory
+        PASS [   0.195s] (691/998) maho-omo-memory status::tests::missing_session_does_not_read_other_journal
+        PASS [   0.211s] (692/998) maho-omo-memory status::tests::advisory_disabled_still_renders_footer
+        PASS [   0.195s] (693/998) maho-omo-memory status::tests::negative_journal_backlog_is_zero
+        PASS [   0.008s] (694/998) maho-omo-memory status::tests::zero_backlog_and_short_streak_are_hidden
+        PASS [   0.007s] (695/998) maho-omo-memory status_active_runs::tests::current_preserves_insertion_order
+        PASS [   0.007s] (696/998) maho-omo-memory status_active_runs::tests::clear_for_shutdown
+        PASS [   0.007s] (697/998) maho-omo-memory status_active_runs::tests::current_returns_launch_facts
+        PASS [   0.008s] (698/998) maho-omo-memory status_active_runs::tests::duplicate_launch_replaces_details
+        PASS [   0.007s] (699/998) maho-omo-memory status_active_runs::tests::initially_idle
+        PASS [   0.006s] (700/998) maho-omo-memory status_active_runs::tests::overlapping_runs_remain_active
+        PASS [   0.007s] (701/998) maho-omo-memory status_active_runs::tests::launch_is_active
+        PASS [   0.009s] (702/998) maho-omo-memory status_active_runs::tests::identities_are_independent
+        PASS [   0.008s] (703/998) maho-omo-memory status_active_runs::tests::settle_returns_to_idle
+        PASS [   0.201s] (704/998) maho-omo-memory status::tests::real_dirty_repository_adds_marker
+        PASS [   0.209s] (705/998) maho-omo-memory status::tests::real_committed_age_uses_system_clock
+        PASS [   0.007s] (706/998) maho-omo-memory status_live::tests::animation_cadence_is_320_milliseconds
+        PASS [   0.008s] (707/998) maho-omo-memory status_live::tests::absent_identity_never_animates
+        PASS [   0.009s] (708/998) maho-omo-memory status_active_runs::tests::unknown_settle_stays_idle
+        PASS [   0.009s] (709/998) maho-omo-memory status_active_runs::tests::settled_current_is_absent
+        PASS [   0.224s] (710/998) maho-omo-memory status::tests::footer_disabled_still_checks_advisory
+        PASS [   0.008s] (711/998) maho-omo-memory status_live::tests::active_spinner_is_not_overwritten_by_refresh
+        PASS [   0.008s] (712/998) maho-omo-memory status_live::tests::changed_head_invalidates_cached_footer
+        PASS [   0.010s] (713/998) maho-omo-memory status_live::tests::disposed_footer_ignores_activity_and_refresh
+        PASS [   0.007s] (714/998) maho-omo-memory status_live::tests::stable_probe_skips_and_restore_bypasses_dedupe
+        PASS [   0.009s] (715/998) maho-omo-memory status_live::tests::frames_wrap_and_settle_restores
+        PASS [   0.007s] (716/998) maho-omo-memory status_live::tests::stop_allows_restart_dispose_is_terminal
+        PASS [   0.007s] (717/998) maho-omo-memory status_live::tests::repeated_activation_preserves_current_frame
+        PASS [   0.008s] (718/998) maho-omo-memory status_live::tests::missing_probe_always_refreshes_and_errors_are_silent
+        PASS [   0.009s] (719/998) maho-omo-memory status_live::tests::stop_prevents_future_frame_publication
+        PASS [   0.191s] (720/998) maho-omo-memory status::tests::real_journal_backlog_is_floored
+        PASS [   0.013s] (721/998) maho-omo-memory status_live::tests::probe_failure_emits_no_status
+        PASS [   0.007s] (722/998) maho-omo-memory supervisor::tests::multiple_sessions_acquire_and_release
+        PASS [   0.008s] (723/998) maho-omo-memory tool_receipts::tests::corrupt_and_mismatched_consumed_silently
+        PASS [   0.014s] (724/998) maho-omo-memory status_live::tests::stopped_footer_can_animate_another_identity
+        PASS [   0.009s] (725/998) maho-omo-memory status_live_wiring::tests::unbound_does_not_create_repo_or_status
+        PASS [   0.010s] (726/998) maho-omo-memory tool_receipts::tests::receipt_consumed_once
+        PASS [   0.009s] (727/998) maho-omo-memory tools::tests::definitions_are_sequential_with_schemas
+        PASS [   0.008s] (728/998) maho-omo-memory trigger_wiring::tests::disabled_clears_compaction_without_reserving
+        PASS [   0.009s] (729/998) maho-omo-memory trigger_wiring::tests::aborted_retry_and_missing_outcome_never_evaluate
+        PASS [   0.008s] (730/998) maho-omo-memory trigger_wiring::tests::imported_defaults_and_agent_override_resolve
+        PASS [   0.015s] (731/998) maho-omo-memory tools::tests::unbound_tools_fail_before_storage
+        PASS [   0.009s] (732/998) maho-omo-memory trigger_wiring::tests::manual_preserves_requested_focus_and_conversations
+        PASS [   0.009s] (733/998) maho-omo-memory trigger_wiring::tests::registration_contains_only_the_three_lifecycle_events
+        PASS [   0.008s] (734/998) maho-omo-memory trigger_wiring::tests::successful_settle_consumes_compaction_before_evaluation
+        PASS [   0.007s] (735/998) maho-omo-memory wiring::tests::registered_evaluator_survives_reload_and_runs_on_each_quit
+        PASS [   0.008s] (736/998) maho-omo-memory wiring::tests::registered_dream_triggers_run_shutdown_dream_only_on_quit
+        PASS [   0.015s] (737/998) maho-omo-memory trigger_wiring::tests::real_reservation_launches_only_active_then_collapses_pending
+        PASS [   0.009s] (738/998) maho-omo-memory wiring::tests::bind_reconciles_before_journal_and_facts_then_registers_policy
+        PASS [   0.007s] (739/998) maho-omo-memory wiring_context::tests::absent_context_is_noop
+        PASS [   0.007s] (740/998) maho-omo-memory wiring_context::tests::branch_count_uses_all_entries_not_current_branch
+        PASS [   0.008s] (741/998) maho-omo-memory wiring_context::tests::record_rejects_arrays_null_and_primitives
+        PASS [   0.012s] (742/998) maho-omo-memory wiring::tests::settled_reconciles_journal_before_facts_delta_and_empty_branch_does_not_enqueue
+        PASS [   0.008s] (743/998) maho-omo-memory wiring_memory_write::tests::failed_result_never_triggers_write_refresh
+        PASS [   0.008s] (744/998) maho-omo-memory wiring_memory_write::tests::absent_footer_and_refresh_error_allow_later_retry
+        PASS [   0.007s] (745/998) maho-omo-memory wiring_memory_write::tests::successful_native_and_prefixed_names_match_after_normalization
+        PASS [   0.007s] (746/998) maho-omo-memory wiring_memory_write::tests::shown_footer_latches_once_and_callback_can_read_session
+        PASS [   0.009s] (747/998) maho-omo-memory wiring_runtime::tests::journal_cache_replays_delta_without_duplicate_entries
+        PASS [   0.011s] (748/998) maho-omo-memory wiring_runtime::tests::dream_runtime_captures_real_journal_and_launches_reserved_run
+        PASS [   0.009s] (749/998) maho-omo-memory wiring_runtime::tests::runtime_settings_are_read_only_on_first_identity_access
+        PASS [   0.008s] (750/998) maho-omo-memory wiring_static::tests::native_static_registration_installs_tools_and_lifecycle_handlers
+        PASS [   0.011s] (751/998) maho-omo-memory wiring_runtime::tests::native_facts_factory_reuses_identity_and_reads_live_enablement
+        PASS [   0.009s] (752/998) maho-omo-memory worker::completion_delivery::tests::already_consumed_completion_never_replays
+        PASS [   0.011s] (753/998) maho-omo-memory wiring_runtime::tests::trigger_runtime_launches_winning_reservation_and_reuses_pending_ledger
+        PASS [   0.008s] (754/998) maho-omo-memory worker::completion_delivery::tests::offline_completion_delivers_without_model_message
+        PASS [   0.011s] (755/998) maho-omo-memory worker::completion_delivery::tests::foreign_identity_unconsumed
+        PASS [   0.008s] (756/998) maho-omo-memory worker::completion_delivery::tests::stale_only_completions_consume_without_visible_summary
+        PASS [   0.007s] (757/998) maho-omo-memory worker::completion_delivery::tests::throwing_ui_is_logged_after_consumption
+        PASS [   0.007s] (758/998) maho-omo-memory worker::completion_records::tests::consumed_delivery_preserved
+        PASS [   0.009s] (759/998) maho-omo-memory worker::completion_delivery::tests::stale_records_silent_and_drain_once
+        PASS [   0.010s] (760/998) maho-omo-memory worker::completion_records::tests::corrupt_record_ignored
+        PASS [   0.009s] (761/998) maho-omo-memory worker::completion_records::tests::mismatch_rejected_without_overwrite
+        PASS [   0.007s] (762/998) maho-omo-memory worker::completion_renderers::tests::duration_bounds_and_rounding
+        PASS [   0.008s] (763/998) maho-omo-memory worker::completion_records::tests::offline_record_pending
+        PASS [   0.008s] (764/998) maho-omo-memory worker::completion_renderers::tests::registered_native_renderer_renders_launch_and_expanded_detail
+        PASS [   0.008s] (765/998) maho-omo-memory worker::create_run_worktree::tests::prelaunch_is_durable_before_creation_and_removed_on_failure
+        PASS [   0.007s] (766/998) maho-omo-memory worker::entry_renderers::tests::fields_and_fit_preserve_width_contract
+        PASS [   0.008s] (767/998) maho-omo-memory worker::entry_renderers::tests::notice_sanitizes_before_style_and_gates_detail
+        PASS [   0.247s] (768/998) maho-omo-memory status::tests::real_repo_footer_and_advisory_once
+        PASS [   0.008s] (769/998) maho-omo-memory worker::fixtures::facts_child::tests::project_extraction_uses_payload_date_and_queue_count
+        PASS [   0.008s] (770/998) maho-omo-memory worker::fixtures::tests::complete_failure_removes_launch_and_records_timeout
+        PASS [   0.007s] (771/998) maho-omo-memory worker::fixtures::tests::finished_child_writes_machine_consumed_marker
+        PASS [   0.008s] (772/998) maho-omo-memory worker::fixtures::tests::incomplete_failure_preserves_launch
+        PASS [   0.215s] (773/998) maho-omo-memory status::tests::under_threshold_is_silent
+        PASS [   0.011s] (774/998) maho-omo-memory worker::fixtures::tests::linger_publishes_before_release_without_losing_attempt
+        PASS [   0.009s] (775/998) maho-omo-memory worker::fork_cost::tests::cache_miss_costs_more
+        PASS [   0.008s] (776/998) maho-omo-memory worker::fork_cost::tests::expensive_session_uses_quick
+        PASS [   0.007s] (777/998) maho-omo-memory worker::fork_cost::tests::facts_excludes_fork
+        PASS [   0.007s] (778/998) maho-omo-memory worker::fork_cost::tests::larger_context_costs_more
+        PASS [   0.009s] (779/998) maho-omo-memory worker::fork_cost::tests::facts_are_cheaper
+        PASS [   0.014s] (780/998) maho-omo-memory worker::fixtures::tests::never_publishes_only_records_release
+        PASS [   0.010s] (781/998) maho-omo-memory worker::fork_cost::tests::measured_profile_matches_range
+        PASS [   0.011s] (782/998) maho-omo-memory worker::fork_cost::tests::long_job_uses_quick
+        PASS [   0.007s] (783/998) maho-omo-memory worker::fork_cost::tests::no_session_uses_quick
+        PASS [   0.008s] (784/998) maho-omo-memory worker::fork_cost::tests::per_turn_cache_billing
+        PASS [   0.024s] (785/998) maho-omo-memory worker::facts_child_launch::tests::native_model_chain_prepares_payload_and_records_matching_supervisor_outcome
+        PASS [   0.009s] (786/998) maho-omo-memory worker::fork_cost::tests::short_cheap_session_forks
+        PASS [   0.008s] (787/998) maho-omo-memory worker::fork_cost::tests::unknown_context_uses_quick
+        PASS [   0.007s] (788/998) maho-omo-memory worker::fork_cost::tests::unpriced_session_uses_quick
+        PASS [   0.011s] (789/998) maho-omo-memory worker::health::tests::derivation_leaves_bytes_unchanged
+        PASS [   0.009s] (790/998) maho-omo-memory worker::health::tests::exact_stale_boundary_counts
+        PASS [   0.007s] (791/998) maho-omo-memory worker::health::tests::missing_directory_zeroes_health
+        PASS [   0.009s] (792/998) maho-omo-memory worker::health::tests::malformed_optional_fields_preserve_valid_health_record
+        PASS [   0.008s] (793/998) maho-omo-memory worker::health::tests::newer_success_breaks_streak
+        PASS [   0.011s] (794/998) maho-omo-memory worker::health::tests::fresh_failure_resumes_entire_streak
+        PASS [   0.009s] (795/998) maho-omo-memory worker::health::tests::stale_failures_keep_history_not_streak
+        PASS [   0.008s] (796/998) maho-omo-memory worker::health::tests::unordered_and_corrupt_records_derive_streak
+        PASS [   0.013s] (797/998) maho-omo-memory worker::health::tests::no_writes_even_for_alert_threshold
+        PASS [   0.009s] (798/998) maho-omo-memory worker::health_alert::tests::already_claimed_fingerprint_does_not_append
+        PASS [   0.008s] (799/998) maho-omo-memory worker::health_alert::tests::missing_ui_does_not_read_or_emit
+        PASS [   0.009s] (800/998) maho-omo-memory worker::health_alert::tests::below_three_failures_does_not_claim_alert
+        PASS [   0.011s] (801/998) maho-omo-memory worker::health_alert::tests::alert_reads_default_hundred_record_history_not_footer_limit
+        PASS [   0.010s] (802/998) maho-omo-memory worker::health_alert::tests::stable_streak_once_per_session_and_entry_metadata
+        PASS [   0.012s] (803/998) maho-omo-memory worker::health_alert::tests::native_health_renderer_registers_and_renders_details
+        PASS [   0.011s] (804/998) maho-omo-memory worker::health_alert::tests::stale_failure_streak_does_not_alert
+        PASS [   0.008s] (805/998) maho-omo-memory worker::health_alert::tests::threshold_unstable_and_stale_suppressed
+        PASS [   0.015s] (806/998) maho-omo-memory worker::health_alert::tests::distinct_failures_do_not_claim_alert
+        PASS [   0.009s] (807/998) maho-omo-memory worker::memory_launch_preflight::tests::discovery_flags_filter_before_attempt_and_do_not_mutate_parent_env
+        PASS [   0.009s] (808/998) maho-omo-memory worker::memory_launch_preflight::tests::no_visible_model_never_launches_attempt
+        PASS [   0.009s] (809/998) maho-omo-memory worker::memory_launch_preflight::tests::unavailable_catalog_warns_and_preserves_reactive_chain
+        PASS [   0.007s] (810/998) maho-omo-memory worker::memory_model_attempts::tests::generic_failure_not_retried
+        PASS [   0.009s] (811/998) maho-omo-memory worker::memory_model_attempts::tests::exhausted_chain_preserves_causes
+        PASS [   0.007s] (812/998) maho-omo-memory worker::memory_model_attempts::tests::launch_error_propagates_without_retry_or_fake_child
+        PASS [   0.008s] (813/998) maho-omo-memory worker::memory_model_attempts::tests::timeout_not_retried
+        PASS [   0.010s] (814/998) maho-omo-memory worker::memory_model_attempts::tests::missing_auth_retries_fallback
+        PASS [   0.010s] (815/998) maho-omo-memory worker::memory_model_attempts::tests::missing_model_retries_fallback
+        PASS [   0.009s] (816/998) maho-omo-memory worker::memory_run_supervisor::tests::entry_requires_directory_before_spawning_or_acquiring_gate
+        PASS [   0.012s] (817/998) maho-omo-memory worker::memory_run_supervisor::tests::release_handshake_records_identity_and_publishes_child_status
+        PASS [   0.013s] (818/998) maho-omo-memory worker::memory_run_supervisor::tests::absent_bootstrap_status_uses_wrapper_exit
+        PASS [   0.013s] (819/998) maho-omo-memory worker::memory_run_supervisor::tests::terminal_gate_failure_keeps_launch_and_does_not_publish
+        PASS [   0.011s] (820/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::cleanup_forces_all_connected_sockets_after_one_shared_deadline
+        PASS [   0.010s] (821/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::exact_socket_close_signal_releases_every_resource
+        PASS [   0.013s] (822/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::child_exit_timeout_does_not_release_a_still_connected_socket
+        PASS [   0.011s] (823/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::cleanup_settles_unconnected_server_without_waiting_for_child_timeout
+        PASS [   0.008s] (824/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::forced_cleanup_reports_connected_socket_and_settles_exit_signal
+        PASS [   0.017s] (825/998) maho-omo-memory worker::memory_run_supervisor_ic8_exit_resources::tests::bounded_signal_timeout_removes_tracked_deadline
+        PASS [   0.009s] (826/998) maho-omo-memory worker::memory_run_supervisor_ic8_process_groups::tests::invalid_pid_never_reaches_runtime
+        PASS [   0.008s] (827/998) maho-omo-memory worker::model_cost::tests::cached_prefix_wins
+        PASS [   0.007s] (828/998) maho-omo-memory worker::model_cost::tests::cheaper_session_without_cache
+        PASS [   0.010s] (829/998) maho-omo-memory worker::memory_run_supervisor_ic8_process_groups::tests::windows_failure_retains_signal_detail
+        PASS [   0.008s] (830/998) maho-omo-memory worker::model_cost::tests::missing_price_is_deterministic
+        PASS [   0.010s] (831/998) maho-omo-memory worker::model_cost::tests::cheaper_fresh_without_cache
+        PASS [   0.009s] (832/998) maho-omo-memory worker::model_cost::tests::missing_candidates_error
+        PASS [   0.014s] (833/998) maho-omo-memory worker::memory_run_supervisor_ic8_harness::tests::run_manifest_carries_exact_clock_deadline_and_exit_port
+        PASS [   0.013s] (834/998) maho-omo-memory worker::memory_run_supervisor_ic8_process_groups::tests::permission_denied_is_live_but_missing_is_dead
+        PASS [   0.009s] (835/998) maho-omo-memory worker::model_cost::tests::session_only_inherits
+        PASS [   0.009s] (836/998) maho-omo-memory worker::model_miss::tests::model_not_visible
+        PASS [   0.010s] (837/998) maho-omo-memory worker::model_miss::tests::auth_missing
+        PASS [   0.011s] (838/998) maho-omo-memory worker::model_cost::tests::uncached_prefix_loses
+        PASS [   0.011s] (839/998) maho-omo-memory worker::model_preflight::tests::cache_hit_avoids_second_child
+        PASS [   0.013s] (840/998) maho-omo-memory worker::model_miss::tests::timeout_and_success_not_retryable
+        PASS [   0.015s] (841/998) maho-omo-memory worker::model_preflight::tests::cached_negative_retains_reactive_chain
+        PASS [   0.015s] (842/998) maho-omo-memory worker::model_preflight::tests::changed_config_sources_invalidate_cache
+        PASS [   0.015s] (843/998) maho-omo-memory worker::model_preflight::tests::failed_probe_retains_stdout_when_stderr_is_empty
+        PASS [   0.008s] (844/998) maho-omo-memory worker::model_preflight::tests::malformed_table_provider_is_rejected
+        PASS [   0.013s] (845/998) maho-omo-memory worker::model_preflight::tests::headerless_nested_ids_remain_visible
+        PASS [   0.010s] (846/998) maho-omo-memory worker::model_preflight::tests::malformed_and_duplicates
+        PASS [   0.015s] (847/998) maho-omo-memory worker::model_preflight::tests::nonzero_catalog_exit_degrades
+        PASS [   0.007s] (848/998) maho-omo-memory worker::registry_fallback::tests::malformed_registry_empty
+        PASS [   0.013s] (849/998) maho-omo-memory worker::model_preflight::tests::probe_failure_keeps_candidates
+        PASS [   0.013s] (850/998) maho-omo-memory worker::model_preflight::tests::real_catalog_filters_candidates
+        PASS [   0.013s] (851/998) maho-omo-memory worker::model_preflight::tests::table_preserves_nested_model_ids
+        PASS [   0.009s] (852/998) maho-omo-memory worker::registry_fallback::tests::non_chat_excluded
+        PASS [   0.014s] (853/998) maho-omo-memory worker::registry_fallback::tests::cheapest_three_win
+        PASS [   0.008s] (854/998) maho-omo-memory worker::remediation::tests::category_failure_precedes_generic_spawn_detail
+        PASS [   0.009s] (855/998) maho-omo-memory worker::registry_fallback::tests::tiny_context_excluded
+        PASS [   0.017s] (856/998) maho-omo-memory worker::registry_fallback::tests::larger_context_breaks_price_tie
+        PASS [   0.010s] (857/998) maho-omo-memory worker::registry_fallback::tests::priced_then_fast_unpriced
+        PASS [   0.008s] (858/998) maho-omo-memory worker::remediation::tests::generic_failure_uses_default_and_auth_stays_distinct
+        PASS [   0.009s] (859/998) maho-omo-memory worker::remediation::tests::existing_model_miss_variants_select_same_remediation
+        PASS [   0.016s] (860/998) maho-omo-memory worker::registry_fallback::tests::only_numeric_cost_fields_survive
+        PASS [   0.008s] (861/998) maho-omo-memory worker::reservation_run_ledger::tests::dream_requires_matching_trigger_origin_and_target
+        PASS [   0.012s] (862/998) maho-omo-memory worker::remediation::tests::quoted_child_model_miss_matches_taxonomy
+        PASS [   0.010s] (863/998) maho-omo-memory worker::remediation::tests::spawn_and_missing_executable_select_same_remediation
+        PASS [   0.012s] (864/998) maho-omo-memory worker::reservation_run_ledger::tests::invalid_fields_rejected
+        PASS [   0.012s] (865/998) maho-omo-memory worker::reservation_run_ledger::tests::preserves_unknown_fields_null_and_large_js_integer_pid
+        PASS [   0.009s] (866/998) maho-omo-memory worker::resolve_model::tests::cheaper_session_wins_without_cache_reuse
+        PASS [   0.008s] (867/998) maho-omo-memory worker::resolve_model::tests::empty_registry_inherits_live_session
+        PASS [   0.009s] (868/998) maho-omo-memory worker::resolve_model::tests::disabled_category_never_inherits
+        PASS [   0.010s] (869/998) maho-omo-memory worker::resolve_model::tests::empty_registry_reports_attempted_chain
+        PASS [   0.010s] (870/998) maho-omo-memory worker::resolve_model::tests::expensive_session_does_not_override_registry
+        PASS [   0.007s] (871/998) maho-omo-memory worker::resolve_model::tests::no_registry_or_session_fails_closed
+        PASS [   0.023s] (872/998) maho-omo-memory worker::resolve_model::tests::canonical_stale_chain_preserves_fallbacks
+        PASS [   0.023s] (873/998) maho-omo-memory worker::resolve_model::tests::category_preserves_model_and_thinking
+        PASS [   0.011s] (874/998) maho-omo-memory worker::resolve_model::tests::no_registry_uses_session
+        PASS [   0.008s] (875/998) maho-omo-memory worker::resolve_model::tests::registry_ladder_chooses_cheapest_chat
+        PASS [   0.016s] (876/998) maho-omo-memory worker::resolve_model::tests::missing_pinned_model_fails_closed
+        PASS [   0.009s] (877/998) maho-omo-memory worker::resolve_model::tests::thinking_values_are_normalized
+        PASS [   0.007s] (878/998) maho-omo-memory worker::resolve_model::tests::warning_override_precedence
+        PASS [   0.007s] (879/998) maho-omo-memory worker::run_artifacts::tests::prelaunch_rejects_corruption
+        PASS [   0.007s] (880/998) maho-omo-memory worker::run_artifacts::tests::durable_json_round_trip_and_update
+        PASS [   0.025s] (881/998) maho-omo-memory worker::resolve_model::tests::legacy_stale_chain_preserves_fallbacks
+        PASS [   0.007s] (882/998) maho-omo-memory worker::run_artifacts::tests::tail_is_bounded_and_missing_is_empty
+        PASS [   0.015s] (883/998) maho-omo-memory worker::resolve_model::tests::unavailable_pin_can_use_registry_ladder
+        PASS [   0.008s] (884/998) maho-omo-memory worker::run_finalization::tests::terminal_sentinel_returns_without_reservation_or_git_work
+        PASS [   0.022s] (885/998) maho-omo-memory worker::resolve_model::tests::stale_pinned_catalog_wins
+        PASS [   0.010s] (886/998) maho-omo-memory worker::run_finalization_claim::tests::abandoned_terminal_and_admin_tamper_are_retained
+        PASS [   0.010s] (887/998) maho-omo-memory worker::run_finalization_claim::tests::invalid_terminal_rejects_without_operation
+        PASS [   0.007s] (888/998) maho-omo-memory worker::run_finalization_settlement::tests::missing_completion_identity_never_publishes_terminal
+        PASS [   0.008s] (889/998) maho-omo-memory worker::run_finalization_settlement::tests::settled_completion_and_terminal_are_idempotent
+        PASS [   0.006s] (890/998) maho-omo-memory worker::run_liveness::tests::absent_and_legacy_never_probe
+        PASS [   0.005s] (891/998) maho-omo-memory worker::run_liveness::tests::dead_and_unknown_do_not_read_identity
+        PASS [   0.011s] (892/998) maho-omo-memory worker::run_liveness::tests::current_process_matches_real_start_identity
+        PASS [   0.006s] (893/998) maho-omo-memory worker::run_liveness::tests::deadline_wait_uses_exact_remaining_budget
+        PASS [   0.006s] (894/998) maho-omo-memory worker::run_liveness::tests::matching_recycled_and_unverifiable_processes
+        PASS [   0.040s] (895/998) maho-omo-memory worker::run_finalization_claim::tests::concurrent_finalizer_observes_terminal_without_reexecution
+        PASS [   0.007s] (896/998) maho-omo-memory worker::run_outcome_publication::tests::competing_abandon_claim_never_enters_gate
+        PASS [   0.008s] (897/998) maho-omo-memory worker::run_outcome_publication::tests::non_utf8_child_logs_do_not_prevent_durable_outcome
+        PASS [   0.009s] (898/998) maho-omo-memory worker::run_outcome_publication::tests::publication_marks_intent_before_gate_and_keeps_success_claim
+        PASS [   0.010s] (899/998) maho-omo-memory worker::run_outcome_publication::tests::retry_advances_ledger_and_removes_old_process_and_thinking_fields
+        PASS [   0.008s] (900/998) maho-omo-memory worker::run_outcome_publication::tests::terminal_winner_prevents_outcome_publication
+        PASS [   0.008s] (901/998) maho-omo-memory worker::run_reconciliation::tests::a_held_scheduler_lock_fails_a_non_deferred_pass
+        PASS [   0.007s] (902/998) maho-omo-memory worker::run_reconciliation::tests::dead_supervisor_live_child_receives_ordered_deadlines_and_signals
+        PASS [   0.007s] (903/998) maho-omo-memory worker::run_reconciliation::tests::unknown_supervisor_waits_then_abandons_without_signaling
+        PASS [   0.306s] (904/998) maho-omo-memory status_live_wiring::tests::real_repo_refresh_settle_and_dirty_fingerprint
+        PASS [   0.185s] (905/998) maho-omo-memory worker::reflection_spawn_input::tests::dream_uses_identity_sources_and_agent_policy_overrides
+        PASS [   0.094s] (906/998) maho-omo-memory worker::run_reconciliation_sweep::tests::a_failing_sweep_reports_a_warning_without_failing_the_pass
+        PASS [   0.351s] (907/998) maho-omo-memory wiring_reflection_live::tests::native_launch_completion_and_shutdown_publish_rpc_and_restore_footer
+        PASS [   0.382s] (908/998) maho-omo-memory tools::tests::real_create_and_patch_commit_clean_repo
+        PASS [   0.010s] (909/998) maho-omo-memory worker::run_sentinel::tests::abort_resolves_pending_wait_without_deadline_delay
+        PASS [   0.186s] (910/998) maho-omo-memory worker::run_finalization_git::tests::changed_run_id_rejects_without_cleanup
+        PASS [   0.007s] (911/998) maho-omo-memory worker::run_sentinel::tests::directory_event_observes_atomic_publication
+        PASS [   0.006s] (912/998) maho-omo-memory worker::run_sentinel::tests::missing_directory_reaches_deadline
+        PASS [   0.006s] (913/998) maho-omo-memory worker::run_temporaries::tests::a_fresh_temporary_is_preserved_and_a_missing_directory_is_an_empty_sweep
+        PASS [   0.006s] (914/998) maho-omo-memory worker::run_temporaries::tests::a_live_or_unknown_owner_preserves_an_aged_temporary
+        PASS [   0.007s] (915/998) maho-omo-memory worker::run_sentinel::tests::stale_attempt_does_not_complete_before_current_publication
+        PASS [   0.151s] (916/998) maho-omo-memory worker::run_reconciliation::tests::a_held_scheduler_lock_defers_the_bind_time_pass_without_sweeping
+        PASS [   0.006s] (917/998) maho-omo-memory worker::run_temporaries::tests::the_predicate_rejects_uppercase_and_non_uuid_shapes
+        PASS [   0.006s] (918/998) maho-omo-memory worker::run_temporaries::tests::an_aged_temporary_is_removed_and_only_matching_shapes_are_touched
+        PASS [   0.006s] (919/998) maho-omo-memory worker::run_terminal_claim::tests::concurrent_claims_observe_one_complete_winner
+        PASS [   0.007s] (920/998) maho-omo-memory worker::run_terminal_claim::tests::dead_publisher_recovery_race_keeps_one_replacement
+        PASS [   0.006s] (921/998) maho-omo-memory worker::run_terminal_claim::tests::invalid_claim_is_not_authorized
+        PASS [   0.007s] (922/998) maho-omo-memory worker::run_terminal_claim::tests::first_claim_wins_and_no_candidates_remain
+        PASS [   0.007s] (923/998) maho-omo-memory worker::run_terminal_claim::tests::empty_crash_claim_recovers_under_injected_gate
+        PASS [   0.162s] (924/998) maho-omo-memory worker::run_reconciliation::tests::a_missing_runs_directory_still_ends_the_pass_with_the_orphan_sweep
+        PASS [   0.006s] (925/998) maho-omo-memory worker::run_terminal_claim::tests::live_publish_claim_keeps_ownership_against_abandonment
+        PASS [   0.005s] (926/998) maho-omo-memory worker::run_terminal_gate::tests::lock_error_prevents_operation
+        PASS [   0.006s] (927/998) maho-omo-memory worker::run_terminal_gate::tests::gate_supplies_source_path_purpose_and_run_identity
+        PASS [   0.007s] (928/998) maho-omo-memory worker::run_terminal_claim::tests::malformed_recovery_race_keeps_one_replacement
+        PASS [   0.007s] (929/998) maho-omo-memory worker::run_terminal_precedence::tests::alive_run_vetoes_and_mismatched_identity_fails
+        PASS [   0.007s] (930/998) maho-omo-memory worker::run_terminal_precedence::tests::matching_outcome_finalizes_before_liveness
+        PASS [   0.006s] (931/998) maho-omo-memory worker::run_terminal_precedence::tests::publication_during_probe_vetoes_abandonment
+        PASS [   0.007s] (932/998) maho-omo-memory worker::run_terminal_precedence::tests::existing_publish_claim_vetoes
+        PASS [   0.008s] (933/998) maho-omo-memory worker::run_terminal_precedence::tests::unknown_liveness_without_publication_abandons
+        PASS [   0.219s] (934/998) maho-omo-memory worker::run_finalization_git::tests::child_failure_records_stderr_and_cleans_worktree
+        PASS [   0.007s] (935/998) maho-omo-memory worker::runner::tests::launch_entry_sums_only_available_transcript_backlog
+        PASS [   0.007s] (936/998) maho-omo-memory worker::runner::tests::launch_route_uses_registry_pricing_and_measured_workload
+        PASS [   0.007s] (937/998) maho-omo-memory worker::runner::tests::merged_metadata_defaults_only_when_ledger_is_valid
+        PASS [   0.009s] (938/998) maho-omo-memory worker::runner::tests::completion_samples_clock_after_execution
+        PASS [   0.008s] (939/998) maho-omo-memory worker::runner::tests::unavailable_category_settles_without_launching_child
+        PASS [   0.008s] (940/998) maho-omo-memory worker::runner::tests::native_unavailable_category_does_not_initialize_engine_or_preflight
+        PASS [   0.007s] (941/998) maho-omo-memory worker::runner_finalization_result::tests::busy_is_rejected
+        PASS [   0.008s] (942/998) maho-omo-memory worker::runner_completion_publication::tests::unavailable_category_suppresses_notification_and_completion_callback
+        PASS [   0.010s] (943/998) maho-omo-memory worker::runner_completion_publication::tests::resolved_execution_model_does_not_inherit_stale_thinking
+        PASS [   0.007s] (944/998) maho-omo-memory worker::runner_finalization_result::tests::missing_completion_and_abandonment_are_rejected
+        PASS [   0.010s] (945/998) maho-omo-memory worker::runner_finalization_result::tests::completed_result_preserves_completion_and_details
+        PASS [   0.007s] (946/998) maho-omo-memory worker::senpi_command::tests::current_absolute_entry_is_fallback
+        PASS [   0.009s] (947/998) maho-omo-memory worker::senpi_command::tests::installed_cli_retains_interpreter
+        PASS [   0.007s] (948/998) maho-omo-memory worker::senpi_command::tests::missing_executable_never_launches_bare_interpreter
+        PASS [   0.008s] (949/998) maho-omo-memory worker::senpi_command::tests::restricted_path_launches_real_script
+        PASS [   0.007s] (950/998) maho-omo-memory worker::senpi_command::tests::windows_npm_shim_resolves_adjacent_cli
+        PASS [   0.007s] (951/998) maho-omo-memory worker::spawn_payload::tests::dream_target_and_run_id_boundaries
+        PASS [   0.154s] (952/998) maho-omo-memory worker::run_reconciliation_sweep::tests::a_reserved_run_id_protects_its_worktree
+        PASS [   0.264s] (953/998) maho-omo-memory worker::run_finalization_git::tests::unchanged_tip_is_checkpointed_before_cleanup
+        PASS [   0.006s] (954/998) maho-omo-memory worker::spawn_payload::tests::retry_rewrites_readonly_payload
+        PASS [   0.006s] (955/998) maho-omo-memory worker::spawn_payload::tests::shared_serializer_and_launch_flags
+        PASS [   0.009s] (956/998) maho-omo-memory worker::spawn_supervisor::tests::actual_supervisor_publishes_matching_outcome_and_reaps
+        PASS [   0.008s] (957/998) maho-omo-memory worker::spawn_supervisor::tests::supervisor_exit_without_outcome_is_error_and_retains_launch
+        PASS [   0.009s] (958/998) maho-omo-memory worker::spawn_supervisor::tests::wrong_attempt_cannot_authorize_successful_exit
+        PASS [   0.006s] (959/998) maho-omo-memory worker::spawn_supervisor_support::tests::invalid_utf8_output_is_decoded_with_replacement
+        PASS [   0.311s] (960/998) maho-omo-memory worker::run_finalization_git::tests::committed_reflection_is_integrated_under_writer_lock
+        PASS [   0.151s] (961/998) maho-omo-memory worker::run_reconciliation_sweep::tests::an_orphan_inside_the_grace_window_is_left_alone
+        PASS [   0.006s] (962/998) maho-omo-memory worker::spawn_supervisor_support::tests::only_known_node_signals_survive
+        PASS [   0.007s] (963/998) maho-omo-memory worker::spawn_supervisor_support::tests::output_tail_matches_utf16_source_slice
+        PASS [   0.007s] (964/998) maho-omo-memory worker::spawn_supervisor_support::tests::undefined_environment_is_removed_but_empty_values_survive
+        PASS [   0.007s] (965/998) maho-omo-memory worker::spawn_supervisor_support::tests::zero_tail_limit_preserves_source_negative_zero_slice
+        PASS [   0.007s] (966/998) maho-omo-memory worker::supervisor_process_identity::tests::exit_parser_uses_last_complete_line_and_rejects_pid_marker
+        PASS [   0.008s] (967/998) maho-omo-memory worker::supervisor_process_identity::tests::clock_uses_highest_numeric_sequence_not_time_or_filename_order
+        PASS [   0.007s] (968/998) maho-omo-memory worker::supervisor_process_identity::tests::graceful_deadline_records_target_and_missing_pid_is_noop
+        PASS [   0.206s] (969/998) maho-omo-memory worker::run_reconciliation_sweep::tests::an_aged_orphan_is_reclaimed_while_a_live_run_survives
+        PASS [   0.008s] (970/998) maho-omo-memory worker::supervisor_process_identity::tests::platform_override_is_test_seam_gated
+        PASS [   0.012s] (971/998) maho-omo-memory worker::supervisor_process_identity::tests::injected_deadline_observes_sequence_clock_publication
+        PASS [   0.009s] (972/998) maho-omo-memory worker::supervisor_process_identity::tests::posix_graceful_termination_reaps_real_process_group
+        PASS [   0.008s] (973/998) maho-omo-memory worker::supervisor_process_identity::tests::real_process_identity_matches_core
+        PASS [   0.007s] (974/998) maho-omo-memory worker::supervisor_process_identity::tests::termination_seams_require_explicit_enable_and_validate_arrays
+        PASS [   0.009s] (975/998) maho-omo-memory worker::supervisor_process_identity::tests::wall_deadline_fires_once_and_cancel_suppresses_callback
+        PASS [   0.012s] (976/998) maho-omo-memory worker::supervisor_test_signals::tests::clock_sequence_can_move_backwards_and_preserves_initial_file
+        PASS [   0.007s] (977/998) maho-omo-memory worker::supervisor_test_signals::tests::initial_state_does_not_require_directory_or_watcher
+        PASS [   0.012s] (978/998) maho-omo-memory worker::supervisor_test_signals::tests::deadline_reports_exact_description_and_budget
+        PASS [   0.016s] (979/998) maho-omo-memory worker::supervisor_process_identity::tests::windows_taskkill_seam_preserves_tree_arguments
+        PASS [   0.009s] (980/998) maho-omo-memory worker::supervisor_test_signals::tests::registration_race_is_closed_by_authoritative_probe
+        PASS [   0.021s] (981/998) maho-omo-memory worker::supervisor_test_signals::tests::queued_filesystem_event_rechecks_after_inflight_probe
+        PASS [   0.037s] (982/998) maho-omo-memory::native_memory native_faux_journal_reconciles_real_branch_on_settle
+        PASS [   0.185s] (983/998) maho-omo-memory worker::spawn_metadata::tests::required_fields_reject_without_metadata
+        PASS [   0.190s] (984/998) maho-omo-memory worker::spawn_metadata::tests::dream_requires_trigger_and_origin
+        PASS [   0.188s] (985/998) maho-omo-memory worker::spawn_metadata::tests::target_requires_dream_and_worktree_reference_is_preserved
+        PASS [   0.077s] (986/998) maho-omo-memory::native_memory native_assembled_root_reconciles_and_enqueues_settled_journal
+        PASS [   0.197s] (987/998) maho-omo-memory worker::spawn_payload::tests::dream_copies_source_bytes_and_defaults_missing_json
+        PASS [   0.459s] (988/998) maho-omo-memory worker::run_finalization::tests::failure_checkpoints_and_cleans_before_terminal_settlement
+        PASS [   0.199s] (989/998) maho-omo-memory worker::spawn_payload::tests::reflection_payload_metadata_and_retry
+        PASS [   0.205s] (990/998) maho-omo-memory worker::spawn_payload::tests::fork_preserves_parent_prefix_identity
+        PASS [   0.030s] (991/998) maho-omo-memory::native_memory native_faux_nudge_persists_accepted_input_provenance
+        PASS [   0.033s] (992/998) maho-omo-memory::native_memory native_root_binds_identity_without_creating_storage
+        PASS [   0.049s] (993/998) maho-omo-memory::native_memory native_idle_dream_resets_and_rearms_but_rejects_busy_host
+        PASS [   0.274s] (994/998) maho-omo-memory worker::runner_execution::tests::real_worktree_model_chain_publishes_and_finalizes_no_changes
+        PASS [   0.171s] (995/998) maho-omo-memory::native_memory native_faux_memory_projection_equals_pinned_ts
+        PASS [   0.238s] (996/998) maho-omo-memory::native_memory native_faux_corrupt_memory_reports_ts_doctor_parser_error
+        PASS [   0.258s] (997/998) maho-omo-memory::native_memory native_faux_memory_tool_commit_carries_injected_provenance_trailers
+        PASS [   0.259s] (998/998) maho-omo-memory::native_memory native_faux_memory_write_commits_and_notifies_snapshot
+────────────
+     Summary [   3.720s] 998 tests run: 998 passed, 0 skipped

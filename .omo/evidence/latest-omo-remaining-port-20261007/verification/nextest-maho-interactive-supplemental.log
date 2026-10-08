@@ -1,0 +1,260 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+    Finished `test` profile [unoptimized] target(s) in 1m 29s
+────────────
+ Nextest run ID f1798b44-b8a3-497c-b6f4-b20873bea6cc with nextest profile: default
+    Starting 383 tests across 34 binaries
+        PASS [   0.008s] (  1/383) maho-interactive interactive_host_runtime::tests::action_failures_surface_only_for_command_refusals_not_transport_loss
+        PASS [   0.008s] (  2/383) maho-interactive interactive_host_runtime::tests::client_info_sends_capabilities_once_then_width_only
+        PASS [   0.010s] (  3/383) maho-interactive interactive_host_runtime::tests::decoded_session_events_reach_session_listeners_and_ignore_unknown_records
+        PASS [   0.016s] (  4/383) maho-interactive interactive_changelog::tests::calver_and_prerelease_versions_compare_like_the_source
+        PASS [   0.016s] (  5/383) maho-interactive interactive_clipboard::tests::preferred_image_mime_type_prefers_the_supported_order
+        PASS [   0.016s] (  6/383) maho-interactive interactive_changelog::tests::latest_version_probe_reads_the_first_header
+        PASS [   0.016s] (  7/383) maho-interactive interactive_changelog::tests::package_links_are_pinned_and_external_links_stay_external
+        PASS [   0.007s] (  8/383) maho-interactive interactive_host_runtime::tests::ensure_host_override_reports_its_refusal_as_the_fallback_cause
+        PASS [   0.017s] (  9/383) maho-interactive interactive_changelog::tests::new_entries_follow_the_last_seen_version_and_the_current_ceiling
+        PASS [   0.008s] ( 10/383) maho-interactive interactive_host_runtime::tests::fallback_invokes_the_invalidate_and_rebind_hooks_in_order
+        PASS [   0.018s] ( 11/383) maho-interactive interactive_clipboard::tests::base_and_supported_mime_types_normalize_parameters
+        PASS [   0.019s] ( 12/383) maho-interactive interactive_extension_ui::tests::extension_theme_matches_the_color_mode_of_its_theme
+        PASS [   0.007s] ( 13/383) maho-interactive interactive_host_runtime::tests::fallback_without_a_session_file_never_starts_a_host
+        PASS [   0.020s] ( 14/383) maho-interactive interactive_extension_ui::tests::extension_theme_emits_the_ansi_prefixes_consumers_apply
+        PASS [   0.022s] ( 15/383) maho-interactive interactive_changelog::tests::display_skips_resumed_sessions_and_records_the_first_seen_version
+        PASS [   0.007s] ( 16/383) maho-interactive interactive_host_runtime::tests::host_event_classification_matches_the_client_event_union
+        PASS [   0.008s] ( 17/383) maho-interactive interactive_host_runtime::tests::hydrate_applies_text_deltas_and_tracks_usage
+        PASS [   0.009s] ( 18/383) maho-interactive interactive_host_runtime::tests::hydrate_leaves_non_delta_and_unknown_events_untouched
+        PASS [   0.009s] ( 19/383) maho-interactive interactive_host_runtime::tests::proxy_fire_and_forget_commands_forward_frames_and_mirror_queued_input
+        PASS [   0.009s] ( 20/383) maho-interactive interactive_host_runtime::tests::hydrate_retains_toolcall_arguments_and_hydrates_usage_and_partial
+        PASS [   0.008s] ( 21/383) maho-interactive interactive_host_runtime::tests::queue_updates_and_reservation_track_the_enqueue_order
+        PASS [   0.009s] ( 22/383) maho-interactive interactive_host_runtime::tests::runtime_lifecycle_is_monotonic_into_fallback_and_disposed
+        PASS [   0.009s] ( 23/383) maho-interactive interactive_host_runtime::tests::reconcile_entries_only_rebuilds_on_a_mismatch_and_keeps_late_arrivals
+        PASS [   0.009s] ( 24/383) maho-interactive interactive_host_runtime::tests::queue_snapshot_reports_the_ordered_inputs
+        PASS [   0.009s] ( 25/383) maho-interactive interactive_host_runtime::tests::proxy_request_commands_return_the_host_data_and_swallow_transport_loss
+        PASS [   0.009s] ( 26/383) maho-interactive interactive_host_runtime::tests::replacement_calls_short_circuit_once_fallen_back
+        PASS [   0.009s] ( 27/383) maho-interactive interactive_host_runtime::tests::session_state_defaults_missing_keys_without_panicking
+        PASS [   0.008s] ( 28/383) maho-interactive interactive_host_runtime::tests::warnings_and_capabilities_match_the_pinned_strings
+        PASS [   0.008s] ( 29/383) maho-interactive interactive_host_runtime::tests::stream_state_events_mirror_start_compaction_retry_and_model
+        PASS [   0.008s] ( 30/383) maho-interactive interactive_host_runtime::tests::subscriptions_stop_delivering_after_they_are_dropped
+        PASS [   0.009s] ( 31/383) maho-interactive interactive_host_runtime::tests::wire_events_hydrate_for_subscribers_and_hold_ui_requests_until_a_handler_attaches
+        PASS [   0.010s] ( 32/383) maho-interactive interactive_host_runtime::tests::session_state_reads_every_field_the_proxy_mirrors
+        PASS [   0.009s] ( 33/383) maho-interactive interactive_mode::tests::debug_log_measures_visible_width_and_escapes_ansi
+        PASS [   0.009s] ( 34/383) maho-interactive interactive_ui_host::tests::footer_factory_data_reads_live_statuses_and_provider_count
+        PASS [   0.009s] ( 35/383) maho-interactive interactive_mode::tests::expandable_text_starts_expanded_when_asked
+        PASS [   0.011s] ( 36/383) maho-interactive interactive_mode::tests::import_destination_reuses_the_stored_path_and_uniquifies_collisions
+        PASS [   0.011s] ( 37/383) maho-interactive interactive_mode::tests::expandable_text_follows_its_render_closures
+        PASS [   0.012s] ( 38/383) maho-interactive interactive_mode::tests::debug_log_reports_terminal_size_lines_and_messages
+        PASS [   0.013s] ( 39/383) maho-interactive keybindings_command::tests::editor_resolution_prefers_visual_and_skips_blank_values
+        PASS [   0.014s] ( 40/383) maho-interactive keybindings_command::tests::editor_round_trip_seeds_the_file_and_reloads_valid_json
+        PASS [   0.008s] ( 41/383) maho-interactive model_catalog_refresh::tests::aborting_the_last_waiter_aborts_the_shared_refresh
+        PASS [   0.016s] ( 42/383) maho-interactive keybindings_command::tests::invalid_json_is_reported_without_reloading
+        PASS [   0.017s] ( 43/383) maho-interactive keybindings_command::tests::nonzero_editor_exit_leaves_the_written_file_untouched
+        PASS [   0.010s] ( 44/383) maho-interactive model_catalog_refresh::tests::concurrent_refreshes_share_one_operation
+        PASS [   0.011s] ( 45/383) maho-interactive model_catalog_refresh::tests::an_aborted_caller_never_starts_an_operation
+        PASS [   0.021s] ( 46/383) maho-interactive interactive_session::tests::local_session_reports_identity_and_never_hands_off
+        PASS [   0.021s] ( 47/383) maho-interactive keybindings_command::tests::missing_editor_binary_reports_launch_failure_with_the_seeded_flag
+        PASS [   0.008s] ( 48/383) maho-interactive question_registry::tests::cycle_rotates_only_with_two_pending_and_list_survives
+        PASS [   0.009s] ( 49/383) maho-interactive question_registry::tests::live_deadline_tracks_idle_updates_without_moving_the_hard_cap
+        PASS [   0.009s] ( 50/383) maho-interactive question_registry::tests::finish_hands_the_surface_to_the_next_pending_question
+        PASS [   0.011s] ( 51/383) maho-interactive model_catalog_refresh::tests::one_callers_abort_does_not_cancel_another
+        PASS [   0.010s] ( 52/383) maho-interactive question_registry::tests::duplicates_share_the_existing_question
+        PASS [   0.011s] ( 53/383) maho-interactive question_registry::tests::composer_reply_targets_only_a_pending_request
+        PASS [   0.008s] ( 54/383) maho-interactive::components32_boundary progressive_transcript_reaches_the_full_history_after_enough_hydration_steps
+        PASS [   0.008s] ( 55/383) maho-interactive::components32_boundary progressive_transcript_paints_only_the_tail_and_hydrates_on_demand
+        PASS [   0.010s] ( 56/383) maho-interactive question_registry::tests::numbering_addresses_arrival_order_and_rejects_zero
+        PASS [   0.010s] ( 57/383) maho-interactive question_registry::tests::unanswered_ids_follow_the_draft_and_labels_render_countdowns
+        PASS [   0.008s] ( 58/383) maho-interactive::components32_boundary tool_renderer_boundary_keeps_failing_after_the_first_failure
+        PASS [   0.011s] ( 59/383) maho-interactive tools::renderers::registered::tests::registered_renderers_defer_to_the_erased_factory_at_the_live_width
+        PASS [   0.015s] ( 60/383) maho-interactive question_registry::tests::retained_draft_conversion_preserves_answers_and_comment
+        PASS [   0.018s] ( 61/383) maho-interactive::components32_cards exploration_groups_match_pinned_senpi
+        PASS [   0.014s] ( 62/383) maho-interactive::components32_custom a_card_with_replaced_renderers_matches_pinned_senpi
+        PASS [   0.020s] ( 63/383) maho-interactive::components32_boundary tool_renderer_boundary_matches_pinned_senpi_failure_and_recovery_paths
+        PASS [   0.025s] ( 64/383) maho-interactive::components32_cards tool_card_progress_line_matches_pinned_senpi
+        PASS [   0.010s] ( 65/383) maho-interactive::components32_extra custom_entries_match_pinned_senpi_with_and_without_content
+        PASS [   0.012s] ( 66/383) maho-interactive::components32_extra bordered_loaders_match_pinned_senpi
+        PASS [   0.037s] ( 67/383) maho-interactive::components32_callonly a_call_only_renderer_collapses_its_fallback_result_like_pinned_senpi
+        PASS [   0.008s] ( 68/383) maho-interactive::components32_fallback fallback_sanitisation_collapses_controls_and_strips_ansi
+        PASS [   0.010s] ( 69/383) maho-interactive::components32_extra user_message_selector_matches_pinned_senpi
+        PASS [   0.011s] ( 70/383) maho-interactive::components32_extra tool_execution_images_match_pinned_senpi_without_image_support
+        PASS [   0.009s] ( 71/383) maho-interactive::components32_fallback formatted_tool_execution_fallbacks_match_pinned_senpi
+        PASS [   0.037s] ( 72/383) maho-interactive::components32_descriptors assistant_render_descriptors_match_pinned_senpi_for_every_branch
+        PASS [   0.009s] ( 73/383) maho-interactive::components32_fallback tool_call_fallbacks_match_pinned_senpi
+        PASS [   0.060s] ( 74/383) maho-interactive::components32_custom exploration_calls_match_pinned_senpi_including_replaced_renderers
+        PASS [   0.011s] ( 75/383) maho-interactive::components32_foundation disabled_notice_is_suppressed_until_transcript_reset
+        PASS [   0.015s] ( 76/383) maho-interactive::components32_foundation borders_match_pinned_senpi_at_zero_and_regular_widths
+        PASS [   0.008s] ( 77/383) maho-interactive::components32_foundation transformers_preserve_last_success_and_pass_context_in_order
+        PASS [   0.018s] ( 78/383) maho-interactive::components32_fallback tool_result_fallbacks_match_pinned_senpi_for_text_and_json_bodies
+        PASS [   0.021s] ( 79/383) maho-interactive::components32_foundation continuity_notices_match_all_pinned_metrics_and_diagnostics
+        PASS [   0.013s] ( 80/383) maho-interactive::components32_overflow user_message_selector_scrolls_and_reports_an_empty_list_like_pinned_senpi
+        PASS [   0.029s] ( 81/383) maho-interactive::components32_overflow exploration_groups_overflow_and_dedupe_rules_like_pinned_senpi
+        PASS [   0.015s] ( 82/383) maho-interactive::components32_support key_text_formatting_matches_pinned_senpi
+        PASS [   0.008s] ( 83/383) maho-interactive::components32_support partial_strikethrough_matches_pinned_senpi
+        PASS [   0.016s] ( 84/383) maho-interactive::components32_support keybinding_hints_match_pinned_senpi_for_registered_bindings
+        PASS [   0.021s] ( 85/383) maho-interactive::components32_support todo_strike_reveal_counts_match_pinned_senpi
+        PASS [   0.023s] ( 86/383) maho-interactive::components32_support raw_key_hints_match_pinned_senpi
+        PASS [   0.027s] ( 87/383) maho-interactive::components32_tools diff_render_treats_unparseable_lines_as_context
+        PASS [   0.034s] ( 88/383) maho-interactive::components32_tools diff_render_colours_removed_and_added_lines_and_highlights_intra_line_changes
+        PASS [   0.019s] ( 89/383) maho-interactive::components32_tools render_signatures_match_pinned_senpi_for_every_bounded_shape
+        PASS [   0.019s] ( 90/383) maho-interactive::components32_tools source_boxes_match_pinned_senpi_at_every_wrapping_width
+        PASS [   0.015s] ( 91/383) maho-interactive::components32_tools visual_truncation_keeps_the_tail_and_counts_the_hidden_prefix
+        PASS [   0.060s] ( 92/383) maho-interactive::components32_tools visual_truncation_passes_short_text_through_unchanged
+        PASS [   0.060s] ( 93/383) maho-interactive::components32_tools word_diff_keeps_common_text_and_marks_only_changes
+        PASS [   0.028s] ( 94/383) maho-interactive::components32_tools word_diff_reports_a_pure_insertion_as_one_added_run
+        PASS [   0.016s] ( 95/383) maho-interactive::components32_transcript tool_execution_fallback_matches_pinned_senpi_without_a_renderer
+        PASS [   0.014s] ( 96/383) maho-interactive::extension_ui_repaint request_render_from_worker_thread_enqueues_exactly_one_widget_frame
+        PASS [   0.015s] ( 97/383) maho-interactive::extension_ui_repaint request_render_on_closed_channel_reports_closure
+        PASS [   0.016s] ( 98/383) maho-interactive::footer_corpus abbreviated_tokens_match_pinned_values
+        PASS [   0.022s] ( 99/383) maho-interactive::footer_corpus all_theme_tokens_match_pinned_palette_ansi
+        PASS [   0.018s] (100/383) maho-interactive::footer_corpus original_footer_corpus_is_byte_equal_at_required_widths
+        PASS [   0.059s] (101/383) maho-interactive::foundation abort_labels_preserve_provenance_and_legacy_retry_counts
+        PASS [   0.063s] (102/383) maho-interactive::foundation compaction_preview_and_idle_respect_width
+        PASS [   0.029s] (103/383) maho-interactive::foundation footer_matches_pinned_output_at_all_widths_and_themes
+        PASS [   0.016s] (104/383) maho-interactive::foundation grapheme_counter_handles_combining_append_and_reset
+        PASS [   1.079s] (105/383) maho-interactive::components32_extra mermaid_transformer_matches_pinned_senpi_for_every_gate
+        PASS [   1.111s] (106/383) maho-interactive::components32_cards user_messages_match_pinned_senpi_at_every_width
+        PASS [   1.119s] (107/383) maho-interactive::components32_cards custom_messages_match_pinned_senpi_collapsed_and_expanded
+        PASS [   1.119s] (108/383) maho-interactive::components32_cards assistant_messages_match_pinned_senpi_for_every_descriptor_shape
+        PASS [   0.016s] (109/383) maho-interactive::foundation renderer_reference_tracks_replacement
+        PASS [   0.015s] (110/383) maho-interactive::foundation provider_notice_keeps_diagnostics_after_retry_completion
+        PASS [   0.014s] (111/383) maho-interactive::foundation pacing_matches_pinned_function_outputs
+        PASS [   0.017s] (112/383) maho-interactive::foundation reveal_preserves_graphemes_and_hidden_metadata
+        PASS [   0.035s] (113/383) maho-interactive::foundation network_errors_exclude_auth_and_require_valid_envelopes
+        PASS [   0.021s] (114/383) maho-interactive::foundation theme_cache_roundtrips_and_rejects_invalid_documents
+        PASS [   0.060s] (115/383) maho-interactive::foundation smooth_reveal_buffers_then_converges_with_explicit_ticks
+        PASS [   0.023s] (116/383) maho-interactive::foundation tool_args_flush_exact_and_replace_component_identity
+        PASS [   0.023s] (117/383) maho-interactive::foundation tool_calls_bypass_smooth_reveal
+        PASS [   0.023s] (118/383) maho-interactive::foundation tool_result_finishes_full_content_without_losing_details
+        PASS [   0.010s] (119/383) maho-interactive::foundation working_status_matches_pinned_function_outputs
+        PASS [   0.016s] (120/383) maho-interactive::presentation session_context_includes_grouped_tokens
+        PASS [   0.017s] (121/383) maho-interactive::presentation narrow_compaction_keeps_cancel_hint
+        PASS [   0.018s] (122/383) maho-interactive::presentation retry_countdown_stops_after_dispose
+        PASS [   0.011s] (123/383) maho-interactive::presentation session_context_is_absent_without_usage
+        PASS [   0.008s] (124/383) maho-interactive::presentation session_zero_cost_is_absent
+        PASS [   0.013s] (125/383) maho-interactive::presentation session_large_tokens_are_grouped
+        PASS [   0.016s] (126/383) maho-interactive::presentation session_cost_uses_two_decimals
+        PASS [   0.019s] (127/383) maho-interactive::presentation session_unknown_context_has_placeholder
+        PASS [   0.010s] (128/383) maho-interactive::presentation version_matches_generated_reference
+        PASS [   0.021s] (129/383) maho-interactive::runtime35_external_editor external_editor_nonzero_exit_is_distinct_from_launch_failure
+        PASS [   0.021s] (130/383) maho-interactive::runtime35_external_editor external_editor_edits_private_prompt_and_cleans_directory
+        PASS [   0.025s] (131/383) maho-interactive::runtime35_external_editor edit_file_keeps_changes_after_unsuccessful_editor
+        PASS [   0.025s] (132/383) maho-interactive::runtime35_external_editor external_editor_can_clear_prompt
+        PASS [   0.015s] (133/383) maho-interactive::runtime35_external_editor nonexistent_editor_is_launch_failure
+        PASS [   0.014s] (134/383) maho-interactive::runtime35_favorites disappearing_snapshot_ids_preserve_their_pattern
+        PASS [   0.007s] (135/383) maho-interactive::runtime35_favorites duplicate_stored_patterns_share_first_resolution_and_are_deduplicated
+        PASS [   0.007s] (136/383) maho-interactive::runtime35_favorites exact_pattern_can_be_removed_and_refavorited_without_losing_decoration
+        PASS [   0.011s] (137/383) maho-interactive::runtime35_favorites empty_resolution_snapshot_appends_selected_ids_bare
+        PASS [   0.006s] (138/383) maho-interactive::runtime35_favorites inserted_stored_pattern_does_not_shift_resolution_identity
+        PASS [   0.008s] (139/383) maho-interactive::runtime35_favorites overlapping_pattern_with_no_ownership_cannot_resurrect_deselected_id
+        PASS [   0.013s] (140/383) maho-interactive::runtime35_favorites unchanged_decorated_pattern_remains_verbatim_with_unrelated_selection
+        PASS [   0.012s] (141/383) maho-interactive::runtime35_favorites reordered_stored_patterns_retain_their_own_decorators
+        PASS [   0.013s] (142/383) maho-interactive::runtime35_favorites partially_deselected_glob_retains_decorators_and_invisible_owned_ids
+        PASS [   0.013s] (143/383) maho-interactive::runtime35_favorites removed_stored_pattern_does_not_shift_resolution_identity
+        PASS [   0.007s] (144/383) maho-interactive::runtime35_helpers abort_and_explicit_cancellation_do_not_become_errors
+        PASS [   0.013s] (145/383) maho-interactive::runtime35_helpers cancelled_login_is_status_while_provider_failure_is_error
+        PASS [   0.013s] (146/383) maho-interactive::runtime35_favorites unresolved_patterns_survive_empty_selection
+        PASS [   0.013s] (147/383) maho-interactive::runtime35_helpers autocomplete_tags_cover_every_scope
+        PASS [   0.008s] (148/383) maho-interactive::runtime35_helpers configured_tmux_produces_no_warning
+        PASS [   0.008s] (149/383) maho-interactive::runtime35_helpers extended_keys_always_is_accepted
+        PASS [   0.011s] (150/383) maho-interactive::runtime35_helpers diagnostic_source_labels_distinguish_system_and_temporary
+        PASS [   0.013s] (151/383) maho-interactive::runtime35_helpers invalid_keybindings_edit_keeps_current_bindings
+        PASS [   0.015s] (152/383) maho-interactive::runtime35_helpers keybindings_seed_and_reload_preserve_user_override
+        PASS [   0.013s] (153/383) maho-interactive::runtime35_helpers keybindings_seed_never_overwrites_existing_config
+        PASS [   0.015s] (154/383) maho-interactive::runtime35_helpers keyboard_ready_tmux_still_requires_image_configuration
+        PASS [   0.013s] (155/383) maho-interactive::runtime35_helpers old_tmux_recommends_upgrade_instead_of_unsupported_settings
+        PASS [   0.017s] (156/383) maho-interactive::runtime35_helpers missing_tmux_settings_are_combined_and_aligned
+        PASS [   0.010s] (157/383) maho-interactive::runtime35_helpers resource_display_uses_locale_order_for_accented_paths
+        PASS [   0.016s] (158/383) maho-interactive::runtime35_helpers only_system_resources_are_system
+        PASS [   0.006s] (159/383) maho-interactive::runtime35_helpers sanitizer_normalizes_line_endings_and_horizontal_space
+        PASS [   0.006s] (160/383) maho-interactive::runtime35_helpers sanitizer_preserves_malformed_csi_text
+        PASS [   0.014s] (161/383) maho-interactive::runtime35_helpers sanitizer_consumes_unterminated_osc
+        PASS [   0.014s] (162/383) maho-interactive::runtime35_helpers resource_groups_preserve_package_ownership_and_scope_order
+        PASS [   0.007s] (163/383) maho-interactive::runtime35_helpers sanitizer_removes_control_sequences_without_losing_visible_content
+        PASS [   0.007s] (164/383) maho-interactive::runtime35_helpers sanitizer_strips_controls_from_error_attribution
+        PASS [   0.007s] (165/383) maho-interactive::runtime35_helpers system_scope_takes_precedence_over_cli
+        PASS [   0.010s] (166/383) maho-interactive::runtime35_helpers startup_resolves_only_fd
+        PASS [   0.011s] (167/383) maho-interactive::runtime35_helpers startup_does_not_download_missing_tools
+        PASS [   0.006s] (168/383) maho-interactive::runtime35_helpers unknown_key_format_does_not_recommend_a_format_change
+        PASS [   0.012s] (169/383) maho-interactive::runtime35_helpers unsupported_outer_terminal_needs_no_passthrough
+        PASS [   0.013s] (170/383) maho-interactive::runtime35_helpers working_images_need_no_passthrough_recommendations
+        PASS [   0.039s] (171/383) maho-interactive::runtime35_native answer_skip_dismisses_the_shown_question_and_keeps_the_other_pending
+        PASS [   1.407s] (172/383) maho-interactive::components32_foundation user_and_branch_cards_match_pinned_output_at_multiple_widths
+        PASS [   0.067s] (173/383) maho-interactive::runtime35_native answer_command_addresses_the_second_pending_question_and_settles_only_it
+        PASS [   1.406s] (174/383) maho-interactive::components32_overflow assistant_message_setters_match_pinned_senpi
+        PASS [   0.067s] (175/383) maho-interactive::runtime35_native answer_list_numbering_and_unknown_numbers_reject_cleanly
+        PASS [   0.068s] (176/383) maho-interactive::runtime35_native answer_list_selection_expands_the_selected_request
+        PASS [   0.032s] (177/383) maho-interactive::runtime35_native ask_user_tool_card_uses_the_question_renderer_not_a_raw_argument_dump
+        PASS [   0.036s] (178/383) maho-interactive::runtime35_native async_question_reexpansion_retains_progress_and_initial_comment
+        PASS [   0.046s] (179/383) maho-interactive::runtime35_native ask_user_tool_result_summarises_the_answer_details
+        PASS [   0.052s] (180/383) maho-interactive::runtime35_native bare_model_selector_cancels_and_releases_native_composer
+        PASS [   0.045s] (181/383) maho-interactive::runtime35_native bare_thinking_selector_filters_then_cancels_without_provider_turn
+        PASS [   0.045s] (182/383) maho-interactive::runtime35_native blocking_question_seeds_the_producer_draft
+        PASS [   1.197s] (183/383) maho-interactive::components32_transcript exploration_transcript_projection_matches_pinned_senpi
+        PASS [   0.048s] (184/383) maho-interactive::runtime35_native cancelled_extension_input_releases_composer
+        PASS [   0.027s] (185/383) maho-interactive::runtime35_native command_path_parser_preserves_quotes_and_first_argument_semantics
+        PASS [   0.045s] (186/383) maho-interactive::runtime35_native configured_session_shortcut_opens_native_selector
+        PASS [   0.089s] (187/383) maho-interactive::runtime35_native collapsed_and_expanded_countdowns_read_the_live_capped_deadline
+        PASS [   0.074s] (188/383) maho-interactive::runtime35_native consecutive_extension_notifications_replace_status_not_append_it
+        PASS [   0.064s] (189/383) maho-interactive::runtime35_native ctrl_c_clear_then_second_press_requests_shutdown_without_timing_luck
+        PASS [   0.064s] (190/383) maho-interactive::runtime35_native custom_factory_completion_restores_editor_and_returns_value
+        PASS [   0.030s] (191/383) maho-interactive::runtime35_native empty_compact_shows_the_pinned_no_messages_warning
+        PASS [   0.064s] (192/383) maho-interactive::runtime35_native debug_command_writes_the_rendered_report_to_the_configured_path
+        PASS [   0.058s] (193/383) maho-interactive::runtime35_native dropped_async_question_removes_widget_and_keeps_composer
+        PASS [   0.047s] (194/383) maho-interactive::runtime35_native empty_enter_does_not_start_provider_turn
+        PASS [   0.075s] (195/383) maho-interactive::runtime35_native expanded_nonblocking_question_keeps_original_timeout
+        PASS [   0.649s] (196/383) maho-interactive::foundation highlight_matches_pinned_token_colors
+        PASS [   0.052s] (197/383) maho-interactive::runtime35_native extension_editor_returns_prefill_through_real_multiline_component
+        PASS [   0.060s] (198/383) maho-interactive::runtime35_native extension_actions_expose_theme_catalog_and_live_working_indicator
+        PASS [   0.041s] (199/383) maho-interactive::runtime35_native extension_expansion_and_keyboard_expansion_share_state
+        PASS [   0.089s] (200/383) maho-interactive::runtime35_native expansion_updates_completed_tool_cards_not_just_pending_cards
+        PASS [   0.059s] (201/383) maho-interactive::runtime35_native extension_editor_widgets_and_status_reach_native_surface
+        PASS [   0.041s] (202/383) maho-interactive::runtime35_native extension_input_uses_real_input_and_returns_typed_value
+        PASS [   0.040s] (203/383) maho-interactive::runtime35_native extension_select_uses_real_selector_and_returns_enter_choice
+        PASS [   0.064s] (204/383) maho-interactive::runtime35_native extension_header_replaces_the_built_in_header_and_restores_it
+        PASS [   0.067s] (205/383) maho-interactive::runtime35_native extension_question_cancel_releases_composer_and_preserves_unanswered_ids
+        PASS [   0.027s] (206/383) maho-interactive::runtime35_native extension_working_visibility_controls_native_active_row
+        PASS [   0.038s] (207/383) maho-interactive::runtime35_native extension_terminal_input_transforms_consumes_and_unsubscribes
+        PASS [   2.330s] (208/383) maho-interactive::components32_mouse exploration_group_mouse_handling_matches_pinned_senpi
+        PASS [   1.085s] (209/383) maho-interactive::runtime35_native assistant_text_segments_remain_on_either_side_of_tool_card
+        PASS [   1.145s] (210/383) maho-interactive::runtime35_native clone_keeps_current_leaf_transcript_and_clears_composer
+        PASS [   0.072s] (211/383) maho-interactive::runtime35_native image_payloads_follow_submitted_marker_order
+        PASS [   1.137s] (212/383) maho-interactive::runtime35_native enter_captures_editor_text_clears_draft_and_submits_native_prompt
+        PASS [   0.052s] (213/383) maho-interactive::runtime35_native import_command_reports_a_missing_file_before_any_session_change
+        PASS [   0.035s] (214/383) maho-interactive::runtime35_native import_without_arguments_reports_usage
+        PASS [   0.083s] (215/383) maho-interactive::runtime35_native invalid_thinking_command_does_not_become_provider_input
+        FAIL [   1.104s] (216/383) maho-interactive::runtime35_native faux_screen_hi_matches_pinned_interactive_cells
+  stdout ───
+
+    running 1 test
+    test faux_screen_hi_matches_pinned_interactive_cells ... FAILED
+
+    failures:
+
+    failures:
+        faux_screen_hi_matches_pinned_interactive_cells
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 104 filtered out; finished in 1.09s
+
+  stderr ───
+
+    thread 'faux_screen_hi_matches_pinned_interactive_cells' (2457703) panicked at crates/maho-interactive/tests/runtime35_native.rs:1022:106:
+    pinned fixture: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+  Cancelling due to test failure: 11 tests still running
+        PASS [   0.021s] (217/383) maho-interactive::runtime35_native live_deadline_does_not_use_the_fixed_attachment_timeout
+        PASS [   0.070s] (218/383) maho-interactive::runtime35_native jsonl_export_preserves_native_messages_and_quoted_path
+        PASS [   1.125s] (219/383) maho-interactive::runtime35_native fork_selector_uses_current_user_history_and_cancel_keeps_transcript
+        PASS [   1.384s] (220/383) maho-interactive::runtime35_native faux_screen_slash_hotkeys_matches_pinned_cells
+        PASS [   1.389s] (221/383) maho-interactive::runtime35_native fork_selection_reopens_user_text_before_selected_message
+        PASS [   0.963s] (222/383) maho-interactive::runtime35_native hidden_custom_history_is_not_rendered
+        PASS [   1.482s] (223/383) maho-interactive::runtime35_native fork_selector_defaults_to_latest_user_message
+        PASS [   0.869s] (224/383) maho-interactive::runtime35_native import_command_confirms_copies_and_switches_to_the_jsonl
+        PASS [   4.989s] (225/383) maho-interactive::components32_renderers built_in_renderers_match_pinned_senpi_calls_and_results
+        PASS [   5.902s] (226/383) maho-interactive::components32_extra bash_execution_matches_pinned_senpi_for_every_terminal_state
+        PASS [   6.448s] (227/383) maho-interactive::components32_cards tool_cards_match_pinned_senpi_for_every_presentation_state
+────────────
+     Summary [   6.515s] 227/383 tests run: 226 passed, 1 failed, 0 skipped
+        FAIL [   1.104s] (216/383) maho-interactive::runtime35_native faux_screen_hi_matches_pinned_interactive_cells
+warning: 156/383 tests were not run due to test failure (run with --no-fail-fast to run all tests, or run with --max-fail)
+error: test run failed

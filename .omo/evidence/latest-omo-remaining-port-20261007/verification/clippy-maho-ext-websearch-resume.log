@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on build directory
+    Checking tokio-rustls v0.26.4
+    Checking serde_json v1.0.149
+    Checking hyper-rustls v0.27.7
+    Checking reqwest v0.13.2
+    Checking reqwest v0.12.28
+    Checking syntect v5.3.0
+    Checking maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+    Checking maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+    Checking maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+    Checking maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+    Checking maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+    Checking maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Checking maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+    Checking maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-websearch)
+    Finished `dev` profile [unoptimized] target(s) in 1m 27s

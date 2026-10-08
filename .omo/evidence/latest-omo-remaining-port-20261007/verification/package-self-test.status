@@ -1,0 +1,5 @@
+command=bun tools/package-native.mjs --self-test
+log=package-self-test-independent.log
+exit=0
+checks_passed=70
+checks_total=70

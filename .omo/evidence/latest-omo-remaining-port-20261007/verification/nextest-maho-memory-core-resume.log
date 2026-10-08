@@ -1,0 +1,725 @@
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+    Finished `test` profile [unoptimized] target(s) in 5.90s
+────────────
+ Nextest run ID 620e3835-daa8-4c60-8e3a-c9f7dab28979 with nextest profile: default
+    Starting 718 tests across 1 binary
+        PASS [   0.104s] (  1/718) maho-memory-core compile::changes::tests::identical_or_missing_revisions_report_no_changes
+        PASS [   0.111s] (  2/718) maho-memory-core compile::compile::tests::given_a_committed_binary_projection_when_compiled_then_its_path_is_listed_without_reading_its_blob
+        PASS [   0.117s] (  3/718) maho-memory-core compile::cache::tests::given_cache_clear_when_called_then_all_entries_are_purged
+        PASS [   0.120s] (  4/718) maho-memory-core compile::changes::tests::revision_exists_reflects_the_repository_history
+        PASS [   0.121s] (  5/718) maho-memory-core compile::cache::tests::given_the_same_template_identity_and_head_when_compiled_twice_then_the_stable_projection_is_reused
+        PASS [   0.134s] (  6/718) maho-memory-core compile::cache::tests::given_two_identities_at_the_same_head_when_compiled_through_one_cache_then_identity_stable_projections_remain_isolated
+        PASS [   0.163s] (  7/718) maho-memory-core compile::cache::tests::given_repeated_calls_for_one_stable_projection_when_compile_runs_many_times_then_the_cache_stays_bounded_to_one_entry
+        PASS [   0.164s] (  8/718) maho-memory-core compile::changes::tests::a_removal_is_reported
+        PASS [   0.167s] (  9/718) maho-memory-core compile::changes::tests::a_non_system_path_edit_counts_only_on_add_or_remove
+        PASS [   0.167s] ( 10/718) maho-memory-core compile::changes::tests::reports_added_and_updated_between_two_revisions
+        PASS [   0.004s] ( 11/718) maho-memory-core compile::render::tests::given_an_identity_and_block_when_marked_then_exact_sentinel_wrapper_is_returned
+        PASS [   0.005s] ( 12/718) maho-memory-core compile::render::tests::given_marked_regions_when_stripped_then_only_surrounding_prompt_content_remains
+        PASS [   0.174s] ( 13/718) maho-memory-core compile::changes::tests::a_commit_carrying_the_excluded_session_trailer_is_skipped
+        PASS [   0.004s] ( 14/718) maho-memory-core compile::render::tests::given_no_matching_block_when_replaced_then_the_sentinel_block_is_appended
+        PASS [   0.004s] ( 15/718) maho-memory-core compile::render::tests::given_repeated_legacy_blocks_when_replaced_then_every_matching_region_is_transformed
+        PASS [   0.004s] ( 16/718) maho-memory-core facts::assets::tests::test_load_facts_persona_non_empty_and_valid
+        PASS [   0.181s] ( 17/718) maho-memory-core compile::cache::tests::given_either_template_content_or_head_changes_when_compiled_then_each_stable_key_retains_only_its_latest_revision
+        PASS [   0.095s] ( 18/718) maho-memory-core compile::compile::tests::given_an_empty_committed_repository_when_compiled_then_only_structured_metadata_is_emitted
+        PASS [   0.106s] ( 19/718) maho-memory-core compile::compile::tests::given_a_stable_identity_and_head_when_compiled_repeatedly_then_metadata_is_identity_only_and_byte_identical
+        PASS [   0.112s] ( 20/718) maho-memory-core compile::compile::tests::given_a_dirty_persona_edit_when_compiled_then_only_the_committed_head_body_sentinel_appears
+        PASS [   0.123s] ( 21/718) maho-memory-core compile::compile::tests::given_a_committed_persona_and_identity_when_compiled_then_both_projection_paths_share_the_self_section_and_metadata_remains_structured
+        PASS [   0.117s] ( 22/718) maho-memory-core compile::compile::tests::given_an_unreadable_committed_system_file_when_compiled_then_its_structural_tag_is_skipped_best_effort
+        PASS [   0.123s] ( 23/718) maho-memory-core compile::compile::tests::given_nested_committed_memory_when_compiled_then_block_sections_projection_order_and_metadata_values_form_the_structural_contract
+        PASS [   0.111s] ( 24/718) maho-memory-core compile::compile::tests::given_only_a_committed_identity_when_compiled_then_it_renders_under_self_without_a_persona_projection
+        PASS [   0.111s] ( 25/718) maho-memory-core compile::compile::tests::given_only_a_committed_persona_when_compiled_then_its_body_is_projected_without_its_description
+        PASS [   0.213s] ( 26/718) maho-memory-core facts::extraction::apply_tests::given_git_commit_fails_after_staging_when_batch_aborts_then_index_and_worktree_are_restored
+        PASS [   0.229s] ( 27/718) maho-memory-core facts::extraction::apply_tests::given_existing_card_with_known_alias_when_fact_names_alias_then_it_lands_in_card_ledger_without_new_directory
+        PASS [   0.197s] ( 28/718) maho-memory-core facts::extraction::apply_tests::given_people_routing_disabled_when_person_fact_arrives_then_it_falls_back_to_monthly_notes
+        PASS [   0.004s] ( 29/718) maho-memory-core facts::extraction::tests::test_given_a_line_that_is_not_json_when_parsed_then_it_throws_with_line_number
+        PASS [   0.201s] ( 30/718) maho-memory-core facts::extraction::apply_tests::given_project_and_person_records_without_people_policy_when_applied_then_one_notes_commit_preserves_texts_and_trailers
+        PASS [   0.004s] ( 31/718) maho-memory-core facts::extraction::tests::test_given_a_matching_envelope_when_validated_then_it_does_not_throw
+        PASS [   0.004s] ( 32/718) maho-memory-core facts::extraction::tests::test_given_a_mismatched_records_hash_when_validated_then_it_throws
+        PASS [   0.004s] ( 33/718) maho-memory-core facts::extraction::tests::test_given_a_non_object_json_line_when_parsed_then_it_throws
+        PASS [   0.004s] ( 34/718) maho-memory-core facts::extraction::tests::test_given_a_person_record_missing_person_when_parsed_then_it_throws
+        PASS [   0.005s] ( 35/718) maho-memory-core facts::extraction::tests::test_given_a_non_uuid_batch_id_when_validated_then_it_throws
+        PASS [   0.004s] ( 36/718) maho-memory-core facts::extraction::tests::test_given_a_person_record_with_empty_aliases_array_when_parsed_then_it_accepts_it
+        PASS [   0.004s] ( 37/718) maho-memory-core facts::extraction::tests::test_given_a_person_record_with_an_empty_string_in_aliases_when_parsed_then_it_throws
+        PASS [   0.004s] ( 38/718) maho-memory-core facts::extraction::tests::test_given_a_person_record_with_empty_name_when_parsed_then_it_throws
+        PASS [   0.004s] ( 39/718) maho-memory-core facts::extraction::tests::test_given_a_project_record_carrying_person_when_parsed_then_it_throws
+        PASS [   0.004s] ( 40/718) maho-memory-core facts::extraction::tests::test_given_a_project_record_with_an_invalid_date_when_parsed_then_it_throws
+        PASS [   0.004s] ( 41/718) maho-memory-core facts::extraction::tests::test_given_a_project_record_with_empty_text_when_parsed_then_it_throws
+        PASS [   0.229s] ( 42/718) maho-memory-core facts::extraction::apply_tests::given_primary_human_card_carries_alias_when_fact_names_it_then_it_routes_to_human_ledger_without_new_card
+        PASS [   0.004s] ( 43/718) maho-memory-core facts::extraction::tests::test_given_an_invalid_scope_when_parsed_then_it_throws
+        PASS [   0.282s] ( 44/718) maho-memory-core facts::extraction::apply_tests::given_existing_explicit_observation_when_different_fact_arrives_then_it_appends_separate_line
+        PASS [   0.004s] ( 45/718) maho-memory-core facts::extraction::tests::test_given_an_unsorted_path_list_when_validated_then_it_throws
+        PASS [   0.246s] ( 46/718) maho-memory-core facts::extraction::apply_tests::given_no_matching_card_when_named_person_fact_arrives_then_card_skeleton_and_ledger_are_created
+        PASS [   0.004s] ( 47/718) maho-memory-core facts::extraction::tests::test_given_extra_unknown_fields_inside_person_when_parsed_then_it_throws
+        PASS [   0.004s] ( 48/718) maho-memory-core facts::extraction::tests::test_given_extra_unknown_fields_when_parsed_then_it_throws
+        PASS [   0.005s] ( 49/718) maho-memory-core facts::extraction::tests::test_given_valid_jsonl_with_person_and_project_scopes_when_parsed_then_records_are_returned_with_exact_values
+        PASS [   0.004s] ( 50/718) maho-memory-core facts::failures_backoff::tests::test_already_parked_record_retains_original_parked_at
+        PASS [   0.004s] ( 51/718) maho-memory-core facts::failures_backoff::tests::test_changed_reason_does_not_reset_streak
+        PASS [   0.004s] ( 52/718) maho-memory-core facts::failures_backoff::tests::test_clear_for_retry_filters_one_conversation
+        PASS [   0.004s] ( 53/718) maho-memory-core facts::failures_backoff::tests::test_clear_for_retry_without_filter_clears_all
+        PASS [   0.004s] ( 54/718) maho-memory-core facts::failures_backoff::tests::test_clear_on_success_removes_matching_record
+        PASS [   0.004s] ( 55/718) maho-memory-core facts::failures_backoff::tests::test_consecutive_failures_backoff_ladder
+        PASS [   0.004s] ( 56/718) maho-memory-core facts::failures_backoff::tests::test_control_characters_sanitized_to_spaces
+        PASS [   0.004s] ( 57/718) maho-memory-core facts::failures_backoff::tests::test_detail_truncated_to_512_bytes
+        PASS [   0.005s] ( 58/718) maho-memory-core facts::failures_backoff::tests::test_fifth_failure_parks_without_eligibility
+        PASS [   0.004s] ( 59/718) maho-memory-core facts::failures_backoff::tests::test_first_failure_eligible_one_minute_later
+        PASS [   0.004s] ( 60/718) maho-memory-core facts::failures_backoff::tests::test_oversized_single_entry_parks_immediately
+        PASS [   0.004s] ( 61/718) maho-memory-core facts::failures_backoff::tests::test_parked_entry_stays_parked_with_growing_streak
+        PASS [   0.004s] ( 62/718) maho-memory-core facts::failures_backoff::tests::test_replayed_failure_id_leaves_record_unchanged
+        PASS [   0.004s] ( 63/718) maho-memory-core facts::failures_schema::tests::test_corrupt_json_throws_typed_error
+        PASS [   0.005s] ( 64/718) maho-memory-core facts::failures_schema::tests::test_non_iso_file_updated_at_throws_typed_error
+        PASS [   0.005s] ( 65/718) maho-memory-core facts::failures_schema::tests::test_non_iso_instant_fields_throw_typed_error
+        PASS [   0.005s] ( 66/718) maho-memory-core facts::failures_schema::tests::test_parked_record_with_null_next_eligible_at
+        PASS [   0.004s] ( 67/718) maho-memory-core facts::failures_schema::tests::test_parked_without_parked_at_throws_typed_error
+        PASS [   0.004s] ( 68/718) maho-memory-core facts::failures_schema::tests::test_render_sorts_records_and_appends_newline
+        PASS [   0.004s] ( 69/718) maho-memory-core facts::failures_schema::tests::test_round_trip_well_formed_file
+        PASS [   0.004s] ( 70/718) maho-memory-core facts::failures_schema::tests::test_unknown_reason_throws_typed_error
+        PASS [   0.004s] ( 71/718) maho-memory-core facts::failures_schema::tests::test_unsupported_version_throws_typed_error
+        PASS [   0.004s] ( 72/718) maho-memory-core facts::failures_selection::tests::test_backoff_dropped_one_millisecond_early
+        PASS [   0.004s] ( 73/718) maho-memory-core facts::failures_selection::tests::test_backoff_eligible_at_exact_instant
+        PASS [   0.004s] ( 74/718) maho-memory-core facts::failures_selection::tests::test_launchable_predecessor_with_later_parked_entry
+        PASS [   0.004s] ( 75/718) maho-memory-core facts::failures_selection::tests::test_legacy_record_anchored_at_zero_still_gates
+        PASS [   0.004s] ( 76/718) maho-memory-core facts::failures_selection::tests::test_no_failures_all_launchable
+        PASS [   0.004s] ( 77/718) maho-memory-core facts::failures_selection::tests::test_out_of_order_pending_list_follows_snapshot_boundary
+        PASS [   0.004s] ( 78/718) maho-memory-core facts::failures_selection::tests::test_parked_endpoint_blocks_later_same_conversation_entries
+        PASS [   0.004s] ( 79/718) maho-memory-core facts::failures_selection::tests::test_unrelated_failure_record_allows_other_entries_to_launch
+        PASS [   0.107s] ( 80/718) maho-memory-core facts::extraction::apply_tests::given_zero_applicable_records_when_applied_then_no_commit_is_attempted
+        PASS [   0.005s] ( 81/718) maho-memory-core facts::failures_store::tests::test_given_a_corrupt_failures_file_when_a_failure_is_recorded_then_the_write_fails_closed_and_the_file_is_untouched
+        PASS [   0.005s] ( 82/718) maho-memory-core facts::failures_store::tests::test_given_a_corrupt_failures_file_when_the_store_reads_then_it_fails_closed_with_a_typed_error
+        PASS [   0.005s] ( 83/718) maho-memory-core facts::failures_store::tests::test_given_a_persisted_failure_when_the_same_failure_id_replays_then_the_streak_stays_at_one
+        PASS [   0.004s] ( 84/718) maho-memory-core facts::failures_store::tests::test_given_an_identity_when_the_queue_layout_is_built_then_failures_json_sits_beside_consumed_json
+        PASS [   0.005s] ( 85/718) maho-memory-core facts::failures_store::tests::test_given_a_recorded_failure_when_the_store_persists_it_then_the_file_is_0600_with_a_trailing_newline
+        PASS [   0.278s] ( 86/718) maho-memory-core facts::extraction::apply_tests::given_slug_taken_by_different_person_when_new_person_sanitizes_to_it_then_numeric_suffix_avoids_collision
+        PASS [   0.005s] ( 87/718) maho-memory-core facts::failures_store::tests::test_given_no_failures_file_when_the_store_reads_then_empty_state_is_returned
+        PASS [   0.006s] ( 88/718) maho-memory-core facts::failures_store::tests::test_given_parked_records_when_a_retry_clears_one_conversation_then_the_rest_stay_parked
+        PASS [   0.262s] ( 89/718) maho-memory-core facts::extraction::apply_tests::given_two_cards_whose_aliases_both_match_when_resolved_then_longest_alias_wins
+        PASS [   0.005s] ( 90/718) maho-memory-core facts::failures_store::tests::test_given_persisted_failures_when_the_batch_succeeds_then_only_its_records_are_cleared
+        PASS [   0.246s] ( 91/718) maho-memory-core facts::extraction::apply_tests::given_two_facts_about_same_new_person_in_one_batch_when_applied_then_one_card_receives_both
+        PASS [   0.005s] ( 92/718) maho-memory-core facts::mutation_plan::tests::test_facts_records_hash_deterministic
+        PASS [   0.005s] ( 93/718) maho-memory-core facts::mutation_plan::tests::test_render_facts_note_existing
+        PASS [   0.005s] ( 94/718) maho-memory-core facts::mutation_plan::tests::test_render_facts_note_fresh
+        PASS [   0.005s] ( 95/718) maho-memory-core facts::payload_cap::tests::test_almost_starved_conversation_loses_to_newest
+        PASS [   0.005s] ( 96/718) maho-memory-core facts::payload_cap::tests::test_cap_constant_value
+        PASS [   0.005s] ( 97/718) maho-memory-core facts::payload_cap::tests::test_multi_conversation_entries_ship_ascending
+        PASS [   0.005s] ( 98/718) maho-memory-core facts::payload_cap::tests::test_middle_entry_not_fitting_holds_back_follower
+        PASS [   0.085s] ( 99/718) maho-memory-core facts::extraction::tests::test_given_an_invalid_batch_id_when_applied_then_it_throws
+        PASS [   0.086s] (100/718) maho-memory-core facts::extraction::tests::test_given_an_empty_facts_batch_when_applied_then_it_returns_no_facts_without_touching_git
+        PASS [   0.262s] (101/718) maho-memory-core facts::extraction::apply_tests::given_two_cards_with_equal_length_aliases_when_resolved_then_smallest_slug_wins_and_tie_is_logged
+        PASS [   0.013s] (102/718) maho-memory-core facts::payload_cap::tests::test_fitting_older_entry_ships_when_newer_does_not_fit
+        PASS [   0.006s] (103/718) maho-memory-core facts::payload_cap::tests::test_payload_measurement_matches_utf8_length
+        PASS [   0.010s] (104/718) maho-memory-core facts::payload_cap::tests::test_oversized_envelope_blocks_all_shipments
+        PASS [   0.005s] (105/718) maho-memory-core facts::payload_cap::tests::test_starved_conversation_selected_first
+        PASS [   0.005s] (106/718) maho-memory-core facts::person_index::tests::test_display_name_of_variants
+        PASS [   0.013s] (107/718) maho-memory-core facts::payload_cap::tests::test_oversized_entry_reported_and_never_truncated
+        PASS [   0.005s] (108/718) maho-memory-core facts::person_index::tests::test_read_facts_people_index_empty_dir
+        PASS [   0.005s] (109/718) maho-memory-core facts::person_routing::tests::test_normalize_observation_text
+        PASS [   0.005s] (110/718) maho-memory-core facts::person_index::tests::test_read_facts_people_index_with_human_and_people
+        PASS [   0.005s] (111/718) maho-memory-core facts::person_routing::tests::test_render_card_skeleton
+        PASS [   0.014s] (112/718) maho-memory-core facts::payload_cap::tests::test_prefix_closure_ships_neither_when_older_does_not_fit
+        PASS [   0.005s] (113/718) maho-memory-core facts::person_routing::tests::test_render_person_targets_with_reinforcement
+        PASS [   0.004s] (114/718) maho-memory-core facts::person_routing::tests::test_resolve_person_slug_by_primary_name
+        PASS [   0.005s] (115/718) maho-memory-core facts::person_routing::tests::test_resolve_person_slug_longest_alias_wins
+        PASS [   0.005s] (116/718) maho-memory-core facts::person_routing::tests::test_resolve_person_slug_tie_breaker_lexicographic
+        PASS [   0.028s] (117/718) maho-memory-core facts::payload_cap::tests::test_exact_cap_accepted_and_one_byte_more_rejected
+        PASS [   0.007s] (118/718) maho-memory-core facts::queue::extra_tests::given_consumed_entries_when_mark_consumed_runs_then_files_deleted_and_watermark_records_endpoint
+        PASS [   0.006s] (119/718) maho-memory-core facts::queue::extra_tests::given_failed_batch_when_retained_then_enqueue_watermark_does_not_roll_back_and_entry_survives
+        PASS [   0.006s] (120/718) maho-memory-core facts::queue::extra_tests::given_leftover_queue_file_with_no_completion_when_reconcile_runs_then_it_is_listed_as_launchable
+        PASS [   0.006s] (121/718) maho-memory-core facts::queue::extra_tests::given_published_entry_when_filename_inspected_then_it_is_colon_free_and_hashes_conversation_id
+        PASS [   0.006s] (122/718) maho-memory-core facts::queue::extra_tests::given_malformed_queue_file_when_list_pending_runs_then_it_is_ignored_instead_of_failing
+        PASS [   0.009s] (123/718) maho-memory-core facts::queue::extra_tests::given_late_older_batch_consumed_when_next_settle_runs_then_no_overlapping_range_is_republished
+        PASS [   0.007s] (124/718) maho-memory-core facts::queue::extra_tests::given_older_batch_settling_after_newer_one_queued_when_consumed_then_enqueue_watermark_never_rolls_back
+        PASS [   0.006s] (125/718) maho-memory-core facts::queue::extra_tests::given_queue_file_landed_without_cursor_write_when_next_settle_runs_then_retained_endpoint_anchors_range
+        PASS [   0.006s] (126/718) maho-memory-core facts::queue::extra_tests::given_two_publications_in_same_millisecond_when_both_land_then_endpoint_hash_keeps_them_distinct
+        PASS [   0.006s] (127/718) maho-memory-core facts::queue::tests::test_given_a_fresh_journal_delta_when_enqueue_runs_then_one_queue_file_holds_the_full_canonical_range
+        PASS [   0.006s] (128/718) maho-memory-core facts::queue::tests::test_given_a_retained_entry_ending_at_m2_when_a_later_settle_arrives_then_the_new_range_starts_strictly_after_it
+        PASS [   0.006s] (129/718) maho-memory-core facts::queue::tests::test_given_an_aborted_drain_signal_when_enqueue_is_attempted_then_nothing_publishes_and_the_cursor_stays_untouched
+        PASS [   0.005s] (130/718) maho-memory-core facts::queue::tests::test_given_an_identical_settle_when_enqueue_runs_again_then_the_duplicate_endpoint_is_skipped
+        PASS [   0.005s] (131/718) maho-memory-core facts::queue::tests::test_given_only_non_canonical_trailing_entries_when_enqueue_runs_then_no_queue_file_is_published
+        PASS [   0.006s] (132/718) maho-memory-core facts::queue::tests::test_given_the_abort_fires_after_the_publish_lands_when_the_cursor_advance_is_attempted_then_the_batch_stays_retryable_with_the_watermark_unmoved
+        PASS [   0.005s] (133/718) maho-memory-core facts::queue::tests::test_given_the_abort_fires_at_the_interior_clock_hook_when_enqueue_runs_then_nothing_publishes_and_the_cursor_stays_untouched
+        PASS [   0.006s] (134/718) maho-memory-core facts::queue::tests::test_given_the_consumed_watermark_already_covers_the_endpoint_when_enqueue_runs_then_nothing_is_published
+        PASS [   0.061s] (135/718) maho-memory-core facts::failures_store::tests::test_given_the_facts_queue_lock_is_held_when_the_store_records_a_failure_then_it_waits_for_the_lock_instead_of_writing
+        PASS [   0.407s] (136/718) maho-memory-core facts::extraction::apply_tests::given_existing_explicit_observation_when_equal_fact_arrives_then_n_increments_and_date_refreshes_without_duplicate
+        PASS [   0.036s] (137/718) maho-memory-core facts::queue::extra_tests::given_two_concurrent_enqueue_attempts_for_same_delta_when_both_run_then_exactly_one_entry_is_published
+        PASS [   0.199s] (138/718) maho-memory-core facts::extraction::apply_tests::given_unresolved_person_mention_when_applied_then_prefixed_bullet_is_stored_verbatim_in_monthly_notes
+        PASS [   0.102s] (139/718) maho-memory-core facts::mutation_plan::tests::test_plan_facts_mutation_parent_dirty
+        PASS [   0.112s] (140/718) maho-memory-core facts::mutation_plan::tests::test_plan_facts_mutation_clean_repo
+        PASS [   0.004s] (141/718) maho-memory-core facts::recovery_ownership::tests::test_parse_porcelain_path_variants
+        PASS [   0.004s] (142/718) maho-memory-core facts::recovery_ownership::tests::test_same_facts_owned_state_comparisons
+        PASS [   0.004s] (143/718) maho-memory-core facts::recovery_ownership::tests::test_same_identity_structural_equality
+        PASS [   0.004s] (144/718) maho-memory-core facts::schema::tests::test_canonical_position
+        PASS [   0.004s] (145/718) maho-memory-core facts::schema::tests::test_facts_queue_paths
+        PASS [   0.004s] (146/718) maho-memory-core facts::schema::tests::test_initial_cursor_fields
+        PASS [   0.004s] (147/718) maho-memory-core facts::schema::tests::test_parse_consumed_round_trip_and_fallback
+        PASS [   0.004s] (148/718) maho-memory-core facts::schema::tests::test_parse_cursor_round_trip_and_defaults
+        PASS [   0.005s] (149/718) maho-memory-core facts::schema::tests::test_parse_queue_entry_valid_and_invalid
+        PASS [   0.004s] (150/718) maho-memory-core facts::schema::tests::test_queue_timestamp
+        PASS [   0.004s] (151/718) maho-memory-core fs::rename_contention::tests::non_contention_error_surfaces_at_once_even_on_windows
+        PASS [   0.085s] (152/718) maho-memory-core facts::recovery_mutation::tests::test_transaction_fails_when_path_is_missing_from_initial_state
+        PASS [   0.004s] (153/718) maho-memory-core fs::rename_contention::tests::non_windows_platform_never_retries
+        PASS [   0.004s] (154/718) maho-memory-core fs::rename_contention::tests::windows_ladder_exhaustion_surfaces_the_last_error
+        PASS [   0.004s] (155/718) maho-memory-core fs::rename_contention::tests::windows_ladder_retries_contention_then_succeeds
+        PASS [   0.004s] (156/718) maho-memory-core fs::resilient::tests::create_exclusive_refuses_a_second_creation
+        PASS [   0.004s] (157/718) maho-memory-core fs::resilient::tests::directory_listing_is_sorted_and_tolerates_a_missing_directory
+        PASS [   0.004s] (158/718) maho-memory-core fs::resilient::tests::rename_moves_a_file_and_remove_file_deletes_it
+        PASS [   0.004s] (159/718) maho-memory-core fs::resilient::tests::write_then_read_round_trips_and_append_extends
+        PASS [   0.004s] (160/718) maho-memory-core fs::retry::tests::eintr_is_retried_up_to_the_cap_and_then_surfaces
+        PASS [   0.004s] (161/718) maho-memory-core fs::retry::tests::interrupted_then_success_returns_the_value
+        PASS [   0.004s] (162/718) maho-memory-core fs::retry::tests::is_eintr_classifies_only_interrupted
+        PASS [   0.004s] (163/718) maho-memory-core fs::retry::tests::non_eintr_surfaces_immediately
+        PASS [   0.004s] (164/718) maho-memory-core fs::write_all::tests::exclusive_flag_detection_matches_the_pinned_predicate
+        PASS [   0.004s] (165/718) maho-memory-core fs::write_all::tests::exclusive_open_is_not_retried_and_fails_when_the_path_exists
+        PASS [   0.004s] (166/718) maho-memory-core fs::write_all::tests::write_all_to_handle_reports_the_bytes_written
+        PASS [   0.004s] (167/718) maho-memory-core fs::write_all::tests::write_path_all_writes_every_byte_and_appends_when_asked
+        PASS [   0.004s] (168/718) maho-memory-core git::config_lock_tests::given_config_lock_failure_when_classified_then_is_retryable
+        PASS [   0.004s] (169/718) maho-memory-core git::config_lock_tests::given_index_lock_contention_when_classified_then_is_retryable
+        PASS [   0.155s] (170/718) maho-memory-core facts::recovery::tests::test_rejects_foreign_creation_at_a_planned_new_path_without_deleting_it
+        PASS [   0.004s] (171/718) maho-memory-core git::config_lock_tests::given_non_lock_git_failure_when_operation_runs_then_it_surfaces_immediately
+        PASS [   0.004s] (172/718) maho-memory-core git::config_lock_tests::given_ref_lock_failure_when_classified_then_is_retryable
+        PASS [   0.112s] (173/718) maho-memory-core facts::recovery_mutation::tests::test_transaction_rollback_reverts_performed_changes
+        PASS [   0.187s] (174/718) maho-memory-core facts::recovery::tests::race_ports::preserves_every_path_when_one_member_of_a_multi_path_batch_is_foreign
+        PASS [   0.186s] (175/718) maho-memory-core facts::recovery::tests::test_publishes_a_complete_blob_backed_envelope_before_the_first_affected_path_mutation
+        PASS [   0.004s] (176/718) maho-memory-core git::config_lock_tests::given_unrelated_git_failure_when_classified_then_is_not_retryable
+        PASS [   0.004s] (177/718) maho-memory-core git::exec_tests::given_bare_git_fails_with_non_enoent_cause_when_windows_roots_exist_then_error_propagates_without_fallback
+        PASS [   0.004s] (178/718) maho-memory-core git::exec_tests::given_bare_runner_reports_missing_cwd_result_when_run_then_windows_fallbacks_are_not_attempted
+        PASS [   0.004s] (179/718) maho-memory-core git::exec_tests::given_binary_not_found_when_run_executes_then_not_found_error_is_produced
+        PASS [   0.005s] (180/718) maho-memory-core git::exec_tests::given_cwd_exists_but_no_git_on_path_when_git_runs_then_not_found_error_fires
+        PASS [   0.197s] (181/718) maho-memory-core facts::recovery::tests::test_find_facts_batch_receipt_matches_the_batch_trailer_and_ignores_unknown_batches
+        PASS [   0.004s] (182/718) maho-memory-core git::exec_tests::given_distinct_standard_roots_when_every_executable_is_absent_then_candidates_attempted_in_deterministic_order
+        PASS [   0.004s] (183/718) maho-memory-core git::exec_tests::given_duplicate_standard_roots_when_fallback_runs_then_equivalent_candidates_attempted_once
+        PASS [   0.004s] (184/718) maho-memory-core git::exec_tests::given_fallback_fails_with_non_enoent_error_when_fallback_runs_then_error_propagates_without_later_candidates
+        PASS [   0.004s] (185/718) maho-memory-core git::exec_tests::given_fallback_nonzero_result_when_fallback_runs_then_result_returns_without_later_candidates
+        PASS [   0.004s] (186/718) maho-memory-core git::exec_tests::given_fallback_timeout_when_fallback_runs_then_timeout_propagates_without_later_candidates
+        PASS [   0.004s] (187/718) maho-memory-core git::exec_tests::given_first_fallback_yields_enoent_when_fallback_runs_then_next_candidate_is_attempted
+        PASS [   0.004s] (188/718) maho-memory-core git::exec_tests::given_git_resolves_on_path_when_windows_roots_exist_then_bare_git_keeps_precedence
+        PASS [   0.004s] (189/718) maho-memory-core git::exec_tests::given_missing_working_directory_when_run_executes_then_reports_exit_code_128
+        PASS [   0.004s] (190/718) maho-memory-core git::exec_tests::given_non_windows_platform_and_missing_git_when_git_runs_then_windows_roots_are_not_attempted
+        PASS [   0.004s] (191/718) maho-memory-core git::exec_tests::given_process_exceeding_timeout_when_run_executes_then_timeout_error_is_produced
+        PASS [   0.004s] (192/718) maho-memory-core git::exec_tests::given_stdin_and_windows_fallback_when_bare_git_absent_then_stdin_reaches_fallback_runner
+        PASS [   0.015s] (193/718) maho-memory-core git::exec_tests::given_input_via_stdin_when_hash_object_reads_it_then_git_produces_sha
+        PASS [   0.004s] (194/718) maho-memory-core git::exec_tests::given_unc_device_and_root_relative_roots_when_fallback_runs_then_only_drive_qualified_root_is_attempted
+        PASS [   0.225s] (195/718) maho-memory-core facts::recovery::tests::race_ports::preserves_foreign_bytes_injected_after_hashing_an_existing_path_for_deletion
+        PASS [   0.015s] (196/718) maho-memory-core git::exec_tests::given_stdin_when_real_git_runs_then_bytes_are_piped_like_a_file_hash
+        PASS [   0.106s] (197/718) maho-memory-core git::config_lock_tests::given_concurrent_config_set_calls_when_mutating_then_they_do_not_overlap
+        PASS [   0.080s] (198/718) maho-memory-core git::config_lock_tests::given_transient_config_lock_failures_when_mutation_runs_then_it_retries
+        PASS [   0.079s] (199/718) maho-memory-core git::config_lock_tests::given_transient_index_lock_failures_when_operation_runs_then_it_retries
+        PASS [   0.260s] (200/718) maho-memory-core facts::recovery::tests::test_rejects_tracked_worktree_drift_without_changing_index_or_worktree_bytes
+        PASS [   0.271s] (201/718) maho-memory-core facts::recovery::tests::test_rejects_tracked_index_drift_without_rewriting_either_surface
+        PASS [   0.294s] (202/718) maho-memory-core facts::recovery::tests::race_ports::preserves_a_foreign_replacement_injected_after_hashing_an_existing_tracked_path
+        PASS [   0.299s] (203/718) maho-memory-core facts::recovery::tests::test_restores_owned_partial_pre_post_residue_and_commits_the_exact_recorded_post_state
+        PASS [   0.106s] (204/718) maho-memory-core git::path_state_tests::test_atomically_materializes_and_removes_worktree_files
+        PASS [   0.084s] (205/718) maho-memory-core git::path_state_tests::test_rejects_traversal_and_invalid_paths
+        PASS [   0.100s] (206/718) maho-memory-core git::path_state_tests::test_hashes_and_writes_blobs
+        PASS [   0.100s] (207/718) maho-memory-core git::path_state_tests::test_rejects_unsupported_index_modes
+        PASS [   0.137s] (208/718) maho-memory-core git::path_state_tests::test_captures_stage_zero_index_and_worktree_identities
+        PASS [   0.143s] (209/718) maho-memory-core git::path_state_tests::test_captures_and_restores_executable_modes
+        PASS [   0.090s] (210/718) maho-memory-core git::repo_tests::test_refuses_to_commit_unrelated_changes
+        PASS [   0.004s] (211/718) maho-memory-core git::repo_tree::tests::parse_cat_file_batch_reads_blob_content_and_skips_missing_oids
+        PASS [   0.004s] (212/718) maho-memory-core git::repo_tree::tests::parse_cat_file_batch_rejects_a_truncated_record
+        PASS [   0.143s] (213/718) maho-memory-core git::path_state_tests::test_sets_and_removes_index_entries
+        PASS [   0.004s] (214/718) maho-memory-core git::repo_tree::tests::parse_ls_tree_sized_reads_byte_sizes_and_skips_tree_entries
+        PASS [   0.004s] (215/718) maho-memory-core git::repo_tree::tests::parse_ls_tree_blobs_keeps_only_blobs
+        PASS [   0.004s] (216/718) maho-memory-core git::repo_worktree_serialization_tests::given_concurrent_worktree_add_calls_then_they_do_not_overlap
+        PASS [   0.004s] (217/718) maho-memory-core git::repo_worktree_serialization_tests::given_concurrent_worktree_remove_calls_then_they_do_not_overlap
+        PASS [   0.004s] (218/718) maho-memory-core identity::layout::tests::test_build_identity_paths_when_root_and_id_given_then_layout_shape_is_produced
+        PASS [   0.004s] (219/718) maho-memory-core identity::layout::tests::test_default_memory_root_when_no_override_then_it_is_home_dot_omo_memory
+        PASS [   0.133s] (220/718) maho-memory-core git::repo_tests::test_explicit_author_flags_control_attribution
+        PASS [   0.004s] (221/718) maho-memory-core identity::layout::tests::test_lock_domain_layout_when_identity_is_built_then_lock_dir_stays_inside_the_root
+        PASS [   0.004s] (222/718) maho-memory-core identity::layout::tests::test_resolve_memory_root_when_override_is_absolute_then_it_is_used_verbatim
+        PASS [   0.090s] (223/718) maho-memory-core git::repo_tests::test_reports_dirty_markdown_encoding_issues
+        PASS [   0.004s] (224/718) maho-memory-core identity::layout::tests::test_resolve_memory_root_when_override_is_blank_then_default_root_is_used
+        PASS [   0.004s] (225/718) maho-memory-core identity::layout::tests::test_resolve_memory_root_when_override_is_relative_then_it_resolves_against_cwd
+        PASS [   0.096s] (226/718) maho-memory-core git::repo_tests::test_rejects_clean_check_on_dirty_changes
+        PASS [   0.004s] (227/718) maho-memory-core identity::layout::tests::test_runtime_subdirnames_when_enumerated_then_every_declared_subdir_lives_under_runtime
+        PASS [   0.004s] (228/718) maho-memory-core identity::resolve::tests::test_is_auto_agent_value_when_value_missing_or_blank_then_it_is_auto
+        PASS [   0.004s] (229/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_auto_then_the_id_is_slug_plus_sha256_of_the_full_path
+        PASS [   0.004s] (230/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_cwd_is_blank_then_it_is_rejected
+        PASS [   0.004s] (231/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_cwd_repeats_then_the_auto_id_is_deterministic
+        PASS [   0.004s] (232/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_cwd_spelling_varies_then_normalization_yields_one_id
+        PASS [   0.004s] (233/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_explicit_has_whitespace_then_it_matches_the_trimmed_form
+        PASS [   0.148s] (234/718) maho-memory-core git::repo_tests::test_initializes_repository_idempotently_with_seed_files
+        PASS [   0.004s] (235/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_hostile_and_honest_slugs_collide_then_hash_suffixes_differ
+        PASS [   0.005s] (236/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_explicit_then_the_directory_is_slug_plus_hash
+        PASS [   0.005s] (237/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_ids_are_hostile_then_every_path_stays_confined
+        PASS [   0.004s] (238/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_no_override_then_paths_live_under_the_default_root
+        PASS [   0.004s] (239/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_projects_share_a_basename_then_slugs_match_but_ids_differ
+        PASS [   0.004s] (240/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_root_is_overridden_then_paths_honor_it_and_stay_confined
+        PASS [   0.005s] (241/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_root_override_is_relative_then_it_uses_the_cwd_argument
+        PASS [   0.004s] (242/718) maho-memory-core identity::resolve::tests::test_resolve_memory_identity_when_value_is_auto_cased_then_only_lowercase_triggers_auto
+        PASS [   0.004s] (243/718) maho-memory-core identity::resolve::tests::test_sanitize_to_slug_when_input_is_already_safe_then_it_is_unchanged
+        PASS [   0.004s] (244/718) maho-memory-core identity::resolve::tests::test_sanitize_to_slug_when_input_is_overlong_then_it_caps_without_a_trailing_dash
+        PASS [   0.004s] (245/718) maho-memory-core identity::resolve::tests::test_sanitize_to_slug_when_input_is_separator_heavy_then_dashes_collapse_and_trim
+        PASS [   0.005s] (246/718) maho-memory-core identity::resolve::tests::test_sanitize_to_slug_when_input_is_unicode_then_it_folds_to_ascii_or_dashes
+        PASS [   0.005s] (247/718) maho-memory-core identity::resolve::tests::test_short_hash_when_hashed_then_it_is_the_first_eight_hex_chars_of_sha256
+        PASS [   0.006s] (248/718) maho-memory-core journal::cursor::tests::test_cursor_remains_retryable_when_reflection_fails_on_captured_snapshot
+        PASS [   0.005s] (249/718) maho-memory-core journal::cursor::tests::test_is_canonical_entry_when_user_or_assistant_with_text_then_true
+        PASS [   0.005s] (250/718) maho-memory-core journal::cursor::tests::test_only_snapshot_rows_become_reflected_when_rows_appended_during_reflection_and_snapshot_succeeds
+        PASS [   0.005s] (251/718) maho-memory-core journal::cursor::tests::test_parse_state_when_corrupt_json_then_returns_error
+        PASS [   0.005s] (252/718) maho-memory-core journal::cursor::tests::test_parse_state_when_valid_json_then_tolerantly_extracts_counters
+        PASS [   0.005s] (253/718) maho-memory-core journal::cursor::tests::test_reflection_state_not_mutated_when_aborted_signal_on_snapshot_capture
+        PASS [   0.005s] (254/718) maho-memory-core journal::entries::tests::test_canonical_and_contextual_rows_use_stable_ids_when_assistant_trajectory_projected
+        PASS [   0.004s] (255/718) maho-memory-core journal::entries::tests::test_has_no_canonical_assistant_row_when_tool_only_assistant_message_projected
+        PASS [   0.005s] (256/718) maho-memory-core journal::store::tests::test_counter_is_recomputed_when_stale_derived_counter_on_disk_written
+        PASS [   0.090s] (257/718) maho-memory-core git::repo_tests::test_supports_custom_author_names_for_empty_initial_commit
+        PASS [   0.005s] (258/718) maho-memory-core journal::store::tests::test_flush_returns_early_without_throwing_when_signal_aborted_mid_flush
+        PASS [   0.005s] (259/718) maho-memory-core journal::store::tests::test_lock_file_is_released_anyway_when_abort_raised_while_task_holds_lock
+        PASS [   0.123s] (260/718) maho-memory-core git::repo_tests::test_runs_hook_installer_during_init_and_commit_boundaries
+        PASS [   0.010s] (261/718) maho-memory-core journal::store::tests::test_every_contender_still_runs_serialized_when_holder_outlasts_acquisition_wait_on_overlapping_same_process_acquisitions
+        PASS [   0.005s] (262/718) maho-memory-core journal::store::tests::test_settles_and_leaves_no_lock_behind_when_flush_runs_on_journal_with_rows
+        PASS [   0.006s] (263/718) maho-memory-core journal::store::tests::test_rows_are_idempotent_and_steps_stay_derived_when_three_completed_assistant_messages_reconciled_twice
+        PASS [   0.005s] (264/718) maho-memory-core journal::store::tests::test_throws_abort_error_and_creates_no_lock_file_when_signal_aborted_before_acquisition
+        PASS [   0.005s] (265/718) maho-memory-core journal::store::tests::test_throws_and_live_lock_never_stolen_when_lock_file_owned_by_live_process_and_deadline_passes
+        PASS [   0.004s] (266/718) maho-memory-core journal::store::tests::test_typed_timeout_error_is_thrown_when_live_foreign_owner_keeps_lock_and_deadline_expires
+        PASS [   0.005s] (267/718) maho-memory-core journal::store::tests::test_throws_without_acquiring_when_abort_during_acquisition_retry_loop_on_contended_lock
+        PASS [   0.018s] (268/718) maho-memory-core journal::store::tests::test_artifact_is_reclaimed_by_age_when_payload_free_lock_file_abandoned_mid_acquisition
+        PASS [   0.005s] (269/718) maho-memory-core locks::acquire::tests::given_absent_lock_when_acquired_and_released_then_record_published_and_removed
+        PASS [   0.015s] (270/718) maho-memory-core journal::store::tests::test_reused_pid_lock_is_reclaimed_when_stale_lock_whose_live_pid_belongs_to_different_process
+        PASS [   0.005s] (271/718) maho-memory-core locks::acquire::tests::given_cancelled_option_when_acquire_called_then_returns_aborted
+        PASS [   0.005s] (272/718) maho-memory-core locks::acquire::tests::given_callback_under_lock_when_callback_fails_then_with_lock_releases_lock
+        PASS [   0.006s] (273/718) maho-memory-core locks::acquire::tests::given_dead_owner_on_another_host_when_acquisition_attempted_then_recovery_fails_closed
+        PASS [   0.006s] (274/718) maho-memory-core locks::acquire::tests::given_lock_whose_nonce_changed_when_former_owner_releases_then_replacement_remains_held
+        PASS [   0.139s] (275/718) maho-memory-core git::repo_tests::test_reports_no_effective_changes_error
+        PASS [   0.016s] (276/718) maho-memory-core journal::store::tests::test_stale_lock_is_reclaimed_and_task_runs_when_lock_file_left_by_dead_process
+        PASS [   0.006s] (277/718) maho-memory-core locks::candidate_sweep::tests::a_sharing_error_retries_then_reports_failure
+        PASS [   0.005s] (278/718) maho-memory-core locks::candidate_sweep::tests::candidate_name_shape_requires_the_uuid_suffix
+        PASS [   0.005s] (279/718) maho-memory-core locks::candidate_sweep::tests::keeps_a_fresh_candidate_unless_it_is_tracked
+        PASS [   0.005s] (280/718) maho-memory-core locks::candidate_sweep::tests::sweeps_a_stale_candidate_and_leaves_live_locks_alone
+        PASS [   0.007s] (281/718) maho-memory-core locks::candidate_sweep::tests::missing_directory_reports_zero_and_forgets_tracked_candidates
+        PASS [   0.013s] (282/718) maho-memory-core locks::acquire::tests::given_old_lock_whose_owner_is_live_when_acquisition_attempted_then_never_recovered
+        PASS [   0.005s] (283/718) maho-memory-core locks::domains::tests::given_hostile_and_distinct_run_ids_when_resolved_then_confined_and_distinct
+        PASS [   0.005s] (284/718) maho-memory-core locks::domains::tests::given_runtime_locks_dir_when_domain_paths_resolved_then_protocol_names_are_stable
+        PASS [   0.004s] (285/718) maho-memory-core locks::lock_record::tests::given_empty_purpose_when_created_then_fails
+        PASS [   0.012s] (286/718) maho-memory-core locks::acquire::tests::given_owned_lock_when_another_owner_acquires_then_contention_error_raised
+        PASS [   0.005s] (287/718) maho-memory-core locks::lock_record::tests::given_invalid_json_or_schema_when_parsed_then_returns_none
+        PASS [   0.017s] (288/718) maho-memory-core locks::acquire::tests::given_live_pid_with_different_process_start_when_acquisition_attempted_then_recovered
+        PASS [   0.005s] (289/718) maho-memory-core locks::lock_record::tests::given_valid_purpose_when_created_then_record_is_populated
+        PASS [   0.005s] (290/718) maho-memory-core locks::process_identity::conflict_tests::given_an_identity_with_no_scheme_separator_when_compared_then_no_conflict_is_reported
+        PASS [   0.005s] (291/718) maho-memory-core locks::process_identity::conflict_tests::given_identical_identities_when_compared_then_no_conflict_is_reported
+        PASS [   0.005s] (292/718) maho-memory-core locks::lock_record::tests::given_valid_serialized_record_when_parsed_then_matches
+        PASS [   0.005s] (293/718) maho-memory-core locks::process_identity::conflict_tests::given_identities_in_different_schemes_when_compared_then_no_conflict_is_reported
+        PASS [   0.005s] (294/718) maho-memory-core locks::process_identity::conflict_tests::given_two_identities_in_one_scheme_when_they_disagree_then_the_conflict_is_reported
+        PASS [   0.006s] (295/718) maho-memory-core locks::process_identity::conflict_tests::comparability_requires_matching_schemes_including_the_schemeless_case
+        PASS [   0.005s] (296/718) maho-memory-core locks::process_identity::tests::given_current_process_when_start_identity_queried_then_format_matches
+        PASS [   0.005s] (297/718) maho-memory-core locks::process_identity::tests::given_the_own_pid_when_start_identity_is_queried_twice_then_the_value_is_stable
+        PASS [   0.005s] (298/718) maho-memory-core locks::process_identity::tests::given_non_existent_pid_when_start_identity_queried_then_returns_none
+        PASS [   0.005s] (299/718) maho-memory-core locks::process_identity::tests::linux_start_identity_is_an_in_process_proc_read
+        PASS [   0.004s] (300/718) maho-memory-core locks::process_identity::tests::start_identity_never_forks_a_child_on_linux
+        PASS [   0.142s] (301/718) maho-memory-core git::repo_tests::test_shows_and_logs_history_with_trailers_and_paths
+        PASS [   0.010s] (302/718) maho-memory-core locks::process_identity::tests::given_current_process_when_liveness_probed_then_reports_alive
+        PASS [   0.010s] (303/718) maho-memory-core locks::process_identity::tests::given_non_existent_pid_when_liveness_probed_then_reports_dead
+        PASS [   0.005s] (304/718) maho-memory-core locks::recall_wake_domain::tests::a_path_failure_surfaces_as_an_io_error_not_already_gone
+        PASS [   0.005s] (305/718) maho-memory-core locks::recall_wake_domain::tests::a_missing_head_ticket_is_treated_as_already_gone
+        PASS [   0.005s] (306/718) maho-memory-core locks::recall_wake_domain::tests::an_aborted_caller_is_refused_and_leaves_no_ticket_behind
+        PASS [   0.005s] (307/718) maho-memory-core locks::recall_wake_domain::tests::a_repeated_try_release_reports_already_gone
+        PASS [   0.005s] (308/718) maho-memory-core locks::recall_wake_domain::tests::an_invalid_slot_count_is_refused_before_any_ticket_is_written
+        PASS [   0.011s] (309/718) maho-memory-core locks::recall_wake_domain::tests::a_dead_head_ticket_is_reaped_so_the_queue_moves
+        PASS [   0.005s] (310/718) maho-memory-core locks::recall_wake_domain::tests::slot_paths_reject_a_non_positive_slot
+        PASS [   0.013s] (311/718) maho-memory-core locks::recall_wake_domain::tests::a_live_head_ticket_keeps_its_place
+        PASS [   0.006s] (312/718) maho-memory-core locks::recall_wake_domain::tests::try_release_releases_an_acquired_lease_and_frees_the_slot
+        PASS [   0.006s] (313/718) maho-memory-core locks::recall_wake_domain::tests::with_recall_wake_lease_releases_the_slot_after_the_operation
+        PASS [   0.005s] (314/718) maho-memory-core memfs::frontmatter::tests::test_frontmatter_when_kind_and_aliases_given_then_roundtrip_is_stable
+        PASS [   0.006s] (315/718) maho-memory-core memfs::frontmatter::tests::test_frontmatter_when_empty_aliases_array_then_accepts_and_roundtrips
+        PASS [   0.007s] (316/718) maho-memory-core memfs::frontmatter::tests::test_frontmatter_when_body_edited_then_preserves_kind_and_aliases
+        PASS [   0.006s] (317/718) maho-memory-core memfs::frontmatter::tests::test_frontmatter_when_varied_inputs_given_then_roundtrip_is_stable
+        PASS [   0.005s] (318/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_has_empty_string_then_throws_frontmatter_error
+        PASS [   0.006s] (319/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_has_non_string_then_throws_frontmatter_error
+        PASS [   0.006s] (320/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_has_special_chars_then_preserves_through_roundtrip
+        PASS [   0.005s] (321/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_not_json_array_then_throws_frontmatter_error
+        PASS [   0.006s] (322/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_without_kind_then_leaves_kind_none
+        PASS [   0.006s] (323/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_body_is_empty_then_yields_empty_body
+        PASS [   0.005s] (324/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_crlf_line_endings_then_normalizes_crlf
+        PASS [   0.008s] (325/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_aliases_is_json_object_then_throws_frontmatter_error
+        PASS [   0.005s] (326/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_empty_description_value_then_throws_frontmatter_error
+        PASS [   0.005s] (327/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_kind_and_aliases_given_then_extracts_both
+        PASS [   0.005s] (328/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_extra_whitespace_around_keys_then_trims
+        PASS [   0.006s] (329/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_kind_multi_word_then_preserves_verbatim
+        PASS [   0.006s] (330/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_limit_key_present_then_tolerates_and_ignores_limit
+        PASS [   0.006s] (331/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_missing_description_then_throws_frontmatter_error
+        PASS [   0.007s] (332/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_kind_without_aliases_then_leaves_aliases_none
+        PASS [   0.006s] (333/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_missing_closing_delimiter_then_throws_frontmatter_error
+        PASS [   0.025s] (334/718) maho-memory-core locks::recall_wake_domain::tests::default_slots_admit_two_concurrent_leases_and_refuse_the_third
+        PASS [   0.006s] (335/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_no_frontmatter_at_all_then_throws_frontmatter_error
+        PASS [   0.123s] (336/718) maho-memory-core git::repo_tree::tests::real_repo_readers_report_sizes_and_blob_content_by_oid
+        PASS [   0.006s] (337/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_read_only_true_then_preserves_read_only
+        PASS [   0.006s] (338/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_well_formed_then_extracts_description_and_body
+        PASS [   0.007s] (339/718) maho-memory-core memfs::frontmatter::tests::test_parse_memory_file_when_read_only_kind_aliases_together_then_preserves_all
+        PASS [   0.006s] (340/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_aliases_none_then_omits_aliases
+        PASS [   0.005s] (341/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_crlf_input_then_outputs_lf_only
+        PASS [   0.006s] (342/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_description_has_newlines_then_collapses_to_spaces
+        PASS [   0.155s] (343/718) maho-memory-core git::repo_tests::test_supports_worktrees_and_merges
+        PASS [   0.005s] (344/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_empty_description_then_throws_frontmatter_error
+        PASS [   0.006s] (345/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_description_has_surrounding_whitespace_then_trims
+        PASS [   0.008s] (346/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_body_is_empty_then_produces_trailing_newline
+        PASS [   0.006s] (347/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_kind_and_aliases_given_then_emits_kind_then_aliases_after_description
+        PASS [   0.007s] (348/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_read_only_edited_then_preserves_read_only
+        PASS [   0.006s] (349/718) maho-memory-core memfs::frontmatter_scalar::tests::canonical_sources_accept_specials_numbers_and_json_forms
+        PASS [   0.008s] (350/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_read_only_kind_aliases_together_then_emits_all_in_order
+        PASS [   0.006s] (351/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_whitespace_only_description_then_throws_frontmatter_error
+        PASS [   0.009s] (352/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_kind_none_then_omits_kind
+        PASS [   0.006s] (353/718) maho-memory-core memfs::frontmatter_scalar::tests::plain_safe_scalars_reject_yaml_specials_and_indicators
+        PASS [   0.005s] (354/718) maho-memory-core memfs::frontmatter_scalar::tests::quoted_scalars_decode_in_both_subset_forms
+        PASS [   0.008s] (355/718) maho-memory-core memfs::frontmatter::tests::test_render_memory_file_when_well_formed_then_roundtrips_stably
+        PASS [   0.007s] (356/718) maho-memory-core memfs::frontmatter_scalar::tests::rendering_quotes_only_when_a_plain_scalar_would_not_round_trip
+        PASS [   0.006s] (357/718) maho-memory-core memfs::frontmatter_scalar::tests::split_frontmatter_handles_lf_and_crlf_and_requires_closing_delimiter
+        PASS [   0.007s] (358/718) maho-memory-core memfs::frontmatter_validation::tests::a_header_violation_prefers_grammar_over_the_description_contract
+        PASS [   0.006s] (359/718) maho-memory-core memfs::frontmatter_validation::tests::a_well_formed_header_passes_both_checks
+        PASS [   0.006s] (360/718) maho-memory-core memfs::frontmatter_validation::tests::description_contract_names_scaffolding_before_length_or_lines
+        PASS [   0.006s] (361/718) maho-memory-core memfs::frontmatter_validation::tests::grammar_rejects_indented_continuations_comments_and_non_pairs
+        PASS [   0.006s] (362/718) maho-memory-core memfs::frontmatter_validation::tests::grammar_rejects_duplicate_keys_and_a_missing_description
+        PASS [   0.006s] (363/718) maho-memory-core memfs::frontmatter_validation::tests::missing_frontmatter_is_reported
+        PASS [   0.006s] (364/718) maho-memory-core memfs::frontmatter_validation::tests::values_must_be_safe_or_canonical_scalars
+        PASS [   0.009s] (365/718) maho-memory-core memfs::frontmatter_validation::tests::scaffolding_detection_matches_the_pinned_pattern
+        PASS [   0.391s] (366/718) maho-memory-core git::config_lock_tests::given_lock_that_never_clears_when_exhausted_then_error_surfaces
+        PASS [   0.022s] (367/718) maho-memory-core memfs::frontmatter_scalar::tests::scalar_source_decodes_quotes_and_preserves_plain_text
+        PASS [   0.020s] (368/718) maho-memory-core memfs::frontmatter_scalar::tests::string_arrays_decode_only_for_json_arrays_of_strings
+        PASS [   0.016s] (369/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_hook_scripts_when_parsed_by_sh_then_syntax_check_passes
+        PASS [   0.009s] (370/718) maho-memory-core memfs::hooks::tests::test_hook_scripts_when_checked_then_parse_as_posix_sh_without_bash_only_constructs
+        PASS [   0.007s] (371/718) maho-memory-core memfs::hooks::tests::test_install_hooks_when_installed_twice_then_both_hooks_stay_executable_and_identical
+        PASS [   0.008s] (372/718) maho-memory-core memfs::hooks::tests::test_install_hooks_when_linked_worktree_then_land_in_shared_hooks_directory
+        PASS [   0.006s] (373/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_absolute_path_inside_root_then_accepted
+        PASS [   0.008s] (374/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_absolute_path_outside_root_then_rejected
+        PASS [   0.006s] (375/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_hostile_labels_given_then_rejected
+        PASS [   0.007s] (376/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_non_markdown_file_and_tool_path_false_then_accepted
+        PASS [   0.009s] (377/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_root_itself_as_absolute_path_then_rejected
+        PASS [   0.015s] (378/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_real_existing_parent_inside_root_then_missing_child_accepted
+        PASS [   0.008s] (379/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_symlink_directory_escapes_root_then_rejected
+        PASS [   0.009s] (380/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_symlink_directory_inside_root_then_accepted
+        PASS [   0.008s] (381/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_symlink_file_escapes_root_then_rejected
+        PASS [   0.009s] (382/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_valid_tool_labels_given_then_resolves_to_confined_markdown_files
+        PASS [   0.007s] (383/718) maho-memory-core memfs::paths::tests::test_validate_repository_path_when_directory_label_given_then_no_extension_added
+        PASS [   0.011s] (384/718) maho-memory-core memfs::paths::tests::test_validate_memory_path_when_windows_absolute_path_outside_root_then_rejected
+        PASS [   0.083s] (385/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_no_configured_mirror_when_commit_lands_then_hook_noops_without_log
+        PASS [   0.007s] (386/718) maho-memory-core memfs::paths::tests::test_validate_repository_path_when_git_given_then_rejected
+        PASS [   0.009s] (387/718) maho-memory-core memfs::paths::tests::test_validate_repository_path_when_traversal_given_then_rejected
+        PASS [   0.005s] (388/718) maho-memory-core people::format::tests::test_is_reserved_slug_when_checked_then_flags_human_only
+        PASS [   0.007s] (389/718) maho-memory-core people::format::tests::test_parse_people_card_when_empty_card_then_yields_no_entries_and_no_diagnostics
+        PASS [   0.092s] (390/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_unreachable_mirror_when_commit_lands_then_commit_succeeds_and_failure_is_logged
+        PASS [   0.013s] (391/718) maho-memory-core people::format::tests::test_parse_people_card_when_comment_only_line_then_skips_comment_lines
+        PASS [   0.016s] (392/718) maho-memory-core people::format::tests::test_parse_people_card_when_blank_lines_between_entries_then_skips_blank_lines
+        PASS [   0.007s] (393/718) maho-memory-core people::format::tests::test_parse_people_card_when_explicit_observation_with_full_comment_fields_then_extracts_all
+        PASS [   0.107s] (394/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_read_only_server_file_when_unrelated_file_changes_then_commit_still_succeeds
+        PASS [   0.014s] (395/718) maho-memory-core people::format::tests::test_parse_people_card_when_entry_exceeds_max_entry_chars_then_returns_diagnostic
+        PASS [   0.017s] (396/718) maho-memory-core people::format::tests::test_parse_people_card_when_entries_exceed_max_entries_then_returns_diagnostic
+        PASS [   0.018s] (397/718) maho-memory-core people::format::tests::test_parse_people_card_when_entry_at_exactly_max_entry_chars_then_accepts_without_diagnostic
+        PASS [   0.013s] (398/718) maho-memory-core people::format::tests::test_parse_people_card_when_invalid_prefix_line_then_returns_diagnostic_and_parses_valid_entries
+        PASS [   0.008s] (399/718) maho-memory-core people::format::tests::test_parse_people_card_when_observation_with_minimal_fields_then_leaves_optional_fields_none
+        PASS [   0.007s] (400/718) maho-memory-core people::format::tests::test_parse_people_card_when_observation_with_n_but_no_src_then_extracts_n
+        PASS [   0.008s] (401/718) maho-memory-core people::format::tests::test_parse_people_card_when_observation_with_multiple_src_ids_then_preserves_full_src
+        PASS [   0.017s] (402/718) maho-memory-core people::format::tests::test_parse_people_card_when_multiple_observation_sections_then_separates_by_section
+        PASS [   0.006s] (403/718) maho-memory-core people::format::tests::test_parse_people_card_when_observation_with_no_comment_then_leaves_comment_fields_none
+        PASS [   0.130s] (404/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_configured_mirror_when_commit_lands_on_main_then_it_is_pushed_and_logged
+        PASS [   0.006s] (405/718) maho-memory-core people::format::tests::test_parse_people_card_when_relationship_entry_then_preserves_predicate_and_content
+        PASS [   0.009s] (406/718) maho-memory-core people::format::tests::test_parse_people_card_when_observation_without_date_bracket_then_returns_diagnostic
+        PASS [   0.005s] (407/718) maho-memory-core people::format::tests::test_parse_people_card_when_trailing_whitespace_on_lines_then_trims
+        PASS [   0.012s] (408/718) maho-memory-core people::format::tests::test_parse_people_card_when_prefix_without_content_then_returns_diagnostic
+        PASS [   0.013s] (409/718) maho-memory-core people::format::tests::test_parse_people_card_when_prefix_with_whitespace_content_then_returns_diagnostic
+        PASS [   0.006s] (410/718) maho-memory-core people::format::tests::test_parse_people_card_when_well_formed_all_prefixes_then_extracts_all_entries
+        PASS [   0.007s] (411/718) maho-memory-core people::format::tests::test_people_card_when_mixed_entries_and_observations_then_parses_and_roundtrips
+        PASS [   0.139s] (412/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_head_read_only_false_when_agent_flips_it_to_true_then_change_is_rejected
+        PASS [   0.009s] (413/718) maho-memory-core people::format::tests::test_resolve_slug_collision_when_collisions_exist_then_appends_numeric_suffix
+        PASS [   0.008s] (414/718) maho-memory-core people::format::tests::test_sanitize_person_slug_when_display_name_given_then_matches_slug_rules
+        PASS [   0.013s] (415/718) maho-memory-core people::format::tests::test_parse_people_card_when_unknown_observation_section_then_returns_diagnostic
+        PASS [   0.008s] (416/718) maho-memory-core people::format::tests::test_serialize_people_card_when_empty_card_then_produces_empty_string
+        PASS [   0.144s] (417/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_default_background_push_when_commit_lands_then_mirror_receives_it_without_blocking
+        PASS [   0.008s] (418/718) maho-memory-core people::format::tests::test_serialize_people_card_when_entries_given_then_produces_one_line_per_entry
+        PASS [   0.005s] (419/718) maho-memory-core people::format::tests::test_serialize_people_card_when_well_formed_then_roundtrips_stably
+        PASS [   0.007s] (420/718) maho-memory-core personas::manifest::tests::filename_lookup_covers_every_kind
+        PASS [   0.010s] (421/718) maho-memory-core people::format::tests::test_serialize_people_card_when_observations_given_then_produces_parseable_card
+        PASS [   0.005s] (422/718) maho-memory-core personas::manifest::tests::shipped_reflection_and_dream_assets_match_their_manifest_names
+        PASS [   0.006s] (423/718) maho-memory-core personas::manifest::tests::manifest_lists_every_persona_filename_in_order
+        PASS [   0.006s] (424/718) maho-memory-core recall::bm25::tests::given_an_empty_query_when_ranked_then_nothing_returns
+        PASS [   0.007s] (425/718) maho-memory-core recall::bm25::tests::given_a_document_holding_every_query_unit_when_widened_then_it_is_lifted_to_the_front
+        PASS [   0.009s] (426/718) maho-memory-core recall::assets::tests::given_a_missing_asset_directory_when_loaded_then_the_error_surfaces
+        PASS [   0.009s] (427/718) maho-memory-core recall::assets::tests::given_the_source_asset_when_loaded_through_the_loader_then_it_equals_the_real_file_and_is_non_empty
+        PASS [   0.006s] (428/718) maho-memory-core recall::bm25::tests::given_cjk_runs_when_tokenized_then_they_expand_into_bigrams_and_han_characters
+        PASS [   0.008s] (429/718) maho-memory-core recall::bm25::tests::given_documents_sharing_a_query_term_when_ranked_then_only_matches_return_best_first
+        PASS [   0.009s] (430/718) maho-memory-core recall::bm25::tests::given_expansions_when_weighted_then_query_terms_are_left_out_and_tiers_keep_their_weight
+        PASS [   0.006s] (431/718) maho-memory-core recall::bm25::tests::given_no_expansions_when_weighted_then_the_map_is_empty
+        PASS [   0.008s] (432/718) maho-memory-core recall::bm25::tests::given_latin_text_when_tokenized_then_it_is_lowercased_and_kept_as_whole_words
+        PASS [   0.007s] (433/718) maho-memory-core recall::english_stem::tests::a_fold_never_returns_a_word_shorter_than_its_own_rule_allows
+        PASS [   0.006s] (434/718) maho-memory-core recall::english_stem::tests::derivational_suffixes_fold
+        PASS [   0.005s] (435/718) maho-memory-core recall::english_stem::tests::plurals_fold_onto_their_singular
+        PASS [   0.007s] (436/718) maho-memory-core recall::english_stem::tests::ing_and_ed_fold_and_collapse_a_doubled_consonant
+        PASS [   0.012s] (437/718) maho-memory-core recall::bm25::tests::given_inflected_words_when_terms_are_built_then_english_suffixes_are_folded
+        PASS [   0.009s] (438/718) maho-memory-core recall::english_stem::tests::short_and_non_ascii_tokens_pass_through_untouched
+        PASS [   0.006s] (439/718) maho-memory-core recall::gate::tests::given_a_hint_that_breaks_the_shape_budget_when_described_then_the_shape_reason_is_named
+        PASS [   0.007s] (440/718) maho-memory-core recall::gate::tests::given_a_hint_that_breaks_the_shape_budget_when_checked_then_the_replay_predicate_rejects_it
+        PASS [   0.008s] (441/718) maho-memory-core recall::gate::tests::given_a_foreign_session_payload_when_taken_then_it_is_left_for_its_real_owner
+        PASS [   0.006s] (442/718) maho-memory-core recall::gate::tests::given_a_meta_hint_when_revalidated_then_it_is_rejected_without_spending_the_cap
+        PASS [   0.010s] (443/718) maho-memory-core recall::gate::tests::given_a_foreign_payload_when_deleted_then_it_is_left_alone
+        PASS [   0.009s] (444/718) maho-memory-core recall::gate::tests::given_a_hand_edited_payload_with_an_invalid_hint_when_taken_then_nothing_returns_and_the_file_is_deleted
+        PASS [   0.007s] (445/718) maho-memory-core recall::gate::tests::given_a_pending_payload_with_a_meta_hint_when_taken_then_the_whole_payload_is_rejected
+        PASS [   0.007s] (446/718) maho-memory-core recall::gate::tests::given_an_expired_payload_when_taken_then_it_is_dropped_and_deleted
+        PASS [   0.007s] (447/718) maho-memory-core recall::gate::tests::given_an_instruction_shaped_hint_from_an_older_session_when_checked_then_the_replay_predicate_accepts_it
+        PASS [   0.007s] (448/718) maho-memory-core recall::gate::tests::given_an_agent_addressing_hint_when_revalidated_then_it_is_dropped_without_reserving_its_path
+        PASS [   0.007s] (449/718) maho-memory-core recall::gate::tests::given_an_unoffered_path_when_validating_then_it_is_rejected
+        PASS [   0.008s] (450/718) maho-memory-core recall::gate::tests::given_a_surfaced_path_when_validating_then_it_is_not_repeated
+        PASS [   0.008s] (451/718) maho-memory-core recall::gate::tests::given_factual_hints_when_revalidated_then_they_survive_both_layers_unchanged
+        PASS [   0.009s] (452/718) maho-memory-core recall::gate::tests::given_factual_fragments_when_revalidated_then_decision_language_fragments_do_not_reject_them
+        PASS [   0.010s] (453/718) maho-memory-core recall::gate::tests::given_decision_language_meta_hints_when_revalidated_then_they_are_rejected
+        PASS [   0.006s] (454/718) maho-memory-core recall::gate::tests::given_more_candidates_than_the_cap_when_validating_then_order_is_preserved_up_to_the_cap
+        PASS [   0.006s] (455/718) maho-memory-core recall::gate::tests::given_the_agent_addressing_hints_when_described_then_the_reason_is_addresses_agent
+        PASS [   0.006s] (456/718) maho-memory-core recall::gate::tests::given_the_observational_hints_when_described_then_no_reason_is_returned
+        PASS [   0.007s] (457/718) maho-memory-core recall::gate::tests::given_the_observational_hints_when_revalidated_then_they_survive_unchanged
+        PASS [   0.005s] (458/718) maho-memory-core recall::haystack::tests::an_empty_body_leaves_the_description_with_a_trailing_separator_collapsed
+        PASS [   0.006s] (459/718) maho-memory-core recall::gate::tests::given_zero_max_items_when_validating_then_nothing_is_accepted
+        PASS [   0.010s] (460/718) maho-memory-core recall::gate::tests::given_pending_nudges_when_written_and_taken_then_they_round_trip_and_the_file_is_removed
+        PASS [   0.006s] (461/718) maho-memory-core recall::haystack::tests::the_description_and_body_are_joined_by_a_single_separator
+        PASS [   0.005s] (462/718) maho-memory-core recall::ledger::tests::given_a_deleted_session_file_when_read_then_the_cached_set_is_dropped
+        PASS [   0.008s] (463/718) maho-memory-core recall::haystack::tests::the_haystack_is_the_normalized_description_then_body
+        PASS [   0.007s] (464/718) maho-memory-core recall::ledger::tests::given_a_ledger_dir_that_does_not_exist_yet_when_entries_are_marked_then_the_directory_is_created
+        PASS [   0.006s] (465/718) maho-memory-core recall::ledger::tests::given_a_second_mark_on_the_same_session_when_read_then_earlier_entries_persist_and_repeats_update
+        PASS [   0.007s] (466/718) maho-memory-core recall::ledger::tests::given_an_unchanged_session_file_when_read_twice_then_the_file_is_parsed_once
+        PASS [   0.005s] (467/718) maho-memory-core recall::ledger::tests::given_an_unknown_session_when_surfaced_paths_are_read_then_the_set_is_empty
+        PASS [   0.008s] (468/718) maho-memory-core recall::ledger::tests::given_an_external_rewrite_of_the_session_file_when_read_then_the_new_content_wins
+        PASS [   0.010s] (469/718) maho-memory-core recall::ledger::tests::given_a_plain_session_id_when_sanitized_then_it_survives_unchanged
+        PASS [   0.010s] (470/718) maho-memory-core recall::ledger::tests::given_a_malformed_ledger_file_when_surfaced_paths_are_read_then_the_set_is_empty
+        PASS [   0.005s] (471/718) maho-memory-core recall::ledger::tests::given_an_unsafe_session_id_when_sanitized_then_separators_and_globs_collapse_to_dashes
+        PASS [   0.007s] (472/718) maho-memory-core recall::ledger::tests::given_an_unsafe_session_id_when_entries_are_marked_then_the_file_lands_sanitized
+        PASS [   0.006s] (473/718) maho-memory-core recall::ledger::tests::given_marked_entries_when_the_file_is_inspected_then_the_versioned_shape_is_pinned
+        PASS [   0.006s] (474/718) maho-memory-core recall::ledger::tests::given_path_traversal_or_empty_input_when_sanitized_then_a_safe_fallback_name_results
+        PASS [   0.008s] (475/718) maho-memory-core recall::ledger::tests::given_no_entries_when_marking_then_nothing_is_written
+        PASS [   0.190s] (476/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_valid_memory_markdown_when_committed_then_hook_accepts_every_supported_shape
+        PASS [   0.006s] (477/718) maho-memory-core recall::ledger::tests::given_two_sessions_when_both_mark_entries_then_separate_files_hold_separate_sets
+        PASS [   0.005s] (478/718) maho-memory-core recall::planner::tests::given_a_query_with_a_two_character_ascii_token_when_planning_then_it_is_dropped
+        PASS [   0.010s] (479/718) maho-memory-core recall::ledger::tests::given_marked_entries_when_surfaced_paths_are_read_then_exactly_those_paths_return
+        PASS [   0.009s] (480/718) maho-memory-core recall::ledger::tests::given_this_instances_own_mark_when_surfaced_paths_are_read_then_the_write_updated_the_cache
+        PASS [   0.008s] (481/718) maho-memory-core recall::planner::tests::given_a_single_kept_term_when_planning_then_the_cap_is_respected
+        PASS [   0.006s] (482/718) maho-memory-core recall::planner::tests::given_korean_stopwords_only_when_planning_then_no_queries
+        PASS [   0.006s] (483/718) maho-memory-core recall::planner::tests::given_only_stopwords_when_planning_then_no_queries
+        PASS [   0.006s] (484/718) maho-memory-core recall::planner::tests::given_tool_texts_when_planning_then_path_derived_terms_join_the_queries
+        PASS [   0.008s] (485/718) maho-memory-core recall::planner::tests::given_a_user_text_when_planning_then_terms_are_ranked_and_capped_with_phrases_appended
+        PASS [   0.008s] (486/718) maho-memory-core recall::planner::tests::given_no_texts_when_planning_then_no_queries
+        PASS [   0.006s] (487/718) maho-memory-core recall::provider::tests::only_markdown_outside_the_root_system_tree_is_recallable
+        PASS [   0.005s] (488/718) maho-memory-core recall::render::tests::given_a_judged_nudge_when_the_block_is_rendered_then_the_hint_replaces_the_description_and_excerpt
+        PASS [   0.006s] (489/718) maho-memory-core recall::render::tests::given_a_hint_with_recalled_memory_delimiters_when_rendered_then_it_cannot_escape_the_block
+        PASS [   0.007s] (490/718) maho-memory-core recall::render::tests::given_a_hostile_path_when_rendered_then_markup_stays_inside_one_escaped_sourced_block
+        PASS [   0.006s] (491/718) maho-memory-core recall::render::tests::given_a_korean_hint_when_rendered_then_the_korean_header_is_used
+        PASS [   0.007s] (492/718) maho-memory-core recall::render::tests::given_an_english_hint_when_rendered_then_the_english_header_is_kept
+        PASS [   0.006s] (493/718) maho-memory-core recall::render::tests::given_the_personas_recalled_memory_sample_when_compared_with_the_renderer_then_they_are_identical
+        PASS [   0.007s] (494/718) maho-memory-core recall::select::tests::given_a_korean_phrase_match_when_hybrid_selects_then_fusion_orders_the_notes_instead_of_the_floor
+        PASS [   0.007s] (495/718) maho-memory-core recall::select::tests::given_a_phrase_match_bm25_ranks_below_lone_word_matches_when_hybrid_selects_then_the_phrase_stays_first
+        PASS [   0.007s] (496/718) maho-memory-core recall::select::tests::given_a_small_english_corpus_when_substring_selects_then_the_matching_note_is_found
+        PASS [   0.006s] (497/718) maho-memory-core recall::select::tests::given_a_surfaced_path_when_substring_selects_then_it_is_excluded
+        PASS [   0.006s] (498/718) maho-memory-core recall::select::tests::given_an_excluded_path_when_selecting_then_it_is_skipped
+        PASS [   0.006s] (499/718) maho-memory-core recall::select::tests::given_no_queries_when_selecting_then_nothing_returns
+        PASS [   0.005s] (500/718) maho-memory-core recall::select::tests::given_the_cap_when_selecting_then_only_that_many_candidates_return
+        PASS [   0.006s] (501/718) maho-memory-core recall::select::tests::given_only_lone_word_queries_when_hybrid_selects_then_fusion_alone_orders_the_notes
+        PASS [   0.007s] (502/718) maho-memory-core recall::select::tests::given_the_phrase_match_is_surfaced_when_hybrid_selects_then_the_floor_does_not_bring_it_back
+        PASS [   0.006s] (503/718) maho-memory-core recall::select::tests::given_the_pinned_phrase_match_when_scores_are_read_then_they_stay_ascending
+        PASS [   0.006s] (504/718) maho-memory-core recall::select::tests::given_zero_max_items_when_selecting_then_nothing_returns
+        PASS [   0.005s] (505/718) maho-memory-core recall::strategy::tests::given_a_corpus_exactly_at_the_cjk_share_threshold_when_chosen_then_bm25_is_picked
+        PASS [   0.006s] (506/718) maho-memory-core recall::strategy::tests::given_a_cjk_query_over_a_large_corpus_when_chosen_then_hybrid_is_picked
+        PASS [   0.005s] (507/718) maho-memory-core recall::strategy::tests::given_a_corpus_just_below_the_cjk_share_threshold_when_chosen_then_substring_is_kept
+        PASS [   0.006s] (508/718) maho-memory-core recall::strategy::tests::given_an_empty_corpus_when_measured_then_the_share_is_zero
+        PASS [   0.005s] (509/718) maho-memory-core recall::strategy::tests::given_an_english_corpus_exactly_at_the_large_threshold_when_chosen_then_hybrid_is_picked
+        PASS [   0.005s] (510/718) maho-memory-core recall::strategy::tests::given_an_english_only_corpus_when_measured_then_the_share_is_zero
+        PASS [   0.007s] (511/718) maho-memory-core recall::strategy::tests::given_an_english_corpus_one_note_below_the_large_threshold_when_chosen_then_substring_is_kept
+        PASS [   0.005s] (512/718) maho-memory-core recall::strategy::tests::given_english_queries_over_a_small_english_corpus_when_chosen_then_the_substring_path_is_kept
+        PASS [   0.006s] (513/718) maho-memory-core recall::strategy::tests::given_hangul_han_hiragana_katakana_and_the_prolonged_sound_mark_when_checked_then_each_counts_as_cjk
+        PASS [   0.006s] (514/718) maho-memory-core recall::strategy::tests::given_latin_cyrillic_digits_and_fullwidth_punctuation_when_checked_then_none_counts_as_cjk
+        PASS [   0.242s] (515/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_reflection_branch_and_detached_head_when_commits_land_then_nothing_is_pushed
+        PASS [   0.005s] (516/718) maho-memory-core reflection::assets::assets::tests::given_dream_persona_asset_when_loaded_then_it_equals_verbatim_markdown
+        PASS [   0.009s] (517/718) maho-memory-core recall::strategy::tests::given_mixed_letters_when_measured_then_the_share_counts_cjk_over_all_letter_code_points
+        PASS [   0.006s] (518/718) maho-memory-core reflection::assets::assets::tests::given_reflection_persona_asset_when_trailer_keys_are_checked_then_runtime_keys_are_present
+        PASS [   0.009s] (519/718) maho-memory-core recall::strategy::tests::given_one_planned_query_with_a_cjk_character_over_an_english_corpus_when_chosen_then_bm25_is_picked
+        PASS [   0.007s] (520/718) maho-memory-core reflection::assets::assets::tests::given_reflection_persona_asset_when_loaded_then_it_equals_verbatim_markdown
+        PASS [   0.262s] (521/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_committed_read_only_file_when_tampered_then_hook_rejects_commit
+        PASS [   0.005s] (522/718) maho-memory-core reflection::machine::tests::given_a_failed_active_run_and_a_queued_request_when_completed_then_the_cursor_stays_unmoved_and_pending_is_promoted
+        PASS [   0.005s] (523/718) maho-memory-core reflection::machine::tests::given_a_manual_request_event_when_evaluated_then_it_immediately_emits_a_manual_reflection_request_with_custom_scope
+        PASS [   0.006s] (524/718) maho-memory-core reflection::machine::tests::given_active_reflection_and_queued_compaction_when_manual_reflection_arrives_then_manual_overrides_compaction_in_pending
+        PASS [   0.004s] (525/718) maho-memory-core reflection::machine::tests::given_active_reflection_and_queued_idle_dream_when_a_newer_idle_dream_arrives_then_newer_dream_updates_focus_and_merges_conversations
+        PASS [   0.004s] (526/718) maho-memory-core reflection::machine::tests::given_active_reflection_and_queued_step_count_when_an_idle_dream_arrives_then_dream_overrides_step_count_in_pending
+        PASS [   0.004s] (527/718) maho-memory-core reflection::machine::tests::given_an_active_reflection_run_when_a_manual_run_arrives_then_manual_work_is_queued_into_pending
+        PASS [   0.005s] (528/718) maho-memory-core reflection::machine::tests::given_compaction_accepted_followed_by_successful_settled_event_when_evaluated_in_order_then_compaction_reflection_takes_precedence
+        PASS [   0.004s] (529/718) maho-memory-core reflection::machine::tests::given_every_completion_outcome_when_the_active_run_completes_then_only_merged_and_no_changes_advance_its_captured_cursor
+        PASS [   0.005s] (530/718) maho-memory-core reflection::machine::tests::given_interleaved_reflection_and_dream_requests_when_every_bounded_event_sequence_is_applied_then_at_most_one_active_and_one_pending_run_exist
+        PASS [   0.004s] (531/718) maho-memory-core reflection::machine::tests::given_pending_automatic_work_became_stale_when_dequeued_then_it_is_dropped_while_manual_work_survives
+        PASS [   0.106s] (532/718) maho-memory-core recall::provider::tests::a_repository_without_a_commit_yields_an_empty_corpus
+        PASS [   0.004s] (533/718) maho-memory-core reflection::machine::tests::given_step_count_below_threshold_when_settled_event_arrives_then_no_transition_is_requested
+        PASS [   0.005s] (534/718) maho-memory-core reflection::machine::tests::given_step_count_reaching_threshold_when_settled_event_arrives_then_a_step_count_reflection_run_is_requested
+        PASS [   0.005s] (535/718) maho-memory-core reflection::orphan_sweep::tests::a_legacy_branch_gets_no_grace_but_stays_protected_while_live
+        PASS [   0.119s] (536/718) maho-memory-core recall::provider::tests::a_file_without_valid_frontmatter_is_skipped_not_fatal
+        PASS [   0.005s] (537/718) maho-memory-core reflection::orphan_sweep::tests::a_live_run_and_an_in_grace_worktree_are_never_selected
+        PASS [   0.118s] (538/718) maho-memory-core recall::provider::tests::uncommitted_edits_never_leak_into_the_corpus
+        PASS [   0.005s] (539/718) maho-memory-core reflection::orphan_sweep::tests::a_non_epoch_directory_is_never_touched
+        PASS [   0.121s] (540/718) maho-memory-core recall::provider::tests::the_corpus_reads_committed_files_and_skips_the_system_tree
+        PASS [   0.005s] (541/718) maho-memory-core reflection::orphan_sweep::tests::a_registered_worktree_whose_directory_is_gone_is_always_selected
+        PASS [   0.005s] (542/718) maho-memory-core reflection::orphan_sweep::tests::owners_parse_from_directories_branches_and_legacy_branches
+        PASS [   0.005s] (543/718) maho-memory-core reflection::orphan_sweep::tests::registered_worktrees_parse_from_porcelain_output
+        PASS [   0.005s] (544/718) maho-memory-core reflection::reservation::tests::given_a_live_signal_when_reservation_runs_then_it_still_reserves
+        PASS [   0.006s] (545/718) maho-memory-core reflection::reservation::tests::given_a_non_dream_active_run_when_it_completes_then_no_dream_state_is_written
+        PASS [   0.007s] (546/718) maho-memory-core reflection::reservation::tests::given_active_reflection_and_queued_compaction_when_manual_reflection_arrives_then_manual_overrides_compaction_in_pending
+        PASS [   0.005s] (547/718) maho-memory-core reflection::reservation::tests::given_an_aborted_signal_when_reservation_starts_then_active_and_pending_state_remain_empty
+        PASS [   0.108s] (548/718) maho-memory-core reflection::completion_validation::tests::given_altered_git_administration_file_when_validated_then_validation_fails
+        PASS [   0.006s] (549/718) maho-memory-core reflection::reservation::tests::given_an_active_reflection_run_when_a_manual_run_arrives_then_manual_work_is_queued_into_pending
+        PASS [   0.007s] (550/718) maho-memory-core reflection::reservation::tests::given_completed_active_run_when_pending_exists_then_pending_is_promoted_to_active
+        PASS [   0.361s] (551/718) maho-memory-core memfs::hooks::tests::hook_behaviour::given_invalid_frontmatter_rules_when_commit_runs_then_hook_rejects_each
+        PASS [   0.117s] (552/718) maho-memory-core reflection::completion_validation::tests::given_an_uncommitted_worktree_edit_when_validated_then_it_reports_dirty_uncommitted
+        PASS [   0.009s] (553/718) maho-memory-core reflection::reservation::tests::given_dream_outcomes_when_runs_complete_then_dream_state_advances_only_for_merged_and_no_changes
+        PASS [   0.004s] (554/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_ahead_count_with_no_push_failure_then_no_reminder
+        PASS [   0.004s] (555/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_clean_repo_then_returns_no_reminders
+        PASS [   0.004s] (556/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_cleared_to_clean_then_retriggering_emits_again
+        PASS [   0.004s] (557/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_conflict_dirty_and_push_failed_simultaneously_then_conflict_takes_priority
+        PASS [   0.004s] (558/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_conflict_persists_then_dedupes
+        PASS [   0.004s] (559/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_different_failure_reason_then_re_emits
+        PASS [   0.005s] (560/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_dirty_repo_then_emits_dirty_reminder_with_commit_needed_and_paths
+        PASS [   0.005s] (561/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_dirty_then_clean_then_different_paths_then_re_emits_after_clear
+        PASS [   0.157s] (562/718) maho-memory-core reflection::completion_validation::tests::given_malformed_frontmatter_outside_the_content_set_when_validated_then_it_passes
+        PASS [   0.158s] (563/718) maho-memory-core reflection::completion_validation::tests::given_clean_worktree_with_valid_commit_when_validated_then_validation_succeeds
+        PASS [   0.005s] (564/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_merge_conflict_then_emits_conflict_reminder_with_resolution_guidance
+        PASS [   0.005s] (565/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_push_failed_then_emits_push_failed_reminder_with_reason
+        PASS [   0.005s] (566/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_push_remains_failed_then_dedupes
+        PASS [   0.005s] (567/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_rebase_conflict_then_mentions_rebase
+        PASS [   0.005s] (568/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_state_persistence_across_calls_then_tracks_conditions
+        PASS [   0.005s] (569/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_regenerating_same_snapshot_then_dedupes
+        PASS [   0.005s] (570/718) maho-memory-core reminders::reminders::tests::test_generate_reminders_when_unmerged_files_conflict_then_conflict_takes_priority_over_dirty
+        PASS [   0.174s] (571/718) maho-memory-core reflection::completion_validation::tests::given_a_commit_with_malformed_frontmatter_when_validated_then_it_fails
+        PASS [   0.005s] (572/718) maho-memory-core reminders::reminders::tests::test_reminder_kind_when_inspected_then_values_are_expected_union
+        PASS [   0.007s] (573/718) maho-memory-core reminders::reminders::tests::test_reminder_kind_for_when_clean_repo_then_null
+        PASS [   0.179s] (574/718) maho-memory-core reflection::completion_validation::tests::given_a_body_only_edit_of_legacy_frontmatter_when_validated_then_it_passes
+        PASS [   0.006s] (575/718) maho-memory-core search::engine::tests::test_search_transcripts_when_conversation_filter_then_only_that_conversation_contributes_results
+        PASS [   0.102s] (576/718) maho-memory-core reflection::orphan_sweep::tests::a_stray_directory_is_reclaimed_and_reported
+        PASS [   0.006s] (577/718) maho-memory-core search::engine::tests::test_search_transcripts_when_date_bounds_then_bounds_are_inclusive_and_undated_messages_stay_eligible
+        PASS [   0.006s] (578/718) maho-memory-core search::engine::tests::test_search_transcripts_when_different_first_match_indices_then_results_sort_by_ascending_score
+        PASS [   0.005s] (579/718) maho-memory-core search::engine::tests::test_search_transcripts_when_empty_or_term_free_query_then_no_results_returned
+        PASS [   0.006s] (580/718) maho-memory-core search::engine::tests::test_search_transcripts_when_equal_scores_then_ties_break_on_descending_date
+        PASS [   0.006s] (581/718) maho-memory-core search::engine::tests::test_search_transcripts_when_hidden_conversations_then_excluded_unless_include_hidden_set
+        PASS [   0.005s] (582/718) maho-memory-core search::engine::tests::test_search_transcripts_when_matched_document_then_identity_fields_are_carried_through
+        PASS [   0.005s] (583/718) maho-memory-core search::engine::tests::test_search_transcripts_when_phrase_plus_term_query_then_only_documents_matching_every_term_and_phrase_returned
+        PASS [   0.005s] (584/718) maho-memory-core search::query::tests::test_date_in_range_when_inclusive_bounds_and_message_on_boundary_then_stays_eligible
+        PASS [   0.007s] (585/718) maho-memory-core search::engine::tests::test_search_transcripts_when_more_matches_than_limit_then_default_limit_is_100_and_explicit_limits_truncate
+        PASS [   0.005s] (586/718) maho-memory-core search::query::tests::test_date_in_range_when_missing_or_unparseable_message_date_then_stays_eligible
+        PASS [   0.006s] (587/718) maho-memory-core search::query::tests::test_date_in_range_when_unparseable_bounds_then_filter_is_ignored
+        PASS [   0.005s] (588/718) maho-memory-core search::query::tests::test_match_score_when_empty_text_then_nothing_matches
+        PASS [   0.005s] (589/718) maho-memory-core search::query::tests::test_match_score_when_mixed_case_and_padded_text_then_matching_is_case_insensitive
+        PASS [   0.005s] (590/718) maho-memory-core search::query::tests::test_match_score_when_one_term_then_score_is_first_index_plus_short_term_bonus
+        PASS [   0.005s] (591/718) maho-memory-core search::query::tests::test_match_score_when_phrase_and_term_then_contributions_combine
+        PASS [   0.005s] (592/718) maho-memory-core search::query::tests::test_match_score_when_phrase_words_out_of_order_then_phrase_does_not_match
+        PASS [   0.005s] (593/718) maho-memory-core search::query::tests::test_match_score_when_quoted_phrase_then_phrase_contributes_tenth_of_first_index
+        PASS [   0.005s] (594/718) maho-memory-core search::query::tests::test_match_score_when_term_is_absent_then_match_is_rejected
+        PASS [   0.005s] (595/718) maho-memory-core search::query::tests::test_match_score_when_term_of_50_chars_or_more_then_length_bonus_floors_at_zero
+        PASS [   0.005s] (596/718) maho-memory-core search::query::tests::test_match_score_when_two_terms_then_per_term_contributions_sum
+        PASS [   0.005s] (597/718) maho-memory-core search::query::tests::test_match_score_when_unclosed_quote_query_then_retained_quote_character_must_appear_literally
+        PASS [   0.006s] (598/718) maho-memory-core search::query::tests::test_normalize_text_when_mixed_case_and_padded_whitespace_then_it_lowercases_collapses_runs_and_trims
+        PASS [   0.006s] (599/718) maho-memory-core search::query::tests::test_parse_query_when_bare_terms_and_double_quoted_phrase_then_terms_and_phrases_are_separated
+        PASS [   0.005s] (600/718) maho-memory-core search::query::tests::test_parse_query_when_mixed_case_input_then_case_is_preserved_for_match_time_normalization
+        PASS [   0.007s] (601/718) maho-memory-core search::query::tests::test_parse_query_when_empty_quotes_and_blank_input_then_nothing_is_produced
+        PASS [   0.005s] (602/718) maho-memory-core search::query::tests::test_parse_query_when_repeated_whitespace_between_terms_then_empty_fragments_are_dropped
+        PASS [   0.005s] (603/718) maho-memory-core search::query::tests::test_parse_query_when_unclosed_quote_then_falls_back_to_raw_whitespace_terms_keeping_quote_character
+        PASS [   0.005s] (604/718) maho-memory-core search::senpi_session_provider::tests::test_list_conversations_when_missing_directory_or_non_jsonl_then_empty_and_never_panics
+        PASS [   0.010s] (605/718) maho-memory-core search::query::tests::test_searchable_text_when_every_searchable_field_present_then_all_parts_are_joined
+        PASS [   0.008s] (606/718) maho-memory-core search::senpi_session_provider::tests::test_list_conversations_when_archived_sidecar_and_excluded_dir_and_is_hidden_then_hidden_and_retrievable_with_include_hidden
+        PASS [   0.008s] (607/718) maho-memory-core search::senpi_session_provider::tests::test_list_conversations_when_hidden_marker_file_inside_dir_then_all_sessions_in_dir_are_hidden
+        PASS [   0.010s] (608/718) maho-memory-core search::senpi_session_provider::tests::test_list_conversations_when_session_file_then_keyed_by_header_id
+        PASS [   0.015s] (609/718) maho-memory-core search::query::tests::test_searchable_text_when_string_content_and_no_optional_fields_then_empty_parts_are_dropped
+        PASS [   0.008s] (610/718) maho-memory-core search::senpi_session_provider::tests::test_read_session_file_when_malformed_line_and_missing_header_then_bad_lines_skipped_and_orphan_survives
+        PASS [   0.007s] (611/718) maho-memory-core seeds::memory_discipline::tests::test_memory_discipline_skill_path_when_checked_then_is_valid_relative_path
+        PASS [   0.011s] (612/718) maho-memory-core search::senpi_session_provider::tests::test_list_conversations_when_shared_ancestor_entry_repeated_in_branches_then_deduplicated
+        PASS [   0.010s] (613/718) maho-memory-core seeds::default_memory::tests::test_persona_seed_sha256_when_hashed_matches_pin
+        PASS [   0.012s] (614/718) maho-memory-core search::senpi_session_provider::tests::test_map_content_when_user_assistant_and_tool_result_entries_then_fields_are_searchable
+        PASS [   0.007s] (615/718) maho-memory-core seeds::seeds::tests::test_build_default_seed_files_when_called_then_produces_three_files_with_expected_paths_and_frontmatter
+        PASS [   0.007s] (616/718) maho-memory-core seeds::seeds::tests::test_init_memory_with_seeds_when_called_on_existing_repo_then_returns_head_unchanged
+        PASS [   0.005s] (617/718) maho-memory-core seeds::seeds::tests::test_init_memory_with_seeds_when_called_on_fresh_repo_then_commits_initial_seed_files
+        PASS [   0.007s] (618/718) maho-memory-core seeds::seeds::tests::test_init_memory_with_seeds_when_called_without_author_name_then_uses_none_author
+        PASS [   0.006s] (619/718) maho-memory-core soul::paths::tests::given_disjoint_paths_when_evaluated_then_touches_soul_path_returns_false
+        PASS [   0.005s] (620/718) maho-memory-core soul::paths::tests::given_soul_paths_when_checked_then_constants_match_specification
+        PASS [   0.006s] (621/718) maho-memory-core soul::paths::tests::given_matching_paths_when_evaluated_then_touches_soul_path_returns_true
+        PASS [   0.150s] (622/718) maho-memory-core reflection::orphan_sweep::tests::sweep_leaves_a_live_run_untouched
+        PASS [   0.154s] (623/718) maho-memory-core reflection::orphan_sweep::tests::sweep_reclaims_a_stale_worktree_directory_and_branch
+        PASS [   0.176s] (624/718) maho-memory-core reflection::orphan_sweep::tests::a_failing_item_reports_removed_false_with_detail_and_the_rest_still_sweep
+        PASS [   0.005s] (625/718) maho-memory-core support::sha256::tests::test_hex_when_bytes_are_given_then_it_is_lowercase_and_zero_padded
+        PASS [   0.004s] (626/718) maho-memory-core support::sha256::tests::test_sha256_when_input_is_abc_then_it_matches_the_fips_vector
+        PASS [   0.005s] (627/718) maho-memory-core support::sha256::tests::test_sha256_when_input_is_empty_then_it_matches_the_fips_vector
+        PASS [   0.143s] (628/718) maho-memory-core reflection::worktree::tests::given_an_absolute_worktrees_dir_when_created_then_worktree_files_and_branch_are_established
+        PASS [   0.005s] (629/718) maho-memory-core support::sha256::tests::test_sha256_when_input_spans_several_blocks_then_it_matches_the_fips_vector
+        PASS [   0.004s] (630/718) maho-memory-core support::time::tests::test_format_rfc3339_when_known_instant_then_it_matches_the_iso_string
+        PASS [   0.005s] (631/718) maho-memory-core support::time::tests::test_format_rfc3339_when_epoch_then_it_is_the_unix_epoch_string
+        PASS [   0.004s] (632/718) maho-memory-core support::time::tests::test_parse_rfc3339_when_input_is_not_a_timestamp_then_it_is_rejected
+        PASS [   0.004s] (633/718) maho-memory-core support::time::tests::test_parse_rfc3339_when_date_only_then_it_is_midnight_utc
+        PASS [   0.005s] (634/718) maho-memory-core support::time::tests::test_parse_rfc3339_when_iso_string_then_it_round_trips_through_format
+        PASS [   0.005s] (635/718) maho-memory-core support::time::tests::test_parse_rfc3339_when_offset_is_given_then_it_normalizes_to_utc
+        PASS [   0.004s] (636/718) maho-memory-core sync::mirror::tests::test_constants_when_inspected_then_config_key_and_log_name_are_letta_parity_names
+        PASS [   0.004s] (637/718) maho-memory-core sync::mirror::tests::test_mirror_log_path_when_given_repo_dir_then_resolves_to_git_log_file
+        PASS [   0.009s] (638/718) maho-memory-core sync::mirror::tests::test_module_surface_when_push_only_mirror_then_no_pull_fetch_or_import_is_exposed
+        PASS [   0.005s] (639/718) maho-memory-core sync::mirror::tests::test_normalize_url_when_called_with_trailing_slashes_then_stored_url_is_normalized
+        PASS [   0.005s] (640/718) maho-memory-core sync::mirror::tests::test_post_commit_hook_script_when_inspected_then_guards_branch_and_never_fetches
+        PASS [   0.005s] (641/718) maho-memory-core sync::mirror::tests::test_push_detail_when_push_to_credentialed_remote_fails_then_no_credential_leaks
+        PASS [   0.004s] (642/718) maho-memory-core sync::mirror::tests::test_push_now_when_no_mirror_configured_then_reports_not_configured_without_throwing
+        PASS [   0.005s] (643/718) maho-memory-core sync::mirror::tests::test_status_log_tail_when_log_contains_credentialed_url_then_tail_is_redacted
+        PASS [   0.235s] (644/718) maho-memory-core reflection::worktree::tests::given_a_worktree_with_committed_changes_when_finalized_then_it_merges_and_cleans_up
+        PASS [   0.005s] (645/718) maho-memory-core sync::redact::tests::test_contains_secret_like_material_when_case_differs_then_case_sensitive_patterns_do_not_match
+        PASS [   0.237s] (646/718) maho-memory-core reflection::worktree_integration::tests::given_a_validated_tip_when_auto_integration_lands_then_it_creates_a_no_ff_receipt
+        PASS [   0.135s] (647/718) maho-memory-core soul::watermark::tests::given_corrupt_watermark_file_when_consumed_then_it_reestablishes_silently_at_head
+        PASS [   0.005s] (648/718) maho-memory-core sync::redact::tests::test_contains_secret_like_material_when_common_credential_forms_then_recognized
+        PASS [   0.006s] (649/718) maho-memory-core sync::redact::tests::test_contains_secret_like_material_when_checked_repeatedly_then_stays_true
+        PASS [   0.136s] (650/718) maho-memory-core soul::watermark::tests::given_no_watermark_file_when_consumed_then_watermark_is_established_silently_at_head_with_no_notice
+        PASS [   0.004s] (651/718) maho-memory-core sync::redact::tests::test_redact_url_when_empty_url_then_empty_string_returned
+        PASS [   0.006s] (652/718) maho-memory-core sync::redact::tests::test_contains_secret_like_material_when_neighbour_is_not_ascii_word_then_ascii_boundary_still_matches
+        PASS [   0.005s] (653/718) maho-memory-core sync::redact::tests::test_redact_url_when_free_text_containing_credentialed_url_then_masked
+        PASS [   0.005s] (654/718) maho-memory-core sync::redact::tests::test_redact_url_when_https_url_carrying_token_then_credential_is_masked
+        PASS [   0.005s] (655/718) maho-memory-core sync::redact::tests::test_redact_url_when_https_url_with_user_and_password_then_both_halves_are_masked
+        PASS [   0.005s] (656/718) maho-memory-core sync::redact::tests::test_redact_url_when_javascript_whitespace_separator_then_feff_joins_and_0085_does_not
+        PASS [   0.005s] (657/718) maho-memory-core sync::redact::tests::test_redact_url_when_pem_blocks_then_matching_labels_replace_and_mismatched_end_is_skipped
+        PASS [   0.136s] (658/718) maho-memory-core soul::watermark::tests::given_watermark_naming_sha_missing_from_history_when_consumed_then_it_reestablishes_silently_at_head
+        PASS [   0.005s] (659/718) maho-memory-core sync::redact::tests::test_redact_url_when_repeated_aws_keys_then_every_key_is_masked
+        PASS [   0.006s] (660/718) maho-memory-core sync::redact::tests::test_redact_url_when_repeated_secrets_and_url_userinfo_then_all_are_masked
+        PASS [   0.105s] (661/718) maho-memory-core sync::mirror::tests::serialization::test_unset_joins_the_serialized_config_mutation_queue
+        PASS [   0.006s] (662/718) maho-memory-core sync::redact::tests::test_redact_url_when_repeated_token_pairs_then_every_pair_is_masked
+        PASS [   0.006s] (663/718) maho-memory-core sync::redact::tests::test_redact_url_when_secret_like_material_in_sync_output_then_predicate_matches_and_redaction_clears_it
+        PASS [   0.006s] (664/718) maho-memory-core sync::redact::tests::test_redact_url_when_ssh_scp_style_url_then_user_info_is_masked
+        PASS [   0.006s] (665/718) maho-memory-core sync::redact::tests::test_redact_url_when_token_bound_counts_utf16_units_then_128_astral_characters_are_fully_masked
+        PASS [   0.006s] (666/718) maho-memory-core sync::redact::tests::test_redact_url_when_ssh_url_with_user_info_then_user_info_is_masked
+        PASS [   0.006s] (667/718) maho-memory-core sync::redact::tests::test_redact_url_when_token_bound_counts_utf16_units_then_129_astral_characters_keep_the_last
+        PASS [   0.006s] (668/718) maho-memory-core sync::redact::tests::test_redact_url_when_token_exceeds_the_upstream_256_character_bound_then_only_the_bound_is_replaced
+        PASS [   0.006s] (669/718) maho-memory-core sync::redact::tests::test_redact_url_when_urls_without_credentials_then_pass_through_unchanged
+        PASS [   0.005s] (670/718) maho-memory-core tools::leaked_arguments_tests::describe_repairs_names_both_arguments
+        PASS [   0.005s] (671/718) maho-memory-core tools::leaked_arguments_tests::a_clean_call_reports_no_repairs
+        PASS [   0.005s] (672/718) maho-memory-core tools::leaked_arguments_tests::ignores_a_closing_tag_that_names_an_unknown_or_self_argument
+        PASS [   0.005s] (673/718) maho-memory-core tools::leaked_arguments_tests::leaves_params_untouched_when_the_target_was_already_supplied
+        PASS [   0.004s] (674/718) maho-memory-core tools::leaked_arguments_tests::splits_a_sibling_argument_leaked_into_description
+        PASS [   0.179s] (675/718) maho-memory-core soul::watermark::tests::given_only_in_band_soul_commits_when_consumed_then_the_watermark_stays_put
+        PASS [   0.179s] (676/718) maho-memory-core soul::watermark::tests::given_out_of_band_commit_touching_only_non_soul_paths_when_consumed_then_no_notice_is_emitted
+        PASS [   0.182s] (677/718) maho-memory-core soul::watermark::tests::given_only_in_band_memory_tool_soul_commits_since_watermark_when_consumed_then_no_notice_is_emitted
+        PASS [   0.188s] (678/718) maho-memory-core soul::watermark::tests::given_watermark_behind_head_with_out_of_band_persona_commit_when_consumed_then_notice_emitted_and_watermark_advances
+        PASS [   0.104s] (679/718) maho-memory-core sync::mirror::tests::test_unset_when_called_twice_then_removes_the_mirror_key_and_tolerates_absence
+        PASS [   0.220s] (680/718) maho-memory-core soul::watermark::tests::given_out_of_band_identity_commit_mixed_with_in_band_persona_commit_when_consumed_then_notice_names_out_of_band_commit
+        PASS [   0.149s] (681/718) maho-memory-core sync::redact::tests::test_redact_url_when_malformed_pem_shaped_input_then_unchanged_and_real_pem_is_masked
+        PASS [   0.128s] (682/718) maho-memory-core tools::memory_apply_patch_provenance_tests::test_commits_omo_trailers_when_provenance_is_present
+        PASS [   0.128s] (683/718) maho-memory-core tools::memory_apply_patch_provenance_tests::test_non_origin_remote_reports_harness_sync
+        PASS [   0.130s] (684/718) maho-memory-core tools::memory_apply_patch_provenance_tests::test_remote_sync_message_formatting
+        PASS [   0.128s] (685/718) maho-memory-core tools::memory_apply_patch_tests::test_supports_add_then_update_in_one_patch
+        PASS [   0.087s] (686/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_missing_reason_and_input
+        PASS [   0.128s] (687/718) maho-memory-core tools::memory_apply_patch_tests::test_synthesizes_description_and_commits_add
+        PASS [   0.124s] (688/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_hunk_context_mismatch_with_diagnostics
+        PASS [   0.129s] (689/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_duplicate_adds_and_adding_existing
+        PASS [   0.161s] (690/718) maho-memory-core tools::memory_apply_patch_provenance_tests::test_applies_delete_patch_operation
+        PASS [   0.161s] (691/718) maho-memory-core tools::memory_apply_patch_tests::test_handles_final_line_without_newline
+        PASS [   0.167s] (692/718) maho-memory-core tools::memory_apply_patch_tests::test_supports_move_followed_by_an_edit
+        PASS [   0.092s] (693/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_updating_nonexistent_file
+        PASS [   0.125s] (694/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_uncommitted_working_tree_changes
+        PASS [   0.119s] (695/718) maho-memory-core tools::memory_tests::test_creates_memory_block_and_commits_locally
+        PASS [   0.123s] (696/718) maho-memory-core tools::memory_tests::test_commits_plain_reason_without_trailers_when_provenance_is_absent
+        PASS [   0.125s] (697/718) maho-memory-core tools::memory_tests::test_commits_omo_trailers_when_provenance_is_present
+        PASS [   0.147s] (698/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_patch_with_no_effective_changes
+        PASS [   0.005s] (699/718) maho-memory-core tools::patch_parser_tests::test_applies_hunks_to_exact_content
+        PASS [   0.005s] (700/718) maho-memory-core tools::patch_parser_tests::test_parses_add_file_directives
+        PASS [   0.126s] (701/718) maho-memory-core tools::memory_tests::test_non_origin_remote_reports_harness_sync
+        PASS [   0.005s] (702/718) maho-memory-core tools::patch_parser_tests::test_parses_delete_file_directives
+        PASS [   0.005s] (703/718) maho-memory-core tools::patch_parser_tests::test_parses_update_file_with_move_to_and_hunks
+        PASS [   0.006s] (704/718) maho-memory-core tools::patch_parser_tests::test_rejects_malformed_patch_headers_and_footers
+        PASS [   0.151s] (705/718) maho-memory-core tools::memory_tests::test_insert_clamps_line_indices
+        PASS [   0.154s] (706/718) maho-memory-core tools::memory_tests::test_str_replace_updates_first_occurrence
+        PASS [   0.190s] (707/718) maho-memory-core tools::memory_tests::test_delete_directory_reports_each_tracked_file
+        PASS [   0.122s] (708/718) maho-memory-core tools::memory_validation_tests::test_rejects_modifying_readonly_blocks
+        PASS [   0.188s] (709/718) maho-memory-core tools::memory_tests::test_rename_and_delete
+        PASS [   0.090s] (710/718) maho-memory-core tools::memory_validation_tests::test_rejects_path_traversal
+        PASS [   0.087s] (711/718) maho-memory-core tools::memory_validation_tests::test_validates_required_parameters
+        PASS [   0.253s] (712/718) maho-memory-core tools::memory_apply_patch_validation_tests::test_rejects_modifying_or_writing_readonly_files
+        PASS [   0.145s] (713/718) maho-memory-core tools::memory_validation_tests::test_rejects_no_changes_and_missing_strings
+        PASS [   0.120s] (714/718) maho-memory-core tools::soul_edit_tests::test_appends_soul_edit_result_line_on_identity_edit
+        PASS [   0.126s] (715/718) maho-memory-core tools::soul_edit_tests::test_appends_soul_edit_line_on_memory_apply_patch
+        PASS [   0.115s] (716/718) maho-memory-core tools::soul_edit_tests::test_appends_soul_edit_result_line_on_persona_edit
+        PASS [   0.155s] (717/718) maho-memory-core tools::memory_validation_tests::test_rejects_utf16_and_invalid_utf8
+        PASS [   0.118s] (718/718) maho-memory-core tools::soul_edit_tests::test_does_not_append_soul_edit_line_on_regular_file
+────────────
+     Summary [   2.194s] 718 tests run: 718 passed, 0 skipped

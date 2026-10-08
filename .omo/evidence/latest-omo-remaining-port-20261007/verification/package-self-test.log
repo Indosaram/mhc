@@ -1,0 +1,71 @@
+ok   stage writes a schema-versioned manifest
+ok   mhc staged beside a skills directory
+ok   ast-grep-mcp staged as a binary sibling
+ok   staged skills are the sorted builtin set
+ok   native skill overrides the shared pool
+ok   shared-only skill staged
+ok   skill debris excluded
+ok   licenses retained
+ok   versions recorded
+ok   source pins recorded
+ok   staged executables carry the exec bit
+ok   manifest verifies the staged tree
+ok   published schema is staged beside the binary
+ok   published schema is a hashed manifest entry
+ok   a manifest without the published schema is rejected
+ok   empty manifest object is rejected
+ok   manifest omitting a required executable is rejected
+ok   changed file mode fails verification
+ok   manifest omitting pins is rejected
+ok   declared skill without a hashed mapping is rejected
+ok   mismatched pin is refused before restage
+ok   existing stage survives a rejected pin mismatch
+ok   manifest is deterministic across runs
+ok   staging directory may contain spaces
+ok   --force restages a non-empty directory
+ok   tampered asset fails verification
+ok   tampered asset reports a size or hash mismatch
+ok   a missing published schema is refused
+ok   missing ast-grep-mcp helper is diagnosed
+ok   no placeholder helper is written
+ok   builtin skill absent from both roots is diagnosed
+ok   drifted builtin skill lists are diagnosed
+ok   non-empty staging directory is refused
+ok   staging into the filesystem root is refused
+ok   staging into the home directory is refused
+ok   missing binary is refused
+ok   rejected input preserves the existing stage
+ok   existing stage survives a rejected restage
+ok   latest source stages the overlay selection
+ok   latest source records the overlay identity
+ok   latest source records no pinned checkout
+ok   latest source retires the declared and unselected names
+ok   latest staged bytes equal the overlay bytes
+ok   latest overlay versions are recorded
+ok   latest manifest verifies
+ok   selected latest staging stages the git-bash sibling
+ok   latest records the installed loader binding
+ok   pinned remains the default source
+ok   pinned and latest select independently
+ok   latest overlay reusing the pin is refused
+ok   an unknown skill source is refused
+ok   latest selection without a tree is refused
+ok   latest skill whose file set differs from its declaration is refused
+ok   a declared overlay sha256 that disagrees with the bytes is refused
+ok   a missing latest overlay manifest is refused
+ok   selected latest staging without the git-bash sibling is refused
+ok   git-bash sibling is staged when named
+ok   git-bash sibling is a hashed manifest executable
+ok   git-bash sibling is absent when not named
+ok   a declared git-bash sibling missing from the manifest is rejected
+ok   a named git-bash sibling that is not a file is refused
+ok   selected latest staging stages the browser engine runtime
+ok   the staged runtime is hashed into the manifest
+ok   the staged runtime records the immutable omowright identity
+ok   the staged runtime bytes equal the materialized runtime
+ok   the latest manifest with a runtime verifies
+ok   selected latest staging without the browser runtime is refused
+ok   a runtime directory missing a staged file is refused
+ok   a runtime materialized from a different omowright commit is refused
+ok   a declared runtime file missing from the manifest is rejected
+self-test: 70/70 passed

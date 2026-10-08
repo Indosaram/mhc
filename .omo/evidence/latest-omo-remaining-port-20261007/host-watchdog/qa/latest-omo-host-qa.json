@@ -1,0 +1,24 @@
+{
+  "schema": "latest-omo-host-qa/v1",
+  "binary": "/home/indo/.cargo-target/maho-code/remaining-maho-cli/debug/mhc",
+  "binary_before": {
+    "sha256": "9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f",
+    "mtimeMs": 1791421308023.7175
+  },
+  "binary_after": {
+    "sha256": "9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f",
+    "mtimeMs": 1791421308023.7175
+  },
+  "binary_stable": true,
+  "scenarios": {
+    "watchdog": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "watchdog-receipt.json"
+      ],
+      "cleanup_ok": true
+    }
+  },
+  "status": "pass"
+}

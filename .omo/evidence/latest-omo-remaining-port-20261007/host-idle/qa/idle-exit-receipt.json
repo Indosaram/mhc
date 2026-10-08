@@ -1,0 +1,16 @@
+{
+  "home": "/tmp/host-qa-home-HfGLNK",
+  "socket": "/tmp/host-qa-home-HfGLNK/rpc.sock",
+  "agent": "/tmp/host-qa-home-HfGLNK/agent",
+  "exitCode": 0,
+  "hostChildPid": 2344057,
+  "cleanup": {
+    "gracefulExit": true,
+    "socketGone": true,
+    "homeRemoved": true
+  },
+  "stdoutBytes": 0,
+  "stderr": "",
+  "streamsComplete": true,
+  "hostDeath": "pidfd-exit"
+}

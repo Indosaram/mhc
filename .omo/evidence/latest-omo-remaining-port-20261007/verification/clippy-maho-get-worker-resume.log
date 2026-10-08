@@ -1,0 +1,5 @@
+    Checking serde_json v1.0.149
+    Checking libsqlite3-sys v0.38.2
+    Checking rusqlite v0.40.2
+    Checking maho-get-worker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/get-worker)
+    Finished `dev` profile [unoptimized] target(s) in 1.41s

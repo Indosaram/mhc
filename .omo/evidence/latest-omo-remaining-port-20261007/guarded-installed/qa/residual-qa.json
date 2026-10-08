@@ -1,0 +1,72 @@
+{
+  "schema": "session2-residual-qa/v1",
+  "sha": null,
+  "binary": "/home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/guarded-installed/install/mhc",
+  "binary_sha256": "1f25161b5d9041a5ce309d1bd675c06cb30bfe170989c7189e2c32603ffd08b9",
+  "binary_actual_sha256": "1f25161b5d9041a5ce309d1bd675c06cb30bfe170989c7189e2c32603ffd08b9",
+  "staged_sha256": "1f25161b5d9041a5ce309d1bd675c06cb30bfe170989c7189e2c32603ffd08b9",
+  "provenance_sha256": null,
+  "binary_mtime_ms": 1791423905892.712,
+  "binary_matches_staged": true,
+  "binary_verified": true,
+  "scenarios": {
+    "tui": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "tui-80x24-regular",
+        "tui-80x24-fullscreen",
+        "tui-120x36-regular",
+        "tui-120x36-fullscreen",
+        "tui-200x50-regular",
+        "tui-200x50-fullscreen"
+      ],
+      "cleanup_ok": true
+    },
+    "theme": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "theme-custom.log",
+        "theme-fallback.log",
+        "theme-custom/",
+        "theme-fallback/"
+      ],
+      "cleanup_ok": true
+    },
+    "install": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "install-verify.log",
+        "install-missing-helper.log"
+      ],
+      "cleanup_ok": true
+    },
+    "mini": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "mini-protocol.log"
+      ],
+      "cleanup_ok": true
+    },
+    "server": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "server-app-server.log"
+      ],
+      "cleanup_ok": true
+    },
+    "registry": {
+      "status": "pass",
+      "blocker": null,
+      "artifacts": [
+        "registry-list-models.log",
+        "registry-rpc.log"
+      ],
+      "cleanup_ok": true
+    }
+  }
+}

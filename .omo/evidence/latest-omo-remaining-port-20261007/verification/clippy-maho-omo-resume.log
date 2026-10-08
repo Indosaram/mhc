@@ -1,0 +1,46 @@
+    Checking rustix v1.1.4
+    Checking tokio-rustls v0.26.4
+    Checking hyper-rustls v0.27.7
+    Checking reqwest v0.12.28
+    Checking maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+    Checking tempfile v3.27.0
+    Checking crossterm v0.29.0
+    Checking maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+    Checking maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+    Checking maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+    Checking maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+    Checking gethostname v1.1.0
+    Checking maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+    Checking maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+    Checking maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+    Checking maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+    Checking maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+    Checking maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+    Checking maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+    Checking maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-fallback-architect)
+    Checking maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+    Checking maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-start-work-continuation)
+    Checking maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-telemetry)
+    Checking maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-onboarding)
+    Checking maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+    Checking maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+    Checking maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+    Checking maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+    Checking maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-init-deep-advisor)
+    Checking maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ulw-loop)
+    Checking maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-todo-fanout-reminder)
+    Checking maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ast-grep)
+    Checking maho-omo-mass-ulw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-mass-ulw)
+    Checking maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-model-profile)
+    Checking maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-native-badge)
+    Checking maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-builtin-mcps)
+    Checking maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+    Checking maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-comment-checker)
+    Checking maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-git-master)
+    Checking maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+    Checking maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+    Checking maho-omo v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/maho-omo)
+    Finished `dev` profile [unoptimized] target(s) in 40.35s

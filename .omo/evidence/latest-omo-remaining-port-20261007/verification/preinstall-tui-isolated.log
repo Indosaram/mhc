@@ -1,0 +1,4 @@
+residual-qa: scenario tui
+residual-qa: tui -> blocked (tui: 80x24/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed); 120x36/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed); 200x50/regular(missing abort_cleared_busy,reply_after_prompt,working_indicator_absent_at_reply,resize_reflowed))
+residual-qa: binary certification failed (actual=9d21883c01694e7deb1f63b95eb298c144bb86da935560a063df9d17e9afed0f staged=absent provenance=absent stable=true matchesStaged=false); QA evidence is unverified
+residual-qa: wrote /home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/preinstall-surface-isolated/qa/residual-qa.json

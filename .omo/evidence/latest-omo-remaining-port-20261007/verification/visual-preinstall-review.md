@@ -1,0 +1,5 @@
+# Fresh preinstall visual review
+
+Inspected preinstall-surface-isolated/qa/tui-120x36-fullscreen/terminal.png as an image. This is the driver's derived rasterization of current xterm cells, not a literal browser screenshot. The native startup help, telemetry notice, typed prompt, abort message, restored queued text, subsequent offline acceptance reply, editor borders, and footer are visible. No blank frame or overlapping text was observed in this 120x36 fullscreen capture. The second submitted prompt includes the restored steer-marker followed by hello again, consistent with restoring queued editor text.
+
+The corresponding evidence.json records all ten behavioral predicates true, resize reflow true, and exit code 0. This does not establish passing regular mode: all three regular geometries failed abort readiness due to a retained Working line. The aggregate also lacks staged binary/provenance certification because this was deliberately a preinstall probe. Final installed evidence and the remaining geometry images still need review.

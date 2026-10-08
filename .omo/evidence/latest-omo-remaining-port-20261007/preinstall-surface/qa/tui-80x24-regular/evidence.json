@@ -1,0 +1,17 @@
+{
+  "geometry": "80x24",
+  "mode": "regular",
+  "theme": null,
+  "onboarding_pre_completed": true,
+  "startup_predicate": false,
+  "prompt_echo_observed": false,
+  "gated_stream_visible_while_held": false,
+  "working_indicator_present_while_held": false,
+  "steer_echoed_while_working": false,
+  "abort_cleared_busy": false,
+  "reply_after_prompt": false,
+  "working_indicator_absent_at_reply": false,
+  "resize_reflowed": false,
+  "exit_code": 137,
+  "error": "timeout waiting for rendered TUI (editor prompt + model footer, idle)"
+}

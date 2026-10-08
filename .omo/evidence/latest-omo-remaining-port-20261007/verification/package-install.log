@@ -1,0 +1,3 @@
+package-native: staged 2 executable(s), 24 skill(s) (432 files) and 2 license(s) into /home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/install
+package-native: skill source pinned
+package-native: manifest /home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/install/manifest.json

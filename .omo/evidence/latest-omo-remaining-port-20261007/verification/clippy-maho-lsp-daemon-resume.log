@@ -1,0 +1,4 @@
+    Checking tokio v1.52.3
+    Checking maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+    Checking maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+    Finished `dev` profile [unoptimized] target(s) in 5.68s

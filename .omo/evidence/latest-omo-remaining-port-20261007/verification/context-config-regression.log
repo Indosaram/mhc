@@ -1,0 +1,84 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+    Finished `test` profile [unoptimized] target(s) in 18.57s
+────────────
+ Nextest run ID 23c94a81-e11a-43de-81fe-deaf74e18b6a with nextest profile: default
+    Starting 54 tests across 13 binaries
+        PASS [   0.006s] ( 1/54) maho-ext-ask-user::format variant_machine_details
+        PASS [   0.006s] ( 2/54) maho-ext-ask-user registry::tests::detached_publication_enqueues_before_rebind_can_drain
+        PASS [   0.008s] ( 3/54) maho-ext-ask-user registry::tests::pending_selection_preserves_insertion_order_not_request_id_order
+        PASS [   0.008s] ( 4/54) maho-ext-ask-user render::tests::wait_aliases_and_tool_dispatch_are_exact
+        PASS [   0.008s] ( 5/54) maho-ext-ask-user::format frame_parser_requires_sentinel_and_line_boundary
+        PASS [   0.010s] ( 6/54) maho-ext-ask-user::family wire_family_uses_api_and_boundary_aware_id_not_provider
+        PASS [   0.012s] ( 7/54) maho-ext-ask-user::native_renderers loaded_question_tools_preserve_native_renderers_after_executor_registration
+        PASS [   0.026s] ( 8/54) maho-ext-ask-user::native_question initial_ui_failure_cancels_without_model_injection_and_tears_down
+        PASS [   0.028s] ( 9/54) maho-ext-ask-user::native_question registered_abort_settles_and_unregisters_owned_question
+        PASS [   0.024s] (10/54) maho-ext-ask-user::native_question registered_shutdown_settles_and_unregisters_before_returning
+        PASS [   0.031s] (11/54) maho-ext-ask-user::native_question failed_persistence_leaves_no_pending_owner_or_notification
+        PASS [   0.026s] (12/54) maho-ext-ask-user::native_question registered_async_question_delivers_one_settlement
+        PASS [   0.006s] (13/54) maho-ext-ask-user::params claude_schema_requires_multi_select_but_not_options
+        PASS [   0.007s] (14/54) maho-ext-ask-user::params codex_schema_requires_wait_flag_and_bounded_choices
+        PASS [   0.033s] (15/54) maho-ext-ask-user::native_question recovered_ui_failure_settles_orphaned_with_comment_and_tears_down
+        PASS [   0.006s] (16/54) maho-ext-ask-user::pending_cases empty_comment_does_not_settle_empty_answers
+        PASS [   0.006s] (17/54) maho-ext-ask-user::pending progress_extends_idle_not_hard_cap
+        PASS [   0.007s] (18/54) maho-ext-ask-user::pending empty_submission_stays_pending_but_partial_answer_settles
+        PASS [   0.013s] (19/54) maho-ext-ask-user::pending comment_submits_without_answers
+        PASS [   0.034s] (20/54) maho-ext-ask-user::native_question registered_ui_empty_submission_preserves_response_and_retires_timer
+        PASS [   0.010s] (21/54) maho-ext-ask-user::pending_cases comment_only_leaves_both_questions_unanswered
+        PASS [   0.008s] (22/54) maho-ext-ask-user::pending timeout_preserves_draft_and_settles_once
+        PASS [   0.035s] (23/54) maho-ext-ask-user::native_question resumed_waiting_call_opens_original_request_without_duplicate_recovery
+        PASS [   0.005s] (24/54) maho-ext-ask-user::pending_cases idle_boundary_and_elapsed_metadata
+        PASS [   0.012s] (25/54) maho-ext-ask-user::pending_cases draft_selections_and_comment_survive_timeout
+        PASS [   0.006s] (26/54) maho-ext-ask-user::pending_cases full_submission_answers_all_questions
+        PASS [   0.005s] (27/54) maho-ext-ask-user::pending_cases repeated_touches_preserve_two_hour_hard_cap
+        PASS [   0.006s] (28/54) maho-ext-ask-user::pending_cases partial_submission_preserves_unanswered_ids
+        PASS [   0.005s] (29/54) maho-ext-ask-user::pending_cases touch_at_twenty_nine_minutes_moves_deadline_to_fifty_nine
+        PASS [   0.006s] (30/54) maho-ext-ask-user::pending_cases submission_after_timeout_returns_existing_result
+        PASS [   0.006s] (31/54) maho-ext-ask-user::pending_timer absolute_attachment_deadlines_share_creation_origin_and_do_not_reset
+        PASS [   0.006s] (32/54) maho-ext-ask-user::pending_timer cancellation_disarms_callback_before_deadline
+        PASS [   0.008s] (33/54) maho-ext-ask-user::pending_timer attachment_snapshot_preserves_draft_without_resetting_hard_cap
+        PASS [   0.006s] (34/54) maho-ext-ask-user::resume pending_async_result_recovers_until_settled
+        PASS [   0.006s] (35/54) maho-ext-ask-user::pending_timer comment_progress_without_answers_preserves_selected_draft
+        PASS [   0.006s] (36/54) maho-ext-ask-user::pending_timer progress_extends_idle_deadline_only_until_original_hard_cap
+        PASS [   0.006s] (37/54) maho-ext-ask-user::pending_timer ui_owned_empty_submission_retires_timer_without_timeout_delivery
+        PASS [   0.006s] (38/54) maho-ext-ask-user::resume recovery_preserves_reverse_branch_order_and_ignores_incomplete_foreign_calls
+        PASS [   0.005s] (39/54) maho-ext-ask-user::resume result_blocks_waiting_call_recovery
+        PASS [   0.013s] (40/54) maho-ext-ask-user::pending_timer authoritative_deadline_preserves_draft_and_fires_once
+        PASS [   0.008s] (41/54) maho-ext-ask-user::resume async_recovery_requires_successfully_accepted_pending_result
+        PASS [   0.005s] (42/54) maho-ext-ask-user::schema claude_bounds
+        PASS [   0.007s] (43/54) maho-ext-ask-user::schema codex_ids_options_and_multiselect
+        PASS [   0.007s] (44/54) maho-ext-ask-user::schema missing_wait_rejected
+        PASS [   0.007s] (45/54) maho-ext-ask-user::schema claude_generated_ids_and_optional_options
+        PASS [   0.006s] (46/54) maho-ext-ask-user::schema option_bounds_and_empty_headers_follow_upstream
+        PASS [   0.011s] (47/54) maho-ext-ask-user::schema canonical_variant_limits_and_option_metadata
+        PASS [   0.008s] (48/54) maho-omo-config-resolution::resolution activated_senpi_profile_overrides_base
+        PASS [   0.007s] (49/54) maho-omo-config-resolution::resolution expands_catalog_and_inherits_attributes
+        PASS [   0.006s] (50/54) maho-omo-config-resolution::resolution malformed_config_reports_diagnostic_without_panicking
+        FAIL [   0.008s] (51/54) maho-omo-config-resolution::resolution preserves_top_level_configuration
+  stdout ───
+
+    running 1 test
+    test preserves_top_level_configuration ... FAILED
+
+    failures:
+
+    failures:
+        preserves_top_level_configuration
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+  stderr ───
+
+    thread 'preserves_top_level_configuration' (2461520) panicked at crates/omo/components/maho-omo-config-resolution/tests/resolution.rs:20:5:
+    [Config(OmoConfigDiagnostic { kind: "deprecated-keys", path: "/tmp/.tmpYDL5Or/home/.maho/omo.jsonc", message: "Deprecated category name in /tmp/.tmpYDL5Or/home/.maho/omo.jsonc: categories.deep renamed to deep-low. Rename it; the alias is removed in a future release.", issue_paths: ["categories.deep"] })]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.124s] (52/54) maho-ext-ask-user::native_question detached_timeout_queues_outcome_once_on_new_registered_runner
+        PASS [   0.135s] (53/54) maho-ext-ask-user::native_question detached_owner_rebinds_before_late_registered_publication
+        PASS [   0.136s] (54/54) maho-ext-ask-user::native_question registered_timeout_settles_once_and_unregisters_owned_question
+────────────
+     Summary [   0.144s] 54 tests run: 53 passed, 1 failed, 0 skipped
+        FAIL [   0.008s] (51/54) maho-omo-config-resolution::resolution preserves_top_level_configuration
+error: test run failed

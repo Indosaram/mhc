@@ -1,0 +1,11 @@
+    Checking aho-corasick v1.1.4
+    Checking futures-util v0.3.34
+    Checking regex-automata v0.4.18
+    Checking chrono v0.4.43
+    Checking regex v1.12.3
+    Checking thiserror v2.0.18
+    Checking serde v1.0.228
+    Checking futures-executor v0.3.34
+    Checking maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+    Checking futures v0.3.34
+    Finished `dev` profile [unoptimized] target(s) in 4.51s

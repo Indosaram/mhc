@@ -1,0 +1,13 @@
+residual-qa: scenario tui
+residual-qa: tui -> pass
+residual-qa: scenario theme
+residual-qa: theme -> pass
+residual-qa: scenario install
+residual-qa: install -> pass
+residual-qa: scenario mini
+residual-qa: mini -> pass
+residual-qa: scenario server
+residual-qa: server -> pass
+residual-qa: scenario registry
+residual-qa: registry -> pass
+residual-qa: wrote /home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/guarded-installed/qa/residual-qa.json

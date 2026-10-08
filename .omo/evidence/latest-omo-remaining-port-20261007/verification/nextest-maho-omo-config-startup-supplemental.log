@@ -1,0 +1,42 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling reqwest v0.12.28
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Finished `test` profile [unoptimized] target(s) in 52.08s
+────────────
+ Nextest run ID 60c717e7-6700-4f18-b2a5-1fe89df80d83 with nextest profile: default
+    Starting 24 tests across 7 binaries
+        PASS [   0.006s] ( 1/24) maho-omo-config-startup::migration empty_isolated_home_has_no_migrations
+        PASS [   0.007s] ( 2/24) maho-omo-config-startup::component registered_session_start_stays_silent_for_a_served_devin_lane
+        PASS [   0.007s] ( 3/24) maho-omo-config-startup::component registered_session_start_reports_an_unserved_devin_selector_once
+        PASS [   0.008s] ( 4/24) maho-omo-config-startup::component migration_and_config_diagnostics_report_once
+        PASS [   0.010s] ( 5/24) maho-omo-config-startup::component migration_notice_reports_once_to_ui
+        PASS [   0.011s] ( 6/24) maho-omo-config-startup::migration conflicting_legacy_model_keeps_target_and_records_diagnostic
+        PASS [   0.011s] ( 7/24) maho-omo-config-startup::migration missing_home_reports_error
+        PASS [   0.011s] ( 8/24) maho-omo-config-startup::migration both_legacy_groups_migrate_into_unified_config
+        PASS [   0.005s] ( 9/24) maho-omo-config-startup::notices missing_home_reports_the_pinned_error_and_touches_nothing
+        PASS [   0.012s] (10/24) maho-omo-config-startup::migration second_caller_is_locked_at_journal_boundary
+        PASS [   0.006s] (11/24) maho-omo-config-startup::notices notification_messages_report_a_resumed_journal_when_nothing_migrated
+        PASS [   0.006s] (12/24) maho-omo-config-startup::notices notification_messages_join_every_migration_diagnostic_once
+        PASS [   0.006s] (13/24) maho-omo-config-startup::notices notification_messages_report_an_error_before_every_other_clause
+        PASS [   0.015s] (14/24) maho-omo-config-startup::component real_conflict_diagnostic_reaches_ui_once
+        PASS [   0.006s] (15/24) maho-omo-config-startup::notices notification_messages_report_unserved_devin_selectors_with_their_config_paths
+        PASS [   0.006s] (16/24) maho-omo-config-startup::notices notification_messages_report_migration_and_config_diagnostics_with_the_native_prefix
+        PASS [   0.006s] (17/24) maho-omo-config-startup::notices notification_messages_stay_silent_without_a_devin_policy
+        PASS [   0.007s] (18/24) maho-omo-config-startup::notices notification_messages_use_the_real_devin_producer_for_selector_boundaries
+        PASS [   0.006s] (19/24) maho-omo-config-startup::registered_migration_driver case3_malformed_legacy_input_reports_and_writes_no_target
+        PASS [   0.008s] (20/24) maho-omo-config-startup::registered_migration_driver case4_migrated_document_reloads_without_codegraph
+        PASS [   0.010s] (21/24) maho-omo-config-startup::registered_migration_driver case2_second_run_reports_nothing_and_leaves_the_document_byte_identical
+        PASS [   0.010s] (22/24) maho-omo-config-startup::registered_migration_driver case1_fresh_legacy_migration_writes_the_unified_document
+        PASS [   0.029s] (23/24) maho-omo-config-startup::faux_session faux_registered_component_preserves_idle_prompt_and_provider_reply
+        PASS [   0.035s] (24/24) maho-omo-config-startup::faux_migration real_startup_migration_matches_reference_document
+────────────
+     Summary [   0.035s] 24 tests run: 24 passed, 0 skipped

@@ -1,0 +1,46 @@
+   Compiling maho-git-bash-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/git-bash-mcp)
+    Finished `test` profile [unoptimized] target(s) in 1.06s
+────────────
+ Nextest run ID 0e52d7b3-3096-4fd1-8b72-7beffebc32c4 with nextest profile: default
+    Starting 39 tests across 6 binaries
+        PASS [   0.005s] ( 1/39) maho-git-bash-mcp::mcp non_object_request_is_invalid_request
+        PASS [   0.005s] ( 2/39) maho-git-bash-mcp::mcp diagnose_reports_disabled_off_windows
+        PASS [   0.005s] ( 3/39) maho-git-bash-mcp::mcp run_on_windows_without_git_bash_returns_install_hint
+        PASS [   0.005s] ( 4/39) maho-git-bash-mcp::mcp initialize_pins_server_info_and_capabilities
+        PASS [   0.007s] ( 5/39) maho-git-bash-mcp::mcp notifications_initialized_produces_no_response
+        PASS [   0.008s] ( 6/39) maho-git-bash-mcp::binary_stdio binary_stays_disabled_off_windows_and_writes_nothing
+        PASS [   0.008s] ( 7/39) maho-git-bash-mcp::mcp run_accepts_timeout_ms_alias_and_rejects_a_fractional_timeout
+        PASS [   0.008s] ( 8/39) maho-git-bash-mcp::mcp run_off_windows_returns_native_windows_error
+        PASS [   0.008s] ( 9/39) maho-git-bash-mcp::binary_stdio binary_reports_usage_for_an_unknown_command
+        PASS [   0.009s] (10/39) maho-git-bash-mcp::mcp initialize_without_protocol_version_falls_back
+        PASS [   0.009s] (11/39) maho-git-bash-mcp::mcp diagnose_lists_every_probed_path
+        PASS [   0.008s] (12/39) maho-git-bash-mcp::mcp malformed_stdio_line_writes_method_not_found_envelope
+        PASS [   0.005s] (13/39) maho-git-bash-mcp::mcp run_per_call_timeout_wins_over_inherited
+        PASS [   0.005s] (14/39) maho-git-bash-mcp::mcp run_rejects_blank_command_without_spawning
+        PASS [   0.006s] (15/39) maho-git-bash-mcp::mcp run_rejects_blank_workdir_before_spawning
+        PASS [   0.006s] (16/39) maho-git-bash-mcp::mcp run_rejects_invalid_timeout_before_spawning
+        PASS [   0.005s] (17/39) maho-git-bash-mcp::mcp run_reports_a_runner_failure_as_error_text
+        PASS [   0.005s] (18/39) maho-git-bash-mcp::mcp run_uses_resolved_git_bash_and_command_payload
+        PASS [   0.005s] (19/39) maho-git-bash-mcp::mcp stdio_server_stays_disabled_off_windows
+        PASS [   0.006s] (20/39) maho-git-bash-mcp::mcp run_uses_exec_command_timeout_env_default
+        PASS [   0.006s] (21/39) maho-git-bash-mcp::mcp stdio_server_serves_on_windows_with_git_bash_and_disables_idle_timeout
+        PASS [   0.005s] (22/39) maho-git-bash-mcp::mcp stdio_server_stays_disabled_on_windows_without_git_bash
+        PASS [   0.008s] (23/39) maho-git-bash-mcp::mcp run_schema_matches_shell_command_conventions
+        PASS [   0.005s] (24/39) maho-git-bash-mcp::mcp timeout_env_keys_preserve_upstream_strings
+        PASS [   0.006s] (25/39) maho-git-bash-mcp::mcp stdio_server_writes_responses_for_a_windows_handshake
+        PASS [   0.005s] (26/39) maho-git-bash-mcp::mcp tools_list_hides_run_off_windows
+        PASS [   0.008s] (27/39) maho-git-bash-mcp::mcp stdio_server_settles_on_input_close
+        PASS [   0.009s] (28/39) maho-git-bash-mcp::mcp run_uses_inherited_default_timeout_with_workdir
+        PASS [   0.005s] (29/39) maho-git-bash-mcp::mcp which_bash_returns_env_path_and_source
+        PASS [   0.005s] (30/39) maho-git-bash-mcp::mcp unknown_tool_reports_its_name
+        PASS [   0.006s] (31/39) maho-git-bash-mcp::mcp unknown_method_is_method_not_found
+        PASS [   0.005s] (32/39) maho-git-bash-mcp::resolver only_the_system32_launcher_on_path_fails_resolution
+        PASS [   0.009s] (33/39) maho-git-bash-mcp::mcp tools_list_hides_run_on_windows_without_git_bash
+        PASS [   0.006s] (34/39) maho-git-bash-mcp::resolver mixed_case_system32_launcher_is_skipped_case_insensitively
+        PASS [   0.005s] (35/39) maho-git-bash-mcp::runner run_reports_a_spawn_failure
+        PASS [   0.011s] (36/39) maho-git-bash-mcp::runner run_removes_the_per_call_output_directory
+        PASS [   0.011s] (37/39) maho-git-bash-mcp::runner run_invokes_bash_with_lc_and_captures_output
+        PASS [   0.506s] (38/39) maho-git-bash-mcp::runner run_kills_the_child_when_the_timeout_elapses
+        PASS [   0.506s] (39/39) maho-git-bash-mcp::runner run_removes_the_output_directory_after_a_timeout_kill
+────────────
+     Summary [   0.523s] 39 tests run: 39 passed, 0 skipped

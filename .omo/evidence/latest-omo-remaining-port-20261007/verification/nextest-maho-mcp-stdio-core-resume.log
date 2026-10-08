@@ -1,0 +1,47 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling syn v2.0.117
+   Compiling serde_derive v1.0.228
+   Compiling serde v1.0.228
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+    Finished `test` profile [unoptimized] target(s) in 4.07s
+────────────
+ Nextest run ID fb5a626b-de1c-441c-afa2-3b6f3f83c824 with nextest profile: default
+    Starting 35 tests across 3 binaries
+        PASS [   0.008s] ( 1/35) maho-mcp-stdio-core::server a_framed_request_is_answered_with_a_framed_response
+        PASS [   0.010s] ( 2/35) maho-mcp-stdio-core::server a_line_request_is_answered_with_a_line_response
+        PASS [   0.010s] ( 3/35) maho-mcp-stdio-core::server a_malformed_payload_uses_the_default_parse_error_response
+        PASS [   0.013s] ( 4/35) maho-mcp-stdio-core::server a_non_terminal_write_failure_is_reported_as_an_error
+        PASS [   0.011s] ( 5/35) maho-mcp-stdio-core::server a_closed_output_settles_the_server_without_an_error
+        PASS [   0.010s] ( 6/35) maho-mcp-stdio-core::server a_missing_watchdog_changes_nothing_and_never_reports_a_parent_exit
+        PASS [   0.017s] ( 7/35) maho-mcp-stdio-core::server a_live_watched_parent_keeps_the_server_serving
+        PASS [   0.007s] ( 8/35) maho-mcp-stdio-core::server a_parse_error_override_is_written
+        PASS [   0.007s] ( 9/35) maho-mcp-stdio-core::server a_running_process_is_reported_alive
+        PASS [   0.006s] (10/35) maho-mcp-stdio-core::server an_eperm_probe_error_is_reported_alive
+        PASS [   0.006s] (11/35) maho-mcp-stdio-core::server an_esrch_probe_error_is_reported_dead
+        PASS [   0.005s] (12/35) maho-mcp-stdio-core::server an_unknown_probe_error_is_reported_alive
+        PASS [   0.005s] (13/35) maho-mcp-stdio-core::transport a_failing_writer_surfaces_the_write_error
+        PASS [   0.005s] (14/35) maho-mcp-stdio-core::transport a_carriage_return_before_the_newline_is_stripped
+        PASS [   0.005s] (15/35) maho-mcp-stdio-core::transport a_missing_content_length_header_is_its_own_parse_error
+        PASS [   0.005s] (16/35) maho-mcp-stdio-core::transport a_partial_frame_is_buffered_until_it_completes
+        PASS [   0.004s] (17/35) maho-mcp-stdio-core::transport a_serialization_failure_is_reported_as_an_error
+        PASS [   0.004s] (18/35) maho-mcp-stdio-core::transport content_length_json_yields_framed_requests
+        PASS [   0.004s] (19/35) maho-mcp-stdio-core::transport blank_lines_are_skipped
+        PASS [   0.005s] (20/35) maho-mcp-stdio-core::transport a_trailing_unterminated_payload_is_flushed_as_a_line_message
+        PASS [   0.005s] (21/35) maho-mcp-stdio-core::transport line_delimited_json_yields_line_mode_requests
+        PASS [   0.006s] (22/35) maho-mcp-stdio-core::transport framed_content_length_counts_utf8_bytes_not_characters
+        PASS [   0.030s] (23/35) maho-mcp-stdio-core::server a_parent_exit_stops_the_poll_after_the_first_report
+        PASS [   0.006s] (24/35) maho-mcp-stdio-core::transport response_mode_controls_the_framing_bytes
+        PASS [   0.007s] (25/35) maho-mcp-stdio-core::transport malformed_json_reports_a_line_mode_parse_error
+        PASS [   0.006s] (26/35) maho-mcp-stdio-core::transport several_framed_messages_in_one_chunk_are_all_yielded
+        PASS [   0.005s] (27/35) maho-mcp-stdio-core::transport the_content_length_prefix_match_is_case_insensitive
+        PASS [   0.007s] (28/35) maho-mcp-stdio-core::transport malformed_framed_body_reports_a_framed_parse_error
+        PASS [   0.032s] (29/35) maho-mcp-stdio-core::server a_killed_watched_parent_settles_the_server_through_the_real_probe
+        PASS [   0.037s] (30/35) maho-mcp-stdio-core::server a_dead_watched_parent_settles_the_server_and_fires_the_hook
+        PASS [   0.004s] (31/35) maho-mcp-stdio-core::transport whitespace_only_trailing_bytes_produce_no_message
+        PASS [   0.026s] (32/35) maho-mcp-stdio-core::server an_idle_server_settles_with_an_idle_timeout
+        PASS [   0.039s] (33/35) maho-mcp-stdio-core::server a_denied_probe_is_treated_as_alive_and_the_server_keeps_serving
+        PASS [   0.027s] (34/35) maho-mcp-stdio-core::server the_current_parent_is_probed_when_no_parent_pid_is_configured
+        PASS [   0.061s] (35/35) maho-mcp-stdio-core::server a_configured_parent_pid_is_probed_instead_of_the_current_parent
+────────────
+     Summary [   0.063s] 35 tests run: 35 passed, 0 skipped

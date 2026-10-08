@@ -1,0 +1,153 @@
+   Compiling serde_json v1.0.149
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.13.2
+   Compiling reqwest v0.12.28
+   Compiling syntect v5.3.0
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+   Compiling maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-websearch)
+    Finished `test` profile [unoptimized] target(s) in 1m 04s
+────────────
+ Nextest run ID e32b32a8-7a17-4b95-8f0d-7853f32f8de9 with nextest profile: default
+    Starting 130 tests across 7 binaries
+        PASS [   0.007s] (  1/130) maho-ext-websearch index::tests::status_argument_uses_ecmascript_whitespace
+        PASS [   0.007s] (  2/130) maho-ext-websearch websearch::config::tests::invalid_entries_are_filtered_before_validation
+        PASS [   0.007s] (  3/130) maho-ext-websearch index::tests::status_reason_controls_notification_level
+        PASS [   0.007s] (  4/130) maho-ext-websearch index::tests::status_command_registers_native_handler
+        PASS [   0.008s] (  5/130) maho-ext-websearch websearch::config::tests::hosted_search_requires_key
+        PASS [   0.008s] (  6/130) maho-ext-websearch websearch::config::tests::invalid_project_config_does_not_fall_through_to_home
+        PASS [   0.008s] (  7/130) maho-ext-websearch websearch::config::tests::mixed_single_and_list_is_rejected
+        PASS [   0.009s] (  8/130) maho-ext-websearch websearch::config::tests::config_read_replaces_invalid_utf8_like_node
+        PASS [   0.009s] (  9/130) maho-ext-websearch websearch::config::tests::backend_alias_and_false_auto_are_preserved
+        PASS [   0.009s] ( 10/130) maho-ext-websearch websearch::config::tests::private_override_rejected_before_missing_key
+        PASS [   0.010s] ( 11/130) maho-ext-websearch websearch::config::tests::empty_domain_lists_still_conflict
+        PASS [   0.013s] ( 12/130) maho-ext-websearch index::tests::lifecycle_refresh_bypass_precedes_config_and_registration_is_lazy
+        PASS [   0.007s] ( 13/130) maho-ext-websearch websearch::native::tests::codex_model_is_not_discovered
+        PASS [   0.007s] ( 14/130) maho-ext-websearch websearch::native::tests::discovered_ids_use_first_sixteen_sha256_hex_characters
+        PASS [   0.009s] ( 15/130) maho-ext-websearch websearch::native::tests::matrix_deepseek_chat
+        PASS [   0.007s] ( 16/130) maho-ext-websearch websearch::native::tests::matrix_fable5
+        PASS [   0.008s] ( 17/130) maho-ext-websearch websearch::native::tests::matrix_deepseek_pro
+        PASS [   0.008s] ( 18/130) maho-ext-websearch websearch::native::tests::matrix_deepseek_flash
+        PASS [   0.009s] ( 19/130) maho-ext-websearch websearch::native::tests::matrix_codex
+        PASS [   0.008s] ( 20/130) maho-ext-websearch websearch::native::tests::matrix_deepseek_v3
+        PASS [   0.010s] ( 21/130) maho-ext-websearch websearch::native::tests::matrix_codex_spark
+        PASS [   0.011s] ( 22/130) maho-ext-websearch websearch::config::tests::upstream_project_config_path_priority
+        PASS [   0.011s] ( 23/130) maho-ext-websearch websearch::native::tests::endpoints_preserve_query_and_drop_fragment
+        PASS [   0.008s] ( 24/130) maho-ext-websearch websearch::native::tests::matrix_gpt_4o
+        PASS [   0.008s] ( 25/130) maho-ext-websearch websearch::native::tests::matrix_gpt_terra
+        PASS [   0.008s] ( 26/130) maho-ext-websearch websearch::native::tests::matrix_gpt_fast
+        PASS [   0.007s] ( 27/130) maho-ext-websearch websearch::native::tests::matrix_haiku
+        PASS [   0.008s] ( 28/130) maho-ext-websearch websearch::native::tests::matrix_gpt_sol
+        PASS [   0.013s] ( 29/130) maho-ext-websearch websearch::native::tests::matrix_gpt_41
+        PASS [   0.009s] ( 30/130) maho-ext-websearch websearch::native::tests::matrix_gpt_54
+        PASS [   0.009s] ( 31/130) maho-ext-websearch websearch::native::tests::matrix_gpt_turbo
+        PASS [   0.009s] ( 32/130) maho-ext-websearch websearch::native::tests::matrix_grok
+        PASS [   0.013s] ( 33/130) maho-ext-websearch websearch::native::tests::matrix_gpt_5
+        PASS [   0.011s] ( 34/130) maho-ext-websearch websearch::native::tests::matrix_gpt_pro
+        PASS [   0.013s] ( 35/130) maho-ext-websearch websearch::native::tests::matrix_gpt_55
+        PASS [   0.007s] ( 36/130) maho-ext-websearch websearch::native::tests::matrix_not_claude
+        PASS [   0.007s] ( 37/130) maho-ext-websearch websearch::native::tests::matrix_opus5
+        PASS [   0.007s] ( 38/130) maho-ext-websearch websearch::native::tests::native_auth_cancellation_subscribes_before_resolution
+        PASS [   0.009s] ( 39/130) maho-ext-websearch websearch::native::tests::matrix_opus48
+        PASS [   0.009s] ( 40/130) maho-ext-websearch websearch::native::tests::matrix_sonnet5
+        PASS [   0.010s] ( 41/130) maho-ext-websearch websearch::native::tests::matrix_openrouter
+        PASS [   0.008s] ( 42/130) maho-ext-websearch websearch::native::tests::openrouter_maps_effective_provider
+        PASS [   0.008s] ( 43/130) maho-ext-websearch websearch::native::tests::native_entry_preserves_source_fields_and_rejects_private_before_auth
+        PASS [   0.012s] ( 44/130) maho-ext-websearch websearch::native::tests::matrix_o3
+        PASS [   0.008s] ( 45/130) maho-ext-websearch websearch::native::tests::upstream_active_auth_failure_does_not_retry_alias
+        PASS [   0.012s] ( 46/130) maho-ext-websearch websearch::native::tests::matrix_sonnet_dated
+        PASS [   0.009s] ( 47/130) maho-ext-websearch websearch::native::tests::route_key_normalizes_terminal_dot_and_rejects_private_host
+        PASS [   0.011s] ( 48/130) maho-ext-websearch websearch::native::tests::native_discovery_deduplicates_before_auth_including_failed_active_route
+        PASS [   0.007s] ( 49/130) maho-ext-websearch websearch::native::tests::upstream_dotted_public_aliases_preserve_first_endpoint
+        PASS [   0.009s] ( 50/130) maho-ext-websearch websearch::native::tests::upstream_distinct_endpoints_preserve_both_candidates
+        PASS [   0.007s] ( 51/130) maho-ext-websearch websearch::provider_endpoints::tests::protocol_and_credentials
+        PASS [   0.009s] ( 52/130) maho-ext-websearch websearch::native::tests::upstream_failed_alias_route_resolves_auth_once
+        PASS [   0.006s] ( 53/130) maho-ext-websearch websearch::provider_endpoints::tests::public_single_terminal_dot
+        PASS [   0.010s] ( 54/130) maho-ext-websearch websearch::native::tests::upstream_fourteen_aliases_yield_two_stable_opaque_routes
+        PASS [   0.011s] ( 55/130) maho-ext-websearch websearch::native::tests::upstream_dotted_private_routes_rejected_before_auth
+        PASS [   0.007s] ( 56/130) maho-ext-websearch websearch::provider_endpoints::tests::terminal_dot_private_hosts
+        PASS [   0.007s] ( 57/130) maho-ext-websearch websearch::provider_endpoints::tests::repeated_terminal_dots
+        PASS [   0.009s] ( 58/130) maho-ext-websearch websearch::native::tests::upstream_query_preserved_fragments_deduplicated
+        PASS [   0.009s] ( 59/130) maho-ext-websearch websearch::provider_endpoints::tests::override_and_default
+        PASS [   0.010s] ( 60/130) maho-ext-websearch websearch::provider_endpoints::tests::whatwg_short_ipv4
+        PASS [   0.008s] ( 61/130) maho-ext-websearch websearch::providers::anthropic::tests::model_and_domain_fields_preserve_empty_values
+        PASS [   0.007s] ( 62/130) maho-ext-websearch websearch::providers::deepseek::tests::official_endpoint_and_default_model
+        PASS [   0.010s] ( 63/130) maho-ext-websearch websearch::providers::anthropic::tests::page_age_precedes_joined_assistant_text
+        PASS [   0.008s] ( 64/130) maho-ext-websearch websearch::providers::brave::tests::query_filters_and_count_are_encoded
+        PASS [   0.006s] ( 65/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_model_override_and_domain_filter
+        PASS [   0.007s] ( 66/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_default_endpoint
+        PASS [   0.008s] ( 67/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_live_response_fixture_has_titled_http_results
+        PASS [   0.010s] ( 68/130) maho-ext-websearch websearch::providers::brave::tests::response_normalization_drops_missing_title
+        PASS [   0.010s] ( 69/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_config_requires_deepseek_key
+        PASS [   0.011s] ( 70/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_default_request_wire_contract
+        PASS [   0.014s] ( 71/130) maho-ext-websearch websearch::providers::deepseek::tests::upstream_config_accepts_deepseek_with_key
+        PASS [   0.007s] ( 72/130) maho-ext-websearch websearch::providers::google_cse::tests::response_uses_item_links
+        PASS [   0.007s] ( 73/130) maho-ext-websearch websearch::providers::exa::tests::response_text_fallback
+        PASS [   0.007s] ( 74/130) maho-ext-websearch websearch::providers::google_cse::tests::count_and_engine_are_encoded
+        PASS [   0.009s] ( 75/130) maho-ext-websearch websearch::providers::kimi::tests::request_filters_and_limits
+        PASS [   0.007s] ( 76/130) maho-ext-websearch websearch::providers::openai_responses::tests::annotation_precedes_sources
+        PASS [   0.013s] ( 77/130) maho-ext-websearch websearch::providers::duckduckgo_html::tests::invalid_links_are_discarded
+        PASS [   0.008s] ( 78/130) maho-ext-websearch websearch::providers::kimi::tests::summary_precedence_and_content_fallback
+        PASS [   0.013s] ( 79/130) maho-ext-websearch websearch::providers::exa::tests::request_count_domains
+        PASS [   0.007s] ( 80/130) maho-ext-websearch websearch::providers::perplexity::tests::allowed_domain_precedence_and_model_options
+        PASS [   0.007s] ( 81/130) maho-ext-websearch websearch::providers::perplexity::tests::fallback_results_preserve_publication_date
+        PASS [   0.012s] ( 82/130) maho-ext-websearch websearch::providers::openai_responses::tests::cached_mode_and_empty_allowed_filters
+        PASS [   0.007s] ( 83/130) maho-ext-websearch websearch::providers::serper::tests::request_clamps_results_and_filters_domains
+        PASS [   0.007s] ( 84/130) maho-ext-websearch websearch::providers::serper::tests::response_uses_organic_links
+        PASS [   0.006s] ( 85/130) maho-ext-websearch websearch::providers::shared::tests::domain_query_filters
+        PASS [   0.007s] ( 86/130) maho-ext-websearch websearch::providers::shared::tests::configured_allowlist_cannot_expand
+        PASS [   0.006s] ( 87/130) maho-ext-websearch websearch::providers::shared::tests::invalid_results_dropped
+        PASS [   0.010s] ( 88/130) maho-ext-websearch websearch::providers::shared::tests::configured_blocklist_narrows_requested_allowlist
+        PASS [   0.021s] ( 89/130) maho-ext-websearch websearch::providers::duckduckgo_html::tests::redirect_entities_and_snippet
+        PASS [   0.008s] ( 90/130) maho-ext-websearch websearch::providers::shared::tests::preserves_unique_order
+        PASS [   0.007s] ( 91/130) maho-ext-websearch websearch::providers::tavily::tests::response_missing_items
+        PASS [   0.008s] ( 92/130) maho-ext-websearch websearch::providers::tavily::tests::request_minimum
+        PASS [   0.012s] ( 93/130) maho-ext-websearch websearch::providers::shared::tests::empty_request_allowlist_stays_empty
+        PASS [   0.007s] ( 94/130) maho-ext-websearch websearch::providers::xai::tests::filters_are_capped_with_allowed_precedence
+        PASS [   0.007s] ( 95/130) maho-ext-websearch websearch::providers::xai::tests::citation_fallback_enabled
+        PASS [   0.018s] ( 96/130) maho-ext-websearch websearch::providers::openai_responses::tests::text_url_cleanup_and_optional_citations
+        PASS [   0.007s] ( 97/130) maho-ext-websearch websearch::providers::z_ai::tests::chat_search_prefers_chat_results
+        PASS [   0.012s] ( 98/130) maho-ext-websearch websearch::providers::tests::all_providers_dispatch_without_network_and_ignore_primitive_payload
+        PASS [   0.007s] ( 99/130) maho-ext-websearch websearch::providers::z_ai::tests::direct_search_filters_blocked_and_first_allowed_domain
+        PASS [   0.013s] (100/130) maho-ext-websearch websearch::providers::tests::config_limits_precede_request_and_domains_cannot_expand
+        PASS [   0.007s] (101/130) maho-ext-websearch websearch::renderers::tests::route_override_preserves_empty_array
+        PASS [   0.007s] (102/130) maho-ext-websearch websearch::search::tests::aborted_provider_never_connects
+        PASS [   0.007s] (103/130) maho-ext-websearch websearch::search::tests::fill_first_uses_lowest_success_count
+        PASS [   0.009s] (104/130) maho-ext-websearch websearch::renderers::tests::duration_threshold_rounds_seconds
+        PASS [   0.007s] (105/130) maho-ext-websearch websearch::search::tests::priority_is_stable_with_default_index
+        PASS [   0.010s] (106/130) maho-ext-websearch websearch::search::tests::native_labels_preserve_explicit_suffix
+        PASS [   0.008s] (107/130) maho-ext-websearch websearch::search::tests::weighted_round_robin_rotates_unique_providers
+        PASS [   0.007s] (108/130) maho-ext-websearch websearch::tool::tests::native_executor_does_not_shim_unbound_auto_discovery
+        PASS [   0.010s] (109/130) maho-ext-websearch websearch::tool::tests::conflicting_nonempty_lists_fail_before_search
+        PASS [   0.019s] (110/130) maho-ext-websearch websearch::renderers::exported_prefix_tests::callbacks_preserve_current_exported_prefix_bytes
+        PASS [   0.008s] (111/130) maho-ext-websearch websearch::tool::tests::query_schema_and_default_limit
+        PASS [   0.011s] (112/130) maho-ext-websearch websearch::tool::tests::aborted_auto_route_without_context_preserves_cancellation
+        PASS [   0.010s] (113/130) maho-ext-websearch websearch::tool::tests::native_executor_conflicting_domains_precede_config_load
+        PASS [   0.007s] (114/130) maho-ext-websearch websearch::tool::tests::search_details_use_source_fields_and_omit_absent_values
+        PASS [   0.010s] (115/130) maho-ext-websearch websearch::tool::tests::routing_state_only_resets_on_identity_or_count_change
+        PASS [   0.006s] (116/130) maho-ext-websearch::config_source_cases malformed_optional_modes_and_routing_use_source_defaults
+        PASS [   0.006s] (117/130) maho-ext-websearch::endpoint_source_cases pinned_whatwg_endpoint_edge_corpus
+        PASS [   0.009s] (118/130) maho-ext-websearch::config_source_cases finite_negative_fields_and_fractional_priority_are_retained
+        PASS [   0.007s] (119/130) maho-ext-websearch::config_source_cases overflow_json_optional_numbers_are_ignored_at_file_boundary
+        PASS [   0.009s] (120/130) maho-ext-websearch::config_source_cases zero_fields_follow_source_truthiness_distinctions
+        PASS [   0.011s] (121/130) maho-ext-websearch::native_registry auto_routes_use_full_models_skip_failed_seen_route_and_prepend_available_order
+        PASS [   0.008s] (122/130) maho-ext-websearch::provider_source_config pinned_provider_full_configuration_requests
+        PASS [   0.009s] (123/130) maho-ext-websearch::native_render native_factory_installs_search_renderers
+        PASS [   0.017s] (124/130) maho-ext-websearch::native_render search_callbacks_preserve_route_progress_filters_and_expansion
+        PASS [   0.040s] (125/130) maho-ext-websearch::native_execute genuine_registered_context_executor_validates_before_native_auth_or_network
+        PASS [   0.065s] (126/130) maho-ext-websearch websearch::search::tests::cancellation_after_http_request_does_not_fallback
+        PASS [   0.058s] (127/130) maho-ext-websearch websearch::tool::tests::native_executor_searches_http_and_emits_source_result_details
+        PASS [   0.050s] (128/130) maho-ext-websearch::native_registry automatic_auth_failure_preserves_configured_http_search_and_request_limit
+        PASS [   0.101s] (129/130) maho-ext-websearch websearch::search::tests::real_http_fallback_preserves_attempts_and_success_count
+        PASS [   0.096s] (130/130) maho-ext-websearch websearch::tool::tests::upstream_fallback_emits_initial_and_per_attempt_progress
+────────────
+     Summary [   0.184s] 130 tests run: 130 passed, 0 skipped

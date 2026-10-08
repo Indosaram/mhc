@@ -1,0 +1,104 @@
+   Compiling tokio v1.52.3
+   Compiling crossterm v0.29.0
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling h2 v0.4.19
+   Compiling tokio-rustls v0.26.4
+   Compiling tower-http v0.6.8
+   Compiling icu_collator v2.3.1
+   Compiling hyper v1.8.1
+   Compiling hyper-util v0.1.20
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-rule-activation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rule-activation)
+   Compiling maho-ext-rules v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rules)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+    Finished `test` profile [unoptimized] target(s) in 1m 01s
+────────────
+ Nextest run ID 2aae6262-a953-43d3-bc61-740c08f841a0 with nextest profile: default
+    Starting 76 tests across 14 binaries
+        PASS [   0.005s] ( 1/76) maho-ext-rules::config truthy_environment_values_disable_rules
+        PASS [   0.006s] ( 2/76) maho-ext-rules::discovery discovery_omits_disabled_sources_and_caches_missing_files
+        PASS [   0.006s] ( 3/76) maho-ext-rules::config other_environment_values_keep_rules_enabled
+        PASS [   0.006s] ( 4/76) maho-ext-rules::commands rules_extension_registers_all_lifecycle_hooks
+        PASS [   0.006s] ( 5/76) maho-ext-rules::commands registers_both_commands
+        PASS [   0.006s] ( 6/76) maho-ext-rules::discovery discovery_normalizes_target_dot_segments_without_walking_outside_root
+        PASS [   0.007s] ( 7/76) maho-ext-rules::commands rules_completions_preserve_subcommand_order_and_empty_results
+        PASS [   0.007s] ( 8/76) maho-ext-rules::config positive_integer_limits_override_defaults
+        PASS [   0.007s] ( 9/76) maho-ext-rules::discovery discovery_walks_target_ancestors_and_keeps_both_home_single_files
+        PASS [   0.008s] (10/76) maho-ext-rules::config invalid_or_unsafe_integer_limits_preserve_defaults
+        PASS [   0.008s] (11/76) maho-ext-rules::discovery scanner_breaks_symlink_cycles_and_preserves_aliases
+        PASS [   0.009s] (12/76) maho-ext-rules::commands rule_lookup_requires_exact_or_unique_suffix
+        PASS [   0.006s] (13/76) maho-ext-rules::discovery scanner_excludes_build_directories_and_limits_depth
+        PASS [   0.005s] (14/76) maho-ext-rules::discovery scanner_orders_case_accents_and_punctuation_like_locale_compare
+        PASS [   0.006s] (15/76) maho-ext-rules::engine injected_discovery_and_content_drive_static_loading
+        PASS [   0.008s] (16/76) maho-ext-rules::dynamic_border border_has_one_line_and_minimum_one_cell
+        PASS [   0.009s] (17/76) maho-ext-rules::engine fingerprints_invalidate_on_rule_addition_and_reset
+        PASS [   0.009s] (18/76) maho-ext-rules::engine relative_paths_cross_siblings_and_normalize_dot_segments
+        PASS [   0.009s] (19/76) maho-ext-rules::engine static_root_single_file_uses_first_source
+        PASS [   0.005s] (20/76) maho-ext-rules::formatter insufficient_envelope_budget_returns_no_block
+        PASS [   0.009s] (21/76) maho-ext-rules::factory native_factory_registers_commands_flags_and_real_injection_hooks
+        PASS [   0.006s] (22/76) maho-ext-rules::formatter empty_rules_produce_no_blocks
+        PASS [   0.010s] (23/76) maho-ext-rules::engine project_rule_symlink_outside_root_is_rejected
+        PASS [   0.005s] (24/76) maho-ext-rules::formatter result_budget_includes_envelope_and_utf16_units
+        PASS [   0.013s] (25/76) maho-ext-rules::formatter embedded_machine_region_markers_cannot_terminate_the_envelope
+        PASS [   0.008s] (26/76) maho-ext-rules::hooks static_hook_reemits_from_base_and_omits_native_context
+        PASS [   0.018s] (27/76) maho-ext-rules::engine dynamic_targets_deduplicate_shared_rule
+        PASS [   0.011s] (28/76) maho-ext-rules::matcher malformed_patterns_stay_literal_like_source
+        PASS [   0.007s] (29/76) maho-ext-rules::matcher normalized_patterns_deduplicate_in_source_order
+        PASS [   0.017s] (30/76) maho-ext-rules::hooks dynamic_hook_injects_structural_grammar_matched_rule
+        PASS [   0.016s] (31/76) maho-ext-rules::matcher matching_patterns_are_cached_and_resettable
+        PASS [   0.020s] (32/76) maho-ext-rules::hooks dynamic_hook_injects_extglob_rule_for_matching_target
+        PASS [   0.019s] (33/76) maho-ext-rules::matcher glob_exclusion_prevents_basename_fallback
+        PASS [   0.010s] (34/76) maho-ext-rules::matcher pinned_brace_expansion_and_ranges_match_source
+        PASS [   0.016s] (35/76) maho-ext-rules::matcher oversized_and_empty_patterns_keep_source_errors
+        PASS [   0.033s] (36/76) maho-ext-rules::faux_session faux_registered_builtin_completes_headless_turn
+        PASS [   0.012s] (37/76) maho-ext-rules::matcher pinned_js_utf16_unit_semantics
+        PASS [   0.020s] (38/76) maho-ext-rules::matcher pinned_fastpath_patterns_match_source
+        PASS [   0.026s] (39/76) maho-ext-rules::matcher pinned_dot_true_matches_dotfiles
+        PASS [   0.023s] (40/76) maho-ext-rules::matcher pinned_extglob_quantifiers_match_source_verdicts
+        PASS [   0.021s] (41/76) maho-ext-rules::matcher pinned_identity_and_octal_escapes_match_the_js_unit
+        PASS [   0.008s] (42/76) maho-ext-rules::matcher pinned_quoting_literalizes_magic
+        PASS [   0.035s] (43/76) maho-ext-rules::matcher pinned_expand_range_sorts_by_utf16_code_units
+        PASS [   0.008s] (44/76) maho-ext-rules::parser aliases_merge_and_deduplicate
+        PASS [   0.011s] (45/76) maho-ext-rules::matcher single_files_precede_always_apply_and_globs
+        PASS [   0.006s] (46/76) maho-ext-rules::parser bom_is_removed_before_parsing
+        PASS [   0.036s] (47/76) maho-ext-rules::matcher pinned_globstar_crosses_directories
+        PASS [   0.006s] (48/76) maho-ext-rules::parser lone_single_quote_scalar_is_an_empty_string
+        PASS [   0.011s] (49/76) maho-ext-rules::parser content_after_array_is_diagnostic
+        PASS [   0.010s] (50/76) maho-ext-rules::parser crlf_frontmatter_is_supported
+        PASS [   0.048s] (51/76) maho-ext-rules::matcher pinned_extglob_astral_bodies_keep_utf16_unit_lengths
+        PASS [   0.011s] (52/76) maho-ext-rules::parser invalid_boolean_salvages_all_content
+        PASS [   0.008s] (53/76) maho-ext-rules::parser missing_closing_delimiter_salvages_all_content
+        PASS [   0.005s] (54/76) maho-ext-rules::parser multiline_patterns_are_supported
+        PASS [   0.006s] (55/76) maho-ext-rules::parser plain_rule_preserves_body
+        PASS [   0.005s] (56/76) maho-ext-rules::parser quoted_inline_comma_is_not_a_separator
+        PASS [   0.005s] (57/76) maho-ext-rules::parser unclosed_array_is_diagnostic
+        PASS [   0.032s] (58/76) maho-ext-rules::matcher pinned_posix_classes_match_source
+        PASS [   0.008s] (59/76) maho-ext-rules::parser quoted_hash_is_not_a_comment
+        PASS [   0.008s] (60/76) maho-ext-rules::parser repeated_carriage_returns_are_not_a_closing_delimiter
+        PASS [   0.009s] (61/76) maho-ext-rules::rules_banner active_banner_routes_diagnostics_and_wraps_to_width
+        PASS [   0.005s] (62/76) maho-ext-rules::rules_banner status_routes_errors_separately_from_muted_count
+        PASS [   0.008s] (63/76) maho-ext-rules::rules_banner empty_banner_omits_diagnostics_and_rule_rows
+        PASS [   0.008s] (64/76) maho-ext-rules::support missing_root_marker_terminates_at_filesystem_root
+        PASS [   0.005s] (65/76) maho-ext-rules::support read_paths_are_resolved_and_deduplicated
+        PASS [   0.007s] (66/76) maho-ext-rules::support missing_start_returns_none
+        PASS [   0.006s] (67/76) maho-ext-rules::support root_discovery_finds_nearest_marker
+        PASS [   0.010s] (68/76) maho-ext-rules::support budget_drops_rule_when_notice_cannot_fit
+        PASS [   0.006s] (69/76) maho-ext-rules::support small_rule_is_not_truncated
+        PASS [   0.009s] (70/76) maho-ext-rules::support failed_tool_result_has_no_paths
+        PASS [   0.004s] (71/76) maho-ext-rules::support truncation_notice_survives_smaller_than_notice_budget
+        PASS [   0.059s] (72/76) maho-ext-rules::matcher pinned_negative_globs_exclude_positives
+        PASS [   0.351s] (73/76) maho-ext-rules::matcher cache_stays_bounded_across_unique_pattern_sets
+        PASS [   0.365s] (74/76) maho-ext-rules::matcher native_grammar_matches_source_generated_escape_corpus
+        PASS [   0.604s] (75/76) maho-ext-rules::matcher native_patterns_match_pinned_picomatch_generated_matrix
+        PASS [  34.256s] (76/76) maho-ext-rules::matcher native_matcher_matches_source_generated_corpus
+────────────
+     Summary [  34.274s] 76 tests run: 76 passed, 0 skipped

@@ -1,0 +1,23 @@
+    Checking serde_core v1.0.228
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.17.1
+    Checking indexmap v2.14.0
+    Checking libc v0.2.186
+    Checking zmij v1.0.19
+    Checking memchr v2.8.3
+    Checking itoa v1.0.17
+    Checking cfg-if v1.0.4
+    Checking bitflags v2.13.1
+    Checking linux-raw-sys v0.12.1
+    Checking getrandom v0.4.2
+    Checking serde_json v1.0.149
+    Checking rustix v1.1.4
+    Checking serde v1.0.228
+    Checking yansi v1.0.1
+    Checking once_cell v1.21.4
+    Checking diff v0.1.13
+    Checking fastrand v2.3.0
+    Checking pretty_assertions v1.4.1
+    Checking maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+    Checking tempfile v3.27.0
+    Finished `dev` profile [unoptimized] target(s) in 4.72s

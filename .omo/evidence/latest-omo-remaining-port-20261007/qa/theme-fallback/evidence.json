@@ -1,0 +1,17 @@
+{
+  "geometry": "120x36",
+  "mode": "regular",
+  "theme": "broken-fallback",
+  "onboarding_pre_completed": true,
+  "startup_predicate": true,
+  "prompt_echo_observed": true,
+  "gated_stream_visible_while_held": true,
+  "working_indicator_present_while_held": true,
+  "steer_echoed_while_working": true,
+  "abort_cleared_busy": false,
+  "reply_after_prompt": false,
+  "working_indicator_absent_at_reply": false,
+  "resize_reflowed": false,
+  "exit_code": 137,
+  "error": "timeout waiting for abort clears busy and returns the editor"
+}

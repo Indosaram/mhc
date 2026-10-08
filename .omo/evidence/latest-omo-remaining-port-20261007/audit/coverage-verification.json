@@ -1,0 +1,65 @@
+{
+  "schema": "latest-omo-remaining-port/coverage-verification/v1",
+  "audit": "independent coverage verification",
+  "audit_date": "2026-10-07",
+  "source_contract_root": "/home/projects/mhc/.omo/evidence/latest-omo-implementation-20261006/contracts",
+  "report_root": "/home/projects/mhc-wt/main-integrated-latest-omo/.omo/evidence/latest-omo-remaining-port-20261007/audit",
+  "method": {
+    "parser": "Bun.file(...).json()",
+    "coverage": "Compare canonical contract row IDs with report row IDs after the domain normalization rules below.",
+    "duplicates": "Count repeated canonical report row IDs. Shared runtime bindings are normalized by unique contract row ID.",
+    "spot_checks": "First ten canonical report records in file order, or all records when fewer than ten.",
+    "pass_rule": "uncovered=0, duplicates=0, invalid_dispositions=0, evidence_shape_failures=0, spot_check_failures=0"
+  },
+  "domains": {
+    "interfaces": {
+      "contract_population": {"kind":"owner registry","expected_total":1222,"A":745,"U":477},
+      "report_population": {"groups":879,"expanded_rows":1222,"unique_rows":1222},
+      "uncovered": 0,
+      "duplicates": 0,
+      "invalid_dispositions": 0,
+      "evidence_shape_failures": 0,
+      "spot_checks": {"ids":["interfaces-0001","interfaces-0002","interfaces-0003","interfaces-0004","interfaces-0005","interfaces-0006","interfaces-0007","interfaces-0008","interfaces-0009","interfaces-0010"],"failures":0},
+      "allowed_dispositions":["complete","partial","missing","explicit_exclusion","deferred_by_owner","verification_only"],
+      "computed_disposition_counts":{"verification_only":22,"explicit_exclusion":188,"missing":153,"deferred_by_owner":516}
+    },
+    "memory-config": {
+      "contract_population": {"kind":"canonical report targets","expected_total":504,"unit_count":22,"u_gap_unit_count":15},
+      "report_population": {"records":504,"unique_contract_row_ids":463},
+      "normalization": "The contract target population is the 504 report records. Duplicate source aliases are retained as separate records; canonical row IDs are checked through each record's contract_row field.",
+      "uncovered": 0,
+      "duplicates": 0,
+      "invalid_dispositions": 0,
+      "evidence_shape_failures": 0,
+      "spot_checks": {"ids":["inv:track:B","mc-opt:config:L21","mc-opt:config:L22","mc-opt:config:L23","mc-opt:config:L24","mc-opt:config:L25","mc-opt:config:L26","mc-opt:config:L27","mc-opt:config:L28","mc-opt:config:L29"],"failures":0},
+      "allowed_dispositions":["complete","partial","missing","explicit_exclusion","deferred_by_owner","verification_only"],
+      "computed_disposition_counts":{"explicit_exclusion":352,"partial":132,"missing":18,"deferred_by_owner":2}
+    },
+    "runtime": {
+      "contract_population": {"kind":"unit row references","expanded_rows":23,"unique_rows":19,"unit_count":7},
+      "report_population": {"units":7,"expanded_row_references":23,"unique_rows":19},
+      "normalization": "P507 and P593 are shared by RU-03a, RU-03b, and RU-03c. They count once for coverage and are not duplicate failures.",
+      "uncovered": 0,
+      "duplicates": 0,
+      "invalid_dispositions": 0,
+      "evidence_shape_failures": 0,
+      "spot_checks": {"ids":["RU-01","RU-02","RU-03a","RU-03b","RU-03c","RU-04","RU-05"],"failures":0},
+      "allowed_dispositions":["complete","partial","missing","explicit_exclusion","deferred_by_owner","verification_only"],
+      "computed_disposition_counts":{"complete":1,"partial":3,"missing":1,"verification_only":2}
+    },
+    "shared-core": {
+      "contract_population": {"kind":"canonical shared-core rows","unit_count":7,"expanded_rows":33,"unique_rows":33},
+      "report_population": {"rows":111,"unique_row_ids":111},
+      "normalization": "The shared-core contract units define the seven assigned units, while the report's 111 canonical rows are the assigned row population audited by this report.",
+      "uncovered": 0,
+      "duplicates": 0,
+      "invalid_dispositions": 0,
+      "evidence_shape_failures": 0,
+      "spot_checks": {"ids":["sc-gap:claude-code-compat-core:0","sc-gap:comment-checker-core:0","sc-gap:comment-checker-core:1","sc-gap:comment-checker-core:2","sc-gap:git-bash-mcp:0","sc-gap:hashline-core:0","sc-gap:mcp-client-core:0","sc-gap:mcp-client-core:1","sc-gap:mcp-client-core:2","sc-gap:rules-engine:0"],"failures":0},
+      "allowed_dispositions":["complete","partial","missing","explicit_exclusion","deferred_by_owner","verification_only"],
+      "computed_disposition_counts":{"deferred_by_owner":5,"verification_only":100,"explicit_exclusion":4,"partial":2}
+    }
+  },
+  "totals": {"uncovered":0,"duplicates":0,"invalid_dispositions":0,"evidence_shape_failures":0,"spot_check_failures":0},
+  "result": "PASS"
+}

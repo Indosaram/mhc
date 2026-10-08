@@ -1,0 +1,126 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.45
+   Compiling serde_core v1.0.228
+   Compiling libc v0.2.186
+   Compiling zmij v1.0.19
+   Compiling serde_json v1.0.149
+   Compiling rustix v1.1.4
+   Compiling getrandom v0.4.2
+   Compiling serde v1.0.228
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.17
+   Compiling bitflags v2.13.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.3.0
+   Compiling yansi v1.0.1
+   Compiling diff v0.1.13
+   Compiling indexmap v2.14.0
+   Compiling pretty_assertions v1.4.1
+   Compiling syn v2.0.117
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.228
+   Compiling maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.59s
+────────────
+ Nextest run ID 1a4b63a7-0634-4ff8-becc-f66cb265a404 with nextest profile: default
+    Starting 93 tests across 8 binaries
+        PASS [   0.007s] ( 1/93) maho-boulder-state time::tests::numeric_offset_shifts_the_instant
+        PASS [   0.007s] ( 2/93) maho-boulder-state time::tests::epoch_formats_as_iso_utc
+        PASS [   0.007s] ( 3/93) maho-boulder-state::lifecycle added_work_becomes_active_and_keeps_existing_work
+        PASS [   0.008s] ( 4/93) maho-boulder-state::lifecycle appending_to_legacy_mirror_state_updates_root_session_ids
+        PASS [   0.008s] ( 5/93) maho-boulder-state time::tests::non_dates_and_impossible_components_are_rejected
+        PASS [   0.008s] ( 6/93) maho-boulder-state::lifecycle appended_session_joins_active_work_and_mirror
+        PASS [   0.008s] ( 7/93) maho-boulder-state::lifecycle add_work_without_state_is_none
+        PASS [   0.008s] ( 8/93) maho-boulder-state time::tests::billion_seconds_formats_as_iso_utc
+        PASS [   0.008s] ( 9/93) maho-boulder-state::lifecycle appending_to_unknown_work_is_none
+        PASS [   0.009s] (10/93) maho-boulder-state time::tests::leap_day_formats_as_iso_utc
+        PASS [   0.009s] (11/93) maho-boulder-state time::tests::format_and_parse_round_trip
+        PASS [   0.009s] (12/93) maho-boulder-state time::tests::date_only_input_parses_as_midnight_utc
+        PASS [   0.008s] (13/93) maho-boulder-state::lifecycle clearing_removes_the_file_and_tolerates_a_missing_one
+        PASS [   0.008s] (14/93) maho-boulder-state::lifecycle ending_an_unknown_task_is_none
+        PASS [   0.009s] (15/93) maho-boulder-state::lifecycle created_state_writes_schema_v2_with_one_active_work_and_gitignore
+        PASS [   0.008s] (16/93) maho-boulder-state::lifecycle plan_name_is_the_basename_without_md
+        PASS [   0.008s] (17/93) maho-boulder-state::lifecycle resume_options_report_plan_progress_and_current_mirror
+        PASS [   0.009s] (18/93) maho-boulder-state::lifecycle completing_an_already_completed_work_does_not_rewrite
+        PASS [   0.010s] (19/93) maho-boulder-state::lifecycle completing_marks_work_done_and_hides_it_from_active_lists
+        PASS [   0.008s] (20/93) maho-boulder-state::lifecycle prometheus_plans_are_found_in_current_and_legacy_dirs
+        PASS [   0.009s] (21/93) maho-boulder-state::lifecycle plan_path_prefers_existing_worktree_copy
+        PASS [   0.010s] (22/93) maho-boulder-state::lifecycle generated_work_id_is_slug_plus_eight_hex_digits
+        PASS [   0.011s] (23/93) maho-boulder-state::lifecycle task_session_upsert_and_timers_record_elapsed_time
+        PASS [   0.012s] (24/93) maho-boulder-state::lifecycle reserved_task_keys_are_rejected
+        PASS [   0.007s] (25/93) maho-boulder-state::on_disk_compat corrupt_files_are_errors_and_never_panic
+        PASS [   0.009s] (26/93) maho-boulder-state::normalize_session_id opencode_prefixed_id_is_unchanged
+        PASS [   0.009s] (27/93) maho-boulder-state::normalize_session_id senpi_prefixed_id_is_unchanged
+        PASS [   0.011s] (28/93) maho-boulder-state::lifecycle upsert_keeps_timer_fields_of_an_existing_task_session
+        PASS [   0.009s] (29/93) maho-boulder-state::normalize_session_id bare_id_with_codex_platform_uses_codex
+        PASS [   0.011s] (30/93) maho-boulder-state::lifecycle work_by_plan_name_honours_worktree_filter
+        PASS [   0.009s] (31/93) maho-boulder-state::normalize_session_id existing_codex_prefix_wins_over_opencode_platform
+        PASS [   0.009s] (32/93) maho-boulder-state::normalize_session_id empty_id_becomes_opencode_empty_id
+        PASS [   0.009s] (33/93) maho-boulder-state::normalize_session_id bare_id_defaults_to_opencode
+        PASS [   0.009s] (34/93) maho-boulder-state::normalize_session_id existing_senpi_prefix_wins_over_codex_platform
+        PASS [   0.009s] (35/93) maho-boulder-state::normalize_session_id bare_id_with_senpi_platform_uses_senpi
+        PASS [   0.007s] (36/93) maho-boulder-state::plan_checklist child_heading_inside_todos_keeps_rows_in_parent_section
+        PASS [   0.007s] (37/93) maho-boulder-state::plan_checklist completed_implementation_and_pending_final_verifier_makes_verifier_next
+        PASS [   0.008s] (38/93) maho-boulder-state::on_disk_compat wrongly_typed_fields_are_tolerated_like_the_typescript_reader
+        PASS [   0.009s] (39/93) maho-boulder-state::on_disk_compat real_project_boulder_json_exposes_its_active_work
+        PASS [   0.009s] (40/93) maho-boulder-state::on_disk_compat real_project_boulder_json_round_trips_to_the_typescript_bytes
+        PASS [   0.009s] (41/93) maho-boulder-state::on_disk_compat selecting_the_legacy_work_of_a_mirror_only_state_matches_typescript_bytes
+        PASS [   0.010s] (42/93) maho-boulder-state::on_disk_compat multi_work_state_rewrite_matches_typescript_bytes
+        PASS [   0.009s] (43/93) maho-boulder-state::plan_checklist complete_plan_has_no_next_task
+        PASS [   0.010s] (44/93) maho-boulder-state::on_disk_compat real_project_boulder_json_rewrite_is_a_fixed_point
+        PASS [   0.010s] (45/93) maho-boulder-state::on_disk_compat selecting_a_numeric_work_id_matches_typescript_bytes
+        PASS [   0.010s] (46/93) maho-boulder-state::plan_checklist fenced_examples_and_higher_level_heading_are_out_of_section_scope
+        PASS [   0.012s] (47/93) maho-boulder-state::plan_checklist atx_closing_markers_keep_headings_structured
+        PASS [   0.005s] (48/93) maho-boulder-state::plan_checklist four_backtick_fence_is_not_closed_by_shorter_fences
+        PASS [   0.005s] (49/93) maho-boulder-state::plan_checklist heading_free_fenced_checkbox_is_ignored_by_legacy_fallback
+        PASS [   0.005s] (50/93) maho-boulder-state::plan_checklist inline_backtick_code_does_not_open_a_fence
+        PASS [   0.005s] (51/93) maho-boulder-state::plan_checklist no_counted_sections_counts_all_top_level_checkboxes
+        PASS [   0.005s] (52/93) maho-boulder-state::plan_checklist scaffold_headings_and_canonical_rows_give_structured_totals_and_next_label
+        PASS [   0.007s] (53/93) maho-boulder-state::plan_checklist heading_free_legacy_star_checklist_keeps_fallback_behavior
+        PASS [   0.006s] (54/93) maho-boulder-state::plan_progress simple_plan_without_structured_headings_counts_all_top_level_checkboxes
+        PASS [   0.006s] (55/93) maho-boulder-state::plan_checklist noncanonical_structured_rows_only_count_exact_positive_number_grammar
+        PASS [   0.008s] (56/93) maho-boulder-state::plan_checklist missing_plan_path_gives_empty_checklist
+        PASS [   0.008s] (57/93) maho-boulder-state::plan_progress final_wave_task_key_is_lower_cased
+        PASS [   0.005s] (58/93) maho-boulder-state::plan_progress structured_plan_reports_first_unchecked_top_level_task
+        PASS [   0.005s] (59/93) maho-boulder-state::read_state empty_object_state_json_reads_as_none
+        PASS [   0.006s] (60/93) maho-boulder-state::plan_progress unstructured_or_missing_plan_has_no_top_level_task
+        PASS [   0.009s] (61/93) maho-boulder-state::plan_progress structured_plan_counts_only_labeled_top_level_todo_and_final_wave_tasks
+        PASS [   0.005s] (62/93) maho-boulder-state::read_state identical_sort_times_return_first_inserted_work
+        PASS [   0.005s] (63/93) maho-boulder-state::read_state malformed_state_json_is_an_invalid_json_error
+        PASS [   0.009s] (64/93) maho-boulder-state::read_state multiple_works_for_one_session_returns_newest_updated_work
+        PASS [   0.007s] (65/93) maho-boulder-state::stale_work activity_exactly_at_the_threshold_is_stale
+        PASS [   0.012s] (66/93) maho-boulder-state::read_state invalid_sort_times_return_first_inserted_work
+        PASS [   0.011s] (67/93) maho-boulder-state::read_state valid_time_wins_over_invalid_time
+        PASS [   0.022s] (68/93) maho-boulder-state::read_state matching_mirror_session_without_works_returns_legacy_mirror_work
+        PASS [   0.025s] (69/93) maho-boulder-state::stale_work a_work_paused_without_a_stale_stamp_keeps_its_status
+        PASS [   0.017s] (70/93) maho-boulder-state::stale_work demoted_work_is_still_resumable
+        PASS [   0.026s] (71/93) maho-boulder-state::stale_work active_work_with_only_a_41_hour_old_transcript_is_paused_and_stamped
+        PASS [   0.030s] (72/93) maho-boulder-state::read_state no_boulder_file_reads_as_none
+        PASS [   0.028s] (73/93) maho-boulder-state::read_state works_without_updated_times_return_newest_started_work
+        PASS [   0.026s] (74/93) maho-boulder-state::stale_work activity_stamped_in_the_future_is_not_stale
+        PASS [   0.030s] (75/93) maho-boulder-state::read_state non_object_state_json_is_an_invalid_shape_error
+        PASS [   0.028s] (76/93) maho-boulder-state::stale_work activity_one_millisecond_inside_the_threshold_is_not_stale
+        PASS [   0.011s] (77/93) maho-boulder-state::stale_work env_knob_overrides_the_default
+        PASS [   0.031s] (78/93) maho-boulder-state::stale_work appending_a_session_to_a_demoted_work_reactivates_it_without_the_stale_stamp
+        PASS [   0.017s] (79/93) maho-boulder-state::stale_work no_transcript_and_no_timestamps_demotes_with_no_last_activity
+        PASS [   0.017s] (80/93) maho-boulder-state::stale_work one_hour_old_transcript_writes_nothing
+        PASS [   0.017s] (81/93) maho-boulder-state::stale_work selecting_a_demoted_work_reactivates_it_without_the_stale_stamp
+        PASS [   0.010s] (82/93) maho-boulder-state::stale_work unreadable_boulder_file_writes_nothing_and_throws_nothing
+        PASS [   0.038s] (83/93) maho-boulder-state::stale_work demoted_work_keeps_every_other_field
+        PASS [   0.023s] (84/93) maho-boulder-state::stale_work no_env_knob_uses_the_six_hour_default
+        PASS [   0.013s] (85/93) maho-boulder-state::stale_work transcript_scan_reads_only_the_matching_session_directory
+        PASS [   0.005s] (86/93) maho-boulder-state::stale_work unresolved_session_id_is_demoted_and_no_unrelated_transcript_matches
+        PASS [   0.022s] (87/93) maho-boulder-state::stale_work non_positive_or_unparsable_env_knob_uses_the_default
+        PASS [   0.023s] (88/93) maho-boulder-state::stale_work no_transcript_but_a_fresh_updated_at_stays_active
+        PASS [   0.025s] (89/93) maho-boulder-state::stale_work no_activity_evidence_is_stale
+        PASS [   0.005s] (90/93) maho-boulder-state::stale_work windows_shaped_session_cwd_encodes_without_colon_or_separator
+        PASS [   0.026s] (91/93) maho-boulder-state::stale_work no_boulder_file_writes_nothing_and_throws_nothing
+        PASS [   0.005s] (92/93) maho-boulder-state::stale_work work_quiet_for_31_days_is_demoted_with_its_last_activity_recorded
+        PASS [   0.044s] (93/93) maho-boulder-state::stale_work completed_work_with_no_activity_for_days_is_untouched
+────────────
+     Summary [   0.100s] 93 tests run: 93 passed, 0 skipped

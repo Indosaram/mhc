@@ -1,0 +1,513 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.22
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling cfg-if v1.0.4
+   Compiling memchr v2.8.3
+   Compiling log v0.4.34
+   Compiling itoa v1.0.17
+   Compiling smallvec v1.15.1
+   Compiling equivalent v1.0.2
+   Compiling scopeguard v1.2.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling serde_core v1.0.228
+   Compiling foldhash v0.2.0
+   Compiling parking_lot_core v0.9.12
+   Compiling lock_api v0.4.14
+   Compiling typenum v1.20.0
+   Compiling version_check v0.9.5
+   Compiling autocfg v1.5.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling subtle v2.6.1
+   Compiling pin-project-lite v0.2.16
+   Compiling hashbrown v0.17.1
+   Compiling fastrand v2.3.0
+   Compiling bitflags v2.13.1
+   Compiling generic-array v0.14.7
+   Compiling bytes v1.12.1
+   Compiling serde v1.0.228
+   Compiling num-traits v0.2.19
+   Compiling zmij v1.0.19
+   Compiling pkg-config v0.3.34
+   Compiling serde_json v1.0.149
+   Compiling jobserver v0.1.35
+   Compiling writeable v0.6.4
+   Compiling futures-core v0.3.34
+   Compiling getrandom v0.2.17
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling rand_core v0.6.4
+   Compiling cc v1.2.55
+   Compiling mio v1.2.0
+   Compiling parking_lot v0.12.5
+   Compiling socket2 v0.6.3
+   Compiling aho-corasick v1.1.4
+   Compiling crypto-common v0.1.7
+   Compiling regex-syntax v0.8.11
+   Compiling litemap v0.8.1
+   Compiling syn v2.0.117
+   Compiling syn v3.0.3
+   Compiling crc32fast v1.5.0
+   Compiling simd-adler32 v0.3.8
+   Compiling cpufeatures v0.2.17
+   Compiling block-buffer v0.10.4
+   Compiling once_cell v1.21.4
+   Compiling futures-sink v0.3.34
+   Compiling digest v0.10.7
+   Compiling utf8_iter v1.0.4
+   Compiling adler2 v2.0.1
+   Compiling zeroize v1.8.2
+   Compiling miniz_oxide v0.8.9
+   Compiling futures-channel v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling slab v0.4.12
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling percent-encoding v2.3.2
+   Compiling cmake v0.1.58
+   Compiling indexmap v2.14.0
+   Compiling http v1.4.0
+   Compiling utf16_iter v1.0.5
+   Compiling write16 v1.0.0
+   Compiling bit-vec v0.8.0
+   Compiling flate2 v1.1.8
+   Compiling fs_extra v1.3.0
+   Compiling thiserror v2.0.18
+   Compiling dunce v1.0.5
+   Compiling either v1.18.0
+   Compiling bit-set v0.8.0
+   Compiling form_urlencoded v1.2.2
+   Compiling ring v0.17.14
+   Compiling tracing-core v0.1.36
+   Compiling aws-lc-sys v0.45.0
+   Compiling iana-time-zone v0.1.65
+   Compiling regex-automata v0.4.18
+   Compiling ryu v1.0.22
+   Compiling aws-lc-rs v1.18.1
+   Compiling anyhow v1.0.104
+   Compiling httparse v1.10.1
+   Compiling chrono v0.4.43
+   Compiling http-body v1.0.1
+   Compiling rustls-pki-types v1.14.0
+   Compiling sha2 v0.10.9
+   Compiling unicode-segmentation v1.13.3
+   Compiling hex v0.4.3
+   Compiling option-ext v0.2.0
+   Compiling dirs-sys v0.5.0
+   Compiling uuid v1.20.0
+   Compiling fnv v1.0.7
+   Compiling untrusted v0.9.0
+   Compiling tower-service v0.3.3
+   Compiling dirs v6.0.0
+   Compiling atomic-waker v1.1.2
+   Compiling rustls v0.23.45
+   Compiling try-lock v0.2.5
+   Compiling unsafe-libyaml v0.2.11
+   Compiling rustversion v1.0.22
+   Compiling want v0.3.1
+   Compiling itertools v0.14.0
+   Compiling sync_wrapper v1.0.2
+   Compiling tree-sitter-language v0.1.8
+   Compiling jiff v0.2.23
+   Compiling pin-utils v0.1.0
+   Compiling tower-layer v0.3.3
+   Compiling httpdate v1.0.3
+   Compiling crossbeam-utils v0.8.23
+   Compiling convert_case v0.10.0
+   Compiling bytemuck v1.25.2
+   Compiling base64 v0.22.1
+   Compiling crossbeam-epoch v0.9.21
+   Compiling ipnet v2.11.0
+   Compiling rustix v1.1.4
+   Compiling http-body-util v0.1.3
+   Compiling zstd-sys v2.1.0+zstd.1.5.7
+   Compiling crossbeam-deque v0.8.8
+   Compiling prettyplease v0.2.37
+   Compiling linux-raw-sys v0.12.1
+   Compiling unicode-general-category v1.1.0
+   Compiling foldhash v0.1.5
+   Compiling weezl v0.1.12
+   Compiling tinyvec_macros v0.1.1
+   Compiling zerovec-derive v0.11.6
+   Compiling futures-macro v0.3.34
+   Compiling tinyvec v1.10.0
+   Compiling hashbrown v0.15.5
+   Compiling futures-util v0.3.34
+   Compiling webpki-roots v1.0.5
+   Compiling fdeflate v0.3.7
+   Compiling synstructure v0.13.2
+   Compiling serde_derive v1.0.228
+   Compiling displaydoc v0.2.5
+   Compiling tokio-macros v2.7.0
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.2
+   Compiling tokio v1.52.3
+   Compiling thiserror-impl v2.0.18
+   Compiling zerofrom v0.1.6
+   Compiling tracing-attributes v0.1.31
+   Compiling yoke v0.8.3
+   Compiling zerovec v0.11.8
+   Compiling zerotrie v0.2.5
+   Compiling tracing v0.1.44
+   Compiling prost-derive v0.14.4
+   Compiling derive_more-impl v2.1.1
+   Compiling iri-string v0.7.10
+   Compiling serde_yaml v0.9.34+deprecated
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.4
+   Compiling prost v0.14.4
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling regex v1.12.3
+   Compiling fancy-regex v0.16.2
+   Compiling bstr v1.13.1
+   Compiling derive_more v2.1.1
+   Compiling thiserror v1.0.69
+   Compiling fixedbitset v0.5.7
+   Compiling color_quant v1.1.0
+   Compiling same-file v1.0.6
+   Compiling petgraph v0.8.3
+   Compiling prost-types v0.14.4
+   Compiling walkdir v2.5.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling tempfile v3.27.0
+   Compiling thiserror-impl v1.0.69
+   Compiling icu_provider v2.3.1
+   Compiling futures-executor v0.3.34
+   Compiling futures v0.3.34
+   Compiling unicode-normalization v0.1.25
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling multiversion-macros v0.9.0
+   Compiling encoding_rs v0.8.41
+   Compiling cfg_aliases v0.1.1
+   Compiling multimap v0.10.1
+   Compiling heck v0.5.0
+   Compiling icu_locale_fallback_data v2.3.0
+   Compiling zstd-safe v7.3.0
+   Compiling nix v0.28.0
+   Compiling prost-build v0.14.4
+   Compiling multiversion v0.9.0
+   Compiling core_detect v1.0.0
+   Compiling signal-hook v0.3.18
+   Compiling rayon-core v1.13.0
+   Compiling simdutf8 v0.1.5
+   Compiling minimal-lexical v0.2.1
+   Compiling multiversion_no_op v1.0.0
+   Compiling globset v0.4.20
+   Compiling tree-sitter-javascript v0.25.0
+   Compiling idna_adapter v1.2.1
+   Compiling nom v7.1.3
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling grep-matcher v0.1.9
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling idna v1.1.0
+   Compiling icu_segmenter_data v2.3.0
+   Compiling getrandom v0.4.2
+   Compiling ignore v0.4.33
+   Compiling icu_locale_fallback v2.3.0
+   Compiling url v2.5.8
+   Compiling tree-sitter v0.25.10
+   Compiling eventsource-stream v0.2.3
+   Compiling encoding_rs_io v0.1.8
+   Compiling filedescriptor v0.8.3
+   Compiling async-trait v0.1.92
+   Compiling serial2 v0.2.37
+   Compiling memmap2 v0.9.11
+   Compiling streaming-iterator v0.1.9
+   Compiling unicode-width v0.2.1
+   Compiling shell-words v1.1.1
+   Compiling downcast-rs v1.2.1
+   Compiling zune-core v0.5.3
+   Compiling quick-error v2.0.1
+   Compiling byteorder-lite v0.1.0
+   Compiling pxfm v0.1.30
+   Compiling litrs v1.0.0
+   Compiling rayon v1.12.0
+   Compiling zune-jpeg v0.5.15
+   Compiling image-webp v0.2.4
+   Compiling portable-pty v0.9.0
+   Compiling grep-searcher v0.1.17
+   Compiling document-features v0.2.12
+   Compiling signal-hook-mio v0.2.5
+   Compiling grep-regex v0.1.14
+   Compiling gif v0.14.2
+   Compiling png v0.18.1
+   Compiling maho-pty v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-pty)
+   Compiling crossterm v0.29.0
+   Compiling icu_segmenter v2.3.0
+   Compiling semver v1.0.27
+   Compiling siphasher v1.0.4
+   Compiling icu_collator_data v2.3.0
+   Compiling maho-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/vendor/maho-grep)
+   Compiling vcpkg v0.2.15
+   Compiling phf_shared v0.13.1
+   Compiling deranged v0.5.8
+   Compiling tokio-util v0.7.18
+   Compiling tower v0.5.3
+   Compiling phf_generator v0.13.1
+   Compiling icu_collator v2.3.1
+   Compiling libsqlite3-sys v0.38.2
+   Compiling powerfmt v0.2.0
+   Compiling num-conv v0.2.2
+   Compiling maho-tui v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tui)
+   Compiling moxcms v0.8.1
+   Compiling time-core v0.1.9
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling hashlink v0.12.2
+   Compiling tower-http v0.6.8
+   Compiling time v0.3.55
+   Compiling quick-xml v0.42.0
+   Compiling h2 v0.4.19
+   Compiling base64 v0.23.1
+   Compiling fallible-iterator v0.3.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling linked-hash-map v0.5.6
+   Compiling bincode v1.3.3
+   Compiling phf_codegen v0.13.1
+   Compiling yaml-rust v0.4.5
+   Compiling phf_macros v0.13.1
+   Compiling zerocopy v0.8.37
+   Compiling sha1 v0.10.6
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling phf v0.13.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling precomputed-hash v0.1.1
+   Compiling string_cache_codegen v0.6.1
+   Compiling maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+   Compiling regress v0.12.0
+   Compiling plist v1.10.1
+   Compiling web_atoms v0.2.6
+   Compiling string_cache v0.9.0
+   Compiling maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-resolution)
+   Compiling syntect v5.3.0
+   Compiling filetime v0.2.27
+   Compiling zstd v0.13.3
+   Compiling dtoa v1.0.11
+   Compiling maho-memory-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/memory-core)
+   Compiling maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+   Compiling dtoa-short v0.3.5
+   Compiling tendril v0.5.1
+   Compiling getrandom v0.1.16
+   Compiling image v0.25.10
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_core v0.9.5
+   Compiling num-integer v0.1.47
+   Compiling servo_arc v0.4.3
+   Compiling inotify-sys v0.1.8
+   Compiling rustc-hash v2.1.1
+   Compiling rand_chacha v0.9.0
+   Compiling paste v1.0.15
+   Compiling const-oid v0.9.6
+   Compiling der v0.7.10
+   Compiling rand v0.9.3
+   Compiling rand_core v0.5.1
+   Compiling rand v0.8.8
+   Compiling num-bigint v0.4.8
+   Compiling selectors v0.38.0
+   Compiling rustc_version v0.4.1
+   Compiling phf_shared v0.11.3
+   Compiling hyper v1.8.1
+   Compiling maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/mcp-stdio-core)
+   Compiling cssparser-macros v0.7.1
+   Compiling safe_arch v0.7.4
+   Compiling num-complex v0.4.6
+   Compiling approx v0.5.1
+   Compiling inout v0.1.4
+   Compiling matrixmultiply v0.3.11
+   Compiling syn v1.0.109
+   Compiling maho-tmux-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/tmux-core)
+   Compiling openssl-probe v0.2.1
+   Compiling cipher v0.4.4
+   Compiling rustls-native-certs v0.8.4
+   Compiling num-rational v0.4.2
+   Compiling wide v0.7.33
+   Compiling cssparser v0.37.0
+   Compiling maho-lsp-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-core)
+   Compiling toml v0.5.11
+   Compiling maho-team-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/team-core)
+   Compiling phf_generator v0.11.3
+   Compiling curve25519-dalek v4.1.3
+   Compiling hyper-util v0.1.20
+   Compiling spki v0.7.3
+   Compiling inotify v0.11.5
+   Compiling rand_chacha v0.2.2
+   Compiling markup5ever v0.39.0
+   Compiling selectors v0.36.1
+   Compiling gethostname v1.1.0
+   Compiling cssparser-macros v0.6.1
+   Compiling universal-hash v0.5.1
+   Compiling notify-types v2.1.0
+   Compiling ttf-parser v0.15.2
+   Compiling jpeg-decoder v0.3.2
+   Compiling mime v0.3.17
+   Compiling opaque-debug v0.3.1
+   Compiling maho-omo-agent-home v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-agent-home)
+   Compiling rusqlite v0.40.2
+   Compiling sys-locale v0.3.2
+   Compiling rawpointer v0.2.1
+   Compiling bitflags v1.3.2
+   Compiling png v0.17.16
+   Compiling tiff v0.9.1
+   Compiling polyval v0.6.2
+   Compiling notify v8.2.0
+   Compiling axum-core v0.5.6
+   Compiling cssparser v0.36.0
+   Compiling html5ever v0.39.0
+   Compiling owned_ttf_parser v0.15.2
+   Compiling simba v0.7.3
+   Compiling find-crate v0.6.3
+   Compiling rand v0.7.3
+   Compiling pkcs8 v0.10.2
+   Compiling phf_macros v0.11.3
+   Compiling num-iter v0.1.46
+   Compiling markup5ever v0.38.0
+   Compiling gif v0.13.3
+   Compiling maho-boulder-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/boulder-state)
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling serde_path_to_error v0.1.20
+   Compiling nom v8.0.0
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling bumpalo v3.19.1
+   Compiling utf-8 v0.7.6
+   Compiling custom_derive v0.1.7
+   Compiling matchit v0.8.4
+   Compiling byteorder v1.5.0
+   Compiling arrayvec v0.7.8
+   Compiling palette v0.6.1
+   Compiling data-encoding v2.11.1
+   Compiling zip v2.4.2
+   Compiling maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/lsp-daemon)
+   Compiling signature v2.2.0
+   Compiling axum v0.8.9
+   Compiling image v0.24.9
+   Compiling ed25519 v2.2.3
+   Compiling vte v0.15.0
+   Compiling palette_derive v0.6.1
+   Compiling zopfli v0.8.3
+   Compiling maho-isolation-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/isolation-core)
+   Compiling tungstenite v0.28.0
+   Compiling conv v0.3.3
+   Compiling rusttype v0.9.3
+   Compiling nalgebra v0.30.1
+   Compiling dom_query v0.28.0
+   Compiling html5ever v0.38.0
+   Compiling rand_distr v0.2.2
+   Compiling maho-senpi-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/senpi-task)
+   Compiling num v0.4.3
+   Compiling phf v0.11.3
+   Compiling ghash v0.5.1
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/comment-checker-core)
+   Compiling maho-config-migration v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/config-migration)
+   Compiling itertools v0.10.5
+   Compiling hmac v0.12.1
+   Compiling aead v0.5.2
+   Compiling flagset v0.4.7
+   Compiling gjson v0.8.1
+   Compiling html-escape v0.2.15
+   Compiling dom_query v0.27.0
+   Compiling aes-gcm v0.10.3
+   Compiling hkdf v0.12.4
+   Compiling ed25519-dalek v2.2.0
+   Compiling tokio-tungstenite v0.28.0
+   Compiling vt100 v0.16.2
+   Compiling instant v0.1.13
+   Compiling dom_smoothie v0.18.2
+   Compiling perlin2d v0.2.6
+   Compiling base64 v0.13.1
+   Compiling imageproc v0.23.1
+   Compiling photon-rs v0.3.3
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.4
+   Compiling rustls-platform-verifier v0.6.2
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling reqwest v0.13.2
+   Compiling maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+   Compiling maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ultrawork)
+   Compiling maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-fallback-architect)
+   Compiling maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-bundled-skills)
+   Compiling maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-onboarding)
+   Compiling maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-lsp)
+   Compiling maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-git-master)
+   Compiling maho-ext-imagegen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-imagegen)
+   Compiling maho-ext-rule-activation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rule-activation)
+   Compiling maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-comment-checker)
+   Compiling maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-telemetry)
+   Compiling maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-start-work-continuation)
+   Compiling maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-todo-fanout-reminder)
+   Compiling maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-skill-commands)
+   Compiling maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-watch)
+   Compiling maho-omo-task v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-task)
+   Compiling maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ulw-loop)
+   Compiling maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-ast-grep)
+   Compiling maho-omo-mass-ulw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-mass-ulw)
+   Compiling maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-native-badge)
+   Compiling maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-builtin-mcps)
+   Compiling maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-config-startup)
+   Compiling maho-ext-anthropic-bash v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-bash)
+   Compiling maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-model-profile)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-ext-omo-zcode-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-omo-zcode-oauth)
+   Compiling maho-ext-loop-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop-guard)
+   Compiling maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-init-deep-advisor)
+   Compiling maho-ext-bash-timeout v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-bash-timeout)
+   Compiling maho-codemode v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-codemode)
+   Compiling maho-ext-openai-image-gen v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-image-gen)
+   Compiling maho-ext-rules v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-rules)
+   Compiling maho-ext-pi-ast-grep v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-ast-grep)
+   Compiling maho-ext-tool-pair-guard v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-pair-guard)
+   Compiling maho-ext-pi-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-webfetch)
+   Compiling maho-ext-herdr-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-herdr-agent-state)
+   Compiling maho-ext-pi-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-pi-nested-agents-md)
+   Compiling maho-ext-video-in v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-video-in)
+   Compiling maho-ext-ttsr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ttsr)
+   Compiling maho-ext-openai-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-openai-web-search)
+   Compiling maho-ext-orca-titlebar-spinner v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-titlebar-spinner)
+   Compiling maho-ext-ferryx-agent-state v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-ferryx-agent-state)
+   Compiling maho-ext-orca-agent-status v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/extensions/maho-ext-orca-agent-status)
+   Compiling maho-ext-anthropic-web-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-web-search)
+   Compiling maho-ext-nested-agents-md v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-nested-agents-md)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-omo-memory v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/components/maho-omo-memory)
+   Compiling maho-ext-compaction v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-compaction)
+   Compiling maho-ext-loop v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-loop)
+   Compiling maho-ext-prompt-preset v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-prompt-preset)
+   Compiling maho-ext-model-fallback v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-model-fallback)
+   Compiling maho-ext-hooks v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-hooks)
+   Compiling maho-ext-config-reload v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-config-reload)
+   Compiling maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-terminal)
+   Compiling maho-ext-cache-keepalive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cache-keepalive)
+   Compiling maho-ext-recommended-models v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-recommended-models)
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+   Compiling maho-omo v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/maho-omo)
+   Compiling maho-ext-gpt-apply-patch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-gpt-apply-patch)
+   Compiling maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-tool-search)
+   Compiling maho-ext-todotools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-todotools)
+   Compiling maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-websearch)
+   Compiling maho-ext-llama v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-llama)
+   Compiling maho-ext-webfetch v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-webfetch)
+   Compiling maho-ext-btw v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-btw)
+   Compiling maho-ext-history-search v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-history-search)
+   Compiling maho-ext-help v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-help)
+   Compiling maho-ext-look-at v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-look-at)
+   Compiling maho-ext-builtin-loose v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-builtin-loose)
+   Compiling maho-ext-permission-system v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-permission-system)
+   Compiling maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-mcp)
+   Compiling maho-ext-goal v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-goal)
+   Compiling maho-ext-anthropic-subscription v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-anthropic-subscription)
+   Compiling maho-ext-account v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-account)
+   Compiling maho-ext-herdr v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-herdr)
+   Compiling maho-ext-cursor-cli-oauth v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-cursor-cli-oauth)
+   Compiling maho-server v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-server)
+   Compiling maho-cli v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-cli)

@@ -1,0 +1,68 @@
+   Compiling parking_lot_core v0.9.12
+   Compiling futures-channel v0.3.34
+   Compiling cc v1.2.55
+   Compiling parking_lot v0.12.5
+   Compiling tokio v1.52.3
+   Compiling ring v0.17.14
+   Compiling futures-util v0.3.34
+   Compiling getrandom v0.2.17
+   Compiling rustls v0.23.45
+   Compiling icu_normalizer v2.3.0
+   Compiling rustix v1.1.4
+   Compiling hyper v1.8.1
+   Compiling rustls-webpki v0.103.15
+   Compiling regex-automata v0.4.18
+   Compiling idna_adapter v1.2.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling hyper-util v0.1.20
+   Compiling tower v0.5.3
+   Compiling idna v1.1.0
+   Compiling tokio-rustls v0.26.4
+   Compiling tower-http v0.6.8
+   Compiling hyper-rustls v0.27.7
+   Compiling maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+   Compiling url v2.5.8
+   Compiling fancy-regex v0.16.2
+   Compiling regex v1.12.3
+   Compiling futures-executor v0.3.34
+   Compiling reqwest v0.12.28
+   Compiling maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+   Compiling futures v0.3.34
+   Compiling gethostname v1.1.0
+   Compiling tempfile v3.27.0
+   Compiling maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+    Finished `test` profile [unoptimized] target(s) in 12.95s
+────────────
+ Nextest run ID 110c89ac-8dc9-414f-8d4d-3a77e67c7bc8 with nextest profile: default
+    Starting 29 tests across 2 binaries
+        PASS [   0.005s] ( 1/29) maho-telemetry-core::all env::do_not_track_one_disables_every_product
+        PASS [   0.006s] ( 2/29) maho-telemetry-core::all env::do_not_track_is_read_fresh_on_each_evaluation
+        PASS [   0.006s] ( 3/29) maho-telemetry-core::all activity_state::malformed_state_json_is_treated_as_missing_and_recorded_in_diagnostics
+        PASS [   0.006s] ( 4/29) maho-telemetry-core::all activity_state::missing_state_sends_once_and_writes_current_utc_day_schema
+        PASS [   0.006s] ( 5/29) maho-telemetry-core::all activity_state::xdg_data_home_state_dir_contains_product_dir_once
+        PASS [   0.006s] ( 6/29) maho-telemetry-core::all env::api_key_configuration_matches_expected_availability
+        PASS [   0.006s] ( 7/29) maho-telemetry-core::all activity_state::stale_state_sends_next_day_and_preserves_schema_field_name
+        PASS [   0.006s] ( 8/29) maho-telemetry-core::all events::allowlisted_boolean_with_content_suffix_reaches_the_wire
+        PASS [   0.007s] ( 9/29) maho-telemetry-core::all events::clients_sharing_an_allowlist_do_not_leak_state
+        PASS [   0.010s] (10/29) maho-telemetry-core::all env::do_not_track_uses_flag_normalization_for_padded_mixed_case
+        PASS [   0.010s] (11/29) maho-telemetry-core::all env::do_not_track_non_opt_out_values_keep_telemetry_enabled
+        PASS [   0.005s] (12/29) maho-telemetry-core::all events::throwing_transport_capture_is_diagnosed_not_propagated
+        PASS [   0.006s] (13/29) maho-telemetry-core::all events::hanging_flush_shutdown_schedules_the_1000ms_bound_and_resolves
+        PASS [   0.005s] (14/29) maho-telemetry-core::all events::malformed_values_and_empty_event_name_are_diagnosed_and_not_sent
+        PASS [   0.007s] (15/29) maho-telemetry-core::all events::fewer_events_than_flush_at_do_not_flush_early
+        PASS [   0.013s] (16/29) maho-telemetry-core::all env::opt_out_env_matrix
+        PASS [   0.007s] (17/29) maho-telemetry-core::all events::unknown_properties_are_dropped_with_a_diagnostic
+        PASS [   0.007s] (18/29) maho-telemetry-core::all posthog_client::blank_api_key_after_trimming_never_constructs_a_transport
+        PASS [   0.009s] (19/29) maho-telemetry-core::all events::malformed_values_on_content_suffixed_keys_never_reach_the_wire
+        PASS [   0.010s] (20/29) maho-telemetry-core::all events::forbidden_client_authored_keys_are_each_rejected
+        PASS [   0.010s] (21/29) maho-telemetry-core::all events::defaults_stay_byte_identical_and_product_overrides_are_threaded
+        PASS [   0.006s] (22/29) maho-telemetry-core::all posthog_client::blank_api_key_does_not_write_dedup_state
+        PASS [   0.006s] (23/29) maho-telemetry-core::all posthog_client::codex_daily_active_payload_matches_current_contract
+        PASS [   0.005s] (24/29) maho-telemetry-core::all posthog_client::real_default_replacing_the_placeholder_activates_without_another_flag
+        PASS [   0.005s] (25/29) maho-telemetry-core::all posthog_client::unconfigured_placeholder_with_clean_env_fails_closed_without_transports
+        PASS [   0.007s] (26/29) maho-telemetry-core::all posthog_client::disabled_telemetry_does_not_write_dedup_state
+        PASS [   0.006s] (27/29) maho-telemetry-core::all posthog_client::placeholder_default_with_real_env_override_is_enabled
+        PASS [   0.007s] (28/29) maho-telemetry-core::all posthog_client::daily_active_recorded_twice_same_day_sends_one_event
+        PASS [   0.007s] (29/29) maho-telemetry-core::all posthog_client::legacy_shared_key_default_remains_enabled
+────────────
+     Summary [   0.019s] 29 tests run: 29 passed, 0 skipped

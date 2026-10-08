@@ -1,0 +1,26 @@
+   Compiling hyper v1.8.1
+   Compiling plist v1.10.1
+   Compiling bincode v1.3.3
+   Compiling hyper-util v0.1.20
+   Compiling syntect v5.3.0
+   Compiling hyper-rustls v0.27.7
+   Compiling reqwest v0.12.28
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ai)
+   Compiling maho-agent v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-agent)
+   Compiling maho-tools v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-tools)
+   Compiling maho-ext-api v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-api)
+   Compiling maho-ext-host v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-ext-host)
+   Compiling maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/builtins/maho-ext-ask-user)
+   Compiling maho-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-core)
+   Compiling maho-rpc v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-rpc)
+   Compiling maho-test-support v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-test-support)
+   Compiling maho-interactive v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/maho-interactive)
+error: couldn't read `crates/maho-interactive/tests/../../../.omo/evidence/task-35-slash/senpi-hotkeys-120.cells.json`: No such file or directory (os error 2)
+    --> crates/maho-interactive/tests/runtime35_native.rs:1041:72
+     |
+1041 | ...on::from_str(include_str!("../../../.omo/evidence/task-35-slash/senpi-hotkeys-120.cells.json")).expect("pin...
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `maho-interactive` (test "runtime35_native") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: command `/home/indo/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu/bin/cargo test --no-run --message-format json-render-diagnostics --package maho-interactive` exited with code 101

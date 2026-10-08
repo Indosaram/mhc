@@ -1,0 +1,363 @@
+{
+  "schema": "remaining-port-package-acceptance/v1",
+  "packages": [
+    {
+      "target": "crates/omo/boulder-state",
+      "package": "maho-boulder-state",
+      "rows": 2,
+      "test_logs": [
+        "verification/nextest-maho-boulder-state.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/maho-cli",
+      "package": "maho-cli",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-cli-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/maho-rpc",
+      "package": "maho-rpc",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-rpc-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-task",
+      "package": "maho-omo-task",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-omo-task-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/senpi-task",
+      "package": "maho-senpi-task",
+      "rows": 4,
+      "test_logs": [
+        "verification/nextest-maho-senpi-task-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/comment-checker-core",
+      "package": "maho-comment-checker-core",
+      "rows": 10,
+      "test_logs": [
+        "verification/nextest-maho-comment-checker-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/utils",
+      "package": "maho-utils",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-utils-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-mcp",
+      "package": "maho-ext-mcp",
+      "rows": 18,
+      "test_logs": [
+        "verification/nextest-maho-ext-mcp-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-rules",
+      "package": "maho-ext-rules",
+      "rows": 9,
+      "test_logs": [
+        "verification/nextest-maho-ext-rules-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/lsp-core",
+      "package": "maho-lsp-core",
+      "rows": 14,
+      "test_logs": [
+        "verification/nextest-maho-lsp-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/lsp-daemon",
+      "package": "maho-lsp-daemon",
+      "rows": 9,
+      "test_logs": [
+        "verification/nextest-maho-lsp-daemon-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/model-core",
+      "package": "maho-model-core",
+      "rows": 10,
+      "test_logs": [
+        "verification/nextest-maho-model-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-prompt-preset",
+      "package": "maho-ext-prompt-preset",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-ext-prompt-preset-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-skill-commands",
+      "package": "maho-omo-skill-commands",
+      "rows": 5,
+      "test_logs": [
+        "verification/nextest-maho-omo-skill-commands-supplemental.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-config-watch",
+      "package": "maho-omo-config-watch",
+      "rows": 2,
+      "test_logs": [
+        "verification/nextest-maho-omo-config-watch-supplemental.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-config-resolution",
+      "package": "maho-omo-config-resolution",
+      "rows": 1,
+      "test_logs": [
+        "verification/repair-acceptance-tests.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-config-startup",
+      "package": "maho-omo-config-startup",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-omo-config-startup-supplemental.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/telemetry-core",
+      "package": "maho-telemetry-core",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-telemetry-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-nested-agents-md",
+      "package": "maho-ext-nested-agents-md",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-ext-nested-agents-md-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/ast-grep-mcp",
+      "package": "maho-ast-grep-mcp",
+      "rows": 8,
+      "test_logs": [
+        "verification/nextest-maho-ast-grep-mcp-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/mcp-stdio-core",
+      "package": "maho-mcp-stdio-core",
+      "rows": 7,
+      "test_logs": [
+        "verification/nextest-maho-mcp-stdio-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-memory",
+      "package": "maho-omo-memory",
+      "rows": 59,
+      "test_logs": [
+        "verification/nextest-maho-omo-memory-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/omo-config-core",
+      "package": "maho-omo-config-core",
+      "rows": 48,
+      "test_logs": [
+        "verification/nextest-maho-omo-config-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/memory-core",
+      "package": "maho-memory-core",
+      "rows": 33,
+      "test_logs": [
+        "verification/nextest-maho-memory-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/git-bash-mcp",
+      "package": "maho-git-bash-mcp",
+      "rows": 4,
+      "test_logs": [
+        "verification/nextest-maho-git-bash-mcp-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/config-migration",
+      "package": "maho-config-migration",
+      "rows": 2,
+      "test_logs": [
+        "verification/nextest-maho-config-migration-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/maho-omo",
+      "package": "maho-omo",
+      "rows": 9,
+      "test_logs": [
+        "verification/nextest-maho-omo-task-resume.log",
+        "verification/nextest-maho-omo-memory-resume.log",
+        "verification/nextest-maho-omo-config-core-resume.log",
+        "verification/nextest-maho-omo-resume.log",
+        "verification/nextest-maho-omo-bundled-skills-resume.log",
+        "verification/nextest-maho-omo-skill-commands-supplemental.log",
+        "verification/nextest-maho-omo-config-watch-supplemental.log",
+        "verification/nextest-maho-omo-config-startup-supplemental.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/maho-interactive",
+      "package": "maho-interactive",
+      "rows": 8,
+      "test_logs": [
+        "verification/repair-acceptance-tests.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-ask-user",
+      "package": "maho-ext-ask-user",
+      "rows": 2,
+      "test_logs": [
+        "verification/repair-acceptance-tests.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/team-core",
+      "package": "maho-team-core",
+      "rows": 5,
+      "test_logs": [
+        "verification/nextest-maho-team-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-bundled-skills",
+      "package": "maho-omo-bundled-skills",
+      "rows": 9,
+      "test_logs": [
+        "verification/nextest-maho-omo-bundled-skills-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-terminal",
+      "package": "maho-ext-terminal",
+      "rows": 2,
+      "test_logs": [
+        "verification/nextest-maho-ext-terminal-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/builtins/maho-ext-websearch",
+      "package": "maho-ext-websearch",
+      "rows": 2,
+      "test_logs": [
+        "verification/nextest-maho-ext-websearch-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/delegate-core",
+      "package": "maho-delegate-core",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-delegate-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/get-worker",
+      "package": "maho-get-worker",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-get-worker-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/isolation-core",
+      "package": "maho-isolation-core",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-isolation-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    },
+    {
+      "target": "crates/omo/components/maho-omo-lsp",
+      "package": "maho-omo-lsp",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-omo-lsp-supplemental.log"
+      ],
+      "verdict": "needs-fix",
+      "finding": "35 tests passed, one pre-existing faux lifecycle assertion omits session_shutdown; left unchanged per existing-test discipline."
+    },
+    {
+      "target": "crates/omo/tmux-core",
+      "package": "maho-tmux-core",
+      "rows": 1,
+      "test_logs": [
+        "verification/nextest-maho-tmux-core-resume.log"
+      ],
+      "verdict": "confirmed"
+    }
+  ],
+  "all_clippy_log": "verification/resume-command-status.log",
+  "changed_crate_clippy_logs": [
+    "verification/repair-clippy.log",
+    "verification/stderr-boundary-clippy.log"
+  ],
+  "workspace_build": "verification/stderr-boundary-build.log",
+  "package_self_test": "verification/package-self-test-independent.log",
+  "known_preexisting_failures": 1
+}

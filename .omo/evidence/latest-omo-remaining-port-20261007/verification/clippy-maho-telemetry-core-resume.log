@@ -1,0 +1,33 @@
+    Checking parking_lot_core v0.9.12
+    Checking futures-channel v0.3.34
+    Checking parking_lot v0.12.5
+    Checking futures-util v0.3.34
+    Checking tokio v1.52.3
+    Checking getrandom v0.2.17
+    Checking ring v0.17.14
+    Checking icu_normalizer v2.3.0
+    Checking rustls-webpki v0.103.15
+    Checking hyper v1.8.1
+    Checking rustls v0.23.45
+    Checking regex-automata v0.4.18
+    Checking idna_adapter v1.2.1
+    Checking linux-raw-sys v0.12.1
+    Checking hyper-util v0.1.20
+    Checking rustix v1.1.4
+    Checking tower v0.5.3
+    Checking idna v1.1.0
+    Checking tokio-rustls v0.26.4
+    Checking maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/omo-config-core)
+    Checking hyper-rustls v0.27.7
+    Checking tower-http v0.6.8
+    Checking url v2.5.8
+    Checking fancy-regex v0.16.2
+    Checking regex v1.12.3
+    Checking futures-executor v0.3.34
+    Checking reqwest v0.12.28
+    Checking futures v0.3.34
+    Checking maho-utils v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/utils)
+    Checking gethostname v1.1.0
+    Checking tempfile v3.27.0
+    Checking maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/telemetry-core)
+    Finished `dev` profile [unoptimized] target(s) in 10.52s

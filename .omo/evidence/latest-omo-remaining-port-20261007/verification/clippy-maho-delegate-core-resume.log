@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on build directory
+    Checking regex-automata v0.4.18
+    Checking regex v1.12.3
+    Checking maho-model-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/model-core)
+    Checking maho-delegate-core v0.0.0 (/home/projects/mhc-wt/main-integrated-latest-omo/crates/omo/delegate-core)
+    Finished `dev` profile [unoptimized] target(s) in 50.28s

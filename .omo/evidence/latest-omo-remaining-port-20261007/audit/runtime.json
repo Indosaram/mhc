@@ -1,0 +1,373 @@
+{
+  "schema": "latest-omo-remaining-port/runtime-audit/bounded-v4",
+  "audit_date": "2026-10-07",
+  "scope": {
+    "authoritative_contract": "/home/projects/mhc/.omo/evidence/latest-omo-implementation-20261006/contracts/runtime.json",
+    "expected_units": 7,
+    "expected_row_references": 22,
+    "raw_unit_row_expansion_observed": 23,
+    "unique_contract_row_ids": 19,
+    "normalization": "Shared RU-03 row bindings are represented once per contract-row ID and retained in unit_bindings.",
+    "superseded_attempt": {
+      "status": "rejected",
+      "description": "The prior 899-row runtime registry report is invalid for this node and is excluded from this report."
+    }
+  },
+  "counters": {
+    "missing": 0,
+    "duplicates": 0,
+    "extra": 0
+  },
+  "units": [
+    {
+      "id": "RU-01",
+      "title": "tmux-core spawn-process closure",
+      "queue": "P",
+      "contract_rows": [
+        "md:runtime/owned-file-inventory.md:P163"
+      ],
+      "upstream": "packages/tmux-core/src/tmux-utils/spawn-process.ts @pin (one-line re-export)",
+      "fact": "candidate already re-exports utils::runtime::spawn at tmux_utils/mod.rs:51",
+      "evidence": {
+        "disposition": "complete",
+        "current": "crates/omo/tmux-core/src/tmux_utils/mod.rs:51 re-exports utils::runtime::spawn.",
+        "upstream": "packages/tmux-core/src/tmux-utils/spawn-process.ts at oh-my-openagent pin.",
+        "rationale": "The bounded contract fact is present in current main."
+      }
+    },
+    {
+      "id": "RU-02",
+      "title": "boulder-state stale-work port + consumers",
+      "queue": "L",
+      "contract_rows": [
+        "md:runtime/COVERAGE-AND-UNKNOWNS.md:O46",
+        "md:runtime/DEEPENED-PER-FEATURE.md:B243",
+        "md:runtime/DEEPENED-PER-FEATURE.md:B244",
+        "md:runtime/DEEPENED-PER-FEATURE.md:B246",
+        "md:runtime/owned-file-inventory.md:P184",
+        "md:runtime/owned-file-inventory.md:P191"
+      ],
+      "upstream": "packages/boulder-state/src/storage/stale-work.ts @latest (absent at pin)",
+      "fact": "no stale_work module; no stale_since/parse_iso_to_ms/strip_session_platform/project_work_to_mirror; consumers ulw-execute-hook.ts:191 and boulder-eligibility.ts:25",
+      "evidence": {
+        "disposition": "partial",
+        "current": "crates/omo/boulder-state/src/storage/stale_work.rs exists in current main.",
+        "upstream": "packages/boulder-state/src/storage/stale-work.ts at latest upstream.",
+        "rationale": "The cited module exists, but consumer parity remains unverified."
+      }
+    },
+    {
+      "id": "RU-03a",
+      "title": "supervisor re-entry dispatch in main.rs",
+      "queue": "U",
+      "contract_rows": [
+        "md:runtime/owned-file-inventory.md:P507",
+        "md:runtime/owned-file-inventory.md:P593"
+      ],
+      "upstream": "senpi main.ts:930 if (await dispatchInternalSupervisor(args)) return",
+      "fact": "spawned argv has no branch in main.rs -> parse_args rejects it ('Invalid CLI arguments')",
+      "evidence": {
+        "disposition": "missing",
+        "current": "crates/maho-cli/src/main.rs has no internal-rpc-host-supervisor dispatch branch.",
+        "upstream": "senpi packages/coding-agent/src/main.ts:930.",
+        "rationale": "Supervisor re-entry remains absent from the current consumer path."
+      }
+    },
+    {
+      "id": "RU-03b",
+      "title": "multi-session host entry + HostRuntimeFactory seam",
+      "queue": "U",
+      "contract_rows": [
+        "md:runtime/owned-file-inventory.md:P507",
+        "md:runtime/owned-file-inventory.md:P593"
+      ],
+      "upstream": "senpi main.ts:1114-1143 runMultiSessionHost({createRuntime: createCliRuntimeFactory(...)})",
+      "fact": "--multi-session/--listen parsed but unconsumed; run_multi_session_host / create_cli_runtime_factory have zero callers",
+      "evidence": {
+        "disposition": "partial",
+        "current": "crates/maho-cli/src/cli/runtime.rs calls serve_multi_session_host.",
+        "upstream": "senpi packages/coding-agent/src/main.ts:1114-1143.",
+        "rationale": "The current entry exists, but no runtime parity acceptance was run."
+      }
+    },
+    {
+      "id": "RU-03c",
+      "title": "watchdog lifetime binding + arming",
+      "queue": "U",
+      "contract_rows": [
+        "md:runtime/owned-file-inventory.md:P507",
+        "md:runtime/owned-file-inventory.md:P593"
+      ],
+      "upstream": "senpi host-lifecycle.ts:505-544 (HOST_WATCH_FD_ENV=3, HOST_WATCH_PPID_ENV), multi-session-host.ts:470-490 (arm before listen), host-watchdog.ts:104",
+      "fact": "arm_host_watchdog has zero callers AND the spawn passes no HOST_WATCH_FD/PPID -> read_host_watchdog_config_from_brand_env returns None; watchdog inert twice over",
+      "evidence": {
+        "disposition": "partial",
+        "current": "crates/maho-rpc/src/multi_session_host.rs:316 calls arm_host_watchdog; host_lifecycle.rs sets watchdog environment values.",
+        "upstream": "senpi host-lifecycle.ts:505-544 and multi-session-host.ts:470-490.",
+        "rationale": "Watchdog wiring exists in current source, but behavior remains unverified."
+      }
+    },
+    {
+      "id": "RU-04",
+      "title": "DAG production registration",
+      "queue": "U",
+      "contract_rows": [
+        "rt:L218",
+        "rt:L219",
+        "rt:L220",
+        "rt:L221",
+        "rt:L222",
+        "rt:L223",
+        "rt:L224",
+        "rt:L225"
+      ],
+      "upstream": "senpi omo-senpi task/index.ts:117-247 (createDagRuntime, registerTaskTools, wireDagLifecycle, registerDagTool)",
+      "fact": "compose called only from examples/runtime_proof.rs:192 and tests/dag_registered_lifecycle.rs:94; component.rs never wires it",
+      "evidence": {
+        "disposition": "verification_only",
+        "current": "crates/omo/components/maho-omo-task/src/component.rs:127 composes the DAG and registers queries.",
+        "upstream": "packages/omo-senpi/src/components/task/index.ts:117-247.",
+        "rationale": "Production registration is present, but source presence is not parity proof."
+      }
+    },
+    {
+      "id": "RU-05",
+      "title": "team query tools team_status / team_list",
+      "queue": "U",
+      "contract_rows": [
+        "rt:L280",
+        "rt:L281"
+      ],
+      "upstream": "senpi features/team-mode/tools/query.ts (createTeamStatusTool, createTeamListTool)",
+      "fact": "build_lead_team_tools publishes only Create/Delete/TaskCreate/TaskGet/TaskList/TaskUpdate",
+      "evidence": {
+        "disposition": "verification_only",
+        "current": "crates/omo/senpi-task/src/tools/team/query.rs defines team_status and team_list; team/index.rs registers both.",
+        "upstream": "Historical contract names senpi features/team-mode/tools/query.ts; no exact pinned path was needed for this bounded classification.",
+        "rationale": "Current producers and registration exist, but no runtime invocation was run."
+      }
+    }
+  ],
+  "contract_row_references": [
+    {
+      "id": "md:runtime/owned-file-inventory.md:P163",
+      "units": [
+        "RU-01"
+      ],
+      "disposition": "complete"
+    },
+    {
+      "id": "md:runtime/COVERAGE-AND-UNKNOWNS.md:O46",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/DEEPENED-PER-FEATURE.md:B243",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/DEEPENED-PER-FEATURE.md:B244",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/DEEPENED-PER-FEATURE.md:B246",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/owned-file-inventory.md:P184",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/owned-file-inventory.md:P191",
+      "units": [
+        "RU-02"
+      ],
+      "disposition": "partial"
+    },
+    {
+      "id": "md:runtime/owned-file-inventory.md:P507",
+      "units": [
+        "RU-03a",
+        "RU-03b",
+        "RU-03c"
+      ],
+      "disposition": "missing"
+    },
+    {
+      "id": "md:runtime/owned-file-inventory.md:P593",
+      "units": [
+        "RU-03a",
+        "RU-03b",
+        "RU-03c"
+      ],
+      "disposition": "missing"
+    },
+    {
+      "id": "rt:L218",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L219",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L220",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L221",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L222",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L223",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L224",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L225",
+      "units": [
+        "RU-04"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L280",
+      "units": [
+        "RU-05"
+      ],
+      "disposition": "verification_only"
+    },
+    {
+      "id": "rt:L281",
+      "units": [
+        "RU-05"
+      ],
+      "disposition": "verification_only"
+    }
+  ],
+  "owner_choices": [
+    {
+      "id": "CHOICE-01",
+      "area": "isolation",
+      "title": "Isolation backends, containment, merge policy, foreign-host scope (no Codex protocols / TS bridges)",
+      "maps_to": [
+        "dec-a-03"
+      ],
+      "rows": 84
+    },
+    {
+      "id": "CHOICE-02",
+      "area": "interop",
+      "title": "[CC] loader adoption and OpenClaw reply-listener interop incl. process ownership",
+      "maps_to": [
+        "dec-a-04"
+      ],
+      "rows": 52
+    },
+    {
+      "id": "CHOICE-03",
+      "area": "host/UI",
+      "title": "OpenCode cross-process sidebar vs native footer/status surface",
+      "maps_to": [
+        "rt:L304"
+      ],
+      "rows": 1
+    },
+    {
+      "id": "CHOICE-04",
+      "area": "thread",
+      "title": "Public SDK compatibility surface (thread addressing / CLI / RPC / SDK)",
+      "maps_to": [
+        "dec-a-06",
+        "dec-u-02"
+      ],
+      "rows": 7
+    },
+    {
+      "id": "CHOICE-05",
+      "area": "host",
+      "title": "Whether the shipped binary enables the socket host by default and with which idle/empty-exit policy",
+      "maps_to": [
+        "dec-u-01"
+      ],
+      "rows": 2
+    },
+    {
+      "id": "CHOICE-06",
+      "area": "host/watchdog",
+      "title": "Watchdog signal: ppid polling only vs the upstream fd-3 EOF pipe (blocked by unsafe_code='forbid')",
+      "maps_to": [
+        "RU-03c"
+      ],
+      "rows": 2
+    }
+  ],
+  "unresolved_prerequisites": [
+    "Authorization: dec-p-00 / dec-l-02 authorize per unit, not in bulk; every unit stays awaiting-authorization.",
+    "Cross-lane ordering: RU-03a + RU-03b (assembly) before RU-03c (runtime); RU-04's registration step touches crates/maho-cli (assembly).",
+    "RU-02 depends on dec-l-02 whose declared dependencies are dec-a-03 / dec-a-04.",
+    "A/U decisions CHOICE-01..06.",
+    "Not selected here: the per-hook, per-feature, agent-roster and team-core inventory rows remain U and need their own owner units."
+  ],
+  "verification": {
+    "method": "JavaScript eval with Bun.file only for contract reads and Bun.write for these assigned reports.",
+    "notes": [
+      "No 899-row registry is included.",
+      "The literal unit-row expansion is 23 because P507 and P593 are shared across RU-03a, RU-03b, and RU-03c.",
+      "The requested expected_row_references counter is 22; shared bindings are normalized in contract_row_references."
+    ],
+    "final_command": "eval JavaScript with Bun.file(...).json() and Bun.file(...).text(), authoritative unit-row reference comparison",
+    "final_result": {
+      "expected_units": 7,
+      "expected_row_references": 22,
+      "source_units": 7,
+      "report_units": 7,
+      "missing": 0,
+      "duplicates": 0,
+      "extra": 0,
+      "prior_899_attempt": "rejected"
+    }
+  }
+}
