@@ -156,6 +156,15 @@ pub struct HookInput {
 pub struct CheckResult {
     pub has_comments: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<CheckFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckFailure {
+    pub exit_code: Option<i32>,
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

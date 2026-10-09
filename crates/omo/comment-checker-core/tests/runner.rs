@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use comment_checker_core::ByteStream;
-use comment_checker_core::CheckResult;
+use comment_checker_core::{CheckFailure, CheckResult};
 use comment_checker_core::ExitFuture;
 use comment_checker_core::HookInput;
 use comment_checker_core::HookToolInput;
@@ -194,6 +194,7 @@ async fn run_exit_two_reports_comments_with_crlf_normalised_stderr() {
         Some(CheckResult {
             has_comments: true,
             message: "COMMENT\nline two\n".to_string(),
+            failure: None,
         })
     );
 }
@@ -260,7 +261,42 @@ async fn run_omits_prompt_args_without_custom_prompt() {
 
 #[tokio::test]
 async fn run_other_exit_codes_and_exit_errors_return_empty() {
-    for exit in [Exit::Code(0), Exit::Code(1), Exit::Code(3), Exit::Error] {
+    for (exit, expected) in [
+        (Exit::Code(0), empty()),
+        (
+            Exit::Code(1),
+            CheckResult {
+                has_comments: false,
+                message: String::new(),
+                failure: Some(CheckFailure {
+                    exit_code: Some(1),
+                    stderr: "message".to_string(),
+                }),
+            },
+        ),
+        (
+            Exit::Code(3),
+            CheckResult {
+                has_comments: false,
+                message: String::new(),
+                failure: Some(CheckFailure {
+                    exit_code: Some(3),
+                    stderr: "message".to_string(),
+                }),
+            },
+        ),
+        (
+            Exit::Error,
+            CheckResult {
+                has_comments: false,
+                message: String::new(),
+                failure: Some(CheckFailure {
+                    exit_code: None,
+                    stderr: "exit failed".to_string(),
+                }),
+            },
+        ),
+    ] {
         let harness = Harness::new("message", exit);
 
         let result = harness
@@ -268,7 +304,7 @@ async fn run_other_exit_codes_and_exit_errors_return_empty() {
             .await
             .ok();
 
-        assert_eq!(result, Some(empty()));
+        assert_eq!(result, Some(expected));
     }
 }
 
@@ -304,8 +340,15 @@ async fn run_propagates_spawn_failure() {
     let result = run_comment_checker(&run_input(Some("/bin/x"), None), &options).await;
 
     assert_eq!(
-        result.map_err(|error| error.to_string()),
-        Err("spawn failed".to_string())
+        result.unwrap(),
+        CheckResult {
+            has_comments: false,
+            message: String::new(),
+            failure: Some(CheckFailure {
+                exit_code: None,
+                stderr: "spawn failed".to_string(),
+            }),
+        }
     );
 }
 
