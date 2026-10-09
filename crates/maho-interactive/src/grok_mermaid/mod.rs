@@ -12,6 +12,7 @@ pub mod graph;
 pub mod labels;
 pub mod parse;
 pub mod layout;
+pub mod layout_seq;
 pub mod source_box;
 pub mod width;
 pub mod width_data;
