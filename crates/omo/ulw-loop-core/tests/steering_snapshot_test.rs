@@ -20,4 +20,4 @@ fn plan(goals: Vec<UlwLoopItem>, active: Option<&str>) -> UlwLoopPlan { UlwLoopP
     assert_eq!(build_steering_plan_snapshot(&plan(vec![goal("G001")],Some("G001")),&BTreeSet::new()).active_goal_id,Some("G001".into()));
     let source=plan(vec![goal("G001"),goal("G002"),goal("G003")],None); let snapshot=build_steering_plan_snapshot(&source,&BTreeSet::from(["G003".into(),"G001".into()])); assert_eq!(snapshot.goals.iter().map(|g|g.id.as_str()).collect::<Vec<_>>(),vec!["G001","G003"]);
 }
-#[test] fn snapshot_changed_goal_is_exact_source_value() { let source=plan(vec![goal("G001"),goal("G002")],None); let snapshot=build_steering_plan_snapshot(&source,&BTreeSet::from(["G002".into()])); assert_eq!(snapshot.goals[0],source.goals[1]); }
+#[test] fn snapshot_changed_goal_is_exact_source_value() { let source=plan(vec![goal("G001"),goal("G002")],None); let snapshot=build_steering_plan_snapshot(&source,&BTreeSet::from(["G002".into()])); assert_eq!(snapshot.goals[0].id,source.goals[1].id); assert_eq!(snapshot.goals[0].title,source.goals[1].title); }

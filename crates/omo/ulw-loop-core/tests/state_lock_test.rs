@@ -32,7 +32,7 @@ fn sync_holder_writes_lease_record() {
 fn current_owner_times_out_without_running_body() {
     let (_d, path) = lock(); fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, record(std::process::id(), "holder", Some(u64::MAX))).unwrap();
-    let mut ran=false; let err=with_state_lock(&path, Some(&opts(0)), |_| {ran=true; Ok(())}).unwrap_err();
+    let mut ran=false; let err=with_state_lock(&path, Some(&opts(0)), |_| {ran=true; Ok::<(), UlwLoopError>(())}).unwrap_err();
     assert_eq!(err.code, ULW_LOOP_LOCK_TIMEOUT_CODE); assert!(!ran);
 }
 #[test]
@@ -57,7 +57,7 @@ fn malformed_old_record_is_reclaimed() {
 }
 #[test]
 fn body_error_propagates() {
-    let (_d,path)=lock(); let err=with_state_lock(&path,None, |_| Err(UlwLoopError::new("body exploded","BODY"))).unwrap_err(); assert_eq!(err.code,"BODY"); assert!(!path.exists());
+    let (_d,path)=lock(); let err=with_state_lock(&path,None, |_| Err::<(), _>(UlwLoopError::new("body exploded","BODY"))).unwrap_err(); assert_eq!(err.code,"BODY"); assert!(!path.exists());
 }
 #[test]
 fn successor_lock_is_preserved() {
