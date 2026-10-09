@@ -1,3 +1,5 @@
+use maho_ext_api::Extension;
+
 #[tokio::test]
 async fn concrete_default_factories_register_tools_and_commands() {
     let root = tempfile::tempdir().expect("isolated factory directory");
@@ -31,3 +33,31 @@ async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     assert_eq!(loaded.extensions.len(), paths.len());
 }
+
+#[tokio::test]
+async fn task_component_registers_session_start_handler_for_non_member() {
+    let parent: maho_cli::cli::default_extensions::TaskParent = std::sync::Arc::new(std::sync::OnceLock::new());
+    let mut env = std::collections::BTreeMap::new();
+    env.insert("HOME".to_string(), "/tmp".to_string());
+    let component = maho_cli::cli::default_extensions::task_entry(parent, env);
+    assert_eq!(component.name, "task");
+
+    let mut api = maho_ext_api::ExtensionApi::new(
+        maho_ext_api::LoadedExtension::new("test", std::path::PathBuf::from("/tmp"), maho_ext_api::SourceInfo::default()),
+        maho_ext_api::ExtensionSessionProfile::default(),
+        maho_ext_api::EventBus::default(),
+        maho_ext_api::ExtensionRuntime::default(),
+    );
+    let omo = maho_omo::OmoExtension::new(vec![component]);
+    omo.register(&mut api);
+
+    // The task entrypoint registers a SessionStart handler on the host api.
+    // When SessionStart fires, it registers the inner TaskComponent and process sweep.
+    assert!(
+        api.registered.handlers.contains_key(&maho_ext_api::EventKind::SessionStart),
+        "SessionStart handler must be registered on host api"
+    );
+    let host_start_handlers = &api.registered.handlers[&maho_ext_api::EventKind::SessionStart];
+    assert!(!host_start_handlers.is_empty());
+}
+
