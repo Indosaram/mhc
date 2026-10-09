@@ -2,7 +2,7 @@ use std::path::Path;
 use memory_core::{
     identity::layout::build_identity_paths,
     identity::resolve::MemoryIdentity,
-    receipts::{read_memory_receipts, receipt_identity, MemoryReceipt, MemoryReceiptInput},
+    receipts::{read_memory_receipts, receipt_identity, MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions},
 };
 use crate::{
     receipts_port::MemoryReceiptsPort,
@@ -77,7 +77,7 @@ impl crate::worker::runner_types::ReflectionReservationPort for IdleReservation 
 }
 
 fn read_receipts(runtime_dir: &Path) -> Vec<MemoryReceipt> {
-    read_memory_receipts(runtime_dir, Default::default()).unwrap().receipts
+    read_memory_receipts(runtime_dir, &ReadMemoryReceiptsOptions::default()).unwrap().receipts
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn given_a_merged_settlement_when_final_json_lands_then_one_merged_receipt_with_
     impl MemoryReceiptsPort for OrderPort<'_> {
         fn append(&self, runtime_dir: &Path, input: &MemoryReceiptInput) -> Result<bool, String> {
             let present = self.run_dir.join("final.json").exists() || self.run_dir.join("abandoned.json").exists();
-            self.calls.lock().unwrap().push((input.event.clone(), present, false));
+            self.calls.lock().unwrap().push((input.event().to_string(), present, false));
             memory_core::receipts::append_memory_receipt_once(runtime_dir, input).map_err(|e| e.to_string())
         }
     }
@@ -122,8 +122,8 @@ fn given_a_merged_settlement_when_final_json_lands_then_one_merged_receipt_with_
     assert_eq!(recorded, vec![("merged".into(), true, false)]);
     let receipts = read_receipts(&identity.paths.runtime);
     assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].event, "merged");
-    assert_eq!(receipts[0].sha.as_deref(), Some("abc123"));
+    assert_eq!(receipts[0].input.event(), "merged");
+    assert_eq!(receipts[0].input.sha(), Some("abc123"));
 }
 
 #[test]
@@ -162,12 +162,12 @@ fn given_no_change_and_failed_settlements_when_settled_then_no_changes_and_faile
 
     let list = read_receipts(&identity.paths.runtime);
     assert_eq!(list.len(), 2);
-    let events: Vec<_> = list.iter().map(|r| r.event.as_str()).collect();
+    let events: Vec<_> = list.iter().map(|r| r.input.event()).collect();
     assert!(events.contains(&"no_changes"));
     assert!(events.contains(&"failed"));
-    let failed_receipt = list.iter().find(|r| r.event == "failed").unwrap();
-    assert_eq!(failed_receipt.reason.as_deref(), Some("validation_failed"));
-    assert!(!failed_receipt.detail.as_deref().unwrap_or("").contains("abc123456"));
+    let failed_receipt = list.iter().find(|r| r.input.event() == "failed").unwrap();
+    assert_eq!(failed_receipt.input.reason(), Some("validation_failed"));
+    assert!(!failed_receipt.input.detail().unwrap_or("").contains("abc123456"));
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn given_a_dead_run_nobody_can_finish_when_abandoned_then_abandoned_receipt_foll
     assert!(run_dir.join("abandoned.json").exists());
     let list = read_receipts(&identity.paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].event, "abandoned");
+    assert_eq!(list[0].input.event(), "abandoned");
 }
 
 #[test]
@@ -236,13 +236,13 @@ fn given_a_merged_run_whose_receipt_write_failed_when_reconciled_twice_then_exac
     assert!(run_dir.join("final.json").exists());
 
     // Backfill sync
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
     let list = read_receipts(&identity.paths.runtime);
-    let merged: Vec<_> = list.iter().filter(|r| r.event == "merged").collect();
+    let merged: Vec<_> = list.iter().filter(|r| r.input.event() == "merged").collect();
     assert_eq!(merged.len(), 1);
-    assert_eq!(merged[0].sha.as_deref(), Some("abc123"));
+    assert_eq!(merged[0].input.sha(), Some("abc123"));
 }
 
 #[test]
@@ -271,12 +271,12 @@ fn given_a_normally_receipted_run_when_reconciled_after_a_restart_then_no_second
 
     assert_eq!(read_receipts(&identity.paths.runtime).len(), 1);
 
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
     let list = read_receipts(&identity.paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].event, "merged");
+    assert_eq!(list[0].input.event(), "merged");
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn given_a_run_dir_reused_by_a_fresh_generation_when_each_generation_is_reconcil
         "generation": "2026-08-11T10:00:00.000Z",
     }), 0o600).unwrap();
 
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
     let (_, val2) = test_ledger(Some(serde_json::json!({ "startedAt": "2026-08-12T09:00:00.000Z" })));
     write_run_json_atomic(&run_dir.join("ledger.json"), &val2, 0o600).unwrap();
@@ -306,10 +306,10 @@ fn given_a_run_dir_reused_by_a_fresh_generation_when_each_generation_is_reconcil
         "generation": "2026-08-12T09:00:00.000Z",
     }), 0o600).unwrap();
 
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
     let list = read_receipts(&identity.paths.runtime);
-    let mut gens: Vec<_> = list.iter().filter(|r| r.event == "merged").map(|r| r.generation.as_deref().unwrap()).collect();
+    let mut gens: Vec<_> = list.iter().filter(|r| r.input.event() == "merged").map(|r| match &r.input { MemoryReceiptInput::Run { generation, .. } => generation.as_str(), MemoryReceiptInput::Facts { .. } => panic!("expected run receipt") }).collect();
     gens.sort();
     assert_eq!(gens, vec!["2026-08-11T10:00:00.000Z", "2026-08-12T09:00:00.000Z"]);
 }
@@ -330,15 +330,15 @@ fn given_a_pre_ledger_abandoned_json_when_reconciled_twice_then_one_abandoned_re
             "abandonedAt": "2026-08-11T10:00:05.000Z",
         }), 0o600).unwrap();
 
-        crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
-        crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+        crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
+        crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
         let list = read_receipts(&identity.paths.runtime);
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].kind, kind);
-        assert_eq!(list[0].event, "abandoned");
-        assert_eq!(list[0].generation.as_deref(), Some("2026-08-11T09:59:00.000Z"));
-        assert_eq!(list[0].reason.as_deref(), Some("launch_interrupted"));
+        assert_eq!(list[0].input.kind(), kind);
+        assert_eq!(list[0].input.event(), "abandoned");
+        assert!(matches!(&list[0].input, MemoryReceiptInput::Run { generation, .. } if generation == "2026-08-11T09:59:00.000Z"));
+        assert_eq!(list[0].input.reason(), Some("launch_interrupted"));
     }
 }
 
@@ -358,12 +358,12 @@ fn given_quarantined_json_beside_an_unreadable_ledger_when_reconciled_then_one_q
         "quarantinedAt": "2026-08-11T10:00:10.000Z",
     }), 0o600).unwrap();
 
-    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(&identity.paths.runtime, &run_dir, None, None);
 
     let list = read_receipts(&identity.paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, "dream");
-    assert_eq!(list[0].event, "quarantined");
-    assert_eq!(list[0].generation.as_deref(), Some("2026-08-11T09:58:00.000Z"));
-    assert_eq!(list[0].reason.as_deref(), Some("ledger_unreadable"));
+    assert_eq!(list[0].input.kind(), "dream");
+    assert_eq!(list[0].input.event(), "quarantined");
+    assert!(matches!(&list[0].input, MemoryReceiptInput::Run { generation, .. } if generation == "2026-08-11T09:58:00.000Z"));
+    assert_eq!(list[0].input.reason(), Some("ledger_unreadable"));
 }
