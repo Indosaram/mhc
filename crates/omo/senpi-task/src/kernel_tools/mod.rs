@@ -291,3 +291,11 @@ mod kernel_tools_python_tests {
         assert!(matches!(resolution, KernelToolGrantResolution::None));
     }
 }
+
+#[cfg(test)]
+#[path = "kernel_tools_tests.rs"]
+mod kernel_tools_port_tests;
+
+#[cfg(test)]
+#[path = "revive_tests.rs"]
+mod revive_tests;
