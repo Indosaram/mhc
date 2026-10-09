@@ -216,12 +216,12 @@ pub fn create_event_telemetry_client(
         flush_at: EVENT_FLUSH_AT,
         flush_interval: EVENT_FLUSH_INTERVAL_MS,
         host: get_telemetry_host(input.env, &product.default_host),
-        disable_geoip: true,
+        disable_geoip: false,
     };
     if let Some(overrides) = &product.transport_options {
         options.apply(overrides);
     }
-    options.disable_geoip = true;
+    options.disable_geoip = false;
     options.flush_at = EVENT_FLUSH_AT;
     options.flush_interval = EVENT_FLUSH_INTERVAL_MS;
 
@@ -245,6 +245,11 @@ pub fn create_event_telemetry_client(
         .map(|(name, keys)| (name.clone(), keys.iter().cloned().collect()))
         .collect();
     let mut shared_properties = TelemetryCaptureProperties::new();
+    if let Some(additional) = &product.additional_properties {
+        for (key, value) in additional {
+            shared_properties.insert(key.clone(), value.clone());
+        }
+    }
     shared_properties.insert("platform".into(), product.platform.clone().into());
     shared_properties.insert("product_name".into(), product.product_name.clone().into());
     shared_properties.insert(
