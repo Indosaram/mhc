@@ -167,3 +167,34 @@ fn cancellation_during_admission_releases_lease() {
     assert_eq!(concurrency.get_count("test/model"), 0);
 }
 
+#[test]
+fn reconcile_ack_loss_marks_unbound_assignment_uncertain() {
+    let store = WorkpoolStore::new("/tmp/workpool-reconcile");
+    let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
+    store.mutate(&pool.pool_id, |p| { let mut n=p.clone(); n.items.push(WorkpoolItem { key:"a".into(), input:json!(2), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }); n });
+    super::reconcile::reconcile_workpool(&store, &pool.pool_id).expect("reconcile");
+    assert_eq!(store.load(&pool.pool_id).expect("load").items[0].error.as_ref().expect("error").code, "delivery_uncertain");
+}
+
+#[test]
+fn reconcile_missing_yield_is_typed() { let item=WorkpoolItem { key:"a".into(), input:json!(null), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }; assert_eq!(super::reconcile::uncertain_item(item).error.expect("error").code,"delivery_uncertain"); }
+
+#[test]
+fn reconcile_cancelled_pool_is_unchanged() { let store=WorkpoolStore::new("/tmp/workpool-reconcile-cancel"); let mut pool=store.create(&caller(),&input(),WorkpoolMode::Fresh,spec()).expect("create"); pool.status=WorkpoolStatus::Cancelled; store.mutate(&pool.pool_id, |_| pool.clone()).expect("save"); super::reconcile::reconcile_workpool(&store,&pool.pool_id).expect("reconcile"); assert_eq!(store.load(&pool.pool_id).expect("load").revision,0); }
+
+fn reuse_setup() -> (WorkpoolStore, WorkpoolCaller, WorkpoolCreate) { let store=WorkpoolStore::new("/tmp/workpool-reuse"); let mut request=input(); request.name="batch".into(); (store,caller(),request) }
+#[test] fn reuse_different_tool_is_conflict() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_conflict_does_not_reveal_grant() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret_tool".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); let e=s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict"); assert!(!e.message.contains("secret_tool")); }
+#[test] fn reuse_grant_to_no_tools_is_conflict() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=None; assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_without_tools_cannot_widen() { let (s,c,mut i)=reuse_setup(); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["secret".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_same_grant_in_other_order_reuses_pool() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["a".into(),"b".into()]); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["b".into(),"a".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
+#[test] fn reuse_empty_grant_reuses_pool() { let (s,c,i)=reuse_setup(); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); let mut empty=i.clone(); empty.tools=Some(vec![]); assert_eq!(s.create(&c,&empty,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
+
+#[test]
+fn kernel_denylist_removing_parent_write_tool_refuses_grant() {
+    struct Available; impl KernelToolCapability for Available { fn available(&self, name:&str)->bool { name=="lookup" } }
+    let mut worker=spec(); worker.plan.tool_denylist=Some(vec!["synthetic_write".into()]);
+    let error=resolve_pool_kernel_tools(&["lookup".into()],&Available,&worker,&["synthetic_write".into()],None,None).expect_err("tools unavailable");
+    assert_eq!(error.code,WorkpoolErrorCode::ToolsUnavailable);
+}
+
