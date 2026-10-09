@@ -3,6 +3,8 @@
 use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
 use crate::paths::{ulw_loop_goals_relative_path, ulw_loop_ledger_relative_path, UlwLoopScope};
 
+pub const ULW_LOOP_AGGREGATE_CODEX_OBJECTIVE: &str = "Complete the durable ulw-loop plan in .omo/ulw-loop/goals.json, including later accepted/appended stories, under the original brief constraints; use .omo/ulw-loop/ledger.jsonl as the audit trail.";
+
 pub fn aggregate_codex_objective_for_scope(scope: Option<&UlwLoopScope>) -> String {
     format!(
         "Complete the durable ulw-loop plan in {}, including later accepted/appended stories, under the original brief constraints; use {} as the audit trail.",
