@@ -70,7 +70,7 @@ fn steering_created_goals_use_numeric_ids_and_defaults() {
 }
 
 #[test]
-fn add_subgoal_appends_goal_and_ledger() { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"idempotencyKey":"add"})), None, None).unwrap(); let saved = read_ulw_loop_plan(dir.path(), None).unwrap(); assert!(result.accepted); assert_eq!(saved.goals.last().unwrap().id, "G004"); assert_eq!(read_steering_ledger_entries(dir.path(), None).unwrap().last().unwrap().mutation_kind.as_deref(), Some("add_subgoal")); }
+fn add_subgoal_appends_goal_and_ledger() { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"idempotencyKey":"add"})), None, None).unwrap(); let saved = read_ulw_loop_plan(dir.path(), None).unwrap(); assert!(result.accepted); assert_eq!(saved.goals.last().unwrap().id, "G004"); assert_eq!(read_steering_ledger_entries(dir.path(), None).last().unwrap().mutation_kind.as_deref(), Some("add_subgoal")); }
 
 #[test]
 fn split_subgoal_supersedes_parent() { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"kind":"split_subgoal","targetGoalId":"G001","childGoals":[{"title":"Child","objective":"Do child"}]})), None, None).unwrap(); assert_eq!(result.plan.goals[0].steering_status.as_deref(), Some("superseded")); assert_eq!(result.plan.goals[0].superseded_by.as_deref().unwrap(), &["G004"]); }
@@ -91,7 +91,7 @@ fn mark_blocked_superseded_replaces_parent() { let dir = repo(plan()); let resul
 fn mark_blocked_superseded_without_children_blocks_goal() { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"kind":"mark_blocked_superseded","targetGoalId":"G001","blockedReason":"external blocker"})), None, None).unwrap(); assert_eq!(result.plan.goals[0].status, "blocked"); assert_eq!(result.plan.goals[0].blocked_reason.as_deref(), Some("external blocker")); }
 
 #[test]
-fn revise_criterion_preserves_status_and_writes_ledger() { for (id,status) in [("C001","pending"),("C002","pass")] { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"kind":"revise_criterion","goalId":"G001","criterionId":id,"scenario":"new scenario","expectedEvidence":"precise evidence"})), None, None).unwrap(); let c = result.plan.goals[0].success_criteria.iter().find(|c| c.id == id).unwrap(); assert_eq!(c.status, status); assert_eq!(read_steering_ledger_entries(dir.path(), None).unwrap().last().unwrap().kind, "criteria_revised"); } }
+fn revise_criterion_preserves_status_and_writes_ledger() { for (id,status) in [("C001","pending"),("C002","pass")] { let dir = repo(plan()); let result = steer_ulw_loop(dir.path(), &proposal(json!({"kind":"revise_criterion","goalId":"G001","criterionId":id,"scenario":"new scenario","expectedEvidence":"precise evidence"})), None, None).unwrap(); let c = result.plan.goals[0].success_criteria.iter().find(|c| c.id == id).unwrap(); assert_eq!(c.status, status); assert_eq!(read_steering_ledger_entries(dir.path(), None).last().unwrap().kind, "criteria_revised"); } }
 
 #[test]
 fn revise_criterion_mutates_targeted_criterion() { let p = plan(); let steering = proposal(json!({"kind":"revise_criterion","goalId":"G001","criterionId":"C001","scenario":"new value"})); let audit = validate_ulw_loop_steering_proposal(&p, &serde_json::to_value(&steering).unwrap()); let next = apply_steering_mutation(&p, &steering, &audit, None); assert_eq!(next.goals[0].success_criteria[0].scenario, "new value"); }
