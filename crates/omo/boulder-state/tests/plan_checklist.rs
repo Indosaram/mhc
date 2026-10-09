@@ -91,6 +91,97 @@ fn completed_implementation_and_pending_final_verifier_makes_verifier_next() {
 }
 
 #[test]
+fn structured_t_f_and_h_task_ids_are_counted() {
+    // given
+    let markdown = [
+        "## TODOs",
+        "- [x] T1.1 Completed implementation",
+        "- [ ] T6.3a Remaining implementation",
+        "## Final Verification Wave",
+        "- [ ] F1 \u{2014} Plan compliance audit",
+        "- [x] H1 \u{2014} User approval",
+    ]
+    .join("\n");
+
+    // when
+    let parsed = parse_plan_checklist(&markdown);
+
+    // then
+    assert_eq!(
+        parsed,
+        checklist(2, 2, 4, Some("T6.3a Remaining implementation"))
+    );
+}
+
+#[test]
+fn boilerplate_structured_sections_and_progress_tracker_rows_fallback() {
+    // given
+    let markdown = [
+        "## TODOs",
+        "Template task guidance.",
+        "## Final Verification Wave",
+        "Template verification guidance.",
+        "## Progress Tracker",
+        "### Implementation Waves",
+        "- [x] T1.1 Completed implementation",
+        "- [ ] T6.3a Remaining implementation",
+        "### Final Verification Wave (all must APPROVE)",
+        "- [ ] F1 \u{2014} Plan compliance audit",
+        "- [x] H1 \u{2014} User approval",
+    ]
+    .join("\n");
+
+    // when
+    let parsed = parse_plan_checklist(&markdown);
+
+    // then
+    assert_eq!(
+        parsed,
+        checklist(2, 2, 4, Some("T6.3a Remaining implementation"))
+    );
+}
+
+#[test]
+fn blocked_tilde_rows_in_structured_sections_count_toward_total_but_neither_completed_nor_next() {
+    // given
+    let markdown = [
+        "## TODOs",
+        "- [x] 1. Done task",
+        "- [~] 2. Blocked on a user decision",
+        "- [ ] 3. Open task",
+        "## Final Verification Wave",
+        "- [~] F1. Blocked verifier",
+    ]
+    .join("\n");
+
+    // when
+    let parsed = parse_plan_checklist(&markdown);
+
+    // then
+    assert_eq!(parsed, checklist(1, 1, 4, Some("3. Open task")));
+}
+
+#[test]
+fn only_done_and_blocked_rows_outside_canonical_sections_leave_nothing_remaining() {
+    // given
+    let markdown = [
+        "## TODOs",
+        "Template task guidance.",
+        "## Progress Tracker",
+        "- [x] T1.1 \u{2014} Schema",
+        "- [~] T5.1 \u{2014} Verification engine \u{2014} BLOCKED: user decision",
+        "- [~] H1 \u{2014} Push + PR \u{2014} BLOCKED: user-only decision",
+    ]
+    .join("\n");
+
+    // when
+    let parsed = parse_plan_checklist(&markdown);
+
+    // then
+    assert_eq!(parsed, checklist(1, 0, 3, None));
+}
+
+#[test]
 fn noncanonical_structured_rows_only_count_exact_positive_number_grammar() {
     // given
     let markdown = [
@@ -255,4 +346,55 @@ fn complete_plan_has_no_next_task() {
 
     // then
     assert_eq!(parsed, checklist(3, 0, 3, None));
+}
+
+#[test]
+fn qa_scenarios_happy_and_failure() {
+    let happy_plan = [
+        "",
+        "## TODOs",
+        "- [x] T1. Initial setup",
+        "- [~] T1.1 Blocked subtask",
+        "- [ ] T1.2a Next actionable implementation",
+        "",
+        "```markdown",
+        "- [ ] T9. Fenced example should be skipped",
+        "```",
+        "",
+        "## Final Verification Wave",
+        "- [ ] F1 \u{2014} Plan compliance audit",
+        "- [ ] H1 \u{2014} Human approval",
+    ]
+    .join("\n");
+    let happy = parse_plan_checklist(&happy_plan);
+    assert_eq!(
+        happy,
+        checklist(
+            1,
+            3,
+            5,
+            Some("T1.2a Next actionable implementation")
+        )
+    );
+
+    let failure_plan = [
+        "",
+        "## TODOs",
+        "- [ ] T0. Invalid zero",
+        "- [ ] T01. Leading zero",
+        "- [ ] 0. Zero invalid",
+        "- [ ] Missing title",
+        "- [ ] 1.",
+        "- [ ] 2. Valid implementation",
+        "## Final Verification Wave",
+        "- [ ] F0. Zero invalid",
+        "- [ ] H0. Zero invalid",
+        "- [ ] F1. Valid verifier",
+    ]
+    .join("\n");
+    let failure = parse_plan_checklist(&failure_plan);
+    assert_eq!(
+        failure,
+        checklist(0, 2, 2, Some("2. Valid implementation"))
+    );
 }
