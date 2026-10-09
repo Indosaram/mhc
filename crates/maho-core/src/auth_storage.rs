@@ -3,15 +3,23 @@
 //! Credentials are kept as serde_json values so an auth.json read and rewritten keeps every field
 //! and key order; typed accessors expose the api_key/oauth shapes senpi validates on load.
 //!
-//! deviation: senpi's AuthStorage also drives OAuth login through pi-ai's AuthInteraction/OAuthAuth
-//! surface, which maho-ai has not ported yet (todos 13/17). Those methods are present but return
-//! an explicit unsupported error instead of silently succeeding; the file/lock/env layer below is
-//! the complete storage behavior todo 16 owns.
+//! AuthStorage also drives OAuth login and logout through maho-ai's OAuth providers and
+//! dynamically registered extension OAuth providers.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::{Map, Value};
+
+use maho_ai::auth::types::{
+    AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, OAuthAuth,
+    ProviderAuthInteraction,
+};
+use maho_ai::compat::extension_oauth_types::{
+    OAuthAuthInfo, OAuthDeviceCodeInfo, OAuthLoginCallbacks, OAuthPrompt, OAuthSelectOption, OAuthSelectPrompt,
+};
+use maho_ai::utils::abort::{AbortController, AbortSignal};
 
 use crate::config::get_agent_dir;
 use crate::credential_pool::slots::{CredentialSlot, PooledCredential};
@@ -293,7 +301,88 @@ pub fn serialize_auth_data(data: &AuthStorageData) -> String {
 }
 
 pub const READ_ONLY_ERROR: &str = "Read-only credential storage cannot modify auth.json";
-pub const OAUTH_UNSUPPORTED_ERROR: &str = "OAuth login is not available in this build (maho-ai auth surface pending)";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OAuthProviderInfo {
+    pub id: String,
+    pub name: String,
+}
+
+struct LegacyInteraction {
+    callbacks: Arc<dyn OAuthLoginCallbacks>,
+    signal: AbortSignal,
+}
+
+#[async_trait::async_trait]
+impl AuthInteraction for LegacyInteraction {
+    fn signal(&self) -> Option<AbortSignal> {
+        Some(self.signal.clone())
+    }
+
+    async fn prompt(&self, prompt: AuthPrompt) -> anyhow::Result<String> {
+        match prompt.kind {
+            AuthPromptKind::ManualCode { message, placeholder } => {
+                if let Some(fut) = self.callbacks.on_manual_code_input() {
+                    Ok(fut.await)
+                } else {
+                    Ok(self.callbacks.on_prompt(OAuthPrompt {
+                        message,
+                        placeholder,
+                        allow_empty: None,
+                        signal: prompt.signal,
+                    }).await)
+                }
+            }
+            AuthPromptKind::Select { message, options } => {
+                let select_options = options
+                    .into_iter()
+                    .map(|opt| OAuthSelectOption {
+                        id: opt.id,
+                        label: opt.label,
+                        description: opt.description,
+                    })
+                    .collect();
+                let value = self.callbacks.on_select(OAuthSelectPrompt {
+                    message,
+                    options: select_options,
+                    signal: prompt.signal,
+                }).await;
+                match value {
+                    Some(v) => Ok(v),
+                    None => Err(anyhow::anyhow!("Login cancelled")),
+                }
+            }
+            AuthPromptKind::Text { message, placeholder }
+            | AuthPromptKind::Secret { message, placeholder } => {
+                Ok(self.callbacks.on_prompt(OAuthPrompt {
+                    message,
+                    placeholder,
+                    allow_empty: None,
+                    signal: prompt.signal,
+                }).await)
+            }
+        }
+    }
+
+    fn notify(&self, event: AuthEvent) {
+        match event {
+            AuthEvent::AuthUrl { url, instructions } => {
+                self.callbacks.on_auth(OAuthAuthInfo { url, instructions });
+            }
+            AuthEvent::DeviceCode { user_code, verification_uri, interval_seconds, expires_in_seconds } => {
+                self.callbacks.on_device_code(OAuthDeviceCodeInfo {
+                    user_code,
+                    verification_uri,
+                    interval_seconds: interval_seconds.map(|v| v as u64),
+                    expires_in_seconds: expires_in_seconds.map(|v| v as u64),
+                });
+            }
+            AuthEvent::Info { message, .. } | AuthEvent::Progress { message } => {
+                self.callbacks.on_progress(&message);
+            }
+        }
+    }
+}
 
 pub struct ReadOnlyAuthStorage {
     auth_path: String,
@@ -352,7 +441,8 @@ pub struct AuthStorage {
     storage: AuthStorageBackend,
     auth_path: Option<String>,
     data: std::sync::Mutex<AuthStorageData>,
-    runtime_overrides: HashMap<String, String>,
+    runtime_overrides: std::sync::Mutex<HashMap<String, String>>,
+    extension_oauth_providers: std::sync::Mutex<HashMap<String, Arc<dyn OAuthAuth>>>,
     errors: std::sync::Mutex<Vec<String>>,
     pub(crate) account_mutation: tokio::sync::Mutex<()>,
 }
@@ -369,7 +459,8 @@ impl AuthStorage {
             storage: AuthStorageBackend::File(FileAuthStorageBackend::new(&normalized)),
             auth_path: Some(normalized),
             data: std::sync::Mutex::new(AuthStorageData::new()),
-            runtime_overrides: HashMap::new(),
+            runtime_overrides: std::sync::Mutex::new(HashMap::new()),
+            extension_oauth_providers: std::sync::Mutex::new(HashMap::new()),
             errors: std::sync::Mutex::new(Vec::new()),
             account_mutation: tokio::sync::Mutex::new(()),
         };
@@ -388,7 +479,8 @@ impl AuthStorage {
             storage: AuthStorageBackend::InMemory(backend),
             auth_path: None,
             data: std::sync::Mutex::new(AuthStorageData::new()),
-            runtime_overrides: HashMap::new(),
+            runtime_overrides: std::sync::Mutex::new(HashMap::new()),
+            extension_oauth_providers: std::sync::Mutex::new(HashMap::new()),
             errors: std::sync::Mutex::new(Vec::new()),
             account_mutation: tokio::sync::Mutex::new(()),
         };
@@ -440,17 +532,26 @@ impl AuthStorage {
     }
 
     pub fn set_runtime_api_key(&mut self, provider: &str, api_key: &str) {
-        self.runtime_overrides.insert(provider.to_owned(), api_key.to_owned());
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider.to_owned(), api_key.to_owned());
     }
 
     pub fn remove_runtime_api_key(&mut self, provider: &str) {
-        self.runtime_overrides.remove(provider);
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider);
     }
 
     /// Whether a non-persistent runtime API key is set for the provider. senpi's
     /// `getProviderAuthStatus` reports `source: "runtime"` for exactly this case.
     pub fn has_runtime_api_key(&self, provider: &str) -> bool {
-        self.runtime_overrides.contains_key(provider)
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(provider)
     }
 
     pub fn get(&self, provider: &str) -> Option<Value> {
@@ -463,8 +564,13 @@ impl AuthStorage {
 
     /// The API key for a provider: runtime override, then stored credential, then the environment.
     pub async fn get_api_key(&self, provider: &str) -> Option<String> {
-        if let Some(runtime) = self.runtime_overrides.get(provider) {
-            return Some(runtime.clone());
+        if let Some(runtime) = self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider)
+            .cloned()
+        {
+            return Some(runtime);
         }
         if let Some(credential) = self.get(provider)
             && let Some(key) = credential_key(&credential) {
@@ -554,12 +660,79 @@ impl AuthStorage {
         self.auth_path.as_deref().and_then(get_file_content_revision)
     }
 
-    pub fn oauth_login(&self) -> Result<(), String> {
-        Err(OAUTH_UNSUPPORTED_ERROR.to_owned())
+    pub fn register_oauth_provider(&self, provider_id: &str, oauth: Arc<dyn OAuthAuth>) {
+        self.extension_oauth_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_id.to_string(), oauth);
     }
 
-    pub fn oauth_logout(&self) -> Result<(), String> {
-        Err(OAUTH_UNSUPPORTED_ERROR.to_owned())
+    pub fn unregister_oauth_provider(&self, provider_id: &str) {
+        self.extension_oauth_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider_id);
+    }
+
+    pub fn get_oauth_providers(&self) -> Vec<OAuthProviderInfo> {
+        let dynamic = self.extension_oauth_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut results: Vec<OAuthProviderInfo> = dynamic
+            .iter()
+            .map(|(id, oauth)| OAuthProviderInfo {
+                id: id.clone(),
+                name: oauth.name().to_string(),
+            })
+            .collect();
+        for &(id, name) in &maho_ai::auth::oauth::load::BUILTIN_OAUTH_PROVIDERS {
+            if !dynamic.contains_key(id) {
+                results.push(OAuthProviderInfo {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                });
+            }
+        }
+        results
+    }
+
+    pub async fn login(&self, provider_id: &str, callbacks: Arc<dyn OAuthLoginCallbacks>) -> Result<(), String> {
+        let dynamic = self.extension_oauth_providers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider_id)
+            .cloned();
+        let oauth = match dynamic {
+            Some(flow) => flow,
+            None => maho_ai::auth::oauth::load::load_builtin_oauth(provider_id)
+                .await
+                .map_err(|err| err.to_string())?
+                .ok_or_else(|| format!("Unknown OAuth provider: {provider_id}"))?,
+        };
+        let signal = callbacks.signal().unwrap_or_else(|| AbortController::new().signal());
+        let interaction = ProviderAuthInteraction::new(
+            signal.clone(),
+            Arc::new(LegacyInteraction { callbacks, signal }),
+        );
+        let credential = oauth.login(&interaction).await.map_err(|err| err.to_string())?;
+        let val = serde_json::to_value(Credential::OAuth(credential)).map_err(|err| err.to_string())?;
+        self.set(provider_id, Some(val))
+    }
+
+    pub async fn oauth_login(&self, provider_id: &str, callbacks: Arc<dyn OAuthLoginCallbacks>) -> Result<(), String> {
+        self.login(provider_id, callbacks).await
+    }
+
+    pub fn logout(&self, provider: &str) -> Result<(), String> {
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(provider);
+        self.delete(provider)
+    }
+
+    pub fn oauth_logout(&self, provider: &str) -> Result<(), String> {
+        self.logout(provider)
     }
 }
 /// One-shot auth.json provider-key migration for the provider rename: a credential stored under a
@@ -605,6 +778,7 @@ pub fn backup_auth_file(auth_path: Option<&str>, content: Option<&str>) -> Optio
 mod tests {
     use super::*;
     use serde_json::json;
+    use maho_ai::auth::types::OAuthCredential;
 
     fn api_key(key: &str) -> Value {
         json!({ "type": "api_key", "key": key })
@@ -823,11 +997,185 @@ mod tests {
         assert!(storage.errors()[0].contains("Invalid auth.json credential for provider"));
     }
 
+    struct FauxOAuth {
+        name: String,
+        credential: OAuthCredential,
+    }
+
+    #[async_trait::async_trait]
+    impl OAuthAuth for FauxOAuth {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+            Ok(self.credential.clone())
+        }
+        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+            Ok(credential.clone())
+        }
+        async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        }
+    }
+
+    struct CancelledOAuth;
+
+    #[async_trait::async_trait]
+    impl OAuthAuth for CancelledOAuth {
+        fn name(&self) -> &str {
+            "Cancelled"
+        }
+        async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
+            let res = interaction.prompt(AuthPrompt {
+                kind: AuthPromptKind::Select {
+                    message: "Choose".into(),
+                    options: vec![],
+                },
+                signal: None,
+            }).await?;
+            Ok(OAuthCredential::new(res, "r", 1000.0))
+        }
+        async fn refresh(&self, credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
+            Ok(credential.clone())
+        }
+        async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        }
+    }
+
+    struct TestCallbacks {
+        cancelled: bool,
+    }
+
+    impl OAuthLoginCallbacks for TestCallbacks {
+        fn on_auth(&self, _info: OAuthAuthInfo) {}
+        fn on_device_code(&self, _info: OAuthDeviceCodeInfo) {}
+        fn on_prompt(&self, _prompt: OAuthPrompt) -> maho_ai::types::BoxFuture<'_, String> {
+            Box::pin(async move { String::new() })
+        }
+        fn on_select(&self, _prompt: OAuthSelectPrompt) -> maho_ai::types::BoxFuture<'_, Option<String>> {
+            let cancelled = self.cancelled;
+            Box::pin(async move {
+                if cancelled {
+                    None
+                } else {
+                    Some("selected".into())
+                }
+            })
+        }
+    }
+
     #[test]
-    fn oauth_login_reports_the_pending_auth_surface_instead_of_succeeding_silently() {
+    fn extension_registered_oauth_provider_appears_in_get_oauth_providers() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
-        assert_eq!(storage.oauth_login().expect_err("error"), OAUTH_UNSUPPORTED_ERROR);
-        assert_eq!(storage.oauth_logout().expect_err("error"), OAUTH_UNSUPPORTED_ERROR);
+        let oauth = Arc::new(FauxOAuth {
+            name: "Anthropic Subscription (Claude Pro/Max)".into(),
+            credential: OAuthCredential::new("a", "r", 123.0),
+        });
+        storage.register_oauth_provider("anthropic-subscription", oauth);
+        let providers = storage.get_oauth_providers();
+        assert!(providers.iter().any(|p| p.id == "anthropic-subscription" && p.name == "Anthropic Subscription (Claude Pro/Max)"));
+    }
+
+    #[tokio::test]
+    async fn login_runs_the_extension_oauth_flow_and_stores_the_credential() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        let storage = AuthStorage::create(&path);
+        let credential = OAuthCredential::new("a", "r", 123.0);
+        let oauth = Arc::new(FauxOAuth {
+            name: "Anthropic Subscription".into(),
+            credential: credential.clone(),
+        });
+        storage.register_oauth_provider("anthropic-subscription", oauth);
+        let callbacks = Arc::new(TestCallbacks { cancelled: false });
+        storage.login("anthropic-subscription", callbacks).await.expect("login");
+
+        let stored = storage.get("anthropic-subscription").expect("stored");
+        assert_eq!(stored.get("type").and_then(Value::as_str), Some("oauth"));
+        assert_eq!(stored.get("access").and_then(Value::as_str), Some("a"));
+        assert_eq!(stored.get("refresh").and_then(Value::as_str), Some("r"));
+        assert_eq!(stored.get("expires").and_then(Value::as_f64), Some(123.0));
+
+        // Verify disk file
+        let disk_content = std::fs::read_to_string(&path).expect("read");
+        let disk_json: Value = serde_json::from_str(&disk_content).expect("json");
+        assert_eq!(disk_json["anthropic-subscription"]["type"], "oauth");
+        assert_eq!(disk_json["anthropic-subscription"]["access"], "a");
+        assert_eq!(disk_json["anthropic-subscription"]["refresh"], "r");
+        assert_eq!(disk_json["anthropic-subscription"]["expires"], 123.0);
+
+        // Logout removes it from disk
+        storage.logout("anthropic-subscription").expect("logout");
+        assert!(storage.get("anthropic-subscription").is_none());
+        let disk_after = std::fs::read_to_string(&path).expect("read");
+        let disk_after_json: Value = serde_json::from_str(&disk_after).expect("json");
+        assert!(!disk_after_json.as_object().unwrap().contains_key("anthropic-subscription"));
+    }
+
+    #[test]
+    fn unregister_oauth_provider_hides_the_provider_again() {
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.register_oauth_provider(
+            "anthropic-subscription",
+            Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
+        );
+        storage.unregister_oauth_provider("anthropic-subscription");
+        let ids: Vec<String> = storage.get_oauth_providers().into_iter().map(|p| p.id).collect();
+        assert!(!ids.contains(&"anthropic-subscription".to_string()));
+    }
+
+    #[test]
+    fn builtin_providers_still_enumerate_after_dynamic_registration() {
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.register_oauth_provider(
+            "anthropic-subscription",
+            Arc::new(FauxOAuth { name: "x".into(), credential: OAuthCredential::new("", "", 0.0) }),
+        );
+        let ids: Vec<String> = storage.get_oauth_providers().into_iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"anthropic".to_string()));
+        assert!(ids.contains(&"anthropic-subscription".to_string()));
+    }
+
+    #[tokio::test]
+    async fn logout_removes_stored_credential_and_runtime_key() {
+        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        storage.set("anthropic", Some(api_key("stored"))).unwrap();
+        storage.set_runtime_api_key("anthropic", "runtime");
+        assert!(storage.has("anthropic"));
+        assert!(storage.has_runtime_api_key("anthropic"));
+
+        storage.logout("anthropic").unwrap();
+        assert!(!storage.has("anthropic"));
+        assert!(!storage.has_runtime_api_key("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_login_leaves_auth_json_unchanged() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        let initial_json = "{\n  \"existing\": {\n    \"type\": \"api_key\",\n    \"key\": \"k\"\n  }\n}\n";
+        std::fs::write(&path, initial_json).unwrap();
+
+        let storage = AuthStorage::create(&path);
+        storage.register_oauth_provider("cancelled-prov", Arc::new(CancelledOAuth));
+        let callbacks = Arc::new(TestCallbacks { cancelled: true });
+
+        let err = storage.login("cancelled-prov", callbacks).await.unwrap_err();
+        assert!(err.contains("Login cancelled"));
+
+        let content_after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content_after, initial_json);
+        assert!(storage.get("cancelled-prov").is_none());
+        assert!(storage.get("existing").is_some());
+    }
+
+    #[tokio::test]
+    async fn unknown_oauth_provider_returns_error() {
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
+        let callbacks = Arc::new(TestCallbacks { cancelled: false });
+        let err = storage.login("unknown-provider-xyz", callbacks).await.unwrap_err();
+        assert_eq!(err, "Unknown OAuth provider: unknown-provider-xyz");
     }
 
     #[test]
