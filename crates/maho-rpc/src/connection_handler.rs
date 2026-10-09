@@ -307,6 +307,14 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("get_session_stats",Ok(Some(value)))
         },
         RpcCommandBody::GetEntries{since}=>("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since{let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))})),
+        RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
+            if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None,error_data:None}});}
+            if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires entryId or targetId".into(),error_code:None,error_data:None}});}
+            let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
+            if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None,error_data:None}});}
+            let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
+            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}});("navigate_tree",result)
+        },
         RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
         RpcCommandBody::RecordBashResult{command,result,exclude_from_context}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireResult{output:String,exit_code:Option<i32>,cancelled:bool,truncated:bool,full_output_path:Option<std::path::PathBuf>}
@@ -324,6 +332,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
+        RpcCommandBody::GetTree=>{fn tree_node(node:maho_core::session_manager::SessionTreeNode)->serde_json::Value{serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>(),"label":node.label,"labelTimestamp":node.label_timestamp})}let tree=session.with_session_manager(|manager|manager.get_tree(manager.leaf_id()).map(tree_node));("get_tree",Ok(Some(serde_json::json!({"tree":tree,"leafId":session.with_session_manager(|manager|manager.leaf_id())}))))},
+        RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
@@ -520,5 +530,32 @@ mod new_session_tests{
         assert_eq!(response["command"],"clone");
         assert_eq!(response["success"],false);
         assert_eq!(response["error"],"Cannot clone session: no current entry selected");
+    }
+
+    #[tokio::test]
+    async fn navigate_tree_requires_one_target(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"navigate_tree"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["error"],"navigate_tree requires entryId or targetId");
+    }
+
+    #[tokio::test]
+    async fn get_tree_returns_tree_and_leaf_id(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"get_tree"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"get_tree");
+        assert!(response["data"].get("tree").is_some());
+        assert!(response["data"].get("leafId").is_some());
+    }
+
+    #[tokio::test]
+    async fn import_jsonl_reports_missing_file(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"import_jsonl","inputPath":"/tmp/does-not-exist-4010.jsonl"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"import_jsonl");
+        assert_eq!(response["error"],"File not found: /tmp/does-not-exist-4010.jsonl");
     }
 }

@@ -3560,6 +3560,36 @@ impl AgentSession {
         Ok(true)
     }
 
+    pub async fn import_from_jsonl(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        let base = std::env::current_dir().map_err(|error| error.to_string())?;
+        let resolved = crate::paths::resolve_path(input_path, &base.to_string_lossy(),
+            &crate::paths::PathInputOptions::expanding_tilde(crate::config::home_dir()));
+        let source = std::path::Path::new(&resolved);
+        if !source.exists() { return Err(format!("File not found: {resolved}")); }
+        let directory = self.with_session_manager(|manager| manager.session_dir().to_owned());
+        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let filename = source.file_name().ok_or("Invalid import filename")?;
+        let mut destination = std::path::Path::new(&directory).join(filename);
+        let stored = crate::paths::resolve_path(&destination.to_string_lossy(), &base.to_string_lossy(),
+            &crate::paths::PathInputOptions::default()) == resolved;
+        if !stored {
+            let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+            let extension = source.extension().map(|extension| format!(".{}", extension.to_string_lossy())).unwrap_or_default();
+            let mut suffix = 1;
+            while destination.exists() {
+                destination = std::path::Path::new(&directory).join(format!("{stem}-{suffix}{extension}"));
+                suffix += 1;
+            }
+        }
+        let destination = destination.to_string_lossy().into_owned();
+        if !stored {
+            let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
+            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+        }
+        self.switch_session_with_cwd(&destination, cwd_override).await
+    }
+
     pub async fn fork(&self, entry_id: &str, include_entry: bool) -> Result<AssistantEditResult, String> {
         let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
         let position = if include_entry { maho_ext_api::ForkPosition::At } else { maho_ext_api::ForkPosition::Before };
