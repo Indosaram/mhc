@@ -5680,6 +5680,11 @@ impl AgentSession {
         }
     }
 
+    pub async fn send_custom_message(&self, message: maho_ext_api::CustomMessage, options: maho_ext_api::SendMessageOptions) -> Result<(), String> {
+        maho_ext_api::ExtensionActions::send_message(&SessionExtensionActions(Arc::downgrade(&self.inner)), message, options)
+            .map_err(|error| error.message)
+    }
+
     fn emit_entry_appended(&self, entry_id: &str) {
         if self.state().extension_mode != ExtensionMode::Rpc {
             return;
