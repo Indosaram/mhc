@@ -43,3 +43,5 @@ mod image_resize {
     }
     pub fn format_dimension_note(result: &ResizedImage) -> Option<String> { result.was_resized.then(|| format!("[Image: original {}x{}, displayed at {}x{}. Multiply coordinates by {:.2} to map to original image.]", result.original_width, result.original_height, result.width, result.height, result.original_width as f64 / result.width as f64)) }
 }
+
+pub use image_resize::{ImageResizeOptions, ResizedImage};
