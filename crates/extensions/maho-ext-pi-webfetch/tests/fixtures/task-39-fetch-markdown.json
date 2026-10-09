@@ -1,0 +1,102 @@
+[
+  {
+    "html": "<h1>Title</h1><p>A <strong>bold</strong> and <em> spaced </em> text.<br>next</p>",
+    "markdown": "# Title\n\nA **bold** and *spaced* text.  \nnext"
+  },
+  {
+    "html": "<ul><li>one</li><li><p>two</p><ul><li>nested</li></ul></li></ul>",
+    "markdown": "-   one\n-   two\n    \n    -   nested"
+  },
+  {
+    "html": "<ol start='3'><li>A</li><li>B</li></ol>",
+    "markdown": "3.  A\n4.  B"
+  },
+  {
+    "html": "<pre><code class='language-js'>a\n```\nb\n</code></pre>",
+    "markdown": "````js\na\n```\nb\n````"
+  },
+  {
+    "html": "<p><code>a`b```c</code> <a href='a(b) c' title='a&amp;quot;b'>link</a><img src='i' alt='[x]'></p>",
+    "markdown": "``a`b```c`` [link](<a\\(b\\) c> \"a&quot;b\")[!\\[x\\]](i)"
+  },
+  {
+    "html": "  a <em> b </em> c <img> d <p> e \n f </p><pre>  x\n y </pre><!--noise--> ",
+    "markdown": "a *b* c  d\n\ne f\n\n  x\n y"
+  },
+  {
+    "html": "<div>&nbsp;<span> </span></div><p>x</p>",
+    "markdown": "x"
+  },
+  {
+    "html": "<script>noise</script><p>a</p><table><tr><td>x</td><td>y</td></tr></table>",
+    "markdown": "a\n\nx\n\ny"
+  },
+  {
+    "html": "<blockquote><p>quoted</p><p>second</p></blockquote>",
+    "markdown": "> quoted\n> \n> second"
+  },
+  {
+    "html": "<p>a<span>&nbsp; x &nbsp;</span> b</p>",
+    "markdown": "a  x   b"
+  },
+  {
+    "html": "<p><em> </em><script> </script><a></a></p>",
+    "markdown": ""
+  },
+  {
+    "html": "<ol start='0x10'><li>x</li></ol>",
+    "markdown": "16.  x"
+  },
+  {
+    "html": "<pre><code class='language-'>x</code></pre>",
+    "markdown": "```\nx\n```"
+  },
+  {
+    "html": "<p><code> a </code> <code>   </code></p>",
+    "markdown": "`a`"
+  },
+  {
+    "html": "<pre><code class='language- language-js'>x</code></pre>",
+    "markdown": "```js\nx\n```"
+  },
+  {
+    "html": "<pre><code>&#13;```\nx</code></pre>",
+    "markdown": "````\n\r```\nx\n````"
+  },
+  {
+    "html": "<code>&#13;a&#13;b</code>",
+    "markdown": "`a b`"
+  },
+  {
+    "html": "<ol start='Infinity'><li>x</li><li>y</li></ol>",
+    "markdown": "Infinity.  x\nInfinity.  y"
+  },
+  {
+    "html": "<div><span>&nbsp; </span><em> &nbsp;</em></div>",
+    "markdown": ""
+  },
+  {
+    "html": "<p><a href='x'> </a><em><img src='x'></em><strong><br></strong></p>",
+    "markdown": "[](x)*![](x)*"
+  },
+  {
+    "html": "<ol start='-2'><li>x<ul><li>y</li></ul>z</li><li>q</li></ol>",
+    "markdown": "-2.  x\n     -   yz\n-1.  q"
+  },
+  {
+    "html": "<p><code>``a`b``</code><code>a\nb</code></p>",
+    "markdown": "``` ``a`b`` ````a b`"
+  },
+  {
+    "html": "<pre><code class='xlanguage-js'>x</code>tail</pre>",
+    "markdown": "```js\nx\n```"
+  },
+  {
+    "html": "<p>a<br><br>b</p><hr><hr>",
+    "markdown": "a  \n  \nb\n\n---\n\n---"
+  },
+  {
+    "html": "<dl><dt>A</dt><dd>B</dd></dl><div><input value='x'>y</div>",
+    "markdown": "A\n\nB\n\ny"
+  }
+]
