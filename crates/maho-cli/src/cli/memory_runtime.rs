@@ -14,7 +14,7 @@ use maho_omo_memory::{composition::MemoryExtensionOptions, context::MemoryIdenti
     wiring_static::MemoryStaticOptions, wiring_types::{MemoryWiringOptions, NativeMemoryWiringOptions}, worker};
 use maho_omo_memory::commands::people_ask::{create_people_ask_runner, PeopleAskLauncher, PeopleAskOptions};
 use maho_omo_memory::commands::register::{DreamCommandOutcome, DreamRequestSink, ManualDreamCommandRequest, MemoryCommandDeps};
-use memory_core::{git::GitMemoryRepo, reflection::{ReflectionReservationStore, ReservedRun}};
+use memory_core::{git::{exec::system_git_exec, GitMemoryRepo}, reflection::{ReflectionReservationStore, ReservedRun}};
 use serde_json::Value;
 
 pub type LiveMemoryConfig = Arc<dyn Fn() -> Result<Value, String> + Send + Sync>;
@@ -157,7 +157,7 @@ impl MemoryRuntime {
                     facts.reconcile_extractor();Ok(())
                 })
             })}),
-            exec: None,
+            exec: Some(system_git_exec()),
             env: Some(self.host.env.clone()),
             people_ask: Some(create_people_ask_runner(PeopleAskOptions {
                 config: (self.host.load_config)().unwrap_or_else(|_| serde_json::json!({})),
@@ -694,6 +694,14 @@ mod tests {
         assert!(Arc::ptr_eq(first.register_host.as_ref().unwrap(), second.register_host.as_ref().unwrap()));
         assert!(Arc::ptr_eq(first.skills_trackers.as_ref().unwrap(), second.skills_trackers.as_ref().unwrap()));
         assert!(Arc::ptr_eq(first.prompt_handler.as_ref().unwrap(), second.prompt_handler.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn command_options_supply_the_bounded_system_git_executor() {
+        let runtime = runtime(serde_json::json!({ "memory": {} }));
+        let options = runtime.options();
+        let deps = options.static_options.register_host;
+        assert!(deps.is_some());
     }
 
     #[test]
