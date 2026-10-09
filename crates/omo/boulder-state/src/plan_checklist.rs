@@ -15,8 +15,15 @@ enum ChecklistSection {
     Other,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CheckboxStatus {
+    Open,
+    Done,
+    InProgress,
+}
+
 struct ParsedCheckbox<'a> {
-    checked: bool,
+    status: CheckboxStatus,
     label: &'a str,
 }
 
@@ -24,6 +31,12 @@ struct ParsedCheckbox<'a> {
 struct MarkdownFence {
     marker: char,
     length: usize,
+}
+
+struct ParsedStructuredPlan {
+    checklist: PlanChecklist,
+    next_task: Option<TopLevelTaskRef>,
+    has_untracked_top_level_checkbox: bool,
 }
 
 /// Checklist of the plan file; a missing or unreadable plan yields an empty checklist.
@@ -34,24 +47,29 @@ pub fn get_plan_checklist(plan_path: &Path) -> PlanChecklist {
     }
 }
 
-/// Count top-level tasks: numbered `## TODOs` rows and `F<n>.` final-wave rows when a
+/// Count top-level tasks: numbered `## TODOs` rows and `F<n>.` / `H<n>.` final-wave rows when a
 /// structured heading exists, otherwise every top-level checkbox.
 pub fn parse_plan_checklist(markdown: &str) -> PlanChecklist {
     let lines = split_lines(markdown);
-    if has_structured_section(&lines) {
-        parse_structured_plan(&lines).0
-    } else {
-        parse_simple_checklist(&lines)
+    if !has_structured_section(&lines) {
+        return parse_simple_checklist(&lines);
     }
+
+    let structured_plan = parse_structured_plan(&lines);
+    if structured_plan.checklist.total == 0 && structured_plan.has_untracked_top_level_checkbox {
+        return parse_simple_checklist(&lines);
+    }
+
+    structured_plan.checklist
 }
 
 pub(crate) fn parse_current_top_level_task(markdown: &str) -> Option<TopLevelTaskRef> {
     let lines = split_lines(markdown);
-    if has_structured_section(&lines) {
-        parse_structured_plan(&lines).1
-    } else {
-        None
+    if !has_structured_section(&lines) {
+        return None;
     }
+
+    parse_structured_plan(&lines).next_task
 }
 
 /// `markdown.split(/\r?\n/)`.
@@ -77,11 +95,13 @@ fn consume_fence(fence: &mut Option<MarkdownFence>, line: &str) -> bool {
     false
 }
 
-fn parse_structured_plan(lines: &[&str]) -> (PlanChecklist, Option<TopLevelTaskRef>) {
+fn parse_structured_plan(lines: &[&str]) -> ParsedStructuredPlan {
+    let mut completed = 0;
     let mut remaining = 0;
     let mut total = 0;
     let mut next_task_label = None;
     let mut next_task = None;
+    let mut has_untracked_top_level_checkbox = false;
     let mut section = ChecklistSection::Other;
     let mut fence = None;
 
@@ -93,18 +113,31 @@ fn parse_structured_plan(lines: &[&str]) -> (PlanChecklist, Option<TopLevelTaskR
             section = parse_structured_section_heading(line);
             continue;
         }
+        if section == ChecklistSection::Other {
+            if parse_simple_top_level_checkbox(line).is_some() {
+                has_untracked_top_level_checkbox = true;
+            }
+            continue;
+        }
+
         let task_section = match section {
             ChecklistSection::Todo => TopLevelTaskSection::Todo,
             ChecklistSection::FinalWave => TopLevelTaskSection::FinalWave,
-            ChecklistSection::Other => continue,
+            ChecklistSection::Other => unreachable!(),
         };
         let Some((checkbox, task)) = parse_structured_top_level_checkbox(line, task_section) else {
             continue;
         };
+
         total += 1;
-        if checkbox.checked {
+        if checkbox.status == CheckboxStatus::Done {
+            completed += 1;
             continue;
         }
+        if checkbox.status == CheckboxStatus::InProgress {
+            continue;
+        }
+
         remaining += 1;
         if next_task_label.is_none() {
             next_task_label = Some(checkbox.label.to_string());
@@ -112,16 +145,20 @@ fn parse_structured_plan(lines: &[&str]) -> (PlanChecklist, Option<TopLevelTaskR
         }
     }
 
-    let checklist = PlanChecklist {
-        total,
-        completed: total - remaining,
-        remaining,
-        next_task_label,
-    };
-    (checklist, next_task)
+    ParsedStructuredPlan {
+        checklist: PlanChecklist {
+            total,
+            completed,
+            remaining,
+            next_task_label,
+        },
+        next_task,
+        has_untracked_top_level_checkbox,
+    }
 }
 
 fn parse_simple_checklist(lines: &[&str]) -> PlanChecklist {
+    let mut completed = 0;
     let mut remaining = 0;
     let mut total = 0;
     let mut next_task_label = None;
@@ -135,9 +172,14 @@ fn parse_simple_checklist(lines: &[&str]) -> PlanChecklist {
             continue;
         };
         total += 1;
-        if checkbox.checked {
+        if checkbox.status == CheckboxStatus::Done {
+            completed += 1;
             continue;
         }
+        if checkbox.status == CheckboxStatus::InProgress {
+            continue;
+        }
+
         remaining += 1;
         if next_task_label.is_none() {
             next_task_label = Some(checkbox.label.to_string());
@@ -146,7 +188,7 @@ fn parse_simple_checklist(lines: &[&str]) -> PlanChecklist {
 
     PlanChecklist {
         total,
-        completed: total - remaining,
+        completed,
         remaining,
         next_task_label,
     }
@@ -161,14 +203,22 @@ fn is_dot_text(text: &str) -> bool {
     !text.contains(['\r', '\n', '\u{2028}', '\u{2029}'])
 }
 
-/// `^[-*][ \t]*\[[ \t]*([xX]?)[ \t]*\][ \t]+(.+)$`
+fn parse_checkbox_status(marker: char) -> CheckboxStatus {
+    match marker {
+        'x' | 'X' => CheckboxStatus::Done,
+        '~' => CheckboxStatus::InProgress,
+        _ => CheckboxStatus::Open,
+    }
+}
+
+/// `^[-*][ \t]*\[[ \t]*([xX~]?)[ \t]*\][ \t]+(.+)$`
 fn parse_simple_top_level_checkbox(line: &str) -> Option<ParsedCheckbox<'_>> {
     let rest = line.strip_prefix(['-', '*'])?;
     let rest = rest.trim_start_matches(is_blank).strip_prefix('[')?;
     let rest = rest.trim_start_matches(is_blank);
-    let (checked, rest) = match rest.strip_prefix(['x', 'X']) {
-        Some(after) => (true, after),
-        None => (false, rest),
+    let (status, rest) = match rest.chars().next() {
+        Some(marker @ ('x' | 'X' | '~')) => (parse_checkbox_status(marker), &rest[marker.len_utf8()..]),
+        _ => (CheckboxStatus::Open, rest),
     };
     let rest = rest.trim_start_matches(is_blank).strip_prefix(']')?;
     let label = rest.trim_start_matches(is_blank);
@@ -177,11 +227,11 @@ fn parse_simple_top_level_checkbox(line: &str) -> Option<ParsedCheckbox<'_>> {
         return None;
     }
     if !label.is_empty() {
-        return Some(ParsedCheckbox { checked, label });
+        return Some(ParsedCheckbox { status, label });
     }
     // `[ \t]+` backtracks one blank so `.+` can take the last one.
     (blank_run >= 2).then(|| ParsedCheckbox {
-        checked,
+        status,
         label: &rest[blank_run - 1..],
     })
 }
@@ -236,53 +286,193 @@ fn is_section_boundary(line: &str) -> bool {
     (1..=2).contains(&hashes) && line[hashes..].chars().next().is_none_or(is_blank)
 }
 
-/// `^- \[([ xX])\] (<label>)$` where the label is `[1-9]\d*\. .+` (todo) or
-/// `F[1-9]\d*\. .+` case-insensitively (final wave).
+/// `^- \[([ xX~])\] (.+)$`
 fn parse_structured_top_level_checkbox(
     line: &str,
     section: TopLevelTaskSection,
 ) -> Option<(ParsedCheckbox<'_>, TopLevelTaskRef)> {
     let rest = line.strip_prefix("- [")?;
     let mut characters = rest.chars();
-    let checked = match characters.next()? {
-        ' ' => false,
-        'x' | 'X' => true,
+    let marker = characters.next()?;
+    let status = match marker {
+        ' ' => CheckboxStatus::Open,
+        'x' | 'X' => CheckboxStatus::Done,
+        '~' => CheckboxStatus::InProgress,
         _ => return None,
     };
     let label = characters.as_str().strip_prefix("] ")?;
+    if !is_dot_text(label) || label.is_empty() {
+        return None;
+    }
     let task = build_task_ref(section, label)?;
-    Some((ParsedCheckbox { checked, label }, task))
+    Some((ParsedCheckbox { status, label }, task))
 }
 
+/// Parses the task key from `label`.
+///
+/// For `todo`: `^([1-9]\d*|T[1-9]\d*(?:\.[1-9]\d*[a-z]?)?)(?:\.[ \t]+|[ \t]+(?:[-\u2014][ \t]+)?)(.+)$`
+/// For `final-wave`: `^([FH][1-9]\d*(?:\.[1-9]\d*[a-z]?)?)(?:\.[ \t]+|[ \t]+(?:[-\u2014][ \t]+)?)(.+)$`
 fn build_task_ref(section: TopLevelTaskSection, label: &str) -> Option<TopLevelTaskRef> {
-    let number_start = match section {
-        TopLevelTaskSection::Todo => 0,
-        TopLevelTaskSection::FinalWave => {
-            if !label.starts_with(['F', 'f']) {
-                return None;
-            }
-            1
-        }
-    };
-    let digits = label[number_start..]
-        .bytes()
-        .take_while(u8::is_ascii_digit)
-        .count();
-    let raw_end = number_start + digits;
-    if digits == 0 || label.as_bytes()[number_start] == b'0' {
-        return None;
-    }
-    let title = label[raw_end..].strip_prefix(". ")?;
-    if title.is_empty() || !is_dot_text(title) {
-        return None;
-    }
-    let raw_label = &label[..raw_end];
+    let (raw_label, title) = parse_task_label(section, label)?;
     Some(TopLevelTaskRef {
         key: format!("{}:{}", section.as_str(), raw_label.to_lowercase()),
         section,
         label: raw_label.to_string(),
         title: title.to_string(),
     })
+}
+
+fn parse_task_label(section: TopLevelTaskSection, label: &str) -> Option<(&str, &str)> {
+    let (raw_label, rest) = match section {
+        TopLevelTaskSection::Todo => parse_todo_key_prefix(label)?,
+        TopLevelTaskSection::FinalWave => parse_final_wave_key_prefix(label)?,
+    };
+
+    let title = parse_task_separator_and_title(rest)?;
+    Some((raw_label, title))
+}
+
+/// `^([1-9]\d*|T[1-9]\d*(?:\.[1-9]\d*[a-z]?)?)` (case-insensitive)
+fn parse_todo_key_prefix(label: &str) -> Option<(&str, &str)> {
+    let bytes = label.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    if bytes[0].eq_ignore_ascii_case(&b'T') {
+        let mut idx = 1;
+        let digits_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        let digits_len = idx - digits_start;
+        if digits_len == 0 || bytes[digits_start] == b'0' {
+            return None;
+        }
+        // Optional dotted subkey: .[1-9]d*[a-z]?
+        if idx < bytes.len() && bytes[idx] == b'.' {
+            let sub_start = idx + 1;
+            let mut sub_idx = sub_start;
+            while sub_idx < bytes.len() && bytes[sub_idx].is_ascii_digit() {
+                sub_idx += 1;
+            }
+            let sub_digits_len = sub_idx - sub_start;
+            if sub_digits_len > 0 && bytes[sub_start] != b'0' {
+                if sub_idx < bytes.len() && bytes[sub_idx].is_ascii_alphabetic() {
+                    sub_idx += 1;
+                }
+                idx = sub_idx;
+            }
+        }
+        Some((&label[..idx], &label[idx..]))
+    } else {
+        // [1-9]d*
+        let mut idx = 0;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == 0 || bytes[0] == b'0' {
+            return None;
+        }
+        Some((&label[..idx], &label[idx..]))
+    }
+}
+
+/// `^([FH][1-9]\d*(?:\.[1-9]\d*[a-z]?)?)` (case-insensitive)
+fn parse_final_wave_key_prefix(label: &str) -> Option<(&str, &str)> {
+    let bytes = label.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let lead = bytes[0].to_ascii_uppercase();
+    if lead != b'F' && lead != b'H' {
+        return None;
+    }
+
+    let mut idx = 1;
+    let digits_start = idx;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    let digits_len = idx - digits_start;
+    if digits_len == 0 || bytes[digits_start] == b'0' {
+        return None;
+    }
+    // Optional dotted subkey: .[1-9]d*[a-z]?
+    if idx < bytes.len() && bytes[idx] == b'.' {
+        let sub_start = idx + 1;
+        let mut sub_idx = sub_start;
+        while sub_idx < bytes.len() && bytes[sub_idx].is_ascii_digit() {
+            sub_idx += 1;
+        }
+        let sub_digits_len = sub_idx - sub_start;
+        if sub_digits_len > 0 && bytes[sub_start] != b'0' {
+            if sub_idx < bytes.len() && bytes[sub_idx].is_ascii_alphabetic() {
+                sub_idx += 1;
+            }
+            idx = sub_idx;
+        }
+    }
+    Some((&label[..idx], &label[idx..]))
+}
+
+/// Matches separator `(?:\.[ \t]+|[ \t]+(?:[-\u{2014}][ \t]+)?)` followed by `(.+)$`.
+fn parse_task_separator_and_title(rest: &str) -> Option<&str> {
+    if let Some(after_dot) = rest.strip_prefix('.') {
+        let trimmed = after_dot.trim_start_matches(is_blank);
+        let blank_count = after_dot.len() - trimmed.len();
+        if blank_count == 0 {
+            return None;
+        }
+        let title = if !trimmed.is_empty() {
+            trimmed
+        } else if blank_count >= 2 {
+            &after_dot[blank_count - 1..]
+        } else {
+            return None;
+        };
+        if is_dot_text(title) {
+            return Some(title);
+        }
+        return None;
+    }
+
+    // Must start with blank: `[ \t]+(?:[-\u{2014}][ \t]+)?`
+    let after_blanks = rest.trim_start_matches(is_blank);
+    let blank_count = rest.len() - after_blanks.len();
+    if blank_count == 0 {
+        return None;
+    }
+
+    // Check if dash or em-dash follows
+    if let Some(after_dash) = after_blanks.strip_prefix('-').or_else(|| after_blanks.strip_prefix('—')) {
+        let after_dash_blanks = after_dash.trim_start_matches(is_blank);
+        let dash_blank_count = after_dash.len() - after_dash_blanks.len();
+        if dash_blank_count > 0 {
+            let title = if !after_dash_blanks.is_empty() {
+                after_dash_blanks
+            } else if dash_blank_count >= 2 {
+                &after_dash[dash_blank_count - 1..]
+            } else {
+                return None;
+            };
+            if is_dot_text(title) {
+                return Some(title);
+            }
+            return None;
+        }
+    }
+
+    let title = if !after_blanks.is_empty() {
+        after_blanks
+    } else if blank_count >= 2 {
+        &rest[blank_count - 1..]
+    } else {
+        return None;
+    };
+    if is_dot_text(title) {
+        return Some(title);
+    }
+    None
 }
 
 /// Leading `[ \t]{0,3}` then a run of three or more backticks or tildes.
