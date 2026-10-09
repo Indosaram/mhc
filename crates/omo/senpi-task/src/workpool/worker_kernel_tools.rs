@@ -15,7 +15,7 @@ pub fn resolve_pool_kernel_tools(
     if names.is_empty() { return Ok(None); }
     let mut granted = Vec::with_capacity(names.len());
     for name in names {
-        if existing.iter().any(|other| other == name) { return Err(WorkpoolError::new(denied_code("tool_name_collision"), format!("Tool name collision: {name}"))); }
+        if existing.iter().any(|other| other == name) { return Err(WorkpoolError::new(denied_code("tools_unavailable"), format!("Kernel tool unavailable: {name}"))); }
         if deny.is_some_and(|items| items.iter().any(|item| item == name)) || allow.is_some_and(|items| !items.iter().any(|item| item == name)) { return Err(WorkpoolError::new(denied_code("policy_denied"), format!("Kernel tool denied: {name}"))); }
         if !capability.available(name) { return Err(WorkpoolError::new(denied_code("kernel_tool_missing"), format!("Kernel tool is unavailable: {name}"))); }
         granted.push(name.clone());

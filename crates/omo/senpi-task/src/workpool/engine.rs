@@ -46,7 +46,7 @@ impl<'a> WorkpoolEngine<'a> {
             next
         })?;
         self.dispatcher.cancel(&owned.pool_id);
-        for worker in cancelled.workers { let _ = self.admission.cancel(&worker.task_id); }
+        for worker in &cancelled.workers { let _ = self.admission.cancel(&worker.task_id); }
         Ok(cancelled)
     }
 }
