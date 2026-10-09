@@ -14,7 +14,7 @@ impl maho_ext_api::ExtensionActions for Catalog {
     fn append_entry(&self,_:&str,_:Option<serde_json::Value>)->Result<(),ExtensionFailure>{panic!("not used")}
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure>{Ok(self.tools.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())}
 }
-fn read_docs_tool()->ToolInfo { ToolInfo {name:"read_docs".into(),label:"Read documentation".into(),description:"Read documentation and API references".into(),parameters:serde_json::json!({"type":"object"}),prompt_guidelines:None,source_info:maho_ext_api::SourceInfo {path:"builtin:docs".into(),..Default::default()},exposure:maho_ext_api::ToolExposure::Search,search_text:None,search_keywords:vec!["documentation".into()],search_group:Some("docs".into()),allow_lazy_activation:true} }
+fn read_docs_tool()->ToolInfo { ToolInfo {name:"read_docs".into(),label:"Read documentation".into(),description:"Read documentation and API references".into(),parameters:serde_json::json!({"type":"object"}),prompt_guidelines:None,source_info:maho_ext_api::SourceInfo {path:"builtin:docs".into(),..Default::default()},exposure:maho_ext_api::ToolExposure::Search,search_text:None,search_keywords:vec!["documentation".into()],search_group:Some("docs".into()),allow_lazy_activation:true,kernel_prelude:None} }
 /// The real registered definition an MCP server contributes: a resident tool with its own object
 /// schema and default (`Direct`) exposure, exactly like `build_mcp_tool_definitions` installs.
 fn mcp_docs_definition()->maho_tools::definition::ToolDefinition {
