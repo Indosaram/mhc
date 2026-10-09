@@ -30,6 +30,7 @@ pub trait ReasoningHost:Send+Sync{
     fn restore_on<'a>(&'a self,ctx:&'a ExtensionContext,model:&'a Model,level:ThinkingLevel)->ExtensionFuture<'a,()>;
 }
 pub struct Reasoning{pub host:Arc<dyn ReasoningHost>}
+pub fn extension(host:Arc<dyn ReasoningHost>)->Reasoning{Reasoning{host}}
 fn reasoning_status(level:ModelThinkingLevel)->String{if level==ModelThinkingLevel::Off{"Reasoning: off.".into()}else{format!("Reasoning: on ({}).",level.as_str())}}
 fn efforts_status(level:ModelThinkingLevel,capability:&ReasoningCapability)->String{format!("Reasoning effort: {}. Available: {}.",level.as_str(),capability.non_off_levels.iter().map(|level|level.as_str()).collect::<Vec<_>>().join(", "))}
 fn complete(values:Vec<&str>,prefix:&str)->Option<Vec<maho_tui::autocomplete::AutocompleteItem>>{
