@@ -54,3 +54,24 @@ pub fn describe_login_failure(error: Option<&LoginFailure>, provider: &str, meth
     };
     LoginFailureNotice { level: NoticeLevel::Error, message }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_cancellation_and_provider_failures() {
+        assert!(is_login_cancellation(None));
+        assert!(is_login_cancellation(Some(&LoginFailure::Abort { message: "aborted".into() })));
+        assert!(is_login_cancellation(Some(&LoginFailure::Failed { message: LOGIN_CANCELLED_NOTICE.into() })));
+        assert!(!is_login_cancellation(Some(&LoginFailure::Failed { message: "invalid_grant".into() })));
+        assert_eq!(describe_login_failure(Some(&LoginFailure::Failed { message: "fetch failed".into() }), "OpenAI", LoginMethod::ApiKey), LoginFailureNotice { level: NoticeLevel::Error, message: "Failed to save API key for OpenAI: fetch failed".into() });
+    }
+
+    #[test]
+    fn preserves_credential_synchronization_message() {
+        let notice = describe_login_failure(Some(&LoginFailure::CredentialSynchronization { message: "disk on fire".into() }), "ChatGPT Subscription", LoginMethod::Oauth);
+        assert_eq!(notice.level, NoticeLevel::Error);
+        assert_eq!(notice.message, "Logged in to ChatGPT Subscription, but local model state could not be synchronized: disk on fire");
+    }
+}

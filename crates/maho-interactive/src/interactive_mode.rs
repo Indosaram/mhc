@@ -1519,6 +1519,38 @@ impl InteractiveMode {
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
+        if text == "/login" || text.starts_with("/login ") {
+            let provider_ref = text.strip_prefix("/login ").map(str::trim).filter(|value| !value.is_empty());
+            let options = maho_core::auth_providers::build_login_provider_infos(&self.session.model_registry(), None)
+                .into_iter()
+                .filter(|option| provider_ref.is_none_or(|reference| option.id.eq_ignore_ascii_case(reference) || option.name.eq_ignore_ascii_case(reference)))
+                .map(|option| crate::components::oauth_selector::AuthSelectorProvider {
+                    id: option.id,
+                    name: option.name,
+                    auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey },
+                    method_name: None,
+                    status: None,
+                }).collect::<Vec<_>>();
+            if options.is_empty() { self.show_status("No login providers available.".into()); return Ok(true); }
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Login, options,
+                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/login {id}")); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), provider_ref)));
+            return Ok(true);
+        }
+        if text == "/logout" {
+            let options = maho_core::auth_providers::build_logout_provider_infos(&self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
+                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
+            }).collect::<Vec<_>>();
+            if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
+            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+            let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
+                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), None)));
+            return Ok(true);
+        }
         if text == "/changelog" {
             let source=maho_core::changelog_source::resolve_changelog_source();
             let entries=crate::interactive_changelog::entries(&source.path);
