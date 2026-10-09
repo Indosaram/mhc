@@ -381,9 +381,6 @@ impl FactsQueue {
             return Ok(());
         }
         fs::rename(&temporary, &target)?;
-        if let Some(parent) = target.parent() {
-            let _ = sync_dir(parent);
-        }
         if let Some(hook) = &self.on_publish {
             hook();
         }
@@ -504,9 +501,6 @@ impl FactsQueue {
         json.push('\n');
         write_file_0600(&temporary, json.as_bytes())?;
         fs::rename(&temporary, &self.layout.consumed_path)?;
-        if let Some(parent) = self.layout.consumed_path.parent() {
-            let _ = sync_dir(parent);
-        }
         Ok(())
     }
 
@@ -522,9 +516,6 @@ impl FactsQueue {
         json.push('\n');
         write_file_0600(&temporary, json.as_bytes())?;
         fs::rename(&temporary, &target)?;
-        if let Some(parent) = target.parent() {
-            let _ = sync_dir(parent);
-        }
         Ok(())
     }
 }
@@ -539,17 +530,6 @@ fn write_file_0600(path: &Path, content: &[u8]) -> io::Result<()> {
     }
     let mut file = options.open(path)?;
     io::Write::write_all(&mut file, content)?;
-    file.sync_all()?;
-    Ok(())
-}
-
-fn sync_dir(path: &Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        if let Ok(file) = fs::File::open(path) {
-            let _ = file.sync_all();
-        }
-    }
     Ok(())
 }
 
