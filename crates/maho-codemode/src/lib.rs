@@ -107,6 +107,17 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
         })();
         Box::pin(async move {result?;Ok(EventResult::None)})
     }));
+    let turn_host=host.clone();let turn_state=state.clone();let turn_proxy=proxy.clone();let turn_options=options.clone();
+    api.on(EventKind::TurnStart,Arc::new(move |_,_| {
+        let result=(|| {
+            let state=turn_state.lock().expect("extension state");
+            if state.runtime.is_none() {return Ok(());}
+            drop(state);
+            let mut api=turn_host.lock().expect("extension api");
+            install_eval(&mut api,&turn_host,&turn_state,&turn_proxy,&turn_options)
+        })();
+        Box::pin(async move {result?;Ok(EventResult::None)})
+    }));
     Ok(())
 }
 
@@ -127,7 +138,7 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
     settings.run_budget_seconds=config::settings::resolve_run_budget_seconds(&settings,&options.environment);
     settings.hard_limit_seconds=config::settings::resolve_hard_limit_seconds(&settings,&options.environment);
     if let Some(runtime)=runtime {settings.languages=runtime.enabled_languages.clone();} else {settings.languages=config::settings::Languages {py:true,js:true,rb:true,jl:true};}
-    let catalog_host=Arc::downgrade(host);let catalog=Arc::new(move ||catalog_host.upgrade().ok_or_else(||"codemode session manager is disposed".to_owned())?.lock().expect("extension api").get_all_tools().map(|tools|tools.into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters)}).collect()).map_err(|error|error.to_string()));
+    let catalog_host=Arc::downgrade(host);let catalog=Arc::new(move ||catalog_host.upgrade().ok_or_else(||"codemode session manager is disposed".to_owned())?.lock().expect("extension api").get_all_tools().map(|tools|tools.into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:None}).collect()).map_err(|error|error.to_string()));
     let executor=runtime.as_ref().map_or_else(|| {let api=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));Arc::new(extension::runtime_factory::RuntimeExecuteTool {api,active_tools:vec![]}) as Arc<dyn bridges::output_bridge::OutputExecuteTool>},|runtime|runtime.executor.clone());
     let cells=state.cells.clone();let weak_cells=Arc::downgrade(&cells);
     let complete=options.complete.clone();let completion_state=settled_state.clone();let completion_cells=weak_cells.clone();
@@ -137,8 +148,19 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
         Box::pin(async move {let mut context=context.ok_or_else(||completion::handler::CompletionError("codemode session has not started".into()))?;if let Some(invocation)=invocation {context.model=invocation.model;context.cwd=invocation.cwd;context.thinking_level=invocation.thinking_level;context.goal_store_file=invocation.goal_store_file;}complete_with_signal(&complete,request,context,signal).await})});
     let events=api.events.clone();
     let on_settled=Arc::new(move |payload:serde_json::Value| {if let (Some(state),Some(cells))=(settled_state.upgrade(),weak_cells.upgrade()) {let current=Arc::ptr_eq(&state.lock().expect("extension state").cells,&cells);if current {events.emit(tool::eval_execution_event::EVAL_EXECUTION_EVENT,&payload);events.emit("senpi:extension-rpc-event",&serde_json::json!({"name":tool::eval_execution_event::EVAL_EXECUTION_EVENT,"data":tool::eval_execution_event::to_eval_execution_rpc_payload(&payload)}));}}});
-    let prompt=prompt::eval_prompt::EvalPromptOptions {model_id:state.model_id.clone(),spawns:runtime.as_ref().is_some_and(|runtime|runtime.spawns),monitor:runtime.is_some() && api.get_all_tools()?.iter().any(|tool|tool.name=="monitor"),spawn_default_agent:Some(settings.task_tools.task.clone()),js_runtime:Some(options.js_runtime.clone()),..Default::default()};
-    let definition=tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:proxy.clone(),executor,list_tools:Some(catalog),complete:Some(completion),settings,artifacts_dir:runtime.as_ref().map(|runtime|runtime.artifacts_dir.clone()),image_sdk:options.image_sdk.clone(),cell_manager:cells,on_cell_settled:Some(on_settled),prompt,runtimes:runtime.as_ref().map_or_else(HashMap::new,|runtime|runtime.runtimes.iter().cloned().collect()),mode:state.context.as_ref().map_or("print",|context|if matches!(context.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {"print"} else {"interactive"}).into()})).map_err(ExtensionFailure::new)?;
+    let preludes_host=Arc::downgrade(host);
+    let active_preludes_fn=Arc::new(move || {
+        let host=preludes_host.upgrade().ok_or_else(||"codemode session manager is disposed".to_owned())?;
+        let host=host.lock().expect("extension api");
+        let active=host.get_active_tools().map_err(|error|error.to_string())?;
+        let all=host.get_all_tools().map_err(|error|error.to_string())?.into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:tool.kernel_prelude}).collect::<Vec<_>>();
+        Ok(extension::kernel_preludes::active_kernel_preludes(&active,&all))
+    });
+    let prompt_active=api.get_active_tools().unwrap_or_default();
+    let prompt_tools=api.get_all_tools().unwrap_or_default().into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:tool.kernel_prelude}).collect::<Vec<_>>();
+    let prompt_preludes=extension::kernel_preludes::active_kernel_preludes(&prompt_active,&prompt_tools);
+    let prompt=prompt::eval_prompt::EvalPromptOptions {model_id:state.model_id.clone(),spawns:runtime.as_ref().is_some_and(|runtime|runtime.spawns),monitor:runtime.is_some() && api.get_all_tools()?.iter().any(|tool|tool.name=="monitor"),spawn_default_agent:Some(settings.task_tools.task.clone()),js_runtime:Some(options.js_runtime.clone()),kernel_preludes:prompt_preludes,..Default::default()};
+    let definition=tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:proxy.clone(),executor,list_tools:Some(catalog),complete:Some(completion),settings,artifacts_dir:runtime.as_ref().map(|runtime|runtime.artifacts_dir.clone()),image_sdk:options.image_sdk.clone(),cell_manager:cells,on_cell_settled:Some(on_settled),prompt,runtimes:runtime.as_ref().map_or_else(HashMap::new,|runtime|runtime.runtimes.iter().cloned().collect()),mode:state.context.as_ref().map_or("print",|context|if matches!(context.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {"print"} else {"interactive"}).into(),active_kernel_preludes:Some(active_preludes_fn)})).map_err(ExtensionFailure::new)?;
     api.try_register_tool(definition)
 }
 

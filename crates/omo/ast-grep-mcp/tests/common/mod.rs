@@ -2,10 +2,29 @@
 
 use std::path::Path;
 
-pub const SG_PATH: &str = "/opt/homebrew/bin/sg";
+pub fn resolve_sg_for_tests() -> String {
+    if let Ok(val) = std::env::var("OMO_AST_GREP_SG_PATH") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            let path = Path::new(&trimmed);
+            assert!(
+                path.is_file(),
+                "OMO_AST_GREP_SG_PATH is set to '{}', but file does not exist or is not a file",
+                trimmed
+            );
+            return trimmed;
+        }
+    }
 
-pub fn sg_available() -> bool {
-    Path::new(SG_PATH).exists()
+    match utils::resolve_sg_binary_sync(&utils::SgResolverOptions::default()) {
+        utils::SgResolution::Found { path, .. } => path,
+        utils::SgResolution::NotFound { error } => {
+            panic!(
+                "Required ast-grep executable not found: {}. Hints: {:?}",
+                error.message, error.hints
+            );
+        }
+    }
 }
 
 pub fn fixture_repo() -> tempfile::TempDir {

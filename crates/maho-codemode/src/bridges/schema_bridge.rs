@@ -1,11 +1,25 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use maho_tools::definition::KernelPrelude;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvalSchemaToolInfo {
     pub name: String,
     pub description: Option<String>,
     pub parameters: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_prelude: Option<KernelPrelude>,
+}
+
+impl EvalSchemaToolInfo {
+    pub fn new(name: impl Into<String>, description: Option<String>, parameters: Option<Value>) -> Self {
+        Self {
+            name: name.into(),
+            description,
+            parameters,
+            kernel_prelude: None,
+        }
+    }
 }
 
 pub type EvalToolCatalog = std::sync::Arc<dyn Fn() -> Result<Vec<EvalSchemaToolInfo>, String> + Send + Sync>;

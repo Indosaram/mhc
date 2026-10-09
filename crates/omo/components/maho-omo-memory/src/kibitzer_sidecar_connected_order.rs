@@ -67,8 +67,7 @@ pub fn order_kibitzer_candidates_by_connection(
     let mut candidates: Vec<ReflectionModelCandidate> = Vec::with_capacity(1 + input.fallbacks.len());
     candidates.push(ReflectionModelCandidate {
         model: input.model.to_string(),
-        thinking: input.thinking.map(str::to_string),
-    });
+        thinking: input.thinking.map(str::to_string), load_extensions: None });
     candidates.extend(input.fallbacks.iter().cloned());
     let leading: Vec<ReflectionModelCandidate> = candidates
         .iter()
@@ -174,7 +173,7 @@ mod tests {
     }
 
     fn candidate(model: &str, thinking: Option<&str>) -> ReflectionModelCandidate {
-        ReflectionModelCandidate { model: model.to_string(), thinking: thinking.map(str::to_string) }
+        ReflectionModelCandidate { model: model.to_string(), thinking: thinking.map(str::to_string) , load_extensions: None }
     }
 
     fn models(entries: &[(&str, &str)]) -> Value {

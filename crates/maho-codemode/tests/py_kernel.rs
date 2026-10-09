@@ -5,7 +5,7 @@ fn options()->PythonKernelStartOptions {
     PythonKernelStartOptions{interpreter_path:"python3".into(),session_id:"fifo".into(),cwd:env!("CARGO_MANIFEST_DIR").into(),connection:BridgeConnectionConfig{port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},env:None,session_env:None,startup_timeout:None,on_message:None}
 }
 fn input(id:&str,code:&str)->PythonKernelRunOptions {
-    PythonKernelRunOptions{cell_id:id.into(),code:code.into(),timeout_ms:Some(5000),on_started:None,on_message:None}
+    PythonKernelRunOptions{cell_id:id.into(),code:code.into(),timeout_ms:Some(5000),preludes:vec![],on_started:None,on_message:None}
 }
 
 #[tokio::test]
@@ -58,7 +58,7 @@ async fn cell_execution_delivers_interrupt_to_real_python_kernel() {
     let (started_tx,started_rx)=tokio::sync::oneshot::channel();
     let started_tx=Mutex::new(Some(started_tx));
     let run=EvalKernel::run(kernel.as_ref(),EvalKernelRunInput {
-        cell_id:"bound".into(),code:"import sys,json\nvalue=41\nsys.__stdout__.write(json.dumps({'type':'text','stream':'stdout','data':'started'})+'\\n')\nsys.__stdout__.flush()\nwhile True: pass".into(),timeout_ms:None,on_started:None,
+        cell_id:"bound".into(),code:"import sys,json\nvalue=41\nsys.__stdout__.write(json.dumps({'type':'text','stream':'stdout','data':'started'})+'\\n')\nsys.__stdout__.flush()\nwhile True: pass".into(),timeout_ms:None,preludes:vec![],on_started:None,
         on_message:Some(Arc::new(move |message|{if message["data"]=="started" && let Some(sender)=started_tx.lock().unwrap().take(){sender.send(()).unwrap();}})),
     });
     let cancel=async {

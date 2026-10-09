@@ -78,7 +78,7 @@ async fn invoke(args: Value, fixture: &Fixture) -> Result<Value, AgentBridgeErro
 }
 #[tokio::test] async fn advertised_isolation_and_progress_forwarded() {
     let fixture = fixture("ok",json!({"task_id":"st_ab","status":"completed","subagent_type":"reviewer"}));
-    let tools = vec![EvalSchemaToolInfo { name:"task".into(), description:None, parameters:Some(json!({"properties":{"isolated":{}}})) }];
+    let tools = vec![EvalSchemaToolInfo { name:"task".into(), description:None, parameters:Some(json!({"properties":{"isolated":{}}})), kernel_prelude:None }];
     let events = Arc::new(Mutex::new(Vec::new())); let seen = Arc::clone(&events);
     AgentBridge::default().run(&json!({"prompt":"x","isolated":true,"apply":false,"merge":true}), AgentBridgeOptions { call_id:"call", task_tool_name:"task", executor:&fixture, tools:Some(&tools),execute_options:ExecuteToolOptions::default(),emit_status:Some(Arc::new(move |event| seen.lock().unwrap().push(event))) }).await.unwrap();
     assert_eq!(fixture.calls.lock().unwrap()[0]["merge"],"branch");

@@ -2,6 +2,7 @@
 
 pub mod activity_state;
 pub mod constants;
+pub mod day_claim;
 pub mod diagnostics;
 pub mod env;
 pub mod events;
@@ -13,6 +14,7 @@ pub mod system_os;
 pub mod types;
 
 pub use activity_state::*;
+pub use day_claim::*;
 pub use constants::*;
 pub use diagnostics::*;
 pub use env::*;

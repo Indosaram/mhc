@@ -82,45 +82,45 @@ fn select_fallback_provider_uses_connected_preferred_provider_when_fallback_prov
 }
 
 #[test]
-fn treats_quota_exceeded_error_pascal_case_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("QuotaExceededError")));
+fn treats_quota_exceeded_error_pascal_case_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("QuotaExceededError")));
 }
 
 #[test]
-fn treats_quota_exceeded_error_lowercase_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("quotaexceedederror")));
+fn treats_quota_exceeded_error_lowercase_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("quotaexceedederror")));
 }
 
 #[test]
-fn treats_insufficient_credits_error_pascal_case_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("InsufficientCreditsError")));
+fn treats_insufficient_credits_error_pascal_case_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("InsufficientCreditsError")));
 }
 
 #[test]
-fn treats_insufficient_credits_error_lowercase_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("insufficientcreditserror")));
+fn treats_insufficient_credits_error_lowercase_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("insufficientcreditserror")));
 }
 
 #[test]
-fn treats_free_usage_limit_error_pascal_case_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("FreeUsageLimitError")));
+fn treats_free_usage_limit_error_pascal_case_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("FreeUsageLimitError")));
 }
 
 #[test]
-fn treats_free_usage_limit_error_lowercase_name_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&named("freeusagelimiterror")));
+fn treats_free_usage_limit_error_lowercase_name_as_retryable_quota_error() {
+    assert!(should_retry_error(&named("freeusagelimiterror")));
 }
 
 #[test]
-fn treats_quota_reset_message_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&message(
+fn treats_quota_reset_message_as_retryable_quota_error() {
+    assert!(should_retry_error(&message(
         "quota will reset after 1 hour"
     )));
 }
 
 #[test]
-fn treats_quota_exceeded_message_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&message(
+fn treats_quota_exceeded_message_as_retryable_quota_error() {
+    assert!(should_retry_error(&message(
         "quota exceeded for this billing period"
     )));
 }
@@ -133,8 +133,8 @@ fn treats_provider_usage_limit_reached_message_as_retryable_fallback_signal() {
 }
 
 #[test]
-fn treats_insufficient_credits_message_as_non_retryable_stop_error() {
-    assert!(!should_retry_error(&message(
+fn treats_insufficient_credits_message_as_retryable_quota_error() {
+    assert!(should_retry_error(&message(
         "insufficient credits to complete this request"
     )));
 }
@@ -161,14 +161,14 @@ fn treats_localized_transient_provider_messages_as_retryable() {
 }
 
 #[test]
-fn treats_subscription_quota_message_as_non_retryable() {
-    assert!(!should_retry_error(&message(
+fn treats_subscription_quota_message_as_retryable() {
+    assert!(should_retry_error(&message(
         "Subscription quota exceeded. You can continue using free models."
     )));
 }
 
 #[test]
-fn treats_localized_quota_exhaustion_messages_as_non_retryable_stop_errors() {
+fn treats_localized_quota_exhaustion_messages_as_retryable_quota_errors() {
     let results: Vec<bool> = [
         "已达到 5 小时的使用上限",
         "额度不足",
@@ -178,7 +178,7 @@ fn treats_localized_quota_exhaustion_messages_as_non_retryable_stop_errors() {
     .iter()
     .map(|text| should_retry_error(&message(text)))
     .collect();
-    assert_eq!(results, vec![false, false, false, false]);
+    assert_eq!(results, vec![true, true, true, true]);
 }
 
 #[test]
@@ -249,8 +249,8 @@ fn http_401_with_status_code_does_not_trigger_fallback() {
 }
 
 #[test]
-fn glm_daily_quota_429_does_not_trigger_fallback() {
-    assert!(!is_retryable_model_error(&status(
+fn glm_daily_quota_429_triggers_fallback() {
+    assert!(is_retryable_model_error(&status(
         429,
         Some(
             "Daily call limit for this API key has been reached. Limit will reset at midnight UTC."
@@ -259,26 +259,47 @@ fn glm_daily_quota_429_does_not_trigger_fallback() {
 }
 
 #[test]
-fn glm_account_in_arrears_429_does_not_trigger_fallback() {
-    assert!(!is_retryable_model_error(&status(
+fn glm_account_in_arrears_429_triggers_fallback() {
+    assert!(is_retryable_model_error(&status(
         429,
         Some("Your account is in arrears, please recharge and try again.")
     )));
 }
 
 #[test]
-fn glm_fair_use_policy_violation_429_does_not_trigger_fallback() {
-    assert!(!is_retryable_model_error(&status(
+fn glm_fair_use_policy_violation_429_triggers_fallback() {
+    assert!(is_retryable_model_error(&status(
         429,
         Some("Request blocked under Fair Use Policy. Your request rate has been restricted.")
     )));
 }
 
 #[test]
-fn stop_message_pattern_takes_precedence_over_429_status_code() {
+fn terminal_quota_message_stops_even_with_429_status_code() {
     assert!(!is_retryable_model_error(&status(
         429,
-        Some("quota exceeded for this account, usage limit has been reached")
+        Some("Terminal quota exhausted for this account. Upgrade the plan to continue.")
+    )));
+}
+
+#[test]
+fn treats_terminal_quota_message_as_non_retryable_stop_error() {
+    assert!(!should_retry_error(&message(
+        "Terminal quota exhausted for this account. Upgrade the plan to continue."
+    )));
+}
+
+#[test]
+fn treats_hard_billing_limit_as_non_retryable_stop_error() {
+    assert!(!should_retry_error(&message(
+        "Hard billing limit reached for this organization."
+    )));
+}
+
+#[test]
+fn treats_context_limit_message_as_non_retryable() {
+    assert!(!should_retry_error(&message(
+        "prompt is too long: context limit reached for this model"
     )));
 }
 

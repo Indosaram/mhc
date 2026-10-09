@@ -219,3 +219,154 @@ fn extracts_provider_auto_retry_signals_from_status_summary_or_details() {
         })
     );
 }
+
+#[test]
+fn aborts_on_terminal_quota_in_data_detail_without_retry() {
+    let error = json!({
+        "data": {
+            "detail": {
+                "error": {
+                    "type": "terminal_quota_exhausted",
+                },
+            },
+        },
+    });
+
+    let error_type = classify_runtime_fallback_error(Some(&error));
+    let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+
+    assert_eq!(error_type, Some(RuntimeFallbackErrorType::Abort));
+    assert!(!is_retryable);
+}
+
+#[test]
+fn nullish_detail_precedence_does_not_fall_through_non_null_malformed_values() {
+    let terminal = json!({"error":{"type":"terminal_quota_exhausted"}});
+    let explicit_null = json!({"detail":null,"data":{"detail":terminal}});
+    assert_eq!(
+        classify_runtime_fallback_error(Some(&explicit_null)),
+        Some(RuntimeFallbackErrorType::Abort)
+    );
+    for malformed in [json!(false), json!(0), json!("malformed")] {
+        let error = json!({"detail":malformed,"data":{"detail":terminal}});
+        assert_eq!(classify_runtime_fallback_error(Some(&error)), None);
+    }
+    let error = json!({"detail":{"error":{"type":null},"type":"terminal_quota_exhausted"}});
+    assert_eq!(
+        classify_runtime_fallback_error(Some(&error)),
+        Some(RuntimeFallbackErrorType::Abort)
+    );
+}
+
+#[test]
+fn aborts_on_model_not_found_terminal_quota_wrapper_without_retry() {
+    let error = json!({
+        "name": "ModelNotFoundError",
+        "message": "Terminal quota exceeded for the requested model",
+    });
+
+    let error_type = classify_runtime_fallback_error(Some(&error));
+    let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+
+    assert_eq!(error_type, Some(RuntimeFallbackErrorType::Abort));
+    assert!(!is_retryable);
+}
+
+#[test]
+fn non_terminal_quota_and_billing_limit_remain_retryable() {
+    let messages = [
+        "non-terminal quota exceeded",
+        "non-terminal billing limit reached",
+    ];
+
+    for message in messages {
+        let error = json!({
+            "name": "QuotaExceededError",
+            "message": message,
+        });
+
+        let error_type = classify_runtime_fallback_error(Some(&error));
+        let is_retryable = is_runtime_fallback_retryable_error(Some(&error), &DEFAULT_RETRY_CODES, &RuntimeFallbackRetryOptions::default());
+
+        assert_eq!(error_type, Some(RuntimeFallbackErrorType::QuotaExceeded), "{message}");
+        assert!(is_retryable, "{message}");
+    }
+}
+
+#[test]
+fn classifies_terminal_quota_exhausted_detail_as_abort() {
+    let cases = [
+        (
+            "structured terminal_quota_exhausted detail with standard message",
+            json!({
+                "detail": {
+                    "error": {
+                        "type": "terminal_quota_exhausted",
+                        "message": "Terminal quota or billing limit reached for the requested LiteLLM model handle.",
+                        "model": "big-pickle",
+                        "upstream_error": "insufficient balance on z.ai account",
+                    },
+                },
+            }),
+            Some(RuntimeFallbackErrorType::Abort),
+            false,
+        ),
+        (
+            "structured terminal_quota_exhausted detail taking precedence over ModelNotFoundError wrapper",
+            json!({
+                "name": "ModelNotFoundError",
+                "detail": {
+                    "error": {
+                        "type": "terminal_quota_exhausted",
+                        "message": "Model not found due to exhausted account quota",
+                    },
+                },
+            }),
+            Some(RuntimeFallbackErrorType::Abort),
+            false,
+        ),
+        (
+            "structured terminal_quota_exhausted detail with arbitrary message (e.g. Account locked)",
+            json!({
+                "detail": {
+                    "error": {
+                        "type": "terminal_quota_exhausted",
+                        "message": "Account locked",
+                    },
+                },
+            }),
+            Some(RuntimeFallbackErrorType::Abort),
+            false,
+        ),
+        (
+            "explicit terminal quota message inside quota error payload",
+            json!({
+                "name": "QuotaExceededError",
+                "message": "Terminal quota reached for provider model",
+            }),
+            Some(RuntimeFallbackErrorType::Abort),
+            false,
+        ),
+        (
+            "soft billing limit message without explicit terminal marker (treats as retryable quota_exceeded)",
+            json!({
+                "name": "BillingError",
+                "message": "Billing limit reached for this month, resets tomorrow",
+            }),
+            Some(RuntimeFallbackErrorType::QuotaExceeded),
+            true,
+        ),
+    ];
+
+    for (label, error, expected_type, expected_retryable) in cases {
+        let actual_type = classify_runtime_fallback_error(Some(&error));
+        let actual_retryable = is_runtime_fallback_retryable_error(
+            Some(&error),
+            &[429, 500, 502, 503, 504],
+            &RuntimeFallbackRetryOptions::default(),
+        );
+
+        assert_eq!(actual_type, expected_type, "{label}");
+        assert_eq!(actual_retryable, expected_retryable, "{label}");
+    }
+}

@@ -1951,3 +1951,33 @@ fn prune_paths_keep_the_diagnostic_for_a_non_object_root_and_a_parse_error() {
         vec![("validation", user_path), ("parse", project_path)]
     );
 }
+
+#[test]
+fn account_home_dir_is_non_empty_and_absolute() {
+    let home = omo_config_core::internal::posix_path::account_home_dir();
+    assert!(!home.is_empty(), "account_home_dir must not be empty");
+    assert!(
+        home.starts_with('/') || (home.len() >= 3 && home.chars().nth(1) == Some(':')),
+        "account_home_dir must be an absolute posix path, got: {home}"
+    );
+}
+
+#[test]
+fn project_paths_walk_stops_at_account_home_boundary_when_home_is_isolated() {
+    // Directories with .omo/omo.jsonc:
+    // /home/alice has one (user account home), /home/alice/work has one (parent project).
+    // When HOME is isolated to /tmp/isolated-home, the upward walk from /home/alice/work/src
+    // must stop at the account home boundary (/home/alice) so /home/alice/.omo is NEVER
+    // loaded as a project layer.
+    let file_system = project_file_system(
+        &["/home/alice", "/home/alice/work"],
+        &[],
+    );
+    let paths = find_project_config_paths_farthest_first(
+        "/home/alice/work/src",
+        "/tmp/isolated-home",
+        &file_system,
+        Some("/home/alice"),
+    );
+    assert_eq!(paths, vec![project_config_path("/home/alice/work")]);
+}

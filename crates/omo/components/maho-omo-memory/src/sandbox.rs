@@ -19,7 +19,7 @@ pub fn apply_facts_sandbox(
 #[cfg(test)]mod tests{
     use super::*;
     fn facts_args(root:&Path)->crate::worker::spawn_types::FactsSpawnArgs{
-        crate::worker::spawn_types::FactsSpawnArgs{run_id:"run".into(),attempt:2,hard_deadline_at:42.0,model:"p/m".into(),thinking:Some("low".into()),next_attempt:None,command:"/bin/sh".into(),args:vec!["-c".into(),"exit 0".into()],cwd:root.into(),env:BTreeMap::new(),paths:crate::worker::spawn_types::FactsSpawnPaths{run_dir:root.into(),payload:root.join("payload.json"),extraction:root.join("extraction.jsonl")}}
+        crate::worker::spawn_types::FactsSpawnArgs{run_id:"run".into(),attempt:2,hard_deadline_at:42.0,model:"p/m".into(),thinking:Some("low".into()),load_extensions:None,next_attempt:None,command:"/bin/sh".into(),args:vec!["-c".into(),"exit 0".into()],cwd:root.into(),env:BTreeMap::new(),paths:crate::worker::spawn_types::FactsSpawnPaths{run_dir:root.into(),payload:root.join("payload.json"),extraction:root.join("extraction.jsonl")}}
     }
     #[test]fn facts_spawn_auto_warns_with_original_metadata(){
         let root=tempfile::tempdir().unwrap();let mut warned=false;

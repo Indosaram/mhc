@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf, Component};
 use serde_json::{Value, json};
+use maho_tools::definition::KernelPrelude;
 use crate::bridge::{protocol::BridgeConnectionConfig, reserved::*};
+use crate::kernels::shared::kernel_prelude_plan::{KernelPreludePlan, KernelPreludeTracker};
 use super::rewrite_imports::rewrite_imports;
 
 pub const PREPARED_CELL_PREFIX: &str = "/*senpi:prepared-cell*/";
@@ -35,15 +37,54 @@ pub fn runtime_context(options: &LocalModuleLoaderOptions) -> Result<Value, std:
         "timeoutPauseOp":TIMEOUT_PAUSE_OP, "timeoutResumeOp":TIMEOUT_RESUME_OP}))
 }
 
-pub struct LocalModuleLoader { prelude: String }
+pub fn contribution_prelude(plan: &KernelPreludePlan) -> String {
+    let mut parts = Vec::new();
+    for name in &plan.remove {
+        parts.push(format!("delete globalThis[{}];", json!(name)));
+    }
+    for contribution in &plan.install {
+        let missing = contribution
+            .exports
+            .iter()
+            .map(|name| format!("!globalThis[{}]", json!(name)))
+            .collect::<Vec<_>>()
+            .join(" || ");
+        if !missing.is_empty() {
+            parts.push(format!("if ({missing}) {{\n{}\n}}", contribution.javascript));
+        } else if !contribution.javascript.is_empty() {
+            parts.push(contribution.javascript.clone());
+        }
+    }
+    parts.join("\n")
+}
+
+pub struct LocalModuleLoader {
+    prelude: String,
+    tracker: std::sync::Mutex<KernelPreludeTracker>,
+}
+
 impl LocalModuleLoader {
     pub fn new(options: &LocalModuleLoaderOptions) -> Result<Self, std::io::Error> {
         let context = runtime_context(options)?;
         let prelude = format!("globalThis.__senpi_module_context__ = {context};\n{}", include_str!("local-module-loader.js").trim_end());
-        Ok(Self { prelude })
+        Ok(Self {
+            prelude,
+            tracker: std::sync::Mutex::new(KernelPreludeTracker::default()),
+        })
     }
 
-    pub fn prepare_cell(&self, code: &str) -> String {
-        format!("{PREPARED_CELL_PREFIX}{}", json!({"prelude":self.prelude,"code":rewrite_imports(code)}))
+    pub fn prepare_cell(&self, code: &str, preludes: &[KernelPrelude]) -> String {
+        let plan = self
+            .tracker
+            .lock()
+            .expect("prelude tracker lock")
+            .plan(preludes);
+        let extra = contribution_prelude(&plan);
+        let full_prelude = if extra.is_empty() {
+            self.prelude.clone()
+        } else {
+            format!("{}\n{}", self.prelude, extra)
+        };
+        format!("{PREPARED_CELL_PREFIX}{}", json!({"prelude":full_prelude,"code":rewrite_imports(code)}))
     }
 }

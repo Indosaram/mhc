@@ -1,0 +1,25 @@
+[package]
+name = "maho-senpi-desktop-backend-x11"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "senpi_desktop_backend_x11"
+crate-type = ["rlib"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "=0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
+libc.workspace = true
+parking_lot = "=0.12.5"
+senpi-desktop-backend-atspi = { package = "maho-senpi-desktop-backend-atspi", path = "../senpi-desktop-backend-atspi" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core", features = ["system-clipboard"] }
+senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety" }
+x11rb = { version = "=0.13.2", features = ["randr", "xinput", "xtest"] }
+xkeysym = "=0.2.1"

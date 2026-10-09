@@ -107,7 +107,16 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     execution.set_kernel(kernel.clone());
     cell.lock().expect("managed cell lock").kernel=Some(kernel.clone());
     let started_manager=manager.clone();let started_cell=cell.clone();let started_tx=messages_tx.clone();
-    let run_input=EvalKernelRunInput {cell_id:invocation.cell_id.clone(),code:invocation.input.code.clone(),timeout_ms:None,on_started:Some(Arc::new(move ||{
+    let preludes = match options.active_kernel_preludes.as_ref().map_or_else(||Ok(Vec::new()), |f| f()) {
+        Ok(preludes) => preludes,
+        Err(error) => {
+            execution.finish();
+            manager.lock().expect("cell manager lock").fail(&cell,&error);
+            emit_early_failure(&options,&invocation,started_at,&error);
+            return Err(error);
+        }
+    };
+    let run_input=EvalKernelRunInput {cell_id:invocation.cell_id.clone(),code:invocation.input.code.clone(),timeout_ms:None,preludes,on_started:Some(Arc::new(move ||{
         started_manager.lock().expect("cell manager lock").mark_running(&started_cell);
         let _=started_tx.send(serde_json::json!({"type":"host-started"}));
     })),on_message:Some(Arc::new(move |message|{let _=messages_tx.send(message.clone());}))};

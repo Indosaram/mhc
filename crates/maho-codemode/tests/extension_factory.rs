@@ -161,7 +161,7 @@ impl ExtensionActions for Host {
     fn send_message(&self,_:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> {Ok(())}
     fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> {Ok(())}
     fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> {Ok(())}
-    fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> {Ok(self.tools.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.iter().map(|tool|ToolInfo {name:tool.definition.name.clone(),label:tool.definition.label.clone(),description:tool.definition.description.clone(),parameters:tool.definition.parameters.clone(),prompt_guidelines:tool.definition.prompt_guidelines.clone(),source_info:tool.source_info.clone(),exposure:ToolExposure::Direct,search_text:None,search_keywords:vec![],search_group:None,allow_lazy_activation:false}).collect())}
+    fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> {Ok(self.tools.lock().map_err(|error|ExtensionFailure::new(error.to_string()))?.iter().map(|tool|ToolInfo {name:tool.definition.name.clone(),label:tool.definition.label.clone(),description:tool.definition.description.clone(),parameters:tool.definition.parameters.clone(),prompt_guidelines:tool.definition.prompt_guidelines.clone(),source_info:tool.source_info.clone(),exposure:ToolExposure::Direct,search_text:None,search_keywords:vec![],search_group:None,allow_lazy_activation:false,kernel_prelude:tool.definition.kernel_prelude.clone()}).collect())}
 }
 
 #[tokio::test]

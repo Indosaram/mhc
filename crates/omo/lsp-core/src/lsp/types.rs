@@ -180,3 +180,29 @@ impl SeverityFilter {
         }
     }
 }
+
+/// TS `FormattingOptions`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormattingOptions {
+    pub tab_size: u32,
+    pub insert_spaces: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim_trailing_whitespace: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_final_newline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim_final_newlines: Option<bool>,
+}
+
+impl Default for FormattingOptions {
+    fn default() -> Self {
+        Self {
+            tab_size: 4,
+            insert_spaces: false,
+            trim_trailing_whitespace: Some(true),
+            insert_final_newline: Some(true),
+            trim_final_newlines: Some(true),
+        }
+    }
+}

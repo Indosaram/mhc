@@ -9,10 +9,6 @@ fn chain(agent: &str) -> &'static [FallbackEntry] {
     &AGENT_MODEL_REQUIREMENTS[agent].fallback_chain
 }
 
-fn has(entry: &FallbackEntry, provider: &str) -> bool {
-    entry.providers.iter().any(|p| p == provider)
-}
-
 #[test]
 fn oracle_has_gpt_5_6_sol_xhigh_as_primary() {
     let oracle = chain("oracle");
@@ -21,7 +17,7 @@ fn oracle_has_gpt_5_6_sol_xhigh_as_primary() {
     assert_eq!(
         oracle[0],
         entry(
-            &["openai", "opencode", "vercel"],
+            &["openai", "chatgpt-subscription", "opencode"],
             "gpt-5.6-sol",
             Some("xhigh")
         )
@@ -33,7 +29,7 @@ fn oracle_has_gpt_5_6_sol_xhigh_as_primary() {
 }
 
 #[test]
-fn sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbacks() {
+fn sisyphus_keeps_opus_primary_before_kimi_k3_gpt_5_6_sol_glm_5_2_and_big_pickle_fallbacks() {
     let sisyphus = &AGENT_MODEL_REQUIREMENTS["sisyphus"];
     let chain = &sisyphus.fallback_chain;
 
@@ -42,8 +38,8 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbac
     assert_eq!(
         chain[0],
         entry(
-            &["anthropic", "github-copilot", "opencode", "vercel"],
-            "claude-opus-5",
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-opus-5-5",
             Some("max")
         )
     );
@@ -55,7 +51,6 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbac
                 "kimi-for-coding",
                 "moonshotai",
                 "opencode",
-                "vercel",
                 "bailian-coding-plan",
                 "moonshotai-cn",
                 "firmware",
@@ -69,7 +64,12 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbac
     assert_eq!(
         chain[2],
         entry(
-            &["openai", "github-copilot", "opencode", "vercel"],
+            &[
+                "openai",
+                "chatgpt-subscription",
+                "github-copilot",
+                "opencode"
+            ],
             "gpt-5.6-sol",
             Some("medium")
         )
@@ -80,52 +80,47 @@ fn sisyphus_keeps_opus_primary_before_kimi_k3_sol_glm_5_2_and_big_pickle_fallbac
     assert_eq!(chain[4].model, "big-pickle");
 }
 
-fn assert_fast_openai_primary_chain(agent: &str) {
-    let chain = chain(agent);
-    // TS destructures [primary, , second, third, ...]: index 1 (DeepSeek) is skipped.
-    assert_eq!(chain.len(), 9, "{agent}");
+fn assert_fast_agent_chain(agent: &str) {
+    let requirement = &AGENT_MODEL_REQUIREMENTS[agent];
+
     assert_eq!(
-        chain[0],
-        entry(&["openai"], "gpt-5.6-luna-fast", Some("low")),
+        requirement.fallback_chain,
+        vec![
+            entry(
+                &["kimi-for-coding"],
+                "kimi-for-coding-highspeed",
+                Some("off")
+            ),
+            entry(
+                &["openai", "chatgpt-subscription"],
+                "gpt-6-luna-fast",
+                Some("low")
+            ),
+            entry(&["deepseek"], "deepseek-flash", Some("max")),
+            entry(
+                &["opencode-go", "bailian-coding-plan"],
+                "qwen3.7-plus",
+                None
+            ),
+            entry(&["opencode-go"], "minimax-m2.7", None),
+            entry(
+                &["anthropic", "github-copilot"],
+                "claude-haiku-4-5",
+                None
+            ),
+        ],
         "{agent}"
     );
-    assert!(
-        has(&chain[2], "opencode-go") && has(&chain[2], "bailian-coding-plan"),
-        "{agent}"
-    );
-    assert_eq!(chain[2].model, "qwen3.7-plus", "{agent}");
-    assert_eq!(
-        chain[3],
-        entry(&["vercel"], "minimax-m2.7-highspeed", None),
-        "{agent}"
-    );
-    assert!(has(&chain[4], "opencode-go"), "{agent}");
-    assert_eq!(chain[4].model, "minimax-m3", "{agent}");
-    assert_eq!(
-        chain[5],
-        entry(
-            &["minimax-coding-plan", "minimax-cn-coding-plan"],
-            "MiniMax-M3",
-            None
-        ),
-        "{agent}"
-    );
-    assert!(has(&chain[6], "opencode-go"), "{agent}");
-    assert_eq!(chain[6].model, "minimax-m2.7", "{agent}");
-    assert!(has(&chain[7], "anthropic"), "{agent}");
-    assert_eq!(chain[7].model, "claude-haiku-4-5", "{agent}");
-    assert!(has(&chain[8], "openai"), "{agent}");
-    assert_eq!(chain[8].model, "gpt-5.4-nano", "{agent}");
 }
 
 #[test]
-fn librarian_keeps_fast_openai_primary_before_qwen_minimax_haiku_and_nano_fallbacks() {
-    assert_fast_openai_primary_chain("librarian");
+fn librarian_runs_no_thinking_kimi_highspeed_luna_fast_deepseek_flash_qwen_m2_7_then_haiku() {
+    assert_fast_agent_chain("librarian");
 }
 
 #[test]
-fn explore_keeps_fast_openai_primary_before_qwen_minimax_haiku_and_nano_fallbacks() {
-    assert_fast_openai_primary_chain("explore");
+fn explore_runs_no_thinking_kimi_highspeed_luna_fast_deepseek_flash_qwen_m2_7_then_haiku() {
+    assert_fast_agent_chain("explore");
 }
 
 #[test]
@@ -136,17 +131,22 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
     assert_eq!(
         chain[0],
         entry(
-            &["openai", "opencode", "vercel"],
+            &["openai", "chatgpt-subscription", "opencode"],
             "gpt-5.6-sol",
             Some("low")
         )
     );
-    assert_eq!(chain[1], entry(&["opencode-go", "vercel"], "kimi-k3", None));
+    assert_eq!(chain[1], entry(&["opencode-go"], "kimi-k3", None));
     assert_eq!(chain[2].model, "glm-4.6v");
     assert_eq!(
         chain[3],
         entry(
-            &["openai", "github-copilot", "opencode", "vercel"],
+            &[
+                "openai",
+                "chatgpt-subscription",
+                "github-copilot",
+                "opencode"
+            ],
             "gpt-5-nano",
             None
         )
@@ -154,27 +154,34 @@ fn multimodal_looker_keeps_vision_capable_fallback_order() {
 }
 
 #[test]
-fn prometheus_uses_fable_5_xhigh_before_kimi_k3_max() {
+fn prometheus_uses_fable_5_1_xhigh_then_opus_5_5_max_before_kimi_k3_max() {
     let chain = chain("prometheus");
 
-    assert_eq!(chain.len(), 2);
+    assert_eq!(chain.len(), 3);
     assert_eq!(
         chain[0],
         entry(
-            &["anthropic", "github-copilot", "opencode", "vercel"],
-            "claude-fable-5",
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
             Some("xhigh")
         )
     );
     assert_eq!(
         chain[1],
         entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-opus-5-5",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[2],
+        entry(
             &[
                 "opencode-go",
                 "kimi-for-coding",
                 "moonshotai",
-                "opencode",
-                "vercel"
+                "opencode"
             ],
             "kimi-k3",
             Some("max")
@@ -183,71 +190,88 @@ fn prometheus_uses_fable_5_xhigh_before_kimi_k3_max() {
 }
 
 #[test]
-fn metis_uses_opus_5_high_before_kimi_k3_low() {
+fn metis_uses_fable_5_1_max_then_opus_5_max_then_kimi_k3_max() {
     let chain = chain("metis");
 
-    assert_eq!(chain.len(), 2);
+    assert_eq!(chain.len(), 3);
     assert_eq!(
         chain[0],
         entry(
-            &["anthropic", "github-copilot", "opencode", "vercel"],
-            "claude-opus-5",
-            Some("high")
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-fable-5-1",
+            Some("max")
         )
     );
     assert_eq!(
         chain[1],
         entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-opus-5-5",
+            Some("max")
+        )
+    );
+    assert_eq!(
+        chain[2],
+        entry(
             &[
                 "opencode-go",
                 "kimi-for-coding",
                 "moonshotai",
-                "opencode",
-                "vercel"
+                "opencode"
             ],
             "kimi-k3",
-            Some("low")
+            Some("max")
         )
     );
 }
 
 #[test]
-fn momus_keeps_native_gpt_5_6_terra_high_before_gpt_5_6_sol_xhigh() {
+fn momus_leads_with_native_gpt_6_astra_xhigh_before_copilot_and_opencode_astra_rungs() {
     let chain = chain("momus");
 
     assert!(chain.len() > 1);
     assert_eq!(
         chain[0],
-        entry(&["openai", "vercel"], "gpt-5.6-terra", Some("high"))
-    );
-    assert_eq!(
-        chain[1],
-        entry(&["github-copilot"], "gpt-5.6-terra", Some("high"))
-    );
-    assert_eq!(
-        chain[2],
         entry(
-            &["openai", "opencode", "vercel"],
-            "gpt-5.6-sol",
+            &["openai", "chatgpt-subscription"],
+            "gpt-6-astra",
             Some("xhigh")
         )
     );
     assert_eq!(
+        chain[1],
+        entry(&["github-copilot"], "gpt-6-astra", Some("high"))
+    );
+    assert_eq!(
+        chain[2],
+        entry(
+            &["openai", "chatgpt-subscription", "opencode"],
+            "gpt-6-astra",
+            Some("high")
+        )
+    );
+    assert_eq!(
         chain[3],
-        entry(&["github-copilot"], "gpt-5.6-sol", Some("high"))
+        entry(
+            &["anthropic", "github-copilot", "opencode"],
+            "claude-opus-5-5",
+            Some("max")
+        )
     );
     assert_eq!(
         chain[4],
         entry(
-            &["anthropic", "github-copilot", "opencode", "vercel"],
-            "claude-opus-5",
-            Some("max")
+            &["google", "github-copilot", "opencode"],
+            "gemini-3.1-pro",
+            Some("high")
         )
     );
+    assert_eq!(chain[5], entry(&["opencode-go"], "glm-5.2", None));
+    assert!(!chain.iter().any(|entry| entry.model.starts_with("gpt-5.6-")));
 }
 
 #[test]
-fn atlas_keeps_sonnet_kimi_sol_and_minimax_fallback_order() {
+fn atlas_keeps_sonnet_kimi_gpt_5_6_sol_and_minimax_fallback_order() {
     let chain = chain("atlas");
 
     assert_eq!(chain.len(), 6);
@@ -258,7 +282,12 @@ fn atlas_keeps_sonnet_kimi_sol_and_minimax_fallback_order() {
     assert_eq!(
         chain[2],
         entry(
-            &["openai", "github-copilot", "opencode", "vercel"],
+            &[
+                "openai",
+                "chatgpt-subscription",
+                "github-copilot",
+                "opencode"
+            ],
             "gpt-5.6-sol",
             Some("medium")
         )
@@ -300,12 +329,24 @@ fn sisyphus_junior_keeps_sonnet_kimi_minimax_and_big_pickle_fallbacks() {
 }
 
 #[test]
-fn hephaestus_supports_openai_github_copilot_opencode_and_vercel_providers() {
+fn hephaestus_supports_openai_chatgpt_subscription_github_copilot_and_opencode_providers() {
     let hephaestus = &AGENT_MODEL_REQUIREMENTS["hephaestus"];
 
     assert_eq!(
         hephaestus.requires_provider,
-        Some(strings(&["openai", "github-copilot", "opencode", "vercel"]))
+        Some(strings(&[
+            "openai",
+            "chatgpt-subscription",
+            "github-copilot",
+            "opencode"
+        ]))
+    );
+    assert!(
+        !hephaestus.requires_provider
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|p| p == "venice")
     );
     assert!(
         !hephaestus.fallback_chain[0]
@@ -318,14 +359,32 @@ fn hephaestus_supports_openai_github_copilot_opencode_and_vercel_providers() {
 }
 
 #[test]
-fn hephaestus_has_one_merged_gpt_5_6_sol_medium_rung() {
+fn hephaestus_leads_with_one_merged_gpt_6_sol_medium_rung_over_its_gpt_5_6_sol_predecessor() {
     let chain = chain("hephaestus");
 
-    assert_eq!(chain.len(), 1);
+    assert_eq!(chain.len(), 2);
     assert_eq!(
         chain[0],
         entry(
-            &["openai", "github-copilot", "vercel", "opencode"],
+            &[
+                "openai",
+                "chatgpt-subscription",
+                "github-copilot",
+                "opencode"
+            ],
+            "gpt-6-sol",
+            Some("medium")
+        )
+    );
+    assert_eq!(
+        chain[1],
+        entry(
+            &[
+                "openai",
+                "chatgpt-subscription",
+                "github-copilot",
+                "opencode"
+            ],
             "gpt-5.6-sol",
             Some("medium")
         )

@@ -103,7 +103,7 @@ function pinnedBuiltinSkills(repo) {
 async function run(command, argv, { cwd, env, timeoutMs = 120_000, stdin } = {}) {
 	const proc = Bun.spawn([command, ...argv], {
 		cwd: cwd ?? process.cwd(),
-		env: env ?? { PATH: process.env.PATH },
+		env: env ?? { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR ?? tmpdir() },
 		stdin: stdin === undefined ? "ignore" : "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -277,7 +277,7 @@ async function renderPng(dir, cols, rows) {
 	}
 	const png = await run("bun", [join(HARNESS, "png-render.mjs"), input, String(cols), String(rows), join(dir, "terminal.png"), join(dir, "terminal.png.json")], {
 		cwd: REPO,
-		env: { PATH: process.env.PATH },
+		env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR ?? tmpdir() },
 		timeoutMs: 60_000,
 	});
 	if (png.exitCode !== 0 || !existsSync(join(dir, "terminal.png"))) {
@@ -320,7 +320,7 @@ async function scenarioTui(ctx) {
 			try {
 				const harness = await run("bun", [join(HARNESS, "tui-driver.mjs"), ctx.binary, dir, String(cols), String(rows), mode], {
 					cwd: REPO,
-					env: { PATH: process.env.PATH, HOME: home },
+					env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? tmpdir() },
 					timeoutMs: 300_000,
 				});
 				writeFileSync(join(dir, "driver.log"), harness.stdout + harness.stderr);
@@ -381,12 +381,12 @@ async function scenarioTheme(ctx) {
 		mkdirSync(badDir, { recursive: true });
 		const goodRun = await run("bun", [join(HARNESS, "tui-driver.mjs"), ctx.binary, goodDir, "120", "36", "regular", good, "custom-accent"], {
 			cwd: REPO,
-			env: { PATH: process.env.PATH, HOME: home },
+			env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? tmpdir() },
 			timeoutMs: 300_000,
 		});
 		const badRun = await run("bun", [join(HARNESS, "tui-driver.mjs"), ctx.binary, badDir, "120", "36", "regular", bad, "broken-fallback"], {
 			cwd: REPO,
-			env: { PATH: process.env.PATH, HOME: home },
+			env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? tmpdir() },
 			timeoutMs: 300_000,
 		});
 		writeFileSync(join(ctx.qaRoot, "theme-custom.log"), goodRun.stdout + goodRun.stderr);
@@ -429,33 +429,91 @@ async function scenarioInstall(ctx) {
 	});
 	writeFileSync(join(ctx.qaRoot, "install-verify.log"), verify.stdout + verify.stderr);
 	artifacts.push("install-verify.log");
-	// Real surface (plan task 3): the staged runtime must carry ALL pinned builtin skills, and the
-	// native ast-grep MCP helper must answer an MCP initialize handshake.
-	const skillNames = pinnedBuiltinSkills(REPO);
-	const missingSkills = skillNames.filter((name) => !existsSync(join(stageDir, "skills", name, "SKILL.md")));
+
+	// Real surface (plan task 3): verify the staged runtime against its verified manifest provenance.
+	// We read the verified manifest to derive the exact selected skill vocabulary (whether pinned baseline
+	// or selected latest overlay), asserting all declared skills are present on disk.
+	let skillNames = [];
+	let manifestParseOk = false;
+	const manifestPath = join(stageDir, "manifest.json");
+	if (existsSync(manifestPath)) {
+		try {
+			const manifestData = JSON.parse(readFileSync(manifestPath, "utf8"));
+			if (manifestData && typeof manifestData === "object" && Array.isArray(manifestData.skills?.names) && manifestData.skills.names.length > 0) {
+				skillNames = manifestData.skills.names;
+				manifestParseOk = true;
+			}
+		} catch {
+			manifestParseOk = false;
+		}
+	}
+	const skillsDir = join(stageDir, "skills");
+	const missingSkills = skillNames.filter((name) => !existsSync(join(skillsDir, name, "SKILL.md")));
+
 	const helper = join(stageDir, "ast-grep-mcp");
 	const hadHelper = existsSync(helper);
 	let handshakeOk = false;
 	if (hadHelper) {
+		let proc;
+		let deadlineTimer;
 		try {
-			const proc = Bun.spawn([helper], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-			proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "residual-qa", version: "1" } } })}\n`);
-			proc.stdin.end();
-			const deadline = setTimeout(() => proc.kill("SIGKILL"), 15_000);
-			const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-			clearTimeout(deadline);
-			handshakeOk = out.split("\n").filter(Boolean).some((line) => {
-				try {
-					const msg = JSON.parse(line);
-					return msg.id === 1 && (msg.result !== undefined || msg.error !== undefined);
-				} catch {
-					return false;
-				}
+			proc = Bun.spawn([helper], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+			const req = JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "residual-qa", version: "1" } },
 			});
+			proc.stdin.write(`${req}\n`);
+			proc.stdin.end();
+
+			const timeoutPromise = new Promise((_, reject) => {
+				deadlineTimer = setTimeout(() => {
+					try { proc.kill("SIGKILL"); } catch {}
+					reject(new Error("mcp initialize timeout"));
+				}, 15_000);
+			});
+
+			const [stdoutText, stderrText, exitCode] = await Promise.race([
+				Promise.all([
+					new Response(proc.stdout).text(),
+					new Response(proc.stderr).text(),
+					proc.exited,
+				]),
+				timeoutPromise,
+			]);
+			clearTimeout(deadlineTimer);
+
+			const lines = stdoutText.split("\n").filter(Boolean);
+			let responseObj = null;
+			for (const line of lines) {
+				try {
+					const parsed = JSON.parse(line);
+					if (parsed && parsed.id === 1) {
+						responseObj = parsed;
+						break;
+					}
+				} catch {}
+			}
+
+			handshakeOk = exitCode === 0 &&
+				responseObj !== null &&
+				responseObj.error === undefined &&
+				responseObj.result !== null &&
+				typeof responseObj.result === "object" &&
+				responseObj.result.capabilities !== null &&
+				typeof responseObj.result.capabilities === "object" &&
+				(responseObj.result.protocolVersion === "2024-11-05" || typeof responseObj.result.protocolVersion === "string");
 		} catch {
 			handshakeOk = false;
+		} finally {
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			if (proc && proc.exitCode === null) {
+				try { proc.kill("SIGKILL"); } catch {}
+			}
 		}
 	}
+
 	const scratch = newHome("residual-install-scratch-");
 	let cleanupOk = false;
 	let ok = false;
@@ -468,8 +526,8 @@ async function scenarioInstall(ctx) {
 		writeFileSync(join(ctx.qaRoot, "install-missing-helper.log"), negative.stdout + negative.stderr);
 		artifacts.push("install-missing-helper.log");
 		const diagnosed = negative.exitCode !== 0 && /ast-grep-mcp|missing|helper/i.test(negative.stdout + negative.stderr);
-		ok = verify.exitCode === 0 && missingSkills.length === 0 && hadHelper && handshakeOk && diagnosed;
-		detail = `verifyExit=${verify.exitCode} skills=${skillNames.length - missingSkills.length}/${skillNames.length} helper=${hadHelper} handshake=${handshakeOk} diagnosed=${diagnosed}`;
+		ok = verify.exitCode === 0 && manifestParseOk && skillNames.length > 0 && missingSkills.length === 0 && hadHelper && handshakeOk && diagnosed;
+		detail = `verifyExit=${verify.exitCode} manifestParseOk=${manifestParseOk} skills=${skillNames.length - missingSkills.length}/${skillNames.length} helper=${hadHelper} handshake=${handshakeOk} diagnosed=${diagnosed}`;
 	} finally {
 		rmSync(scratch, { recursive: true, force: true });
 		cleanupOk = !existsSync(scratch);

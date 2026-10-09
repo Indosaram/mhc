@@ -1,0 +1,14 @@
+[package]
+name = "maho-senpi-desktop-safety"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "senpi_desktop_safety"
+crate-type = ["rlib"]
+
+[dependencies]
+parking_lot = "=0.12.5"
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core" }
+thiserror.workspace = true

@@ -183,5 +183,6 @@ function errorFromBridge(error) {
 	if (error.name) result.name = error.name;
 	if (error.stack) result.stack = error.stack;
 	if (typeof error.code === "string") result.code = error.code;
+	if (error.data !== undefined) result.data = error.data;
 	return result;
 }

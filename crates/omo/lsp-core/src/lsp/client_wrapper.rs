@@ -4,9 +4,12 @@ use crate::lsp::errors::is_lsp_dead_connection_error;
 use crate::lsp::manager::LspManager;
 use crate::lsp::manager::SharedClient;
 use crate::lsp::manager::get_lsp_manager;
+use crate::lsp::outside_context_workspace::find_workspace_root_outside_context;
+use crate::lsp::workspace_markers::{GIT_WORKSPACE_MARKER, PROJECT_WORKSPACE_MARKERS};
 use crate::lsp::server_install_state::InstallDecision;
 use crate::lsp::server_install_state::load_install_decision;
 use crate::lsp::server_resolution::find_server_for_extension;
+use crate::lsp::server_definitions::LSP_LOCAL_INSTALL_HINTS;
 use crate::lsp::types::FailedServerLookupResult;
 use crate::lsp::types::ServerLookupResult;
 use crate::request_context::canonicalize_existing_or_nearest_ancestor;
@@ -18,16 +21,6 @@ use crate::request_context::resolve_from;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
-
-const WORKSPACE_MARKERS: [&str; 7] = [
-    ".git",
-    "package.json",
-    "pyproject.toml",
-    "Cargo.toml",
-    "go.mod",
-    "pom.xml",
-    "build.gradle",
-];
 
 const READ_ONLY_TOOLS: [&str; 6] = [
     "diagnostics",
@@ -54,7 +47,7 @@ pub fn is_directory_path(file_path: &str) -> bool {
     std::fs::metadata(file_path).is_ok_and(|metadata| metadata.is_dir())
 }
 
-/// TS `findWorkspaceRoot`: nearest marker directory inside the request cwd.
+/// TS `findWorkspaceRoot`: a repository root wins over nested package markers.
 pub fn find_workspace_root(file_path: &str) -> Result<String, LspError> {
     let cwd = context_cwd()?;
     let abs = resolve_readable_path_inside_context(file_path)?;
@@ -63,15 +56,24 @@ pub fn find_workspace_root(file_path: &str) -> Result<String, LspError> {
     } else {
         dirname(&abs)
     };
+    if !is_path_inside(&cwd, &dir) {
+        return Ok(find_workspace_root_outside_context(&dir));
+    }
     let fallback_root =
         nearest_existing_directory_inside_context(&dir, &cwd).unwrap_or_else(|| cwd.clone());
+    let mut nearest_package_root = None;
     while is_path_inside(&cwd, &dir) {
         if let Some(canonical_dir) = existing_directory_inside_context(&dir, &cwd)
-            && WORKSPACE_MARKERS
+        {
+            if Path::new(&dir).join(GIT_WORKSPACE_MARKER).exists() {
+                return Ok(canonical_dir);
+            }
+            if nearest_package_root.is_none() && PROJECT_WORKSPACE_MARKERS
                 .iter()
                 .any(|marker| Path::new(&dir).join(marker).exists())
-        {
-            return Ok(canonical_dir);
+            {
+                nearest_package_root = Some(canonical_dir);
+            }
         }
         if dir == cwd {
             break;
@@ -82,7 +84,7 @@ pub fn find_workspace_root(file_path: &str) -> Result<String, LspError> {
         }
         dir = parent;
     }
-    Ok(fallback_root)
+    Ok(nearest_package_root.unwrap_or(fallback_root))
 }
 
 /// TS `resolveReadablePathInsideContext`: keeps the lexical path when it is inside cwd.
@@ -96,10 +98,7 @@ pub fn resolve_readable_path_inside_context(file_path: &str) -> Result<String, L
         return Ok(rebased);
     }
     let canonical = canonicalize_existing_or_nearest_ancestor(&abs)?;
-    if is_path_inside(&cwd, &canonical) {
-        return Ok(canonical);
-    }
-    Err(outside_cwd_error(file_path))
+    Ok(canonical)
 }
 
 /// TS `resolvePathInsideContext`: like the readable variant, but the canonical target
@@ -166,6 +165,20 @@ fn nearest_existing_directory_inside_context(directory: &str, cwd: &str) -> Opti
         current = parent;
     }
     None
+}
+
+fn format_install_options(server_id: &str, install_hint: &str) -> Vec<String> {
+    if let Some((_, local_hint)) = LSP_LOCAL_INSTALL_HINTS.iter().find(|(id, _)| *id == server_id) {
+        vec![
+            "To install in THIS repository (preferred \u{2014} no global install needed):".to_string(),
+            format!("  {local_hint}"),
+            String::new(),
+            "Or install it globally:".to_string(),
+            format!("  {install_hint}"),
+        ]
+    } else {
+        vec!["To install, run:".to_string(), format!("  {install_hint}")]
+    }
 }
 
 /// TS `formatServerLookupError`.
@@ -241,11 +254,10 @@ pub fn format_server_lookup_error(result: &FailedServerLookupResult) -> Result<S
                     "The user has pre-authorized LSP installation. Run the install command, then retry this tool:"
                         .to_string(),
                 );
-                lines.push(format!("  {install_hint}"));
+                lines.extend(format_install_options(&server.id, install_hint).into_iter().skip(1));
                 return Ok(lines.join("\n"));
             }
-            lines.push("To install, run:".to_string());
-            lines.push(format!("  {install_hint}"));
+            lines.extend(format_install_options(&server.id, install_hint));
             lines.push(String::new());
             lines.push(
                 "ACTION REQUIRED \u{2014} ASK THE USER whether to install this LSP server."

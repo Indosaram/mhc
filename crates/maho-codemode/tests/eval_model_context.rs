@@ -36,7 +36,7 @@ impl maho_codemode::bridges::output_bridge::OutputExecuteTool for Executor {
 #[tokio::test]
 async fn callable_eval_uses_each_invocations_model_for_display_images() {
     let kernel=Arc::new(JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"image-context",4,None).await.unwrap());
-    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None});
     let tool=create_eval_tool(options).unwrap();
     let mut results=Vec::new();
     for (id,provider,api,expected) in [("provider","ollama","openai-responses","image/png"),("api","other","ollama-chat","image/png"),("normal","openai","openai-responses","image/webp")] {

@@ -14,3 +14,4 @@ pub use lsp::*;
 pub use missing_dependency_result::*;
 pub use post_edit::*;
 pub use request_context::*;
+pub use tools::*;

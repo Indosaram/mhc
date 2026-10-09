@@ -30,6 +30,42 @@ fn grep_empty_path_does_not_fall_back_to_pattern(){
     assert_eq!(requests[0].patterns,vec!["*"]);
 }
 #[test]
+fn custom_parser_empty_yields_zero_requests() {
+    let mut registry = create_builtin_parser_registry();
+    registry.set_definition_resolver(std::sync::Arc::new(|name| {
+        if name == "omo_browser_bridge" {
+            let mut def = maho_ext_api::ToolDefinition::new("omo_browser_bridge", "desc", json!({}), std::sync::Arc::new(|_| Box::pin(async { panic!() })));
+            def.permission_parser = Some(std::sync::Arc::new(|_input, _cwd| Vec::new()));
+            Some(def)
+        } else {
+            None
+        }
+    }));
+    let requests = registry.parse("omo_browser_bridge", &json!({}), (Path::new("/workspace"), Path::new("/home/user")));
+    assert!(requests.is_empty());
+}
+#[test]
+fn custom_parser_returns_custom_requests() {
+    let mut registry = create_builtin_parser_registry();
+    registry.set_definition_resolver(std::sync::Arc::new(|name| {
+        if name == "custom_tool" {
+            let mut def = maho_ext_api::ToolDefinition::new("custom_tool", "desc", json!({}), std::sync::Arc::new(|_| Box::pin(async { panic!() })));
+            def.permission_parser = Some(std::sync::Arc::new(|input, _cwd| {
+                let target = input.get("target").and_then(serde_json::Value::as_str).unwrap_or("default");
+                vec![maho_ext_api::ToolPermissionRequest::new("custom_perm", vec![target.to_string()], vec![format!("{target}/*")])]
+            }));
+            Some(def)
+        } else {
+            None
+        }
+    }));
+    let requests = registry.parse("custom_tool", &json!({"target": "resource"}), (Path::new("/workspace"), Path::new("/home/user")));
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].permission, "custom_perm");
+    assert_eq!(requests[0].patterns, vec!["resource"]);
+    assert_eq!(requests[0].always, vec!["resource/*"]);
+}
+#[test]
 fn list_default(){for name in ["find","ls"]{let r=parse(name,json!({}));assert_eq!(r[0].permission,"list");assert_eq!(r[0].patterns,vec!["."]);}}
 #[test]
 fn fallback(){assert_eq!(parse("unknown",json!({}))[0].patterns,vec!["*"]);}

@@ -3,6 +3,8 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::PoisonError;
+use super::file_location::PostEditFileLocation;
+use super::not_installed_guidance::{not_installed_guidance, PostEditNotInstalledOutcome};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 4;
 const CLEAN_DIAGNOSTICS_TEXT: &str = "No diagnostics found";
@@ -13,6 +15,7 @@ const CLEAN_DIAGNOSTICS_TEXT: &str = "No diagnostics found";
 pub enum PostEditDiagnosticsOutcome {
     Text(String),
     NotConfigured { extension: String },
+    NotInstalled(PostEditNotInstalledOutcome),
 }
 
 /// A thrown runner failure. `message` mirrors `Error.message`; an empty message falls
@@ -34,6 +37,7 @@ impl DiagnosticsRunnerError {
 pub struct PostEditDiagnosticsBlock {
     pub file_path: String,
     pub diagnostics: String,
+    pub blocking: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +45,7 @@ pub enum PostEditObservationKind {
     Block,
     Clean,
     NotConfigured,
+    NotInstalled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +64,7 @@ pub struct PostEditDiagnosticsResult {
 #[derive(Debug, Default)]
 pub struct PostEditNotConfiguredCache {
     not_configured_extensions: Mutex<Vec<String>>,
+    not_installed_servers: Mutex<HashSet<String>>,
 }
 
 impl PostEditNotConfiguredCache {
@@ -90,6 +96,7 @@ pub fn create_post_edit_not_configured_cache() -> PostEditNotConfiguredCache {
 
 pub fn reset_post_edit_not_configured_cache(cache: &PostEditNotConfiguredCache) {
     cache.lock().clear();
+    cache.not_installed_servers.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }
 
 /// TS `CollectPostEditDiagnosticsInput`.
@@ -98,6 +105,7 @@ pub struct CollectPostEditDiagnosticsInput<'a, F> {
     pub run_diagnostics: F,
     pub cache: Option<&'a PostEditNotConfiguredCache>,
     pub max_concurrency: Option<usize>,
+    pub locate_file: Option<&'a (dyn Fn(&str) -> PostEditFileLocation + Sync)>,
 }
 
 /// TS `collectPostEditDiagnostics`: dedupes paths, skips cached not-configured
@@ -118,6 +126,19 @@ where
     let mut result = PostEditDiagnosticsResult::default();
     for (file_path, outcome) in targets.into_iter().zip(outcomes) {
         let kind = match outcome {
+            PostEditDiagnosticsOutcome::NotInstalled(outcome) => {
+                match not_installed_guidance(&file_path, &outcome, &cache.not_installed_servers, input.locate_file) {
+                    Some(text) if !text.is_empty() && text != CLEAN_DIAGNOSTICS_TEXT => {
+                        result.blocks.push(PostEditDiagnosticsBlock {
+                            file_path: file_path.clone(),
+                            diagnostics: text,
+                            blocking: false,
+                        });
+                        PostEditObservationKind::Block
+                    }
+                    _ => PostEditObservationKind::NotInstalled,
+                }
+            }
             PostEditDiagnosticsOutcome::NotConfigured { extension } => {
                 cache.add(extension);
                 PostEditObservationKind::NotConfigured
@@ -131,6 +152,7 @@ where
                 result.blocks.push(PostEditDiagnosticsBlock {
                     file_path: file_path.clone(),
                     diagnostics,
+                    blocking: true,
                 });
                 PostEditObservationKind::Block
             }
@@ -190,6 +212,10 @@ where
             let outcome = match run_diagnostics(file_path.clone()).await {
                 Ok(PostEditDiagnosticsOutcome::Text(text)) => {
                     PostEditDiagnosticsOutcome::Text(text.trim().to_string())
+                }
+                Ok(PostEditDiagnosticsOutcome::NotInstalled(mut outcome)) => {
+                    outcome.text = outcome.text.trim().to_string();
+                    PostEditDiagnosticsOutcome::NotInstalled(outcome)
                 }
                 Ok(not_configured) => not_configured,
                 Err(error) => {

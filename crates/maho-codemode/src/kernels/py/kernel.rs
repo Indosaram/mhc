@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, path::Path, sync::{Arc, Mutex}, time::Duration};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use crate::kernels::shared::kernel_prelude_plan::KernelPreludeTracker;
 use super::{kernel_contract::{PendingRun, PythonKernelRunOptions, PythonKernelStartOptions}, transport::{PythonKernelTransport, PythonTransportOptions, failed_python_result}};
 
 type QueueSnapshot = (Option<String>, Vec<String>);
@@ -105,12 +106,14 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
     let mut active:Option<PendingRun>=None;
     let mut deadline:Option<tokio::time::Instant>=None;
     let mut failure:Option<String>=None;
+    let mut prelude_tracker = KernelPreludeTracker::default();
     loop {
         if active.is_none() && failure.is_none() && let Some(mut run)=queue.pop_front() {
             run.started_at=Some(tokio::time::Instant::now());
             if let Some(callback)=&run.input.on_started { callback(); }
             deadline=run.input.timeout_ms.map(|ms|tokio::time::Instant::now()+Duration::from_millis(ms));
-            if let Err(error)=transport.run(&run.input.cell_id,&run.input.code,run.input.timeout_ms).await {
+            let plan = prelude_tracker.plan(&run.input.preludes);
+            if let Err(error)=transport.run_with_preludes(&run.input.cell_id,&run.input.code,run.input.timeout_ms,Some(&plan)).await {
                 let _=run.resolve.send(Err(error.to_string()));
             } else { active=Some(run); }
         }
@@ -144,6 +147,7 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                 }
                 Some(Command::Reset(response))=>{
                     settle_all(&mut active,&mut queue,"Python kernel reset");deadline=None;
+                    prelude_tracker = KernelPreludeTracker::default();
                     let result=match transport.retire().await {Ok(())=>match start_transport(&options,&shutdown).await {Ok(next)=>{transport=next;Ok(())},Err(error)=>Err(error)},Err(error)=>Err(error.to_string())};
                     failure=result.as_ref().err().cloned();let _=response.send(result);
                 }
@@ -157,28 +161,42 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                 Ok(message)=>{
                     if message["type"]=="result" {
                         if active.as_ref().is_some_and(|run|message["cellId"]==run.input.cell_id) && let Some(run)=active.take() {
-                            if let Some(callback)=run.input.on_message.as_ref().or(fallback.as_ref()){callback(&message);}settle(run,message,true);deadline=None;
+                            deadline=None;
+                            let mut message=message;
+                            if message["durationMs"]==0 && let Some(started)=run.started_at {message["durationMs"]=serde_json::json!(started.elapsed().as_secs_f64()*1000.0);}
+                            settle(run,message,true);
                         }
-                    } else if let Some(callback)=active.as_ref().and_then(|run|run.input.on_message.as_ref()).or(fallback.as_ref()) {callback(&message);}
+                    } else if message["type"]=="interrupted" {
+                        if let Some(run)=&mut active && let Some(sender)=run.resolve_state_retained.take() {let _=sender.send(true);}
+                    } else {
+                        let active_callback=active.as_ref().and_then(|run|run.input.on_message.as_ref());
+                        if let Some(callback)=active_callback.or(fallback.as_ref()) {callback(&message);}
+                    }
                 }
                 Err(error)=>{
-                    if let Some(run)=active.take() {let result=failed_python_result(&run.input.cell_id,"Python kernel died",Some(&error.to_string()));settle(run,result,false);}
-                    deadline=None;
-                    match transport.retire().await {Ok(())=>match start_transport(&options,&shutdown).await {Ok(next)=>transport=next,Err(error)=>failure=Some(error)},Err(error)=>failure=Some(error.to_string())}
+                    let failure_message=error.to_string();
+                    settle_all(&mut active,&mut queue,&format!("Python kernel died: {failure_message}"));
+                    let _=transport.retire().await;
+                    match start_transport(&options,&shutdown).await {
+                        Ok(next)=>{transport=next;failure=None;},
+                        Err(restart_error)=>{failure=Some(restart_error);}
+                    }
                 }
             },
-            ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending::<()>().await}}, if deadline.is_some()=>{
+            _ = async { match deadline { Some(time)=>tokio::time::sleep_until(time).await, None=>std::future::pending().await } } => {
                 if let Some(run)=active.take() {
-                    let message=if run.interrupt_reason.is_some(){"Eval interrupted".into()}else{format!("Python kernel timed out after {}ms",run.input.timeout_ms.unwrap_or(0))};
+                    let timed_out=run.interrupt_reason.is_none();
+                    let message=if timed_out {format!("Python kernel timed out after {}ms",run.input.timeout_ms.unwrap_or_default())} else {"Eval interrupted".into()};
                     let result=failed_python_result(&run.input.cell_id,&message,None);
-                    let retired=transport.retire().await;
-                    settle(run,result,false);
-                    match retired {Ok(())=>match start_transport(&options,&shutdown).await {Ok(next)=>transport=next,Err(error)=>failure=Some(error)},Err(error)=>failure=Some(error.to_string())}
+                    let _=transport.retire().await;
+                    match start_transport(&options,&shutdown).await {
+                        Ok(next)=>{transport=next;failure=None;},
+                        Err(restart_error)=>{failure=Some(restart_error);}
+                    }
+                    deadline=None;settle(run,result,false);
                 }
-                deadline=None;
             }
         }
-        if let Some(error)=&failure {for run in queue.drain(..){let _=run.resolve.send(Err(error.clone()));}}
     }
-    *snapshot.lock().expect("Python queue poisoned")=(None,Vec::new());
+    let _=transport.retire().await;
 }

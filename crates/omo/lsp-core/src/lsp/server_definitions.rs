@@ -16,6 +16,27 @@ impl BuiltinServer {
     }
 }
 
+pub const LSP_LOCAL_INSTALL_HINTS: &[(&str, &str)] = &[
+    ("typescript", "bun add -d typescript-language-server typescript"),
+    ("vue", "bun add -d @vue/language-server"),
+    ("eslint", "bun add -d vscode-langservers-extracted"),
+    ("oxlint", "bun add -d oxlint"),
+    ("biome", "bun add -d @biomejs/biome"),
+    ("svelte", "bun add -d svelte-language-server"),
+    ("astro", "bun add -d @astrojs/language-server"),
+    ("bash", "bun add -d bash-language-server"),
+    ("bash-ls", "bun add -d bash-language-server"),
+    ("yaml-ls", "bun add -d yaml-language-server"),
+    ("php", "bun add -d intelephense"),
+    ("prisma", "bun add -d prisma"),
+    ("dockerfile", "bun add -d dockerfile-language-server-nodejs"),
+    ("pyright", "uv add --dev pyright"),
+    ("basedpyright", "uv add --dev basedpyright"),
+    ("ruff", "uv add --dev ruff"),
+    ("ty", "uv add --dev ty"),
+    ("ruby-lsp", "bundle add ruby-lsp --group development"),
+];
+
 pub const LSP_INSTALL_HINTS: &[(&str, &str)] = &[
     (
         "typescript",

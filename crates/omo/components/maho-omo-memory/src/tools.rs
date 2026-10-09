@@ -98,8 +98,12 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
     [memory, patch]
 }
 
+pub fn register_memory_tools_with_options(api: &mut ExtensionApi, resolve: MemoryContextResolver, options: MemoryToolsOptions) {
+    for tool in create_memory_tools_with_options(resolve, options) { api.register_tool(tool); }
+}
+
 pub fn register_memory_tools(api: &mut ExtensionApi, resolve: MemoryContextResolver) {
-    for tool in create_memory_tools(resolve) { api.register_tool(tool); }
+    register_memory_tools_with_options(api, resolve, MemoryToolsOptions::default());
 }
 
 #[cfg(test)]

@@ -108,6 +108,18 @@ fn expected_tool_surface() -> Value {
             },
         },
         {
+            "name": "format",
+            "title": "LSP Format",
+            "description": "Format a source file with its language server and write the returned edits to disk.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "filePath": { "type": "string", "description": "Source file path to format." },
+                },
+                "required": ["filePath"],
+            },
+        },
+        {
             "name": "install_decision",
             "title": "LSP Install Decision",
             "description": "Record whether the user allowed or declined installing a missing LSP server. Record 'declined' when the user declines, or has not explicitly asked for LSP installation, to silence future prompts.",
@@ -140,7 +152,7 @@ fn standalone_context() -> crate::request_context::LspRequestContext {
 }
 
 #[test]
-fn public_eight_tool_schemas_are_pinned_in_order() {
+fn public_nine_tool_schemas_are_pinned_in_order() {
     let surface: Vec<Value> = lsp_mcp_tools()
         .into_iter()
         .map(|tool| {

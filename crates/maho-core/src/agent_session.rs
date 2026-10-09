@@ -4379,6 +4379,7 @@ impl AgentSession {
                 description: tool.tool.description.clone(),
                 parameters: tool.tool.parameters.clone(),
                 prompt_guidelines: None,
+                kernel_prelude: None,
                 source_info: SourceInfo {
                     path: String::new(),
                     source: String::new(),

@@ -30,6 +30,22 @@ fn fixture() -> (tempfile::TempDir, GitMemoryRepo) {
 }
 
 #[test]
+fn projected_paths_use_locale_order_for_case() {
+    let (_dir, repo) = fixture();
+    let base = repo.head().expect("head").expect("base");
+    let paths = ["notes/Z.md", "notes/a.md", "notes/A.md", "notes/z.md"];
+    for path in paths {
+        std::fs::write(repo.dir.join(path), "---\ndescription: note\n---\nbody\n")
+            .expect("add note");
+    }
+    repo.commit_write(&paths, "add notes", &author()).expect("commit");
+    let head = repo.head().expect("head").expect("revision");
+    let changes = projected_changes_between(&repo, Some(&base), Some(&head), &Default::default())
+        .expect("changes");
+    assert_eq!(changes.added, ["notes/a.md", "notes/A.md", "notes/z.md", "notes/Z.md"]);
+}
+
+#[test]
 fn reports_added_and_updated_between_two_revisions() {
     let (_dir, repo) = fixture();
     let base = repo.head().expect("head").expect("base");

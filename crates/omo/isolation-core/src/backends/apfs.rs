@@ -66,7 +66,7 @@ mod system {
     use std::ffi::CStr;
     use std::sync::Arc;
 
-    extern "C" {
+    unsafe extern "C" {
         fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32) -> libc::c_int;
     }
 

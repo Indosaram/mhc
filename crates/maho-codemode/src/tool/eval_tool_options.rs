@@ -1,17 +1,18 @@
 use std::{collections::HashMap,path::PathBuf,sync::{Arc,Mutex}};
 use maho_ai::utils::abort::AbortSignal;
 use maho_ext_api::AgentToolResult;
+use maho_tools::definition::KernelPrelude;
 use crate::{bridges::{output_bridge::OutputExecuteTool,schema_bridge::EvalToolCatalog},config::settings::CodemodeSettings,prompt::eval_prompt::EvalPromptOptions};
 use super::{types::{EvalKernel,EvalKernelFuture,EvalLanguage,EvalRuntimeInfo,EvalToolInput},detached_cell_manager::EvalDetachedCellManager,cell_handler::CellCompletionHandler,image_resize::EvalImageSdk};
 
 pub trait EvalKernelManager: Send + Sync {
     fn get_kernel(&self,language:EvalLanguage) -> EvalKernelFuture<'_,Arc<dyn EvalKernel>>;
-    // Managers without an HTTP completion bridge need no context registration.
     fn set_invocation_context(&self,_cell_id:&str,_context:EvalInvocationContext) -> Option<Box<dyn FnOnce()+Send>> {None}
     fn execution_tracker(&self) -> Option<&crate::extension::session_manager_proxy::SessionManagerProxy> { None }
 }
 pub type CellUpdateCallback=Arc<dyn Fn(AgentToolResult)+Send+Sync>;
 pub type CellSettledCallback=Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+pub type ActiveKernelPreludes=Arc<dyn Fn() -> Result<Vec<KernelPrelude>, String> + Send + Sync>;
 #[derive(Clone)]
 pub struct EvalInvocationContext {
     pub model: Option<maho_ai::model::Model>,
@@ -32,14 +33,41 @@ pub struct CreateEvalToolOptions {
     pub prompt: EvalPromptOptions,
     pub runtimes: HashMap<EvalLanguage,EvalRuntimeInfo>,
     pub mode: String,
+    pub active_kernel_preludes: Option<ActiveKernelPreludes>,
 }
+
+impl CreateEvalToolOptions {
+    pub fn new(
+        kernel_manager: Arc<dyn EvalKernelManager>,
+        executor: Arc<dyn OutputExecuteTool>,
+        cell_manager: Arc<Mutex<EvalDetachedCellManager>>,
+        image_sdk: Arc<dyn EvalImageSdk>,
+    ) -> Self {
+        Self {
+            kernel_manager,
+            executor,
+            list_tools: None,
+            complete: None,
+            settings: Default::default(),
+            artifacts_dir: None,
+            image_sdk,
+            cell_manager,
+            on_cell_settled: None,
+            prompt: Default::default(),
+            runtimes: HashMap::new(),
+            mode: "print".into(),
+            active_kernel_preludes: None,
+        }
+    }
+}
+
 pub struct EvalCellInvocation {
-    pub steering_signal: Option<maho_ext_api::AbortSignal>,
     pub cell_id: String,
     pub input: EvalToolInput,
     pub signal: AbortSignal,
+    pub steering_signal: Option<maho_ext_api::AbortSignal>,
     pub on_update: Option<CellUpdateCallback>,
-    pub mode: String,
-    pub model: Option<maho_ai::model::Model>,
     pub context: Option<EvalInvocationContext>,
+    pub model: Option<maho_ai::model::Model>,
+    pub mode: String,
 }

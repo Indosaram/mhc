@@ -49,7 +49,7 @@ fn relative_file_inside_cwd_resolves_marker_workspace_inside_cwd() {
 }
 
 #[test]
-fn absolute_file_outside_cwd_rejects_before_workspace_inference() {
+fn absolute_file_outside_cwd_uses_its_own_marked_workspace() {
     let root = temp_root();
     let outside = temp_root();
     std::fs::create_dir_all(outside.path().join(".git")).expect("mkdir");
@@ -67,10 +67,48 @@ fn absolute_file_outside_cwd_rejects_before_workspace_inference() {
     let result =
         run_with_request_context(context_for(root.path()), || find_workspace_root(&target));
 
-    assert!(
-        matches!(result, Err(LspError::InvalidPath(_))),
-        "{result:?}"
-    );
+    assert_eq!(result.expect("workspace"), real(outside.path()));
+}
+
+#[test]
+fn outside_read_path_is_canonical_but_mutation_is_rejected() {
+    let root = temp_root();
+    let outside = temp_root();
+    let target = outside.path().join("probe.ts");
+    std::fs::write(&target, "export const value = 1;\n").expect("write");
+    let target_text = target.to_string_lossy().into_owned();
+    let (read, mutation) = run_with_request_context(context_for(root.path()), || {
+        (
+            resolve_readable_path_inside_context(&target_text),
+            resolve_path_inside_context(&target_text),
+        )
+    });
+    assert_eq!(read.expect("read path"), real(&target));
+    assert!(matches!(mutation, Err(LspError::InvalidPath(_))));
+}
+
+#[test]
+fn outside_unmarked_file_uses_its_own_directory() {
+    let root = temp_root();
+    let outside = temp_root();
+    let target = outside.path().join("probe.ts");
+    std::fs::write(&target, "export const value = 1;\n").expect("write");
+    let result = run_with_request_context(context_for(root.path()), || {
+        find_workspace_root(&target.to_string_lossy())
+    });
+    assert_eq!(result.expect("workspace"), real(outside.path()));
+}
+
+#[test]
+fn repository_marker_wins_over_nearest_package_marker() {
+    let root = temp_root();
+    std::fs::create_dir_all(root.path().join(".git")).expect("git marker");
+    std::fs::create_dir_all(root.path().join("packages/nested/src")).expect("directories");
+    std::fs::write(root.path().join("packages/nested/package.json"), "{}").expect("marker");
+    let workspace = run_with_request_context(context_for(root.path()), || {
+        find_workspace_root("packages/nested/src/file.ts")
+    });
+    assert_eq!(workspace.expect("workspace"), real(root.path()));
 }
 
 #[test]

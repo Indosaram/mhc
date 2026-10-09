@@ -11,16 +11,27 @@ use crate::support::bundled_snapshot;
 fn keeps_luna_fast_aligned_with_its_bundled_canonical_model() {
     let snapshot = bundled_snapshot();
 
-    let issues =
-        collect_model_capability_guardrail_issues(CollectModelCapabilityGuardrailIssuesInput {
-            snapshot: Some(&snapshot),
-            ..Default::default()
-        });
+    for model_id in [
+        "gpt-5.6-luna-fast",
+        "gpt-6-luna-fast",
+        "gpt-6-sol-fast",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol-fast",
+    ] {
+        let issues =
+            collect_model_capability_guardrail_issues(CollectModelCapabilityGuardrailIssuesInput {
+                snapshot: Some(&snapshot),
+                ..Default::default()
+            });
 
-    assert!(!issues.iter().any(|issue| matches!(
-        issue,
-        ModelCapabilityGuardrailIssue::BuiltInModelMissingFromSnapshot { model_id, .. } if model_id == "gpt-5.6-luna-fast"
-    )));
+        assert!(
+            !issues.iter().any(|issue| matches!(
+                issue,
+                ModelCapabilityGuardrailIssue::BuiltInModelMissingFromSnapshot { model_id: id, .. } if id == model_id
+            )),
+            "{model_id}"
+        );
+    }
 }
 
 #[test]
@@ -32,7 +43,7 @@ fn requires_built_in_requirement_models_to_stay_unique_and_sorted() {
     assert_eq!(model_ids, sorted);
     let unique: std::collections::HashSet<_> = model_ids.iter().collect();
     assert_eq!(unique.len(), model_ids.len());
-    assert!(model_ids.iter().any(|id| id == "claude-opus-5"));
+    assert!(model_ids.iter().any(|id| id == "claude-opus-5-5"));
     assert!(!model_ids.iter().any(|id| id == "gpt-5.5"));
     assert!(model_ids.iter().any(|id| id == "gpt-5.6-sol"));
     assert!(model_ids.iter().any(|id| id == "kimi-k3"));

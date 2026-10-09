@@ -64,6 +64,7 @@ pub struct LspClientTransport {
     workspace_apply_edit_handler: Mutex<Option<WorkspaceApplyEditHandler>>,
     publish_diagnostics_hook: Mutex<Option<PublishDiagnosticsHook>>,
     diagnostic_pull_supported: AtomicBool,
+    document_formatting_supported: AtomicBool,
 }
 
 impl std::fmt::Debug for LspClientTransport {
@@ -94,6 +95,7 @@ impl LspClientTransport {
             workspace_apply_edit_handler: Mutex::new(None),
             publish_diagnostics_hook: Mutex::new(None),
             diagnostic_pull_supported: AtomicBool::new(false),
+            document_formatting_supported: AtomicBool::new(false),
         }
     }
 
@@ -136,6 +138,14 @@ impl LspClientTransport {
 
     pub fn is_diagnostic_pull_supported(&self) -> bool {
         self.diagnostic_pull_supported.load(Ordering::SeqCst)
+    }
+
+    pub fn is_document_formatting_supported(&self) -> bool {
+        self.document_formatting_supported.load(Ordering::SeqCst)
+    }
+
+    pub fn set_document_formatting_supported(&self, supported: bool) {
+        self.document_formatting_supported.store(supported, Ordering::SeqCst);
     }
 
     pub fn clear_stored_diagnostics(&self, uri: &str) {
@@ -467,11 +477,14 @@ impl LspClientTransport {
                 None,
             )
             .await?;
-        let pull_supported = result
-            .get("capabilities")
-            .and_then(Value::as_object)
-            .is_some_and(|capabilities| capabilities.contains_key("diagnosticProvider"));
+        let caps = result.get("capabilities").and_then(Value::as_object);
+        let pull_supported = caps.is_some_and(|c| c.contains_key("diagnosticProvider"));
         self.set_diagnostic_pull_supported(pull_supported);
+        let formatting_supported = caps.is_some_and(|c| {
+            c.get("documentFormattingProvider")
+                .is_some_and(|v| v == &Value::Bool(true) || v.is_object())
+        });
+        self.set_document_formatting_supported(formatting_supported);
         self.send_notification("initialized", Some(json!({})))
             .await?;
         self.send_notification(

@@ -91,6 +91,16 @@ pub enum RenderShell { Default, #[serde(rename = "self")] Own }
 
 pub type ToolUpdateCallback = Arc<dyn Fn(ToolResult) -> Result<(), ToolError> + Send + Sync>;
 pub type PrepareArguments = Arc<dyn Fn(Value) -> Result<Value, ToolError> + Send + Sync>;
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelPrelude {
+    pub javascript: String,
+    pub python: String,
+    pub documentation: String,
+    pub exports: Vec<String>,
+    pub declarations: Option<String>,
+    pub safety: Option<String>,
+    pub method_allowlist: Option<Vec<String>>,
+}
 pub struct ToolCall<'a> {
     pub id: &'a str,
     pub params: Value,
@@ -99,6 +109,19 @@ pub struct ToolCall<'a> {
     pub context: Option<&'a dyn ToolContext>,
 }
 pub type ToolExecutor = Arc<dyn for<'a> Fn(ToolCall<'a>) -> ToolFuture<'a, ToolResult> + Send + Sync>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPermissionRequest {
+    pub permission: String,
+    pub patterns: Vec<String>,
+    pub always: Vec<String>,
+}
+impl ToolPermissionRequest {
+    pub fn new(permission: impl Into<String>, patterns: Vec<String>, always: Vec<String>) -> Self {
+        Self { permission: permission.into(), patterns, always }
+    }
+}
+pub type ToolPermissionParser = Arc<dyn Fn(&Value, &Path) -> Vec<ToolPermissionRequest> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct ToolDefinition {
@@ -119,6 +142,8 @@ pub struct ToolDefinition {
     pub prepare_arguments: Option<PrepareArguments>,
     pub execution_mode: Option<ToolExecutionMode>,
     pub execute: ToolExecutor,
+    pub kernel_prelude: Option<KernelPrelude>,
+    pub permission_parser: Option<ToolPermissionParser>,
 }
 impl ToolDefinition {
     pub fn new(name: &str, description: &str, parameters: Value, execute: ToolExecutor) -> Self {
@@ -126,6 +151,7 @@ impl ToolDefinition {
             exposure: None, search_text: None, search_keywords: None, search_group: None,
             allow_lazy_activation: None, prompt_snippet: None, prompt_guidelines: None,
             freeform: None, constrained_sampling: None, render_shell: None,
-            prepare_arguments: None, execution_mode: None }
+            prepare_arguments: None, execution_mode: None,
+            permission_parser: None, kernel_prelude: None }
     }
 }

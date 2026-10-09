@@ -7,6 +7,7 @@ pub use definitions::LspToolKind;
 pub use definitions::lsp_mcp_tools;
 pub use handlers::execute_lsp_diagnostics;
 pub use handlers::execute_lsp_find_references;
+pub use handlers::execute_lsp_format;
 pub use handlers::execute_lsp_goto_definition;
 pub use handlers::execute_lsp_install_decision;
 pub use handlers::execute_lsp_prepare_rename;
@@ -40,6 +41,7 @@ pub async fn execute_lsp_tool(
         LspToolKind::PrepareRename => execute_lsp_prepare_rename(params, signal).await,
         LspToolKind::Rename => execute_lsp_rename(params, signal).await,
         LspToolKind::InstallDecision => execute_lsp_install_decision(params),
+        LspToolKind::Format => execute_lsp_format(params, signal).await,
     }
 }
 
