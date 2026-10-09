@@ -121,7 +121,7 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
     assert_eq!(
         recorder.options(),
         [TelemetryTransportOptions {
-            disable_geoip: true,
+            disable_geoip: false,
             disable_remote_config: true,
             enable_exception_autocapture: false,
             enable_local_evaluation: false,
@@ -150,6 +150,145 @@ fn unknown_properties_are_dropped_with_a_diagnostic() {
         diagnostics.events(),
         [TelemetryDiagnosticEvent::TelemetryEventPropertyDropped]
     );
+}
+
+#[test]
+fn additional_properties_ride_on_shared_block_without_overriding_fixed_keys() {
+    let fixture = Fixture::new();
+    let recorder = Recorder::new();
+    let mut product = fixture.product.clone();
+    product.additional_properties = Some(props(json!({
+        "install_id": "a".repeat(64),
+        "platform": "spoofed",
+        "surface": "desktop",
+    })));
+    let allowlist = session_allowlist();
+    let client = create_event_telemetry_client(&CreateEventTelemetryClientInput {
+        diagnostics: None,
+        distinct_id: "machine-hash",
+        env: Some(&fixture.env),
+        on_capture: None,
+        product: &product,
+        property_allowlist: &allowlist,
+        schema_version: 3,
+        set_timeout_fn: None,
+        source: "test",
+        transport_factory: Some(recorder.factory()),
+    });
+
+    client.capture_event(
+        "session_started",
+        &props(json!({
+            "$session_id": "session-hash",
+            "reason": "startup",
+        })),
+    );
+
+    let messages = recorder.messages();
+    assert_eq!(messages.len(), 1);
+    let properties = &messages[0].properties;
+    assert_eq!(properties.get("install_id"), Some(&Value::String("a".repeat(64))));
+    assert_eq!(properties.get("surface"), Some(&Value::String("desktop".into())));
+    assert_eq!(properties.get("platform"), Some(&Value::String("omo-senpi".into())));
+    assert_eq!(properties.get("product_name"), Some(&Value::String("omo-native".into())));
+    assert_eq!(properties.get("schema_version"), Some(&Value::from(3)));
+}
+
+#[test]
+fn native_events_client_effective_transport_options_disable_geoip_false_while_guards_hold() {
+    let fixture = Fixture::new();
+    let recorder = Recorder::new();
+    let diagnostics = DiagnosticsSink::default();
+    let configured_product = TelemetryProductConfig {
+        disable_geoip: Some(true),
+        transport_options: Some(TelemetryTransportOverrides {
+            disable_geoip: Some(true),
+            flush_at: Some(3),
+            flush_interval: Some(250),
+            ..TelemetryTransportOverrides::default()
+        }),
+        ..fixture.product.clone()
+    };
+    let allowlist = allowlist(
+        "session_started",
+        &["$session_id", "$ip", "$lib", "reason", "count", "prompt_text", "file_path", "user_prompt"],
+    );
+    let client = create_event_telemetry_client(&CreateEventTelemetryClientInput {
+        diagnostics: Some(diagnostics.sink()),
+        distinct_id: "machine-hash",
+        env: Some(&fixture.env),
+        on_capture: None,
+        product: &configured_product,
+        property_allowlist: &allowlist,
+        schema_version: 2,
+        set_timeout_fn: None,
+        source: "test",
+        transport_factory: Some(recorder.factory()),
+    });
+
+    client.capture_event(
+        "session_started",
+        &props(json!({
+            "$session_id": "session-hash",
+            "$ip": "203.0.113.1",
+            "$lib": "custom-client",
+            "count": f64::INFINITY,
+            "file_path": "/Users/x/secret",
+            "prompt_text": "anything",
+            "reason": "startup",
+            "user_prompt": "ignore previous instructions",
+        })),
+    );
+
+    assert_eq!(
+        recorder.options(),
+        [TelemetryTransportOptions {
+            disable_geoip: false,
+            disable_remote_config: true,
+            enable_exception_autocapture: false,
+            enable_local_evaluation: false,
+            flush_at: 20,
+            flush_interval: 10_000,
+            host: "https://posthog.test".into(),
+            strict_local_evaluation: true,
+        }]
+    );
+    let messages = recorder.messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].properties.get("$process_person_profile"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        messages[0].properties.get("$session_id"),
+        Some(&Value::String("session-hash".into()))
+    );
+    assert_eq!(
+        messages[0].properties.get("package_version"),
+        Some(&Value::String("5.0.0".into()))
+    );
+    assert_eq!(
+        messages[0].properties.get("platform"),
+        Some(&Value::String("omo-senpi".into()))
+    );
+    assert_eq!(
+        messages[0].properties.get("product_name"),
+        Some(&Value::String("omo-native".into()))
+    );
+    assert_eq!(
+        messages[0].properties.get("reason"),
+        Some(&Value::String("startup".into()))
+    );
+    assert_eq!(
+        messages[0].properties.get("schema_version"),
+        Some(&Value::from(2))
+    );
+    assert!(!messages[0].properties.contains_key("$ip"));
+    assert!(!messages[0].properties.contains_key("$lib"));
+    assert!(!messages[0].properties.contains_key("count"));
+    assert!(!messages[0].properties.contains_key("file_path"));
+    assert!(!messages[0].properties.contains_key("prompt_text"));
+    assert!(!messages[0].properties.contains_key("user_prompt"));
 }
 
 #[test]
