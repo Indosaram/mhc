@@ -366,6 +366,21 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             );
             ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
         },
+        RpcCommandBody::GetProviderAccounts{provider}=>{
+            let result=session.model_registry().get_credential_accounts(provider,&session.agent_dir()).await
+                .map(|accounts|Some(serde_json::json!({"accounts":accounts.into_iter().map(|account|serde_json::json!({
+                    "name":account.name,"displayName":account.display_name,"source":account.source.as_str(),"blocked":account.blocked,"pinned":account.pinned,
+                })).collect::<Vec<_>>() })));
+            ("get_provider_accounts",result)
+        },
+        RpcCommandBody::AccountPin{provider,name}=>{
+            let result=session.model_registry().pin_credential_account(provider,name.as_deref(),&session.agent_dir()).await.map(|()|None);
+            ("account_pin",result)
+        },
+        RpcCommandBody::AccountRemove{provider,name}=>{
+            let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
+            ("account_remove",result)
+        },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
         RpcCommandBody::GetTree=>{fn tree_node(node:maho_core::session_manager::SessionTreeNode)->serde_json::Value{serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>(),"label":node.label,"labelTimestamp":node.label_timestamp})}let tree=session.with_session_manager(|manager|manager.get_tree(manager.leaf_id()).map(tree_node));("get_tree",Ok(Some(serde_json::json!({"tree":tree,"leafId":session.with_session_manager(|manager|manager.leaf_id())}))))},
         RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
@@ -643,5 +658,20 @@ mod new_session_tests{
     async fn edit_assistant_message_reports_exact_missing_entry_error(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_assistant_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
+    }
+    #[tokio::test]
+    async fn get_provider_accounts_dispatches_empty_accounts(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_provider_accounts","provider":"openai"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"get_provider_accounts"); assert_eq!(response["success"],true); assert_eq!(response["data"],serde_json::json!({"accounts":[]}));
+    }
+    #[tokio::test]
+    async fn account_pin_preserves_provider_error(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"account_pin","provider":"openai","name":"missing"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"account_pin"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Provider account not found: missing");
+    }
+    #[tokio::test]
+    async fn account_remove_preserves_provider_error(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"account_remove","provider":"openai","name":"missing"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"account_remove"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Provider account not found: missing");
     }
 }
