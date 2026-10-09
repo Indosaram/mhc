@@ -62,6 +62,7 @@ use crate::session_activity::{SessionActivitySnapshot, WakeSourceTracker, is_ses
 use crate::session_log::{SessionLogger, SessionLoggerOptions};
 use crate::session_manager::SessionManager;
 use crate::settings_manager::SettingsManager;
+use crate::utils::tool_result_images::normalize_tool_result_images;
 
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
 /// Sample eval-cell call for an eval-only tool, using the argument name that tool actually takes.
@@ -4834,6 +4835,8 @@ impl AgentSession {
                     if let Some(is_error) = rewrite.is_error { result.is_error = Some(is_error); }
                     if let Some(usage) = rewrite.usage { result.usage = Some(usage); }
                 }
+                let normalized = normalize_tool_result_images(&result.content, None).await;
+                result.content = normalized.into_owned();
                 Ok::<(), String>(())
             }.await;
             hook.map_err(|message| ExecuteToolError { code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message, active_tools })?;
@@ -5128,13 +5131,17 @@ impl AgentSession {
                 let session = AgentSession { inner };
                 let mut guard = session.extension_runner.lock().await.clone();
                 let runner = guard.as_mut()?;
-                let content = serde_json::from_value(serde_json::to_value(context.result.content).ok()?).ok()?;
+                let content = serde_json::from_value(serde_json::to_value(context.result.content.clone()).ok()?).ok()?;
                 let rewrite = runner.emit_tool_result(maho_ext_api::ToolResultEvent {
                     tool_call_id: context.tool_call.id, tool_name: context.tool_call.name, input: context.args,
                     content, details: Some(context.result.details), is_error: context.is_error, usage: context.result.usage,
                 }).await.ok().flatten()?;
+                let content = normalize_tool_result_images(
+                    &rewrite.content.as_ref().and_then(|content| serde_json::to_value(content).ok()).and_then(|content| serde_json::from_value(content).ok()).unwrap_or(context.result.content.clone()),
+                    None,
+                ).await.into_owned();
                 Some(maho_agent::types::AfterToolCallResult {
-                    content: rewrite.content.and_then(|content| serde_json::from_value(serde_json::to_value(content).ok()?).ok()),
+                    content: Some(serde_json::from_value(serde_json::to_value(content).ok()?).ok()?),
                     details: rewrite.details, is_error: rewrite.is_error, usage: rewrite.usage, terminate: None,
                 })
             })
