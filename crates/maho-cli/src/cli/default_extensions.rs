@@ -201,8 +201,19 @@ impl Extension for Task {
                     let team_ownership = senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
                         state_dir: ownership.state_dir.clone(), team_bounds: ownership.team_bounds, load_runtime_state: None,
                     };
-                    if let Some(component) = maho_omo_task::component::TaskComponent::register(&mut api, engine, spawn, ownership,
-                        senpi_task::team::member_extension::identity::is_team_member_process_from_env())? {
+                    let member = senpi_task::team::member_extension::identity::is_team_member_process_from_env();
+                    let sweep_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+                    let packaged = lsp_daemon::paths::packaged_runtime_defaults();
+                    let logger = shared.logger();
+                    let info_log = logger.clone();
+                    let warn_log = logger.clone();
+                    let sweep = maho_omo_task::process_sweep::production_process_sweep_options(
+                        sweep_env,
+                        packaged,
+                        Arc::new(move |m: &str| info_log.info(m, None)),
+                        Arc::new(move |m: &str| warn_log.warn(m, None)),
+                    );
+                    if let Some(component) = maho_omo_task::component::TaskComponent::register_with_process_sweep(&mut api, engine, spawn, ownership, member, sweep)? {
                         super::task_session::mount_team_runtime(&mut api, &component, team_ownership, actions.clone(), coordinator.clone())?;
                     }
                     let handlers = std::mem::take(&mut api.registered.handlers);
