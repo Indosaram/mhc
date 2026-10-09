@@ -1,6 +1,6 @@
 //! Read-only native diagnostics corresponding to the three portable `omo doctor` checks.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::{BTreeMap, HashMap}, path::Path};
 
 const DEFAULT_CATEGORIES: &[&str] = &[
     "architect", "artistry", "deep-high", "deep-low", "quick", "ultrabrain",
@@ -85,7 +85,8 @@ pub fn run_doctor(args: &[String]) -> Result<i32, String> {
     if !args.is_empty() { return Err(format!("Unknown doctor option: {}", args[0])); }
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let env = env_map();
-    let agent_dir = maho_core::config::get_agent_dir_with(&cwd.to_string_lossy(), env.get("HOME").map(String::as_str).unwrap_or("."), &env);
+    let agent_dir_env: HashMap<_, _> = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+    let agent_dir = maho_core::config::get_agent_dir_with(&cwd.to_string_lossy(), env.get("HOME").map(String::as_str).unwrap_or("."), &agent_dir_env);
     let lines = doctor_lines(&cwd, &env, &agent_dir);
     println!("{}", lines.join("\n"));
     Ok(if lines.iter().any(|line| severity(line)) { 1 } else { 0 })
