@@ -230,6 +230,40 @@ pub fn parse_steering_proposals(argv: &[String]) -> Result<Vec<UlwLoopSteeringPr
     Ok(proposals)
 }
 
+pub fn normalize_steering_proposal(
+    mut proposal: UlwLoopSteeringProposal,
+) -> Result<UlwLoopSteeringProposal, UlwLoopError> {
+    fn trim(value: &mut Option<String>) {
+        if let Some(value) = value {
+            *value = value.trim().to_string();
+        }
+    }
+
+    trim(&mut proposal.goal_id);
+    trim(&mut proposal.target_goal_id);
+    trim(&mut proposal.criterion_id);
+    trim(&mut proposal.title);
+    trim(&mut proposal.objective);
+    trim(&mut proposal.revised_title);
+    trim(&mut proposal.revised_objective);
+    trim(&mut proposal.blocked_reason);
+    trim(&mut proposal.scenario);
+    trim(&mut proposal.expected_evidence);
+    trim(&mut proposal.user_model);
+    trim(&mut proposal.directive_text);
+    trim(&mut proposal.prompt_signature);
+    trim(&mut proposal.idempotency_key);
+    proposal.evidence = proposal.evidence.trim().to_string();
+    proposal.rationale = proposal.rationale.trim().to_string();
+    if proposal.evidence.is_empty() {
+        return Err(UlwLoopError::new(
+            "Evidence must not be empty.",
+            "ULW_LOOP_STEERING_EVIDENCE_REQUIRED",
+        ));
+    }
+    Ok(proposal)
+}
+
 pub fn print_steer_result(result: &SteerUlwLoopResult, json: bool) {
     if json {
         let out = serde_json::json!({
