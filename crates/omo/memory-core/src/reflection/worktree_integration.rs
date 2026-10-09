@@ -52,34 +52,16 @@ pub fn probe_legacy_auto_run_receipt(
     worktree: &ReflectionWorktree,
     run_id: &str,
 ) -> LegacyAutoRunReceiptProbe {
-    let receipts_path = worktree
-        .parent
-        .dir
-        .join(".omo/runtime/reflection/tool-receipts.json");
-    let raw = match std::fs::read_to_string(&receipts_path) {
-        Ok(s) => s,
-        Err(_) => return LegacyAutoRunReceiptProbe::Incomplete,
-    };
-
-    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return LegacyAutoRunReceiptProbe::Incomplete,
-    };
-
-    if let Some(receipt) = parsed.get(run_id) {
-        let sha = receipt
-            .get("integrationSha")
-            .and_then(|s| s.as_str())
-            .map(String::from);
-        LegacyAutoRunReceiptProbe::AlreadyRecorded {
-            integration_sha: sha,
-        }
-    } else {
-        LegacyAutoRunReceiptProbe::Incomplete
+    match find_exact_run_receipt(worktree, run_id, None) {
+        Some(sha) => LegacyAutoRunReceiptProbe::AlreadyRecorded {
+            integration_sha: Some(sha),
+        },
+        None => LegacyAutoRunReceiptProbe::Incomplete,
     }
 }
 
 /// Probes whether a branch tip or run ID has already landed in parent HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReflectionIntegrationProbe {
     NotIntegrated,
     AlreadyMerged { integration_sha: String },
@@ -92,14 +74,18 @@ pub fn probe_reflection_integration(
     run_id: &str,
     tip_sha: &str,
 ) -> ReflectionIntegrationProbe {
+    if mode == ReflectionIntegrationMode::Auto
+        && let Some(receipt) = find_exact_run_receipt(worktree, run_id, Some(tip_sha))
+    {
+        return ReflectionIntegrationProbe::AlreadyMerged {
+            integration_sha: receipt,
+        };
+    }
+
     let exec = worktree.exec.as_ref();
     let parent_dir = &worktree.parent.dir;
 
-    let ancestor = exec.run_in(
-        parent_dir,
-        &["merge-base", "--is-ancestor", tip_sha, "HEAD"],
-    );
-    if ancestor.map(|r| r.code == 0).unwrap_or(false) {
+    if is_ancestor(exec, parent_dir, tip_sha, "HEAD") {
         let head = exec
             .run_in(parent_dir, &["rev-parse", "--verify", "HEAD"])
             .map(|r| r.stdout.trim().to_string())
@@ -109,23 +95,49 @@ pub fn probe_reflection_integration(
         };
     }
 
-    if mode == ReflectionIntegrationMode::Auto {
-        let trailer_pattern = format!("--grep=^Omo-Run: {run_id}$");
-        let matches = exec.run_in(
-            parent_dir,
-            &["log", "-n", "1", "--format=%H", &trailer_pattern, "HEAD"],
-        );
-        if let Ok(m) = matches {
-            let sha = m.stdout.trim().to_string();
-            if !sha.is_empty() {
-                return ReflectionIntegrationProbe::AlreadyMerged {
-                    integration_sha: sha,
-                };
-            }
+    ReflectionIntegrationProbe::NotIntegrated
+}
+
+fn find_exact_run_receipt(
+    worktree: &ReflectionWorktree,
+    run_id: &str,
+    validated_tip_sha: Option<&str>,
+) -> Option<String> {
+    let exec = worktree.exec.as_ref();
+    let parent_dir = &worktree.parent.dir;
+    let rev_range = format!("{}..HEAD", worktree.base_sha());
+    let commits_res = exec.run_in(parent_dir, &["rev-list", &rev_range]).ok()?;
+    if commits_res.code != 0 {
+        return None;
+    }
+    for commit in commits_res.stdout.lines().map(str::trim).filter(|c| !c.is_empty()) {
+        if !has_exact_run_receipt(exec, parent_dir, commit, run_id) {
+            continue;
+        }
+        if validated_tip_sha.is_none()
+            || validated_tip_sha.is_some_and(|tip| is_ancestor(exec, parent_dir, tip, commit))
+        {
+            return Some(commit.to_string());
         }
     }
+    None
+}
 
-    ReflectionIntegrationProbe::NotIntegrated
+fn has_exact_run_receipt(exec: &dyn GitExec, cwd: &Path, commit: &str, run_id: &str) -> bool {
+    let trailers = exec.run_in(
+        cwd,
+        &["show", "-s", "--format=%(trailers:key=Omo-Run,valueonly)", commit],
+    );
+    match trailers {
+        Ok(res) if res.code == 0 => res.stdout.lines().any(|v| v.trim() == run_id),
+        _ => false,
+    }
+}
+
+fn is_ancestor(exec: &dyn GitExec, cwd: &Path, ancestor: &str, descendant: &str) -> bool {
+    exec.run_in(cwd, &["merge-base", "--is-ancestor", ancestor, descendant])
+        .map(|r| r.code == 0)
+        .unwrap_or(false)
 }
 
 /// Integrates a validated reflection worktree branch under writer lock protection.
