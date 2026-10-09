@@ -10,6 +10,7 @@ pub mod eval_handles;
 mod delegate_adapter;
 pub mod host;
 pub mod isolation;
+pub mod kernel_tools;
 pub mod lifecycle;
 pub mod manager;
 pub mod model_chain;
