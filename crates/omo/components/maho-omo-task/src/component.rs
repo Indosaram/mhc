@@ -3,6 +3,8 @@ use maho_ext_api::{ExtensionApi, ExtensionEvent, EventKind, EventResult, FlagVal
 use senpi_task::{completion::{CompletionRequest, ReconcileUnnotifiedNotificationsInput, TransitionReason}, manager::{AbortSignal, types::ListScope}};
 use crate::{engine::TaskEngine, resumption_channel_emitter::{OwnedResumptionChannels, TaskResumptionChannelManager}, session_transition_bridge::SessionTransitionBridge, status_ui::TaskStatusUi, timers::HostTimers, tools::TaskToolsDeps};
 
+pub use crate::workpool_tool::register_workpool_tool;
+
 struct CompletionWaiter { signal: AbortSignal, thread: JoinHandle<()> }
 struct TeamRuntime { service:Arc<crate::team_service::TeamService>, pollers:Arc<crate::lead_poller_lifecycle::LeadPollerLifecycle>, liveness:Arc<crate::member_liveness::TeamMemberLivenessNotifier> }
 /// The bind-time suspend callback the team runtime installs (`set_before_suspend`).

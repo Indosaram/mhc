@@ -14,6 +14,7 @@ pub mod task_rpc_codec;
 pub mod status_ui;
 pub mod dag_status_ui;
 pub mod tools;
+pub mod workpool_tool;
 pub mod dag_tool;
 pub mod planner;
 pub mod parent_notifier;
