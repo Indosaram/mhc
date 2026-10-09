@@ -231,26 +231,12 @@ pub fn builtin_extensions() -> &'static [NativeExtension] {
 }
 
 /// Pinned builtin ids whose constructor needs host state the CLI cannot build at registration.
-static DEFERRED_BUILTINS: [DeferredExtension; 19] = [
-    DeferredExtension { id: "gpt-apply-patch", crate_name: "maho-ext-gpt-apply-patch", requirement: "crate publishes tool internals only; needs the extension factory for the apply-patch toolset" },
-    DeferredExtension { id: "ask-user", crate_name: "maho-ext-ask-user", requirement: "crate publishes schema/pending/format/resume/params/render modules only; needs the ask-user `Extension` factory" },
-    DeferredExtension { id: "imagegen", crate_name: "maho-ext-imagegen", requirement: "crate publishes paths/params/state/tool internals; needs the imagegen `Extension` factory" },
-    DeferredExtension { id: "openai-image-gen", crate_name: "maho-ext-openai-image-gen", requirement: "crate publishes gate/inject/externalize internals; needs the `Extension` factory" },
-    DeferredExtension { id: "todowrite", crate_name: "maho-ext-todotools", requirement: "`TodotoolsExtension { actions: Arc<dyn ExtensionActions>, accessors: Arc<dyn TodoAccessors>, copy_markdown }` needs both handles: the core `Arc<dyn ExtensionActions>` and a session-state `TodoAccessors` (the crate ships only the `ExecutionFixture` test impl; the host must own the current-phases state + widget sync)" },
-    DeferredExtension { id: "redraws", crate_name: "maho-ext-builtin-loose", requirement: "crate publishes the Tps extension only; needs the redraws `Extension`" },
-    DeferredExtension { id: "service-tier", crate_name: "maho-ext-builtin-loose", requirement: "crate publishes the Tps extension only; needs the service-tier `Extension`" },
-    DeferredExtension { id: "reasoning", crate_name: "maho-ext-reasoning", requirement: "crate publishes no `impl Extension`; needs the reasoning lane factory" },
-    DeferredExtension { id: "history-search", crate_name: "maho-ext-history-search", requirement: "crate publishes overlay/indexer internals; needs the `Extension` factory" },
-    DeferredExtension { id: "import-repro", crate_name: "maho-ext-builtin-loose", requirement: "crate publishes the Tps extension only; needs the import-repro `Extension`" },
-    DeferredExtension { id: "look-at", crate_name: "maho-ext-look-at", requirement: "crate publishes runner/settings internals; needs the `Extension` factory" },
-    DeferredExtension { id: "cache-keepalive", crate_name: "maho-ext-cache-keepalive", requirement: "crate publishes helpers only; needs the `Extension` factory" },
-    DeferredExtension { id: "gpt-account", crate_name: "maho-ext-builtin-loose", requirement: "host-constructed: `maho-ext-builtin-loose::gpt_account::GptAccount { login: AccountLogin, open_browser }` needs the ChatGPT OAuth login flow and the browser launcher the CLI wires at runtime" },
-    DeferredExtension { id: "claude-sdk-oauth", crate_name: "maho-ext-anthropic-subscription", requirement: "host-constructed, not static: `crate::cli::oauth_providers::oauth_extension_factories` builds it from the resolved Claude executable + auth.json store + settings; static assembly cannot supply that host state" },
-    DeferredExtension { id: "cursor-cli-oauth", crate_name: "maho-ext-cursor-cli-oauth", requirement: "host-constructed via `crate::cli::oauth_providers::cursor_cli_extension` from lane-24's real `CursorCliOAuth::native(store, settings, resolve, persist_acknowledgement, persist_enabled, now)` + `production_*` helpers; static assembly cannot supply the resolved `cursor-agent` executable, the settings loader or the SettingsStorage" },
-    DeferredExtension { id: "tool-search", crate_name: "maho-ext-tool-search", requirement: "host-constructed, not static: the CLI builds `ToolSearchExtension` with the MCP native gate closure (`crate::cli::default_extensions`) so the shared tool-search service and the MCP gate read the same resolved state; static assembly cannot supply that per-session gate" },
-    DeferredExtension { id: "mcp", crate_name: "maho-ext-mcp", requirement: "host-constructed, not static: the CLI builds `maho_ext_mcp::index::McpExtension { registry, owner: 1, tool_search: Some(shared) }` over the `crate::cli::tool_search::SharedToolSearch` service and reads the returned service's native tool-search gate (`crate::cli::default_extensions`); static assembly cannot supply that per-session shared service" },
-    DeferredExtension { id: "diff", crate_name: "maho-ext-builtin-loose", requirement: "host-constructed: `maho-ext-builtin-loose::diff::Diff { render_binding }` needs the TUI `RenderBinding` the CLI builds at mount (`globalDefaultExtensionIds` member)" },
-    DeferredExtension { id: "files", crate_name: "maho-ext-builtin-loose", requirement: "host-constructed: `maho-ext-builtin-loose::files::Files { render_binding }` needs the TUI `RenderBinding` the CLI builds at mount (`globalDefaultExtensionIds` member)" },
+static DEFERRED_BUILTINS: [DeferredExtension; 5] = [
+    DeferredExtension { id: "todowrite", crate_name: "maho-ext-todotools", requirement: "host-constructed todo state" },
+    DeferredExtension { id: "claude-sdk-oauth", crate_name: "maho-ext-anthropic-subscription", requirement: "host-constructed OAuth state" },
+    DeferredExtension { id: "cursor-cli-oauth", crate_name: "maho-ext-cursor-cli-oauth", requirement: "host-constructed cursor state" },
+    DeferredExtension { id: "tool-search", crate_name: "maho-ext-tool-search", requirement: "host-constructed shared service" },
+    DeferredExtension { id: "mcp", crate_name: "maho-ext-mcp", requirement: "host-constructed shared service" },
 ];
 
 pub fn deferred_builtin_extensions() -> &'static [DeferredExtension] {
