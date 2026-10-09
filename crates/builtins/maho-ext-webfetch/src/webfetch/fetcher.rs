@@ -4,6 +4,8 @@ use super::errors::WebfetchError;
 pub const MAX_RESPONSE_SIZE_BYTES:usize=5*1024*1024;
 pub const DEFAULT_TIMEOUT_SECONDS:u64=30;
 pub const MAX_TIMEOUT_SECONDS:u64=120;
+pub const BROWSER_USER_AGENT:&str="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+pub const RETRY_USER_AGENT:&str="pi-webfetch";
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WebfetchFormat { Markdown,Text,Html }
 pub type FetchProgressCallback<'a>=dyn Fn(usize,Option<usize>)->Result<(),WebfetchError>+Send+Sync+'a;
@@ -40,42 +42,55 @@ pub async fn fetch_url(options:FetchOptions<'_>)->Result<FetchResult,WebfetchErr
     let signal=options.signal.cloned().unwrap_or_default();
     let future=async {
         let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(transport_error)?;
+        let mut user_agent=BROWSER_USER_AGENT;
         let mut current=options.url.to_owned();
-        for redirect in 0..=20 {
-            let response=client.get(&current)
-                .header("Accept",build_accept_header(options.format))
-                .header("Accept-Language","en-US,en;q=0.9")
-                .header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
-                .header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"")
-                .header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate")
-                .header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1")
-                .header("Upgrade-Insecure-Requests","1")
-                .header("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
-                .send().await.map_err(transport_error)?;
-            let status=response.status();
-            let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").to_owned(),|reason|reason.as_bytes().iter().map(|byte|char::from(*byte)).collect());
-            let location=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty());
-            if matches!(status.as_u16(),301|302|303|307|308) && redirect<20 && let Some(location)=location {
-                let next=url::Url::parse(&current).and_then(|base|base.join(location)).map_err(|e|WebfetchError::InvalidUrl(e.to_string()))?;
-                super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
-                current=next.into(); continue;
+        'attempts: loop {
+            for redirect in 0..=20 {
+                if signal.is_aborted() { return Err(WebfetchError::Abort("Request aborted".into())); }
+                let mut req=client.get(&current)
+                    .header("Accept",build_accept_header(options.format))
+                    .header("Accept-Language","en-US,en;q=0.9")
+                    .header("User-Agent",user_agent);
+                if user_agent==BROWSER_USER_AGENT {
+                    req=req
+                        .header("Sec-CH-UA","\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+                        .header("Sec-CH-UA-Mobile","?0").header("Sec-CH-UA-Platform","\"Windows\"")
+                        .header("Sec-Fetch-Dest","document").header("Sec-Fetch-Mode","navigate")
+                        .header("Sec-Fetch-Site","none").header("Sec-Fetch-User","?1")
+                        .header("Upgrade-Insecure-Requests","1");
+                }
+                let response=req.send().await.map_err(transport_error)?;
+                let status=response.status();
+                let status_text=response.extensions().get::<hyper::ext::ReasonPhrase>().map_or_else(||status.canonical_reason().unwrap_or("").to_owned(),|reason|reason.as_bytes().iter().map(|byte|char::from(*byte)).collect());
+                if status.as_u16()==403 && user_agent==BROWSER_USER_AGENT && response.headers().get("cf-mitigated").is_some_and(|v|v=="challenge") {
+                    super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
+                    current=options.url.to_owned();
+                    user_agent=RETRY_USER_AGENT;
+                    continue 'attempts;
+                }
+                let location=response.headers().get("location").and_then(|v|v.to_str().ok()).filter(|s|!s.is_empty());
+                if matches!(status.as_u16(),301|302|303|307|308) && redirect<20 && let Some(location)=location {
+                    let next=url::Url::parse(&current).and_then(|base|base.join(location)).map_err(|e|WebfetchError::InvalidUrl(e.to_string()))?;
+                    super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
+                    current=next.into(); continue;
+                }
+                let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
+                let length=response.headers().get("content-length").and_then(|v|v.to_str().ok()).and_then(parse_content_length);
+                if length.is_some_and(|n|n>MAX_RESPONSE_SIZE_BYTES) {
+                    super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
+                    return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into()));
+                }
+                let mut stream=response.bytes_stream(); let mut body=vec![];
+                while let Some(chunk)=stream.next().await {
+                    let chunk=chunk.map_err(transport_error)?;
+                    if chunk.len()>MAX_RESPONSE_SIZE_BYTES-body.len() { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
+                    body.extend_from_slice(&chunk);
+                    if let Some(progress)=options.on_progress { progress(body.len(),length)?; }
+                }
+                return Ok(FetchResult{url:current,status:status.as_u16(),status_text,content_type,bytes:body.len(),truncated:body.len()==MAX_RESPONSE_SIZE_BYTES,body});
             }
-            let content_type=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
-            let length=response.headers().get("content-length").and_then(|v|v.to_str().ok()).and_then(parse_content_length);
-            if length.is_some_and(|n|n>MAX_RESPONSE_SIZE_BYTES) {
-                super::response_body::discard_body(response.bytes_stream().map(|chunk|chunk.map(|bytes|bytes.to_vec())),MAX_RESPONSE_SIZE_BYTES,Some(&signal)).await;
-                return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into()));
-            }
-            let mut stream=response.bytes_stream(); let mut body=vec![];
-            while let Some(chunk)=stream.next().await {
-                let chunk=chunk.map_err(transport_error)?;
-                if chunk.len()>MAX_RESPONSE_SIZE_BYTES-body.len() { return Err(WebfetchError::ResponseTooLarge("Response too large (exceeds 5MB limit)".into())); }
-                body.extend_from_slice(&chunk);
-                if let Some(progress)=options.on_progress { progress(body.len(),length)?; }
-            }
-            return Ok(FetchResult{url:current,status:status.as_u16(),status_text,content_type,bytes:body.len(),truncated:body.len()==MAX_RESPONSE_SIZE_BYTES,body});
+            return Err(WebfetchError::Abort("Redirect resolution aborted".into()));
         }
-        Err(WebfetchError::Abort("Redirect resolution aborted".into()))
     };
     tokio::select! {
         biased;
@@ -108,5 +123,82 @@ mod tests {
         let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(2.0),signal:None,on_progress:None});
         let (result,())=tokio::join!(client,server);
         let result=result.unwrap(); assert_eq!(result.body,b"hello"); assert_eq!(result.status,200); assert_eq!(result.url,format!("http://{address}/final")); assert_eq!(result.content_type,"text/plain"); assert!(!result.truncated);
+    }
+    #[tokio::test]
+    async fn cloudflare_challenge_retries_with_alternate_user_agent() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=async {
+            let mut requests=0;
+            loop {
+                let (mut socket,_)=listener.accept().await.unwrap();
+                let mut buffer=[0u8;4096]; let mut request=vec![];
+                loop {
+                    let n=socket.read(&mut buffer).await.unwrap(); assert!(n>0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if request.windows(4).any(|w|w==b"\r\n\r\n") { break; }
+                }
+                requests+=1;
+                let request_str=String::from_utf8_lossy(&request);
+                let lower=request_str.to_lowercase();
+                if requests==1 {
+                    assert!(lower.contains("user-agent: mozilla/5.0"));
+                    socket.write_all(b"HTTP/1.1 403 Forbidden\r\ncf-mitigated: challenge\r\nContent-Type: text/html\r\nContent-Length: 20\r\nConnection: close\r\n\r\n<h1>challenge</h1>\n").await.unwrap();
+                } else if requests==2 {
+                    assert!(lower.contains("user-agent: pi-webfetch"));
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nretried").await.unwrap();
+                    break;
+                }
+            }
+            assert_eq!(requests,2);
+        };
+        let url=format!("http://{address}/challenge");
+        let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(5.0),signal:None,on_progress:None});
+        let (result,())=tokio::join!(client,server);
+        let result=result.unwrap(); assert_eq!(result.status,200); assert_eq!(result.body,b"retried");
+    }
+    #[tokio::test]
+    async fn plain_403_without_cf_header_does_not_retry() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=async {
+            let (mut socket,_)=listener.accept().await.unwrap();
+            let mut buffer=[0u8;4096]; let mut request=vec![];
+            loop {
+                let n=socket.read(&mut buffer).await.unwrap(); assert!(n>0);
+                request.extend_from_slice(&buffer[..n]);
+                if request.windows(4).any(|w|w==b"\r\n\r\n") { break; }
+            }
+            socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nforbidden").await.unwrap();
+        };
+        let url=format!("http://{address}/forbidden");
+        let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(5.0),signal:None,on_progress:None});
+        let (result,())=tokio::join!(client,server);
+        let result=result.unwrap(); assert_eq!(result.status,403); assert_eq!(result.body,b"forbidden");
+    }
+    #[tokio::test]
+    async fn abort_during_challenge_retry_is_honored() {
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let signal=AbortSignal::default();
+        let signal_for_abort=signal.clone();
+        let server=async {
+            let (mut socket,_)=listener.accept().await.unwrap();
+            let mut buffer=[0u8;4096]; let mut request=vec![];
+            loop {
+                let n=socket.read(&mut buffer).await.unwrap(); assert!(n>0);
+                request.extend_from_slice(&buffer[..n]);
+                if request.windows(4).any(|w|w==b"\r\n\r\n") { break; }
+            }
+            socket.write_all(b"HTTP/1.1 403 Forbidden\r\ncf-mitigated: challenge\r\nContent-Type: text/html\r\nContent-Length: 11\r\nConnection: close\r\n\r\nchallenged!").await.unwrap();
+            signal_for_abort.abort();
+        };
+        let url=format!("http://{address}/challenge-abort");
+        let client=fetch_url(FetchOptions{url:&url,format:WebfetchFormat::Text,timeout_seconds:Some(5.0),signal:Some(&signal),on_progress:None});
+        let (result,())=tokio::join!(client,server);
+        assert!(matches!(result,Err(WebfetchError::Abort(_))));
     }
 }
