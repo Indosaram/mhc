@@ -11,4 +11,9 @@ pub mod types;
 pub mod aggregate;
 pub mod yield_;
 pub mod yield_event;
+pub mod worker_capability;
+pub mod worker_kernel_tools;
+pub mod worker_tool_identity;
+pub mod worker_turn;
+pub mod process_worker;
 
