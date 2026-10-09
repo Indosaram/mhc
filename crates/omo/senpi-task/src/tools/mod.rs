@@ -6,3 +6,5 @@ pub mod render;
 pub mod run_stats_format;
 pub mod task;
 pub mod team;
+pub mod workpool;
+pub mod workpool_schema;
