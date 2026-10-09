@@ -142,6 +142,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reports_close_code_and_reason_after_message_less_error() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        failure.on_error(&WebSocketErrorEvent::default());
+        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: Some("Connection ended".into()), was_clean: Some(false) });
+        assert_eq!(seen.lock().unwrap().as_slice(), ["WebSocket closed 1006 Connection ended"]);
+    }
+
+    #[test]
+    fn preserves_runtime_error_message_over_close_diagnostics() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        failure.on_error(&WebSocketErrorEvent { message: Some("read ECONNRESET".into()), nested_message: None });
+        failure.on_close(&WebSocketCloseEvent { code: Some(1006), reason: Some("Connection ended".into()), was_clean: Some(false) });
+        assert_eq!(seen.lock().unwrap().as_slice(), ["read ECONNRESET"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reports_generic_error_when_close_never_arrives() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let failure = create_web_socket_transport_failure(move |error| sink.lock().unwrap().push(error), 250);
+        failure.on_error(&WebSocketErrorEvent::default());
+        tokio::time::advance(Duration::from_millis(250)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(seen.lock().unwrap().as_slice(), ["WebSocket error"]);
+    }
+
+    #[test]
     fn close_errors_name_the_code_reason_and_cleanliness() {
         let error = extract_web_socket_close_error(&WebSocketCloseEvent {
             code: Some(1006),
