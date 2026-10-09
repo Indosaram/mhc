@@ -6,6 +6,7 @@ pub mod agents;
 pub mod category;
 pub mod completion;
 pub mod dag;
+pub mod eval_handles;
 mod delegate_adapter;
 pub mod host;
 pub mod isolation;
