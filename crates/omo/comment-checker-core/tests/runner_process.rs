@@ -226,6 +226,7 @@ async fn real_checker_receives_hook_json_and_reports_exit_two() {
         CheckResult {
             has_comments: true,
             message: "COMMENT\nline two\n".to_string(),
+            failure: None,
         }
     );
     let recorded = std::fs::read_to_string(harness.path("checker.stdin")).expect("recorded stdin");
