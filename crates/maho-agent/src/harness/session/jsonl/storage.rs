@@ -16,6 +16,7 @@ use crate::harness::session::values::{ListElement, ListReadOptions, StoredValue,
 use crate::harness::types::FileSystem;
 
 use super::io::{file_value, parse_jsonl_transaction, publish_file_atomically, publish_jsonl, read_jsonl_header, serialize_jsonl_transaction};
+use super::legacy_v3::LegacyV3Source;
 use super::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader, JsonlStorageOptions};
 
 fn split_complete_lines(content: &str) -> (Vec<String>, bool) {
@@ -31,10 +32,10 @@ fn split_complete_lines(content: &str) -> (Vec<String>, bool) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum JsonlBacking {
     V4,
-    V3,
+    V3(LegacyV3Source),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +75,7 @@ impl JsonlStorage {
     }
 
     pub fn is_legacy_v3(&self) -> bool {
-        *self.backing.lock().expect("jsonl backing") == JsonlBacking::V3
+        matches!(*self.backing.lock().expect("jsonl backing"), JsonlBacking::V3(_))
     }
 
     pub async fn create(
@@ -98,11 +99,12 @@ impl JsonlStorage {
             state.prepare_commit(initial_writes, storage.now())?
         };
         let writes = prepared.writes.clone();
+        let publish_context = context.clone();
         publish_jsonl(
             options.file_system.clone(),
             options.path.clone(),
             &header,
-            context,
+            &publish_context,
             Arc::new(move |append| {
                 let writes = writes.clone();
                 Box::pin(async move {
@@ -135,14 +137,28 @@ impl JsonlStorage {
         let parsed = parsed?;
         match parsed {
             super::codec::JsonlParsedSessionHeader::V4(header) => Self::open_v4(options, header, context).await,
-            super::codec::JsonlParsedSessionHeader::V3Legacy(_) => Err(SessionError::new(
-                SessionErrorKind::Io,
-                format!(
-                    "Invalid JSONL storage {}: legacy v3 upgrade is not ported",
-                    options.path
-                ),
-            )),
+            super::codec::JsonlParsedSessionHeader::V3Legacy(_) => Self::open_legacy_v3(options, context).await,
         }
+    }
+
+    async fn open_legacy_v3(options: JsonlStorageOptions, context: &Context) -> Result<JsonlStorage, SessionError> {
+        let source = LegacyV3Source::read(options.file_system.clone(), &options.path, context).await?;
+        let mut header = source.header.clone();
+        header.next_seq = Some(source.next_seq);
+        let storage = JsonlStorage {
+            file_system: options.file_system.clone(),
+            path: options.path.clone(),
+            now: options.now.clone().unwrap_or_else(default_now),
+            header,
+            backing: std::sync::Mutex::new(JsonlBacking::V3(source.clone())),
+            state: std::sync::Mutex::new(InMemoryStorageState::new()),
+            lifecycle: std::sync::Mutex::new(StorageLifecycle::Open),
+            close_lock: tokio::sync::Mutex::new(()),
+        };
+        for write in source.writes(context.clone(), None).await? {
+            storage.replay_committed(&[write])?;
+        }
+        Ok(storage)
     }
 
     async fn open_v4(
@@ -216,11 +232,17 @@ impl JsonlStorage {
     }
 
     async fn apply_commit(&self, writes: Vec<Write>, context: &Context) -> Result<CommitResult, SessionError> {
-        if self.is_legacy_v3() && !writes.is_empty() {
-            return Err(SessionError::new(
-                SessionErrorKind::Io,
-                "Cannot commit to a legacy v3 JSONL storage: the v3 upgrade is not ported",
-            ));
+        if !writes.is_empty() {
+            let source = {
+                let backing = self.backing.lock().expect("jsonl backing");
+                match &*backing {
+                    JsonlBacking::V4 => None,
+                    JsonlBacking::V3(source) => Some(source.clone()),
+                }
+            };
+            if let Some(source) = source {
+                return self.upgrade_legacy_v3_to_v4(source, writes, context).await;
+            }
         }
         let prepared = {
             let state = self.state.lock().expect("jsonl state");
@@ -241,6 +263,63 @@ impl JsonlStorage {
         Ok(CommitResult {
             first_seq: prepared.result.first_seq,
             seqs: prepared.result.seqs,
+            timestamp: prepared.result.timestamp,
+            stats,
+        })
+    }
+
+    async fn upgrade_legacy_v3_to_v4(
+        &self,
+        source: LegacyV3Source,
+        caller_writes: Vec<Write>,
+        context: &Context,
+    ) -> Result<CommitResult, SessionError> {
+        let timestamp = self.now();
+        let adjustment = crate::harness::session::commit::insert_usage(NewUsageRow {
+            id: maho_ai::utils::uuid::uuidv7(Some(timestamp as f64))
+                .map_err(|error| SessionError::new(SessionErrorKind::Io, error.to_string()))?,
+            usage: source.imported_usage.clone(),
+            entry_id: None,
+            adjustment: true,
+            details: Some(serde_json::json!({"source": "v3-import"})),
+        });
+        let prepared = {
+            let state = self.state.lock().expect("jsonl state");
+            state.prepare_commit(std::iter::once(adjustment).chain(caller_writes).collect(), timestamp)?
+        };
+        let next_seq = prepared.result.first_seq + prepared.writes.len() as i64;
+        let mut upgraded_header = self.header.clone();
+        upgraded_header.next_seq = Some(next_seq);
+        let legacy_writes = source.writes(context.clone(), None).await?;
+        let publish_context = context.clone();
+        let committed_writes = prepared.writes.clone();
+        let publish_writes = committed_writes.clone();
+        publish_jsonl(
+            self.file_system.clone(),
+            self.path.clone(),
+            &upgraded_header,
+            &publish_context,
+            Arc::new(move |append| {
+                let legacy_writes = legacy_writes.clone();
+                let prepared_writes = publish_writes.clone();
+                Box::pin(async move {
+                    for write in legacy_writes.iter().cloned() {
+                        append(vec![write]).await?;
+                    }
+                    append(prepared_writes).await
+                })
+            }),
+        )
+        .await?;
+        let stats = self
+            .state
+            .lock()
+            .expect("jsonl state")
+            .apply_validated(&committed_writes);
+        *self.backing.lock().expect("jsonl backing") = JsonlBacking::V4;
+        Ok(CommitResult {
+            first_seq: prepared.result.first_seq + 1,
+            seqs: prepared.result.seqs.into_iter().skip(1).collect(),
             timestamp: prepared.result.timestamp,
             stats,
         })

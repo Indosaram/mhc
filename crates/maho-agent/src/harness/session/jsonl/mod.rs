@@ -3,6 +3,7 @@
 pub mod codec;
 pub mod fork;
 pub mod io;
+pub mod legacy_v3;
 pub mod repo;
 pub mod storage;
 pub mod types;
@@ -16,6 +17,7 @@ pub use io::{
     AppendFn, PublishContentFn, file_value, parse_committed_write, parse_jsonl_transaction, publish_file_atomically,
     publish_jsonl, read_jsonl_header, serialize_jsonl_transaction,
 };
+pub use legacy_v3::LegacyV3Source;
 pub use repo::{JsonlSessionRepo, JsonlSessionRepoHandle};
 pub use storage::JsonlStorage;
 pub use types::{
