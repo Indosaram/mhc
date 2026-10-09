@@ -1,0 +1,39 @@
+[package]
+name = "ulw-loop-core"
+version.workspace = true
+edition.workspace = true
+license = "LicenseRef-SUL-1.0"
+publish.workspace = true
+
+[lib]
+name = "ulw_loop_core"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
+indexmap = { workspace = true, features = ["serde"] }
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+collapsible_if = "allow"
+large_enum_variant = "allow"
+needless_update = "allow"
+needless_borrow = "allow"
+manual_pattern_char_comparison = "allow"
+let_and_return = "allow"
+unnecessary_unwrap = "allow"
+useless_vec = "allow"
+needless_lifetimes = "allow"
+double_ended_iterator_last = "allow"
+io_other_error = "allow"

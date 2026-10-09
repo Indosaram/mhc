@@ -4812,6 +4812,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "ulw-loop-core",
 ]
 
 [[package]]
@@ -8158,6 +8159,20 @@ checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
 dependencies = [
  "rand 0.10.3",
  "web-time",
+]
+
+[[package]]
+name = "ulw-loop-core"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
