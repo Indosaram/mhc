@@ -42,6 +42,10 @@ pub fn print_json<T: serde::Serialize>(value: &T) {
 }
 
 pub fn print_json_error(error: &UlwLoopError) {
+    println!("{}", serde_json::to_string_pretty(&json_error(error)).unwrap_or_default());
+}
+
+pub fn json_error(error: &UlwLoopError) -> Value {
     let mut err_obj = serde_json::json!({
         "code": error.code,
         "message": error.message,
@@ -49,11 +53,10 @@ pub fn print_json_error(error: &UlwLoopError) {
     if let Some(details) = &error.details {
         err_obj["details"] = serde_json::to_value(details).unwrap_or(Value::Null);
     }
-    let out = serde_json::json!({
+    serde_json::json!({
         "ok": false,
         "error": err_obj,
-    });
-    print_json(&out);
+    })
 }
 
 fn criteria_counts(goal: &UlwLoopItem) -> (usize, usize) {
@@ -67,6 +70,10 @@ fn criteria_counts(goal: &UlwLoopItem) -> (usize, usize) {
 }
 
 pub fn print_status(plan: &UlwLoopPlan) {
+    println!("{}", render_status(plan));
+}
+
+pub fn render_status(plan: &UlwLoopPlan) -> String {
     let mut total_criteria = 0;
     let mut pass_criteria = 0;
     let mut lines = vec!["ulw-loop status".to_string(), String::new(), "goals:".to_string()];
@@ -87,7 +94,7 @@ pub fn print_status(plan: &UlwLoopPlan) {
     lines.push("summary:".to_string());
     lines.push(format!("total goals: {}", plan.goals.len()));
     lines.push(format!("criteria: {pass_criteria}/{total_criteria} pass"));
-    println!("{}", lines.join("\n"));
+    lines.join("\n")
 }
 
 pub fn blocked_decision_handoff(plan: &UlwLoopPlan) -> String {
