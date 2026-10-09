@@ -239,7 +239,16 @@ impl TaskDagEngine {
             let scheduler = cancel_dag.schedulers.lock().unwrap_or_else(PoisonError::into_inner).get(run).cloned().ok_or_else(|| maho_ext_api::ToolError::Message("DAG scheduler not attached".into()))?;
             scheduler.cancel(&run.to_owned(), reason).map_err(maho_ext_api::ToolError::Message)
         });
-        let mut tool = crate::dag_tool::create_dag_tool(crate::dag_tool::DagToolDeps { manager:self.manager.clone(), parent_session_id:parent_session_id.clone(), root_session_id:parent_session_id, wait:Some(wait), cancel:Some(cancel) });
+        let mut tool = crate::dag_tool::create_dag_tool(crate::dag_tool::DagToolDeps {
+            manager: self.manager.clone(),
+            parent_session_id: parent_session_id.clone(),
+            root_session_id: parent_session_id,
+            wait: Some(wait),
+            cancel: Some(cancel),
+            retry: None,
+            send: None,
+            amend: None,
+        });
         let execute = tool.execute.clone(); let dag = self.clone();
         tool.execute = Arc::new(move |call| {
             let start = call.params["action"] == "start";
@@ -271,6 +280,10 @@ impl TaskDagEngine {
                 Ok(result)
             })
         });
+        // Register workflow tool and legacy dag alias
+        let mut dag_alias = tool.clone();
+        dag_alias.name = crate::dag_tool::DAG_TOOL_NAME.into();
         api.register_tool(tool);
+        api.register_tool(dag_alias);
     }
 }

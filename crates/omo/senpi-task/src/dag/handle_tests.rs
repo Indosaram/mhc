@@ -69,6 +69,10 @@ fn build_node(spec: NodeSpec) -> DagNode {
         created_at: AT.to_string(),
         started_at: None,
         completed_at: spec.completed_at.map(str::to_string),
+        exec_attempt: None,
+        output: None,
+        output_bytes: None,
+        last_activity_at: None,
     }
 }
 

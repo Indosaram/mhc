@@ -330,7 +330,7 @@ fn given_a_definition_with_a_cyclic_dependency_when_started_then_invalid_definit
     let error = rejected.expect_err("expected invalid_definition");
     assert_eq!(error.code, DagManagerErrorCode::InvalidDefinition);
     assert_eq!(
-        error.errors.iter().map(|entry| entry.code).collect::<Vec<_>>(),
+        error.errors().iter().map(|entry| entry.code).collect::<Vec<_>>(),
         vec![crate::dag::graph::DagCompileErrorCode::Cycle]
     );
     assert_eq!(run_files(&store), Vec::<String>::new());
@@ -368,7 +368,7 @@ fn given_a_configured_node_ceiling_when_a_definition_exceeds_it_then_invalid_def
 
     let error = rejected.expect_err("expected invalid_definition");
     assert_eq!(
-        error.errors.iter().map(|entry| entry.code).collect::<Vec<_>>(),
+        error.errors().iter().map(|entry| entry.code).collect::<Vec<_>>(),
         vec![crate::dag::graph::DagCompileErrorCode::NodeCountExceeded]
     );
     assert!(error.message.contains("max_nodes_per_run 1"));

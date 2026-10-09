@@ -36,7 +36,21 @@ pub enum DagManagerErrorCode {
     RunNotFound,
     RunNotOwned,
     InvalidArguments,
+    InvalidAmendment,
+    AmendRunningNode,
+    RunStillActive,
 }
+
+pub const DAG_MANAGER_ERROR_CODES: [DagManagerErrorCode; 8] = [
+    DagManagerErrorCode::InvalidDefinition,
+    DagManagerErrorCode::DefinitionConflict,
+    DagManagerErrorCode::RunNotFound,
+    DagManagerErrorCode::RunNotOwned,
+    DagManagerErrorCode::InvalidArguments,
+    DagManagerErrorCode::InvalidAmendment,
+    DagManagerErrorCode::AmendRunningNode,
+    DagManagerErrorCode::RunStillActive,
+];
 
 impl DagManagerErrorCode {
     pub fn as_str(self) -> &'static str {
@@ -46,8 +60,19 @@ impl DagManagerErrorCode {
             Self::RunNotFound => "run_not_found",
             Self::RunNotOwned => "run_not_owned",
             Self::InvalidArguments => "invalid_arguments",
+            Self::InvalidAmendment => "invalid_amendment",
+            Self::AmendRunningNode => "amend_running_node",
+            Self::RunStillActive => "run_still_active",
         }
     }
+}
+
+/// Compile details and affected node identifiers carried by [`DagManagerError`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DagManagerErrorDetails {
+    pub errors: Vec<DagCompileError>,
+    pub diagnostics: Vec<DagDiagnostic>,
+    pub node_ids: Vec<DagNodeId>,
 }
 
 /// Every `DagManager` rejection. `code` is the wire vocabulary the dag tool and RPC handlers
@@ -58,24 +83,45 @@ pub struct DagManagerError {
     pub code: DagManagerErrorCode,
     pub message: String,
     pub run_id: Option<DagRunId>,
-    pub errors: Vec<DagCompileError>,
-    pub diagnostics: Vec<DagDiagnostic>,
+    pub details: Box<DagManagerErrorDetails>,
 }
 
 impl DagManagerError {
-    fn new(code: DagManagerErrorCode, message: impl Into<String>) -> Self {
+    pub fn new(code: DagManagerErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
             run_id: None,
-            errors: Vec::new(),
-            diagnostics: Vec::new(),
+            details: Box::default(),
         }
     }
 
-    fn with_run_id(mut self, run_id: DagRunId) -> Self {
+    pub fn with_run_id(mut self, run_id: DagRunId) -> Self {
         self.run_id = Some(run_id);
         self
+    }
+
+    pub fn with_node_ids(mut self, node_ids: Vec<DagNodeId>) -> Self {
+        self.details.node_ids = node_ids;
+        self
+    }
+
+    pub fn with_compile(mut self, errors: Vec<DagCompileError>, diagnostics: Vec<DagDiagnostic>) -> Self {
+        self.details.errors = errors;
+        self.details.diagnostics = diagnostics;
+        self
+    }
+
+    pub fn errors(&self) -> &[DagCompileError] {
+        &self.details.errors
+    }
+
+    pub fn diagnostics(&self) -> &[DagDiagnostic] {
+        &self.details.diagnostics
+    }
+
+    pub fn node_ids(&self) -> &[DagNodeId] {
+        &self.details.node_ids
     }
 }
 
@@ -493,13 +539,10 @@ fn start_run(
             .map(|error| error.message.clone())
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(DagManagerError {
-            code: DagManagerErrorCode::InvalidDefinition,
+        return Err(DagManagerError::new(
+            DagManagerErrorCode::InvalidDefinition,
             message,
-            run_id: None,
-            errors: compiled.errors,
-            diagnostics: compiled.diagnostics,
-        });
+        ).with_compile(compiled.errors, compiled.diagnostics));
     }
 
     // (2) fingerprint the SUBMITTED definition: never effective_prompt, never skill content.

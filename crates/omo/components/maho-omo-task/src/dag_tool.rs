@@ -1,88 +1,533 @@
 use std::sync::Arc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use maho_ext_api::{ToolDefinition, ToolError, ToolResult};
-use senpi_task::{dag::{graph::{DagDefinition, DagNodeInput}, manager::{DagManager, DagManagerError, DagManagerErrorCode, DagStartParams}, types::DagNodeTarget}, tools::task::validation::{TargetInput, TaskTargetSelection, validate_task_target}};
+use regex::Regex;
+use senpi_task::{
+    dag::{
+        graph::{DagDefinition, DagNodeInput},
+        manager::{DagManager, DagManagerError, DagStartParams},
+        scheduler::DagNodeControlError,
+        types::{DagNode, DagNodeState, DagNodeTarget, DagRunSnapshot, DAG_NODE_QUIET_AFTER_MS},
+    },
+    tools::task::validation::{TargetInput, TaskTargetSelection, validate_task_target},
+};
 use crate::tools::tool_text;
 
+pub const WORKFLOW_TOOL_NAME: &str = "workflow";
 pub const DAG_TOOL_NAME: &str = "dag";
-pub const DESCRIPTION: &str = "Run a dependency graph of child tasks in one call: nodes execute in parallel waves, and a node starts only after every node it dependsOn has finished. dependsOn is ordering ONLY - no upstream output is substituted into a downstream prompt, so each prompt must stand alone. Each node targets EITHER category OR subagent_type, never both; model is an explicit override valid only alongside subagent_type. start is idempotent per definition key: re-starting the same key with the same graph reuses the run instead of duplicating it.";
-#[derive(Deserialize)]
-pub struct DagToolInput { pub action: String, pub definition: Option<DefinitionInput>, pub run_id: Option<String>, pub reason: Option<String> }
-#[derive(Deserialize)]
-pub struct DefinitionInput { pub key: String, pub name: String, pub nodes: Vec<NodeInput> }
-#[derive(Deserialize)]
+
+pub const DESCRIPTION: &str = "Dependency-graph execution for child tasks. COMPOSE THE SPEC PROGRAMMATICALLY INSIDE AN eval CELL - the kernel exposes this tool as `tool.workflow` alongside a JS SDK, so build the graph as code: partition the work into logically distinct steps, name one node per step, and wire the ordering as data. A graph is a program; write it as one instead of hand-authoring a call. A node starts only after every node it dependsOn has finished, and unrelated nodes run in parallel up to the resident-child cap. dependsOn is ordering ONLY - no upstream output is substituted into a downstream prompt, so each prompt must stand alone. Each node targets EITHER category OR subagent_type, never both; model is an explicit override valid only alongside subagent_type. start is idempotent per definition key: re-starting the same key with the same graph reuses the run instead of duplicating it. wait detaches by default against a live run: the session is woken as each node completes and when the run settles, and detach=false restores the blocking wait that returns the final result. snapshot carries each settled node's own output plus outputBytes, and each running node's lastActivityAt, so a midpoint peek can audit a child's claim and tell a working child from a silent one. When a run settles badly, do NOT start a new one: retry re-runs the failed nodes in place, amend edits the graph and re-runs only what changed, and send steers or revives one node's child.";
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct DagToolInput {
+    pub action: String,
+    pub definition: Option<DefinitionInput>,
+    pub run_id: Option<String>,
+    pub reason: Option<String>,
+    pub detach: Option<bool>,
+    pub node_id: Option<String>,
+    pub node_ids: Option<Vec<String>>,
+    pub message: Option<String>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct DefinitionInput {
+    pub key: String,
+    pub name: String,
+    pub nodes: Vec<NodeInput>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct NodeInput {
-    pub id: String, pub prompt: String, pub label: Option<String>, pub category: Option<String>, pub subagent_type: Option<String>, pub model: Option<String>,
+    pub id: String,
+    pub prompt: String,
+    pub label: Option<String>,
+    pub category: Option<String>,
+    pub subagent_type: Option<String>,
+    pub model: Option<String>,
     #[serde(rename = "dependsOn")]
     pub depends_on: Option<Vec<String>>,
-    pub task_summary: Option<String>, pub description: Option<String>, pub load_skills: Option<Vec<String>>,
+    pub task_summary: Option<String>,
+    pub description: Option<String>,
+    pub load_skills: Option<Vec<String>>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagToolSendDelivery {
+    Steer,
+    Revive,
+    Queued,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DagToolSendOutcome {
+    pub node_id: String,
+    pub task_id: String,
+    pub delivery: DagToolSendDelivery,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<usize>,
+}
+
+#[derive(Debug)]
+pub enum DagToolExecutionError {
+    Tool(ToolError),
+    Manager(DagManagerError),
+    Control(DagNodeControlError),
+}
+
+impl std::fmt::Display for DagToolExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tool(e) => write!(f, "{e}"),
+            Self::Manager(e) => write!(f, "{e}"),
+            Self::Control(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for DagToolExecutionError {}
+
+impl From<ToolError> for DagToolExecutionError {
+    fn from(e: ToolError) -> Self {
+        Self::Tool(e)
+    }
+}
+
+impl From<DagManagerError> for DagToolExecutionError {
+    fn from(e: DagManagerError) -> Self {
+        Self::Manager(e)
+    }
+}
+
+impl From<DagNodeControlError> for DagToolExecutionError {
+    fn from(e: DagNodeControlError) -> Self {
+        Self::Control(e)
+    }
+}
+
 pub type DagWait = Arc<dyn Fn(&str, &str) -> Result<Value, ToolError> + Send + Sync>;
 pub type DagCancel = Arc<dyn Fn(&str, Option<&str>) -> Result<(), ToolError> + Send + Sync>;
-pub struct DagToolDeps { pub manager: DagManager, pub parent_session_id: Arc<dyn Fn() -> String + Send + Sync>, pub root_session_id: Arc<dyn Fn() -> String + Send + Sync>, pub wait: Option<DagWait>, pub cancel: Option<DagCancel> }
-fn failure(code: &str, message: &str, nodes: Vec<Value>, errors: Vec<Value>, diagnostics: Vec<Value>) -> ToolResult {
-    tool_text(message.into(), json!({"kind":"error","error":{"code":code,"message":message,"nodes":nodes,"errors":errors,"diagnostics":diagnostics}}))
+pub type DagRetry = Arc<dyn Fn(&str, Option<&[String]>, Option<&str>) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
+pub type DagSend = Arc<dyn Fn(&str, &str, &str) -> Result<DagToolSendOutcome, DagToolExecutionError> + Send + Sync>;
+pub type DagAmend = Arc<dyn Fn(&str, DagDefinition) -> Result<DagRunSnapshot, DagToolExecutionError> + Send + Sync>;
+
+pub struct DagToolDeps {
+    pub manager: DagManager,
+    pub parent_session_id: Arc<dyn Fn() -> String + Send + Sync>,
+    pub root_session_id: Arc<dyn Fn() -> String + Send + Sync>,
+    pub wait: Option<DagWait>,
+    pub cancel: Option<DagCancel>,
+    pub retry: Option<DagRetry>,
+    pub send: Option<DagSend>,
+    pub amend: Option<DagAmend>,
 }
+
+pub fn quiet_nodes_notice(nodes: &[DagNode], now: i64) -> String {
+    let mut quiet = Vec::new();
+    for node in nodes {
+        if node.state != DagNodeState::Running {
+            continue;
+        }
+        let Some(last_activity) = &node.last_activity_at else {
+            continue;
+        };
+        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(last_activity) {
+            let activity_ms = parsed.timestamp_millis();
+            let silent_ms = now - activity_ms;
+            if silent_ms >= DAG_NODE_QUIET_AFTER_MS as i64 {
+                quiet.push(format!("{} ({}m)", node.id, silent_ms / 60_000));
+            }
+        }
+    }
+    if quiet.is_empty() {
+        String::new()
+    } else {
+        format!(" Quiet children, no transcript activity: {}.", quiet.join(", "))
+    }
+}
+
+pub fn lint_dag_definition_nodes(nodes: &[NodeInput]) -> Vec<String> {
+    let task_marker = Regex::new(r"TASK:").expect("valid regex");
+    let stop_marker = Regex::new(r"STOP WHEN").expect("valid regex");
+    let verification_shape = Regex::new(r"(?i)\b(verify|verification|verifier|audit|validate|validation|qa)\b").expect("valid regex");
+
+    let mut warnings = Vec::new();
+    for node in nodes {
+        if !task_marker.is_match(&node.prompt) {
+            warnings.push(format!(
+                "node \"{}\": prompt is missing the TASK: marker from the mass-ulw node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
+                node.id
+            ));
+        }
+        if !stop_marker.is_match(&node.prompt) {
+            warnings.push(format!(
+                "node \"{}\": prompt is missing a STOP WHEN condition from the mass-ulw node prompt contract",
+                node.id
+            ));
+        }
+    }
+    if nodes.len() >= 2 && !nodes.iter().any(|node| verification_shape.is_match(&node.id) || verification_shape.is_match(&node.prompt)) {
+        warnings.push(format!(
+            "run has {} nodes but no verification node; a graph that produces work ends with a verification wave (mass-ulw planning reference)",
+            nodes.len()
+        ));
+    }
+    warnings
+}
+
+fn failure(code: &str, message: &str, nodes: Vec<Value>, errors: Vec<Value>, diagnostics: Vec<Value>, node_ids: Vec<Value>) -> ToolResult {
+    tool_text(
+        message.into(),
+        json!({
+            "kind": "error",
+            "error": {
+                "code": code,
+                "message": message,
+                "nodes": nodes,
+                "errors": errors,
+                "diagnostics": diagnostics,
+                "node_ids": node_ids,
+            }
+        }),
+    )
+}
+
 fn manager_failure(error: DagManagerError) -> ToolResult {
-    let code = match error.code { DagManagerErrorCode::DefinitionConflict => "definition_conflict", DagManagerErrorCode::RunNotFound => "run_not_found", DagManagerErrorCode::RunNotOwned => "run_not_owned", DagManagerErrorCode::InvalidArguments | DagManagerErrorCode::InvalidDefinition => "invalid_definition" };
-    let errors = error.errors.iter().map(|error| json!({"code":error.code.as_str(),"message":error.message,"nodeIds":error.node_ids})).collect();
-    let diagnostics = error.diagnostics.iter().map(|diagnostic| json!(diagnostic)).collect();
-    failure(code, &error.message, vec![], errors, diagnostics)
+    let code = error.code.as_str();
+    let errors = error.errors().iter().map(|error| json!({"code": error.code.as_str(), "message": error.message, "nodeIds": error.node_ids})).collect();
+    let diagnostics = error.diagnostics().iter().map(|diagnostic| json!(diagnostic)).collect();
+    let node_ids = error.node_ids().iter().map(|id| json!(id)).collect();
+    failure(code, &error.message, vec![], errors, diagnostics, node_ids)
 }
+
+fn control_failure(error: DagNodeControlError) -> ToolResult {
+    let code = error.code.as_str();
+    let node_ids = error.node_ids.iter().map(|id| json!(id)).collect();
+    failure(code, &error.message, vec![], vec![], vec![], node_ids)
+}
+
+fn validate_nodes(definition_nodes: &[NodeInput]) -> Result<Vec<DagNodeInput>, ToolResult> {
+    let mut errors = Vec::new();
+    let mut nodes = Vec::new();
+    for node in definition_nodes {
+        let selection = validate_task_target(TargetInput {
+            category: node.category.as_deref(),
+            subagent_type: node.subagent_type.as_deref(),
+            model: node.model.as_deref(),
+        });
+        let target = match selection {
+            TaskTargetSelection::Error(error) => {
+                errors.push(json!({"node_id": node.id, "code": error.code.as_str(), "message": error.message}));
+                continue;
+            }
+            TaskTargetSelection::Category(category) => DagNodeTarget::Category(category),
+            TaskTargetSelection::SubagentType(subagent_type) => DagNodeTarget::SubagentType {
+                subagent_type,
+                model: node.model.clone(),
+            },
+        };
+        nodes.push(DagNodeInput {
+            id: node.id.clone(),
+            prompt: node.prompt.clone(),
+            target,
+            label: node.label.clone(),
+            depends_on: node.depends_on.clone(),
+            task_summary: node.task_summary.clone(),
+            description: node.description.clone(),
+            load_skills: node.load_skills.clone(),
+        });
+    }
+    if !errors.is_empty() {
+        let message = errors
+            .iter()
+            .map(|error| format!("Node \"{}\": {}", error["node_id"].as_str().unwrap_or_default(), error["message"].as_str().unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(failure("invalid_definition", &message, errors, vec![], vec![], vec![]));
+    }
+    Ok(nodes)
+}
+
 pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResult, ToolError> {
     let parent = (deps.parent_session_id)();
     if input.action == "start" {
-        let Some(definition) = input.definition else { return Ok(failure("invalid_definition", "action=start requires a definition. Provide definition.key, definition.name, and definition.nodes.", vec![], vec![], vec![])) };
-        let mut errors = Vec::new(); let mut nodes = Vec::new();
-        for node in definition.nodes {
-            let selection = validate_task_target(TargetInput { category: node.category.as_deref(), subagent_type: node.subagent_type.as_deref(), model: node.model.as_deref() });
-            let target = match selection {
-                TaskTargetSelection::Error(error) => { errors.push(json!({"node_id":node.id,"code":error.code.as_str(),"message":error.message})); continue },
-                TaskTargetSelection::Category(category) => DagNodeTarget::Category(category),
-                TaskTargetSelection::SubagentType(subagent_type) => DagNodeTarget::SubagentType { subagent_type, model: node.model },
-            };
-            nodes.push(DagNodeInput { id: node.id, prompt: node.prompt, target, label: node.label, depends_on: node.depends_on, task_summary: node.task_summary, description: node.description, load_skills: node.load_skills });
-        }
-        if !errors.is_empty() { let message = errors.iter().map(|error| format!("Node \"{}\": {}", error["node_id"].as_str().unwrap_or_default(), error["message"].as_str().unwrap_or_default())).collect::<Vec<_>>().join(" "); return Ok(failure("invalid_definition", &message, errors, vec![], vec![])) }
-        let result = match deps.manager.start(DagStartParams { definition: DagDefinition { key: definition.key, name: definition.name, nodes }, parent_session_id: parent, root_session_id: (deps.root_session_id)() }) { Ok(result) => result, Err(error) => return Ok(manager_failure(error)) };
-        return Ok(tool_text(format!("{} dag run {} ({} nodes).", if result.reused { "Reused" } else { "Started" }, result.snapshot.run_id, result.snapshot.counts.total), json!({"kind":"started","run_id":result.snapshot.run_id,"reused":result.reused,"snapshot":result.snapshot})));
+        let Some(definition) = input.definition else {
+            return Ok(failure("invalid_definition", "action=start requires a definition. Provide definition.key, definition.name, and definition.nodes.", vec![], vec![], vec![], vec![]));
+        };
+        let nodes = match validate_nodes(&definition.nodes) {
+            Ok(nodes) => nodes,
+            Err(res) => return Ok(res),
+        };
+        let warnings = lint_dag_definition_nodes(&definition.nodes);
+        let result = match deps.manager.start(DagStartParams {
+            definition: DagDefinition {
+                key: definition.key,
+                name: definition.name,
+                nodes,
+            },
+            parent_session_id: parent,
+            root_session_id: (deps.root_session_id)(),
+        }) {
+            Ok(result) => result,
+            Err(error) => return Ok(manager_failure(error)),
+        };
+        let verb = if result.reused { "Reused" } else { "Started" };
+        let warning_text = if warnings.is_empty() {
+            String::new()
+        } else {
+            format!(" Advisory warnings (fix the definition and re-start under a new key to clear them): {}", warnings.join(" | "))
+        };
+        return Ok(tool_text(
+            format!("{} dag run {} ({} nodes).{}", verb, result.snapshot.run_id, result.snapshot.counts.total, warning_text),
+            json!({
+                "kind": "started",
+                "run_id": result.snapshot.run_id,
+                "reused": result.reused,
+                "snapshot": result.snapshot,
+                "warnings": warnings,
+            }),
+        ));
     }
-    let Some(run_id) = input.run_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else { return Ok(failure("run_not_found", &format!("action={} requires run_id.", input.action), vec![], vec![], vec![])) };
-    let snapshot = match deps.manager.snapshot(&run_id.to_owned(), &parent) { Ok(snapshot) => snapshot, Err(error) => return Ok(manager_failure(error)) };
+
+    let Some(run_id) = input.run_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(failure("run_not_found", &format!("action={} requires run_id.", input.action), vec![], vec![], vec![], vec![]));
+    };
+
+    let snapshot = match deps.manager.snapshot(&run_id.to_owned(), &parent) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return Ok(manager_failure(error)),
+    };
     let status = snapshot.status.as_str();
+
     match input.action.as_str() {
-        "attach" => Ok(tool_text(format!("Attached to dag run {run_id} ({status})."), json!({"kind":"attached","run_id":run_id,"snapshot":snapshot}))),
-        "snapshot" => Ok(tool_text(format!("Dag run {run_id} is {status} ({}/{} nodes complete).", snapshot.counts.completed, snapshot.counts.total), json!({"kind":"snapshot","run_id":run_id,"snapshot":snapshot}))),
-        "wait" => if let Some(wait) = &deps.wait { let result = wait(run_id, &parent)?; Ok(tool_text(format!("Dag run {run_id} finished with status {}.", result["status"].as_str().unwrap_or_default()), json!({"kind":"waited","run_id":run_id,"result":result}))) } else { Ok(tool_text(format!("Dag run {run_id} is {status}; no wait surface is wired in this session."), json!({"kind":"waited","run_id":run_id,"result":{"runId":run_id,"status":status,"snapshot":snapshot,"nodes":{}}}))) },
-        "cancel" => { if let Some(cancel) = &deps.cancel { cancel(run_id, input.reason.as_deref())?; } let snapshot = match deps.manager.snapshot(&run_id.to_owned(), &parent) { Ok(snapshot) => snapshot, Err(error) => return Ok(manager_failure(error)) }; Ok(tool_text(format!("Cancelled dag run {run_id}{}.", input.reason.map_or_else(String::new, |reason| format!(" ({reason})"))), json!({"kind":"cancelled","run_id":run_id,"snapshot":snapshot}))) },
+        "attach" => {
+            let _ = match deps.manager.attach(&run_id.to_owned(), &parent) {
+                Ok(h) => h,
+                Err(error) => return Ok(manager_failure(error)),
+            };
+            Ok(tool_text(
+                format!("Attached to dag run {run_id} ({status})."),
+                json!({
+                    "kind": "attached",
+                    "run_id": run_id,
+                    "snapshot": snapshot,
+                }),
+            ))
+        }
+        "snapshot" => {
+            let quiet = quiet_nodes_notice(&snapshot.nodes, chrono::Utc::now().timestamp_millis());
+            Ok(tool_text(
+                format!("Dag run {run_id} is {status} ({}/{} nodes complete).{}", snapshot.counts.completed, snapshot.counts.total, quiet),
+                json!({
+                    "kind": "snapshot",
+                    "run_id": run_id,
+                    "snapshot": snapshot,
+                }),
+            ))
+        }
+        "wait" => {
+            let Some(wait) = &deps.wait else {
+                return Ok(tool_text(
+                    format!("Dag run {run_id} is {status}; no wait surface is wired in this session."),
+                    json!({
+                        "kind": "waited",
+                        "run_id": run_id,
+                        "result": {
+                            "runId": run_id,
+                            "status": status,
+                            "snapshot": snapshot,
+                            "nodes": {},
+                        }
+                    }),
+                ));
+            };
+            let is_terminal = matches!(status, "completed" | "failed" | "cancelled");
+            let detach = input.detach.unwrap_or(true);
+            if detach && !is_terminal {
+                let quiet = quiet_nodes_notice(&snapshot.nodes, chrono::Utc::now().timestamp_millis());
+                return Ok(tool_text(
+                    format!(
+                        "Detached from dag run {run_id} ({status}, {}/{} nodes complete). The session is woken as each node completes and again when the run settles; use action=snapshot for a midpoint peek or action=wait with detach=false to block until settle.{}",
+                        snapshot.counts.completed, snapshot.counts.total, quiet
+                    ),
+                    json!({
+                        "kind": "detached",
+                        "run_id": run_id,
+                        "snapshot": snapshot,
+                    }),
+                ));
+            }
+            let result = wait(run_id, &parent)?;
+            let res_status = result["status"].as_str().unwrap_or_default();
+            Ok(tool_text(
+                format!("Dag run {run_id} finished with status {res_status}."),
+                json!({
+                    "kind": "waited",
+                    "run_id": run_id,
+                    "result": result,
+                }),
+            ))
+        }
+        "detach" => {
+            let quiet = quiet_nodes_notice(&snapshot.nodes, chrono::Utc::now().timestamp_millis());
+            Ok(tool_text(
+                format!(
+                    "Detached from dag run {run_id} ({status}, {}/{} nodes complete). The session is woken as each node completes and again when the run settles; use action=snapshot for a midpoint peek or action=wait with detach=false to block until settle.{}",
+                    snapshot.counts.completed, snapshot.counts.total, quiet
+                ),
+                json!({
+                    "kind": "detached",
+                    "run_id": run_id,
+                    "snapshot": snapshot,
+                }),
+            ))
+        }
+        "cancel" => {
+            if let Some(cancel) = &deps.cancel {
+                cancel(run_id, input.reason.as_deref())?;
+            }
+            let updated_snapshot = match deps.manager.snapshot(&run_id.to_owned(), &parent) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Ok(manager_failure(error)),
+            };
+            let reason_text = input.reason.map_or_else(String::new, |reason| format!(" ({reason})"));
+            Ok(tool_text(
+                format!("Cancelled dag run {run_id}{reason_text}."),
+                json!({
+                    "kind": "cancelled",
+                    "run_id": run_id,
+                    "snapshot": updated_snapshot,
+                }),
+            ))
+        }
+        "retry" => {
+            if input.node_id.is_some() && input.node_ids.is_some() {
+                return Ok(failure("invalid_arguments", "action=retry accepts node_id OR node_ids, never both.", vec![], vec![], vec![], vec![]));
+            }
+            let selected: Option<Vec<String>> = if let Some(node_id) = input.node_id {
+                Some(vec![node_id])
+            } else {
+                input.node_ids
+            };
+            if input.prompt.is_some() && selected.as_ref().is_none_or(|ids| ids.len() != 1) {
+                return Ok(failure("invalid_arguments", "action=retry accepts prompt only alongside exactly one node id.", vec![], vec![], vec![], vec![]));
+            }
+            let Some(retry) = &deps.retry else {
+                return Ok(failure("run_still_active", &format!("Dag run {run_id} has no retry surface wired in this session."), vec![], vec![], vec![], vec![]));
+            };
+            let retried_snapshot = match retry(run_id, selected.as_deref(), input.prompt.as_deref()) {
+                Ok(snap) => snap,
+                Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
+                Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Tool(e)) => return Err(e),
+            };
+            let scope = selected.as_ref().map_or_else(|| "every failed or cancelled node".to_string(), |ids| ids.join(", "));
+            let mut details = json!({
+                "kind": "retried",
+                "run_id": run_id,
+                "snapshot": retried_snapshot,
+            });
+            if let Some(ids) = selected {
+                details["node_ids"] = json!(ids);
+            }
+            Ok(tool_text(
+                format!("Retried {scope} on dag run {run_id}; it is now {}.", retried_snapshot.status.as_str()),
+                details,
+            ))
+        }
+        "send" => {
+            let Some(node_id) = input.node_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
+                return Ok(failure("invalid_arguments", "action=send requires node_id.", vec![], vec![], vec![], vec![]));
+            };
+            let Some(message) = input.message.as_deref().map(str::trim).filter(|msg| !msg.is_empty()) else {
+                return Ok(failure("invalid_arguments", "action=send requires a non-empty message.", vec![], vec![], vec![], vec![]));
+            };
+            let Some(send) = &deps.send else {
+                return Ok(failure("node_not_continuable", &format!("Dag run {run_id} has no send surface wired in this session."), vec![], vec![], vec![], vec![]));
+            };
+            let sent = match send(run_id, node_id, message) {
+                Ok(outcome) => outcome,
+                Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
+                Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Tool(e)) => return Err(e),
+            };
+            let delivery_str = match sent.delivery {
+                DagToolSendDelivery::Steer => "steer",
+                DagToolSendDelivery::Revive => "revive",
+                DagToolSendDelivery::Queued => "queued",
+            };
+            let mut details = json!({
+                "kind": "sent",
+                "run_id": run_id,
+                "node_id": sent.node_id,
+                "task_id": sent.task_id,
+                "delivery": delivery_str,
+            });
+            if let Some(pos) = sent.queue_position {
+                details["queue_position"] = json!(pos);
+            }
+            Ok(tool_text(
+                format!("Delivered the message to dag node {} ({}).", sent.node_id, delivery_str),
+                details,
+            ))
+        }
+        "amend" => {
+            let Some(definition) = input.definition else {
+                return Ok(failure("invalid_arguments", "action=amend requires a definition carrying the edited graph.", vec![], vec![], vec![], vec![]));
+            };
+            let nodes = match validate_nodes(&definition.nodes) {
+                Ok(nodes) => nodes,
+                Err(res) => return Ok(res),
+            };
+            let Some(amend) = &deps.amend else {
+                return Ok(failure("invalid_amendment", &format!("Dag run {run_id} has no amend surface wired in this session."), vec![], vec![], vec![], vec![]));
+            };
+            let amended_snapshot = match amend(run_id, DagDefinition {
+                key: definition.key,
+                name: definition.name,
+                nodes,
+            }) {
+                Ok(snap) => snap,
+                Err(DagToolExecutionError::Manager(e)) => return Ok(manager_failure(e)),
+                Err(DagToolExecutionError::Control(e)) => return Ok(control_failure(e)),
+                Err(DagToolExecutionError::Tool(e)) => return Err(e),
+            };
+            Ok(tool_text(
+                format!("Amended dag run {run_id}; it is now {}.", amended_snapshot.status.as_str()),
+                json!({
+                    "kind": "amended",
+                    "run_id": run_id,
+                    "snapshot": amended_snapshot,
+                }),
+            ))
+        }
         _ => Err(ToolError::Message("invalid dag action".into())),
     }
 }
+
 pub fn create_dag_tool(deps: DagToolDeps) -> ToolDefinition {
     let deps = Arc::new(deps);
-    let parameters = json!({"type":"object","properties":{"action":{"anyOf":[{"type":"string","const":"start"},{"type":"string","const":"attach"},{"type":"string","const":"snapshot"},{"type":"string","const":"wait"},{"type":"string","const":"cancel"}]},"definition":{"type":"object","properties":{"key":{"type":"string"},"name":{"type":"string"},"nodes":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"prompt":{"type":"string"},"label":{"type":"string"},"category":{"type":"string"},"subagent_type":{"type":"string"},"model":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"task_summary":{"type":"string"},"description":{"type":"string"},"load_skills":{"type":"array","items":{"type":"string"}}},"required":["id","prompt"]}}},"required":["key","name","nodes"]},"run_id":{"type":"string"},"reason":{"type":"string"}},"required":["action"]});
-    let mut tool = ToolDefinition::new(DAG_TOOL_NAME, DESCRIPTION, parameters, Arc::new(move |call| { let deps = deps.clone(); Box::pin(async move { run_dag_tool(&deps, serde_json::from_value(call.params)?) }) }));
-    tool.parameters["properties"]["action"]["description"]=json!("start creates or reuses a run from a definition; attach re-binds to a live run; snapshot reads current state; wait blocks until the run settles; cancel stops it.");
-    tool.parameters["properties"]["definition"]["description"]=json!("Graph to run. Required for action=start, ignored otherwise.");
-    tool.parameters["properties"]["run_id"]["description"]=json!("Run id returned by start. Required for attach, snapshot, wait, and cancel.");
-    tool.parameters["properties"]["reason"]["description"]=json!("Optional human-readable reason recorded when cancelling a run.");
-    let definition=&mut tool.parameters["properties"]["definition"]["properties"];
-    definition["key"]["description"]=json!("Stable idempotency key for this run within the session; re-starting with the same key and definition reuses the existing run.");
-    definition["name"]["description"]=json!("Human-readable run name shown in status views.");
-    definition["nodes"]["description"]=json!("The nodes of the graph. Each node targets EITHER a category OR a subagent_type.");
-    let node=&mut definition["nodes"]["items"]["properties"];
-    for (key,description) in [
-        ("id","Node id, unique within the definition; referenced by dependsOn."),
-        ("prompt","The instruction for this node's child task. MUST be written in English."),
-        ("label","Short human label for this node."),
-        ("category","Category name to route this node through. Mutually exclusive with subagent_type; required unless subagent_type is given."),
-        ("subagent_type","Agent name to invoke directly (e.g. momus). Mutually exclusive with category; required unless category is given."),
-        ("model","Explicit model override. Only valid with subagent_type; rejected alongside category, which takes its model from omo.json."),
-        ("dependsOn","Ids of nodes that must finish before this one is scheduled. Ordering only: no output is substituted into this prompt."),
-        ("task_summary","One-line summary of this node's work, shown in the run widget."),
-        ("description","Short human description of this node."),
-        ("load_skills","Skill names whose SKILL.md content is prepended to this node's prompt."),
-    ] { node[key]["description"]=json!(description); }
-    tool.label = "Dag".into(); tool
+    let raw_schema: Value = serde_json::from_str(include_str!("../tests/golden/workflow-schema.json")).expect("valid workflow-schema.json");
+    let parameters = raw_schema["parameters"].clone();
+    let mut tool = ToolDefinition::new(
+        WORKFLOW_TOOL_NAME,
+        DESCRIPTION,
+        parameters,
+        Arc::new(move |call| {
+            let deps = deps.clone();
+            Box::pin(async move {
+                let input: DagToolInput = serde_json::from_value(call.params)?;
+                run_dag_tool(&deps, input)
+            })
+        }),
+    );
+    tool.label = "Workflow".into();
+    tool
+}
+
+pub fn create_workflow_tool(deps: DagToolDeps) -> ToolDefinition {
+    create_dag_tool(deps)
 }
