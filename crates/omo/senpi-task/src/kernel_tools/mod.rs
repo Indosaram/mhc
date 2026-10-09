@@ -297,5 +297,13 @@ mod kernel_tools_python_tests {
 mod kernel_tools_port_tests;
 
 #[cfg(test)]
+#[path = "kernel_tools_invoke_scope_tests.rs"]
+mod kernel_tools_invoke_scope_port_tests;
+
+#[cfg(test)]
+#[path = "kernel_tools_policy_refusal_tests.rs"]
+mod kernel_tools_policy_refusal_port_tests;
+
+#[cfg(test)]
 #[path = "revive_tests.rs"]
 mod revive_tests;
