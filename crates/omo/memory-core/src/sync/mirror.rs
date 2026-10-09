@@ -285,15 +285,16 @@ impl<'a> MirrorSync<'a> {
     }
 
     fn run(&self, argv: &[&str], timeout_ms: u64) -> GitExecResult {
+        let string_argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
+        let options = GitExecOptions {
+            cwd: self.repo.dir.clone(),
+            timeout_ms,
+            ..GitExecOptions::default()
+        };
+
         if let Some(exec) = self.exec {
-            let options = GitExecOptions {
-                cwd: self.repo.dir.clone(),
-                timeout_ms,
-                ..GitExecOptions::default()
-            };
-            let argv: Vec<String> = argv.iter().map(|arg| (*arg).to_string()).collect();
             return exec
-                .run(&argv, &options)
+                .run(&string_argv, &options)
                 .unwrap_or_else(|error| GitExecResult {
                     code: 1,
                     stdout: String::new(),
@@ -301,24 +302,14 @@ impl<'a> MirrorSync<'a> {
                 });
         }
 
-        let mut command = std::process::Command::new("git");
-        command
-            .args(argv)
-            .current_dir(&self.repo.dir)
-            .env("GIT_TERMINAL_PROMPT", "0");
-
-        match command.output() {
-            Ok(output) => GitExecResult {
-                code: output.status.code().unwrap_or(1),
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            },
-            Err(error) => GitExecResult {
+        self.repo
+            .exec()
+            .run(&string_argv, &options)
+            .unwrap_or_else(|error| GitExecResult {
                 code: 1,
                 stdout: String::new(),
                 stderr: error.to_string(),
-            },
-        }
+            })
     }
 }
 
