@@ -271,6 +271,11 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("send_custom_message",result.map(|()|None))
         },
         RpcCommandBody::GetFastMode=>("get_fast_mode",Ok(Some(serde_json::json!({"enabled":session.is_fast_mode_active(),"serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})})))),
+        RpcCommandBody::SetFastMode{enabled}=>{
+            let model=session.model();
+            session.set_session_fast_mode(*enabled);
+            ("set_fast_mode",Ok(Some(serde_json::json!({"enabled":*enabled,"serviceTier":if *enabled{"priority"}else{"auto"},"provider":model.provider,"modelId":model.id}))))
+        },
         RpcCommandBody::CleanupBashOutput{path}=>("cleanup_bash_output",session.cleanup_bash_output(std::path::Path::new(path)).await.map(|()|None)),
         RpcCommandBody::ExportJsonl{output_path}=>("export_jsonl",session.export_to_jsonl(output_path.as_deref()).map(|path|Some(serde_json::json!({"path":path}))).map_err(|error|error.to_string())),
         RpcCommandBody::Steer{message,images,enqueue_order}|RpcCommandBody::FollowUp{message,images,enqueue_order}=>{
@@ -292,6 +297,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::SetAutoRetry{enabled}=>("set_auto_retry",session.set_auto_retry_enabled(*enabled).map(|()|None)),
         RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
         RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
+        RpcCommandBody::CheckReloadVeto=>("check_reload_veto",session.check_reload_veto().await.map(|value|Some(value.into()))),
+        RpcCommandBody::AbortBranchSummary=>{session.abort_branch_summary();("abort_branch_summary",Ok(None))},
         RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
         RpcCommandBody::SetSteeringMode{mode}|RpcCommandBody::SetFollowUpMode{mode}=>{let mode=match mode{crate::rpc_types::QueueMode::All=>maho_agent::types::QueueMode::All,crate::rpc_types::QueueMode::OneAtATime=>maho_agent::types::QueueMode::OneAtATime};let kind=if matches!(&command.body,RpcCommandBody::SetSteeringMode{..}){session.set_steering_mode(mode);"set_steering_mode"}else{session.set_follow_up_mode(mode);"set_follow_up_mode"};(kind,Ok(None))},
         RpcCommandBody::GetAvailableThinkingLevels=>("get_available_thinking_levels",Ok(Some(serde_json::json!({"levels":session.get_available_thinking_levels()})))),
@@ -340,6 +347,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}});("navigate_tree",result)
         },
         RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
+        RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
+            let result=session.execute_bash(command,None,exclude_from_context.unwrap_or(false),execution_id.clone(),None).await;
+            ("bash",result.map(|result|Some(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))))
+        },
         RpcCommandBody::RecordBashResult{command,result,exclude_from_context}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireResult{output:String,exit_code:Option<i32>,cancelled:bool,truncated:bool,full_output_path:Option<std::path::PathBuf>}
             let response=serde_json::from_value::<WireResult>(result.clone()).map_err(|error|error.to_string()).map(|result|{let parsed=maho_tools::bash_executor::BashResult{output:result.output,exit_code:result.exit_code,cancelled:result.cancelled,truncated:result.truncated,full_output_path:result.full_output_path};session.record_bash_result(command,&parsed,exclude_from_context.unwrap_or(false));None});("record_bash_result",response)
@@ -597,6 +608,26 @@ mod new_session_tests{
     async fn append_user_message_dispatches(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"append_user_message","content":"hello"})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"append_user_message"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn bash_dispatches_success(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"bash"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn abort_branch_summary_dispatches(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"abort_branch_summary"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"abort_branch_summary"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn check_reload_veto_dispatches(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"check_reload_veto"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],false);
+    }
+    #[tokio::test]
+    async fn set_fast_mode_dispatches_exact_shape(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"set_fast_mode","enabled":true})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"set_fast_mode"); assert_eq!(response["success"],true); assert_eq!(response["data"]["enabled"],true);
     }
     #[tokio::test]
     async fn send_custom_message_dispatches(){
