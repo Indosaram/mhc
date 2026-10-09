@@ -13,6 +13,7 @@ pub mod identity_runtime;
 pub mod index;
 pub mod journal_wiring;
 pub mod memory_notice_spec;
+pub mod memory_maintenance;
 pub mod nudge_wiring;
 pub mod guard;
 pub mod facts_run_cleanup;
