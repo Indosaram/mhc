@@ -15,6 +15,8 @@ pub mod worker_capability;
 pub mod worker_kernel_tools;
 pub mod worker_tool_identity;
 pub mod worker_turn;
+#[cfg(test)]
+mod ported_tests;
 pub mod process_worker;
 pub mod dispatcher;
 pub mod engine;
