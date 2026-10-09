@@ -235,4 +235,40 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         assert!(rx.try_recv().is_err());
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_ping_budget_is_shorter_than_idle_timeout() {
+        let socket = Arc::new(Socket { pings: AtomicUsize::new(0) });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let monitor = start_websocket_liveness(socket, move |error| { let _ = tx.send(error); }, DEFAULT_WEBSOCKET_LIVENESS_POLICY);
+        tokio::time::advance(Duration::from_millis(70_001)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(rx.try_recv().expect("dead socket").unanswered_pings, 2);
+        monitor.stop();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn answered_pongs_keep_a_silent_stream_alive() {
+        let socket = Arc::new(Socket { pings: AtomicUsize::new(0) });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let monitor = start_websocket_liveness(socket.clone(), move |error| { let _ = tx.send(error); }, WebSocketLivenessPolicy { ping_interval_ms: 30, pong_timeout_ms: 10, max_unanswered_pings: 2 });
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_millis(30)).await;
+            tokio::task::yield_now().await;
+            monitor.note_activity();
+        }
+        assert!(rx.try_recv().is_err());
+        assert!(socket.pings.load(Ordering::SeqCst) >= 3);
+        monitor.stop();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_ping_capability_does_not_start_liveness_failure() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let monitor = start_websocket_liveness(Arc::new(InertSocket), move |error| { let _ = tx.send(error); }, DEFAULT_WEBSOCKET_LIVENESS_POLICY);
+        tokio::time::advance(Duration::from_millis(100_000)).await;
+        tokio::task::yield_now().await;
+        assert!(rx.try_recv().is_err());
+        monitor.stop();
+    }
 }
