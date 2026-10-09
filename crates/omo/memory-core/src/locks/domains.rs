@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::support::sha256::sha256_hex;
 
-/// Canonical strings for the eight well-known lock domains.
-pub const LOCK_DOMAINS: [&str; 8] = [
+/// Canonical strings for the nine well-known lock domains.
+pub const LOCK_DOMAINS: [&str; 9] = [
     "memory-write",
     "reflection-scheduler",
     "reflection-finalize",
@@ -17,9 +17,10 @@ pub const LOCK_DOMAINS: [&str; 8] = [
     "facts-queue",
     "facts-runs",
     "notice",
+    "receipts",
 ];
 
-/// The eight well-known lock domains recognised by the memory-core protocol.
+/// The nine well-known lock domains recognised by the memory-core protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LockDomain {
     #[serde(rename = "memory-write")]
@@ -38,6 +39,8 @@ pub enum LockDomain {
     FactsRuns,
     #[serde(rename = "notice")]
     Notice,
+    #[serde(rename = "receipts")]
+    Receipts,
 }
 
 impl LockDomain {
@@ -52,6 +55,7 @@ impl LockDomain {
             Self::FactsQueue => "facts-queue",
             Self::FactsRuns => "facts-runs",
             Self::Notice => "notice",
+            Self::Receipts => "receipts",
         }
     }
 }
@@ -169,6 +173,11 @@ pub fn facts_runs_lock_path(locks_directory: &Path) -> PathBuf {
 /// Resolves the exclusive lock path for global notifications.
 pub fn notice_lock_path(locks_directory: &Path) -> PathBuf {
     locks_directory.join("notice.lock")
+}
+
+/// Resolves the exclusive lock path for receipts file serialization.
+pub fn receipts_lock_path(locks_directory: &Path) -> PathBuf {
+    locks_directory.join("receipts.lock")
 }
 
 #[cfg(test)]

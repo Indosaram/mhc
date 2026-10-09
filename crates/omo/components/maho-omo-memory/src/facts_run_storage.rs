@@ -5,7 +5,7 @@ use crate::{facts_failure_recording::FactsQueuedKey,facts_runner_types::{FactsFi
 pub enum FactsStorageError{Artifact(ArtifactError),LockRecord(memory_core::locks::LockRecordError),Lock(memory_core::locks::WithLockError<ArtifactError>),InvalidTimestamp,SequenceExhausted}
 impl std::fmt::Display for FactsStorageError{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{match self{Self::Artifact(error)=>error.fmt(f),Self::LockRecord(error)=>error.fmt(f),Self::Lock(error)=>error.fmt(f),Self::InvalidTimestamp=>f.write_str("Invalid facts launch timestamp"),Self::SequenceExhausted=>f.write_str("facts run sequence exhausted")}}}
 impl std::error::Error for FactsStorageError{}
-pub struct ReserveFactsRunDirOptions<'a>{pub facts_dir:&'a Path,pub locks_dir:&'a Path,pub entries:&'a [FactsQueueEntry],pub batch_id:&'a str,pub launched_at:i64,pub deadline_ms:Option<i64>,pub termination_grace_ms:Option<i64>,pub lock_wait_ms:Option<u64>}
+pub struct ReserveFactsRunDirOptions<'a>{pub facts_dir:&'a Path,pub locks_dir:&'a Path,pub entries:&'a [FactsQueueEntry],pub batch_id:&'a str,pub launched_at:i64,pub deadline_ms:Option<i64>,pub termination_grace_ms:Option<i64>,pub lock_wait_ms:Option<u64>,pub receipts_dir:Option<&'a Path>,pub receipts:Option<&'a dyn crate::receipts_port::MemoryReceiptsPort>,pub warn:Option<&'a (dyn Fn(&str) + Send + Sync)>}
 pub fn queue_keys(entries:&[FactsQueueEntry])->Vec<FactsQueuedKey>{entries.iter().map(|entry|FactsQueuedKey{conversation_id:entry.conversation_id.clone(),end_message_id:entry.range.end_message_id.clone(),end_snapshot_line:entry.range.end_snapshot_line}).collect()}
 fn next_attempt(runs:&Path,digest:&str)->u64{let prefix=format!("facts-{digest}-");std::fs::read_dir(runs).into_iter().flatten().filter_map(Result::ok).filter_map(|entry|{let name=entry.file_name().to_string_lossy().into_owned();let name=name.strip_prefix(".prune-").unwrap_or(&name);let rest=name.strip_prefix(&prefix)?;let end=rest.find(|character:char|!character.is_ascii_digit()).unwrap_or(rest.len());if end==0||!rest[end..].is_empty()&&!rest[end..].starts_with('-'){return None;}rest[..end].parse::<u64>().ok()}).max().unwrap_or(0)+1}
 pub fn reserve_facts_run_dir(options:&ReserveFactsRunDirOptions<'_>)->Result<Option<PathBuf>,FactsStorageError>{
@@ -20,6 +20,18 @@ pub fn reserve_facts_run_dir(options:&ReserveFactsRunDirOptions<'_>)->Result<Opt
         }
         Err(ArtifactError::Io(std::io::Error::other("facts run sequence exhausted")))
     }).map_err(FactsStorageError::Lock)?;
+    if let (Some(_dir), Some(receipts_dir)) = (&result, options.receipts_dir) {
+        let receipt = crate::receipts_port::facts_receipt(options.batch_id, "launched", Default::default());
+        let warn_bridge = options.warn.map(|w| {
+            move |msg: &str, _fields: &std::collections::BTreeMap<String, String>| w(msg)
+        });
+        crate::receipts_port::emit_memory_receipt(
+            receipts_dir,
+            &receipt,
+            options.receipts,
+            warn_bridge.as_ref().map(|w| w as &dyn Fn(&str, &std::collections::BTreeMap<String, String>)),
+        );
+    }
     Ok(result)
 }
 pub fn final_result(record:&FactsFinalRecord)->FactsLaunchResult{match record.outcome{FactsTerminalOutcome::Committed if record.sha.is_some()=>FactsLaunchResult::Committed{run_id:record.run_id.clone(),sha:record.sha.clone().expect("checked sha")},FactsTerminalOutcome::NoFacts=>FactsLaunchResult::NoFacts{run_id:record.run_id.clone()},FactsTerminalOutcome::ParentDirty=>FactsLaunchResult::ParentDirty{run_id:record.run_id.clone()},_=>FactsLaunchResult::Failed{run_id:record.run_id.clone()}}}
@@ -32,7 +44,7 @@ pub fn write_facts_final(dir:&Path,run_id:&str,outcome:FactsTerminalOutcome,fini
 #[cfg(test)]
 mod tests{
     use super::*;
-    #[test]fn reserves_monotonic_names_with_tombstone_high_water(){let root=tempfile::tempdir().unwrap();let options=ReserveFactsRunDirOptions{facts_dir:&root.path().join("facts"),locks_dir:&root.path().join("locks"),entries:&[],batch_id:"batch",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None};let first=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(first.file_name().unwrap().to_string_lossy().ends_with("-1"));let ledger:serde_json::Value=crate::worker::run_artifacts::read_run_json(&first.join("ledger.json")).unwrap();assert_eq!(ledger["deadlineAt"],905000);let second=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(second.file_name().unwrap().to_string_lossy().ends_with("-2"));let tombstone=second.with_file_name(format!(".prune-{}-uuid",second.file_name().unwrap().to_string_lossy()));std::fs::rename(second,tombstone).unwrap();let third=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(third.file_name().unwrap().to_string_lossy().ends_with("-3"));assert!(!facts_runs_lock_path(options.locks_dir).exists());}
+    #[test]fn reserves_monotonic_names_with_tombstone_high_water(){let root=tempfile::tempdir().unwrap();let options=ReserveFactsRunDirOptions{facts_dir:&root.path().join("facts"),locks_dir:&root.path().join("locks"),entries:&[],batch_id:"batch",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None,receipts_dir:None,receipts:None,warn:None};let first=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(first.file_name().unwrap().to_string_lossy().ends_with("-1"));let ledger:serde_json::Value=crate::worker::run_artifacts::read_run_json(&first.join("ledger.json")).unwrap();assert_eq!(ledger["deadlineAt"],905000);let second=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(second.file_name().unwrap().to_string_lossy().ends_with("-2"));let tombstone=second.with_file_name(format!(".prune-{}-uuid",second.file_name().unwrap().to_string_lossy()));std::fs::rename(second,tombstone).unwrap();let third=reserve_facts_run_dir(&options).unwrap().unwrap();assert!(third.file_name().unwrap().to_string_lossy().ends_with("-3"));assert!(!facts_runs_lock_path(options.locks_dir).exists());}
     #[test]fn final_sentinel_precedes_disposable_cleanup(){let root=tempfile::tempdir().unwrap();std::fs::write(root.path().join("facts-payload.json"),"payload").unwrap();write_facts_final(root.path(),"run",FactsTerminalOutcome::NoFacts,"now",None,None,&mut |_,_,_|panic!("warn")).unwrap();assert!(root.path().join("final.json").exists());assert!(!root.path().join("facts-payload.json").exists());}
     #[test]fn committed_without_sha_degrades_to_failed(){assert_eq!(final_result(&FactsFinalRecord{version:1,run_id:"run".into(),outcome:FactsTerminalOutcome::Committed,sha:None}),FactsLaunchResult::Failed{run_id:"run".into()});}
 }

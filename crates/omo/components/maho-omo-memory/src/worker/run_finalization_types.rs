@@ -6,6 +6,8 @@ pub struct RunFinalizationContext<'a> {
     pub reservation: &'a dyn super::runner_types::ReflectionReservationPort,
     pub launch: Option<&'a dyn Fn(&ReservedRun)>,
     pub now_ms: &'a dyn Fn() -> i64,
+    pub receipts: Option<&'a dyn crate::receipts_port::MemoryReceiptsPort>,
+    pub warn: Option<&'a (dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync)>,
 }
 
 pub struct ReservationRunResult {

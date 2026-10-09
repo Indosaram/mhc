@@ -63,8 +63,9 @@ fn check_facts(
 pub async fn handle_doctor(
     deps: &MemoryCommandDeps,
     ctx: &CommandContext,
-    _args: &str,
+    args: &str,
 ) -> CommandResponse {
+    let parsed_json = args.contains("--json");
     let identity = match require_identity(deps, ctx) {
         Ok(identity) => identity,
         Err(error) => return respond(ctx, error, NotifyLevel::Error),
@@ -73,17 +74,26 @@ pub async fn handle_doctor(
     let repository = check_repository(&identity);
     let mut checks = vec![repository];
     let mut extra: Vec<String> = Vec::new();
+    let mut receipts_summary: Option<super::doctor_receipts::ReceiptSummaries> = None;
+    let mut quarantined_runs: Vec<super::doctor_receipts::QuarantinedRun> = Vec::new();
 
     if checks[0].level == CheckLevel::Ok {
         let warn_tokens = (deps.settings)()
             .ok()
             .and_then(|settings| settings["compile_warn_tokens"].as_u64())
             .unwrap_or(0) as usize;
+        let (receipts_check, receipts_map) = super::doctor_receipts::check_receipts(&identity.identity_paths.runtime, deps.now_ms());
+        receipts_summary = Some(receipts_map);
+        let (quarantine_check, quarantine_list) = super::doctor_receipts::check_quarantined_runs(&identity.identity_paths.reflection);
+        quarantined_runs = quarantine_list;
+
         checks.extend(check_frontmatter(&identity.identity_paths.repo));
         checks.push(check_soul_seed(&identity.identity_paths.repo));
         checks.push(check_locks(deps, &identity.identity_paths.locks));
         checks.push(check_worktrees(deps, &identity));
         checks.push(check_abandoned_runs(&identity.identity_paths.reflection));
+        checks.push(quarantine_check);
+        checks.push(receipts_check);
         checks.push(check_reflection_health(&identity.identity_paths.reflection, deps.now_ms()));
         checks.push(check_tokens(&identity.identity_paths.repo, warn_tokens));
 
@@ -107,6 +117,31 @@ pub async fn handle_doctor(
     }
 
     let level = worst_level(&checks);
+    let notify = match level {
+        CheckLevel::Fail => NotifyLevel::Error,
+        CheckLevel::Warn => NotifyLevel::Warning,
+        CheckLevel::Ok => NotifyLevel::Info,
+    };
+
+    if parsed_json {
+        let json_report = serde_json::json!({
+            "identity": identity.identity,
+            "level": match level {
+                CheckLevel::Ok => "ok",
+                CheckLevel::Warn => "warn",
+                CheckLevel::Fail => "fail",
+            },
+            "checks": checks.iter().map(|c| serde_json::json!({
+                "name": c.name,
+                "level": c.level.as_str(),
+                "detail": c.detail,
+            })).collect::<Vec<_>>(),
+            "receipts": receipts_summary,
+            "quarantinedRuns": quarantined_runs,
+        });
+        return respond(ctx, serde_json::to_string_pretty(&json_report).unwrap_or_default(), notify);
+    }
+
     let mut lines = vec![
         format!("# Memory doctor: {}", identity.identity),
         String::new(),
@@ -128,11 +163,6 @@ pub async fn handle_doctor(
         }
         CheckLevel::Ok => {}
     }
-    let notify = match level {
-        CheckLevel::Fail => NotifyLevel::Error,
-        CheckLevel::Warn => NotifyLevel::Warning,
-        CheckLevel::Ok => NotifyLevel::Info,
-    };
     respond(ctx, lines.join("\n"), notify)
 }
 

@@ -41,7 +41,7 @@ impl MemoryIdentityRuntime{
     }
     pub async fn reconcile(&self,now:&dyn Fn()->i64,recovery:&dyn crate::worker::run_reconciliation::ReflectionRecoveryPort,launch:&dyn Fn(&memory_core::reflection::ReservedRun))->Result<Vec<(String,String)>,String>{
         let identity=as_memory_identity(&self.identity);
-        crate::worker::run_reconciliation::reconcile_reflection_runs_with_options(&crate::worker::run_finalization_types::RunFinalizationContext{identity:&identity,reservation:self.store.as_ref(),launch:Some(launch),now_ms:now},recovery,None,true).await
+        crate::worker::run_reconciliation::reconcile_reflection_runs_with_options(&crate::worker::run_finalization_types::RunFinalizationContext{identity:&identity,reservation:self.store.as_ref(),launch:Some(launch),now_ms:now,receipts:None,warn:None},recovery,None,true).await
     }
 }
 pub fn create_identity_reservation_store(context:&MemoryIdentityContext,settings:&serde_json::Value)->Result<Arc<ReflectionReservationStore>,String>{
