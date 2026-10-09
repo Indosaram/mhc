@@ -1,0 +1,2 @@
+use super::{errors::{EvalHandleErrorCode, EvalHandleHostError}, host::{HandleOutcome, HandleRef}, task_refs::{load_fenced, settled, task_outcome, TaskRecord}};
+pub fn result_of(tasks: &[TaskRecord], reference: HandleRef, owner: &str) -> Result<HandleOutcome, EvalHandleHostError> { let record = load_fenced(tasks, &reference, owner)?; if !settled(record) { return Err(EvalHandleHostError::new(EvalHandleErrorCode::Pending, format!("{} is still running", reference.id))); } Ok(task_outcome(record, reference)) }
