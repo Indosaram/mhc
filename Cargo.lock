@@ -3101,12 +3101,15 @@ dependencies = [
  "maho-ext-openai-image-gen",
  "maho-ext-openai-web-search",
  "maho-ext-orca-agent-status",
+ "maho-ext-orca-prefill",
  "maho-ext-orca-titlebar-spinner",
  "maho-ext-permission-system",
  "maho-ext-pi-ast-grep",
+ "maho-ext-pi-comment-checker",
  "maho-ext-pi-nested-agents-md",
  "maho-ext-pi-webfetch",
  "maho-ext-prompt-preset",
+ "maho-ext-quiet-model-profile",
  "maho-ext-recommended-models",
  "maho-ext-rules",
  "maho-ext-terminal",
@@ -3207,6 +3210,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "fancy-regex",
  "futures",
@@ -3222,6 +3226,7 @@ dependencies = [
  "maho-ext-recommended-models",
  "maho-tools",
  "maho-tui",
+ "photon-rs",
  "regex",
  "semver",
  "serde",
@@ -3974,6 +3979,10 @@ dependencies = [
 [[package]]
 name = "maho-ext-quiet-model-profile"
 version = "0.0.0"
+dependencies = [
+ "maho-ext-api",
+ "maho-omo-model-profile",
+]
 
 [[package]]
 name = "maho-ext-reasoning"
