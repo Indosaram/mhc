@@ -152,7 +152,7 @@ mod tests {
 
     fn context(root: &Path) -> MemoryIdentityContext {
         let paths = build_identity_paths(root, "agent");
-        MemoryIdentityContext::new("agent".into(), paths.clone(), create_memory_binding("agent", paths.repo.to_string_lossy(), 1.0))
+        MemoryIdentityContext::new("agent".into(), paths.clone(), create_memory_binding("agent", paths.repo.to_string_lossy().as_ref(), 1.0))
     }
 
     fn git(repo: &Path, args: &[&str]) -> String {
@@ -182,7 +182,7 @@ mod tests {
 
     fn logger() -> Logger { Logger::default() }
 
-    fn old_millis() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() }
+    fn old_millis() -> u64 { u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap_or(u64::MAX) }
 
     fn empty_journal(context: &MemoryIdentityContext, name: &str, old: u64) -> std::path::PathBuf {
         let dir = context.identity_paths.transcripts.join(name);
@@ -215,7 +215,7 @@ mod tests {
     async fn recent_pass_skips_second_process() {
         let (_root, context) = history(20); let first = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); first.schedule(context.clone()); first.settled().await;
         for index in 20..40 { fs::write(context.identity_paths.repo.join(format!("note-{index}.md")), format!("note {index}\n")).unwrap(); git(&context.identity_paths.repo, &["add", "."]); git(&context.identity_paths.repo, &["commit", "-q", "-m", &format!("note {index}")]); }
-        let before = loose(&context.identity_paths.repo); let log = logger(); let second = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); second.schedule(context); second.settled().await; assert_eq!(loose(&context.identity_paths.repo), before); assert!(log.info.lock().unwrap().is_empty());
+        let before = loose(&context.identity_paths.repo); let log = logger(); let second = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); second.schedule(context.clone()); second.settled().await; assert_eq!(loose(&context.identity_paths.repo), before); assert!(log.info.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
