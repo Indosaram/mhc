@@ -245,7 +245,7 @@ pub fn parse_facts_extraction_jsonl(
         }
         let value: serde_json::Value =
             serde_json::from_str(trimmed).map_err(|_| invalid(index, "line is not valid JSON"))?;
-        records.push(parse_record(&value, index)?);
+        records.push(parse_facts_extraction_record(&value, index)?);
     }
     Ok(records)
 }
@@ -305,7 +305,8 @@ pub fn validate_facts_recovery(
     Ok(())
 }
 
-fn parse_record(
+/// Parse and validate a single fact extraction record from a JSON value.
+pub fn parse_facts_extraction_record(
     value: &serde_json::Value,
     index: usize,
 ) -> Result<FactsExtractionRecord, FactsExtractionValidationError> {

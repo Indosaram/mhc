@@ -6,7 +6,8 @@ use crate::git::path_state::{GitIndexIdentity, GitPathState, GitWorktreeIdentity
 
 use crate::facts::extraction::{
     ApplyFactsBatchOptions, ApplyFactsBatchResult, FactsBatch, FactsExtractionRecord,
-    FactsPersonReference, apply_facts_batch, parse_facts_extraction_jsonl, validate_facts_recovery,
+    FactsPersonReference, apply_facts_batch, parse_facts_extraction_jsonl,
+    parse_facts_extraction_record, validate_facts_recovery,
 };
 use crate::facts::mutation_plan::{
     FactsApplyRecovery, FactsPostIdentity, FactsRecoveryPath, facts_records_hash,
@@ -483,4 +484,55 @@ fn test_given_an_invalid_batch_id_when_applied_then_it_throws() {
 
     // then
     assert!(result.is_err());
+}
+
+#[test]
+fn test_given_either_valid_record_arm_when_validated_directly_then_the_record_is_parsed() {
+    let project_val = serde_json::json!({
+        "scope": "project",
+        "text": "The project uses Bun.",
+        "date": "2026-08-10"
+    });
+    let person_val = serde_json::json!({
+        "scope": "person",
+        "person": { "name": "Mina", "aliases": ["Min"] },
+        "text": "Mina prefers concise reviews.",
+        "date": "2026-08-10"
+    });
+
+    let parsed_project = parse_facts_extraction_record(&project_val, 0).expect("parse project");
+    let parsed_person = parse_facts_extraction_record(&person_val, 1).expect("parse person");
+
+    assert_eq!(
+        parsed_project,
+        FactsExtractionRecord::Project {
+            text: "The project uses Bun.".to_string(),
+            date: "2026-08-10".to_string(),
+        }
+    );
+    assert_eq!(
+        parsed_person,
+        FactsExtractionRecord::Person {
+            person: FactsPersonReference {
+                name: "Mina".to_string(),
+                aliases: vec!["Min".to_string()],
+            },
+            text: "Mina prefers concise reviews.".to_string(),
+            date: "2026-08-10".to_string(),
+        }
+    );
+}
+
+#[test]
+fn test_given_malformed_direct_values_when_validated_then_the_typed_validation_error_identifies_each_rejection() {
+    let malformed = [
+        serde_json::json!({ "scope": "project", "text": "missing date" }),
+        serde_json::json!({ "scope": "other", "text": "bad scope", "date": "2026-08-10" }),
+        serde_json::json!({ "scope": "person", "person": "not an object", "text": "bad person", "date": "2026-08-10" }),
+    ];
+
+    for (index, val) in malformed.iter().enumerate() {
+        let err = parse_facts_extraction_record(val, index).unwrap_err();
+        assert_eq!(err.message.starts_with(&format!("facts extraction line {}:", index + 1)), true);
+    }
 }
