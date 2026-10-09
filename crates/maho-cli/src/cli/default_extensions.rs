@@ -70,9 +70,25 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("herdr", maho_ext_herdr::Herdr),
             factory("btw", maho_ext_btw::Btw::default()),
             factory("cache-keepalive", maho_ext_cache_keepalive::CacheKeepalive::default()),
-            factory("help", maho_ext_help::Help { display: Arc::new(|ctx, markdown| Box::pin(async move {
-                ctx.ui.select(&markdown, &["Close".into()], Default::default()).await; Ok(())
-            })) }),
+            factory("help", maho_ext_help::Help { display: maho_ext_help::native_display(maho_ext_help::HelpUiBindings {
+                render: {
+                    let widget_sender = widget_sender.clone();
+                    Arc::new(move |_| {
+                        let widget_sender = widget_sender.clone();
+                        Arc::new(move || drop(widget_sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
+                    })
+                },
+                rows: Arc::new(|host| {
+                    let host = host.dimensions();
+                    Arc::new(move || usize::from(host.1))
+                }),
+                theme: Arc::new(|theme| {
+                    maho_interactive::theme::Theme::builtin(
+                        theme.name.as_deref().unwrap_or("dark"),
+                        maho_interactive::theme::ColorMode::Truecolor,
+                    ).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))
+                }),
+            }) }),
             factory("history-search", maho_ext_history_search::HistorySearch {
                 session_dir: Arc::new(|ctx| ctx.session_manager.get_session_dir().ok_or_else(|| ExtensionFailure::new("History search requires a session directory"))),
                 default_sessions_root: Arc::new(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()).join("sessions")),
