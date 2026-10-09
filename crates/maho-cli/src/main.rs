@@ -66,7 +66,32 @@ fn run() -> Result<(), String> {
     if let Some(command) = maho_cli::cli::auth_command::parse_auth_command(&argv)? {
         let parsed = maho_cli::cli::args::parse_args(&command.args, grok)?;
         maho_cli::cli::auth_command::validate_auth_command_args(&parsed, command.kind)?;
-        return Err("Auth execution blocked: maho-core ModelRuntime check_auth/list_credentials/model-aware get_auth API request (todo 16)".to_owned());
+        let agent = PathBuf::from(maho_core::config::get_agent_dir());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        return runtime.block_on(async {
+            if command.kind != maho_cli::cli::auth_command::AuthCommandKind::Check {
+                let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default() });
+                let credential = maho_cli::cli::credential_print::resolve_credential_for_print(&parsed, &model_runtime, command.kind, command.min_expiry_ms).await?;
+                return output(&format!("{credential}\n"));
+            }
+            let requested = maho_cli::cli::auth_check::requested_provider(&parsed);
+            let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: Some(agent.join("auth.json")), ..Default::default() });
+            let mut result = maho_cli::cli::auth_check::check_provider_auth(&parsed, &model_runtime, !command.no_refresh).await.unwrap_or(maho_cli::cli::auth_check::AuthCheckResult { status: maho_cli::cli::auth_check::AuthCheckStatus::Invalid, provider: requested, reason: Some(maho_cli::cli::auth_check::AuthCheckReason::InvalidState), auth_type: None });
+            let mut credential = None;
+            if command.credentials && result.status == maho_cli::cli::auth_check::AuthCheckStatus::Ready {
+                credential = maho_cli::cli::auth_check::provider_credential(&model_runtime, &result.provider, !command.no_refresh).await?;
+                if credential.is_none() { result.status = maho_cli::cli::auth_check::AuthCheckStatus::NotReady; result.reason = Some(maho_cli::cli::auth_check::AuthCheckReason::CredentialNotAvailable); }
+            }
+            let rendered = if command.json {
+                let mut value = serde_json::to_value(&result).map_err(|error| error.to_string())?;
+                if let Some(credential) = credential { value["credentials"] = serde_json::Value::String(credential); }
+                serde_json::to_string(&value).map_err(|error| error.to_string())?
+            } else if let Some(credential) = credential { credential } else { serde_json::to_value(&result.status).map_err(|error| error.to_string())?.as_str().unwrap_or("invalid").to_owned() };
+            output(&format!("{rendered}\n"))?;
+            let code = match result.status { maho_cli::cli::auth_check::AuthCheckStatus::Ready => 0, maho_cli::cli::auth_check::AuthCheckStatus::NotReady => 1, maho_cli::cli::auth_check::AuthCheckStatus::Invalid => 2 };
+            if code != 0 { std::process::exit(code); }
+            Ok(())
+        });
     }
     if let Some(command) = maho_cli::package_manager_cli::parse_package_command(&argv) {
         if command.help { return output(&maho_cli::package_manager_cli::package_command_help(command.command)); }
