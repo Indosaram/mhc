@@ -234,7 +234,7 @@ mod bounded_exec {
                    exit 2\n\
                  fi\n\
                  # Block until something is written to fifo\n\
-                 cat \"{}\"\n\
+                 exec cat \"{}\"\n\
                  exit 0\n",
                 fifo_path.display()
             );
@@ -297,6 +297,9 @@ mod bounded_exec {
         assert!(!result.detail.contains("secret"));
         assert!(!result.detail.contains("user:"));
         assert!(result.detail.contains("timed out after 100ms"));
+
+        // Unblock any potential reader if anything survived
+        let _ = std::fs::OpenOptions::new().write(true).read(true).open(&fifo_path);
     }
 
     #[test]
