@@ -36,6 +36,44 @@ pub struct RecordEvidenceArgs {
     pub artifacts: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CriteriaSummary {
+    pub total_criteria: usize,
+    pub pass_count: usize,
+    pub pending_count: usize,
+    pub fail_count: usize,
+    pub blocked_count: usize,
+    pub goals_with_unresolved_criteria: Vec<String>,
+}
+
+pub fn criteria_summary(plan: &UlwLoopPlan) -> CriteriaSummary {
+    let mut summary = CriteriaSummary {
+        total_criteria: 0,
+        pass_count: 0,
+        pending_count: 0,
+        fail_count: 0,
+        blocked_count: 0,
+        goals_with_unresolved_criteria: Vec::new(),
+    };
+    for goal in &plan.goals {
+        let mut unresolved = false;
+        for criterion in &goal.success_criteria {
+            summary.total_criteria += 1;
+            match criterion.status.as_str() {
+                "pass" => summary.pass_count += 1,
+                "pending" => { summary.pending_count += 1; unresolved = true; }
+                "fail" => { summary.fail_count += 1; unresolved = true; }
+                "blocked" => { summary.blocked_count += 1; unresolved = true; }
+                _ => unresolved = true,
+            }
+        }
+        if unresolved {
+            summary.goals_with_unresolved_criteria.push(goal.id.clone());
+        }
+    }
+    summary
+}
+
 fn ledger_kind(status: &str) -> Result<&'static str, UlwLoopError> {
     match status {
         "pass" => Ok("evidence_captured"),
