@@ -148,7 +148,8 @@ mod tests {
     async fn a_held_scheduler_lock_fails_a_non_deferred_pass() {
         let root=tempfile::tempdir().unwrap();
         let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
-        let context=RunFinalizationContext{identity:&identity,reservation:&ContendedReservation,launch:None,now_ms:&||0};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&ContendedReservation,launch:None,now_ms:&||0,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
         let error=reconcile_reflection_runs_with_options(&context,&recovery,None,false).await.unwrap_err();
         assert_eq!(error,"Lock is held: /locks/reflection-scheduler.lock");
@@ -162,7 +163,8 @@ mod tests {
         repo.init(Some(memory_core::git::InitializeGitRepoOptions::default())).unwrap();
         let exec=repo.exec();
         let orphan=memory_core::reflection::create_reflection_worktree(&repo,"run-gone",&identity.paths.worktrees,exec.as_ref(),None).unwrap();
-        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||4_000_000_000_000};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||4_000_000_000_000,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
         assert_eq!(reconcile_reflection_runs(&context,&recovery).await,Ok(vec![]));
         assert!(!orphan.dir.exists());
@@ -190,7 +192,8 @@ mod tests {
         let held=memory_core::locks::create_lock_record("reflection-scheduler",Default::default()).unwrap();
         let lock_path=memory_core::locks::reflection_scheduler_lock_path(&identity.paths.locks);
         memory_core::locks::acquire_lock(&lock_path,&held,&memory_core::locks::AcquireLockOptions::default()).unwrap();
-        let context=RunFinalizationContext{identity:&identity,reservation:&store,launch:None,now_ms:&||4_000_000_000_000};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&store,launch:None,now_ms:&||4_000_000_000_000,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:Default::default(),calls:Default::default()};
         let result=reconcile_reflection_runs_with_options(&context,&recovery,None,true).await;
         memory_core::locks::release_lock(&lock_path,&held).unwrap();
@@ -223,7 +226,8 @@ mod tests {
     #[tokio::test]
     async fn dead_supervisor_live_child_receives_ordered_deadlines_and_signals() {
         let root=tempfile::tempdir().unwrap();let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
-        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||0};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||0,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Dead,RunProcessVerdict::Alive,RunProcessVerdict::Alive,RunProcessVerdict::Alive,RunProcessVerdict::Dead].into()),calls:Default::default()};
         reconcile_run(&context,root.path(),ledger(root.path()),&recovery).await.unwrap();
         assert_eq!(*recovery.calls.borrow(),["wait:100","signal:43:SIGTERM","wait:105","signal:43:SIGKILL","fail:true"]);
@@ -231,7 +235,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_supervisor_waits_then_abandons_without_signaling() {
         let root=tempfile::tempdir().unwrap();let identity=memory_core::identity::resolve::MemoryIdentity{id:"agent".into(),safe_slug:"agent".into(),paths:memory_core::identity::layout::build_identity_paths(root.path(),"agent")};
-        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||0};
+        let receipts=crate::receipts_port::DefaultReceiptsPort;let warn=|_:&str,_:&std::collections::BTreeMap<String,String>|{};
+        let context=RunFinalizationContext{identity:&identity,reservation:&Reservation,launch:None,now_ms:&||0,receipts:Some(&receipts),warn:Some(&warn)};
         let recovery=Recovery{verdicts:std::cell::RefCell::new([RunProcessVerdict::Unknown,RunProcessVerdict::Unknown].into()),calls:Default::default()};
         reconcile_run(&context,root.path(),ledger(root.path()),&recovery).await.unwrap();assert_eq!(*recovery.calls.borrow(),["outcome:105","abandon"]);
     }
