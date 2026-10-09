@@ -25,6 +25,8 @@ pub fn get_auth_credential(auth: Option<&maho_ai::models::AuthResolution>) -> Op
     let value = authorization[separator..].trim_start();
     (!value.is_empty() && !value.contains(['\r', '\n'])).then_some(value)
 }
+
+pub fn auth_command_error(message: impl Into<String>) -> String { message.into() }
 pub fn parse_auth_command(args: &[String]) -> Result<Option<AuthCommand>, String> {
     if args.first().is_none_or(|s| s != "auth") { return Ok(None); }
     let kind = match args.get(1).map(String::as_str) { Some("check") => AuthCommandKind::Check, Some("print-api-key") => AuthCommandKind::ApiKey, Some("print-bearer-token") => AuthCommandKind::BearerToken, other => return Err(format!("Unknown auth command \"{}\". Use \"mhc auth print-api-key\", \"mhc auth print-bearer-token\", or \"mhc auth check\".", other.unwrap_or(""))) };

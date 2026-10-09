@@ -16,6 +16,8 @@ pub mod list_models;
 pub mod list_tips;
 pub mod experimental;
 pub mod auth_command;
+pub mod auth_check;
+pub mod credential_print;
 pub mod help_flags_cache;
 pub mod file_processor;
 pub mod help_fast_path;
