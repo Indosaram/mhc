@@ -333,16 +333,16 @@ pub fn draw_text_over_edges(canvas: &mut Canvas, text: &str, x: usize, y: usize,
 pub fn mask_char(mask: u8) -> &'static str {
     match mask {
         0 => " ",
-        1..=3 => "│",      // U | D | (U | D)
-        4 | 8 | 12 => "─", // L | R | (L | R)
-        6 => "┌",          // D | R
-        10 => "┐",         // D | L
-        5 => "└",          // U | R
-        9 => "┘",          // U | L
-        7 => "├",          // U | D | R
-        11 => "┤",         // U | D | L
-        14 => "┬",         // D | L | R
-        13 => "┴",         // U | L | R
+        m if m == U || m == D || m == U | D => "│",
+        m if m == L || m == R || m == L | R => "─",
+        m if m == D | R => "┌",
+        m if m == D | L => "┐",
+        m if m == U | R => "└",
+        m if m == U | L => "┘",
+        m if m == U | D | R => "├",
+        m if m == U | D | L => "┤",
+        m if m == D | L | R => "┬",
+        m if m == U | L | R => "┴",
         _ => "┼",
     }
 }
