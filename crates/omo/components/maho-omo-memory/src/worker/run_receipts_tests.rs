@@ -70,10 +70,7 @@ impl crate::worker::runner_types::ReflectionReservationPort for IdleReservation 
     }
     fn complete(&self, _run_id: &str, outcome: memory_core::reflection::ReflectionOutcome) -> Result<memory_core::reflection::CompletionResult, String> {
         Ok(memory_core::reflection::CompletionResult {
-            transition: memory_core::reflection::ReservationTransitionResult {
-                active: None,
-                launch: None,
-            },
+            launch: None,
             outcome,
         })
     }
@@ -110,15 +107,15 @@ fn given_a_merged_settlement_when_final_json_lands_then_one_merged_receipt_with_
         reservation: &res,
         launch: None,
         now_ms: &now_fn,
+        receipts: Some(&port),
+        warn: None,
     };
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_settlement::RunSettlementOutcome::Merged { integration_sha: "abc123".into() },
-        |op| op(),
-        Some(&port),
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
     ).unwrap();
 
     let recorded = calls.lock().unwrap().clone();
@@ -145,28 +142,22 @@ fn given_no_change_and_failed_settlements_when_settled_then_no_changes_and_faile
         reservation: &res,
         launch: None,
         now_ms: &now_fn,
+        receipts: None,
+        warn: None,
     };
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir1,
         &ledger1,
-        crate::worker::run_finalization_settlement::RunSettlementOutcome::NoChanges,
-        |op| op(),
-        None,
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "no_changes".into(), reason: None, detail: None, integration_sha: None },
     ).unwrap();
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir2,
         &ledger2,
-        crate::worker::run_finalization_settlement::RunSettlementOutcome::Failed {
-            reason: "validation_failed".into(),
-            detail: "secret token=abc123456 leaked".into(),
-            terminal_outcome: None,
-        },
-        |op| op(),
-        None,
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "failed".into(), reason: Some("validation_failed".into()), detail: Some("secret token=abc123456 leaked".into()), integration_sha: None },
     ).unwrap();
 
     let list = read_receipts(&identity.paths.runtime);
@@ -192,6 +183,8 @@ fn given_a_dead_run_nobody_can_finish_when_abandoned_then_abandoned_receipt_foll
         reservation: &res,
         launch: None,
         now_ms: &now_fn,
+        receipts: None,
+        warn: None,
     };
 
     crate::worker::run_finalization::abandon_reservation_run(
@@ -228,15 +221,15 @@ fn given_a_merged_run_whose_receipt_write_failed_when_reconciled_twice_then_exac
         reservation: &res,
         launch: None,
         now_ms: &now_fn,
+        receipts: Some(&FailingPort),
+        warn: None,
     };
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_settlement::RunSettlementOutcome::Merged { integration_sha: "abc123".into() },
-        |op| op(),
-        Some(&FailingPort),
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
     ).unwrap();
 
     assert_eq!(read_receipts(&identity.paths.runtime).len(), 0);
@@ -265,15 +258,15 @@ fn given_a_normally_receipted_run_when_reconciled_after_a_restart_then_no_second
         reservation: &res,
         launch: None,
         now_ms: &now_fn,
+        receipts: None,
+        warn: None,
     };
 
     crate::worker::run_finalization_settlement::settle_reservation_run(
         &context,
         &run_dir,
         &ledger,
-        crate::worker::run_finalization_settlement::RunSettlementOutcome::Merged { integration_sha: "abc123".into() },
-        |op| op(),
-        None,
+        crate::worker::run_finalization_types::DurableFinalizationDecision { outcome: "merged".into(), reason: None, detail: None, integration_sha: Some("abc123".into()) },
     ).unwrap();
 
     assert_eq!(read_receipts(&identity.paths.runtime).len(), 1);
