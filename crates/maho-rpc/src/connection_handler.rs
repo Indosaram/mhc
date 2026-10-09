@@ -102,10 +102,14 @@ pub fn json_parse_error_response(input:&str)->String{
     response.push_str("\"}\n");response
 }
 pub type RpcRecordSink=std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+type ActiveLogins=std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String,maho_ai::utils::abort::AbortController>>>;
 pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
     handle_input_line_with_sink(session,line,None).await
 }
 pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>)->Result<Option<String>,serde_json::Error>{
+    handle_input_line_with_login_state(session,line,sink,None,None).await
+}
+async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Result<Option<String>,serde_json::Error>{
     let parsed=serde_json::from_str::<serde_json::Value>(line);
     if parsed.is_err(){return Ok(Some(json_parse_error_response(line)));}
     let error=match &parsed{Err(_)=>None,Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
@@ -118,7 +122,7 @@ pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Op
         Err(error) if error.to_string().starts_with(&format!("unknown variant `{}`,",value["type"].as_str().unwrap_or_default()))=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}}).map(Some);},
         Err(error)=>return Err(error),
     };
-    handle_session_command_with_sink(session,&command,sink).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
+    handle_session_command_with_sink(session,&command,sink,active_logins,ui).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
@@ -179,7 +183,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
     state
 }
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
-    handle_session_command_with_sink(session,command,None).await
+    handle_session_command_with_sink(session,command,None,None,None).await
 }
 fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
     let result=result?;
@@ -192,7 +196,7 @@ fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::A
     if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
     Ok(Some(value))
 }
-async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>)->Option<RpcResponse>{
+async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
             let options=(||{
@@ -374,6 +378,26 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             }).collect::<Vec<_>>();
             ("get_auth_providers",Ok(Some(serde_json::json!({"providers":providers}))))
         },
+        RpcCommandBody::LoginStart{provider}=>{
+            let sink=sink.unwrap_or_else(||std::sync::Arc::new(|_|{}));
+            let active_logins=active_logins.unwrap_or_else(||std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
+            let controller=maho_ai::utils::abort::AbortController::new();
+            if let Some(previous)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(provider.clone(),controller.clone()){previous.abort(None);}
+            let provider=provider.clone();let storage=session.model_registry().auth_storage.clone();let active_logins=active_logins.clone();let event_sink=sink.clone();let ui=ui.unwrap_or_else(||std::sync::Arc::new(crate::connection_handler::RpcExtensionUi::new(event_sink.clone(),Default::default(),Default::default(),Vec::new())));
+            tokio::spawn(async move{
+                let callbacks=std::sync::Arc::new(crate::login_prompts::RpcLoginPromptCallbacks::with_sink(controller.signal(),provider.clone(),event_sink.clone(),ui));
+                let result=storage.login(&provider,callbacks).await;
+                let mut end=serde_json::json!({"type":"auth_login_end","provider":provider,"success":result.is_ok()});
+                if let Err(error)=result{end["error"]=error.into();}
+                event_sink(end);
+                active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&provider);
+            });
+            return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"login_start".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}});
+        },
+        RpcCommandBody::LoginCancel{provider}=>{
+            if let Some(active_logins)=active_logins{if let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}}
+            ("login_cancel",Ok(None))
+        },
         RpcCommandBody::LoginApiKey{provider,key}=>{
             let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|Some(serde_json::Value::Null));
             ("login_api_key",result)
@@ -518,6 +542,7 @@ pub struct RpcConnectionHandler{
     pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
     questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,
     shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>,
+    active_logins:ActiveLogins,
 }
 impl RpcConnectionHandler{
     /// Build a handler over `session` and install the RPC extension UI on it.
@@ -531,7 +556,7 @@ impl RpcConnectionHandler{
         // The CLI mount already starts host sessions; attach only replaces the connection context.
         if session.has_started_extension_lifecycle() {session.rebind_extension_context(bindings).await;}
         else {session.bind_extensions(bindings).await;}
-        Self{session,ui,pending,questions,shutdown_requested}
+        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default()}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
@@ -543,7 +568,7 @@ impl RpcConnectionHandler{
                 crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value);}}
             return Ok(None);
         }
-        handle_input_line_with_sink(&self.session,line,Some(self.ui.out.clone())).await
+        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone())).await
     }
     fn out_record(&self,record:serde_json::Value){(self.ui.out)(record);}
     pub fn is_shutdown_requested(&self)->bool{self.shutdown_requested.load(std::sync::atomic::Ordering::SeqCst)}
