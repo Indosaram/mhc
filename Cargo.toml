@@ -111,6 +111,7 @@ members = [
     "crates/omo/components/maho-omo-todo-fanout-reminder",
     "crates/omo/components/maho-omo-ultrawork",
     "crates/omo/components/maho-omo-ulw-loop",
+    "crates/omo/ulw-loop-core",
     "crates/omo/components/maho-omo-start-work-continuation",
     # RESERVED (todo 1008, run dag_34a6a24f): "crates/omo/components/maho-omo-git-master" is added here
     # once its crate source and the config owner's resolve_omo_git_master_settings land.
