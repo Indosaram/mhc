@@ -310,6 +310,10 @@ pub fn compile_dag(definition: &DagDefinition, options: &DagCompileOptions) -> D
             created_at: at.to_string(),
             started_at: None,
             completed_at: None,
+            exec_attempt: None,
+            output: None,
+            output_bytes: None,
+            last_activity_at: None,
         })
         .collect();
     let declared = |id: &DagNodeId| declaration_index.get(id).copied().unwrap_or(0);

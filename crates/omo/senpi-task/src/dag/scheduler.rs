@@ -1216,6 +1216,76 @@ fn count_nodes(nodes: &[DagNode]) -> DagNodeCounts {
     counts
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DagNodeControlErrorCode {
+    RunNotFound,
+    RunNotOwned,
+    RunStillActive,
+    InvalidArguments,
+    NodeNotFound,
+    NodeNotRetryable,
+    NodeHasNoTask,
+    NodeNotContinuable,
+}
+
+pub const DAG_NODE_CONTROL_ERROR_CODES: [DagNodeControlErrorCode; 8] = [
+    DagNodeControlErrorCode::RunNotFound,
+    DagNodeControlErrorCode::RunNotOwned,
+    DagNodeControlErrorCode::RunStillActive,
+    DagNodeControlErrorCode::InvalidArguments,
+    DagNodeControlErrorCode::NodeNotFound,
+    DagNodeControlErrorCode::NodeNotRetryable,
+    DagNodeControlErrorCode::NodeHasNoTask,
+    DagNodeControlErrorCode::NodeNotContinuable,
+];
+
+impl DagNodeControlErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunNotFound => "run_not_found",
+            Self::RunNotOwned => "run_not_owned",
+            Self::RunStillActive => "run_still_active",
+            Self::InvalidArguments => "invalid_arguments",
+            Self::NodeNotFound => "node_not_found",
+            Self::NodeNotRetryable => "node_not_retryable",
+            Self::NodeHasNoTask => "node_has_no_task",
+            Self::NodeNotContinuable => "node_not_continuable",
+        }
+    }
+}
+
+/// Every refusal the per-node control verbs produce. `code` is the wire vocabulary the dag tool
+/// surfaces verbatim; `node_ids` names the exact nodes that caused the refusal.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("{message}")]
+pub struct DagNodeControlError {
+    pub code: DagNodeControlErrorCode,
+    pub message: String,
+    pub run_id: Option<DagRunId>,
+    pub node_ids: Vec<DagNodeId>,
+}
+
+impl DagNodeControlError {
+    pub fn new(code: DagNodeControlErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            run_id: None,
+            node_ids: Vec::new(),
+        }
+    }
+
+    pub fn with_run_id(mut self, run_id: DagRunId) -> Self {
+        self.run_id = Some(run_id);
+        self
+    }
+
+    pub fn with_node_ids(mut self, node_ids: Vec<DagNodeId>) -> Self {
+        self.node_ids = node_ids;
+        self
+    }
+}
+
 #[cfg(test)]
 #[path = "scheduler_tests.rs"]
 mod tests;
