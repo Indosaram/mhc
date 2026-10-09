@@ -618,6 +618,10 @@ impl SettingsManager {
         self.selected_sources.get(&scope)
     }
 
+    pub fn get_selected_settings_sources(&self) -> Vec<SettingsSourceSelection> {
+        self.selected_sources.values().cloned().collect()
+    }
+
     pub fn subscribe_to_source_selection(&self, listener: SettingsSourceListener) -> SettingsSourceSubscription {
         self.source_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
         SettingsSourceSubscription { listeners: self.source_listeners.clone(), listener }
@@ -648,6 +652,20 @@ impl SettingsManager {
 
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.settings.get(key).and_then(Value::as_f64)
+    }
+
+    pub fn get_raw_fallback_chains(&self) -> Option<&Value> {
+        self.settings.get("retry").and_then(|retry| retry.get("fallbackChains"))
+    }
+
+    pub fn get_fallback_chains_scope(&self) -> Option<SettingsScope> {
+        if self.project_settings.get("retry").and_then(|retry| retry.get("fallbackChains")).is_some() {
+            return Some(SettingsScope::Project);
+        }
+        if self.global_settings.get("retry").and_then(|retry| retry.get("fallbackChains")).is_some() {
+            return Some(SettingsScope::Global);
+        }
+        None
     }
 
     pub fn apply_overrides(&mut self, overrides: &Settings) {

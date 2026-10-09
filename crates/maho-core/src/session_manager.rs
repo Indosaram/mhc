@@ -534,6 +534,8 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    pub fn dispose(&mut self) {}
+
     fn build(cwd: &str, session_dir: &str, session_file: Option<String>, persist: bool, options: Option<NewSessionOptions>) -> Self {
         let mut manager = Self {
             session_id: String::new(),

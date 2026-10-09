@@ -478,7 +478,26 @@ struct AgentSessionState {
     compaction_extension_signal: Option<maho_ext_api::AbortSignal>,
     branch_summary_abort_controller: Option<maho_ai::utils::abort::AbortController>,
     session_title_abort_controller: Option<maho_ai::utils::abort::AbortController>,
+    active_compaction_log_attempt: Option<CompactionLogAttempt>,
+    superseded_compaction_log_attempt_ids: BTreeSet<String>,
+    resume_compaction_requirement: Option<(serde_json::Value, String)>,
+    resume_slice: Option<ResumeSliceState>,
     disposed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResumeSliceState {
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub dropped_entries: usize,
+    pub notice: String,
+}
+
+#[derive(Clone, Debug)]
+struct CompactionLogAttempt {
+    id: String,
+    reason: maho_ext_api::CompactionReason,
+    tokens_before: Option<u64>,
 }
 
 fn name_set(names: Option<Vec<String>>) -> Option<BTreeSet<String>> {
@@ -504,6 +523,7 @@ pub struct AgentSessionInner {
     session_logger: SessionLogger,
     fallback_now: Arc<dyn Fn() -> f64 + Send + Sync>,
     retry_random: Arc<dyn Fn() -> f64 + Send + Sync>,
+    fallback_validation_warnings: Vec<String>,
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
@@ -1508,11 +1528,7 @@ fn downcast_handler<T: Send + Sync + 'static>(handler: Arc<dyn Fn(&T) + Send + S
 }
 
 impl AgentSession {
-    /// Not yet ported from the constructor (tracked by the `agent-session.ts` ledger row): the
-    /// settings source-selection subscription, `applyOverrides` for the `no-model-fallback` /
-    /// `no-ask-user` flags, fallback-chain validation logging, the retry-fallback controller and
-    /// probe scheduler, the agent subscription and tool hooks, and `_buildRuntime` (tool registry
-    /// and system prompt). Each lands with the slice that owns it.
+    /// Create a new agent session.
     pub fn new(mut config: AgentSessionConfig) -> Result<Self, MissingModelAccessError> {
         if config.flag_values.get("no-model-fallback").is_some_and(|value| matches!(value, FlagValue::Boolean(true)))
             || std::env::var("NO_FALLBACK").as_deref() == Ok("1")
@@ -1526,13 +1542,35 @@ impl AgentSession {
             (None, None) => return Err(MissingModelAccessError),
         };
         let agent_dir = config.agent_dir.clone().unwrap_or_else(crate::config::get_agent_dir);
-        let session_logger_dir = agent_dir.clone();
+        let fallback_logger_dir = agent_dir.clone();
+        let fallback_validation_warnings = crate::retry_fallback::validate::validate_fallback_chains(
+            config.settings_manager.get_raw_fallback_chains(),
+            &model_registry.get_all(),
+        );
+        let fallback_chains_source = config.settings_manager.get_fallback_chains_scope()
+            .map(|s| match s {
+                crate::settings_manager::SettingsScope::Global => "global",
+                crate::settings_manager::SettingsScope::Project => "project",
+            })
+            .unwrap_or("default");
+        {
+            let mut fallback_logger = crate::retry_fallback::log::FallbackLogger::new(
+                std::path::Path::new(&fallback_logger_dir),
+                None,
+            );
+            for warning in &fallback_validation_warnings {
+                let mut data = Map::new();
+                data.insert("warning".to_owned(), Value::String(warning.clone()));
+                data.insert("source".to_owned(), Value::String(fallback_chains_source.to_owned()));
+                fallback_logger.warn("validation_warning", Some(&data));
+            }
+        }
         let agent = config.agent;
         let state = AgentSessionState {
             scoped_models: config.scoped_models,
             favorite_models: config.favorite_models,
             cwd: config.cwd,
-            agent_dir,
+            agent_dir: agent_dir.clone(),
             custom_tools: config.custom_tools,
             initial_active_tool_names: config.initial_active_tool_names,
             default_tool_names: name_set(config.default_tool_names),
@@ -1627,6 +1665,10 @@ impl AgentSession {
             compaction_extension_signal: None,
             branch_summary_abort_controller: None,
             session_title_abort_controller: None,
+            active_compaction_log_attempt: None,
+            superseded_compaction_log_attempt_ids: BTreeSet::new(),
+            resume_compaction_requirement: None,
+            resume_slice: None,
             disposed: false,
         };
         let session = Self { inner: Arc::new(AgentSessionInner {
@@ -1639,11 +1681,12 @@ impl AgentSession {
             event_bus: EventBus::new(),
             event_listeners: Arc::new(Mutex::new(Vec::new())),
             next_listener_id: Arc::new(AtomicU64::new(0)),
-            session_logger: SessionLogger::create(Some(&session_logger_dir), SessionLoggerOptions::default()),
+            session_logger: SessionLogger::create(Some(&agent_dir), SessionLoggerOptions::default()),
             fallback_now: config
                 .fallback_now
                 .unwrap_or_else(|| Arc::new(|| maho_ai::utils::diagnostics::now_ms() as f64)),
             retry_random: config.retry_random.unwrap_or_else(|| Arc::new(rand_unit)),
+            fallback_validation_warnings,
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
             binding_readiness: Mutex::new(None),
@@ -2681,11 +2724,8 @@ impl AgentSession {
         state.cumulative_hinted_wait_ms = 0.0;
     }
 
-    pub fn fallback_validation_warnings(&self) -> Vec<String> {
-        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
-        crate::retry_fallback::validate::validate_fallback_chains(
-            settings.as_ref().and_then(|settings| settings.get("fallbackChains")), &self.model_registry.get_all(),
-        )
+    pub fn fallback_validation_warnings(&self) -> &[String] {
+        &self.inner.fallback_validation_warnings
     }
 
     pub fn set_auto_retry_enabled(&self, enabled: bool) -> Result<(), String> {
@@ -4525,9 +4565,6 @@ impl AgentSession {
     }
 
     /// Set active tools by name; only tools in the registry can be enabled.
-    ///
-    /// Not yet ported: the base system-prompt rebuild and the message-revision bump that follow a
-    /// change (owned by the system-prompt slice).
     pub fn set_active_tools_by_name(&self, tool_names: Vec<String>) {
         let policy_armed = self.is_eval_only_policy_armed();
         self.publish_eval_only_tool_hints();
@@ -4566,7 +4603,7 @@ impl AgentSession {
         state.requested_active_tool_names = Some(requested);
         drop(state);
         self.rebuild_system_prompt();
-        if changed {
+        if changed && lock(&self.binding_readiness).is_none() {
             self.abort_compaction();
             self.state().message_revision += 1;
         }
@@ -4622,9 +4659,6 @@ impl AgentSession {
     }
 
     /// Execute a tool by name through the same preparation and hook path the agent loop uses.
-    ///
-    /// Not yet ported: `_emitAfterToolCallHooks`'s image normalization, and the tool-search
-    /// activation fallback (no Rust service).
     pub async fn execute_tool(
         &self,
         tool_name: &str,
@@ -5632,11 +5666,158 @@ impl AgentSession {
         }
     }
 
+    fn estimate_compaction_log_tokens(&self, source: &str) -> Option<u64> {
+        let values: Vec<Value> = if source == "active" {
+            self.messages()
+                .iter()
+                .filter_map(|m| session_message_to_value(m).ok())
+                .collect()
+        } else {
+            self.with_session_manager(|manager| {
+                manager.build_context(manager.leaf_id()).messages
+            })
+        };
+        let filtered = crate::messages::filter_context_excluded_messages(values);
+        let estimate = crate::compaction::estimate_context_tokens(&filtered);
+        Some(estimate.tokens)
+    }
+
     /// Mirror stuck-prone lifecycle transitions into logs/session.log (content-free).
-    ///
-    /// Not yet ported: the `compaction_start`/`compaction_end` attempt bookkeeping, which lands
-    /// with the compaction slice.
     fn log_session_event(&self, event: &AgentSessionEvent) {
+        if let AgentSessionEvent::CompactionStart { reason, request_id } = event {
+            let previous_attempt = self.state().active_compaction_log_attempt.clone();
+            if let Some(previous_attempt) = previous_attempt {
+                let tokens_after = self.estimate_compaction_log_tokens("persisted");
+                let mut data = Map::new();
+                data.insert("attemptId".to_owned(), Value::String(previous_attempt.id.clone()));
+                data.insert("reason".to_owned(), Value::String(match previous_attempt.reason {
+                    maho_ext_api::CompactionReason::Manual => "manual",
+                    maho_ext_api::CompactionReason::Threshold => "threshold",
+                    maho_ext_api::CompactionReason::Overflow => "overflow",
+                    maho_ext_api::CompactionReason::PrePrompt => "pre-prompt",
+                    maho_ext_api::CompactionReason::Branch => "branch",
+                    maho_ext_api::CompactionReason::Extension => "extension",
+                }.to_owned()));
+                data.insert("mode".to_owned(), Value::String(if previous_attempt.reason == maho_ext_api::CompactionReason::Manual { "manual" } else { "auto" }.to_owned()));
+                data.insert("action".to_owned(), Value::String("compact".to_owned()));
+                data.insert("disposition".to_owned(), Value::String("superseded".to_owned()));
+                data.insert("accepted".to_owned(), Value::Bool(false));
+                data.insert("skipped".to_owned(), Value::Bool(true));
+                data.insert("aborted".to_owned(), Value::Bool(true));
+                data.insert("willRetry".to_owned(), Value::Bool(false));
+                if let Some(tokens_before) = previous_attempt.tokens_before {
+                    data.insert("tokensBefore".to_owned(), serde_json::json!(tokens_before));
+                }
+                if let Some(tokens_after) = tokens_after {
+                    data.insert("tokensAfter".to_owned(), serde_json::json!(tokens_after));
+                }
+                self.session_logger.info("compaction_decision", Some(&data));
+                self.state().superseded_compaction_log_attempt_ids.insert(previous_attempt.id);
+            }
+            let attempt_id = request_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let tokens_before = self.estimate_compaction_log_tokens("persisted");
+            let attempt = CompactionLogAttempt {
+                id: attempt_id.clone(),
+                reason: *reason,
+                tokens_before,
+            };
+            self.state().active_compaction_log_attempt = Some(attempt.clone());
+            let mut data = Map::new();
+            data.insert("attemptId".to_owned(), Value::String(attempt.id));
+            data.insert("reason".to_owned(), Value::String(match reason {
+                maho_ext_api::CompactionReason::Manual => "manual",
+                maho_ext_api::CompactionReason::Threshold => "threshold",
+                maho_ext_api::CompactionReason::Overflow => "overflow",
+                maho_ext_api::CompactionReason::PrePrompt => "pre-prompt",
+                maho_ext_api::CompactionReason::Branch => "branch",
+                maho_ext_api::CompactionReason::Extension => "extension",
+            }.to_owned()));
+            data.insert("mode".to_owned(), Value::String(if *reason == maho_ext_api::CompactionReason::Manual { "manual" } else { "auto" }.to_owned()));
+            data.insert("action".to_owned(), Value::String("compact".to_owned()));
+            if let Some(tokens_before) = attempt.tokens_before {
+                data.insert("tokensBefore".to_owned(), serde_json::json!(tokens_before));
+            }
+            self.session_logger.info("compaction_start", Some(&data));
+            return;
+        }
+
+        if let AgentSessionEvent::CompactionEnd {
+            reason, result, aborted, will_retry, request_id, accepted, rejection_cause, error_message,
+        } = event {
+            if let Some(req_id) = request_id
+                && self.state().superseded_compaction_log_attempt_ids.remove(req_id)
+            {
+                return;
+            }
+            let active_attempt = self.state().active_compaction_log_attempt.clone();
+            let attempt = if request_id.is_some() && active_attempt.as_ref().map(|a| &a.id) == request_id.as_ref() {
+                active_attempt
+            } else {
+                None
+            };
+            let is_accepted = accepted.unwrap_or(result.is_some());
+            let is_rejected = rejection_cause.is_some();
+            let is_skipped = !is_accepted && (attempt.is_none() || (!is_rejected && !*aborted && error_message.is_none()));
+            let disposition = if is_accepted {
+                "committed"
+            } else if attempt.is_none() {
+                "skipped"
+            } else if is_rejected {
+                "rejected"
+            } else if *aborted {
+                "aborted"
+            } else if error_message.is_some() {
+                "failed"
+            } else {
+                "skipped"
+            };
+            let tokens_after = self.estimate_compaction_log_tokens(if is_accepted { "active" } else { "persisted" });
+            let mut data = Map::new();
+            if let Some(attempt_id) = attempt.as_ref().map(|a| a.id.as_str()).or(request_id.as_deref()) {
+                data.insert("attemptId".to_owned(), Value::String(attempt_id.to_owned()));
+            }
+            data.insert("reason".to_owned(), Value::String(match reason {
+                maho_ext_api::CompactionReason::Manual => "manual",
+                maho_ext_api::CompactionReason::Threshold => "threshold",
+                maho_ext_api::CompactionReason::Overflow => "overflow",
+                maho_ext_api::CompactionReason::PrePrompt => "pre-prompt",
+                maho_ext_api::CompactionReason::Branch => "branch",
+                maho_ext_api::CompactionReason::Extension => "extension",
+            }.to_owned()));
+            data.insert("mode".to_owned(), Value::String(if *reason == maho_ext_api::CompactionReason::Manual { "manual" } else { "auto" }.to_owned()));
+            data.insert("action".to_owned(), Value::String(if is_accepted || attempt.is_some() { "compact" } else { "none" }.to_owned()));
+            data.insert("disposition".to_owned(), Value::String(disposition.to_owned()));
+            data.insert("accepted".to_owned(), Value::Bool(is_accepted));
+            data.insert("skipped".to_owned(), Value::Bool(is_skipped));
+            data.insert("aborted".to_owned(), Value::Bool(*aborted));
+            data.insert("willRetry".to_owned(), Value::Bool(*will_retry));
+            if let Some(cause) = rejection_cause {
+                data.insert("rejectionCause".to_owned(), Value::String(match cause {
+                    maho_ext_api::CompactionRejectionCause::CancelledByExtension => "cancelled-by-extension",
+                    maho_ext_api::CompactionRejectionCause::ExternalOwner => "external-owner",
+                    maho_ext_api::CompactionRejectionCause::WouldOverflow => "would-overflow",
+                    maho_ext_api::CompactionRejectionCause::CircuitBreaker => "circuit-breaker",
+                    maho_ext_api::CompactionRejectionCause::PerTurnCap => "per-turn-cap",
+                    maho_ext_api::CompactionRejectionCause::StaleRevision => "stale-revision",
+                }.to_owned()));
+            }
+            if let Some(err) = error_message {
+                data.insert("error".to_owned(), Value::String(err.clone()));
+            }
+            let tokens_before = attempt.as_ref().and_then(|a| a.tokens_before).or(tokens_after);
+            if let Some(tokens_before) = tokens_before {
+                data.insert("tokensBefore".to_owned(), serde_json::json!(tokens_before));
+            }
+            if let Some(tokens_after) = tokens_after {
+                data.insert("tokensAfter".to_owned(), serde_json::json!(tokens_after));
+            }
+            self.session_logger.info("compaction_decision", Some(&data));
+            if attempt.is_some() {
+                self.state().active_compaction_log_attempt = None;
+            }
+            return;
+        }
+
         if let AgentSessionEvent::Agent(maho_agent::types::AgentEvent::MessageEnd { message }) = event
             && let Some(message) = message.as_assistant()
             && message.stop_reason == StopReason::Error
@@ -5657,22 +5838,58 @@ impl AgentSession {
         }
     }
 
+    pub fn admit_resume_compaction_required(&self, projection: serde_json::Value, notice: String) {
+        self.state().resume_compaction_requirement = Some((projection, notice));
+    }
+
+    pub fn apply_resume_slice(&self, slice: ResumeSliceState) {
+        self.state().resume_slice = Some(slice.clone());
+        self.emit(AgentSessionEvent::ResumeContextReduced {
+            tokens_before: slice.tokens_before,
+            tokens_after: slice.tokens_after,
+            dropped_entries: slice.dropped_entries,
+            notice: slice.notice,
+        });
+    }
+
     /// Subscribe to session events. The returned handle unsubscribes when dropped.
-    ///
-    /// Not yet ported: the resume-compaction/resume-slice replays and the settings-source replay,
-    /// which land with the compaction and settings-source slices.
     pub fn subscribe(&self, listener: AgentSessionEventListener) -> AgentSessionSubscription {
+        let (resume_req, resume_slice) = {
+            let state = self.state();
+            (state.resume_compaction_requirement.clone(), state.resume_slice.clone())
+        };
+        if let Some((projection, notice)) = resume_req {
+            listener(&AgentSessionEvent::ResumeCompactionRequired { projection, notice });
+        }
+        if let Some(slice) = resume_slice {
+            listener(&AgentSessionEvent::ResumeContextReduced {
+                tokens_before: slice.tokens_before,
+                tokens_after: slice.tokens_after,
+                dropped_entries: slice.dropped_entries,
+                notice: slice.notice,
+            });
+        }
+        let sources = self.with_settings_manager(|manager| manager.get_selected_settings_sources());
+        for source in sources {
+            listener(&AgentSessionEvent::SettingsSourceSelected {
+                selection: serde_json::json!({
+                    "path": source.path,
+                    "scope": source.scope.as_str(),
+                    "format": match source.format { crate::settings_manager::SettingsFormat::Jsonc => "jsonc", crate::settings_manager::SettingsFormat::Json => "json" },
+                    "reason": match source.reason { crate::settings_manager::SettingsSourceReason::ExplicitJsonc => "explicit-jsonc", crate::settings_manager::SettingsSourceReason::JsonOnly => "json-only" },
+                }),
+            });
+        }
         let id = self.next_listener_id.fetch_add(1, Ordering::SeqCst);
         self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, listener));
         AgentSessionSubscription { listeners: Arc::clone(&self.event_listeners), id }
     }
 
     /// Remove all listeners and release session-scoped resources.
-    ///
-    /// Not yet ported: aborting retry/compaction/branch-summary/session-title/bash, disposing tool
-    /// contexts, disconnecting the agent subscription and the wake-source unsubscribe, and the
-    /// session manager's own dispose; each lands with the slice that owns it.
     pub async fn dispose(&self) {
+        if self.state().disposed {
+            return;
+        }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         self.state().disposed = true;
         lock(&self.settled_delivery).cancel();
@@ -5700,6 +5917,7 @@ impl AgentSession {
         }
         self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
         let _ = maho_ai::session_resources::cleanup_session_resources(Some(&self.session_id()));
+        self.with_session_manager_mut(|manager| manager.dispose());
     }
 
     /// Reserve a global order for input temporarily owned outside the native queues.
@@ -6187,9 +6405,6 @@ impl AgentSession {
 
     /// `autoCompactionEnabled`: the session override when set, else the settings value.
     /// `autoCompactionEnabled`: the session override when set, else the settings value.
-    ///
-    /// Not yet ported: `_autoCompactionSessionOverride` (owned by the compaction slice); this reads
-    /// the settings value only.
     pub fn auto_compaction_enabled(&self) -> bool {
         if let Some(enabled) = self.state().auto_compaction_session_override {
             return enabled;
@@ -11617,6 +11832,116 @@ mod tests {
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role(), "bashExecution");
+    }
+
+    #[tokio::test]
+    async fn late_subscriber_receives_replays_once_before_live_events() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cwd = tmp.path().to_string_lossy().into_owned();
+        let agent_dir = tmp.path().join("agent").to_string_lossy().into_owned();
+        std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+        std::fs::write(tmp.path().join("agent").join("settings.json"), "{}").expect("write settings");
+        let settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+        let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+            providers: Some(Vec::new()),
+            ..Default::default()
+        });
+        let session = AgentSession::new(AgentSessionConfig {
+            agent: stub_agent(),
+            session_manager: SessionManager::in_memory(&cwd, None, None),
+            settings_manager: settings,
+            cwd: cwd.clone(),
+            agent_dir: Some(agent_dir),
+            fallback_now: None,
+            retry_random: None,
+            scoped_models: Vec::new(),
+            favorite_models: Vec::new(),
+            flag_values: BTreeMap::new(),
+            custom_tools: Vec::new(),
+            model_runtime: Some(runtime),
+            model_registry: None,
+            uses_default_stream_function: Some(true),
+            initial_active_tool_names: None,
+            default_tool_names: None,
+            eval_only_tool_names: None,
+            allowed_tool_names: None,
+            excluded_tool_names: None,
+            base_tools_override: None,
+            session_start_event: None,
+            auto_title_sessions: None,
+        }).expect("session");
+
+        session.admit_resume_compaction_required(
+            serde_json::json!({"usable": false, "admission": "resume"}),
+            "compacting before first prompt".to_owned(),
+        );
+        session.apply_resume_slice(ResumeSliceState {
+            tokens_before: 10000,
+            tokens_after: 5000,
+            dropped_entries: 10,
+            notice: "reduced context".to_owned(),
+        });
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _sub = session.subscribe(Arc::new(move |event| {
+            lock(&observed).push(event.clone());
+        }));
+
+        let captured = lock(&events).clone();
+        assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::ResumeCompactionRequired { .. })));
+        assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::ResumeContextReduced { .. })));
+        assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::SettingsSourceSelected { .. })));
+
+        // Emit a live event and verify it is received after replays
+        session.emit(AgentSessionEvent::AgentIdle);
+        let final_events = lock(&events).clone();
+        assert!(matches!(final_events.last(), Some(AgentSessionEvent::AgentIdle)));
+    }
+
+    #[tokio::test]
+    async fn dispose_is_idempotent_and_cleans_resources() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _sub = session.subscribe(Arc::new(move |event| {
+            lock(&observed).push(event.clone());
+        }));
+
+        assert!(!session.state().disposed);
+        session.dispose().await;
+        assert!(session.state().disposed);
+        assert_eq!(session.inner.event_listeners.lock().unwrap().len(), 0);
+
+        // Second dispose should be a no-op, no panic
+        session.dispose().await;
+        assert!(session.state().disposed);
+
+        // Subscribing after dispose works without panic
+        let sub2 = session.subscribe(Arc::new(|_| {}));
+        drop(sub2);
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_session_override_and_event() {
+        let session = test_session();
+        assert!(session.auto_compaction_enabled());
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let _sub = session.subscribe(Arc::new(move |event| {
+            if let AgentSessionEvent::SessionSettingsChanged { auto_compaction_enabled, .. } = event {
+                lock(&observed).push(*auto_compaction_enabled);
+            }
+        }));
+
+        session.set_auto_compaction_enabled(false);
+        assert!(!session.auto_compaction_enabled());
+        assert_eq!(*lock(&events), vec![false]);
+
+        session.set_auto_compaction_enabled(true);
+        assert!(session.auto_compaction_enabled());
+        assert_eq!(*lock(&events), vec![false, true]);
     }
 
     #[tokio::test]
