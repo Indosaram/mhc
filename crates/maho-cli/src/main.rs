@@ -78,6 +78,11 @@ fn run() -> Result<(), String> {
         return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command));
     }
     match argv.first().map(String::as_str) {
+        Some("doctor") => {
+            let code = maho_cli::cli::doctor::run_doctor(&argv[1..])?;
+            if code != 0 { std::process::exit(code); }
+            return Ok(());
+        }
         Some("host") => {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
             let code = runtime.block_on(maho_cli::cli::host_command::run_host_command(&argv[1..]))?;
