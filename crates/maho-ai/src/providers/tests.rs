@@ -461,7 +461,7 @@ impl ProviderStreams for CancelRecordingStreams {
 
 #[tokio::test]
 async fn provider_cancel_deferred_receives_the_resolved_model_and_request_options() {
-    let base = get_builtin_model("openai", "").expect("openai model");
+    let base = get_builtin_model("openai", "gpt-4o").expect("openai model");
     let mut model = base.clone();
     model.provider = "cancel-recording".into();
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -506,7 +506,7 @@ async fn provider_cancel_deferred_receives_the_resolved_model_and_request_option
 
 #[tokio::test]
 async fn models_cancel_deferred_reports_unsupported_capability_and_unknown_providers() {
-    let base = get_builtin_model("openai", "").expect("openai model");
+    let base = get_builtin_model("openai", "gpt-4o").expect("openai model");
     let handle = DeferredHandle {
         provider: "no-cancel".into(),
         model_id: base.id.clone(),
