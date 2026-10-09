@@ -11,6 +11,8 @@ pub trait FactsTerminalIo{
     fn write_sentinel(&mut self,path:&Path,value:&serde_json::Value)->Result<(),ArtifactError>{crate::worker::run_artifacts::write_run_json_atomic(path,value,0o600)}
     fn remove(&mut self,path:&Path)->std::io::Result<()>{crate::facts_run_cleanup::remove_run_artifact(path)}
     fn warn(&mut self,message:&str,detail:&str);
+    fn receipts_dir(&self)->Option<&Path>{None}
+    fn receipts_port(&self)->Option<&dyn crate::receipts_port::MemoryReceiptsPort>{None}
 }
 pub struct FactsFailureWrite<'a>{pub run_dir:&'a Path,pub run_id:&'a str,pub batch_id:&'a str,pub targets:&'a [FactsFailureTarget],pub reason:FactsFailureReason,pub detail:&'a str,pub outcome:Option<FactsTerminalOutcome>}
 pub struct FactsTerminalWrites<'a>{pub failures:&'a dyn FactsFailurePort,pub io:&'a mut dyn FactsTerminalIo}
@@ -25,10 +27,55 @@ impl FactsTerminalWrites<'_>{
         self.cleanup(dir);
         Ok(())
     }
-    pub fn fail(&mut self,write:&FactsFailureWrite<'_>)->Result<(),FactsTerminalError>{self.record(write.targets,write.batch_id,write.reason,write.detail)?;self.final_record(write.run_dir,write.run_id,write.outcome.unwrap_or(FactsTerminalOutcome::Failed),Some(write.detail),None)}
-    pub fn abandon(&mut self,dir:&Path,ledger:&FactsRunLedger)->Result<(),FactsTerminalError>{self.record(&ledger_targets(&ledger.queued),&ledger.batch_id,FactsFailureReason::UnknownLiveness,"facts run liveness is unknown")?;self.io.write_sentinel(&dir.join("abandoned.json"),&serde_json::json!({"version":1,"runId":ledger.run_id,"abandonedAt":self.io.now(),"reason":"unknown_liveness"})).map_err(FactsTerminalError::Artifact)?;self.cleanup(dir);Ok(())}
+    fn receipt(&mut self,batch_id:Option<&str>,event:&str,extra:crate::receipts_port::ReceiptExtra){
+        let Some(receipts_dir)=self.io.receipts_dir()else{return;};
+        let Some(batch_id)=batch_id else{return;};
+        let receipt=crate::receipts_port::facts_receipt(batch_id,event,extra);
+        crate::receipts_port::emit_memory_receipt(receipts_dir,&receipt,self.io.receipts_port(),None);
+    }
+    fn batch_id_of(&mut self,run_dir:&Path,run_id:&str)->Option<String>{
+        let ledger_path=run_dir.join("ledger.json");
+        let Ok(ledger)=crate::worker::run_artifacts::read_run_json::<serde_json::Value>(&ledger_path)else{
+            self.io.warn("facts receipt skipped: ledger unreadable",&run_dir.display().to_string());
+            return None;
+        };
+        if ledger.get("runId").and_then(|v|v.as_str())==Some(run_id)&&let Some(batch_id)=ledger.get("batchId").and_then(|v|v.as_str()){
+            return Some(batch_id.to_string());
+        }
+        self.io.warn("facts receipt skipped: ledger does not name this run",&run_dir.display().to_string());
+        None
+    }
+    pub fn fail(&mut self,write:&FactsFailureWrite<'_>)->Result<(),FactsTerminalError>{
+        let parked=self.record_and_check_parked(write.targets,write.batch_id,write.reason,write.detail)?;
+        self.final_record(write.run_dir,write.run_id,write.outcome.unwrap_or(FactsTerminalOutcome::Failed),Some(write.detail),None)?;
+        let reason_str=format!("{:?}",write.reason);
+        self.receipt(Some(write.batch_id),"failed",crate::receipts_port::ReceiptExtra{sha:None,reason:Some(reason_str.clone()),detail:Some(write.detail.to_string())});
+        if parked{self.receipt(Some(write.batch_id),"parked",crate::receipts_port::ReceiptExtra{sha:None,reason:Some(reason_str),detail:None});}
+        Ok(())
+    }
+    fn record_and_check_parked(&mut self,targets:&[FactsFailureTarget],id:&str,reason:FactsFailureReason,detail:&str)->Result<bool,FactsTerminalError>{
+        if targets.is_empty(){return Ok(false);}
+        let after=self.failures.record_failure(RecordFailureRequest{targets:targets.to_vec(),failure_id:id.into(),reason,detail:Some(detail.into())}).map_err(FactsTerminalError::Failure)?;
+        let parked=targets.iter().any(|target|after.entries.iter().any(|entry|entry.state==memory_core::facts::failures_schema::FactsFailureState::Parked&&entry.conversation_id==target.conversation_id&&entry.end_message_id==target.end_message_id&&entry.end_snapshot_line==target.end_snapshot_line));
+        Ok(parked)
+    }
+    pub fn abandon(&mut self,dir:&Path,ledger:&FactsRunLedger)->Result<(),FactsTerminalError>{
+        self.record(&ledger_targets(&ledger.queued),&ledger.batch_id,FactsFailureReason::UnknownLiveness,"facts run liveness is unknown")?;
+        self.io.write_sentinel(&dir.join("abandoned.json"),&serde_json::json!({"version":1,"runId":ledger.run_id,"abandonedAt":self.io.now(),"reason":"unknown_liveness"})).map_err(FactsTerminalError::Artifact)?;
+        self.cleanup(dir);
+        self.receipt(Some(&ledger.batch_id),"abandoned",crate::receipts_port::ReceiptExtra{sha:None,reason:Some("unknown_liveness".into()),detail:None});
+        Ok(())
+    }
     pub fn preflight_fail(&self,targets:&[FactsFailureTarget],id:&str,reason:FactsFailureReason,detail:&str)->Result<(),FactsTerminalError>{self.record(targets,id,reason,detail)}
-    pub fn succeed(&mut self,dir:&Path,id:&str,outcome:FactsTerminalOutcome,entries:&[FactsQueueEntry],targets:&[FactsFailureTarget],sha:Option<&str>)->Result<(),FactsTerminalError>{self.io.mark_consumed(entries).map_err(FactsTerminalError::Consume)?;if !targets.is_empty()&&let Err(error)=self.failures.clear_on_success(targets){self.io.warn("facts failure records survived a successful run",&error.to_string());}self.final_record(dir,id,outcome,None,sha)}
+    pub fn succeed(&mut self,dir:&Path,id:&str,outcome:FactsTerminalOutcome,entries:&[FactsQueueEntry],targets:&[FactsFailureTarget],sha:Option<&str>)->Result<(),FactsTerminalError>{
+        self.io.mark_consumed(entries).map_err(FactsTerminalError::Consume)?;
+        if !targets.is_empty()&&let Err(error)=self.failures.clear_on_success(targets){self.io.warn("facts failure records survived a successful run",&error.to_string());}
+        self.final_record(dir,id,outcome,None,sha)?;
+        let batch_id=self.batch_id_of(dir,id);
+        let event=if outcome==FactsTerminalOutcome::Committed{"committed"}else{"no_facts"};
+        self.receipt(batch_id.as_deref(),event,crate::receipts_port::ReceiptExtra{sha:sha.map(str::to_string),reason:None,detail:None});
+        Ok(())
+    }
 }
 impl crate::facts_oversize::FactsPreflightFailure for FactsTerminalWrites<'_>{type Error=FactsTerminalError;fn preflight_fail(&mut self,targets:Vec<FactsFailureTarget>,id:String,reason:FactsFailureReason,detail:String)->Result<(),Self::Error>{FactsTerminalWrites::preflight_fail(self,&targets,&id,reason,&detail)}}
 #[cfg(test)]

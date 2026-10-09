@@ -26,7 +26,7 @@ impl SenpiSubprocessRunner{
         let settings=crate::reflection_settings::resolve_agent_reflection_settings(input.config.get("memory"),&input.identity.id)?;
         let deadline=match options.deadline_ms{Some(deadline)=>deadline as f64,None=>settings["timeout_minutes"].as_f64().ok_or("reflection timeout missing")?*60_000.0};
         let merge=settings["merge"].as_str().ok_or("reflection merge policy missing")?;
-        let context=super::run_finalization_types::RunFinalizationContext{identity:input.identity,reservation:input.reservation,launch:None,now_ms:input.now_ms};
+        let context=super::run_finalization_types::RunFinalizationContext{identity:input.identity,reservation:input.reservation,launch:None,now_ms:input.now_ms,receipts:None,warn:None};
         let execution=super::runner_execution::ReflectionExecutionInput{run:input.run,resolution:input.resolution,identity:input.identity,config:input.config,env:options.env,sources:options.sources,launch:options.launcher,parent_session_file:options.parent_session_file,parent_cwd:options.parent_cwd,route:options.route,sandbox:options.sandbox,merge_policy:merge,hard_deadline_at:(input.now_ms)() as f64+deadline,options:options.child,finalization:&context};
         let identity=input.identity;
         self.launch(input,live,||super::runner_execution::execute_reflection_run(cache,execution,|repo,run|{

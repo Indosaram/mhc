@@ -2,6 +2,9 @@ pub mod args;
 pub mod backup;
 pub mod doctor;
 pub mod doctor_checks;
+pub mod doctor_receipts;
+#[cfg(test)]
+mod doctor_receipts_tests;
 pub mod dream;
 pub mod dream_staging;
 pub mod facts;

@@ -18,7 +18,7 @@ pub use candidate_sweep::{
 };
 pub use domains::{
     LOCK_DOMAINS, LockDomain, LockDomainError, facts_queue_lock_path, facts_runs_lock_path,
-    memory_writer_lock_path, notice_lock_path, reflection_scheduler_lock_path,
+    memory_writer_lock_path, notice_lock_path, receipts_lock_path, reflection_scheduler_lock_path,
     run_finalization_lock_path, skills_usage_lock_path, transcript_state_lock_path,
 };
 pub use lock_record::{
