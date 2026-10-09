@@ -36,19 +36,35 @@ pub struct SpawnGuardOptions {
 }
 
 pub fn apply_spawn_guards(payload: &PreToolUsePayload, options: Option<&SpawnGuardOptions>) -> String {
+    apply_spawn_guards_with_env(payload, options, |key| env::var(key).ok())
+}
+
+pub fn apply_spawn_guards_with_env(
+    payload: &PreToolUsePayload,
+    options: Option<&SpawnGuardOptions>,
+    get_env: impl Fn(&str) -> Option<String> + Copy,
+) -> String {
     if payload.hook_event_name != "PreToolUse" || !is_spawn_tool(&payload.tool_name) {
         return String::new();
     }
-    if resolve_toolkit_surface() == UlwLoopToolkitSurface::LazyCodex {
+    if crate::surface::resolve_toolkit_surface_with_env(get_env) == UlwLoopToolkitSurface::LazyCodex {
         let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
         if let Some(r) = reason {
             return deny(&r);
         }
     }
-    apply_spawn_budget_guards(payload, options)
+    apply_spawn_budget_guards_with_env(payload, options, get_env)
 }
 
 pub fn apply_spawn_budget_guards(payload: &PreToolUsePayload, options: Option<&SpawnGuardOptions>) -> String {
+    apply_spawn_budget_guards_with_env(payload, options, |key| env::var(key).ok())
+}
+
+pub fn apply_spawn_budget_guards_with_env(
+    payload: &PreToolUsePayload,
+    options: Option<&SpawnGuardOptions>,
+    get_env: impl Fn(&str) -> Option<String> + Copy,
+) -> String {
     if payload.hook_event_name != "PreToolUse" || !is_spawn_tool(&payload.tool_name) {
         return String::new();
     }
@@ -73,30 +89,34 @@ pub fn apply_spawn_budget_guards(payload: &PreToolUsePayload, options: Option<&S
         ..Default::default()
     });
     match with_state_lock(&lock_path, lock_opts.as_ref(), |_| {
-        Ok(evaluate_guards(payload, &plan, &state_dir))
+        Ok(evaluate_guards(payload, &plan, &state_dir, get_env))
     }) {
         Ok(output) => output,
         Err(err) => deny(&format!("ulw-loop spawn guard could not take the session state lock: {err}")),
     }
 }
 
-fn evaluate_guards(payload: &PreToolUsePayload, plan: &crate::domain_types::UlwLoopPlan, state_dir: &Path) -> String {
-    if let Some(reason) = peek_fan_out_budget(state_dir) {
+fn evaluate_guards(payload: &PreToolUsePayload, plan: &crate::domain_types::UlwLoopPlan, state_dir: &Path, get_env: impl Fn(&str) -> Option<String> + Copy) -> String {
+    if let Some(reason) = peek_fan_out_budget(state_dir, get_env) {
         return deny(&reason);
     }
     if let Some(missing) = missing_gate_artifact(payload, plan) {
         return deny(&format!("record manual QA first; gate audits its artifacts: missing {missing}"));
     }
-    if let Some(reason) = consume_review_spawn_budget(payload, plan, state_dir) {
+    if let Some(reason) = consume_review_spawn_budget(payload, plan, state_dir, get_env) {
         return deny(&reason);
     }
-    if let Some(reason) = consume_fan_out_budget(state_dir) {
+    if let Some(reason) = consume_fan_out_budget(state_dir, get_env) {
         return deny(&reason);
     }
     String::new()
 }
 
-pub fn run_spawn_admission_recorder_cli<R: Read, W: Write>(mut stdin: R, mut _stdout: W) {
+pub fn run_spawn_admission_recorder_cli<R: Read, W: Write>(stdin: R, stdout: W) {
+    run_spawn_admission_recorder_cli_with_env(stdin, stdout, |key| env::var(key).ok());
+}
+
+pub fn run_spawn_admission_recorder_cli_with_env<R: Read, W: Write>(mut stdin: R, mut _stdout: W, get_env: impl Fn(&str) -> Option<String>) {
     let mut raw = String::new();
     if stdin.read_to_string(&mut raw).is_err() {
         return;
@@ -114,7 +134,7 @@ pub fn run_spawn_admission_recorder_cli<R: Read, W: Write>(mut stdin: R, mut _st
         return;
     }
 
-    let Ok(data_dir) = env::var("PLUGIN_DATA") else {
+    let Some(data_dir) = get_env("PLUGIN_DATA") else {
         return;
     };
     let Some(session_id) = payload.get("session_id").and_then(|v| v.as_str()) else {
@@ -149,10 +169,10 @@ pub fn run_spawn_guard_cli<R: Read, W: Write>(mut stdin: R, mut stdout: W) {
     }
 }
 
-fn peek_fan_out_budget(state_dir: &Path) -> Option<String> {
+fn peek_fan_out_budget(state_dir: &Path, get_env: impl Fn(&str) -> Option<String>) -> Option<String> {
     let counter_path = state_dir.join("spawn-count.json");
     let count = read_count(&counter_path) + 1;
-    let limit = fan_out_limit();
+    let limit = fan_out_limit(get_env);
     if count <= limit {
         None
     } else {
@@ -162,11 +182,11 @@ fn peek_fan_out_budget(state_dir: &Path) -> Option<String> {
     }
 }
 
-fn consume_fan_out_budget(state_dir: &Path) -> Option<String> {
+fn consume_fan_out_budget(state_dir: &Path, get_env: impl Fn(&str) -> Option<String>) -> Option<String> {
     let counter_path = state_dir.join("spawn-count.json");
     let count = read_count(&counter_path) + 1;
     let _ = atomic_write_json(&counter_path, &serde_json::json!({ "count": count }));
-    let limit = fan_out_limit();
+    let limit = fan_out_limit(get_env);
     if count <= limit {
         None
     } else {
@@ -180,6 +200,7 @@ fn consume_review_spawn_budget(
     payload: &PreToolUsePayload,
     plan: &crate::domain_types::UlwLoopPlan,
     state_dir: &Path,
+    get_env: impl Fn(&str) -> Option<String> + Copy,
 ) -> Option<String> {
     let agent_type = review_agent_type(&payload.tool_input)?;
     let goal = plan
@@ -189,7 +210,7 @@ fn consume_review_spawn_budget(
         .or_else(|| plan.goals.iter().find(|g| is_final_run_completion_candidate(plan, g)))?;
 
     let counter_path = state_dir.join("review-spawn-counts.json");
-    let limit = review_spawn_limit();
+    let limit = review_spawn_limit(get_env);
     let mut counts = read_counts(&counter_path);
     let key = format!("{}:{}:a{}", agent_type, goal.id, goal.attempt);
     let count = counts.get(&key).copied().unwrap_or(0) + 1;
@@ -346,17 +367,15 @@ fn deny(reason: &str) -> String {
     s
 }
 
-fn fan_out_limit() -> u32 {
-    env::var("OMO_SPAWN_FANOUT_LIMIT")
-        .ok()
+fn fan_out_limit(get_env: impl Fn(&str) -> Option<String>) -> u32 {
+    get_env("OMO_SPAWN_FANOUT_LIMIT")
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_FANOUT_LIMIT)
 }
 
-fn review_spawn_limit() -> u32 {
-    env::var("OMO_ULW_LOOP_REVIEW_SPAWN_LIMIT")
-        .ok()
+fn review_spawn_limit(get_env: impl Fn(&str) -> Option<String>) -> u32 {
+    get_env("OMO_ULW_LOOP_REVIEW_SPAWN_LIMIT")
         .and_then(|s| s.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_REVIEW_SPAWN_LIMIT)
