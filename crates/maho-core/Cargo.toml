@@ -30,6 +30,8 @@ anyhow = "=1.0.104"
 globset = "=0.4.20"
 fancy-regex = "=0.16.2"
 semver = "=1.0.27"
+base64 = "=0.22.1"
+photon-rs = { version = "=0.3.3", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
