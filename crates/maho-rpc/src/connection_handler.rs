@@ -211,6 +211,15 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::SwitchSession{session_path,cwd_override}=>
             ("switch_session",session.switch_session_with_cwd(session_path,cwd_override.as_deref()).await.map(|switched|Some(serde_json::json!({"cancelled":!switched})))),
+        RpcCommandBody::Fork{entry_id,position}=>{
+            let include_entry=matches!(position,Some(crate::rpc_types::ForkPosition::At));
+            ("fork",session.fork(entry_id,include_entry).await.map(|result|Some(serde_json::json!({"text":result.editor_text,"cancelled":result.cancelled}))))
+        },
+        RpcCommandBody::Clone=>{
+            let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));
+            let Some(leaf_id)=leaf_id else{return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"clone".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Cannot clone session: no current entry selected".into(),error_code:None,error_data:None}});};
+            ("clone",session.fork(&leaf_id,true).await.map(|result|Some(serde_json::json!({"cancelled":result.cancelled}))))
+        },
         RpcCommandBody::NewSession{parent_session}=>
             ("new_session",session.new_session(Some(maho_core::session_manager::NewSessionOptions{parent_session:parent_session.clone(),..Default::default()})).await.map(|changed|Some(serde_json::json!({"cancelled":!changed})))),
         RpcCommandBody::Abort=>{
@@ -491,5 +500,25 @@ mod new_session_tests{
         assert_eq!(response["command"],"new_session");
         assert_eq!(response["success"],true);
         assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    }
+
+    #[tokio::test]
+    async fn fork_preserves_response_shape_and_error_semantics(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"fork","type":"fork","entryId":"missing"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"fork");
+        assert_eq!(response["success"],false);
+        assert_eq!(response["error"],"Invalid entry ID for forking");
+    }
+
+    #[tokio::test]
+    async fn clone_without_leaf_returns_exact_error(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"clone","type":"clone"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"clone");
+        assert_eq!(response["success"],false);
+        assert_eq!(response["error"],"Cannot clone session: no current entry selected");
     }
 }
