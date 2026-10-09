@@ -1,20 +1,19 @@
 use ulw_loop_core::surface::*;
+use std::collections::BTreeMap;
 
 #[test]
 fn no_marker_defaults_to_lazycodex() { assert_eq!(resolve_toolkit_surface(), UlwLoopToolkitSurface::LazyCodex); }
 
 #[test]
 fn omo_senpi_env_override_resolves_surface() {
-    unsafe { std::env::set_var("OMO_AGENT_TOOLKIT_SURFACE", "omo-senpi"); }
-    assert_eq!(resolve_toolkit_surface(), UlwLoopToolkitSurface::OmoSenpi);
-    unsafe { std::env::remove_var("OMO_AGENT_TOOLKIT_SURFACE"); }
+    let env = BTreeMap::from([(String::from("OMO_AGENT_TOOLKIT_SURFACE"), String::from("omo-senpi"))]);
+    assert_eq!(resolve_toolkit_surface_with_env(|key| env.get(key).cloned()), UlwLoopToolkitSurface::OmoSenpi);
 }
 
 #[test]
 fn unknown_env_falls_back_to_lazycodex() {
-    unsafe { std::env::set_var("OMO_AGENT_TOOLKIT_SURFACE", "bogus"); }
-    assert_eq!(resolve_toolkit_surface(), UlwLoopToolkitSurface::LazyCodex);
-    unsafe { std::env::remove_var("OMO_AGENT_TOOLKIT_SURFACE"); }
+    let env = BTreeMap::from([(String::from("OMO_AGENT_TOOLKIT_SURFACE"), String::from("bogus"))]);
+    assert_eq!(resolve_toolkit_surface_with_env(|key| env.get(key).cloned()), UlwLoopToolkitSurface::LazyCodex);
 }
 
 #[test]

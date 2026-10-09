@@ -84,7 +84,11 @@ pub const GATE_REVIEWER_AGENT_NAMES: [&str; 4] = [
 ];
 
 pub fn resolve_toolkit_surface() -> UlwLoopToolkitSurface {
-    if let Ok(v) = env::var("OMO_AGENT_TOOLKIT_SURFACE") {
+    resolve_toolkit_surface_with_env(|key| env::var(key).ok())
+}
+
+pub fn resolve_toolkit_surface_with_env(get_env: impl FnOnce(&str) -> Option<String>) -> UlwLoopToolkitSurface {
+    if let Some(v) = get_env("OMO_AGENT_TOOLKIT_SURFACE") {
         if let Some(s) = UlwLoopToolkitSurface::parse(&v) {
             return s;
         }
