@@ -5616,6 +5616,12 @@ impl AgentSession {
         runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))).ok()
     }
 
+    pub async fn extension_runner_request(&self, name: &str, data: Value) -> Result<Value, String> {
+        self.extension_runner.lock().await.clone()
+            .ok_or_else(|| "Extension runner is not bound".to_owned())?
+            .handle_rpc_request(name, data).await.map_err(|error| error.message)
+    }
+
     /// Subscribe to live per-session MCP wire-status snapshots. `T` is the MCP extension's
     /// `McpWireStatusSnapshot`; the channel carries an erased `Arc<dyn Any>` so maho-core needs no
     /// dependency on the MCP crate. `None` when no extension runner is bound. Use
