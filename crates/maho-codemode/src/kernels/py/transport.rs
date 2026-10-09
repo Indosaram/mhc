@@ -173,9 +173,13 @@ impl PythonKernelTransport {
     }
 
     pub async fn run(&mut self, cell_id: &str, code: &str, timeout_ms: Option<u64>) -> Result<(), PythonTransportError> {
+        self.run_with_preludes(cell_id, code, timeout_ms, None).await
+    }
+    pub async fn run_with_preludes(&mut self, cell_id: &str, code: &str, timeout_ms: Option<u64>, preludes: Option<&crate::kernels::shared::kernel_prelude_plan::KernelPreludePlan>) -> Result<(), PythonTransportError> {
         if !self.active { return Err(PythonTransportError::Closed); }
         let mut frame = json!({"type":"run","cellId":cell_id,"code":code});
         if let Some(timeout_ms) = timeout_ms { frame["timeoutMs"] = json!(timeout_ms); }
+        if let Some(plan) = preludes { frame["preludes"] = json!({"install":plan.install,"remove":plan.remove}); }
         self.write(&frame).await
     }
 

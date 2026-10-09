@@ -227,3 +227,14 @@ fn pair_validation_wins_before_directory_lookup() {
 fn stamped_version_is_the_crate_version() {
     assert_eq!(resolve_daemon_version(), env!("CARGO_PKG_VERSION"));
 }
+
+#[test]
+fn packaged_runtime_defaults_selects_absolute_lsp_daemon_sibling() {
+    let defaults = packaged_runtime_defaults();
+    assert!(defaults.cli_path.is_absolute());
+    let expected_exe = std::env::current_exe().expect("current executable");
+    let expected_parent = expected_exe.parent().expect("parent dir");
+    assert_eq!(defaults.cli_path.parent(), Some(expected_parent));
+    let expected_name = if cfg!(windows) { "lsp-daemon.exe" } else { "lsp-daemon" };
+    assert_eq!(defaults.cli_path.file_name().and_then(|n| n.to_str()), Some(expected_name));
+}

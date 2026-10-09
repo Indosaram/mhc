@@ -155,7 +155,76 @@ pub fn platform_dirname(path: &str, windows: bool) -> String {
     }
 }
 
+#[cfg(unix)]
+fn account_home_dir_unix() -> Option<String> {
+    // Node.js `os.userInfo().homedir` uses `getpwuid_r(getuid())` on Unix.
+    // Query the OS passwd entry for the calling process uid so the account home is
+    // independent of any temporary $HOME override across Linux, macOS, and BSDs.
+    let uid = unsafe { libc::getuid() };
+    let mut buf_size = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        -1 => 1024,
+        n if n <= 0 => 1024,
+        n => n as usize,
+    };
+    if buf_size < 1024 {
+        buf_size = 1024;
+    }
+
+    loop {
+        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let mut buf: Vec<std::ffi::c_char> = vec![0; buf_size];
+
+        // SAFETY:
+        // - `pwd` points to uninitialized storage of `libc::passwd`, which `getpwuid_r` writes into.
+        // - `buf` is allocated with `buf_size` capacity and passed with matching `buflen`.
+        // - `result` is set to point to `pwd` on success, or null on error / user not found.
+        // - When `res == 0` and `result != null`, `pwd` is fully initialized and valid.
+        // - Strings referenced by `pwd` (such as `pw_dir`) reside within `buf`. `buf` remains
+        //   alive in this scope while `pw_dir` is converted into an owned Rust String before returning.
+        let (res, pw_dir_str) = unsafe {
+            let ret = libc::getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr(),
+                buf_size,
+                &mut result,
+            );
+            if ret == 0 && !result.is_null() {
+                let pw = pwd.assume_init();
+                let dir_opt = if pw.pw_dir.is_null() {
+                    None
+                } else {
+                    std::ffi::CStr::from_ptr(pw.pw_dir).to_str().ok().map(str::to_string)
+                };
+                (ret, dir_opt)
+            } else {
+                (ret, None)
+            }
+        };
+
+        if res == libc::ERANGE {
+            buf_size = buf_size.checked_mul(2)?;
+            continue;
+        }
+        if res != 0 {
+            return None;
+        }
+
+        let dir = pw_dir_str?;
+        if dir.is_empty() {
+            return None;
+        }
+        return Some(to_posix_path(&dir));
+    }
+}
+
 pub fn account_home_dir() -> String {
+    #[cfg(unix)]
+    if let Some(home) = account_home_dir_unix() {
+        return home;
+    }
+
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .ok()

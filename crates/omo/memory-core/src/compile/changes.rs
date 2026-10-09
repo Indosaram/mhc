@@ -79,6 +79,10 @@ pub fn projected_changes_between(
     let after_set: BTreeSet<&String> = after.iter().collect();
 
     let mut changes = ProjectedChanges::default();
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+        .unwrap_or_else(|error| std::panic::panic_any(error));
+    let mut touched: Vec<_> = touched.into_iter().collect();
+    touched.sort_by(|a, b| collator.compare(a, b));
     for path in &touched {
         let existed_before = before_set.contains(path);
         let exists_after = after_set.contains(path);

@@ -186,6 +186,8 @@ impl GitMemoryRepo {
     pub fn status(&self, paths: &[impl AsRef<str>]) -> Result<String, GitError> {
         let normalized = normalize_pathspecs(paths);
         let mut argv = vec![
+            "-c".to_string(),
+            "core.quotePath=false".to_string(),
             "status".to_string(),
             "--porcelain".to_string(),
             "--untracked-files=all".to_string(),

@@ -209,8 +209,10 @@ pub fn resolve_daemon_version() -> String {
 
 /// Runtime defaults for this build: the running executable and the stamped version.
 pub fn packaged_runtime_defaults() -> DaemonRuntimeDefaults {
+    let exe = std::env::current_exe().expect("current executable");
+    let sibling_name = if cfg!(windows) { "lsp-daemon.exe" } else { "lsp-daemon" };
     DaemonRuntime {
-        cli_path: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lsp-daemon")),
+        cli_path: exe.with_file_name(sibling_name),
         version: resolve_daemon_version(),
     }
 }

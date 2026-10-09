@@ -116,6 +116,7 @@ async fn protocol_dispatch_covers_invalid_ping_notification_list_and_unknown_met
             json!("symbols"),
             json!("prepare_rename"),
             json!("rename"),
+            json!("format"),
             json!("install_decision"),
         ]
     );

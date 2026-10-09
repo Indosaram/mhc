@@ -78,10 +78,7 @@ fn binary_serves_handshake_list_and_domain_errors_over_stdio() {
 
 #[test]
 fn binary_dispatches_search_to_real_sg_over_stdio() {
-    if !common::sg_available() {
-        eprintln!("skipping: {} not installed", common::SG_PATH);
-        return;
-    }
+    let sg_path = common::resolve_sg_for_tests();
     let repo = common::fixture_repo();
     let responses = run_binary(
         &[json!({
@@ -91,7 +88,7 @@ fn binary_dispatches_search_to_real_sg_over_stdio() {
                 "paths": ["src"], "workdir": common::path_str(repo.path()),
             } },
         })],
-        Some(common::SG_PATH),
+        Some(&sg_path),
     );
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["result"]["isError"], json!(false));

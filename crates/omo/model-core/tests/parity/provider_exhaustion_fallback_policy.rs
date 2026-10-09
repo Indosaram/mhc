@@ -22,7 +22,7 @@ fn error_info(error: &Value) -> ErrorInfo {
 }
 
 #[test]
-fn quota_subscription_and_billing_exhaustion_are_eligible_without_weakening_legacy_stop_semantics()
+fn quota_subscription_and_billing_exhaustion_are_eligible_and_model_classifier_agrees()
 {
     let errors = [
         json!({ "name": "QuotaExceededError", "message": "Quota exceeded for this billing period." }),
@@ -50,7 +50,7 @@ fn quota_subscription_and_billing_exhaustion_are_eligible_without_weakening_lega
         provider_exhaustion_results,
         vec![(Some(RuntimeFallbackErrorType::QuotaExceeded), true); errors.len()]
     );
-    assert_eq!(legacy_retry_results, vec![false; errors.len()]);
+    assert_eq!(legacy_retry_results, vec![true; errors.len()]);
 }
 
 #[test]

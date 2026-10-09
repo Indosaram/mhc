@@ -121,7 +121,7 @@ pub fn runtime_host_from_api(api: std::sync::Arc<ExtensionApi>, context: &dyn ma
     let active_tools = api.get_active_tools()?;
     let executor = std::sync::Arc::new(RuntimeExecuteTool {api: api.clone(), active_tools: active_tools.clone()});
     let list_tools = std::sync::Arc::new(move || api.get_all_tools().map(|tools| tools.into_iter().map(|tool| crate::bridges::schema_bridge::EvalSchemaToolInfo {
-        name: tool.name, description: Some(tool.description), parameters: Some(tool.parameters),
+        name: tool.name, description: Some(tool.description), parameters: Some(tool.parameters), kernel_prelude: tool.kernel_prelude,
     }).collect()).map_err(|error| error.to_string()));
     Ok(RuntimeHostOptions {executor, active_tools, list_tools: Some(list_tools), complete, session_env: crate::kernels::session_env::session_environment_from_context(context)})
 }

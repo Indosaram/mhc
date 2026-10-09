@@ -6,8 +6,8 @@ pub use maho_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback}
 pub use maho_tools::tool_definition_wrapper::wrap_tool_definition;
 pub use maho_ai::{model::Model, types::{JsonValue, ModelThinkingLevel, ThinkingLevel, Usage, ImageContent}};
 pub use maho_ai::types::{Message, UserMessage, UserContent, AssistantMessage, ContentBlock};
-pub use maho_tools::{ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
-pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall};
+pub use maho_tools::{KernelPrelude, ToolContext, ToolDefinition, FilesystemPolicy, FilesystemPolicyChecker, FilesystemPolicyDecision, FilesystemPolicyRequest};
+pub use maho_tools::definition::{AbortSignal, ToolContent, ToolResult, ToolSessionManager, ToolExposure, ToolExecutionMode, ToolError, ToolCall, ToolPermissionParser, ToolPermissionRequest};
 pub use maho_tools::filesystem_policy::FilesystemOperation;
 pub use maho_tui::tui::Component;
 pub use maho_tui::autocomplete::AutocompleteItem;
@@ -1247,13 +1247,13 @@ pub struct ResolvedCommand { pub command: RegisteredCommand, pub invocation_name
 #[derive(Clone)]
 pub struct RegisteredTool { pub definition: ToolDefinition, pub source_info: SourceInfo }
 #[derive(Clone, Debug)]
-pub struct ToolInfo { pub name: String, pub label: String, pub description: String, pub parameters: JsonValue, pub prompt_guidelines: Option<Vec<String>>, pub source_info: SourceInfo, pub exposure: ToolExposure, pub search_text: Option<String>, pub search_keywords: Vec<String>, pub search_group: Option<String>, pub allow_lazy_activation: bool }
+pub struct ToolInfo { pub name: String, pub label: String, pub description: String, pub parameters: JsonValue, pub prompt_guidelines: Option<Vec<String>>, pub source_info: SourceInfo, pub exposure: ToolExposure, pub search_text: Option<String>, pub search_keywords: Vec<String>, pub search_group: Option<String>, pub allow_lazy_activation: bool, pub kernel_prelude: Option<maho_tools::KernelPrelude> }
 pub fn normalize_tool_exposure(tool: &ToolDefinition, source_info: SourceInfo) -> ToolInfo {
     let exposure = tool.exposure.unwrap_or(ToolExposure::Direct);
     ToolInfo { name: tool.name.clone(), label: tool.label.clone(), description: tool.description.clone(), parameters: tool.parameters.clone(),
         prompt_guidelines: tool.prompt_guidelines.clone(), source_info, exposure,
         search_text: if exposure == ToolExposure::Search { tool.search_text.clone() } else { None },
-        search_keywords: tool.search_keywords.clone().unwrap_or_default(), search_group: tool.search_group.clone(), allow_lazy_activation: tool.allow_lazy_activation != Some(false) }
+        search_keywords: tool.search_keywords.clone().unwrap_or_default(), search_group: tool.search_group.clone(), allow_lazy_activation: tool.allow_lazy_activation != Some(false), kernel_prelude: tool.kernel_prelude.clone() }
 }
 #[derive(Clone, Debug, Default)]
 pub struct MessageRenderOptions { pub expanded: bool, pub output_pad: usize }
@@ -1533,7 +1533,7 @@ pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRende
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
-struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor> }
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>, tools: BTreeMap<String, Vec<RegisteredTool>> }
 enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
@@ -1548,6 +1548,7 @@ impl ExtensionRuntime {
                 let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
                 state.extension_tool_executors.extend(pending.tool_executors);
+                state.live_tools.extend(pending.tools);
             }
             for change in pending.providers { match change {
                 ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
@@ -1657,6 +1658,15 @@ impl ExtensionRuntime {
     }
     pub fn live_tools(&self, path: &str) -> Option<Vec<RegisteredTool>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_tools.get(path).cloned()
+    }
+    pub fn live_tool_definition(&self, name: &str) -> Option<ToolDefinition> {
+        let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for tools in state.live_tools.values() {
+            if let Some(tool) = tools.iter().rev().find(|t| t.definition.name == name) {
+                return Some(tool.definition.clone());
+            }
+        }
+        None
     }
     pub fn live_mcp_servers(&self, path: &str) -> Option<Vec<RegisteredMcpServerDeclaration>> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_mcp_servers.get(path).cloned()
@@ -1898,7 +1908,10 @@ impl ExtensionApi {
         Ok(())
     }
     fn publish_tools(&self) {
-        if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
+        let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() {
+            pending.tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
+        } else {
             let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
             state.live_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());

@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc::{self, Receiver};
@@ -199,4 +199,16 @@ fn explicit_kill_cleans_a_child_that_traps_abort_sigterm() {
     child.handle.kill().unwrap_or_else(|error| panic!("{error}"));
     child.begin_wait();
     assert_eq!(child.await_exit(), 1);
+}
+
+#[test]
+fn handle_after_reap_returns_safe_state_without_signaling() {
+    let mut process = spawn(&sh("exit 0"), &SpawnOptions::default()).unwrap_or_else(|error| panic!("{error}"));
+    let code = process.exited().unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(code, 0);
+    // After reaping, requesting a handle on a reaped process without prior handle is rejected
+    assert_eq!(
+        process.handle().err().map(|e| e.kind()),
+        Some(std::io::ErrorKind::NotFound)
+    );
 }

@@ -9,9 +9,8 @@ use ast_grep_mcp::tools::scan::build_scan_apply_args;
 use ast_grep_mcp::tools::scan::build_scan_args;
 use ast_grep_mcp::tools::scan::execute_scan;
 use ast_grep_mcp::tools::scan::parse_scan_input;
-use common::SG_PATH;
 use common::path_str;
-use common::sg_available;
+use common::resolve_sg_for_tests;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -269,13 +268,11 @@ fn sg_deprecation_banner_is_tolerated_as_warning() {
 
 #[test]
 fn inline_rule_dry_scan_carries_nested_rule_block() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(DEFAULT_SOURCE);
     let target = dir.path().join("src/a.ts");
     let before = contents(&target);
-    let payload = execute_scan(&inline_value(dir.path(), RULE), SG_PATH, None);
+    let sg_path = resolve_sg_for_tests();
+    let payload = execute_scan(&inline_value(dir.path(), RULE), &sg_path, None);
     assert_eq!(payload["ok"], json!(true), "{payload}");
     assert_eq!(payload["applied"], json!(false));
     let first = &payload["matches"][0];
@@ -297,14 +294,12 @@ fn inline_rule_dry_scan_carries_nested_rule_block() {
 
 #[test]
 fn metadata_present_only_when_requested() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(DEFAULT_SOURCE);
-    let without = execute_scan(&base_value(dir.path(), &[]), SG_PATH, None);
+    let sg_path = resolve_sg_for_tests();
+    let without = execute_scan(&base_value(dir.path(), &[]), &sg_path, None);
     let with_metadata = execute_scan(
         &base_value(dir.path(), &[("includeMetadata", json!(true))]),
-        SG_PATH,
+        &sg_path,
         None,
     );
     assert!(without["matches"][0]["rule"].get("metadata").is_none());
@@ -315,7 +310,8 @@ fn metadata_present_only_when_requested() {
 }
 
 fn run_sg(dir: &Path, args: &[String]) -> std::process::Output {
-    Command::new(SG_PATH)
+    let sg_path = resolve_sg_for_tests();
+    Command::new(sg_path)
         .args(args)
         .current_dir(dir)
         .output()
@@ -324,9 +320,6 @@ fn run_sg(dir: &Path, args: &[String]) -> std::process::Output {
 
 #[test]
 fn apply_matrix_json_update_does_not_mutate_but_plain_update_does() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture("console.log(\"hello\");\n");
     let target = dir.path().join("src/a.ts");
     let before = contents(&target);
@@ -361,13 +354,11 @@ fn apply_matrix_json_update_does_not_mutate_but_plain_update_does() {
 
 #[test]
 fn apply_runs_preview_then_plain_update_all() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture("console.log(\"hello\");\n");
+    let sg_path = resolve_sg_for_tests();
     let payload = execute_scan(
         &base_value(dir.path(), &[("apply", json!(true))]),
-        SG_PATH,
+        &sg_path,
         None,
     );
     assert_eq!(payload["ok"], json!(true), "{payload}");
@@ -383,34 +374,27 @@ fn apply_runs_preview_then_plain_update_all() {
 
 #[test]
 fn no_matching_rule_is_valid_empty_success() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture("const x = 1;\n");
     let direct = run_sg(dir.path(), &build_scan_args(&base_input(dir.path())));
     assert_eq!(direct.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&direct.stdout), "");
-    let payload = execute_scan(&base_value(dir.path(), &[]), SG_PATH, None);
+    let sg_path = resolve_sg_for_tests();
+    let payload = execute_scan(&base_value(dir.path(), &[]), &sg_path, None);
     assert_eq!(payload["ok"], json!(true));
     assert_eq!(payload["matches"], json!([]));
 }
 
 #[test]
 fn unparseable_yaml_returns_rule_parse_failed() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(DEFAULT_SOURCE);
-    let payload = execute_scan(&inline_value(dir.path(), "id: ["), SG_PATH, None);
+    let sg_path = resolve_sg_for_tests();
+    let payload = execute_scan(&inline_value(dir.path(), "id: ["), &sg_path, None);
     assert_eq!(payload["ok"], json!(false));
     assert_eq!(payload["error"]["code"], json!("RULE_PARSE_FAILED"));
 }
 
 #[test]
 fn hostile_parent_sgconfig_is_isolated() {
-    if !sg_available() {
-        return;
-    }
     let parent = fixture(DEFAULT_SOURCE);
     let child = parent.path().join("child");
     std::fs::create_dir_all(child.join("src")).unwrap();
@@ -420,25 +404,24 @@ fn hostile_parent_sgconfig_is_isolated() {
         "ruleDirs: [definitely-missing-rules]\n",
     )
     .unwrap();
-    let payload = execute_scan(&inline_value(&child, RULE), SG_PATH, None);
+    let sg_path = resolve_sg_for_tests();
+    let payload = execute_scan(&inline_value(&child, RULE), &sg_path, None);
     assert_eq!(payload["ok"], json!(true), "{payload}");
     assert_eq!(payload["matches"].as_array().unwrap().len(), 1);
 }
 
 #[test]
 fn truncated_preview_refuses_mutation() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(DEFAULT_SOURCE);
     let target = dir.path().join("src/a.ts");
     let before = contents(&target);
+    let sg_path = resolve_sg_for_tests();
     let payload = execute_scan(
         &base_value(
             dir.path(),
             &[("apply", json!(true)), ("maxMatches", json!(1))],
         ),
-        SG_PATH,
+        &sg_path,
         None,
     );
     assert_eq!(payload["ok"], json!(false));

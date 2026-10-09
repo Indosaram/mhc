@@ -4,3 +4,4 @@ pub mod subprocess_kernel;
 pub mod subprocess_process;
 pub mod subprocess_run;
 pub mod subprocess_queue;
+pub mod kernel_prelude_plan;

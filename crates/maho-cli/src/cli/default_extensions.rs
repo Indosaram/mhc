@@ -150,13 +150,13 @@ impl Extension for Task {
                 let parent_registry = super::task_runners::live_parent_registry(weak.clone());
                 let process = super::task_runners::authenticated_rpc_options(super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
-                    &maho_core::config::get_agent_dir(), environment, Vec::new()), weak.clone());
+                    &maho_core::config::get_agent_dir(), environment.clone(), Vec::new()), weak.clone());
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth: 3,
                     create_session: super::task_session::factory(executor.clone(), parent.weak_accessor()), parent_registry, rpc_options: process.clone(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
-                let config = parent.with_settings_manager(|settings| settings.get_value("omo").cloned().unwrap_or_else(|| serde_json::json!({})));
+                let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let engine = slot.get_or_insert_with(|| maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {

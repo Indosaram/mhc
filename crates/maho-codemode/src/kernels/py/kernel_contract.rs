@@ -1,6 +1,7 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 use tokio::sync::oneshot;
 use serde_json::Value;
+use maho_tools::definition::KernelPrelude;
 use crate::{bridge::protocol::BridgeConnectionConfig, kernels::{session_env::SessionEnvironment, shared::subprocess_run::{KernelMessageCallback, KernelStartedCallback}}};
 
 pub struct PythonKernelStartOptions {
@@ -10,14 +11,16 @@ pub struct PythonKernelStartOptions {
     pub connection: BridgeConnectionConfig,
     pub env: Option<SessionEnvironment>,
     pub session_env: Option<SessionEnvironment>,
-    pub startup_timeout: Option<Duration>,
+    pub startup_timeout: Option<std::time::Duration>,
     pub on_message: Option<KernelMessageCallback>,
 }
 
+#[derive(Default)]
 pub struct PythonKernelRunOptions {
     pub cell_id: String,
     pub code: String,
     pub timeout_ms: Option<u64>,
+    pub preludes: Vec<KernelPrelude>,
     pub on_started: Option<KernelStartedCallback>,
     pub on_message: Option<KernelMessageCallback>,
 }

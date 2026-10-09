@@ -18,11 +18,16 @@ use tokio::sync::Notify;
 
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Unix socket paths are length-limited (104 bytes on macOS), so tests root in /tmp.
+/// Keep the longest test socket path below the natural 100-byte path limit.
+/// A short configured TMPDIR avoids the /tmp quota without breaking socket binds.
 pub fn short_tempdir() -> tempfile::TempDir {
+    let base_dir = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute() && dir.to_string_lossy().len() <= 60)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
     tempfile::Builder::new()
         .prefix("lspd-")
-        .tempdir_in("/tmp")
+        .tempdir_in(base_dir)
         .unwrap()
 }
 

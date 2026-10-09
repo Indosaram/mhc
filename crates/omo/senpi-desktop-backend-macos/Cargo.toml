@@ -1,0 +1,32 @@
+[package]
+name = "maho-senpi-desktop-backend-macos"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "senpi_desktop_backend_macos"
+crate-type = ["rlib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "=0.25.0", features = ["highsierra"] }
+foreign-types = "=0.5.0"
+image = { version = "=0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
+libc.workspace = true
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
+objc2-application-services = { version = "=0.3.2", default-features = true }
+objc2-core-foundation = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-foundation = "=0.3.2"
+parking_lot = "=0.12.5"
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core", features = ["system-clipboard"] }
+senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety" }
+tempfile = "=3.27.0"
+xcap = { version = "=0.9.6", default-features = false }

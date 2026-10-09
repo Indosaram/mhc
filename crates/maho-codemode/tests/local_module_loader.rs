@@ -29,7 +29,7 @@ fn context_normalizes_roots_and_preserves_explicit_local_root() {
 fn cell_payload_contains_prepared_sentinel_and_rewritten_code() {
     let options = LocalModuleLoaderOptions {cwd:"/tmp/project".into(),local_roots:None,artifacts_dir:Some("/tmp/artifacts".into())};
     assert_eq!(runtime_context(&options).unwrap()["localRootUrls"]["local"], "file:///tmp/artifacts/local/");
-    let prepared = LocalModuleLoader::new(&options).unwrap().prepare_cell("import value from './value.mjs';");
+    let prepared = LocalModuleLoader::new(&options).unwrap().prepare_cell("import value from './value.mjs';", &[]);
     let payload:serde_json::Value = serde_json::from_str(prepared.strip_prefix(PREPARED_CELL_PREFIX).unwrap()).unwrap();
     assert_eq!(payload["code"], "const value = (await __senpi_import__(\"./value.mjs\")).default;");
     assert!(payload["prelude"].as_str().unwrap().contains("globalThis.__senpi_import__"));
@@ -41,7 +41,7 @@ async fn prepared_imports_execute_in_external_worker() {
     let cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let loader = LocalModuleLoader::new(&LocalModuleLoaderOptions {cwd:cwd.into(),local_roots:None,artifacts_dir:None}).unwrap();
     let kernel = JavaScriptKernel::start(cwd, "prepared-import", 4, None).await.unwrap();
-    let result = kernel.run(KernelRunInput {cell_id:"import".into(),code:loader.prepare_cell("import { basename } from 'node:path'; basename('/tmp/value');"),timeout_ms:Some(5000)}, |_|{}).await.unwrap();
+    let result = kernel.run(KernelRunInput {cell_id:"import".into(),code:loader.prepare_cell("import { basename } from 'node:path'; basename('/tmp/value');", &[]),timeout_ms:Some(5000)}, |_|{}).await.unwrap();
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(result["valueRepr"], "\"value\"");
     kernel.close().await.unwrap();

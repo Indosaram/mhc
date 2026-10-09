@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-pub const AGENT_DIR_ENV_NAMES: [&str; 3] = [
-    "OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR",
+pub const AGENT_DIR_ENV_NAMES: [&str; 4] = [
+    "MAHO_CODING_AGENT_DIR", "OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR", "PI_CODING_AGENT_DIR",
 ];
 pub const AGENT_HOME_SENTINEL: &str = "settings.json";
 
@@ -36,6 +36,12 @@ mod tests {
     use super::*;
     fn resolve(env: &[(&str, &str)], exists: impl Fn(&Path) -> bool) -> PathBuf {
         resolve_agent_home(&env.iter().map(|(k,v)| (k.to_string(),v.to_string())).collect(), Path::new("/home/tester"), Path::new("/cwd"), exists)
+    }
+    #[test] fn maho_brand_name_wins_over_legacy() {
+        assert_eq!(resolve(&[("MAHO_CODING_AGENT_DIR","/explicit/maho"),("OMO_CODING_AGENT_DIR","/explicit/omo"),("SENPI_CODING_AGENT_DIR","/explicit/senpi"),("PI_CODING_AGENT_DIR","/explicit/pi")], |_| false), Path::new("/explicit/maho"));
+    }
+    #[test] fn blank_maho_falls_back_to_legacy() {
+        assert_eq!(resolve(&[("MAHO_CODING_AGENT_DIR","   "),("OMO_CODING_AGENT_DIR","/explicit/omo")], |_| false), Path::new("/explicit/omo"));
     }
     #[test] fn branded_name_wins() {
         assert_eq!(resolve(&[("OMO_CODING_AGENT_DIR","/explicit/omo"),("SENPI_CODING_AGENT_DIR","/explicit/senpi"),("PI_CODING_AGENT_DIR","/explicit/pi")], |_| false), Path::new("/explicit/omo"));

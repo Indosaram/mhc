@@ -1,12 +1,16 @@
 use crate::{arity, external_dir::{extract_external_paths,is_external_path}};
+pub use maho_ext_api::{ToolDefinition, ToolPermissionRequest as PermissionRequest};
 use serde_json::Value;
 use std::{collections::BTreeMap,path::Path,sync::Arc};
 
-#[derive(Clone,Debug,PartialEq,Eq)]
-pub struct PermissionRequest {pub permission:String,pub patterns:Vec<String>,pub always:Vec<String>}
 pub type ToolPermissionParser=Arc<dyn Fn(&Value,&Path,&Path)->Vec<PermissionRequest>+Send+Sync>;
-#[derive(Default)]
-pub struct ParserRegistry {parsers:BTreeMap<String,ToolPermissionParser>}
+pub type ToolDefinitionResolver = Arc<dyn Fn(&str) -> Option<ToolDefinition> + Send + Sync>;
+
+#[derive(Default, Clone)]
+pub struct ParserRegistry {
+    parsers: BTreeMap<String, ToolPermissionParser>,
+    definition_resolver: Option<ToolDefinitionResolver>,
+}
 fn request(permission:&str,patterns:Vec<String>,always:Vec<String>)->PermissionRequest {PermissionRequest{permission:permission.into(),patterns,always}}
 fn fallback(permission:&str)->Vec<PermissionRequest>{vec![request(permission,vec!["*".into()],vec!["*".into()])]}
 fn string<'a>(input:&'a Value,keys:&[&str])->Option<&'a str>{keys.iter().find_map(|key|input.get(key).and_then(Value::as_str))}
@@ -23,8 +27,17 @@ fn external(mut requests:Vec<PermissionRequest>,paths:&[String],location:(&Path,
 }
 impl ParserRegistry {
     pub fn register(&mut self,name:&str,parser:ToolPermissionParser){self.parsers.insert(name.into(),parser);}
+    pub fn set_definition_resolver(&mut self, resolver: ToolDefinitionResolver) { self.definition_resolver = Some(resolver); }
     pub fn parse(&self,name:&str,input:&Value,location:(&Path,&Path))->Vec<PermissionRequest>{
-        self.parsers.get(name).map_or_else(||fallback(name),|parser|parser(input,location.0,location.1))
+        if let Some(parser) = self.parsers.get(name) {
+            return parser(input, location.0, location.1);
+        }
+        if let Some(resolver) = &self.definition_resolver
+            && let Some(definition) = resolver(name)
+            && let Some(custom) = &definition.permission_parser {
+                    return custom(input, location.0);
+        }
+        fallback(name)
     }
 }
 pub fn create_builtin_parser_registry()->ParserRegistry{

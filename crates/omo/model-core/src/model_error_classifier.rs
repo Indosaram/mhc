@@ -11,11 +11,6 @@ const RETRYABLE_ERROR_NAMES: &[&str] = &[
     "authenticationerror",
 ];
 
-const STOP_ERROR_NAMES: &[&str] = &[
-    "quotaexceedederror",
-    "insufficientcreditserror",
-    "freeusagelimiterror",
-];
 
 /// Error names that are user-induced or fixable without switching models.
 const NON_RETRYABLE_ERROR_NAMES: &[&str] = &[
@@ -80,37 +75,6 @@ const RETRYABLE_MESSAGE_PATTERNS: &[&str] = &[
     "upstream request failed",
 ];
 
-/// Quota/billing exhaustion patterns; these take precedence over retryable patterns.
-const STOP_MESSAGE_PATTERNS: &[&str] = &[
-    "quota will reset after",
-    "quota exceeded",
-    "free usage limit",
-    "billing limit",
-    "billing hard limit",
-    "monthly limit",
-    "plan limit",
-    "subscription quota",
-    "subscription limit",
-    "payment required",
-    "out of credits",
-    "credits exhausted",
-    "insufficient credits",
-    "insufficient balance",
-    "credit balance",
-    "usage limit for this month",
-    "exhausted your capacity",
-    // GLM/Z.ai business error codes that indicate permanent quota/billing exhaustion
-    "daily call limit",
-    "daily limit",
-    "usage limit reached for",
-    "in arrears",
-    "fair use policy",
-    "recharge and try",
-    "使用上限",
-    "额度不足",
-    "余额不足",
-    "已耗尽",
-];
 
 const AUTO_RETRY_GATE_PATTERNS: &[&str] = &["rate limit", "cooling down", "credentials for model"];
 
@@ -133,26 +97,21 @@ pub struct ErrorInfo {
 /// Known retryable error name, or a retryable message/status that no STOP pattern overrides.
 #[must_use]
 pub fn is_retryable_model_error(error: &ErrorInfo) -> bool {
-    if let Some(name) = error.name.as_deref().filter(|name| !name.is_empty()) {
-        let error_name_lower = name.to_lowercase();
-        let error_name_lower = error_name_lower.as_str();
-        if NON_RETRYABLE_ERROR_NAMES.contains(&error_name_lower)
-            || STOP_ERROR_NAMES.contains(&error_name_lower)
-        {
-            return false;
-        }
-        if RETRYABLE_ERROR_NAMES.contains(&error_name_lower) {
-            return true;
-        }
-    }
-
-    let msg = error.message.as_deref().unwrap_or_default().to_lowercase();
-    if STOP_MESSAGE_PATTERNS
-        .iter()
-        .any(|pattern| msg.contains(pattern))
-    {
+    let name = error.name.as_deref().map(str::to_lowercase);
+    if name.as_deref().is_some_and(|name| NON_RETRYABLE_ERROR_NAMES.contains(&name)) {
         return false;
     }
+    let value = serde_json::json!({"name":error.name,"message":error.message,"statusCode":error.status_code});
+    if crate::runtime_fallback_error_classifier::is_terminal_quota_error(Some(&value)) {
+        return false;
+    }
+    if crate::runtime_fallback_error_classifier::classify_runtime_fallback_error(Some(&value)) == Some(crate::runtime_fallback_error_classifier::RuntimeFallbackErrorType::QuotaExceeded) {
+        return true;
+    }
+    if name.as_deref().is_some_and(|name| RETRYABLE_ERROR_NAMES.contains(&name)) {
+        return true;
+    }
+    let msg = error.message.as_deref().unwrap_or_default().to_lowercase();
     if has_provider_auto_retry_signal(&msg) {
         return true;
     }

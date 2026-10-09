@@ -16,6 +16,6 @@ pub use spawn::{
     AbortController, AbortRegistration, AbortSignal, SpawnOptions, SpawnSyncResult, SpawnedProcess,
     StdioMode, spawn, spawn_sync,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(unix, windows))]
 pub use spawn::ProcessHandle;
 pub use which::bun_which;

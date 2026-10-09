@@ -87,12 +87,41 @@ pub fn is_kimi_k2_model(model: &str) -> bool {
     model_name.contains("kimi") || K2P.is_match(&model_name)
 }
 
+/// Kimi Code addresses its models by rolling product ids that carry no version
+/// signal. Moonshot upgraded `kimi-for-coding` to K2.8 Preview in place on
+/// 2026-09-11 and left `kimi-for-coding-highspeed` on K2.7 Code HighSpeed.
+/// <https://www.kimi.com/code/docs/en/kimi-code/models.html> (checked 2026-09-18)
+pub const KIMI_CODE_K27_MODEL_ID: &str = "kimi-for-coding-highspeed";
+pub const KIMI_CODE_K28_MODEL_ID: &str = "kimi-for-coding";
+
 #[must_use]
 pub fn is_kimi_k27_model(model: &str) -> bool {
     static KIMI_K27: LazyLock<Regex> = LazyLock::new(|| regex(r"kimi-k2[.\-]?7"));
     static K2P7: LazyLock<Regex> = LazyLock::new(|| regex(r"k2[-.]?p7"));
     let model_name = extract_model_name(model).to_lowercase();
+    if model_name == KIMI_CODE_K27_MODEL_ID {
+        return true;
+    }
     KIMI_K27.is_match(&model_name) || K2P7.is_match(&model_name)
+}
+
+#[must_use]
+pub fn is_kimi_k28_model(model: &str) -> bool {
+    static KIMI_K28: LazyLock<Regex> = LazyLock::new(|| regex(r"kimi-k2[.\-]?8"));
+    static K2P8: LazyLock<Regex> = LazyLock::new(|| regex(r"k2[-.]?p8"));
+    let model_name = extract_model_name(model).to_lowercase();
+    if model_name == KIMI_CODE_K28_MODEL_ID {
+        return true;
+    }
+    KIMI_K28.is_match(&model_name) || K2P8.is_match(&model_name)
+}
+
+/// K2.7 Code and K2.8 Preview share one prompt. K2.8 is an efficiency and
+/// context upgrade inside the same K2 coding family, not a new prompting
+/// contract, so every prompt-routing site treats the two as one family.
+#[must_use]
+pub fn is_kimi_k2_code_model(model: &str) -> bool {
+    is_kimi_k27_model(model) || is_kimi_k28_model(model)
 }
 
 #[must_use]

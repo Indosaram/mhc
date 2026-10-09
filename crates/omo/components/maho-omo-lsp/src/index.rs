@@ -1,19 +1,30 @@
-use std::{path::PathBuf,sync::{Arc,Mutex}};
+use std::sync::{Arc,Mutex};
 use maho_ext_api::{EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,ExtensionFailure,ExtensionWidgetOptions,FlagType,FlagValue,ToolContent,ToolError,ToolResult,ToolResultEventResult,WidgetPlacement};
-use lsp_core::post_edit::{DiagnosticsRunnerError,PostEditDiagnosticsOutcome};
-use crate::{adapter::descriptors::descriptors,daemon_tool_client::{call_packaged_daemon_tool,current_senpi_request_context},post_edit_diagnostics::{append_post_edit_diagnostics,LspPostEditSessionState,POST_EDIT_DIAGNOSTICS_WIDGET_KEY,should_run_post_edit_diagnostics}};
+use lsp_core::post_edit::{DiagnosticsRunnerError};
+use crate::{adapter::descriptors::descriptors,daemon_tool_client::{call_packaged_daemon_tool,current_senpi_request_context},post_edit_diagnostics::{LspPostEditSessionState,POST_EDIT_DIAGNOSTICS_WIDGET_KEY,should_run_post_edit_diagnostics}};
 const TOOLS_FLAG:&str="omo-senpi-lsp-tools-enabled";
 const POST_EDIT_FLAG:&str="omo-senpi-lsp-post-edit-diagnostics-enabled";
 #[derive(Default)]
 pub struct LspComponent;
+pub type DiagnosticsRunner=Arc<dyn Fn(String)->std::pin::Pin<Box<dyn std::future::Future<Output=Result<lsp_core::post_edit::PostEditDiagnosticsOutcome,DiagnosticsRunnerError>>+Send>>+Send+Sync>;
+#[derive(Default)]
+pub struct LspComponentOptions {
+    pub formatter:Option<maho_omo_formatter::FormatterStep>,
+    pub run_diagnostics:Option<DiagnosticsRunner>,
+}
 impl Extension for LspComponent {
     fn register(&self,api:&mut ExtensionApi) {
+        self.register_with_options(api,LspComponentOptions::default());
+    }
+}
+impl LspComponent {
+    pub fn register_with_options(&self,api:&mut ExtensionApi,options:LspComponentOptions) {
         api.register_flag(TOOLS_FLAG,FlagType::Boolean {default:Some(true)},Some("Enable omo-senpi LSP tools.".into()));
         api.register_flag(POST_EDIT_FLAG,FlagType::Boolean {default:Some(true)},Some("Enable omo-senpi post-edit LSP diagnostics.".into()));
         if api.get_flag(TOOLS_FLAG)==Some(FlagValue::Boolean(false)) {return;}
-        let home=PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let home=crate::daemon_tool_client::resolve_request_home(std::env::var("HOME").ok().as_deref(),||dirs::home_dir().unwrap_or_default());
         for notice in crate::adapter::migration_notices::get_config_notices(&api.cwd,&home) {
-            eprintln!("omo-senpi ignored project-local LSP commands; move custom commands to the user .pi config: {} ({:?})",notice.config_path.display(),notice.server_ids);
+            eprintln!("omo-senpi ignored project-local LSP commands; move custom commands to the user config {}: {} ({:?})",notice.user_config_path.display(),notice.config_path.display(),notice.server_ids);
         }
         for mut tool in descriptors() {
             let name=tool.name.clone();let cwd=api.cwd.clone();let home=home.clone();
@@ -37,24 +48,59 @@ impl Extension for LspComponent {
             })) {std::panic::panic_any(error);}
         }
         let state=Arc::new(Mutex::new(LspPostEditSessionState::default()));
-        if api.get_flag(POST_EDIT_FLAG)!=Some(FlagValue::Boolean(false)) {
+        let diagnostics_enabled=api.get_flag(POST_EDIT_FLAG)!=Some(FlagValue::Boolean(false));
+        let formatter=Arc::new(std::sync::OnceLock::<maho_omo_formatter::FormatterStep>::new());
+        if let Some(step)=options.formatter {let _=formatter.set(step);}
+        let run_diagnostics=options.run_diagnostics;
+        {
             let caches=Arc::clone(&state);let home=home.clone();
-            api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let caches=Arc::clone(&caches);let home=home.clone();Box::pin(async move {
+            api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let caches=Arc::clone(&caches);let home=home.clone();let formatter=Arc::clone(&formatter);let run_diagnostics=run_diagnostics.clone();Box::pin(async move {
                 let ExtensionEvent::ToolResult(event)=event else {return Ok(EventResult::None);};
-                if !should_run_post_edit_diagnostics(event) {return Ok(EventResult::None);}
+                let formatter=formatter.get_or_init(|| {
+                    let format_cwd=ctx.cwd.clone();let format_home=home.clone();
+                    let loaded=maho_omo_config_resolution::load_senpi_omo_config(omo_config_core::LoadOmoConfigOptions {cwd:Some(ctx.cwd.to_string_lossy().into_owned()),..Default::default()});
+                    let config=loaded.config.get("formatOnMutation").cloned().and_then(|value|serde_json::from_value(value).ok());
+                    maho_omo_formatter::create_formatter_step(maho_omo_formatter::FormatterStepOptions {
+                        config,
+                        markers:Some(Box::new(|cwd|std::fs::read_dir(cwd).map(|entries|entries.filter_map(Result::ok).filter_map(|entry|entry.file_name().into_string().ok()).collect()).unwrap_or_default())),
+                        read_marker:Some(Box::new(|cwd,marker|std::fs::read_to_string(cwd.join(marker)).unwrap_or_default())),
+                        daemon_format:Some(Box::new(move |path| {
+                            let path=path.to_path_buf();let cwd=format_cwd.clone();let home=format_home.clone();
+                            Box::pin(async move {
+                                let context=current_senpi_request_context(&cwd,&home).map_err(|error|error.to_string())?;
+                                let args=serde_json::json!({"filePath":path}).as_object().cloned().unwrap_or_default();
+                                let result=call_packaged_daemon_tool("format",args,context,Default::default()).await.map_err(|error|error.to_string())?;
+                                Ok(maho_omo_formatter::DaemonFormatResult {content:Some(result.content.into_iter().map(serde_json::from_value::<ToolContent>).collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?),details:result.details,is_error:result.is_error})
+                            })
+                        })),
+                        ..Default::default()
+                    })
+                });
+                let formatted=formatter.format_tool_result(event,&ctx.cwd,Some(ctx.session_manager.session_id())).await;
+                let has_format_content=formatted.content.is_some();
+                let mut after_format=event.clone();
+                if let Some(content)=formatted.content {after_format.content.extend(content);}
+                let formatted_result=||if has_format_content {EventResult::ToolResult(ToolResultEventResult {content:Some(after_format.content.clone()),details:None,is_error:None,usage:None})} else {EventResult::None};
+                if let Some(error)=formatted.error.filter(|error|!error.is_empty()) {after_format.content.push(ToolContent::text(error));return Ok(EventResult::ToolResult(ToolResultEventResult {content:Some(after_format.content),details:None,is_error:Some(true),usage:None}));}
+                if !diagnostics_enabled || !should_run_post_edit_diagnostics(&after_format) {return Ok(formatted_result());}
                 if let Some(update)=&ctx.update_tool_hook_status {update("(OmO) Checking LSP Diagnostics");}
                 let cache=caches.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_create(Some(ctx.session_manager.session_id()));
                 let context=current_senpi_request_context(&ctx.cwd,&home).map_err(|e|ExtensionFailure::new(e.to_string()))?;
                 let signal=ctx.signal.clone().unwrap_or_default();
-                let result=append_post_edit_diagnostics(event,move |path| {let context=context.clone();let signal=signal.clone();async move {
+                let cwd=ctx.cwd.to_string_lossy().into_owned();
+                let agent_dirs=vec![ctx.agent_dir.to_string_lossy().into_owned()];
+                let locate_file=|path:&str| lsp_core::post_edit::classify_post_edit_file_location(path,&lsp_core::post_edit::PostEditFileLocationOptions {cwd:&cwd,agent_dirs:&agent_dirs,temp_dirs:None,home_dirs:None});
+                let result=crate::post_edit_diagnostics::append_post_edit_diagnostics_with_locator(&after_format,move |path| {let context=context.clone();let signal=signal.clone();let run=run_diagnostics.clone();async move {
+                    if let Some(run)=run {return run(path).await;}
                     let args=serde_json::json!({"filePath":path,"severity":"error"}).as_object().cloned().unwrap_or_default();
                     let result=call_packaged_daemon_tool("lsp_diagnostics",args,context,signal).await.map_err(|e|DiagnosticsRunnerError::new(e.to_string()))?;
-                    if let Some(availability)=result.details.as_ref().and_then(|v|v.get("availability")) && availability.get("kind").and_then(serde_json::Value::as_str)==Some("not_configured") && let Some(extension)=availability.get("extension").and_then(serde_json::Value::as_str).filter(|s|!s.is_empty()) {return Ok(PostEditDiagnosticsOutcome::NotConfigured {extension:extension.into()});}
-                    Ok(PostEditDiagnosticsOutcome::Text(result.content.iter().filter(|b|b.get("type").and_then(serde_json::Value::as_str)==Some("text")).filter_map(|b|b.get("text").and_then(serde_json::Value::as_str)).collect::<Vec<_>>().join("\n")))
-                }},Some(&cache)).await;
+                    Ok(crate::post_edit_outcome::post_edit_outcome_from_daemon_result(&result))
+                }},Some(&cache),Some(&locate_file)).await;
                 if let Some(result)=result {ctx.ui.set_widget(POST_EDIT_DIAGNOSTICS_WIDGET_KEY,None,ExtensionWidgetOptions {placement:WidgetPlacement::BelowEditor});if let Some(content)=result.content {return Ok(EventResult::ToolResult(ToolResultEventResult {content:Some(content),details:None,is_error:None,usage:None}));}}
-                Ok(EventResult::None)
+                Ok(formatted_result())
             })}));
+        }
+        if diagnostics_enabled {
             for kind in [EventKind::SessionStart,EventKind::SessionCompact] {let caches=Arc::clone(&state);api.on(kind,Arc::new(move |_,ctx| {let caches=Arc::clone(&caches);Box::pin(async move {let mut caches=caches.lock().unwrap_or_else(std::sync::PoisonError::into_inner);let id=Some(ctx.session_manager.session_id());if kind==EventKind::SessionStart {caches.on_session_start(id);} else {caches.reset(id);}Ok(EventResult::None)})}));}
         }
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let state=Arc::clone(&state);Box::pin(async move {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).delete(Some(ctx.session_manager.session_id()));Ok(EventResult::None)})}));
@@ -67,6 +113,7 @@ fn daemon_agent_result(result:lsp_daemon::daemon_client::ToolExecutionResult)->R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use maho_ext_api::{EventBus,ExtensionRuntime,ExtensionSessionProfile,LoadedExtension,SourceInfo};
     fn api()->ExtensionApi {ExtensionApi::new(LoadedExtension::new("lsp",PathBuf::from("/workspace"),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),ExtensionRuntime::default())}
     #[test] fn structured_daemon_errors_keep_content_and_details() {

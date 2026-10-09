@@ -9,6 +9,11 @@ license = "LicenseRef-SUL-1.0"
 workspace = true
 
 [dependencies]
+dirs.workspace = true
+maho-omo-formatter = { path = "../maho-omo-formatter" }
+maho-omo-post-mutation = { path = "../maho-omo-post-mutation" }
+maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
+omo-config-core = { package = "maho-omo-config-core", path = "../../omo-config-core" }
 maho-lsp-core = { path = "../../lsp-core" }
 maho-ext-api = { path = "../../../maho-ext-api" }
 maho-lsp-daemon = { path = "../../lsp-daemon" }

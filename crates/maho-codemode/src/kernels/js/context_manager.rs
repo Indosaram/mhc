@@ -88,8 +88,11 @@ impl JavaScriptKernel {
         while let Ok(message)=frames.try_recv() {on_message(&message);}
         result
     }
-    pub async fn run_with_callbacks(&self, mut input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>) -> Result<Value,ProcessError> {
-        if !input.code.starts_with(PREPARED_CELL_PREFIX) {input.code=self.loader.prepare_cell(&input.code);}
+    pub async fn run_with_callbacks(&self, input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>) -> Result<Value,ProcessError> {
+        self.run_with_preludes(input, on_message, on_started, &[]).await
+    }
+    pub async fn run_with_preludes(&self, mut input: KernelRunInput, on_message: Option<KernelMessageCallback>, on_started: Option<KernelStartedCallback>, preludes: &[maho_tools::KernelPrelude]) -> Result<Value,ProcessError> {
+        if !input.code.starts_with(PREPARED_CELL_PREFIX) {input.code=self.loader.prepare_cell(&input.code, preludes);}
         let (sender,receiver)=oneshot::channel();
         self.commands.send(Command::Run(input,on_message,on_started,sender)).map_err(|_|ProcessError::Closed)?;
         receiver.await.map_err(|_|ProcessError::Closed)?.map_err(ProcessError::Startup)

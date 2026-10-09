@@ -81,14 +81,14 @@ mod tests {
         let mut runner=maho_ext_host::ExtensionRunner::new(loaded.extensions,loaded.runtime,loaded.events,context(t.path(),&session.session_id()));let input_runner=runner.clone();
         session.set_extension_runner(runner.clone()).await;session.bind_extensions(maho_core::agent_session::ExtensionBindings {mode:Some(maho_ext_api::ExtensionMode::Print),..Default::default()}).await;
         tokio::time::timeout(std::time::Duration::from_secs(5),session.prompt("Say hello.",Default::default())).await.unwrap().unwrap();
-        // Current core emits input but no input_disposition. Both inputs remain
-        // pending until explicit shutdown; do not invent a Started event here.
-        assert!(!messages.lock().unwrap().iter().any(|m|m.event=="prompt_submitted"));
+    // Current core emits Started disposition on initial prompt, so prompt_submitted
+        // is captured immediately with turn_start metadata.
+        assert_eq!(messages.lock().unwrap().iter().filter(|m|m.event=="prompt_submitted").count(),1);
         runner=input_runner;runner.emit(ExtensionEvent::Input(maho_ext_api::InputEvent {input_id:"pending-real-session".into(),text:"ulw resume later".into(),source:maho_ext_api::InputSource::Interactive,images:None,streaming_behavior:None})).await.unwrap();
         for id in ["overlap-a","overlap-b"] {runner.emit(ExtensionEvent::ToolExecutionStart {tool_call_id:id.into(),tool_name:"bash".into(),args:serde_json::json!({})}).await.unwrap();}
         for id in ["overlap-a","overlap-b"] {runner.emit(ExtensionEvent::ToolExecutionEnd {tool_call_id:id.into(),tool_name:"bash".into(),result:serde_json::json!(1),is_error:false}).await.unwrap();}
         tokio::time::timeout(std::time::Duration::from_secs(2),session.emit_session_shutdown(SessionReason::Quit)).await.unwrap();
-        {let messages=messages.lock().unwrap();assert!(messages.iter().any(|m|m.event=="session_started"));assert!(messages.iter().any(|m|m.event=="turn_completed"));let prompts=messages.iter().filter(|m|m.event=="prompt_submitted").collect::<Vec<_>>();assert_eq!(prompts.len(),2);assert!(prompts.iter().all(|m|m.properties["queue_mode"]=="other" && m.properties["is_turn_start"]==false));assert_eq!(prompts[0].properties["keyword_variant"],"none");assert_eq!(prompts[1].properties["keyword_variant"],"ulw");assert_eq!(messages.iter().filter(|m|m.event=="parallelism_summary").count(),1);}
+        {let messages=messages.lock().unwrap();assert!(messages.iter().any(|m|m.event=="session_started"));assert!(messages.iter().any(|m|m.event=="turn_completed"));let prompts=messages.iter().filter(|m|m.event=="prompt_submitted").collect::<Vec<_>>();assert_eq!(prompts.len(),2);assert_eq!(prompts[0].properties["queue_mode"],"immediate");assert_eq!(prompts[0].properties["is_turn_start"],true);assert_eq!(prompts[1].properties["queue_mode"],"other");assert_eq!(prompts[1].properties["is_turn_start"],false);assert_eq!(prompts[0].properties["keyword_variant"],"none");assert_eq!(prompts[1].properties["keyword_variant"],"ulw");assert_eq!(messages.iter().filter(|m|m.event=="parallelism_summary").count(),1);}
         session.emit_session_shutdown(SessionReason::Quit).await;session.dispose().await;
         assert_eq!(messages.lock().unwrap().iter().filter(|m|m.event=="prompt_submitted").count(),2);
     }

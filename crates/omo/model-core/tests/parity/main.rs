@@ -3,6 +3,7 @@
 mod support;
 
 mod category_routing_policy;
+mod context_overflow;
 mod context_limit_resolver;
 mod gpt_5_6_copilot_resolution;
 mod luna_deepseek_chain_policy;
@@ -16,10 +17,12 @@ mod model_capabilities_suffixed_provider_lookup;
 mod model_capability_aliases;
 mod model_capability_guardrails;
 mod model_error_classifier;
+mod model_error_classifier_usage_limit;
 mod model_error_classifier_openai_usage_limit;
 mod model_family_detectors;
 mod model_format_normalizer;
 mod model_normalization;
+mod model_requirements;
 mod model_requirements_agents;
 mod model_requirements_categories;
 mod model_requirements_deprecated_routing;

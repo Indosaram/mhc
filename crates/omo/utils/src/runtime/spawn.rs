@@ -188,6 +188,173 @@ mod pidfd {
 #[cfg(target_os = "linux")]
 pub use pidfd::ProcessHandle;
 
+#[cfg(all(unix, not(target_os = "linux")))]
+mod unix_child {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug)]
+    struct Inner {
+        pid: u32,
+        reaped: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct ProcessHandle {
+        inner: Arc<Mutex<Inner>>,
+    }
+
+    impl ProcessHandle {
+        pub(crate) fn new(pid: u32) -> Self {
+            Self {
+                inner: Arc::new(Mutex::new(Inner { pid, reaped: false })),
+            }
+        }
+
+        pub fn terminate(&self) -> io::Result<()> {
+            self.send_signal(libc::SIGTERM)
+        }
+
+        pub fn kill(&self) -> io::Result<()> {
+            self.send_signal(libc::SIGKILL)
+        }
+
+        fn send_signal(&self, signal: i32) -> io::Result<()> {
+            let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if inner.reaped {
+                return Ok(());
+            }
+            // SAFETY: inner.pid was spawned by this process and has not been reaped yet.
+            // In POSIX, a child PID is not reused by the kernel until the parent reaps it.
+            let res = unsafe { libc::kill(inner.pid as libc::pid_t, signal) };
+            if res == -1 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ESRCH) {
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            } else {
+                Ok(())
+            }
+        }
+
+        pub(crate) fn wait_without_reap(&self) -> io::Result<()> {
+            let pid = {
+                let inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if inner.reaped {
+                    return Ok(());
+                }
+                inner.pid
+            };
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            loop {
+                // SAFETY: waitid is called on an unreaped child PID of this process with WNOWAIT.
+                let res = unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOWAIT,
+                    )
+                };
+                if res == 0 {
+                    return Ok(());
+                }
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(err);
+            }
+        }
+
+        pub(crate) fn mark_reaped(&self) {
+            let mut inner = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            inner.reaped = true;
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+pub use unix_child::ProcessHandle;
+
+#[cfg(windows)]
+mod windows_child {
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, OwnedHandle};
+    use std::sync::Arc;
+
+    const WAIT_OBJECT_0: u32 = 0x00000000;
+    const WAIT_TIMEOUT: u32 = 0x00000102;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+
+    unsafe extern "system" {
+        fn TerminateProcess(hProcess: *mut std::ffi::c_void, uExitCode: u32) -> i32;
+        fn WaitForSingleObject(hHandle: *mut std::ffi::c_void, dwMilliseconds: u32) -> u32;
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct ProcessHandle {
+        handle: Arc<OwnedHandle>,
+    }
+
+    impl ProcessHandle {
+        pub(crate) fn new(handle: OwnedHandle) -> Self {
+            Self {
+                handle: Arc::new(handle),
+            }
+        }
+
+        pub fn terminate(&self) -> io::Result<()> {
+            self.kill()
+        }
+
+        pub fn kill(&self) -> io::Result<()> {
+            // SAFETY: self.handle holds an owned duplicate of the process HANDLE.
+            let ret = unsafe {
+                TerminateProcess(self.handle.as_raw_handle() as *mut std::ffi::c_void, 1)
+            };
+            if ret == 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+                    // Check if the process has actually terminated or is still active.
+                    // On Windows, a signaled process object (WAIT_OBJECT_0) authoritatively proves
+                    // termination regardless of whether its exit code is STILL_ACTIVE (259).
+                    let raw = self.handle.as_raw_handle() as *mut std::ffi::c_void;
+                    let wait_res = unsafe { WaitForSingleObject(raw, 0) };
+                    if wait_res == WAIT_OBJECT_0 {
+                        return Ok(());
+                    } else if wait_res == WAIT_TIMEOUT {
+                        // Process is still running; ERROR_ACCESS_DENIED was a real refusal
+                        return Err(err);
+                    }
+                }
+                Err(err)
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use windows_child::ProcessHandle;
+
+#[cfg(not(any(unix, windows)))]
+#[derive(Clone, Debug)]
+pub struct ProcessHandle;
+
+#[cfg(not(any(unix, windows)))]
+impl ProcessHandle {
+    pub fn terminate(&self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+    pub fn kill(&self) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+}
+
 /// Spawn options; unset stdio defaults to stdin=ignore, stdout=pipe, stderr=inherit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpawnOptions {
@@ -251,6 +418,10 @@ pub struct SpawnedProcess {
     _cancellation: Option<AbortRegistration>,
     #[cfg(target_os = "linux")]
     pidfd: Option<Arc<OwnedFd>>,
+    #[cfg(all(unix, not(target_os = "linux")))]
+    unix_handle: Option<unix_child::ProcessHandle>,
+    #[cfg(windows)]
+    windows_handle: Option<windows_child::ProcessHandle>,
     pub stdin: Option<ChildStdin>,
     pub stdout: Option<ChildStdout>,
     pub stderr: Option<ChildStderr>,
@@ -285,12 +456,56 @@ impl SpawnedProcess {
         Ok(ProcessHandle::new(pidfd))
     }
 
+    #[cfg(all(unix, not(target_os = "linux")))]
+    pub fn handle(&mut self) -> io::Result<ProcessHandle> {
+        let handle = match &self.unix_handle {
+            Some(handle) => handle.clone(),
+            None => {
+                if self.exit_code.is_some() {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, "child has already been reaped"));
+                }
+                let handle = unix_child::ProcessHandle::new(self.pid);
+                self.unix_handle = Some(handle.clone());
+                handle
+            }
+        };
+        Ok(handle)
+    }
+
+    #[cfg(windows)]
+    pub fn handle(&mut self) -> io::Result<ProcessHandle> {
+        let handle = match &self.windows_handle {
+            Some(handle) => handle.clone(),
+            None => {
+                if self.exit_code.is_some() {
+                    return Err(io::Error::new(io::ErrorKind::NotFound, "child has already been reaped"));
+                }
+                use std::os::windows::io::AsHandle;
+                let owned = self.child.as_handle().try_clone_to_owned()?;
+                let handle = windows_child::ProcessHandle::new(owned);
+                self.windows_handle = Some(handle.clone());
+                handle
+            }
+        };
+        Ok(handle)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn handle(&mut self) -> io::Result<ProcessHandle> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"))
+    }
+
     /// Wait for exit; the exit code is cached for [`Self::exit_code`].
     pub fn exited(&mut self) -> io::Result<i32> {
         if let Some(code) = self.exit_code {
             return Ok(code);
         }
         drop(self.stdin.take());
+        #[cfg(all(unix, not(target_os = "linux")))]
+        if let Some(handle) = &self.unix_handle {
+            handle.wait_without_reap()?;
+            handle.mark_reaped();
+        }
         let code = code_of(self.child.wait()?);
         self.exit_code = Some(code);
         self._cancellation = None;
@@ -307,7 +522,14 @@ impl SpawnedProcess {
         let err = err_reader.join().unwrap_or_default();
         let code = match self.exit_code {
             Some(code) => code,
-            None => code_of(self.child.wait()?),
+            None => {
+                #[cfg(all(unix, not(target_os = "linux")))]
+                if let Some(handle) = &self.unix_handle {
+                    handle.wait_without_reap()?;
+                    handle.mark_reaped();
+                }
+                code_of(self.child.wait()?)
+            }
         };
         self.exit_code = Some(code);
         self._cancellation = None;
@@ -330,7 +552,7 @@ fn read_all(stream: Option<impl Read>) -> String {
 }
 
 pub fn spawn(cmd: &[String], options: &SpawnOptions) -> io::Result<SpawnedProcess> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(unix, windows)))]
     if options.signal.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -366,7 +588,50 @@ pub fn spawn(cmd: &[String], options: &SpawnOptions) -> io::Result<SpawnedProces
             }
         }
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let (cancellation, unix_handle) = match &options.signal {
+        None => (None, None),
+        Some(signal) => {
+            let handle = unix_child::ProcessHandle::new(pid);
+            let listener_handle = handle.clone();
+            match signal.add_abort_listener(move || {
+                let _ = listener_handle.terminate();
+            }) {
+                Some(registration) => (Some(registration), Some(handle)),
+                None => {
+                    let _ = handle.terminate();
+                    (None, Some(handle))
+                }
+            }
+        }
+    };
+    #[cfg(windows)]
+    let (cancellation, windows_handle) = match &options.signal {
+        None => (None, None),
+        Some(signal) => {
+            use std::os::windows::io::AsHandle;
+            let owned = match child.as_handle().try_clone_to_owned() {
+                Ok(owned) => owned,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
+            let handle = windows_child::ProcessHandle::new(owned);
+            let listener_handle = handle.clone();
+            match signal.add_abort_listener(move || {
+                let _ = listener_handle.terminate();
+            }) {
+                Some(registration) => (Some(registration), Some(handle)),
+                None => {
+                    let _ = handle.terminate();
+                    (None, Some(handle))
+                }
+            }
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
     let cancellation = None;
     Ok(SpawnedProcess {
         child,
@@ -375,6 +640,10 @@ pub fn spawn(cmd: &[String], options: &SpawnOptions) -> io::Result<SpawnedProces
         _cancellation: cancellation,
         #[cfg(target_os = "linux")]
         pidfd,
+        #[cfg(all(unix, not(target_os = "linux")))]
+        unix_handle,
+        #[cfg(windows)]
+        windows_handle,
         stdin,
         stdout,
         stderr,

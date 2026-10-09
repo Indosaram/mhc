@@ -22,7 +22,7 @@ fn beyond_category(category: &str, registry: Option<&dyn SenpiModelRegistry>, se
     if fresh.is_none() && inherited.is_none() { return Ok(None); }
     let decision = choose_reflection_launch_model(&ReflectionLaunchInput { fresh: fresh.as_ref(), session: inherited.as_ref(), prefix_tokens: 0.0, workload_tokens: 50_000.0, cache_reusable: false }).map_err(|error| HostError { message: error.to_string() })?;
     let inherit = decision.choice == LaunchChoice::Inherit;
-    Ok(Some(ReflectionModelResolution::Resolved { category: category.into(), model: decision.model, thinking: normalize_thinking(decision.thinking.as_deref()), source: Some(if inherit { "session_inherit" } else { "registry_fallback" }), fallbacks: if inherit { vec![] } else { candidates.into_iter().skip(1).map(|candidate| ReflectionModelCandidate { model: candidate.model, thinking: None }).collect() } }))
+    Ok(Some(ReflectionModelResolution::Resolved { category: category.into(), model: decision.model, thinking: normalize_thinking(decision.thinking.as_deref()), source: Some(if inherit { "session_inherit" } else { "registry_fallback" }), fallbacks: if inherit { vec![] } else { candidates.into_iter().skip(1).map(|candidate| ReflectionModelCandidate { model: candidate.model, thinking: None , load_extensions: None }).collect() } }))
 }
 
 pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option<&dyn SenpiModelRegistry>, session: Option<&ReflectionSessionModel>) -> Result<ReflectionModelResolution, HostError> {
@@ -32,7 +32,7 @@ pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option
     if let CategoryResolutionResult::Resolved { category: resolved_category, spec, .. } = resolution {
         let thinking = normalize_thinking(spec.reasoning.as_deref().or(spec.reasoning_effort.as_deref()).or(spec.variant.as_deref()));
         let selected = format!("{}/{}", spec.provider, spec.model_id);
-        let mut fallbacks: Vec<_> = spec.fallback_models.unwrap_or_default().into_iter().map(|fallback| ReflectionModelCandidate { model: format!("{}/{}", fallback.provider, fallback.model_id), thinking: normalize_thinking(fallback.reasoning_effort.as_deref().or(fallback.variant.as_deref())) }).collect();
+        let mut fallbacks: Vec<_> = spec.fallback_models.unwrap_or_default().into_iter().map(|fallback| ReflectionModelCandidate { model: format!("{}/{}", fallback.provider, fallback.model_id), thinking: normalize_thinking(fallback.reasoning_effort.as_deref().or(fallback.variant.as_deref())), load_extensions: None }).collect();
         let category_config = &config["categories"][category];
         let canonical = category_config["models"].as_array().filter(|entries| !entries.is_empty());
         let legacy = category_config.get("fallback_models");
@@ -44,7 +44,7 @@ pub fn resolve_reflection_model(category: &str, config: &Value, registry: Option
                 let Some((provider, id)) = model.split_once('/').filter(|(provider, id)| !provider.is_empty() && !id.is_empty()) else { continue; };
                 if registry.find(provider, id).is_none() { continue; }
                 let thinking = normalize_thinking(entry.get("reasoning").or_else(|| entry.get("reasoningEffort")).or_else(|| entry.get("variant")).and_then(Value::as_str));
-                fallbacks.push(ReflectionModelCandidate { model, thinking });
+                fallbacks.push(ReflectionModelCandidate { model, thinking , load_extensions: None });
             }
         }
         let mut seen = BTreeSet::new();

@@ -20,6 +20,9 @@ use crate::lsp::constants::DEFAULT_MAX_SYMBOLS;
 use crate::lsp::directory_diagnostics::DirectoryDiagnosticsOptions;
 use crate::lsp::directory_diagnostics::aggregate_diagnostics_for_directory;
 use crate::lsp::errors::LspError;
+use crate::lsp::format_document::FormatDocumentOptions;
+use crate::lsp::format_document::FormatDocumentResult;
+use crate::lsp::format_document::format_document_with_client;
 use crate::lsp::formatters::filter_diagnostics_by_severity;
 use crate::lsp::formatters::format_apply_result;
 use crate::lsp::formatters::format_diagnostic;
@@ -520,6 +523,89 @@ pub async fn execute_lsp_rename(
             Value::Object(
                 position.with(json!({ "newName": new_name, "apply": null, "edit": null })),
             ),
+        ),
+    }
+}
+
+fn describe_format_result(file_path: &str, result: &FormatDocumentResult) -> String {
+    match result {
+        FormatDocumentResult::Unavailable { .. } => {
+            format!("Formatting unavailable for {file_path}: the language server does not advertise documentFormattingProvider.")
+        }
+        FormatDocumentResult::Unchanged { .. } => {
+            format!("Already formatted: {file_path}")
+        }
+        FormatDocumentResult::Formatted { lines_added, lines_removed } => {
+            format!("Formatted {file_path} (+{lines_added}/-{lines_removed} lines)")
+        }
+    }
+}
+
+fn format_details(file_path: &str, result: &FormatDocumentResult) -> Map<String, Value> {
+    match result {
+        FormatDocumentResult::Unavailable { reason } => details(json!({
+            "filePath": file_path,
+            "status": "unavailable",
+            "reason": reason,
+            "linesAdded": 0,
+            "linesRemoved": 0,
+        })),
+        FormatDocumentResult::Unchanged { lines_added, lines_removed } => details(json!({
+            "filePath": file_path,
+            "status": "unchanged",
+            "linesAdded": lines_added,
+            "linesRemoved": lines_removed,
+        })),
+        FormatDocumentResult::Formatted { lines_added, lines_removed } => details(json!({
+            "filePath": file_path,
+            "status": "formatted",
+            "linesAdded": lines_added,
+            "linesRemoved": lines_removed,
+        })),
+    }
+}
+
+/// TS `executeLspFormat`.
+pub async fn execute_lsp_format(
+    params: &Map<String, Value>,
+    signal: Option<&AbortSignal>,
+) -> Result<ToolExecutionResult, LspError> {
+    let file_path = require_string(params, "filePath")?;
+
+    let result = with_lsp_client(
+        &file_path,
+        |client, _root, resolved| async move {
+            let lsp = lsp_client(&client)?;
+            format_document_with_client(
+                lsp,
+                &resolved,
+                FormatDocumentOptions {
+                    formatting_options: None,
+                    signal,
+                },
+            )
+            .await
+        },
+        "format",
+        client_options(signal),
+    )
+    .await;
+
+    match result {
+        Ok(result) => {
+            let text = describe_format_result(&file_path, &result);
+            let d = format_details(&file_path, &result);
+            Ok(ToolExecutionResult::text(text, d))
+        }
+        Err(error) => recover(
+            error,
+            json!({
+                "filePath": file_path,
+                "status": "unavailable",
+                "reason": "server_unavailable",
+                "linesAdded": 0,
+                "linesRemoved": 0,
+            }),
         ),
     }
 }

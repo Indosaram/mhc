@@ -42,7 +42,7 @@ async fn real_eval_consumer_retains_live_capability_and_nested_scope_restores_ou
     assert!(current_kernel_tools().is_none());
     let kernel=Arc::new(JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"scope-consumer",4,None).await.unwrap());
     let consumer=Arc::new(Consumer(Mutex::new(None)));
-    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:consumer.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into()});
+    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:consumer.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None});
     let proof=tokio::time::timeout(Duration::from_secs(10),async {
         let result=run_eval_cell(options,invocation("consume","tool(function increment(value) { return value+1; }); display(await tool.consume({}));")).await.unwrap();
         assert_eq!(result.details["cells"][0]["status"],"complete","{result:?}");

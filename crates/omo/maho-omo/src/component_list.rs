@@ -108,7 +108,7 @@ pub fn omo_components(
     options: &OmoComponentOptions,
 ) -> Vec<OmoSenpiComponent> {
     let skills_root = options.skills_root.clone();
-    let mut components = Vec::with_capacity(22);
+    let mut components = Vec::with_capacity(25);
     components.push(component("config-startup", maho_omo_config_startup::ConfigStartupComponent::default()));
     components.push(component("model-profile", maho_omo_model_profile::ModelProfileComponent::new(
         maho_omo_model_profile::ModelProfileComponentOptions { load_config: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
@@ -147,7 +147,7 @@ pub fn omo_components(
         ),
     ));
     components.push(component("ultrawork", maho_omo_ultrawork::UltraworkComponent::default()));
-    components.push(component("mass-ulw", maho_omo_mass_ulw::MassUlwComponent { skills_root: options.skills_root_string() }));
+    components.push(component("skill-pointers", maho_omo_skill_pointers::SkillPointersComponent::new(options.skills_root_string())));
     components.push(component("ulw-execute-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
     // The loop's registration-time log has no context; bind the shared runtime logger at
     // construction (same pattern as config-watch below) so the production path logs too.
@@ -165,9 +165,18 @@ pub fn omo_components(
     components.push(component("comment-checker", maho_omo_comment_checker::CommentCheckerComponent::default()));
     components.push(component("ast-grep", maho_omo_ast_grep::AstGrepComponent::default()));
     components.push(component("builtin-mcps", maho_omo_builtin_mcps::BuiltinMcpsComponent::from_env(&options.env)));
+    let x_search_env=options.env.clone();
+    components.push(OmoSenpiComponent::from_context_register("x-search",move |api,runtime| {
+        use maho_ext_api::Extension;
+        maho_omo_x_search::XSearchComponent::new(maho_omo_x_search::XSearchComponentOptions {
+            env:Some(x_search_env.clone()),logger:Some(runtime.logger()),..Default::default()
+        }).register(api);
+    }));
+    components.push(component("browser-bridge", maho_omo_browser_bridge::BrowserBridgeComponent::default()));
     components.push(component("lsp", maho_omo_lsp::LspComponent));
     components.push(task);
     components.push(memory);
+    components.push(component("gateway",maho_omo_gateway::GatewayComponent::new(Default::default())));
     let watch = std::sync::Arc::new(std::sync::Mutex::new(maho_omo_config_watch::index::ConfigWatchComponent::default()));
     components.push(OmoSenpiComponent::from_context_register("config-watch", move |api, runtime| {
         use maho_ext_api::Extension;
@@ -210,7 +219,7 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "init-deep-advisor",
         "telemetry",
         "ultrawork",
-        "mass-ulw",
+        "skill-pointers",
         "ulw-execute-continuation",
         "ulw-loop",
         "todo-fanout-reminder",
@@ -219,9 +228,12 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "comment-checker",
         "ast-grep",
         "builtin-mcps",
+        "x-search",
+        "browser-bridge",
         "lsp",
         "task",
         "memory",
+        "gateway",
         "config-watch",
     ]
     .to_vec()

@@ -47,6 +47,6 @@ async fn faux_component_runs_real_session_startup_and_turn() {
         matches!(message["role"].as_str(), Some("user" | "assistant")).then(|| message["content"].clone())
     }).collect::<Vec<_>>();
     assert_eq!(messages.iter().map(|message| message["content"].clone()).collect::<Vec<_>>(), expected);
-    assert_eq!(*events.lock().expect("lifecycle events"), ["session_start", "turn_end"]);
+    assert_eq!(*events.lock().expect("lifecycle events"), ["session_start", "turn_end", "session_shutdown"]);
     assert!(std::fs::read_dir(state.path()).expect("component state").next().is_none());
 }

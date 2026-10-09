@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -12,6 +15,8 @@ use utils::xdg_data_dir::ResolveXdgDataDirOptions;
 use utils::xdg_data_dir::XdgOsProvider;
 use utils::xdg_data_dir::resolve_xdg_data_dir;
 
+use crate::day_claim::DayClaimOutcome;
+use crate::day_claim::claim_utc_day;
 use crate::diagnostics::to_iso_string;
 use crate::types::TelemetryDiagnosticEvent;
 use crate::types::TelemetryDiagnosticInput;
@@ -21,6 +26,13 @@ use crate::types::TelemetryError;
 const POSTHOG_ACTIVITY_STATE_FILE: &str = "posthog-activity.json";
 const LAST_ACTIVE_DAY_KEY: &str = "lastActiveDayUTC";
 const DIAGNOSTIC_SOURCE: &str = "shared";
+
+// Bounds a process that cannot persist its stamp at all: without this it would ask again on every
+// call, which is how a reload loop turns one machine into thousands of events a day.
+fn captured_days_by_state_dir() -> &'static Mutex<HashMap<PathBuf, String>> {
+    static CAPTURED: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    CAPTURED.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,19 +91,59 @@ pub fn get_telemetry_activity_state_file_path(state_dir: &Path) -> PathBuf {
 pub fn get_daily_active_capture_state(
     input: &DailyActiveCaptureStateInput<'_>,
 ) -> PostHogActivityCaptureState {
-    let mut state = read_state(input);
     let iso = to_iso_string(input.now.unwrap_or_else(Utc::now));
     let day_utc = iso[..10].to_string();
-    let capture_daily = state.get(LAST_ACTIVE_DAY_KEY).and_then(Value::as_str) != Some(&day_utc);
 
-    if capture_daily {
-        state.insert(LAST_ACTIVE_DAY_KEY.into(), day_utc.clone().into());
-        write_state(input, &state);
+    {
+        let guard = captured_days_by_state_dir()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.get(input.state_dir) == Some(&day_utc) {
+            return PostHogActivityCaptureState {
+                day_utc,
+                capture_daily: false,
+            };
+        }
+    }
+
+    let state = read_state(input);
+    if state.get(LAST_ACTIVE_DAY_KEY).and_then(Value::as_str) == Some(&day_utc) {
+        let mut guard = captured_days_by_state_dir()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.insert(input.state_dir.to_path_buf(), day_utc.clone());
+        return PostHogActivityCaptureState {
+            day_utc,
+            capture_daily: false,
+        };
+    }
+
+    let claim = claim_utc_day(input.state_dir, &day_utc);
+    {
+        let mut guard = captured_days_by_state_dir()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.insert(input.state_dir.to_path_buf(), day_utc.clone());
+    }
+
+    if claim == DayClaimOutcome::AlreadyClaimed {
+        return PostHogActivityCaptureState {
+            day_utc,
+            capture_daily: false,
+        };
+    }
+
+    // The claim already carries the decision, so the state file is advisory: it keeps the fast path
+    // read-only, repairs a corrupt file, and lets a client predating claims keep deduping.
+    if claim == DayClaimOutcome::Claimed {
+        let mut next_state = state;
+        next_state.insert(LAST_ACTIVE_DAY_KEY.into(), day_utc.clone().into());
+        write_state(input, &next_state);
     }
 
     PostHogActivityCaptureState {
         day_utc,
-        capture_daily,
+        capture_daily: true,
     }
 }
 
@@ -139,7 +191,8 @@ fn write_state(input: &DailyActiveCaptureStateInput<'_>, state: &Map<String, Val
         .map_err(|error| error.to_string())
         .and_then(|()| serde_json::to_string_pretty(state).map_err(|error| error.to_string()))
         .and_then(|json| {
-            write_file_atomically(&path, &format!("{json}\n")).map_err(|error| error.to_string())
+            write_file_atomically(&path, &format!("{json}
+")).map_err(|error| error.to_string())
         });
     if let Err(error) = written {
         report(

@@ -76,6 +76,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     indicator.during_surface_write(|| { for error in &extensions.errors { eprintln!("{}: {}", error.extension_path, error.error); } });
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
     extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
+    for (name, value) in &parsed.unknown_flags {
+        if extensions.extensions.iter().any(|extension| extension.flags.iter().any(|flag| flag.name == *name)) {
+            let flag_value = match value {
+                super::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
+                super::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
+            };
+            extensions.runtime.set_flag(name, flag_value);
+        }
+    }
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
     let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);

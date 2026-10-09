@@ -23,7 +23,7 @@ pub async fn execute_reflection_run(
     let ReflectionModelResolution::Resolved{model,thinking,fallbacks,category,..}=input.resolution else{return finalize_execution_failure(&input,Some(&worktree),MemoryModelAttemptError::Launch("reflection child launch requires a resolved model".into()),terminal_gate);};
     let launched=std::cell::RefCell::new(Some(append_launched));
     let worktree_ref=&worktree;let input_ref=&input;
-    let result=super::memory_launch_preflight::resolve_and_preflight_memory_launch_typed(cache,super::memory_launch_preflight::MemoryLaunchPreflightInput{first:ReflectionModelCandidate{model:model.clone(),thinking:thinking.clone()},rest:fallbacks,launch:input.launch,env:input.env,env_flag:"SENPI_MEMORY_REFLECTION",config_sources:input.sources,surface_name:"reflection",now_ms:input.options.launched_at},warn,|candidate,attempt,next_attempt|{
+    let result=super::memory_launch_preflight::resolve_and_preflight_memory_launch_typed(cache,super::memory_launch_preflight::MemoryLaunchPreflightInput{first:ReflectionModelCandidate{model:model.clone(),thinking:thinking.clone(), load_extensions: None },rest:fallbacks,launch:input.launch,env:input.env,env_flag:"SENPI_MEMORY_REFLECTION",config_sources:input.sources,surface_name:"reflection",now_ms:input.options.launched_at},warn,|candidate,attempt,next_attempt|{
         let launched=&launched;
         async move{
             let fork=input_ref.route.is_some_and(|route|route.route==super::fork_cost::Route::Fork);

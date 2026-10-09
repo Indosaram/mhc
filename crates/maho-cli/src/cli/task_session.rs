@@ -119,7 +119,10 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     Ok(())
 }
 
-struct NativeChild { session: Arc<maho_core::agent_session::AgentSession>, executor: tokio::runtime::Handle }
+pub struct NativeChild { pub session: Arc<maho_core::agent_session::AgentSession>, pub executor: tokio::runtime::Handle }
+impl NativeChild {
+    pub fn new(session: Arc<maho_core::agent_session::AgentSession>, executor: tokio::runtime::Handle) -> Self { Self { session, executor } }
+}
 impl ChildSession for NativeChild {
     fn session_id(&self) -> String { self.session.session_id() }
     fn prompt(&self, text: &str) -> Result<(), HostError> {
@@ -129,8 +132,30 @@ impl ChildSession for NativeChild {
             Ok::<(), String>(())
         }).map_err(|message| HostError { message })
     }
-    fn steer(&self, text: &str) -> Result<(), HostError> { self.executor.block_on(self.session.steer(text, None, Default::default())).map_err(|message| HostError { message }) }
-    fn follow_up(&self, text: &str) -> Result<(), HostError> { self.executor.block_on(self.session.follow_up(text, None, Default::default())).map_err(|message| HostError { message }) }
+    fn steer(&self, text: &str) -> Result<(), HostError> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let session = self.session.clone();
+            let text = text.to_owned();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| HostError { message: error.to_string() })?;
+                runtime.block_on(session.steer(&text, None, Default::default())).map_err(|message| HostError { message })
+            }).join().map_err(|_| HostError { message: "steer thread panicked".to_owned() })?
+        } else {
+            self.executor.block_on(self.session.steer(text, None, Default::default())).map_err(|message| HostError { message })
+        }
+    }
+    fn follow_up(&self, text: &str) -> Result<(), HostError> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let session = self.session.clone();
+            let text = text.to_owned();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| HostError { message: error.to_string() })?;
+                runtime.block_on(session.follow_up(&text, None, Default::default())).map_err(|message| HostError { message })
+            }).join().map_err(|_| HostError { message: "follow_up thread panicked".to_owned() })?
+        } else {
+            self.executor.block_on(self.session.follow_up(text, None, Default::default())).map_err(|message| HostError { message })
+        }
+    }
     fn abort(&self) -> Result<(), HostError> { let session = self.session.clone(); self.executor.spawn(async move { session.abort().await; }); Ok(()) }
     fn get_last_assistant_text(&self) -> Option<String> { self.session.get_last_assistant_text() }
     fn subscribe(&self, listener: ChildSessionListener) -> senpi_task::manager::child_handle::Unsubscribe {
@@ -138,7 +163,20 @@ impl ChildSession for NativeChild {
         let session = self.session.clone();
         Box::new(move || { drop(subscription); drop(session); })
     }
-    fn dispose(&self) { let session = self.session.clone(); self.executor.block_on(async move { session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await; session.dispose().await; }); }
+    fn dispose(&self) {
+        let session = self.session.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            self.executor.spawn(async move {
+                session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
+                session.dispose().await;
+            });
+        } else {
+            self.executor.block_on(async move {
+                session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
+                session.dispose().await;
+            });
+        }
+    }
 }
 
 pub fn factory(executor: tokio::runtime::Handle, parent: Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>) -> senpi_task::runners::in_process::runner::CreateChildSession {
@@ -170,6 +208,6 @@ pub fn factory(executor: tokio::runtime::Handle, parent: Arc<dyn Fn() -> Option<
             thinking_level: options.thinking_level.as_deref().and_then(maho_ai::types::ThinkingLevel::parse),
             ..Default::default()
         })).map_err(|message| HostError { message })?;
-        Ok(Arc::new(NativeChild { session: Arc::new(session.session), executor: executor.clone() }) as Arc<dyn ChildSession>)
+        Ok(Arc::new(NativeChild::new(Arc::new(session.session), executor.clone())) as Arc<dyn ChildSession>)
     })
 }

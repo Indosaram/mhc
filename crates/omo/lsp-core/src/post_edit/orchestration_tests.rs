@@ -13,6 +13,7 @@ fn block(file_path: &str, diagnostics: &str) -> PostEditDiagnosticsBlock {
     PostEditDiagnosticsBlock {
         file_path: file_path.to_string(),
         diagnostics: diagnostics.to_string(),
+        blocking: true,
     }
 }
 
@@ -29,6 +30,7 @@ async fn rendered_not_configured_text_is_not_cached() {
         file_paths: &paths(&["a.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |_| async {
             calls.fetch_add(1, Ordering::SeqCst);
             text("No LSP server configured for extension: .foo\n\nordinary text from a renderer")
@@ -39,6 +41,7 @@ async fn rendered_not_configured_text_is_not_cached() {
         file_paths: &paths(&["b.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |_| async {
             calls.fetch_add(1, Ordering::SeqCst);
             text("diagnostic for b.foo")
@@ -66,6 +69,7 @@ async fn duplicate_paths_are_processed_once_and_blocks_stay_ordered() {
         file_paths: &paths(&["a.ts", "b.ts", "a.ts", "c.ts"]),
         cache: None,
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |file_path: String| {
             calls.lock().expect("calls").push(file_path.clone());
             async move {
@@ -101,6 +105,7 @@ async fn concurrency_is_bounded_to_four_and_failures_isolate() {
         file_paths: &paths(&["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"]),
         cache: None,
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |file_path: String| {
             let active = active.clone();
             let max_active = max_active.clone();
@@ -171,6 +176,7 @@ async fn only_structured_not_configured_is_cached_until_reset() {
         file_paths: &paths(&["a.foo", "c.bar"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: run,
     })
     .await;
@@ -187,6 +193,7 @@ async fn only_structured_not_configured_is_cached_until_reset() {
         file_paths: &paths(&["b.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: run,
     })
     .await;
@@ -202,6 +209,7 @@ async fn only_structured_not_configured_is_cached_until_reset() {
         file_paths: &paths(&["a.foo", "b.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: run,
     })
     .await;
@@ -225,6 +233,7 @@ async fn non_not_configured_failures_always_retry() {
         file_paths: &paths(&["a.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |_| async {
             calls.fetch_add(1, Ordering::SeqCst);
             text("LSP server 'foo' for .foo is NOT INSTALLED.")
@@ -235,6 +244,7 @@ async fn non_not_configured_failures_always_retry() {
         file_paths: &paths(&["b.foo"]),
         cache: Some(&cache),
         max_concurrency: None,
+        locate_file: None,
         run_diagnostics: |_| async {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(DiagnosticsRunnerError::new("daemon unavailable"))

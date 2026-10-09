@@ -18,10 +18,11 @@ const EXPECTED_AGENTS: [&str; 11] = [
     "sisyphus-junior",
 ];
 
-const EXPECTED_CATEGORIES: [&str; 8] = [
+const EXPECTED_CATEGORIES: [&str; 9] = [
     "visual-engineering",
     "ultrabrain",
-    "deep",
+    "deep-low",
+    "deep-high",
     "artistry",
     "quick",
     "unspecified-low",

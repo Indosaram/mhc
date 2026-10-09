@@ -2,7 +2,7 @@ use maho_codemode::bridges::schema_bridge::*;
 use serde_json::json;
 
 fn tools() -> Vec<EvalSchemaToolInfo> {
-    vec![EvalSchemaToolInfo { name: "mcp_computer_use_batch".into(), description: Some("Run steps.".into()), parameters: Some(json!({"type":"object", "required":["steps"]})) }, EvalSchemaToolInfo { name: "grep".into(), description: None, parameters: None }]
+    vec![EvalSchemaToolInfo { name: "mcp_computer_use_batch".into(), description: Some("Run steps.".into()), parameters: Some(json!({"type":"object", "required":["steps"]})), kernel_prelude: None }, EvalSchemaToolInfo { name: "grep".into(), description: None, parameters: None, kernel_prelude: None }]
 }
 
 #[test]

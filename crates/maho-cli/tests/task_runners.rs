@@ -535,3 +535,48 @@ fn resolved_omo_config_returns_a_live_resolved_root_not_an_envelope() {
     assert!(config.get("global").is_none(), "no frozen global envelope: {config}");
     assert!(config.get("project").is_none(), "no frozen project envelope: {config}");
 }
+
+#[tokio::test]
+async fn native_child_steer_and_follow_up_propagate_queue_errors() {
+    use std::sync::Arc;
+    use maho_cli::cli::task_session::NativeChild;
+    use senpi_task::runners::in_process::child_handle::ChildSession;
+
+    let dir = tempfile::tempdir().expect("child session dir");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(
+        maho_core::model_runtime::CreateModelRuntimeOptions { providers: Some(Vec::new()), ..Default::default() });
+    runtime.register_native_provider(provider.provider.clone());
+    let model = provider.get_model(Some("faux-1")).expect("model");
+
+    let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
+        path: "test-cmd-ext".into(),
+        source_info: Default::default(),
+        factory: Arc::new(|api| {
+            api.register_command("registered_cmd", Some("test command".into()), None, Arc::new(|_, _| Box::pin(async { Ok(()) })));
+            Box::pin(async { Ok(()) })
+        }),
+    };
+
+    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()),
+        agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(model), model_runtime: Some(runtime),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        extension_factories: vec![factory],
+        ..Default::default()
+    }).await.expect("child session with command");
+
+    let child = NativeChild::new(Arc::new(created.session), tokio::runtime::Handle::current());
+
+    assert!(child.steer("valid steer").is_ok(), "a queued steer returns Ok");
+    assert!(child.follow_up("valid follow up").is_ok(), "a queued follow_up returns Ok");
+
+    let steer_error = child.steer("/registered_cmd").expect_err("a registered command cannot be queued");
+    assert!(steer_error.message.contains("cannot be queued"), "steer propagates the queue error: {}", steer_error.message);
+    let follow_up_error = child.follow_up("/registered_cmd").expect_err("a registered command cannot be queued");
+    assert!(follow_up_error.message.contains("cannot be queued"), "follow_up propagates the queue error: {}", follow_up_error.message);
+
+    child.dispose();
+}

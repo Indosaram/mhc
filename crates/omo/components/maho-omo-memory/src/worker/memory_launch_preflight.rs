@@ -37,7 +37,7 @@ where F: FnMut(ReflectionModelCandidate, usize, Option<RunAttempt>) -> Fut, Fut:
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn candidate(model: &str) -> ReflectionModelCandidate { ReflectionModelCandidate { model: model.into(), thinking: None } }
+    fn candidate(model: &str) -> ReflectionModelCandidate { ReflectionModelCandidate { model: model.into(), thinking: None , load_extensions: None } }
     fn success() -> ReflectionChildResult { ReflectionChildResult { code: Some(0), signal: None, stdout: String::new(), stderr: String::new(), timed_out: false } }
     #[tokio::test]
     async fn discovery_flags_filter_before_attempt_and_do_not_mutate_parent_env() {
@@ -52,14 +52,17 @@ mod tests {
         assert!(env.is_empty());
     }
     #[tokio::test]
-    async fn no_visible_model_never_launches_attempt() {
+    async fn missing_catalog_models_retain_extension_enabled_reactive_attempt() {
         let launch = Launcher { command: "/bin/sh".into(), prefix_args: vec!["-c".into(), "printf 'other/model\\n'".into()] };
         let env = BTreeMap::new();
         let input = MemoryLaunchPreflightInput { first: candidate("builtin/model"), rest: &[], launch: &launch, env: &env, env_flag: "SENPI_MEMORY_REFLECTION", config_sources: &[], surface_name: "reflection", now_ms: 0 };
-        let mut launched = false;
-        let error = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |e| panic!("{e}"), |_, _, _| { launched = true; std::future::ready(Ok(success())) }).await.unwrap_err();
-        assert!(!launched);
-        assert!(error.contains("builtin/model (model_not_visible)"));
+        let mut warning = String::new();
+        let result = resolve_and_preflight_memory_launch(&mut ModelPreflight::default(), input, |message| warning = message.into(), |candidate, _, _| {
+            assert_eq!(candidate.load_extensions, Some(true));
+            std::future::ready(Ok(success()))
+        }).await.unwrap();
+        assert_eq!(result.candidate.model, "builtin/model");
+        assert!(!warning.is_empty());
     }
     #[tokio::test]
     async fn unavailable_catalog_warns_and_preserves_reactive_chain() {

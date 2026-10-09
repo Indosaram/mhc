@@ -7,6 +7,8 @@ license = "LicenseRef-SUL-1.0"
 
 [dependencies]
 maho-memory-core.workspace = true
+maho-model-core = { path = "../../model-core", version = "=0.0.0" }
+regex.workspace = true
 maho-ext-api = { path = "../../../maho-ext-api", version = "=0.0.0" }
 maho-tools = { path = "../../../maho-tools", version = "=0.0.0" }
 maho-core = { path = "../../../maho-core", version = "=0.0.0" }

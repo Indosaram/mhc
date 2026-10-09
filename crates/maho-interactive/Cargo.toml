@@ -23,7 +23,7 @@ tempfile = "=3.27.0"
 unicode-segmentation = "=1.13.3"
 syntect = { version = "=5.3.0", default-features = false, features = ["default-fancy"] }
 sha2 = "=0.10.9"
-chrono = { version = "=0.4.43", features = ["clock"] }
+chrono = { version = "=0.4.45", features = ["clock"] }
 icu_collator = "=2.3.1"
 base64 = "=0.22.1"
 semver = "=1.0.27"

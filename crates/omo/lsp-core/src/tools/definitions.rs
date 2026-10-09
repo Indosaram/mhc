@@ -10,6 +10,7 @@ pub enum LspToolKind {
     Symbols,
     PrepareRename,
     Rename,
+    Format,
     InstallDecision,
 }
 
@@ -127,6 +128,19 @@ pub fn lsp_mcp_tools() -> Vec<LspMcpTool> {
             description: "Rename a symbol across the workspace and apply the returned workspace edit.",
             input_schema: object_schema(rename, &["filePath", "line", "character", "newName"]),
             kind: LspToolKind::Rename,
+        },
+        LspMcpTool {
+            name: "format",
+            aliases: vec!["lsp_format"],
+            title: "LSP Format",
+            description: "Format a source file with its language server and write the returned edits to disk.",
+            input_schema: object_schema(
+                json!({
+                    "filePath": { "type": "string", "description": "Source file path to format." },
+                }),
+                &["filePath"],
+            ),
+            kind: LspToolKind::Format,
         },
         LspMcpTool {
             name: "install_decision",

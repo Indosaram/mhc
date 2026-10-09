@@ -40,10 +40,12 @@ pub enum EvalToolRequest {
 }
 
 pub type EvalKernelFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+#[derive(Default)]
 pub struct EvalKernelRunInput {
     pub cell_id: String,
     pub code: String,
     pub timeout_ms: Option<u64>,
+    pub preludes: Vec<maho_tools::KernelPrelude>,
     pub on_started: Option<crate::kernels::shared::subprocess_run::KernelStartedCallback>,
     pub on_message: Option<crate::kernels::shared::subprocess_run::KernelMessageCallback>,
 }
@@ -64,7 +66,7 @@ pub trait EvalKernel: Send + Sync {
 
 impl EvalKernel for crate::kernels::py::kernel::PythonKernel {
     fn run(&self, input: EvalKernelRunInput) -> EvalKernelFuture<'_, serde_json::Value> {
-        Box::pin(self.run(crate::kernels::py::kernel_contract::PythonKernelRunOptions {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms,on_started:input.on_started,on_message:input.on_message}))
+        Box::pin(self.run(crate::kernels::py::kernel_contract::PythonKernelRunOptions {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms,on_started:input.on_started,on_message:input.on_message,preludes:input.preludes}))
     }
     fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool> {Box::pin(async move {Ok(self.cancel_queued(cell_id,reason).await)})}
     fn interrupt<'a>(&'a self, reason: &'a str, cell_id: Option<&'a str>) -> EvalKernelFuture<'a, KernelInterruptHandle> {
@@ -98,7 +100,7 @@ impl EvalKernel for crate::kernels::shared::subprocess_kernel::SubprocessKernel 
 impl EvalKernel for crate::kernels::js::context_manager::JavaScriptKernel {
     fn kernel_tools(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn maho_ext_api::ExtensionKernelTools>> { Some(self) }
     fn run(&self,input:EvalKernelRunInput)->EvalKernelFuture<'_,serde_json::Value> {
-        Box::pin(async move {self.run_with_callbacks(crate::kernels::shared::subprocess_contract::KernelRunInput {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms},input.on_message,input.on_started).await.map_err(|error|error.to_string())})
+        Box::pin(async move {self.run_with_preludes(crate::kernels::shared::subprocess_contract::KernelRunInput {cell_id:input.cell_id,code:input.code,timeout_ms:input.timeout_ms},input.on_message,input.on_started,&input.preludes).await.map_err(|error|error.to_string())})
     }
     fn cancel_queued<'a>(&'a self,id:&'a str,reason:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async move {Ok(self.cancel_queued(id,reason).await)})}
     fn interrupt<'a>(&'a self,reason:&'a str,id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {

@@ -4,6 +4,7 @@
 //! hardcoded fallback chains, the resolution pipeline, and runtime-fallback error classification.
 
 mod connected_providers_cache;
+mod context_overflow;
 mod context_limit_resolver;
 mod fallback_chain_from_models;
 mod fallback_model_object;
@@ -18,6 +19,8 @@ mod model_error_classifier;
 mod model_family_detectors;
 mod model_format_normalizer;
 mod model_normalization;
+mod agent_model_requirements;
+mod category_model_requirements;
 mod model_requirement_types;
 mod model_requirements;
 mod model_resolution_pipeline;
@@ -37,6 +40,7 @@ mod runtime_fallback_model;
 mod runtime_fallback_retryable_patterns;
 
 pub use connected_providers_cache::*;
+pub use context_overflow::*;
 pub use context_limit_resolver::*;
 pub use fallback_chain_from_models::*;
 pub use fallback_model_object::*;

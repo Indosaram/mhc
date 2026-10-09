@@ -389,6 +389,13 @@ impl MemoryRuntime {
             Ok(settings) => settings["tool_exposure"] == "search", Err(error) => { (this.host.warn)(&error); false }
         });
         let this = self.clone(); let tools = Arc::new(move || this.active_identity());
+        let this = self.clone();
+        let write_notice: maho_omo_memory::tools::WriteNoticeGate = Arc::new(move || {
+            let identity = this.active_identity();
+            let identity_str = identity.as_ref().map(|id| id.identity.as_str());
+            let settings = this.settings().ok();
+            maho_omo_memory::reflection_settings::resolve_write_notice_enabled(settings.as_ref(), identity_str)
+        });
         let cwd = self.host.cwd.clone(); let resolve_cwd = Arc::new(move || cwd.clone());
         let this = self.clone(); let edit_notice = Arc::new(move |identity: &str| match this.settings() {
             Ok(settings) => settings["agents"][identity]["soul"]["edit_notice"].as_bool().or_else(|| settings["soul"]["edit_notice"].as_bool()).unwrap_or(true),
@@ -425,7 +432,8 @@ impl MemoryRuntime {
             prompt: maho_omo_memory::prompt::MemoryPromptInjectionOptions {
                 resolve_context: resolve.clone(), create_repo: Some(Arc::new(|identity| GitMemoryRepo::open(&identity.identity_paths.repo, &identity.identity).map_err(|error| error.to_string()))),
                 search_exposure: Some(search), resolve_nudge_turns: Some(nudge), resolve_soul_notice: Some(soul),
-            }, nudge: self.nudge.clone(), resolve_context: resolve, resolve_tool_context: tools, resolve_cwd: resolve_cwd.clone(),
+            }, nudge: self.nudge.clone(), resolve_context: resolve, resolve_tool_context: tools,
+            write_notice: Some(write_notice), resolve_cwd: resolve_cwd.clone(),
             captured_tools: self.host.captured_tools.clone(), warn: self.host.warn.clone(), edit_notice,
             theme: Arc::new(|theme| Arc::new(MemoryEntryTheme(theme.clone()))),
             memory_write: maho_omo_memory::wiring_memory_write::MemoryWriteOptions { resolve_session: writes, on_memory_write: on_write, refresh_status: refresh },
@@ -737,5 +745,186 @@ mod tests {
         assert!(!configured.enabled);
         assert_eq!(configured.limits.max_entries, 5);
         assert_eq!(configured.limits.max_entry_chars, 50);
+    }
+
+    struct TestSession(&'static str);
+    impl maho_ext_api::ToolSessionManager for TestSession {
+        fn session_id(&self) -> &str { self.0 }
+        fn session_file(&self) -> Option<&Path> { None }
+    }
+    impl maho_ext_api::SessionManager for TestSession {
+        fn get_entries(&self) -> Vec<maho_ext_api::SessionEntry> { Vec::new() }
+        fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> { Vec::new() }
+        fn get_leaf_id(&self) -> Option<String> { None }
+        fn get_session_name(&self) -> Option<String> { None }
+    }
+    struct TestRegistry;
+    impl maho_ext_api::ModelRegistry for TestRegistry {
+        fn get_all(&self) -> Vec<maho_ext_api::Model> { Vec::new() }
+        fn get_available(&self) -> Vec<maho_ext_api::Model> { Vec::new() }
+        fn find(&self, _: &str, _: &str) -> Option<maho_ext_api::Model> { None }
+        fn has_configured_auth(&self, _: &maho_ext_api::Model) -> bool { false }
+        fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+    }
+    struct TestUi;
+    impl ExtensionUi for TestUi {
+        fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, bool> { Box::pin(async { false }) }
+        fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: maho_ext_api::ExtensionUiDialogOptions) -> maho_ext_api::UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+        fn notify(&self, _: &str, _: NotificationType) {}
+        fn set_status(&self, _: &str, _: Option<&str>) {}
+        fn set_widget(&self, _: &str, _: Option<maho_ext_api::WidgetContent>, _: maho_ext_api::ExtensionWidgetOptions) {}
+        fn set_header(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_footer(&self, _: Option<maho_ext_api::ComponentFactory>) {}
+        fn set_title(&self, _: &str) {}
+        fn paste_to_editor(&self, _: &str) {}
+        fn set_editor_text(&self, _: &str) {}
+        fn get_editor_text(&self) -> String { String::new() }
+        fn custom(&self, _: maho_ext_api::ComponentFactory, _: maho_ext_api::CustomUiOptions) -> maho_ext_api::ExtensionFuture<'_, Value> { Box::pin(async { Ok(serde_json::Value::Null) }) }
+        fn theme(&self) -> maho_ext_api::Theme { maho_ext_api::Theme::default() }
+    }
+
+    fn test_context(session_id: &'static str, cwd: &Path, agent_dir: &Path) -> ExtensionContext {
+        ExtensionContext {
+            ui: Arc::new(TestUi), mode: maho_ext_api::ExtensionMode::Print, has_ui: false,
+            cwd: cwd.into(), agent_dir: agent_dir.into(), session_manager: Arc::new(TestSession(session_id)),
+            model_registry: Arc::new(TestRegistry), model: None, thinking_level: None, service_tier: None,
+            effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None, loaded_extension_paths: Vec::new(),
+            signal: None, steering_signal: None, is_idle_fn: Arc::new(|| true), wait_for_idle_fn: Arc::new(|| Box::pin(async {})),
+            is_project_trusted_fn: Arc::new(|| true), is_compacting_fn: Arc::new(|| false), get_system_prompt_fn: Arc::new(|| "base".into()),
+            get_system_prompt_options_fn: Arc::new(|| maho_ext_api::BuildSystemPromptOptions { cwd: "/tmp".into(), ..Default::default() }),
+            registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None,
+            compaction_signal: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_memory_tool_via_static_options_reflects_write_notice_settings_and_per_agent_override() {
+        let root = tempfile::tempdir().unwrap();
+        let agent_dir = root.path().join("agent");
+        let project_dir = root.path().join("project");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let config = Arc::new(Mutex::new(serde_json::json!({
+            "memory": {
+                "enabled": true,
+                "agent": "lead",
+                "write_notice": { "enabled": true },
+                "agents": {
+                    "override-off": { "write_notice": { "enabled": false } },
+                    "override-on": { "write_notice": { "enabled": true } }
+                }
+            }
+        })));
+
+        let mut h = host(config.clone());
+        h.cwd = project_dir.clone();
+        h.agent_dir = agent_dir.clone();
+        h.env.insert("HOME".into(), agent_dir.to_string_lossy().into_owned());
+        let runtime = MemoryRuntime::new(h).unwrap();
+
+        let mut api = maho_ext_api::ExtensionApi::new(
+            maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()),
+            Default::default(), Default::default(), Default::default(),
+        );
+
+        api.runtime.bind(Arc::new(NoopActions));
+        // Register memory static options and component lifecycle handlers
+        let static_options = runtime.static_options();
+        maho_omo_memory::wiring_static::register_memory_static(&mut api, static_options);
+        let registered = runtime.component.register(&mut api, maho_omo_memory::index::MemoryComponentHooks {
+            after_bind: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+            shutdown: Arc::new(|_, _, _| Box::pin(async { Ok(()) })),
+            clear_status: Arc::new(|_| {}),
+            warn: Arc::new(|_| {}),
+        }, |_| {}).expect("memory component registration");
+        assert!(registered, "memory component should register successfully");
+
+        // 1. Session start binds "session-1" with identity "lead" (configured agent: lead, no per-agent override)
+        let ctx1 = test_context("session-1", &project_dir, &agent_dir);
+        for handler in api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).expect("SessionStart handlers") {
+            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &ctx1).await.expect("session start dispatch");
+        }
+        runtime.capture_context(&ctx1);
+        let lead_identity = runtime.active_identity().expect("bound active identity").identity;
+        assert!(lead_identity.starts_with("lead"), "session bound the configured lead agent: {lead_identity}");
+
+        let tool = api.registered.tools.iter().find(|t| t.definition.name == "memory").expect("memory tool registered");
+
+        // Call 1: lead agent with global enabled: true and NO per-agent override -> writeNotice present with identity = lead
+        let call1 = maho_ext_api::ToolCall { id: "c1", params: serde_json::json!({"command":"create","reason":"lead write","file_path":"reference/lead.md","description":"lead","file_text":"content1"}), signal: Default::default(), on_update: None, context: None };
+        let res1 = (tool.definition.execute)(call1).await.expect("lead create succeeds");
+        let details1 = res1.details.expect("details present");
+        assert!(details1.get("writeNotice").is_some(), "writeNotice emitted for lead under global enabled: true");
+        assert_eq!(details1["writeNotice"]["identity"], serde_json::json!(lead_identity));
+
+        // 2. Change global write_notice setting to false (lead still has no override) -> next call reflects it without restart
+        *config.lock().unwrap() = serde_json::json!({
+            "memory": {
+                "enabled": true,
+                "agent": "lead",
+                "write_notice": { "enabled": false },
+                "agents": {
+                    "override-off": { "write_notice": { "enabled": false } },
+                    "override-on": { "write_notice": { "enabled": true } }
+                }
+            }
+        });
+        let call2 = maho_ext_api::ToolCall { id: "c2", params: serde_json::json!({"command":"create","reason":"lead write 2","file_path":"reference/lead2.md","description":"lead","file_text":"content2"}), signal: Default::default(), on_update: None, context: None };
+        let res2 = (tool.definition.execute)(call2).await.expect("lead create 2 succeeds");
+        let details2 = res2.details.expect("details present");
+        assert!(details2.get("writeNotice").is_none(), "writeNotice omitted when global disabled and no override");
+
+        // 3. Switch configured agent to "override-on" (per-agent override enabled: true even though global is false)
+        *config.lock().unwrap() = serde_json::json!({
+            "memory": {
+                "enabled": true,
+                "agent": "override-on",
+                "write_notice": { "enabled": false },
+                "agents": {
+                    "override-off": { "write_notice": { "enabled": false } },
+                    "override-on": { "write_notice": { "enabled": true } }
+                }
+            }
+        });
+        let ctx2 = test_context("session-2", &project_dir, &agent_dir);
+        for handler in api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).expect("SessionStart handlers") {
+            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &ctx2).await.expect("session start dispatch");
+        }
+        runtime.capture_context(&ctx2);
+        let override_on_identity = runtime.active_identity().expect("bound active identity").identity;
+        assert!(override_on_identity.starts_with("override-on"), "session bound the override-on agent: {override_on_identity}");
+
+        let call3 = maho_ext_api::ToolCall { id: "c3", params: serde_json::json!({"command":"create","reason":"override on write","file_path":"reference/on.md","description":"on","file_text":"content3"}), signal: Default::default(), on_update: None, context: None };
+        let res3 = (tool.definition.execute)(call3).await.expect("override-on create succeeds");
+        let details3 = res3.details.expect("details present");
+        assert!(details3.get("writeNotice").is_some(), "writeNotice emitted for override-on despite global false");
+        assert_eq!(details3["writeNotice"]["identity"], serde_json::json!(override_on_identity));
+
+        // 4. Switch configured agent to "override-off", reset global to true -> override false wins, notice omitted
+        *config.lock().unwrap() = serde_json::json!({
+            "memory": {
+                "enabled": true,
+                "agent": "override-off",
+                "write_notice": { "enabled": true },
+                "agents": {
+                    "override-off": { "write_notice": { "enabled": false } },
+                    "override-on": { "write_notice": { "enabled": true } }
+                }
+            }
+        });
+        let ctx3 = test_context("session-3", &project_dir, &agent_dir);
+        for handler in api.registered.handlers.get(&maho_ext_api::EventKind::SessionStart).expect("SessionStart handlers") {
+            (handler)(&mut maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent { reason: maho_ext_api::SessionReason::Startup, initial_model_provenance: None, previous_session_file: None }), &ctx3).await.expect("session start dispatch");
+        }
+        runtime.capture_context(&ctx3);
+        let override_off_identity = runtime.active_identity().expect("bound active identity").identity;
+        assert!(override_off_identity.starts_with("override-off"), "session bound the override-off agent: {override_off_identity}");
+
+        let call4 = maho_ext_api::ToolCall { id: "c4", params: serde_json::json!({"command":"create","reason":"override off write","file_path":"reference/off.md","description":"off","file_text":"content4"}), signal: Default::default(), on_update: None, context: None };
+        let res4 = (tool.definition.execute)(call4).await.expect("override-off create succeeds");
+        let details4 = res4.details.expect("details present");
+        assert!(details4.get("writeNotice").is_none(), "writeNotice omitted for override-off despite global true");
     }
 }

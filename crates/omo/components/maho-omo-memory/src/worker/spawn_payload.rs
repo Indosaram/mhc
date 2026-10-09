@@ -13,6 +13,7 @@ pub struct PrepareReflectionSpawnInput<'a> {
     pub category: &'a str,
     pub model: &'a str,
     pub thinking: Option<&'a str>,
+    pub load_extensions: Option<bool>,
     pub attempt: Option<u32>,
     pub hard_deadline_at: Option<f64>,
     pub next_attempt: Option<RunAttempt>,
@@ -141,13 +142,15 @@ pub fn prepare_reflection_spawn(input: PrepareReflectionSpawnInput<'_>) -> Resul
     }
     env.insert("SENPI_MEMORY_REFLECTION".into(), "1".into());
     env.insert("SENPI_PTY_FORCE_PIPE".into(), "1".into());
+    if input.load_extensions == Some(true) { env.insert("OMO_SENPI_DISABLED".into(), "1".into()); }
     let mut args = input.launch.prefix_args;
     args.extend(["-p".into(), "--system-prompt".into(), persona.to_string_lossy().into_owned(), "--tools".into(), "bash,edit".into(), "--no-extensions".into(), "--no-skills".into(), "--no-prompt-templates".into(), "--no-context-files".into(), "--session-dir".into(), session_dir.to_string_lossy().into_owned(), "--model".into(), input.model.into()]);
+    if input.load_extensions == Some(true) { args.retain(|arg| arg != "--no-extensions"); }
     if let Some(thinking) = input.thinking { args.extend(["--thinking".into(), thinking.into()]); }
     args.push(format!("@{}", prompt.display()));
     let trigger = match input.run.request.trigger { ReflectionTrigger::StepCount => "step-count", ReflectionTrigger::Compaction => "compaction", ReflectionTrigger::Manual => "manual", ReflectionTrigger::Dream => "dream" };
     let origin = if is_dream { input.run.request.origin.map(|origin| match origin { memory_core::reflection::DreamOrigin::Manual => "manual", memory_core::reflection::DreamOrigin::Idle => "idle", memory_core::reflection::DreamOrigin::Shutdown => "shutdown" }.into()) } else { None };
-    Ok(ReflectionSpawnArgs { parent_session_file: None, run_id: Some(input.run.run_id.clone()), attempt: input.attempt.unwrap_or(1), hard_deadline_at: input.hard_deadline_at.unwrap_or(input.now_ms + 900_000.0), category: input.category.into(), conversation_ids: input.run.request.conversation_ids.clone(), model: input.model.into(), thinking: input.thinking.map(str::to_owned), next_attempt: input.next_attempt, kind: Some(if is_dream { "dream" } else { "reflection" }.into()), trigger: Some(trigger.into()), origin, merge_policy: Some(input.merge_policy.into()), target_doc: input.run.request.target_doc.clone(), worktree: Some(input.worktree.clone()), command: input.launch.command, args, cwd: input.worktree.dir.clone(), env, paths: ReflectionSpawnPaths { session_dir, worktree: input.worktree.dir.clone(), git_common_dir: input.worktree.common_config_path.parent().unwrap_or_else(|| Path::new(".")).into(), transcript, persona, prompt, skills_usage, dream_state, dream_policy, dream_target } })
+    Ok(ReflectionSpawnArgs { parent_session_file: None, run_id: Some(input.run.run_id.clone()), attempt: input.attempt.unwrap_or(1), hard_deadline_at: input.hard_deadline_at.unwrap_or(input.now_ms + 900_000.0), category: input.category.into(), conversation_ids: input.run.request.conversation_ids.clone(), model: input.model.into(), thinking: input.thinking.map(str::to_owned), load_extensions: input.load_extensions, next_attempt: input.next_attempt, kind: Some(if is_dream { "dream" } else { "reflection" }.into()), trigger: Some(trigger.into()), origin, merge_policy: Some(input.merge_policy.into()), target_doc: input.run.request.target_doc.clone(), worktree: Some(input.worktree.clone()), command: input.launch.command, args, cwd: input.worktree.dir.clone(), env, paths: ReflectionSpawnPaths { session_dir, worktree: input.worktree.dir.clone(), git_common_dir: input.worktree.common_config_path.parent().unwrap_or_else(|| Path::new(".")).into(), transcript, persona, prompt, skills_usage, dream_state, dream_policy, dream_target } })
 }
 
 pub fn prepare_reflection_fork_spawn(input: PrepareReflectionSpawnInput<'_>) -> Result<ReflectionSpawnArgs, std::io::Error> {
@@ -158,12 +161,13 @@ pub fn prepare_reflection_fork_spawn(input: PrepareReflectionSpawnInput<'_>) -> 
     let mut args = vec!["-p".into(), "--fork".into(), parent.to_string_lossy().into_owned(), "--session-dir".into(), base.paths.session_dir.to_string_lossy().into_owned(), "--model".into(), base.model.clone()];
     if let Some(thinking) = &base.thinking { args.extend(["--thinking".into(), thinking.clone()]); }
     args.push(format!("@{}", base.paths.prompt.display()));
+    base.env.remove("OMO_SENPI_DISABLED");
     base.parent_session_file = Some(parent);
     base.args = args;
     if let Some(cwd) = parent_cwd { base.cwd = cwd; }
     Ok(base)
 }
-pub struct PrepareFactsSpawnInput<'a>{pub run_id:&'a str,pub run_dir:&'a Path,pub payload:&'a FactsPayload,pub model:&'a str,pub thinking:Option<&'a str>,pub attempt:Option<u32>,pub hard_deadline_at:Option<f64>,pub next_attempt:Option<RunAttempt>,pub env:BTreeMap<String,String>,pub launch:Launcher,pub now_ms:f64}
+pub struct PrepareFactsSpawnInput<'a>{pub run_id:&'a str,pub run_dir:&'a Path,pub payload:&'a FactsPayload,pub model:&'a str,pub thinking:Option<&'a str>,pub load_extensions:Option<bool>,pub attempt:Option<u32>,pub hard_deadline_at:Option<f64>,pub next_attempt:Option<RunAttempt>,pub env:BTreeMap<String,String>,pub launch:Launcher,pub now_ms:f64}
 pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnArgs,std::io::Error>{
     let mut builder=std::fs::DirBuilder::new();builder.recursive(true);
     #[cfg(unix)]{use std::os::unix::fs::DirBuilderExt;builder.mode(0o700);}
@@ -173,10 +177,12 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
     std::fs::write(&payload,serialize_facts_payload(input.payload))?;
     #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&payload,std::fs::Permissions::from_mode(0o400))?;}
     let mut env=input.env;env.insert("FACTS_PAYLOAD_PATH".into(),payload.to_string_lossy().into_owned());env.insert("FACTS_EXTRACTION_PATH".into(),extraction.to_string_lossy().into_owned());env.insert("SENPI_MEMORY_FACTS".into(),"1".into());env.insert("SENPI_PTY_FORCE_PIPE".into(),"1".into());
+    if input.load_extensions == Some(true) { env.insert("OMO_SENPI_DISABLED".into(), "1".into()); }
     let mut args=input.launch.prefix_args;args.extend(["-p".into(),"--system-prompt".into(),load_facts_persona().into(),"--tools".into(),"read,write".into(),"--no-extensions".into(),"--no-skills".into(),"--no-prompt-templates".into(),"--no-context-files".into(),"--session-dir".into(),input.run_dir.to_string_lossy().into_owned(),"--model".into(),input.model.into()]);
+    if input.load_extensions == Some(true) { args.retain(|arg| arg != "--no-extensions"); }
     if let Some(thinking)=input.thinking{args.extend(["--thinking".into(),thinking.into()]);}
     args.push(format!("Read {} and write only {} according to the system prompt.",payload.display(),extraction.display()));
-    Ok(FactsSpawnArgs{run_id:input.run_id.into(),attempt:input.attempt.unwrap_or(1),hard_deadline_at:input.hard_deadline_at.unwrap_or(input.now_ms+900_000.0),model:input.model.into(),thinking:input.thinking.map(str::to_owned),next_attempt:input.next_attempt,command:input.launch.command,args,cwd:input.run_dir.into(),env,paths:FactsSpawnPaths{run_dir:input.run_dir.into(),payload,extraction}})
+    Ok(FactsSpawnArgs{run_id:input.run_id.into(),attempt:input.attempt.unwrap_or(1),hard_deadline_at:input.hard_deadline_at.unwrap_or(input.now_ms+900_000.0),model:input.model.into(),thinking:input.thinking.map(str::to_owned),load_extensions:input.load_extensions,next_attempt:input.next_attempt,command:input.launch.command,args,cwd:input.run_dir.into(),env,paths:FactsSpawnPaths{run_dir:input.run_dir.into(),payload,extraction}})
 }
 #[cfg(test)]mod tests{
     use super::*;
@@ -188,7 +194,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         (run, worktree, DreamPeoplePolicy { enabled: true, max_entries: 3, max_entry_chars: 500 })
     }
     fn reflection_input<'a>(root: &'a Path, run: &'a ReservedRun, worktree: &'a ReflectionWorktree, policy: &'a DreamPeoplePolicy) -> PrepareReflectionSpawnInput<'a> {
-        PrepareReflectionSpawnInput { parent_session_file: None, parent_cwd: None, run, worktree, reflection_sessions_dir: root, category: "quick", model: "p/m", thinking: Some("low"), attempt: None, hard_deadline_at: None, next_attempt: None, env: Default::default(), merge_policy: "auto", skills_usage_source: root, dream_state_source: root, people_policy: policy, launch: Launcher { command: "mhc".into(), prefix_args: vec!["prefix".into()] }, now_ms: 42.0 }
+        PrepareReflectionSpawnInput { parent_session_file: None, parent_cwd: None, run, worktree, reflection_sessions_dir: root, category: "quick", model: "p/m", thinking: Some("low"), load_extensions: None, attempt: None, hard_deadline_at: None, next_attempt: None, env: Default::default(), merge_policy: "auto", skills_usage_source: root, dream_state_source: root, people_policy: policy, launch: Launcher { command: "mhc".into(), prefix_args: vec!["prefix".into()] }, now_ms: 42.0 }
     }
     #[test]
     fn reflection_payload_metadata_and_retry() {
@@ -208,6 +214,36 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         assert_eq!(value["request"]["conversationIds"].as_array().unwrap().len(), 2);
         assert!(second.paths.skills_usage.is_none());
         #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; assert_eq!(std::fs::metadata(second.paths.transcript).unwrap().permissions().mode() & 0o777, 0o400); }
+    }
+    #[test]
+    fn extension_visible_reflection_omits_discovery_disable_and_fork_keeps_parent_hooks() {
+        let root=tempfile::tempdir().unwrap();
+        let (run,worktree,policy)=reflection_fixture(root.path());
+        let mut input=reflection_input(root.path(),&run,&worktree,&policy);
+        input.load_extensions=Some(true);
+        let args=prepare_reflection_spawn(input).unwrap();
+        assert_eq!(args.load_extensions,Some(true));
+        assert!(!args.args.iter().any(|arg|arg=="--no-extensions"));
+        assert_eq!(args.env["OMO_SENPI_DISABLED"],"1");
+        let parent=root.path().join("parent.jsonl");
+        std::fs::write(&parent,"").unwrap();
+        let mut input=reflection_input(root.path(),&run,&worktree,&policy);
+        input.parent_session_file=Some(&parent);
+        input.parent_cwd=Some(root.path());
+        input.load_extensions=Some(true);
+        let args=prepare_reflection_fork_spawn(input).unwrap();
+        assert!(!args.env.contains_key("OMO_SENPI_DISABLED"));
+        assert!(!args.args.iter().any(|arg|arg=="--no-extensions"));
+    }
+    #[test]
+    fn extension_visible_facts_launch_retains_payload_and_disables_omo() {
+        let root=tempfile::tempdir().unwrap();
+        let payload=payload();
+        let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:"facts",run_dir:root.path(),payload:&payload,model:"extension/model",thinking:None,load_extensions:Some(true),attempt:None,hard_deadline_at:None,next_attempt:None,env:Default::default(),launch:Launcher{command:"mhc".into(),prefix_args:vec![]},now_ms:0.0}).unwrap();
+        assert_eq!(args.load_extensions,Some(true));
+        assert!(!args.args.iter().any(|arg|arg=="--no-extensions"));
+        assert_eq!(args.env["OMO_SENPI_DISABLED"],"1");
+        assert_eq!(std::fs::read_to_string(args.paths.payload).unwrap(),serialize_facts_payload(&payload));
     }
     #[test]
     fn dream_copies_source_bytes_and_defaults_missing_json() {
@@ -257,8 +293,8 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         for id in ["", "..", ".", "---", "☃"] { assert!(safe_run_id(id).is_err()); }
     }
     fn payload()->FactsPayload{FactsPayload{version:1,identity:"agent".into(),today:"2026-10-02".into(),known_people:vec![],primary_human:memory_core::facts::FactsPrimaryHuman{slug:"human".into(),aliases:vec![]},entries:vec![]}}
-    #[test]fn shared_serializer_and_launch_flags(){let root=tempfile::tempdir().unwrap();let payload=payload();let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:"facts",run_dir:root.path(),payload:&payload,model:"p/m",thinking:Some("low"),attempt:None,hard_deadline_at:None,next_attempt:None,env:BTreeMap::from([("KEEP".into(),"yes".into())]),launch:Launcher{command:"maho".into(),prefix_args:vec!["prefix".into()]},now_ms:42.0}).unwrap();assert_eq!(std::fs::read_to_string(&args.paths.payload).unwrap(),serialize_facts_payload(&payload));assert_eq!(args.args[0],"prefix");assert_eq!(args.attempt,1);assert_eq!(args.hard_deadline_at,900042.0);assert_eq!(args.env["KEEP"],"yes");assert_eq!(args.env["SENPI_PTY_FORCE_PIPE"],"1");assert!(args.args.windows(2).any(|a|a==["--tools","read,write"]));assert!(!args.paths.extraction.exists());}
-    #[test]fn retry_rewrites_readonly_payload(){let root=tempfile::tempdir().unwrap();let mut payload=payload();for id in ["first","second"]{payload.identity=id.into();let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:"facts",run_dir:root.path(),payload:&payload,model:"p/m",thinking:None,attempt:Some(2),hard_deadline_at:Some(123.0),next_attempt:None,env:Default::default(),launch:Launcher{command:"maho".into(),prefix_args:vec![]},now_ms:0.0}).unwrap();assert_eq!(std::fs::read_to_string(&args.paths.payload).unwrap(),serialize_facts_payload(&payload));assert_eq!(args.hard_deadline_at,123.0);
+    #[test]fn shared_serializer_and_launch_flags(){let root=tempfile::tempdir().unwrap();let payload=payload();let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:"facts",run_dir:root.path(),payload:&payload,model:"p/m",thinking:Some("low"),load_extensions:None,attempt:None,hard_deadline_at:None,next_attempt:None,env:BTreeMap::from([("KEEP".into(),"yes".into())]),launch:Launcher{command:"maho".into(),prefix_args:vec!["prefix".into()]},now_ms:42.0}).unwrap();assert_eq!(std::fs::read_to_string(&args.paths.payload).unwrap(),serialize_facts_payload(&payload));assert_eq!(args.args[0],"prefix");assert_eq!(args.attempt,1);assert_eq!(args.hard_deadline_at,900042.0);assert_eq!(args.env["KEEP"],"yes");assert_eq!(args.env["SENPI_PTY_FORCE_PIPE"],"1");assert!(args.args.windows(2).any(|a|a==["--tools","read,write"]));assert!(!args.paths.extraction.exists());}
+    #[test]fn retry_rewrites_readonly_payload(){let root=tempfile::tempdir().unwrap();let mut payload=payload();for id in ["first","second"]{payload.identity=id.into();let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:"facts",run_dir:root.path(),payload:&payload,model:"p/m",thinking:None,load_extensions:None,attempt:Some(2),hard_deadline_at:Some(123.0),next_attempt:None,env:Default::default(),launch:Launcher{command:"maho".into(),prefix_args:vec![]},now_ms:0.0}).unwrap();assert_eq!(std::fs::read_to_string(&args.paths.payload).unwrap(),serialize_facts_payload(&payload));assert_eq!(args.hard_deadline_at,123.0);
         #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;assert_eq!(std::fs::metadata(&args.paths.payload).unwrap().permissions().mode()&0o777,0o400);}
     }}
 }

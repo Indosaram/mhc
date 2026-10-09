@@ -4,7 +4,9 @@ use crate::lsp::errors::LspError;
 use crate::lsp::transport::LspClientTimeoutOptions;
 use crate::lsp::transport::LspClientTransport;
 use crate::lsp::types::Diagnostic;
+use crate::lsp::types::FormattingOptions;
 use crate::lsp::types::ResolvedServer;
+use crate::lsp::types::TextEdit;
 use crate::lsp::workspace_document_state::PullDiagnosticsReport;
 use crate::lsp::workspace_document_state::PushDiagnosticsResolution;
 use crate::lsp::workspace_document_state::WorkspaceDocumentState;
@@ -259,6 +261,40 @@ impl LspClient {
         self.transport
             .send_request("textDocument/documentSymbol", Some(params), None, signal)
             .await
+    }
+
+    pub fn is_document_formatting_supported(&self) -> bool {
+        self.transport.is_document_formatting_supported()
+    }
+
+    /// TS `formatDocument`.
+    ///
+    /// Requests whole-document formatting edits, returning None when the server never advertised the
+    /// capability so callers can report unavailability instead of surfacing a method-not-found error.
+    pub async fn format_document(
+        &self,
+        file_path: &str,
+        options: FormattingOptions,
+        signal: Option<&AbortSignal>,
+    ) -> Result<Option<Vec<TextEdit>>, LspError> {
+        if !self.is_document_formatting_supported() {
+            return Ok(None);
+        }
+        let abs_path = self.resolve_workspace_path(file_path);
+        self.open_file(&abs_path).await?;
+        let params = json!({
+            "textDocument": { "uri": file_uri(&abs_path) },
+            "options": options,
+        });
+        let result = self
+            .transport
+            .send_request("textDocument/formatting", Some(params), None, signal)
+            .await?;
+        if result.is_null() {
+            return Ok(Some(Vec::new()));
+        }
+        let edits: Vec<TextEdit> = serde_json::from_value(result).unwrap_or_default();
+        Ok(Some(edits))
     }
 
     pub async fn workspace_symbols(

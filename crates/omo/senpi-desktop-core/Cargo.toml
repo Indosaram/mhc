@@ -1,0 +1,44 @@
+[package]
+name = "maho-senpi-desktop-core"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+publish.workspace = true
+
+[lib]
+name = "senpi_desktop_core"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[features]
+# The system text clipboard for the native backends; the fake backend and
+# the engine protocol never need it.
+system-clipboard = ["dep:arboard"]
+
+[dependencies]
+arboard = { version = "=3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
+flume = "=0.12.0"
+image = { version = "=0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
+parking_lot = "=0.12.5"
+png = "=0.18.1"
+schemars = "=1.2.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "=1.11.0"
+
+# Imported from senpi (see PINS.md): this crate does not opt into `[lints] workspace = true`.
+# The table mirrors the workspace lints; exact lint behavior preserved without new blanket allows.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"

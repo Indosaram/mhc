@@ -191,7 +191,7 @@ fn spawn_rejects_empty_command() {
     assert!(spawn(&[], &SpawnOptions::default()).is_err());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod recovered_spawn_cancellation {
     use super::sh;
     use std::io::{BufRead, BufReader};
@@ -290,7 +290,36 @@ mod recovered_spawn_cancellation {
         let result = spawn_sync(&sh("echo sync-ok"), &options)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout.as_deref(), Some(b"sync-ok\n".as_slice()));
+        assert_eq!(result.stdout.as_deref(), Some(b"sync-ok
+".as_slice()));
+    }
+
+    #[test]
+    fn wait_with_output_retains_no_numeric_pid_signaling_after_reap() {
+        let options = SpawnOptions {
+            stdin: Some(StdioMode::Pipe),
+            stdout: Some(StdioMode::Pipe),
+            stderr: Some(StdioMode::Pipe),
+            ..Default::default()
+        };
+        let mut process = spawn(
+            &sh("echo ready >&2; exit 0"),
+            &options,
+        ).unwrap_or_else(|error| panic!("{error}"));
+        let handle = process.handle().unwrap_or_else(|error| panic!("{error}"));
+        let (code, _out, _err) = process.wait_with_output().unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(code, 0);
+        // After reap, handle operations are synchronized: on Linux pidfd returns ESRCH
+        // (reaped child), on non-Linux unix_child it safely short-circuits without signaling.
+        // Neither ever signals a recycled or non-owned numeric PID.
+        match handle.terminate() {
+            Ok(()) => {}
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ESRCH)),
+        }
+        match handle.kill() {
+            Ok(()) => {}
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ESRCH)),
+        }
     }
 }
 
@@ -301,48 +330,6 @@ fn bun_which_constrains_lookup() {
     assert_eq!(bun_which("sh\0evil"), None);
 }
 
-#[cfg(not(target_os = "linux"))]
-mod recovered_spawn_cancellation_off_linux {
-    use super::sh;
-    use utils::{AbortController, SpawnOptions, StdioMode, spawn, spawn_sync};
-
-    #[test]
-    fn signal_spawn_reports_the_unsupported_platform_boundary() {
-        let controller = AbortController::new();
-        let options = SpawnOptions {
-            signal: Some(controller.signal()),
-            ..Default::default()
-        };
-        let kind = spawn(&sh("echo never"), &options).err().map(|error| error.kind());
-        assert_eq!(kind, Some(std::io::ErrorKind::Unsupported));
-    }
-
-    #[test]
-    fn signal_less_spawn_preserves_the_off_linux_contract() {
-        let options = SpawnOptions {
-            stdout: Some(StdioMode::Pipe),
-            stderr: Some(StdioMode::Pipe),
-            ..Default::default()
-        };
-        let output = spawn(&sh("echo off-linux-ok"), &options)
-            .and_then(|process| process.wait_with_output())
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(output, (0, "off-linux-ok\n".to_string(), String::new()));
-    }
-
-    #[test]
-    fn synchronous_spawn_ignores_the_signal_off_linux() {
-        let controller = AbortController::new();
-        controller.abort();
-        let options = SpawnOptions {
-            signal: Some(controller.signal()),
-            ..Default::default()
-        };
-        let result = spawn_sync(&sh("echo sync-off-linux"), &options)
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(result.exit_code, 0);
-    }
-}
 
 #[test]
 fn runtime_file_round_trips() {

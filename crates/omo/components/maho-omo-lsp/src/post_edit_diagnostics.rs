@@ -4,6 +4,7 @@ use lsp_core::post_edit::{
     reset_post_edit_not_configured_cache,
 };
 use maho_ext_api::{ToolContent, ToolResultEvent};
+#[cfg(test)]
 use serde_json::Value;
 use std::{collections::HashMap, future::Future, sync::Arc};
 
@@ -51,6 +52,19 @@ where
     F: Fn(String) -> Fut,
     Fut: Future<Output = Result<PostEditDiagnosticsOutcome, DiagnosticsRunnerError>>,
 {
+    append_post_edit_diagnostics_with_locator(event, run, cache, None).await
+}
+
+pub async fn append_post_edit_diagnostics_with_locator<F, Fut>(
+    event: &ToolResultEvent,
+    run: F,
+    cache: Option<&PostEditNotConfiguredCache>,
+    locate_file: Option<&(dyn Fn(&str) -> lsp_core::post_edit::PostEditFileLocation + Sync)>,
+) -> Option<PostEditDiagnosticsResult>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<PostEditDiagnosticsOutcome, DiagnosticsRunnerError>>,
+{
     if !should_run_post_edit_diagnostics(event) {
         return None;
     }
@@ -63,6 +77,7 @@ where
         run_diagnostics: run,
         cache,
         max_concurrency: Some(4),
+        locate_file,
     })
     .await;
     let content = if result.blocks.is_empty() {
@@ -83,47 +98,7 @@ where
     })
 }
 pub fn extract_mutated_file_paths(event: &ToolResultEvent) -> Vec<String> {
-    let mut paths = Vec::new();
-    let input = &event.input;
-    for key in ["path", "filePath"] {
-        add(&mut paths, input.get(key));
-    }
-    for key in ["paths", "filePaths"] {
-        if let Some(items) = input.get(key).and_then(Value::as_array) {
-            for item in items {
-                add(&mut paths, Some(item));
-            }
-        }
-    }
-    if let Some(patch) = input.get("input").and_then(Value::as_str) {
-        for line in patch.split('\n') {
-            for prefix in ["*** Add File: ", "*** Update File: ", "*** Move to: "] {
-                if let Some(path) = line.strip_prefix(prefix) {
-                    let path = path.trim().to_owned();
-                    if !paths.contains(&path) {
-                        paths.push(path);
-                    }
-                }
-            }
-        }
-    }
-    for key in ["files", "changes"] {
-        if let Some(items) = input.get(key).and_then(Value::as_array) {
-            for item in items {
-                for key in ["path", "filePath", "movePath"] {
-                    add(&mut paths, item.get(key));
-                }
-            }
-        }
-    }
-    paths
-}
-fn add(paths: &mut Vec<String>, value: Option<&Value>) {
-    if let Some(path) = value.and_then(Value::as_str).filter(|s| !s.is_empty())
-        && !paths.iter().any(|p| p == path)
-    {
-        paths.push(path.into());
-    }
+    maho_omo_post_mutation::extract_mutated_file_paths(&maho_omo_post_mutation::PostMutationEvent::from(event))
 }
 #[cfg(test)]
 mod tests {

@@ -6,10 +6,9 @@ use ast_grep_mcp::tools::search::SearchInput;
 use ast_grep_mcp::tools::search::build_search_args;
 use ast_grep_mcp::tools::search::execute_search;
 use ast_grep_mcp::tools::search::parse_search_input;
-use common::SG_PATH;
 use common::fixture_repo;
 use common::path_str;
-use common::sg_available;
+use common::resolve_sg_for_tests;
 use pretty_assertions::assert_eq;
 use serde_json::Map;
 use serde_json::Value;
@@ -355,15 +354,13 @@ fn live(pattern: &str, dir: &std::path::Path, extra: &[(&str, Value)]) -> Value 
     for (key, value) in extra {
         input.insert((*key).to_owned(), value.clone());
     }
+    let sg_path = resolve_sg_for_tests();
     let parsed = parse(Value::Object(input)).expect("valid input");
-    execute_search(&parsed, SG_PATH, None)
+    execute_search(&parsed, &sg_path, None)
 }
 
 #[test]
 fn live_success_payload_contract() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture_repo();
     let payload = live("console.log($MSG)", dir.path(), &[]);
     assert_eq!(payload["ok"], json!(true));
@@ -399,9 +396,6 @@ fn live_success_payload_contract() {
 
 #[test]
 fn live_max_matches_1_truncates_with_limit_warning() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture_repo();
     let payload = live("console.log($MSG)", dir.path(), &[("maxMatches", json!(1))]);
     assert_eq!(payload["ok"], json!(true));
@@ -423,9 +417,6 @@ fn live_max_matches_1_truncates_with_limit_warning() {
 
 #[test]
 fn live_malformed_pattern_returns_error_payload() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture_repo();
     let payload = live("console.log($MSG", dir.path(), &[]);
     assert_eq!(payload["ok"], json!(false));
@@ -449,9 +440,6 @@ fn live_malformed_pattern_returns_error_payload() {
 
 #[test]
 fn live_no_matches_returns_empty_success() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture_repo();
     let payload = live("process.exit($CODE)", dir.path(), &[]);
     assert_eq!(payload["ok"], json!(true));
@@ -465,9 +453,6 @@ fn live_no_matches_returns_empty_success() {
 
 #[test]
 fn live_include_hidden_returns_hidden_files() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture_repo();
     std::fs::write(
         dir.path().join("src/.hidden.ts"),

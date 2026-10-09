@@ -36,7 +36,10 @@ impl Extension for PermissionSystem{
                 let (rules,approved)=settings::load_permission_settings(&manager,&cli,(&ctx.cwd,&home),preset).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                 let initial_approved=approved.len();let actions=runtime.session_actions()?;let active=actions.get_active_tools()?;
                 let disabled=config::disabled(&active,&rules);actions.set_active_tools(active.into_iter().filter(|name|!disabled.contains(name)).collect())?;
-                *state.lock().expect("permission state lock")=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry:parsers::create_builtin_parser_registry(),static_rules:rules,cli,initial_approved});
+                let mut registry = parsers::create_builtin_parser_registry();
+                let rt = runtime.clone();
+                registry.set_definition_resolver(Arc::new(move |name: &str| rt.live_tool_definition(name)));
+                *state.lock().expect("permission state lock")=Some(SessionPolicy{service:service::PermissionService::new(rules.clone(),approved,events::PermissionEventEmitter{bus}),registry,static_rules:rules,cli,initial_approved});
                 Ok(EventResult::None)
             })
         }));

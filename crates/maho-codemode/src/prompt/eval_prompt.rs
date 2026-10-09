@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use maho_tools::definition::KernelPrelude;
 use crate::{config::settings::{Languages, DEFAULT_RUN_BUDGET_SECONDS, DEFAULT_MAX_DETACHED_CELLS}, tool::types::EvalRuntimeInfo};
 use super::eval_prompt_template::EVAL_PROMPT_TEMPLATE;
 
@@ -31,6 +32,7 @@ pub struct EvalPromptOptions {
     pub bun_skill_path: Option<String>,
     pub run_budget_seconds: Option<f64>,
     pub max_detached_cells: Option<f64>,
+    pub kernel_preludes: Vec<KernelPrelude>,
 }
 
 pub struct EvalPromptParts {
@@ -62,6 +64,7 @@ pub fn build_eval_prompt(enabled: &Languages, options: &EvalPromptOptions) -> Re
         ("bunSkillPath", options.bun_skill_path.clone().unwrap_or_default()),
         ("runBudgetSeconds", options.run_budget_seconds.unwrap_or(DEFAULT_RUN_BUDGET_SECONDS).to_string()),
         ("maxDetachedCells", options.max_detached_cells.unwrap_or(DEFAULT_MAX_DETACHED_CELLS).to_string()),
+        ("kernelPreludeDocs", options.kernel_preludes.iter().map(|p| p.documentation.clone()).collect::<Vec<_>>().join("\n")),
     ] { context.insert(key.to_owned(), serde_json::Value::String(value)); }
     let (rendered, index, _) = render_until(EVAL_PROMPT_TEMPLATE, &context, 0, &[])?;
     if index != EVAL_PROMPT_TEMPLATE.len() { return Err(EvalPromptError("unexpected template close tag".into())); }
@@ -113,8 +116,14 @@ fn render_until(template: &str, context: &HashMap<String, serde_json::Value>, st
             };
             output.push_str(if condition { &truthy_text } else { &falsey_text });
             index = end;
-        } else if tag.starts_with('/') { return Err(EvalPromptError(format!("unexpected template close tag {tag}"))); }
-        else if let Some(serde_json::Value::String(value)) = context.get(tag) { output.push_str(value); }
+        } else if let Some(value) = context.get(tag) {
+            match value {
+                serde_json::Value::String(text) => output.push_str(text),
+                serde_json::Value::Bool(true) => output.push_str("true"),
+                serde_json::Value::Bool(false) => output.push_str("false"),
+                _ => output.push_str(&value.to_string()),
+            }
+        }
     }
-    Ok((output, index, None))
+    Ok((output, template.len(), None))
 }

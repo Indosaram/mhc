@@ -10,9 +10,8 @@ use ast_grep_mcp::tools::rewrite::build_rewrite_apply_args;
 use ast_grep_mcp::tools::rewrite::build_rewrite_args;
 use ast_grep_mcp::tools::rewrite::execute_rewrite;
 use ast_grep_mcp::tools::rewrite::parse_rewrite_input;
-use common::SG_PATH;
 use common::path_str;
-use common::sg_available;
+use common::resolve_sg_for_tests;
 use pretty_assertions::assert_eq;
 use serde_json::Map;
 use serde_json::Value;
@@ -94,7 +93,8 @@ fn schema_base(overrides: &[(&str, Value)]) -> Value {
 }
 
 fn run(input: &Value) -> Value {
-    execute_rewrite(input, SG_PATH, None, &RewriteHooks::default())
+    let sg_path = resolve_sg_for_tests();
+    execute_rewrite(input, &sg_path, None, &RewriteHooks::default())
 }
 
 #[test]
@@ -422,9 +422,6 @@ fn preflight_regex_misuse_with_force_bypasses_heuristic() {
 
 #[test]
 fn dry_run_previews_and_never_mutates() {
-    if !sg_available() {
-        return;
-    }
     let dir = default_fixture();
     let before = contents(&target(&dir));
     let payload = run(&json!({
@@ -456,9 +453,6 @@ fn dry_run_previews_and_never_mutates() {
 
 #[test]
 fn dry_run_empty_rewrite_previews_deletion() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(&[("src/a.ts", "console.log(\"hello\");\n")]);
     let before = contents(&target(&dir));
     let payload = run(&base_input(dir.path(), &[("rewrite", json!(""))]));
@@ -469,9 +463,6 @@ fn dry_run_empty_rewrite_previews_deletion() {
 
 #[test]
 fn apply_empty_rewrite_deletes_matched_node() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(&[("src/a.ts", "console.log(\"hello\");\nconst x = 1;\n")]);
     let payload = run(&base_input(
         dir.path(),
@@ -484,9 +475,6 @@ fn apply_empty_rewrite_deletes_matched_node() {
 
 #[test]
 fn dry_run_multi_metavariable_expands_captured_nodes() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(&[("src/a.ts", "foo(1, 2, 3);\n")]);
     let payload = run(&base_input(
         dir.path(),
@@ -505,9 +493,6 @@ fn dry_run_multi_metavariable_expands_captured_nodes() {
 
 #[test]
 fn apply_clean_preview_mutates_files() {
-    if !sg_available() {
-        return;
-    }
     let dir = default_fixture();
     let before = contents(&target(&dir));
     let payload = run(&base_input(dir.path(), &[("apply", json!(true))]));
@@ -532,9 +517,6 @@ fn apply_clean_preview_mutates_files() {
 
 #[test]
 fn apply_truncated_preview_is_refused() {
-    if !sg_available() {
-        return;
-    }
     let dir = default_fixture();
     let before = contents(&target(&dir));
     let result = run(&base_input(
@@ -549,9 +531,6 @@ fn apply_truncated_preview_is_refused() {
 
 #[test]
 fn apply_zero_matches_skips_second_pass() {
-    if !sg_available() {
-        return;
-    }
     let dir = default_fixture();
     let before = contents(&target(&dir));
     let payload = run(&base_input(
@@ -573,15 +552,13 @@ fn apply_zero_matches_skips_second_pass() {
 
 #[test]
 fn apply_after_fixture_changes_reports_stale_preview() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(&[("src/a.ts", "console.log(\"hello\");\n")]);
     let path = target(&dir);
     let rewrite_file = || std::fs::write(&path, "const untouched = 1;\n").unwrap();
+    let sg_path = resolve_sg_for_tests();
     let result = execute_rewrite(
         &base_input(dir.path(), &[("apply", json!(true))]),
-        SG_PATH,
+        &sg_path,
         None,
         &RewriteHooks {
             on_preview_complete: Some(&rewrite_file),
@@ -596,18 +573,16 @@ fn apply_after_fixture_changes_reports_stale_preview() {
 
 #[test]
 fn apply_after_deadline_expires_between_passes_times_out() {
-    if !sg_available() {
-        return;
-    }
     let dir = fixture(&[("src/a.ts", "console.log(\"hello\");\n")]);
     let before = contents(&target(&dir));
     let stall = || std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let sg_path = resolve_sg_for_tests();
     let result = execute_rewrite(
         &base_input(
             dir.path(),
             &[("apply", json!(true)), ("timeoutMs", json!(1_000))],
         ),
-        SG_PATH,
+        &sg_path,
         None,
         &RewriteHooks {
             on_preview_complete: Some(&stall),
@@ -622,9 +597,6 @@ fn apply_after_deadline_expires_between_passes_times_out() {
 
 #[test]
 fn apply_malformed_pattern_reports_parse_failure() {
-    if !sg_available() {
-        return;
-    }
     let dir = default_fixture();
     let before = contents(&target(&dir));
     let result = run(&base_input(

@@ -10,6 +10,26 @@ Audit the full original port contract against current main at 74c79192, classify
 
 HEAVY: this crosses runtime, auth/security, process/session/concurrency, packaging trust, and several crate boundaries.
 
+## Scope amendment: computer use deferred (2026-10-08)
+
+The user explicitly instructed: "컴퓨터 유즈는 defer로처리해줘".
+Decision `scope-computer-use-deferred-20261008` defers computer-use component
+completion, its dedicated tool-activation integration, and computer-use desktop
+execution QA from this delivery. Existing authored changes remain unaccepted
+work in progress, not evidence of completed parity. This decision does not
+exclude browser automation, generic runtime behavior, or packaging obligations
+that have independent consumers. The evidence decision file specifies the
+boundary; final ledger rows must cite it rather than claim implementation complete.
+
+## Scope amendment: native self-update deferred (2026-10-08)
+
+The user answered: "자체 업데이트: 이번 범위에서 명시적 defer".
+Decision `scope-native-self-update-deferred-20261008` defers native product
+self-update, including contract row `if:X:L67`, from this delivery. The existing
+`mhc import-omo` advice is not equivalent to updating the native product binary.
+This deferral does not remove resource-package update, model-catalog refresh,
+installation verification, or packaging trust-boundary obligations.
+
 ## Skills
 
 - ultrawork: binding evidence-first execution and stop contract.

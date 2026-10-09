@@ -10,6 +10,7 @@ pub struct MemoryStaticOptions{
     pub nudge:Arc<Mutex<crate::nudge_wiring::MemoryNudgeWiring>>,
     pub resolve_context:crate::prompt::PromptContextResolver,
     pub resolve_tool_context:crate::tools::MemoryContextResolver,
+    pub write_notice:Option<crate::tools::WriteNoticeGate>,
     pub resolve_cwd:Arc<dyn Fn()->PathBuf+Send+Sync>,
     pub captured_tools:Arc<dyn Fn()->Vec<String>+Send+Sync>,
     pub warn:crate::guard::GuardWarning,
@@ -30,7 +31,7 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
     crate::nudge_wiring::MemoryNudgeWiring::register(options.nudge,api,options.resolve_context.clone());
     crate::soul_notice::register_soul_notice(api,options.resolve_context.clone(),options.edit_notice);
     match options.prompt_handler{Some(handler)=>crate::prompt::register_memory_prompt_handler_with_cache(api,options.prompt,handler),None=>crate::prompt::register_memory_prompt_handler(api,options.prompt)}
-    crate::tools::register_memory_tools(api,options.resolve_tool_context);
+    crate::tools::register_memory_tools_with_options(api,options.resolve_tool_context,crate::tools::MemoryToolsOptions{write_notice:options.write_notice,..Default::default()});
     crate::guard::register_memory_guard(api,options.resolve_context.clone(),options.resolve_cwd,options.captured_tools,options.warn);
     crate::skills_scope::register_memory_skills_scope(api,options.resolve_context);
     let skills_usage=match options.skills_trackers{Some(trackers)=>{crate::skills_usage_wiring::register_skills_usage_with_trackers(api,options.skills_usage,trackers.clone());trackers},None=>crate::skills_usage_wiring::register_skills_usage(api,options.skills_usage)};
@@ -47,12 +48,53 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
             register_host:None,
             skills_trackers:None,
             prompt_handler:None,
-            prompt:crate::prompt::MemoryPromptInjectionOptions{resolve_context:resolve.clone(),create_repo:None,search_exposure:None,resolve_nudge_turns:None,resolve_soul_notice:None},nudge:Arc::new(Mutex::new(Default::default())),resolve_context:resolve,resolve_tool_context:Arc::new(||None),resolve_cwd:Arc::new(PathBuf::new),captured_tools:Arc::new(Vec::new),warn:Arc::new(|_|{}),edit_notice:Arc::new(|_|true),theme:Arc::new(|_|Arc::new(Theme)),
+            prompt:crate::prompt::MemoryPromptInjectionOptions{resolve_context:resolve.clone(),create_repo:None,search_exposure:None,resolve_nudge_turns:None,resolve_soul_notice:None},nudge:Arc::new(Mutex::new(Default::default())),resolve_context:resolve,resolve_tool_context:Arc::new(||None),write_notice:None,resolve_cwd:Arc::new(PathBuf::new),captured_tools:Arc::new(Vec::new),warn:Arc::new(|_|{}),edit_notice:Arc::new(|_|true),theme:Arc::new(|_|Arc::new(Theme)),
             memory_write:crate::wiring_memory_write::MemoryWriteOptions{resolve_session:Arc::new(|_|None),on_memory_write:Arc::new(|_|Ok(())),refresh_status:Arc::new(|_,_|panic!("unbound"))},
             skills_usage:crate::skills_usage_wiring::SkillsUsageOptions{resolve_context:Arc::new(|_|None),resolve_cwd:Arc::new(PathBuf::new),now_ms:Arc::new(||0)},
             triggers:crate::trigger_wiring::ReflectionTriggerWiringOptions{resolve_session:Arc::new(|_|None),on_launch:Arc::new(|_|Ok(())),warn:Arc::new(|_|{})},
         });
         for kind in [maho_ext_api::EventKind::BeforeAgentStart,maho_ext_api::EventKind::InputDisposition,maho_ext_api::EventKind::ToolCall,maho_ext_api::EventKind::ToolResult,maho_ext_api::EventKind::ResourcesDiscover,maho_ext_api::EventKind::AgentSettled]{assert!(api.registered.handlers.contains_key(&kind));}
         assert!(api.registered.entry_renderers.contains_key(crate::worker::health_alert::REFLECTION_HEALTH_ENTRY_TYPE));assert!(registration.skills_usage.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_static_registration_installs_write_notice_gate() {
+        struct Theme;
+        impl crate::worker::entry_renderers::EntryRenderTheme for Theme {
+            fn fg(&self, _: &str, text: &str) -> String { text.into() }
+            fn italic(&self, text: &str) -> String { text.into() }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let paths = memory_core::identity::layout::build_identity_paths(root.path(), "agent");
+        let context = crate::context::MemoryIdentityContext::new("agent".into(), paths.clone(), crate::binding::MemorySessionBinding { identity: "agent".into(), repo_path_hash: "hash".into(), bound_at: 0.0 });
+        let gate_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate = { let gate_enabled = gate_enabled.clone(); Arc::new(move || gate_enabled.load(std::sync::atomic::Ordering::Relaxed)) };
+        let resolve: crate::prompt::PromptContextResolver = Arc::new(move |_| Some(context.clone()));
+        let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()), Default::default(), Default::default(), Default::default());
+        let tool_context = resolve("s1");
+        register_memory_static(&mut api, MemoryStaticOptions {
+            register_host: None, skills_trackers: None, prompt_handler: None,
+            prompt: crate::prompt::MemoryPromptInjectionOptions { resolve_context: resolve.clone(), create_repo: None, search_exposure: None, resolve_nudge_turns: None, resolve_soul_notice: None },
+            nudge: Arc::new(Mutex::new(Default::default())), resolve_context: resolve, resolve_tool_context: Arc::new(move || tool_context.clone()),
+            write_notice: Some(gate), resolve_cwd: Arc::new(PathBuf::new), captured_tools: Arc::new(Vec::new), warn: Arc::new(|_| {}), edit_notice: Arc::new(|_| true), theme: Arc::new(|_| Arc::new(Theme)),
+            memory_write: crate::wiring_memory_write::MemoryWriteOptions { resolve_session: Arc::new(|_| None), on_memory_write: Arc::new(|_| Ok(())), refresh_status: Arc::new(|_, _| panic!("unbound")) },
+            skills_usage: crate::skills_usage_wiring::SkillsUsageOptions { resolve_context: Arc::new(|_| None), resolve_cwd: Arc::new(PathBuf::new), now_ms: Arc::new(|| 0) },
+            triggers: crate::trigger_wiring::ReflectionTriggerWiringOptions { resolve_session: Arc::new(|_| None), on_launch: Arc::new(|_| Ok(())), warn: Arc::new(|_| {}) },
+        });
+        let tool = api.registered.tools.iter().find(|t| t.definition.name == "memory").expect("memory tool registered by static registration");
+
+        // 1. Gate enabled -> details contains writeNotice with serialized identity
+        let call_enabled = maho_ext_api::ToolCall { id: "c1", params: serde_json::json!({"command":"create","reason":"test notice","file_path":"reference/note.md","description":"test","file_text":"content"}), signal: Default::default(), on_update: None, context: None };
+        let res1 = (tool.definition.execute)(call_enabled).await.expect("create succeeds");
+        let details1 = res1.details.expect("details present");
+        assert!(details1.get("writeNotice").is_some(), "writeNotice must be emitted when gate is true");
+        assert_eq!(details1["writeNotice"]["identity"], "agent");
+
+        // 2. Gate disabled -> writeNotice is omitted
+        gate_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+        let call_disabled = maho_ext_api::ToolCall { id: "c2", params: serde_json::json!({"command":"create","reason":"test notice 2","file_path":"reference/note2.md","description":"test","file_text":"content"}), signal: Default::default(), on_update: None, context: None };
+        let res2 = (tool.definition.execute)(call_disabled).await.expect("create succeeds");
+        let details2 = res2.details.expect("details present");
+        assert!(details2.get("writeNotice").is_none(), "writeNotice must be omitted when gate is false");
     }
 }

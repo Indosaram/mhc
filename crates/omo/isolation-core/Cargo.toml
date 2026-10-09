@@ -10,7 +10,7 @@ name = "isolation_core"
 path = "src/lib.rs"
 
 [dependencies]
-chrono = { version = "=0.4.43", default-features = false, features = ["clock", "std"] }
+chrono = { version = "=0.4.45", default-features = false, features = ["clock", "std"] }
 filetime.workspace = true
 hex = "=0.4.3"
 libc = "=0.2.186"

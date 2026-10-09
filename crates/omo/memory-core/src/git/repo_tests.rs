@@ -17,6 +17,34 @@ fn create_repo() -> (tempfile::TempDir, GitMemoryRepo) {
 }
 
 #[test]
+fn unicode_status_paths_are_raw_utf8() {
+    let (_temp, repo) = create_repo();
+    repo.init(Some(InitializeGitRepoOptions::default())).expect("init");
+    let path = "people/\u{ae40}\u{cca0}\u{c218}/card.md";
+    fs::create_dir_all(repo.dir.join(path).parent().expect("card directory")).expect("mkdir");
+    fs::write(repo.dir.join(path), "---\ndescription: Person\n---\nidentity\n").expect("card");
+    let status = repo.status(&[] as &[&str]).expect("status");
+    assert!(status.contains(path));
+    assert!(!status.contains("\\352"));
+}
+
+#[test]
+fn unicode_memory_path_can_be_committed_without_false_dirty_rejection() {
+    let (_temp, repo) = create_repo();
+    repo.init(Some(InitializeGitRepoOptions::default())).expect("init");
+    let before = repo.head().expect("head");
+    let path = "people/\u{ae40}\u{cca0}\u{c218}/card.md";
+    fs::create_dir_all(repo.dir.join(path).parent().expect("card directory")).expect("mkdir");
+    fs::write(repo.dir.join(path), "---\ndescription: Person\n---\nidentity\n").expect("card");
+    repo.commit_write(&[path], "remember person", &GitCommitAuthor {
+        agent_id: "agent-one".into(), author_name: "Author".into(), author_email: None,
+    }).expect("commit");
+    assert_ne!(repo.head().expect("head"), before);
+    assert!(repo.ls_tree(Some("HEAD"), None).expect("tree").contains(&path.to_string()));
+    assert!(repo.status(&[] as &[&str]).expect("status").trim().is_empty());
+}
+
+#[test]
 fn test_initializes_repository_idempotently_with_seed_files() {
     let (_temp, repo) = create_repo();
 

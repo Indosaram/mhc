@@ -312,6 +312,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             );
             ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
         },
+        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})

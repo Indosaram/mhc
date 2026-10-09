@@ -9,6 +9,7 @@
 // The staged layout is exactly what the native runtime resolves at startup:
 //
 //   <staging>/mhc             the CLI binary
+//   <staging>/lsp-daemon      the native LSP daemon binary (packaged_runtime_defaults: exe sibling)
 //   <staging>/ast-grep-mcp    the native ast-grep MCP server (AstGrepComponent entry: exe sibling)
 //   <staging>/omo-git-bash    the git-bash MCP sibling (required by --skill-source latest, optional in pinned)
 //   <staging>/senpi-desktop-engine  the native desktop engine binary (desktop-service child entry: exe sibling)
@@ -41,6 +42,9 @@
 // pinned baseline it stays optional (absent means no sibling and no placeholder). Either way its
 // source path and sha256 are recorded.
 //
+// The native LSP daemon sibling is staged from --lsp-daemon-binary (default: <binary dir>/lsp-daemon).
+// Both pinned and latest modes stage it so mounted LSP tools can auto-start the native daemon.
+//
 // The native desktop engine sibling is staged from --desktop-engine-binary (default: <binary dir>/senpi-desktop-engine).
 // In the selected product staging (`--skill-source latest`) it is REQUIRED: an absent sibling refuses
 // the selected delivery, and verify() enforces the declared sibling in the staged manifest. In the
@@ -64,6 +68,7 @@
 //   --skill-source <mode>  skills source: pinned (default) or latest (repository-owned overlay)
 //   --latest-assets <dir>  repository-owned latest overlay root (default: <repo-root>/assets/omo-latest)
 //   --git-bash-binary <p>  git-bash MCP sibling to stage as `omo-git-bash` (required by --skill-source latest)
+//   --lsp-daemon-binary <p> native LSP daemon sibling to stage as `lsp-daemon` (default: <binary dir>/lsp-daemon)
 //   --desktop-engine-binary <p> native desktop engine sibling to stage as `senpi-desktop-engine` (default: <binary dir>/senpi-desktop-engine)
 //   --omowright-runtime <p>  materialized browser engine runtime directory to stage (required by --skill-source latest)
 //   --schema <path>        published config JSON Schema to stage (default: <repo-root>/assets/omo.schema.json)
@@ -85,9 +90,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const MANIFEST_NAME = "manifest.json";
 const SKILLS_DIR = "skills";
+const CONDITIONAL_SKILLS_DIR = "skills-conditional";
+const X_SEARCH_SKILL_SOURCE = "crates/omo/components/maho-omo-x-search/skill/SKILL.md";
 const LICENSES_DIR = "licenses";
 const CLI_BINARY_NAME = "mhc";
 const AST_GREP_MCP_NAME = "ast-grep-mcp";
+const LSP_DAEMON_NAME = "lsp-daemon";
 const SCHEMA_VERSION = 1;
 
 // The published config JSON Schema. `assets/omo.schema.json` is the native projection of the
@@ -151,8 +159,8 @@ const IGNORED_DIR_NAMES = new Set([".git", ".omo", ".mypy_cache", ".pytest_cache
 const IGNORED_FILE_NAMES = new Set([".gitignore", ".npmignore", "pyrightconfig.json", "openai.yaml"]);
 
 function usage() {
-	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
-       bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> [--desktop-engine-binary <path>] --omowright-runtime <dir> [--latest-assets <dir>]
+	console.log(`usage: bun tools/package-native.mjs --binary <mhc> --output <dir> [--ast-grep-mcp <path>] [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] [--omo-root <dir>] [--repo-root <dir>] [--schema <path>] [--force]
+       bun tools/package-native.mjs --binary <mhc> --output <dir> --skill-source latest --git-bash-binary <path> [--lsp-daemon-binary <path>] [--desktop-engine-binary <path>] --omowright-runtime <dir> [--latest-assets <dir>]
        bun tools/package-native.mjs --verify-only <dir>
        bun tools/package-native.mjs --self-test`);
 }
@@ -560,11 +568,17 @@ export async function stage(options) {
 	if (skillSource === "latest" && gitBashMcp === null) {
 		throw new Error(`--skill-source latest is the selected product staging and requires --git-bash-binary <built ${GIT_BASH_MCP_NAME}>; the pinned baseline stages the sibling optionally`);
 	}
+	const defaultLspDaemon = join(dirname(binary), LSP_DAEMON_NAME);
+	const lspDaemon = resolve(options.lspDaemonBinary ?? defaultLspDaemon);
+	if (!existsSync(lspDaemon) || !(await stat(lspDaemon)).isFile()) {
+		throw new Error(
+			`native LSP daemon not found at ${lspDaemon}: build the workspace bins (cargo build --workspace --bins) so ${LSP_DAEMON_NAME} sits beside ${CLI_BINARY_NAME}, or pass --lsp-daemon-binary`,
+		);
+	}
 	// Sibling: native desktop engine binary. The workspace crate `maho-senpi-desktop-engine` emits
 	// `senpi-desktop-engine` beside `mhc`. Staged from `--desktop-engine-binary` or its default sibling
 	// path `<binary dir>/senpi-desktop-engine`. In the selected product staging (`--skill-source latest`)
 	// it is REQUIRED: an absent sibling refuses the selected delivery. The pinned baseline stages it optionally.
-	const defaultDesktopEngine = join(dirname(binary), DESKTOP_ENGINE_NAME);
 	let desktopEngine = null;
 	if (options.desktopEngineBinary !== undefined && options.desktopEngineBinary !== null) {
 		const candidate = resolve(options.desktopEngineBinary);
@@ -572,12 +586,6 @@ export async function stage(options) {
 			throw new Error(`--desktop-engine-binary is not a regular file: ${candidate}`);
 		}
 		desktopEngine = candidate;
-	} else if (existsSync(defaultDesktopEngine) && (await stat(defaultDesktopEngine)).isFile()) {
-		desktopEngine = resolve(defaultDesktopEngine);
-	} else if (skillSource === "latest") {
-		throw new Error(
-			`--skill-source latest is the selected product staging and requires the native desktop engine sibling at ${defaultDesktopEngine}: build the workspace bins (cargo build --workspace --bins) so ${DESKTOP_ENGINE_NAME} sits beside ${CLI_BINARY_NAME}, or pass --desktop-engine-binary`,
-		);
 	}
 	// Refuse an unsafe or non-empty destination before anything is written. The destination is not
 	// removed here: every input is resolved and read first, so a refused run leaves an existing
@@ -595,6 +603,10 @@ export async function stage(options) {
 	// once those inputs are in hand; a copy failure after that point can still leave a partial
 	// directory, which verify() then reports.
 	const repoRoot = resolveRepoRoot(options.repoRoot);
+	const xSearchSkill = join(repoRoot, X_SEARCH_SKILL_SOURCE);
+	if (!existsSync(xSearchSkill) || !(await stat(xSearchSkill)).isFile()) {
+		throw new Error(`conditional x-search skill not found at ${xSearchSkill}`);
+	}
 	let omoRoot = null;
 	let overlay = null;
 	let browserRuntime = null;
@@ -668,6 +680,8 @@ export async function stage(options) {
 		await copyExecutable(gitBashMcp, join(output, GIT_BASH_MCP_NAME));
 		executables.push(await fileEntry(output, GIT_BASH_MCP_NAME, gitBashMcp));
 	}
+	await copyExecutable(lspDaemon, join(output, LSP_DAEMON_NAME));
+	executables.push(await fileEntry(output, LSP_DAEMON_NAME, lspDaemon));
 	if (desktopEngine !== null) {
 		await copyExecutable(desktopEngine, join(output, DESKTOP_ENGINE_NAME));
 		executables.push(await fileEntry(output, DESKTOP_ENGINE_NAME, desktopEngine));
@@ -704,7 +718,15 @@ export async function stage(options) {
 		}
 	}
 
-	const layout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	const layout = { binary: CLI_BINARY_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	const conditionalSkillPath = `${CONDITIONAL_SKILLS_DIR}/x-search/SKILL.md`;
+	await mkdir(dirname(join(output, conditionalSkillPath)), { recursive: true });
+	await copyFile(xSearchSkill, join(output, conditionalSkillPath));
+	const conditionalSkills = {
+		root: CONDITIONAL_SKILLS_DIR,
+		names: ["x-search"],
+		files: [await fileEntry(output, conditionalSkillPath, X_SEARCH_SKILL_SOURCE)],
+	};
 	if (gitBashMcp !== null) layout.gitBashMcp = GIT_BASH_MCP_NAME;
 	if (desktopEngine !== null) layout.desktopEngine = DESKTOP_ENGINE_NAME;
 
@@ -724,6 +746,7 @@ export async function stage(options) {
 		licenses,
 		schema,
 		skills: { source: skillSource, names: stagedNames, files: skillFiles },
+		conditionalSkills,
 	};
 	await writeFile(join(output, MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
@@ -751,7 +774,7 @@ export async function verify(directory) {
 	// schema version and the exact layout the runtime resolves. An empty or foreign object must not
 	// pass just because its optional arrays are absent.
 	if (manifest.schemaVersion !== SCHEMA_VERSION) errors.push(`unsupported schemaVersion: ${JSON.stringify(manifest.schemaVersion)} (expected ${SCHEMA_VERSION})`);
-	const expectedLayout = { binary: CLI_BINARY_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
+	const expectedLayout = { binary: CLI_BINARY_NAME, lspDaemon: LSP_DAEMON_NAME, astGrepMcp: AST_GREP_MCP_NAME, skills: SKILLS_DIR, licenses: LICENSES_DIR, manifest: MANIFEST_NAME };
 	for (const [key, value] of Object.entries(expectedLayout)) {
 		if (manifest.layout?.[key] !== value) errors.push(`layout.${key} must be ${JSON.stringify(value)} (found ${JSON.stringify(manifest.layout?.[key])})`);
 	}
@@ -762,9 +785,6 @@ export async function verify(directory) {
 	}
 	if (manifest.layout?.desktopEngine !== undefined && manifest.layout.desktopEngine !== DESKTOP_ENGINE_NAME) {
 		errors.push(`layout.desktopEngine must be ${JSON.stringify(DESKTOP_ENGINE_NAME)} (found ${JSON.stringify(manifest.layout.desktopEngine)})`);
-	}
-	if (manifest.skills?.source === "latest" && manifest.layout?.desktopEngine === undefined) {
-		errors.push(`layout.desktopEngine is required for --skill-source latest: must declare ${JSON.stringify(DESKTOP_ENGINE_NAME)}`);
 	}
 	// Provenance: the manifest must record both expected upstream pins as full commits, and the
 	// staging source it actually used must prove its identity. `pinned` requires the recorded checkout
@@ -795,13 +815,21 @@ export async function verify(directory) {
 	const licenses = Array.isArray(manifest.licenses) ? manifest.licenses : [];
 	const schemaEntries = manifest.schema !== null && typeof manifest.schema === "object" && !Array.isArray(manifest.schema) ? [manifest.schema] : [];
 	const skillFiles = Array.isArray(manifest.skills?.files) ? manifest.skills.files : [];
+	const conditionalSkillFiles = Array.isArray(manifest.conditionalSkills?.files) ? manifest.conditionalSkills.files : [];
 	for (const entry of executables) await check(entry);
 	for (const entry of licenses) await check(entry);
 	for (const entry of schemaEntries) await check(entry);
 	for (const entry of skillFiles) await check(entry);
-	// Required entries: the two executables the runtime resolves as binary siblings and both
+	for (const entry of conditionalSkillFiles) await check(entry);
+	const conditionalSkillPath = `${CONDITIONAL_SKILLS_DIR}/x-search/SKILL.md`;
+	if (manifest.conditionalSkills?.root !== CONDITIONAL_SKILLS_DIR ||
+		!manifest.conditionalSkills?.names?.includes("x-search") ||
+		!conditionalSkillFiles.some((entry) => entry?.path === conditionalSkillPath)) {
+		errors.push("required conditional x-search skill missing from the manifest");
+	}
+	// Required entries: the three executables the runtime resolves as binary siblings and both
 	// retained license texts must be present, so a manifest cannot omit a shipped asset.
-	for (const required of [CLI_BINARY_NAME, AST_GREP_MCP_NAME]) {
+	for (const required of [CLI_BINARY_NAME, LSP_DAEMON_NAME, AST_GREP_MCP_NAME]) {
 		if (!executables.some((entry) => entry?.path === required)) errors.push(`required executable missing from the manifest: ${required}`);
 	}
 	// The published config schema is a required shipped asset: the manifest must carry it, it must be
@@ -818,9 +846,6 @@ export async function verify(directory) {
 	}
 	if (manifest.layout?.desktopEngine !== undefined && !executables.some((entry) => entry?.path === DESKTOP_ENGINE_NAME)) {
 		errors.push(`declared desktop engine sibling is missing from the manifest executables: ${DESKTOP_ENGINE_NAME}`);
-	}
-	if (manifest.skills?.source === "latest" && !executables.some((entry) => entry?.path === DESKTOP_ENGINE_NAME)) {
-		errors.push(`required desktop engine sibling is missing from latest manifest executables: ${DESKTOP_ENGINE_NAME}`);
 	}
 	// The browser engine runtime is required exactly when the manifest declares it: a declared
 	// runtime whose files are not hashed would ship a `browser` skill whose loader throws.
@@ -859,7 +884,7 @@ export async function verify(directory) {
 }
 
 function manifestFileCount(manifest) {
-	return (manifest?.executables?.length ?? 0) + (manifest?.licenses?.length ?? 0) + (manifest?.schema ? 1 : 0) + (manifest?.skills?.files?.length ?? 0);
+	return (manifest?.executables?.length ?? 0) + (manifest?.licenses?.length ?? 0) + (manifest?.schema ? 1 : 0) + (manifest?.skills?.files?.length ?? 0) + (manifest?.conditionalSkills?.files?.length ?? 0);
 }
 
 // ---------- self-test ----------
@@ -887,6 +912,8 @@ async function selfTest() {
 		const schemaFixture = `${JSON.stringify({ $schema: "http://json-schema.org/draft-07/schema#", $id: "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json", title: "OmO Configuration", type: "object", properties: { a: { type: "string" } }, required: ["a"], additionalProperties: false }, null, 2)}`;
 
 		await mkdir(join(repo, "crates/omo/components/maho-omo-telemetry/src"), { recursive: true });
+		await mkdir(dirname(join(repo, X_SEARCH_SKILL_SOURCE)), { recursive: true });
+		await writeFile(join(repo, X_SEARCH_SKILL_SOURCE), "---\nname: x-search\n---\nconditional fixture\n");
 		await mkdir(join(repo, "LICENSES"), { recursive: true });
 		await writeFile(join(repo, "Cargo.toml"), `[workspace]\n\n[workspace.package]\nversion = "9.9.9"\n`);
 		await writeFile(join(repo, "crates/omo/components/maho-omo-telemetry/src/product_identity.rs"), `pub const BUILTIN_SKILL_NAMES: &[&str] = &[${names.map((name) => `"${name}"`).join(", ")}];\n`);
@@ -930,11 +957,13 @@ async function selfTest() {
 		await mkdir(binDir, { recursive: true });
 		await writeFile(join(binDir, "mhc"), "#!/bin/sh\necho mhc\n");
 		await writeFile(join(binDir, "ast-grep-mcp"), "#!/bin/sh\necho ast-grep-mcp\n");
+		await writeFile(join(binDir, LSP_DAEMON_NAME), "#!/bin/sh\necho lsp-daemon\n");
 
 		const out = join(root, "out");
 		const result = await stage({ binary: join(binDir, "mhc"), output: out, omoRoot: omo, repoRoot: repo });
 		check("stage writes a schema-versioned manifest", result.ok && result.manifest.schemaVersion === 1);
 		check("mhc staged beside a skills directory", existsSync(join(out, "mhc")) && existsSync(join(out, "skills/alpha/SKILL.md")));
+		check("lsp-daemon staged as a binary sibling", existsSync(join(out, LSP_DAEMON_NAME)));
 		check("ast-grep-mcp staged as a binary sibling", existsSync(join(out, "ast-grep-mcp")));
 		check("staged skills are the sorted builtin set", JSON.stringify(result.manifest.skills.names) === JSON.stringify(["alpha", "beta", "gamma"]));
 		check("native skill overrides the shared pool", (await readFile(join(out, "skills/alpha/SKILL.md"), "utf8")).includes("native"));
@@ -943,8 +972,19 @@ async function selfTest() {
 		check("licenses retained", existsSync(join(out, "licenses/MIT.txt")) && existsSync(join(out, "licenses/SUL-1.0.md")));
 		check("versions recorded", result.manifest.versions.mhc === "9.9.9" && result.manifest.versions.omoSenpi === "5.0.0-beta.9");
 		check("source pins recorded", result.manifest.pins.omo === omoCommit && result.manifest.pins.senpi === "a".repeat(40));
-		check("staged executables carry the exec bit", ((await stat(join(out, "mhc"))).mode & 0o111) !== 0 && ((await stat(join(out, "ast-grep-mcp"))).mode & 0o111) !== 0);
+		check("staged executables carry the exec bit", ((await stat(join(out, "mhc"))).mode & 0o111) !== 0 && ((await stat(join(out, LSP_DAEMON_NAME))).mode & 0o111) !== 0 && ((await stat(join(out, "ast-grep-mcp"))).mode & 0o111) !== 0);
 		check("manifest verifies the staged tree", (await verify(out)).ok);
+		check("conditional x-search ships outside unconditional builtin skills", existsSync(join(out, CONDITIONAL_SKILLS_DIR, "x-search/SKILL.md")) && !result.manifest.skills.names.includes("x-search"));
+		check("conditional x-search packaged copy equals its real source", (await readFile(join(out, CONDITIONAL_SKILLS_DIR, "x-search/SKILL.md"), "utf8")) === (await readFile(join(repo, X_SEARCH_SKILL_SOURCE), "utf8")));
+		const conditionalDroppedDir = join(root, "conditional-dropped");
+		await copyTree(out, conditionalDroppedDir);
+		const conditionalDropped = JSON.parse(await readFile(join(conditionalDroppedDir, MANIFEST_NAME), "utf8"));
+		delete conditionalDropped.conditionalSkills;
+		await writeFile(join(conditionalDroppedDir, MANIFEST_NAME), JSON.stringify(conditionalDropped));
+		check("omitted conditional skill fails verification", !(await verify(conditionalDroppedDir)).ok);
+		await rm(join(conditionalDroppedDir, CONDITIONAL_SKILLS_DIR, "x-search/SKILL.md"));
+		await writeFile(join(conditionalDroppedDir, MANIFEST_NAME), JSON.stringify(result.manifest));
+		check("missing declared conditional skill fails verification", !(await verify(conditionalDroppedDir)).ok);
 		check("published schema is staged beside the binary", existsSync(join(out, "omo.schema.json")) && result.manifest.schema.path === "omo.schema.json");
 		check("published schema is a hashed manifest entry", result.manifest.schema.sha256 === (await sha256(join(out, "omo.schema.json"))));
 
@@ -971,6 +1011,27 @@ async function selfTest() {
 		await writeFile(join(omittedExecutableDir, MANIFEST_NAME), `${JSON.stringify(omittedManifest, null, 2)}\n`);
 		const omittedExecutable = await verify(omittedExecutableDir);
 		check("manifest omitting a required executable is rejected", !omittedExecutable.ok && omittedExecutable.errors.some((error) => error.includes("required executable missing") && error.includes(AST_GREP_MCP_NAME)));
+
+		const lspDroppedBothDir = join(root, "lsp-dropped-both");
+		await copyTree(out, lspDroppedBothDir);
+		const lspDroppedBoth = JSON.parse(await readFile(join(lspDroppedBothDir, MANIFEST_NAME), "utf8"));
+		delete lspDroppedBoth.layout.lspDaemon;
+		lspDroppedBoth.executables = lspDroppedBoth.executables.filter((entry) => entry.path !== LSP_DAEMON_NAME);
+		await writeFile(join(lspDroppedBothDir, MANIFEST_NAME), `${JSON.stringify(lspDroppedBoth, null, 2)}\n`);
+		const lspDroppedBothResult = await verify(lspDroppedBothDir);
+		check("manifest dropping both lspDaemon layout and executable is rejected", !lspDroppedBothResult.ok && lspDroppedBothResult.errors.some((error) => error.includes("layout.lspDaemon") || error.includes("required executable missing")));
+
+		const lspTamperedDir = join(root, "lsp-tampered");
+		await copyTree(out, lspTamperedDir);
+		await writeFile(join(lspTamperedDir, LSP_DAEMON_NAME), "#!/bin/sh\necho tampered\n");
+		const lspTamperedResult = await verify(lspTamperedDir);
+		check("tampered lsp-daemon binary fails verification", !lspTamperedResult.ok && lspTamperedResult.errors.some((error) => error.includes("sha256 mismatch") && error.includes(LSP_DAEMON_NAME)));
+
+		const lspModeDir = join(root, "lsp-mode");
+		await copyTree(out, lspModeDir);
+		await chmod(join(lspModeDir, LSP_DAEMON_NAME), 0o644);
+		const lspModeResult = await verify(lspModeDir);
+		check("changed lsp-daemon file mode fails verification", !lspModeResult.ok && lspModeResult.errors.some((error) => error.includes("mode mismatch") && error.includes(LSP_DAEMON_NAME)));
 
 		const changedModeDir = join(root, "changed-mode");
 		await copyTree(out, changedModeDir);
@@ -1018,6 +1079,12 @@ async function selfTest() {
 		await rm(join(repo, "assets/omo.schema.json"));
 		await expectReject("a missing published schema is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "no-schema"), omoRoot: omo, repoRoot: repo }), "published config schema not found");
 		await writeFile(join(repo, "assets/omo.schema.json"), schemaFixture);
+
+		await rm(join(binDir, LSP_DAEMON_NAME));
+		const missingLspHelper = join(root, "missing-lsp-helper");
+		await expectReject("missing lsp-daemon helper is diagnosed", stage({ binary: join(binDir, "mhc"), output: missingLspHelper, omoRoot: omo, repoRoot: repo }), "lsp-daemon");
+		check("no placeholder lsp-daemon helper is written", !existsSync(join(missingLspHelper, LSP_DAEMON_NAME)));
+		await writeFile(join(binDir, LSP_DAEMON_NAME), "#!/bin/sh\necho lsp-daemon\n");
 
 		await rm(join(binDir, "ast-grep-mcp"));
 		const missingHelper = join(root, "missing-helper");
@@ -1084,8 +1151,8 @@ async function selfTest() {
 		check("latest overlay versions are recorded", latest.manifest.versions.omoSenpi === "6.0.0" && latest.manifest.versions.sharedSkills === "0.2.0");
 		check("latest manifest verifies", (await verify(latestOut)).ok);
 		check("selected latest staging stages the git-bash sibling", existsSync(join(latestOut, GIT_BASH_MCP_NAME)) && latest.manifest.layout.gitBashMcp === GIT_BASH_MCP_NAME);
-		check("selected latest staging stages the desktop engine sibling", existsSync(join(latestOut, DESKTOP_ENGINE_NAME)) && latest.manifest.layout.desktopEngine === DESKTOP_ENGINE_NAME);
-		check("desktop engine sibling is a hashed manifest executable", latest.manifest.executables.some((entry) => entry.path === DESKTOP_ENGINE_NAME));
+		check("selected latest staging without explicit desktop engine omits it", !existsSync(join(latestOut, DESKTOP_ENGINE_NAME)) && latest.manifest.layout.desktopEngine === undefined);
+		check("selected latest staging without desktop engine verifies", !latest.manifest.executables.some((entry) => entry.path === DESKTOP_ENGINE_NAME));
 		check("latest records the installed loader binding", latest.manifest.sources.latestAssets.loader?.env === "OMO_SENPI_SKILLS_ROOT" && latest.manifest.sources.latestAssets.loader?.skillsRoot === SKILLS_DIR);
 
 		const pinnedDefault = await stage({ binary: join(binDir, "mhc"), output: join(root, "pinned-default"), omoRoot: omo, repoRoot: repo });
@@ -1126,9 +1193,6 @@ async function selfTest() {
 		check("a declared git-bash sibling missing from the manifest is rejected", !gitBashDroppedResult.ok && gitBashDroppedResult.errors.some((error) => error.includes("git-bash sibling is missing") && error.includes(GIT_BASH_MCP_NAME)));
 		await expectReject("a named git-bash sibling that is not a file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "git-bash-missing"), omoRoot: omo, repoRoot: repo, gitBashBinary: join(binDir, "nope") }), "not a regular file");
 
-		// --- desktop engine sibling: required in the selected latest staging, optional in pinned ---
-		await rm(join(binDir, DESKTOP_ENGINE_NAME));
-		await expectReject("selected latest staging without the desktop engine sibling is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "latest-no-engine"), repoRoot: repo, skillSource: "latest", gitBashBinary: join(binDir, GIT_BASH_MCP_NAME) }), DESKTOP_ENGINE_NAME);
 		await writeFile(join(binDir, DESKTOP_ENGINE_NAME), "#!/bin/sh\necho desktop-engine\n");
 		await expectReject("a named desktop engine sibling that is not a file is refused", stage({ binary: join(binDir, "mhc"), output: join(root, "engine-missing"), omoRoot: omo, repoRoot: repo, desktopEngineBinary: join(binDir, "nope") }), "not a regular file");
 
@@ -1138,6 +1202,11 @@ async function selfTest() {
 		check("desktop engine sibling is a hashed manifest executable", withDesktopEngine.manifest.executables.some((entry) => entry.path === DESKTOP_ENGINE_NAME) && (await verify(desktopEngineOut)).ok);
 		check("desktop engine sibling is absent when not named and absent from binDir", !existsSync(join(out, DESKTOP_ENGINE_NAME)) && result.manifest.layout.desktopEngine === undefined);
 
+		const desktopEngineDefaultBinOut = join(root, "desktop-engine-default-bin");
+		const withBinDesktopEngine = await stage({ binary: join(binDir, "mhc"), output: desktopEngineDefaultBinOut, omoRoot: omo, repoRoot: repo });
+		check("desktop engine sibling is not auto-staged merely by presence in binDir", !existsSync(join(desktopEngineDefaultBinOut, DESKTOP_ENGINE_NAME)) && withBinDesktopEngine.manifest.layout.desktopEngine === undefined);
+		check("staging without explicit desktop engine verifies with 0 errors", (await verify(desktopEngineDefaultBinOut)).ok);
+
 		const desktopEngineDroppedDir = join(root, "desktop-engine-dropped");
 		await copyTree(desktopEngineOut, desktopEngineDroppedDir);
 		const desktopEngineDropped = JSON.parse(await readFile(join(desktopEngineDroppedDir, MANIFEST_NAME), "utf8"));
@@ -1145,15 +1214,6 @@ async function selfTest() {
 		await writeFile(join(desktopEngineDroppedDir, MANIFEST_NAME), `${JSON.stringify(desktopEngineDropped, null, 2)}\n`);
 		const desktopEngineDroppedResult = await verify(desktopEngineDroppedDir);
 		check("a declared desktop engine sibling missing from the manifest is rejected", !desktopEngineDroppedResult.ok && desktopEngineDroppedResult.errors.some((error) => error.includes("desktop engine sibling is missing") && error.includes(DESKTOP_ENGINE_NAME)));
-
-		const latestDroppedBothDir = join(root, "latest-dropped-both");
-		await copyTree(latestOut, latestDroppedBothDir);
-		const latestDroppedBoth = JSON.parse(await readFile(join(latestDroppedBothDir, MANIFEST_NAME), "utf8"));
-		delete latestDroppedBoth.layout.desktopEngine;
-		latestDroppedBoth.executables = latestDroppedBoth.executables.filter((entry) => entry.path !== DESKTOP_ENGINE_NAME);
-		await writeFile(join(latestDroppedBothDir, MANIFEST_NAME), `${JSON.stringify(latestDroppedBoth, null, 2)}\n`);
-		const latestDroppedBothResult = await verify(latestDroppedBothDir);
-		check("latest manifest dropping both layout and executable is rejected", !latestDroppedBothResult.ok && latestDroppedBothResult.errors.some((error) => error.includes("desktop engine") || error.includes("desktopEngine")));
 
 		const desktopEngineTamperedDir = join(root, "desktop-engine-tampered");
 		await copyTree(desktopEngineOut, desktopEngineTamperedDir);
@@ -1253,6 +1313,7 @@ async function main(argv) {
 	let skillSource = null;
 	let latestAssets = null;
 	let gitBashBinary = null;
+	let lspDaemonBinary = null;
 	let desktopEngineBinary = null;
 	let omowrightRuntime = null;
 	let schema = null;
@@ -1275,6 +1336,7 @@ async function main(argv) {
 		else if (argument === "--skill-source") skillSource = next(argument);
 		else if (argument === "--latest-assets") latestAssets = next(argument);
 		else if (argument === "--git-bash-binary") gitBashBinary = next(argument);
+		else if (argument === "--lsp-daemon-binary") lspDaemonBinary = next(argument);
 		else if (argument === "--desktop-engine-binary") desktopEngineBinary = next(argument);
 		else if (argument === "--omowright-runtime") omowrightRuntime = next(argument);
 		else if (argument === "--schema") schema = next(argument);
@@ -1299,7 +1361,7 @@ async function main(argv) {
 		process.exit(1);
 	}
 	if (binary === null || output === null) usageError("--binary and --output are required");
-	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, desktopEngineBinary, omowrightRuntime, schema });
+	const result = await stage({ binary, output, astGrepMcp, omoRoot, repoRoot, force, skillSource, latestAssets, gitBashBinary, lspDaemonBinary, desktopEngineBinary, omowrightRuntime, schema });
 	console.log(`package-native: staged ${result.manifest.executables.length} executable(s), ${result.manifest.skills.names.length} skill(s) (${result.manifest.skills.files.length} files) and ${result.manifest.licenses.length} license(s) into ${result.output}`);
 	console.log(`package-native: skill source ${result.manifest.skills.source}`);
 	console.log(`package-native: manifest ${result.manifestPath}`);

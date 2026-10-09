@@ -1021,7 +1021,19 @@ async def run_code(code: Any, want_value: bool) -> Any:
     return None
 
 
-def run_cell(cell_id: str, code: str) -> None:
+def apply_preludes(preludes: Any) -> None:
+    # Host-computed per cell: globals of tools deactivated since the last cell are dropped,
+    # and an active tool's snippet runs only while one of its exports is missing.
+    if not isinstance(preludes, dict):
+        return
+    for name in preludes.get("remove", []):
+        USER_NS.pop(name, None)
+    for contribution in preludes.get("install", []):
+        if any(name not in USER_NS for name in contribution.get("exports", [])):
+            exec(compile(contribution.get("python", ""), "<kernel-prelude>", "exec"), USER_NS)
+
+
+def run_cell(cell_id: str, code: str, preludes: Any = None) -> None:
     global ACTIVE_CELL_ID
     ACTIVE_CELL_ID = cell_id
     start = time.monotonic()
@@ -1031,6 +1043,7 @@ def run_cell(cell_id: str, code: str) -> None:
     # cells) ignores it so a late signal cannot kill the stdin-read loop.
     signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
+        apply_preludes(preludes)
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             body, expression = compile_cell(code)
             LOOP.run_until_complete(run_code(body, False))
@@ -1079,7 +1092,7 @@ def handle(message: dict[str, Any]) -> bool:
         emit({"type": "ready"})
         return True
     if message_type == "run":
-        run_cell(str(message.get("cellId", "")), str(message.get("code", "")))
+        run_cell(str(message.get("cellId", "")), str(message.get("code", "")), message.get("preludes"))
         return True
     if message_type == "close":
         emit({"type": "closed"})

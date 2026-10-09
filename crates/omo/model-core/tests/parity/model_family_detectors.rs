@@ -11,9 +11,11 @@ use model_core::is_glm_model;
 use model_core::is_gpt_model;
 use model_core::is_grok45_model;
 use model_core::is_grok46_model;
+use model_core::is_kimi_k2_code_model;
 use model_core::is_kimi_k2_model;
-use model_core::is_kimi_k3_model;
 use model_core::is_kimi_k27_model;
+use model_core::is_kimi_k28_model;
+use model_core::is_kimi_k3_model;
 use model_core::is_mini_max_model;
 use model_core::is_swe2_model;
 use model_core::is_unserved_devin_swe2_selector;
@@ -79,6 +81,41 @@ fn kimi_k2_7_model_ids_detect_k2_7_only_not_k2_6() {
         ],
     );
     assert!(is_kimi_k2_model("opencode-go/kimi-k2.7"));
+}
+
+#[test]
+fn kimi_k2_8_model_ids_detect_k2_8_and_the_kimi_code_rolling_ids_by_version() {
+    check(
+        is_kimi_k28_model,
+        &[
+            ("moonshotai/kimi-k2.8", true),
+            ("opencode-go/kimi-k2-8", true),
+            ("kimi-for-coding/k2p8", true),
+            ("kimi-for-coding/kimi-for-coding", true),
+            ("kimi-for-coding/kimi-for-coding-highspeed", false),
+            ("opencode-go/kimi-k2.7", false),
+            ("anthropic/claude-opus-4-7", false),
+        ],
+    );
+    assert!(is_kimi_k27_model("kimi-for-coding/kimi-for-coding-highspeed"));
+    assert!(!is_kimi_k27_model("kimi-for-coding/kimi-for-coding"));
+}
+
+#[test]
+fn the_kimi_k2_coding_family_k2_7_and_k2_8_share_it_and_k2_6_stays_out() {
+    check(
+        is_kimi_k2_code_model,
+        &[
+            ("opencode-go/kimi-k2.7", true),
+            ("kimi-for-coding/k2p7", true),
+            ("moonshotai/kimi-k2.8", true),
+            ("kimi-for-coding/kimi-for-coding", true),
+            ("kimi-for-coding/kimi-for-coding-highspeed", true),
+            ("moonshotai/kimi-k2.6", false),
+            ("opencode-go/kimi-k3", false),
+            ("anthropic/claude-opus-4-7", false),
+        ],
+    );
 }
 
 #[test]

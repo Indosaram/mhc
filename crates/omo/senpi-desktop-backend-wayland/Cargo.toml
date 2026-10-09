@@ -1,0 +1,35 @@
+[package]
+name = "maho-senpi-desktop-backend-wayland"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "senpi_desktop_backend_wayland"
+crate-type = ["rlib"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.11.1", default-features = false, features = ["tokio"] }
+futures.workspace = true
+image = { version = "=0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
+libloading = "=0.8.9"
+parking_lot = "=0.12.5"
+reis = { version = "=0.5.0", features = ["tokio"] }
+senpi-desktop-backend-atspi = { package = "maho-senpi-desktop-backend-atspi", path = "../senpi-desktop-backend-atspi" }
+senpi-desktop-core = { package = "maho-senpi-desktop-core", path = "../senpi-desktop-core", features = ["system-clipboard"] }
+senpi-desktop-safety = { package = "maho-senpi-desktop-safety", path = "../senpi-desktop-safety" }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+xkeysym = "=0.2.1"
+zbus = { version = "=5.19.0", default-features = false, features = [
+    "async-io",
+    "blocking-api",
+] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile = "=3.27.0"

@@ -40,6 +40,12 @@ pub enum LspError {
         server_id: String,
         root: String,
     },
+    /// TS `LspClientRespawnBudgetExceededError`.
+    ClientRespawnBudgetExceeded {
+        server_id: String,
+        root: String,
+        retry_limit: usize,
+    },
     /// Aborted via a cancellation signal (TS `DOMException("Aborted", "AbortError")`).
     Aborted,
     /// Any other error, carrying its message (TS plain `Error`).
@@ -56,6 +62,7 @@ impl LspError {
             Self::ServerLookup { .. } => "LspServerLookupError",
             Self::ServerInitializing { .. } => "LspServerInitializingError",
             Self::ProcessSpawn(_) => "LspProcessSpawnError",
+            Self::ClientRespawnBudgetExceeded { .. } => "LspClientRespawnBudgetExceededError",
             Self::Aborted => "AbortError",
             Self::JsonRpc {
                 code: Some(code), ..
@@ -140,6 +147,14 @@ impl fmt::Display for LspError {
                 f,
                 "LSP server is still initializing. Please retry in a few seconds. Original error: {}",
                 timeout_message(method, stderr_tail.as_deref())
+            ),
+            Self::ClientRespawnBudgetExceeded {
+                server_id,
+                root,
+                retry_limit,
+            } => write!(
+                f,
+                "LSP server {server_id} at {root} failed to stay alive; respawn budget exhausted ({retry_limit} consecutive dead generations). Retrying after the cooldown may succeed.",
             ),
             Self::Aborted => f.write_str("Aborted"),
             Self::JsonRpc { message, .. } => f.write_str(message),
