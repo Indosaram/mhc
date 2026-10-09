@@ -181,6 +181,17 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
     handle_session_command_with_sink(session,command,None).await
 }
+fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
+    let result=result?;
+    let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));
+    if result.unchanged==Some(true){return Ok(Some(serde_json::json!({"outcome":"unchanged","leafId":leaf_id})));}
+    if result.cancelled{return Ok(Some(serde_json::json!({"outcome":"cancelled","leafId":leaf_id,"aborted":result.aborted.unwrap_or(false)})));}
+    let entry=result.entry_id.as_deref().and_then(|id|session.with_session_manager(|manager|manager.entry(id)));
+    if entry.as_ref().is_none_or(|entry|entry["type"]!="message")||leaf_id.is_none(){return Err(not_persisted.to_owned());}
+    let mut value=serde_json::json!({"outcome":"edited","entry":entry,"leafId":leaf_id});
+    if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
+    Ok(Some(value))
+}
 async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
@@ -246,6 +257,19 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             (if favorite{"set_favorite_models"}else{"set_scoped_models"},parsed.map(|models|{if favorite{session.set_favorite_models(models);}else{session.set_scoped_models(models);}None}))
         },
         RpcCommandBody::AppendSessionEntry{entry}=>{session.append_session_entry(entry.clone());("append_session_entry",Ok(None))},
+        RpcCommandBody::AppendUserMessage{content}=>{
+            let message=serde_json::json!({"role":"user","content":content,"timestamp":maho_ai::utils::diagnostics::now_ms()});
+            session.with_session_manager_mut(|manager|{manager.append_message(message);});
+            let messages=session.with_session_manager(|manager|manager.build_context(None).messages);
+            let agent_messages=messages.iter().filter_map(|message|serde_json::from_value(message.clone()).ok()).collect();
+            session.agent().set_messages(agent_messages);
+            ("append_user_message",Ok(None))
+        },
+        RpcCommandBody::SendCustomMessage{custom_type,content,display,details,trigger_turn,deliver_as}=>{
+            let content=serde_json::from_value::<Vec<maho_tools::definition::ToolContent>>(content.clone()).map_err(|error:serde_json::Error|error.to_string());
+            let result=content.and_then(|content|session.send_custom_message(maho_ext_api::CustomMessage{custom_type:custom_type.clone(),content,display:*display,details:details.clone()},maho_ext_api::SendMessageOptions{trigger_turn:trigger_turn.unwrap_or(false),deliver_as:deliver_as.map(|mode|match mode{crate::rpc_types::DeliveryMode::Steer=>maho_ext_api::DeliverAs::Steer,crate::rpc_types::DeliveryMode::FollowUp=>maho_ext_api::DeliverAs::FollowUp,crate::rpc_types::DeliveryMode::NextTurn=>maho_ext_api::DeliverAs::NextTurn})}));
+            ("send_custom_message",result.map(|()|None))
+        },
         RpcCommandBody::GetFastMode=>("get_fast_mode",Ok(Some(serde_json::json!({"enabled":session.is_fast_mode_active(),"serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})})))),
         RpcCommandBody::CleanupBashOutput{path}=>("cleanup_bash_output",session.cleanup_bash_output(std::path::Path::new(path)).await.map(|()|None)),
         RpcCommandBody::ExportJsonl{output_path}=>("export_jsonl",session.export_to_jsonl(output_path.as_deref()).map(|path|Some(serde_json::json!({"path":path}))).map_err(|error|error.to_string())),
@@ -334,6 +358,16 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
         RpcCommandBody::GetTree=>{fn tree_node(node:maho_core::session_manager::SessionTreeNode)->serde_json::Value{serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>(),"label":node.label,"labelTimestamp":node.label_timestamp})}let tree=session.with_session_manager(|manager|manager.get_tree(manager.leaf_id()).map(tree_node));("get_tree",Ok(Some(serde_json::json!({"tree":tree,"leafId":session.with_session_manager(|manager|manager.leaf_id())}))))},
         RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
+        RpcCommandBody::EditAssistantMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
+            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_assistant_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_assistant_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
+            let result=session.edit_assistant_message(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
+            ("edit_assistant_message",edit_response(session,result,"Edited assistant entry was not persisted"))
+        },
+        RpcCommandBody::EditUserMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
+            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
+            let result=session.edit_user_message(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
+            ("edit_user_message",edit_response(session,result,"Edited user entry was not persisted"))
+        },
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
@@ -557,5 +591,26 @@ mod new_session_tests{
         let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
         assert_eq!(response["command"],"import_jsonl");
         assert_eq!(response["error"],"File not found: /tmp/does-not-exist-4010.jsonl");
+    }
+
+    #[tokio::test]
+    async fn append_user_message_dispatches(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"append_user_message","content":"hello"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"append_user_message"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn send_custom_message_dispatches(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"send_custom_message","customType":"notice","content":[{"type":"text","text":"hello"}],"display":true})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"send_custom_message"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn edit_user_message_reports_exact_missing_entry_error(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_user_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
+    }
+    #[tokio::test]
+    async fn edit_assistant_message_reports_exact_missing_entry_error(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_assistant_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
     }
 }
