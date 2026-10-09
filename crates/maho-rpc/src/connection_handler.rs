@@ -453,7 +453,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::ExtensionRequest{name,data}=>{
             let name=name.trim();
             if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
-            else {("extension_request",Err(format!("RPC command requires unfinished runtime binding: extension_request:{name}")))}
+            else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(|data|Some(data)))}
         },
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
