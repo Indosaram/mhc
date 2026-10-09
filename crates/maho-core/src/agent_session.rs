@@ -4835,7 +4835,10 @@ impl AgentSession {
                     if let Some(is_error) = rewrite.is_error { result.is_error = Some(is_error); }
                     if let Some(usage) = rewrite.usage { result.usage = Some(usage); }
                 }
-                let normalized = normalize_tool_result_images(&result.content, None).await;
+                let normalized = normalize_tool_result_images(
+                    &result.content,
+                    Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
+                ).await;
                 result.content = normalized.into_owned();
                 Ok::<(), String>(())
             }.await;
@@ -5138,7 +5141,7 @@ impl AgentSession {
                 }).await.ok().flatten()?;
                 let content = normalize_tool_result_images(
                     &rewrite.content.as_ref().and_then(|content| serde_json::to_value(content).ok()).and_then(|content| serde_json::from_value(content).ok()).unwrap_or(context.result.content.clone()),
-                    None,
+                    Some(session.with_settings_manager(SettingsManager::get_image_auto_resize)),
                 ).await.into_owned();
                 Some(maho_agent::types::AfterToolCallResult {
                     content: Some(serde_json::from_value(serde_json::to_value(content).ok()?).ok()?),
