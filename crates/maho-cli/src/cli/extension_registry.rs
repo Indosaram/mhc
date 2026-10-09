@@ -273,15 +273,38 @@ fn pi_ast_grep() -> Box<dyn Extension> {
 fn pi_nested_agents_md() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)
 }
+fn omo_zcode_oauth() -> Box<dyn Extension> {
+    Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
+}
+fn pi_comment_checker() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_comment_checker::CommentChecker {
+        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from).unwrap_or_default(),
+    })
+}
+fn orca_prefill() -> Box<dyn Extension> {
+    struct Environment;
+    impl maho_ext_orca_prefill::PrefillEnvironment for Environment {
+        fn pane_key(&self) -> Option<String> { std::env::var("ORCA_PANE_KEY").ok() }
+        fn take_prefill(&self) -> Option<String> { std::env::var("ORCA_PREFILL").ok() }
+    }
+    Box::new(maho_ext_orca_prefill::OrcaPrefill { environment: Arc::new(Environment) })
+}
+fn quiet_model_profile() -> Box<dyn Extension> {
+    Box::new(maho_ext_quiet_model_profile::QuietModelProfile::new(Default::default()))
+}
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 6] = [
+static USER_FACTORIES: [NativeExtension; 10] = [
     NativeExtension { id: "pi-ast-grep", crate_name: "maho-ext-pi-ast-grep", factory: pi_ast_grep },
     NativeExtension { id: "pi-nested-agents-md", crate_name: "maho-ext-pi-nested-agents-md", factory: pi_nested_agents_md },
     NativeExtension { id: "ferryx-agent-state", crate_name: "maho-ext-ferryx-agent-state", factory: ferryx_agent_state },
     NativeExtension { id: "herdr-agent-state", crate_name: "maho-ext-herdr-agent-state", factory: herdr_agent_state },
     NativeExtension { id: "orca-agent-status", crate_name: "maho-ext-orca-agent-status", factory: orca_agent_status },
     NativeExtension { id: "orca-titlebar-spinner", crate_name: "maho-ext-orca-titlebar-spinner", factory: orca_titlebar_spinner },
+    NativeExtension { id: "omo-zcode-oauth", crate_name: "maho-ext-omo-zcode-oauth", factory: omo_zcode_oauth },
+    NativeExtension { id: "pi-comment-checker", crate_name: "maho-ext-pi-comment-checker", factory: pi_comment_checker },
+    NativeExtension { id: "orca-prefill", crate_name: "maho-ext-orca-prefill", factory: orca_prefill },
+    NativeExtension { id: "quiet-model-profile", crate_name: "maho-ext-quiet-model-profile", factory: quiet_model_profile },
 ];
 
 pub fn user_extensions() -> &'static [NativeExtension] {
@@ -289,15 +312,7 @@ pub fn user_extensions() -> &'static [NativeExtension] {
 }
 
 /// User-port ids whose crate publishes no constructible `Extension` in this worktree.
-static DEFERRED_USER_EXTENSIONS: [DeferredExtension; 7] = [
-    DeferredExtension { id: "pi-webfetch", crate_name: "maho-ext-pi-webfetch", requirement: "crate `WebfetchExtension` exists only in the `resume-webfetch` worktree (owner: todo 39 pi-webfetch); this worktree's copy publishes the `webfetch` module only" },
-    DeferredExtension { id: "omo-zcode-oauth", crate_name: "maho-ext-omo-zcode-oauth", requirement: "`ZcodeOAuth` lives in lane-40 (owner: todo 40); this worktree's `src/lib.rs` is empty" },
-    DeferredExtension { id: "pi-rules", crate_name: "maho-ext-pi-rules", requirement: "crate publishes config/commands/index modules; needs the `Extension` factory (owner: todo 39)" },
-    DeferredExtension { id: "pi-goal", crate_name: "maho-ext-pi-goal", requirement: "crate publishes index + the goal module; needs the `Extension` factory (owner: todo 39)" },
-    DeferredExtension { id: "pi-websearch", crate_name: "maho-ext-pi-websearch", requirement: "crate publishes index + the websearch module; needs the `Extension` factory (owner: todo 39)" },
-    DeferredExtension { id: "pi-comment-checker", crate_name: "maho-ext-pi-comment-checker", requirement: "`CommentChecker { source_path: PathBuf }` needs the checker source path the host resolves at startup (owner: todo 40)" },
-    DeferredExtension { id: "orca-prefill", crate_name: "maho-ext-orca-prefill", requirement: "`OrcaPrefill { environment: Arc<dyn PrefillEnvironment> }` needs the orca pane environment provider (owner: todo 40)" },
-];
+static DEFERRED_USER_EXTENSIONS: [DeferredExtension; 0] = [];
 
 pub fn deferred_user_extensions() -> &'static [DeferredExtension] {
     &DEFERRED_USER_EXTENSIONS
