@@ -1,6 +1,6 @@
 use crate::{wiring_types::{MemoryWiringOptions,MemoryAfterBindInput},wiring_runtime::MemoryRuntimeWiring,wiring_reflection_live::MemoryReflectionLiveWiring,status_live::MemoryFooterUi};
-pub struct MemoryWiring{pub runtime:MemoryRuntimeWiring,pub reflection_live:MemoryReflectionLiveWiring,pub skills_usage:crate::skills_usage_wiring::SkillsUsageTrackers,evaluators:Vec<Box<dyn crate::shutdown_drain::ShutdownEvaluator>>}
-pub fn create_memory_wiring(options:MemoryWiringOptions)->MemoryWiring{MemoryWiring{runtime:options.runtime,reflection_live:Default::default(),skills_usage:options.skills_usage,evaluators:vec![]}}
+pub struct MemoryWiring{pub runtime:MemoryRuntimeWiring,pub reflection_live:MemoryReflectionLiveWiring,pub skills_usage:crate::skills_usage_wiring::SkillsUsageTrackers,pub maintenance:crate::memory_maintenance::MemoryMaintenance,evaluators:Vec<Box<dyn crate::shutdown_drain::ShutdownEvaluator>>}
+pub fn create_memory_wiring(options:MemoryWiringOptions)->MemoryWiring{MemoryWiring{runtime:options.runtime,reflection_live:Default::default(),skills_usage:options.skills_usage,maintenance:crate::memory_maintenance::MemoryMaintenance::new(Default::default()),evaluators:vec![]}}
 struct NativeFooter(std::sync::Arc<dyn maho_ext_api::ExtensionUi>);
 impl MemoryFooterUi for NativeFooter{fn set_status(&mut self,key:&str,text:&str){self.0.set_status(key,Some(text));}}
 impl MemoryWiring{
@@ -56,7 +56,7 @@ impl MemoryWiring{
         &mut self,api:&mut maho_ext_api::ExtensionApi,input:MemoryAfterBindInput<'_>,ui:Option<&mut (dyn MemoryFooterUi+Send)>,
         reconcile:impl FnOnce()->F,facts:crate::facts_wiring::MemoryFactsWiringOptions,warn:impl FnOnce(&str,&memory_core::journal::store::JournalError),
     )->Result<(),String>{
-        self.runtime.contexts.insert(input.session_id.into(),input.identity.clone());self.reflection_live.attach(input.session_id);
+        self.runtime.contexts.insert(input.session_id.into(),input.identity.clone());self.reflection_live.attach(input.session_id);self.maintenance.schedule(input.identity.clone());
         crate::policy_guard::register_memory_filesystem_policy(Some(api),Some(&input.identity)).map_err(|error|error.to_string())?;
         reconcile().await?;
         if !input.entries.is_empty(){self.runtime.journal_wiring_for(&input.identity).reconcile_session(Some(input.session_id),input.entries,warn).map_err(|error|error.to_string())?;}
@@ -80,7 +80,7 @@ impl MemoryWiring{
     }
     pub fn shutdown(&mut self,session:&str){let identity=self.runtime.resolve_context(session).map(|context|context.identity.clone());self.reflection_live.shutdown(identity.as_deref());}
     pub async fn on_session_shutdown(&mut self,reason:crate::shutdown_drain::ShutdownReason,session:&str,deadline:f64,now:&(dyn Fn()->f64+Sync),warn:&mut (dyn FnMut(&str,Option<&str>)+Send)){
-        self.shutdown(session);
+        self.maintenance.dispose();self.shutdown(session);
         let evaluators=std::mem::take(&mut self.evaluators);
         let evaluators={let mut drain=crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps{wiring:self,now});for evaluator in evaluators{drain.register_evaluator(evaluator);}drain.run(reason,session,deadline,now,warn).await;std::mem::take(&mut drain.evaluators)};
         self.evaluators=evaluators;
