@@ -6,6 +6,7 @@
 //! ~2200 lines covering flowchart, state, class, ER and sequence grammars) is not ported, so
 //! `render` reports no art and every mermaid block takes the source-box path. That is recorded as
 //! `partial` in this crate's parity ledger.
+pub mod ansi;
 pub mod labels;
 pub mod source_box;
 pub mod width;
