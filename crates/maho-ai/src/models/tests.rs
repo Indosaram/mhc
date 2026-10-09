@@ -2162,7 +2162,7 @@ impl ProviderStreams for CancelRecorder {
 #[tokio::test]
 async fn cancel_deferred_resolves_the_provider_and_rejects_unknown_or_incapable_providers() {
     let title = "Models.cancelDeferred resolves the provider and rejects unknown or incapable providers";
-    let base = builtin("anthropic", "");
+    let base = builtin("anthropic", "claude-opus-4-8");
     let model = with_provider(&base, "cancel-target");
     let handle = DeferredHandle {
         provider: "cancel-target".into(),
