@@ -211,6 +211,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::SwitchSession{session_path,cwd_override}=>
             ("switch_session",session.switch_session_with_cwd(session_path,cwd_override.as_deref()).await.map(|switched|Some(serde_json::json!({"cancelled":!switched})))),
+        RpcCommandBody::NewSession{parent_session}=>
+            ("new_session",session.new_session(Some(maho_core::session_manager::NewSessionOptions{parent_session:parent_session.clone(),..Default::default()})).await.map(|changed|Some(serde_json::json!({"cancelled":!changed})))),
         RpcCommandBody::Abort=>{
             let mut abort=Box::pin(session.abort());
             let completed=std::future::poll_fn(|context|std::task::Poll::Ready(abort.as_mut().poll(context).is_ready())).await;
@@ -454,4 +456,40 @@ impl RpcConnectionHandler{
     pub fn cancel_pending_extension_ui_requests(&self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all();self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all(0);}
     /// Tear down subscriptions and dispose the session runtime. Never exits the process.
     pub async fn dispose(&self){self.cancel_pending_extension_ui_requests();self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
+}
+
+#[cfg(test)]
+mod new_session_tests{
+    use super::*;
+    use std::sync::Arc;
+
+    fn session()->AgentSession{
+        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()});
+        AgentSession::new(maho_core::agent_session::AgentSessionConfig{
+            agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
+            session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),
+            settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
+            cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
+        }).expect("session")
+    }
+
+    #[tokio::test]
+    async fn new_session_without_parent_returns_navigation_result(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"new","type":"new_session"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"new_session");
+        assert_eq!(response["success"],true);
+        assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    }
+
+    #[tokio::test]
+    async fn new_session_with_parent_preserves_success_shape(){
+        let session=session();
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"new_session","parentSession":"parent-session"})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["command"],"new_session");
+        assert_eq!(response["success"],true);
+        assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
+    }
 }
