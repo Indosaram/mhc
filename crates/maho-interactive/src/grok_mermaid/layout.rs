@@ -78,12 +78,34 @@ pub fn assign_positions(by_rank: &[Vec<usize>], size: &[usize], sep: usize, edge
     for e in edges { if e.from != e.to && ranks[e.to] > ranks[e.from] { parents[e.to].push(e.from); children[e.from].push(e.to); } }
     let mut pos = vec![0f64; n]; for row in by_rank { let mut x = 0.; for &v in row { x += size[v] as f64 / 2.; pos[v] = x; x += size[v] as f64 / 2. + sep as f64; } }
     for it in 0..10 { let rows: Vec<&Vec<usize>> = if it % 2 == 0 { by_rank.iter().collect() } else { by_rank.iter().rev().collect() }; let neigh = if it % 2 == 0 { &parents } else { &children }; for row in rows { relax_rank(row, neigh, &mut pos, size, sep); } }
-    let min_left = pos.iter().enumerate().map(|(v,p)| p - size[v] as f64 / 2.).fold(f64::INFINITY, f64::min).min(0.); pos.iter().map(|p| (p - min_left).max(0.).round() as usize).collect()
+    let min_left = pos.iter().enumerate().map(|(v,p)| p - size[v] as f64 / 2.).fold(f64::INFINITY, f64::min); let min_left = if min_left.is_finite() { min_left } else { 0. }; pos.iter().map(|p| (p - min_left).max(0.).round() as usize).collect()
 }
 
 fn relax_rank(nodes: &[usize], neigh: &[Vec<usize>], pos: &mut [f64], size: &[usize], sep: usize) { if nodes.is_empty() { return; } let desired: Vec<f64> = nodes.iter().map(|&v| if neigh[v].is_empty() { pos[v] } else { neigh[v].iter().map(|&u| pos[u]).sum::<f64>() / neigh[v].len() as f64 }).collect(); let mut left = vec![0.; nodes.len()]; for i in 0..nodes.len() { left[i] = if i == 0 { desired[i] } else { desired[i].max(left[i-1] + (size[nodes[i-1]] + size[nodes[i]]) as f64 / 2. + sep as f64) }; } let mut right = vec![0.; nodes.len()]; for i in (0..nodes.len()).rev() { right[i] = if i+1 == nodes.len() { desired[i] } else { desired[i].min(right[i+1] - (size[nodes[i+1]] + size[nodes[i]]) as f64 / 2. - sep as f64) }; } for i in 0..nodes.len() { pos[nodes[i]] = (left[i]+right[i])/2.; } for i in 1..nodes.len() { let m = pos[nodes[i-1]] + (size[nodes[i-1]] + size[nodes[i]]) as f64 / 2. + sep as f64; if pos[nodes[i]] < m { pos[nodes[i]] = m; } } }
 
 pub fn assign_tracks(spans: &[[usize; 5]]) -> (Vec<(usize, usize)>, usize) { let mut sorted = spans.to_vec(); sorted.sort(); let mut tracks: Vec<Vec<[usize;4]>> = Vec::new(); let mut assigned = Vec::new(); for [s,e,f,t,idx] in sorted { let slot = tracks.iter().position(|m| m.iter().all(|[s2,e2,f2,t2]| e2+2 <= s || e+2 <= *s2 || *f2 == f || *t2 == t)).unwrap_or_else(|| { tracks.push(Vec::new()); tracks.len()-1 }); tracks[slot].push([s,e,f,t]); assigned.push((idx,slot)); } (assigned, tracks.len()) }
+
+fn bus_spans(graph: &Graph, ranks: &[usize], centers: &[usize], r: usize, exact: bool) -> Vec<[usize; 5]> {
+    let mut out = Vec::new();
+    for (i, e) in graph.edges.iter().enumerate() {
+        let jogs = if exact { centers[e.from] != centers[e.to] } else { centers[e.from].abs_diff(centers[e.to]) > 1 };
+        if e.from != e.to && ranks[e.from] == r && ranks[e.to] == r + 1 && jogs {
+            out.push([centers[e.from].min(centers[e.to]), centers[e.from].max(centers[e.to]), e.from, e.to, i]);
+        }
+    }
+    out
+}
+
+fn lane_spans(graph: &Graph, ranks: &[usize], placed: &[Placed], vertical: bool) -> Vec<[usize; 5]> {
+    let mut out = Vec::new();
+    for (i, e) in graph.edges.iter().enumerate() {
+        if e.from == e.to || ranks[e.to] == ranks[e.from] + 1 { continue; }
+        let pf = placed[e.from]; let pt = placed[e.to];
+        let (a, b) = if vertical { (pf.cy.min(pt.cy), pf.cy.max(pt.cy)) } else { (pf.cx.min(pt.cx), pf.cx.max(pt.cx)) };
+        out.push([a, b, e.from, e.to, i]);
+    }
+    out
+}
 
 pub fn orient(mut canvas: Canvas, graph: &Graph) -> Canvas { if graph.dir == Dir::Up { canvas.flip_vertical(); } else if graph.dir == Dir::Left { canvas.flip_horizontal(); } canvas }
 
@@ -150,4 +172,31 @@ mod tests {
 
     #[test]
     fn track_packing() { let (a, n) = assign_tracks(&[[0, 3, 0, 1, 4], [0, 3, 0, 2, 5], [5, 6, 1, 2, 6]]); assert_eq!(n, 2); assert_eq!(a.len(), 3); }
+
+    #[test]
+    fn positions_normalize_left_edge() {
+        assert_eq!(assign_positions(&[vec![0]], &[4], 3, &[], &[0]), vec![0]);
+    }
+
+    #[test]
+    fn relax_rank_preserves_spacing() {
+        let mut pos = vec![0.0, 0.0];
+        relax_rank(&[0, 1], &[vec![], vec![]], &mut pos, &[4, 6], 3);
+        assert!(pos[1] - pos[0] >= 8.999);
+    }
+
+    #[test]
+    fn bus_spans_select_jogging_adjacent_edges() {
+        let mut graph = Graph::default(); graph.nodes = (0..2).map(|i| super::super::graph::Node { label: i.to_string(), shape: Shape::Rect }).collect(); graph.edges = vec![edge(0, 1)];
+        assert_eq!(bus_spans(&graph, &[0, 1], &[0, 3], 0, false), vec![[0, 3, 0, 1, 0]]);
+        assert!(bus_spans(&graph, &[0, 1], &[0, 1], 0, false).is_empty());
+    }
+
+    #[test]
+    fn lane_spans_skip_adjacent_edges() {
+        let mut graph = Graph::default(); graph.nodes = (0..3).map(|i| super::super::graph::Node { label: i.to_string(), shape: Shape::Rect }).collect(); graph.edges = vec![edge(0, 2), edge(0, 1), edge(1, 1)];
+        let placed = vec![Placed { cx: 2, cy: 4, ..Placed::default() }, Placed { cx: 8, cy: 9, ..Placed::default() }, Placed { cx: 5, cy: 12, ..Placed::default() }];
+        assert_eq!(lane_spans(&graph, &[0, 1, 2], &placed, false), vec![[2, 5, 0, 2, 0]]);
+        assert_eq!(lane_spans(&graph, &[0, 1, 2], &placed, true), vec![[4, 12, 0, 2, 0]]);
+    }
 }
