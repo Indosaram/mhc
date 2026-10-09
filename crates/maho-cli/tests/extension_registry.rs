@@ -18,6 +18,13 @@ fn pinned_builtin_order_matches_upstream() {
 }
 
 #[test]
+fn registered_builtin_ids_follow_pinned_order() {
+    let registered: Vec<&str> = builtin_extensions().iter().map(|extension| extension.id).collect();
+    let expected: Vec<&str> = BUILTIN_EXTENSION_IDS.iter().copied().filter(|id| registered.contains(id)).collect();
+    assert_eq!(registered, expected);
+}
+
+#[test]
 fn every_pinned_id_is_linked_or_recorded_as_deferred() {
     let mut covered: Vec<&str> = builtin_extensions()
         .iter()
