@@ -9,6 +9,7 @@ use tokio::io::AsyncReadExt;
 use url::Url;
 
 use crate::types::ByteStream;
+use crate::types::CheckFailure;
 use crate::types::CheckResult;
 use crate::types::ResolveCommentCheckerBinaryInput;
 use crate::types::RunCommentCheckerInput;
@@ -18,6 +19,25 @@ use crate::types::SpawnSignal;
 pub const DEFAULT_PACKAGE_NAME: &str = "@code-yeongyu/comment-checker";
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_KILL_GRACE_MS: u64 = 1_000;
+const MAX_FAILURE_STDERR: usize = 500;
+
+fn normalize_message(message: &str) -> String {
+    message.replace("\r\n", "\n")
+}
+
+fn failed(exit_code: Option<i32>, stderr: &str) -> CheckResult {
+    let normalized = normalize_message(stderr);
+    let trimmed = normalized.trim();
+    let truncated: String = trimmed.chars().take(MAX_FAILURE_STDERR).collect();
+    CheckResult {
+        has_comments: false,
+        message: String::new(),
+        failure: Some(CheckFailure {
+            exit_code,
+            stderr: truncated,
+        }),
+    }
+}
 
 /// Cached path if it still exists, else `<package dir>/bin/<binary_name>` found by
 /// Node-style `node_modules` lookup from `import_meta_url`.
@@ -71,15 +91,20 @@ async fn read_text(mut stream: ByteStream) -> io::Result<String> {
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).await?;
     let text = String::from_utf8_lossy(&bytes);
-    Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())
+    Ok(text.strip_prefix('﻿').unwrap_or(&text).to_string())
+}
+
+enum ExitOutcome {
+    Exited(i32),
+    NotStarted(String),
 }
 
 /// Pipes the hook input JSON to `<binary> check [--prompt <p>]`.
 ///
-/// Exit code `2` yields `has_comments: true` with the CRLF-normalised stderr;
-/// any other exit code, a stream/exit error, or a timeout (which sends
-/// `SIGTERM`) yields the empty result. Only spawn and stdin failures are
-/// returned as `Err`, matching the TS promise rejections.
+/// Exit code `2` yields `has_comments: true` with the CRLF-normalised stderr when delivered;
+/// exit code `0` yields clean empty result;
+/// timeouts yield empty result with SIGTERM sent;
+/// exit outside protocol or spawn/start errors produce `CheckResult` with `failure` set.
 pub async fn run_comment_checker(
     input: &RunCommentCheckerInput,
     options: &RunCommentCheckerOptions<'_>,
@@ -100,28 +125,59 @@ pub async fn run_comment_checker(
 
     let timeout = Duration::from_millis(options.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
-    let mut process = (options.spawn)(&args)?;
-    let payload = serde_json::to_string(&input.hook_input).map_err(io::Error::other)?;
-    process.write_stdin(&payload)?;
-    process.end_stdin()?;
+    let mut process = match (options.spawn)(&args) {
+        Ok(proc) => proc,
+        Err(err) => return Ok(failed(None, &err.to_string())),
+    };
+
+    let payload = match serde_json::to_string(&input.hook_input) {
+        Ok(p) => p,
+        Err(err) => return Err(io::Error::other(err)),
+    };
+
+    let input_delivered = match process.write_stdin(&payload).and_then(|()| process.end_stdin()) {
+        Ok(()) => true,
+        Err(_) => {
+            let _ = process.kill(SpawnSignal::Sigkill);
+            false
+        }
+    };
 
     let stdout = process.take_stdout();
     let stderr = process.take_stderr();
+
     let completed = tokio::time::timeout(timeout, async {
-        tokio::try_join!(read_text(stdout), read_text(stderr), process.exited())
+        let stdout_fut = read_text(stdout);
+        let stderr_fut = read_text(stderr);
+        let exit_fut = process.exited();
+        let (stdout_res, stderr_res, exit_res) = tokio::join!(stdout_fut, stderr_fut, exit_fut);
+        let exit_outcome = match exit_res {
+            Ok(code) => ExitOutcome::Exited(code),
+            Err(err) => ExitOutcome::NotStarted(err.to_string()),
+        };
+        (stdout_res.ok(), stderr_res.ok(), exit_outcome)
     })
     .await;
 
-    let Ok(completed) = completed else {
+    let Ok((_stdout, stderr, exit_outcome)) = completed else {
         let _ = process.kill(SpawnSignal::Sigterm);
         return Ok(CheckResult::default());
     };
 
-    match completed {
-        Ok((_stdout, stderr, 2)) => Ok(CheckResult {
-            has_comments: true,
-            message: stderr.replace("\r\n", "\n"),
-        }),
-        Ok(_) | Err(_) => Ok(CheckResult::default()),
+    match exit_outcome {
+        ExitOutcome::NotStarted(reason) => Ok(failed(None, &reason)),
+        ExitOutcome::Exited(0) => Ok(CheckResult::default()),
+        ExitOutcome::Exited(2) => {
+            if input_delivered && let Some(stderr) = stderr {
+                Ok(CheckResult {
+                    has_comments: true,
+                    message: normalize_message(&stderr),
+                    failure: None,
+                })
+            } else {
+                Ok(CheckResult::default())
+            }
+        }
+        ExitOutcome::Exited(code) => Ok(failed(Some(code), stderr.as_deref().unwrap_or(""))),
     }
 }
