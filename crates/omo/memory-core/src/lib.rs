@@ -10,6 +10,7 @@ pub mod locks;
 pub mod memfs;
 pub mod people;
 pub mod personas;
+pub mod receipts;
 pub mod recall;
 pub mod reflection;
 pub mod reminders;

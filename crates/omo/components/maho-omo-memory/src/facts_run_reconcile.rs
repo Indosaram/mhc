@@ -9,6 +9,8 @@ pub trait FactsReconciliationPort{
     fn fail(&mut self,dir:&Path,ledger:&FactsRunLedger,detail:&str)->Result<(),Self::Error>;
     fn abandon(&mut self,dir:&Path,ledger:&FactsRunLedger)->Result<(),Self::Error>;
     fn warn(&mut self,run_id:&str,error:&Self::Error);
+    fn receipts_dir(&self)->Option<&Path>{None}
+    fn receipts_port(&self)->Option<&dyn crate::receipts_port::MemoryReceiptsPort>{None}
 }
 #[derive(Debug)]
 pub enum FactsReconciliationError<E>{Artifact(ArtifactError),Operation(E)}
@@ -16,7 +18,12 @@ pub fn reconcile_facts_runs<P:FactsReconciliationPort>(facts:&Path,port:&mut P)-
     let runs=facts.join("runs");let mut names:Vec<_>=std::fs::read_dir(&runs).into_iter().flatten().filter_map(Result::ok).map(|entry|entry.file_name()).collect();names.sort();let mut active=false;
     for name in names{
         let dir=runs.join(name);
-        if crate::facts_run_cleanup::is_terminal_run_dir(&dir){continue;}
+        if crate::facts_run_cleanup::is_terminal_run_dir(&dir){
+            if let Some(receipts_dir)=port.receipts_dir(){
+                backfill_facts_receipt(receipts_dir,&dir,port.receipts_port());
+            }
+            continue;
+        }
         let Ok(ledger)=read_run_json::<FactsRunLedger>(&dir.join("ledger.json"))else{continue;};
         if dir.join("outcome.json").exists(){let outcome=read_run_json::<RunOutcome>(&dir.join("outcome.json")).map_err(FactsReconciliationError::Artifact)?;if run_outcome_matches_ledger(ledger.attempt,&outcome){if let Err(error)=port.finalize(&dir){port.warn(&ledger.run_id,&error);active=true;}continue;}}
         let verdict=port.liveness(&ledger);
@@ -24,6 +31,33 @@ pub fn reconcile_facts_runs<P:FactsReconciliationPort>(facts:&Path,port:&mut P)-
         if verdict==ProcessLiveness::Unknown{port.abandon(&dir,&ledger).map_err(FactsReconciliationError::Operation)?;}else{port.fail(&dir,&ledger,"facts supervisor and child are not alive").map_err(FactsReconciliationError::Operation)?;}
     }
     Ok(active)
+}
+
+fn backfill_facts_receipt(runtime_dir:&Path,run_dir:&Path,receipts:Option<&dyn crate::receipts_port::MemoryReceiptsPort>){
+    let Ok(ledger)=read_run_json::<serde_json::Value>(&run_dir.join("ledger.json"))else{return;};
+    let Some(batch_id)=ledger.get("batchId").and_then(|v|v.as_str())else{return;};
+    let ledger_run_id=ledger.get("runId").and_then(|v|v.as_str());
+
+    if let Ok(final_record)=read_run_json::<serde_json::Value>(&run_dir.join("final.json")){
+        if final_record.get("runId").and_then(|v|v.as_str())!=ledger_run_id{return;}
+        let event=match final_record.get("outcome").and_then(|v|v.as_str()){
+            Some("committed")=>"committed",
+            Some("no_facts")=>"no_facts",
+            Some("failed")|Some("parent_dirty")=>"failed",
+            _=>return,
+        };
+        let sha=if event=="committed"{final_record.get("sha").and_then(|v|v.as_str()).map(str::to_string)}else{None};
+        let receipt=crate::receipts_port::facts_receipt(batch_id,event,crate::receipts_port::ReceiptExtra{sha,reason:None,detail:None});
+        crate::receipts_port::emit_memory_receipt(runtime_dir,&receipt,receipts,None);
+        return;
+    }
+
+    if let Ok(abandoned)=read_run_json::<serde_json::Value>(&run_dir.join("abandoned.json")){
+        if abandoned.get("runId").and_then(|v|v.as_str())!=ledger_run_id{return;}
+        let reason=abandoned.get("reason").and_then(|v|v.as_str()).map(str::to_string);
+        let receipt=crate::receipts_port::facts_receipt(batch_id,"abandoned",crate::receipts_port::ReceiptExtra{sha:None,reason,detail:None});
+        crate::receipts_port::emit_memory_receipt(runtime_dir,&receipt,receipts,None);
+    }
 }
 #[cfg(test)]
 mod tests{

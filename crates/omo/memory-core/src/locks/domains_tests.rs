@@ -19,6 +19,7 @@ fn given_runtime_locks_dir_when_domain_paths_resolved_then_protocol_names_are_st
         facts_runs_lock_path(&locks_directory),
         notice_lock_path(&locks_directory),
         run_finalization_lock_path(&locks_directory, "run-123").unwrap(),
+        receipts_lock_path(&locks_directory),
     ];
 
     // #then
@@ -33,6 +34,7 @@ fn given_runtime_locks_dir_when_domain_paths_resolved_then_protocol_names_are_st
             "facts-queue",
             "facts-runs",
             "notice",
+            "receipts",
         ]
     );
     assert_eq!(paths[0], locks_directory.join("memory-write.lock"));
@@ -51,6 +53,7 @@ fn given_runtime_locks_dir_when_domain_paths_resolved_then_protocol_names_are_st
     assert_eq!(paths[5], locks_directory.join("facts-runs.lock"));
     assert_eq!(paths[6], locks_directory.join("notice.lock"));
     assert_eq!(paths[7], locks_directory.join("finalize-run-123.lock"));
+    assert_eq!(paths[8], locks_directory.join("receipts.lock"));
 }
 
 #[test]
