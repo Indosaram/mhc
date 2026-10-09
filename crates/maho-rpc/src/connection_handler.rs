@@ -267,7 +267,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::SendCustomMessage{custom_type,content,display,details,trigger_turn,deliver_as}=>{
             let content=serde_json::from_value::<Vec<maho_tools::definition::ToolContent>>(content.clone()).map_err(|error:serde_json::Error|error.to_string());
-            let result=content.and_then(|content|session.send_custom_message(maho_ext_api::CustomMessage{custom_type:custom_type.clone(),content,display:*display,details:details.clone()},maho_ext_api::SendMessageOptions{trigger_turn:trigger_turn.unwrap_or(false),deliver_as:deliver_as.map(|mode|match mode{crate::rpc_types::DeliveryMode::Steer=>maho_ext_api::DeliverAs::Steer,crate::rpc_types::DeliveryMode::FollowUp=>maho_ext_api::DeliverAs::FollowUp,crate::rpc_types::DeliveryMode::NextTurn=>maho_ext_api::DeliverAs::NextTurn})}));
+            let result=match content{Err(error)=>Err(error),Ok(content)=>session.send_custom_message(maho_ext_api::CustomMessage{custom_type:custom_type.clone(),content,display:*display,details:details.clone()},maho_ext_api::SendMessageOptions{trigger_turn:trigger_turn.unwrap_or(false),deliver_as:deliver_as.map(|mode|match mode{crate::rpc_types::DeliveryMode::Steer=>maho_ext_api::DeliverAs::Steer,crate::rpc_types::DeliveryMode::FollowUp=>maho_ext_api::DeliverAs::FollowUp,crate::rpc_types::DeliveryMode::NextTurn=>maho_ext_api::DeliverAs::NextTurn})}).await};
             ("send_custom_message",result.map(|()|None))
         },
         RpcCommandBody::GetFastMode=>("get_fast_mode",Ok(Some(serde_json::json!({"enabled":session.is_fast_mode_active(),"serviceTier":session.effective_service_tier().map(|tier|match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"})})))),
@@ -337,14 +337,14 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if let Some(usage)=stats.context_usage{value["contextUsage"]=serde_json::json!({"tokens":usage.tokens,"contextWindow":usage.context_window,"percent":usage.percent});}
             ("get_session_stats",Ok(Some(value)))
         },
-        RpcCommandBody::GetEntries{since}=>("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since{let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))})),
+        RpcCommandBody::GetEntries{since}=>{let since=since.clone();("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since.as_deref(){let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))}))},
         RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
             if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None,error_data:None}});}
             if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires entryId or targetId".into(),error_code:None,error_data:None}});}
             let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
             if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None,error_data:None}});}
             let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
-            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}});("navigate_tree",result)
+            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
         },
         RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
         RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
@@ -366,6 +366,22 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             );
             ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
         },
+        RpcCommandBody::GetAuthProviders=>{
+            let registry=session.model_registry();
+            let providers=maho_core::auth_providers::build_login_provider_infos(registry,None).into_iter().map(|info|{
+                let status=registry.get_provider_auth_status(&info.id);
+                serde_json::json!({"id":info.id,"name":info.name,"authType":match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"},"status":{"configured":status.configured,"source":status.source,"label":status.label}})
+            }).collect::<Vec<_>>();
+            ("get_auth_providers",Ok(Some(serde_json::json!({"providers":providers}))))
+        },
+        RpcCommandBody::LoginApiKey{provider,key}=>{
+            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|Some(serde_json::Value::Null));
+            ("login_api_key",result)
+        },
+        RpcCommandBody::Logout{provider}=>{
+            let result=session.model_registry().auth_storage.logout(provider).map(|()|Some(serde_json::Value::Null));
+            ("logout",result)
+        },
         RpcCommandBody::GetProviderAccounts{provider}=>{
             let result=session.model_registry().get_credential_accounts(provider,&session.agent_dir()).await
                 .map(|accounts|Some(serde_json::json!({"accounts":accounts.into_iter().map(|account|serde_json::json!({
@@ -382,7 +398,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("account_remove",result)
         },
         RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
-        RpcCommandBody::GetTree=>{fn tree_node(node:maho_core::session_manager::SessionTreeNode)->serde_json::Value{serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>(),"label":node.label,"labelTimestamp":node.label_timestamp})}let tree=session.with_session_manager(|manager|manager.get_tree(manager.leaf_id()).map(tree_node));("get_tree",Ok(Some(serde_json::json!({"tree":tree,"leafId":session.with_session_manager(|manager|manager.leaf_id())}))))},
+        RpcCommandBody::GetTree=>{fn tree_node(node:maho_core::session_manager::SessionTreeNode)->serde_json::Value{serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>(),"label":node.label,"labelTimestamp":node.label_timestamp})}let (tree,leaf_id)=session.with_session_manager(|manager|{let leaf_id=manager.leaf_id().map(str::to_owned);(manager.get_tree(leaf_id.as_deref()).map(tree_node),leaf_id)});("get_tree",Ok(Some(serde_json::json!({"tree":tree,"leafId":leaf_id}))))},
         RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
         RpcCommandBody::EditAssistantMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
             if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_assistant_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_assistant_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
@@ -623,6 +639,23 @@ mod new_session_tests{
     async fn append_user_message_dispatches(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"append_user_message","content":"hello"})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"append_user_message"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn get_auth_providers_dispatches_provider_statuses(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_auth_providers"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"get_auth_providers"); assert_eq!(response["success"],true); assert!(response["data"]["providers"].is_array());
+    }
+    #[tokio::test]
+    async fn login_api_key_persists_api_key_credential(){
+        let session=session();
+        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"login_api_key","provider":"fixture","key":"secret"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"login_api_key"); assert_eq!(response["success"],true); assert_eq!(session.model_registry().auth_storage.get("fixture"),Some(serde_json::json!({"type":"api_key","key":"secret"})));
+    }
+    #[tokio::test]
+    async fn logout_removes_stored_credential(){
+        let session=session(); session.model_registry().auth_storage.set("fixture",Some(serde_json::json!({"type":"api_key","key":"secret"}))).unwrap();
+        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"logout","provider":"fixture"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"logout"); assert_eq!(response["success"],true); assert_eq!(session.model_registry().auth_storage.get("fixture"),None);
     }
     #[tokio::test]
     async fn bash_dispatches_success(){
