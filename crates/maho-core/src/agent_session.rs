@@ -4050,6 +4050,10 @@ impl AgentSession {
         Ok(true)
     }
 
+    pub async fn check_reload_veto(&self) -> Result<bool, String> {
+        Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true))
+    }
+
     fn expand_input(&self, text: &str, templates: bool) -> Result<String, String> {
         let skills = self.state().skills.clone();
         let tokens = crate::skill_invocation::parse_skill_invocation_tokens(text, &crate::skill_invocation::ParseSkillInvocationOptions {
