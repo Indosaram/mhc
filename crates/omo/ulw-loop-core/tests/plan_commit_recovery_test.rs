@@ -4,7 +4,7 @@ use ulw_loop_core::command_types::CreateUlwLoopOptions;
 use ulw_loop_core::paths::{ulw_loop_dir, UlwLoopScope};
 use ulw_loop_core::plan_commit::{commit, CommitMutation};
 use ulw_loop_core::plan_crud::create_ulw_loop_plan;
-use ulw_loop_core::plan_io::{plan_exists, read_ledger, read_ulw_loop_plan};
+use ulw_loop_core::plan_io::{plan_exists, read_ledger, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
 
 fn make(root: &std::path::Path) -> (UlwLoopScope, ulw_loop_core::domain_types::UlwLoopPlan) {
     let scope = UlwLoopScope::new("commit-log");
