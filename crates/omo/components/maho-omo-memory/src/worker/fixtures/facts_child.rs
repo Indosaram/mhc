@@ -1,14 +1,49 @@
 use std::{collections::BTreeMap, path::Path};
+use memory_core::facts::extraction::parse_facts_extraction_record;
+
 pub fn run(mode: &str, env: &BTreeMap<String, String>) -> Result<i32, String> {
     let payload_path = env.get("FACTS_PAYLOAD_PATH").ok_or("facts paths are required")?;
     let extraction_path = env.get("FACTS_EXTRACTION_PATH").ok_or("facts paths are required")?;
     if env.get("SENPI_MEMORY_FACTS").is_none_or(|value| value != "1") { return Err("facts sentinel is required".into()); }
     let payload: serde_json::Value = super::super::run_artifacts::read_run_json(Path::new(payload_path)).map_err(|error| error.to_string())?;
-    let output = match mode {
-        "fact" => format!("{}\n", serde_json::json!({"scope":"project","text":format!("fixture consumed {} queue entries", payload["entries"].as_array().ok_or("entries must be an array")?.len()),"date":payload["today"]})),
-        "person" => format!("{}\n", serde_json::json!({"scope":"person","person":{"name":"Mina","aliases":["Min"]},"text":"Mina prefers concise reviews.","date":payload["today"]})),
-        "empty" => String::new(),
-        "malformed" => "{\"scope\":\"project\",\"person\":{\"name\":\"Mina\",\"aliases\":[]},\"text\":\"bad\",\"date\":\"2026-08-10\"}\n".into(),
+
+    let record_fact = |record_val: &serde_json::Value| -> Result<(), String> {
+        let rec = parse_facts_extraction_record(record_val, 0).map_err(|e| e.message)?;
+        let line = format!("{}\n", serde_json::to_string(&rec).map_err(|e| e.to_string())?);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(extraction_path)
+            .map_err(|e| e.to_string())?;
+        use std::io::Write;
+        file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        file.flush().map_err(|e| e.to_string())?;
+        Ok(())
+    };
+
+    match mode {
+        "fact" => {
+            record_fact(&serde_json::json!({
+                "scope": "project",
+                "text": format!("fixture consumed {} queue entries", payload["entries"].as_array().ok_or("entries must be an array")?.len()),
+                "date": payload["today"]
+            }))?;
+        }
+        "person" => {
+            record_fact(&serde_json::json!({
+                "scope": "person",
+                "person": { "name": "Mina", "aliases": ["Min"] },
+                "text": "Mina prefers concise reviews.",
+                "date": payload["today"]
+            }))?;
+        }
+        "empty" => {
+            // Call nothing when no durable fact qualifies.
+            std::fs::write(extraction_path, "").map_err(|error| error.to_string())?;
+        }
+        "malformed" => {
+            std::fs::write(extraction_path, "{\"scope\":\"project\",\"person\":{\"name\":\"Mina\",\"aliases\":[]},\"text\":\"bad\",\"date\":\"2026-08-10\"}\n").map_err(|error| error.to_string())?;
+        }
         "fail" => return Ok(7),
         "model-not-found" => {
             eprintln!("Error: Model \"extension-only/primary\" not found. Use --list-models to see available models.");
@@ -16,7 +51,6 @@ pub fn run(mode: &str, env: &BTreeMap<String, String>) -> Result<i32, String> {
         }
         _ => return Err(format!("unknown facts fixture mode: {mode}")),
     };
-    std::fs::write(extraction_path, output).map_err(|error| error.to_string())?;
     Ok(0)
 }
 
