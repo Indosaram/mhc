@@ -56,9 +56,12 @@ maho-ext-loop = { path = "../builtins/maho-ext-loop" }
 maho-ext-ttsr = { path = "../builtins/maho-ext-ttsr" }
 maho-ext-config-reload = { path = "../builtins/maho-ext-config-reload" }
 maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
+maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker" }
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }
 maho-ext-omo-zcode-oauth = { path = "../extensions/maho-ext-omo-zcode-oauth" }
+maho-ext-orca-prefill = { path = "../extensions/maho-ext-orca-prefill" }
+maho-ext-quiet-model-profile = { path = "../extensions/maho-ext-quiet-model-profile" }
 maho-ext-ferryx-agent-state = { path = "../extensions/maho-ext-ferryx-agent-state" }
 maho-ext-herdr-agent-state = { path = "../extensions/maho-ext-herdr-agent-state" }
 maho-ext-orca-agent-status = { path = "../extensions/maho-ext-orca-agent-status" }
