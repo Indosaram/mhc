@@ -31,3 +31,13 @@ pub fn resolve_worker_kernel_tools(pool: &WorkpoolRecord, capability: Option<&dy
 }
 
 #[cfg(test)] mod tests { use super::*; struct Fake; impl KernelToolCapability for Fake { fn available(&self, name: &str) -> bool { name == "lookup" } } #[test] fn missing_capability_is_typed() { let result = resolve_worker_kernel_tools(&WorkpoolRecord { version: 1, pool_id: "wp_test".into(), name: "n".into(), parent_session_id: "p".into(), root_session_id: "p".into(), generation: 0, revision: 0, mode: super::super::types::WorkpoolMode::Fresh, agent: super::super::types::WorkpoolAgent::Category { prompt: "p".into(), model: None, category: "c".into() }, worker_spec: WorkpoolSpec { start: Default::default(), plan: Default::default() }, status: super::super::types::WorkpoolStatus::Open, kernel_tool_names: Some(vec!["lookup".into()]), items: vec![], workers: vec![], aggregate: None }, None, &[]); assert_eq!(result.unwrap_err().code, WorkpoolErrorCode::ToolsUnavailable); } }
+#[cfg(test)] mod additional_tests {
+    use super::*;
+    struct Available;
+    impl KernelToolCapability for Available { fn available(&self, name: &str) -> bool { name == "fixture_lookup" } }
+    fn spec() -> WorkpoolSpec { WorkpoolSpec { start: Default::default(), plan: Default::default() } }
+    #[test] fn granted_binding_keeps_requested_names() { let grant=resolve_pool_kernel_tools(&["fixture_lookup".into()], &Available, &spec(), &[], None, None).expect("grant").expect("some"); assert_eq!(grant.names, vec!["fixture_lookup"]); }
+    #[test] fn missing_parent_binding_refuses_worker_grant() { let pool=WorkpoolRecord { version: 1, pool_id: "wp_test".into(), name: "n".into(), parent_session_id: "p".into(), root_session_id: "p".into(), generation: 1, revision: 0, mode: super::super::types::WorkpoolMode::Fresh, agent: super::super::types::WorkpoolAgent::Category { prompt: "p".into(), model: None, category: "c".into() }, worker_spec: spec(), status: super::super::types::WorkpoolStatus::Open, kernel_tool_names: Some(vec!["fixture_lookup".into()]), items: vec![], workers: vec![], aggregate: None }; assert_eq!(resolve_worker_kernel_tools(&pool, None, &[]).expect_err("denied").code, WorkpoolErrorCode::ToolsUnavailable); }
+    #[test] fn existing_tool_name_is_rejected() { let error=resolve_pool_kernel_tools(&["fixture_lookup".into()], &Available, &spec(), &["fixture_lookup".into()], None, None).expect_err("collision"); assert_eq!(error.code, WorkpoolErrorCode::ToolNameCollision); }
+    #[test] fn stale_tool_name_is_not_silently_dropped() { let error=resolve_pool_kernel_tools(&["fixture_lookup".into()], &Available, &spec(), &[], Some(&[]), None).expect_err("denied"); assert_eq!(error.code, WorkpoolErrorCode::PolicyDenied); }
+}

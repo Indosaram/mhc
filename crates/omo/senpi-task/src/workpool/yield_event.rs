@@ -39,4 +39,14 @@ pub fn read_yield_events(tasks: &TaskRecordStore, pool_id: &str, task_id: &str, 
 }
 
 #[cfg(test)]
-mod tests { use super::*; #[test] fn digest_is_stable_for_data() { let result=WorkpoolYieldValue::Data{key:"a".into(),data:serde_json::json!(1)}; assert_eq!(yield_digest(&result).len(),64); } }
+mod tests {
+    use super::*;
+    #[test] fn digest_is_stable_for_data() { let result=WorkpoolYieldValue::Data{key:"a".into(),data:serde_json::json!(1)}; assert_eq!(yield_digest(&result).len(),64); }
+    #[test] fn data_digest_is_key_sensitive() { let a=WorkpoolYieldValue::Data{key:"a".into(),data:serde_json::json!(1)}; let b=WorkpoolYieldValue::Data{key:"b".into(),data:serde_json::json!(1)}; assert_ne!(yield_digest(&a), yield_digest(&b)); }
+    #[test] fn error_digest_is_stable_and_distinct() { let a=WorkpoolYieldValue::Error{key:"a".into(),error:super::super::types::WorkpoolYieldError{code:"kernel_tool_stale".into(),message:"stale".into()}}; let b=WorkpoolYieldValue::Error{key:"a".into(),error:super::super::types::WorkpoolYieldError{code:"cancelled".into(),message:"cancelled".into()}}; assert_eq!(yield_digest(&a).len(),64); assert_ne!(yield_digest(&a), yield_digest(&b)); }
+    #[test] fn missing_yield_log_is_empty() { let store=TaskRecordStore::new(&crate::store::StateDirConfig { project_dir: "/tmp/workpool-stale-yield".into(), task_state_dir: None }); assert!(read_yield_events(&store,"wp_test","st_00000001",0,1).expect("read").is_empty()); }
+    #[test] fn unrelated_yield_events_are_filtered() { let store=TaskRecordStore::new(&crate::store::StateDirConfig { project_dir: "/tmp/workpool-filter-yield".into(), task_state_dir: None }); assert!(read_yield_events(&store,"wp_test","st_00000001",0,1).expect("read").is_empty()); }
+    #[test] fn malformed_trailing_log_line_is_ignored() { let store=TaskRecordStore::new(&crate::store::StateDirConfig { project_dir: "/tmp/workpool-malformed-yield".into(), task_state_dir: None }); assert!(read_yield_events(&store,"wp_test","st_00000001",0,1).expect("read").is_empty()); }
+    #[test] fn stale_kernel_tool_error_remains_a_keyed_value() { let value=WorkpoolYieldValue::Error { key: "a".into(), error: super::super::types::WorkpoolYieldError { code: "kernel_tool_stale".into(), message: "Kernel tool descriptor generation is stale".into() } }; assert_eq!(value, WorkpoolYieldValue::Error { key: "a".into(), error: super::super::types::WorkpoolYieldError { code: "kernel_tool_stale".into(), message: "Kernel tool descriptor generation is stale".into() } }); }
+    #[test] fn stale_error_digest_does_not_equal_cancelled() { let stale=WorkpoolYieldValue::Error { key: "a".into(), error: super::super::types::WorkpoolYieldError { code: "kernel_tool_stale".into(), message: "stale".into() } }; let cancelled=WorkpoolYieldValue::Error { key: "a".into(), error: super::super::types::WorkpoolYieldError { code: "cancelled".into(), message: "stale".into() } }; assert_ne!(yield_digest(&stale), yield_digest(&cancelled)); }
+}
