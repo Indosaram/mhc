@@ -4321,6 +4321,12 @@ impl AgentSession {
         self.with_session_manager(|manager| manager.session_file().map(str::to_owned))
     }
 
+    pub fn export_to_html(&self, output_path: Option<&str>, theme_name: Option<&str>) -> Result<String, String> {
+        self.with_session_manager(|manager| {
+            crate::export_html::index::export_session_to_html(manager, output_path, theme_name, Some(self.system_prompt()))
+        })
+    }
+
     pub fn session_name(&self) -> Option<String> {
         self.with_session_manager(|manager| manager.session_name().map(str::to_owned))
     }
