@@ -434,6 +434,26 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=session.edit_user_message(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
             ("edit_user_message",edit_response(session,result,"Edited user entry was not persisted"))
         },
+        RpcCommandBody::GetMedia{tool_call_id,content_index}=>{
+            let index=if content_index.is_finite()&&content_index.fract()==0.0&&*content_index>=0.0{*content_index as usize}else{usize::MAX};
+            let content=session.messages().into_iter().find_map(|message|{
+                let result=message.as_tool_result()?;
+                (result.tool_call_id==*tool_call_id).then(||result.content.get(index)).flatten().and_then(|block|{
+                    matches!(block,maho_ai::types::ContentBlock::Image(_)).then(||serde_json::to_value(block).ok()).flatten()
+                })
+            });
+            let result=content.map(|content|Some(serde_json::json!({"toolCallId":tool_call_id,"contentIndex":content_index,"content":content}))).ok_or_else(||crate::rpc_types::RPC_ERROR_MEDIA_NOT_FOUND.to_owned());
+            ("get_media",result)
+        },
+        RpcCommandBody::GetLoadedSurfaces=>{
+            let mcp_servers=session.mcp_wire_status_snapshot::<serde_json::Value>().and_then(|value|value.get("servers").cloned()).unwrap_or_else(||serde_json::json!([]));
+            ("get_loaded_surfaces",Ok(Some(serde_json::json!({"extensions":[],"mcpServers":mcp_servers}))))
+        },
+        RpcCommandBody::ExtensionRequest{name,data}=>{
+            let name=name.trim();
+            if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
+            else {("extension_request",Err(format!("RPC command requires unfinished runtime binding: extension_request:{name}")))}
+        },
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
@@ -664,6 +684,21 @@ mod new_session_tests{
     async fn append_user_message_dispatches(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"append_user_message","content":"hello"})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"append_user_message"); assert_eq!(response["success"],true);
+    }
+    #[tokio::test]
+    async fn get_media_reports_missing_media(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"missing","contentIndex":0})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"get_media"); assert_eq!(response["success"],false); assert_eq!(response["error"],"media_not_found");
+    }
+    #[tokio::test]
+    async fn get_loaded_surfaces_dispatches_inventory(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_loaded_surfaces"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"get_loaded_surfaces"); assert_eq!(response["success"],true); assert!(response["data"]["extensions"].is_array()); assert!(response["data"]["mcpServers"].is_array());
+    }
+    #[tokio::test]
+    async fn extension_request_rejects_empty_name(){
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"extension_request","name":"   "})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["command"],"extension_request"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Extension RPC request name cannot be empty");
     }
     #[tokio::test]
     async fn get_auth_providers_dispatches_provider_statuses(){
