@@ -1,6 +1,7 @@
 //! Port of senpi `packages/coding-agent/src/core/sdk.ts`.
 //!
-//! Not ported (documented in `parity.d/21.md`): `createAgentSession` needs the resource loader,
+//! `createAgentSession` is ported; see `parity.d/21.md` for the remaining integration gaps.
+//! The original resource-loader note is retained only as historical context:
 //! the built-in tool factories (`tools/index.ts`, todo 18) and `AgentSession::_buildRuntime`, none
 //! of which are ported yet, so only `clampThinkingLevelToModel` and the option/result shapes are
 //! here. `setDefaultStreamFn(streamSimple)` at module load has no Rust counterpart because the
