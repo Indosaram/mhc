@@ -171,3 +171,157 @@ mod serialization {
         assert_eq!(repo.config_get(CONFIG_KEY).expect("get"), None);
     }
 }
+
+mod bounded_exec {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use crate::git::{GitExec, GitExecOptions, GitExecResult, GitExecRuntime};
+
+    struct TimeoutTrackingExec {
+        observed_timeout_ms: Arc<AtomicUsize>,
+        observed_terminal_prompt: Arc<AtomicBool>,
+    }
+
+    impl GitExec for TimeoutTrackingExec {
+        fn run(&self, argv: &[String], options: &GitExecOptions) -> std::io::Result<GitExecResult> {
+            self.observed_timeout_ms.store(options.timeout_ms as usize, Ordering::SeqCst);
+            let val = options.env.get("GIT_TERMINAL_PROMPT").cloned().unwrap_or_default();
+            if val == "0" {
+                self.observed_terminal_prompt.store(true, Ordering::SeqCst);
+            }
+            if argv.iter().any(|arg| arg == "push") {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("git push timed out after {}ms", options.timeout_ms),
+                ))
+            } else {
+                Ok(GitExecResult {
+                    code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn test_push_honors_timeout_ms_and_redacts_error_on_exec_none_path() {
+        let temp = tempdir().expect("tempdir");
+        let bin_dir = tempdir().expect("bin tempdir");
+        let fifo_dir = tempdir().expect("fifo tempdir");
+        let fifo_path = fifo_dir.path().join("stall_fifo");
+
+        // Create a FIFO for stall control
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("mkfifo");
+        assert!(status.success());
+
+        // Create a fake git script that blocks on reading the FIFO
+        let fake_git_path = bin_dir.path().join("git");
+        {
+            let mut script = File::create(&fake_git_path).expect("create fake git");
+            let script_content = format!(
+                "#!/bin/sh\n\
+                 if [ \"$GIT_TERMINAL_PROMPT\" != \"0\" ]; then\n\
+                   echo \"missing GIT_TERMINAL_PROMPT=0\" >&2\n\
+                   exit 2\n\
+                 fi\n\
+                 # Block until something is written to fifo\n\
+                 cat \"{}\"\n\
+                 exit 0\n",
+                fifo_path.display()
+            );
+            script.write_all(script_content.as_bytes()).expect("write fake git");
+            let mut perms = script.metadata().expect("meta").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_git_path, perms).expect("set_permissions");
+        }
+
+        // Default exec: None path delegates to repo.exec().
+        // Here we provide repo with a GitExec using system spawn_and_capture against fake_git.
+        let custom_exec = crate::git::exec::create_git_exec(GitExecRuntime {
+            platform: None,
+            run_command: Some(Arc::new({
+                let fake_git = fake_git_path.clone();
+                move |_cmd, argv, options| {
+                    let mut cmd = std::process::Command::new(&fake_git);
+                    cmd.args(argv);
+                    cmd.current_dir(&options.cwd);
+                    for (k, v) in &options.env {
+                        cmd.env(k, v);
+                    }
+                    cmd.env("GIT_TERMINAL_PROMPT", "0");
+                    let mut child = cmd.spawn()?;
+                    let start = std::time::Instant::now();
+                    let timeout = std::time::Duration::from_millis(options.timeout_ms);
+                    loop {
+                        if let Some(status) = child.try_wait()? {
+                            return Ok(GitExecResult {
+                                code: status.code().unwrap_or(1),
+                                stdout: String::new(),
+                                stderr: String::new(),
+                            });
+                        }
+                        if start.elapsed() >= timeout {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!("git timed out after {}ms", options.timeout_ms),
+                            ));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+            })),
+        });
+
+        let mut repo_opts = GitMemoryRepoOptions::new(temp.path(), "mirror-stall-agent");
+        repo_opts.exec = Some(custom_exec);
+        let repo = GitMemoryRepo::new(repo_opts).expect("repo");
+
+        // MirrorSync::new uses exec: None!
+        let mirror = MirrorSync::new(&repo);
+
+        // Test with credential in URL to ensure redaction on timeout
+        let result = mirror.push("https://user:secret@127.0.0.1:9999/repo.git", 100);
+
+        assert!(!result.pushed);
+        assert!(!result.detail.contains("secret"));
+        assert!(!result.detail.contains("user:"));
+        assert!(result.detail.contains("timed out after 100ms"));
+    }
+
+    #[test]
+    fn test_push_passes_terminal_prompt_and_redacts_credentials_on_timeout() {
+        let temp = tempdir().expect("tempdir");
+        let timeout_observed = Arc::new(AtomicUsize::new(0));
+        let prompt_observed = Arc::new(AtomicBool::new(false));
+
+        let mock = TimeoutTrackingExec {
+            observed_timeout_ms: Arc::clone(&timeout_observed),
+            observed_terminal_prompt: Arc::clone(&prompt_observed),
+        };
+
+        let mut repo_opts = GitMemoryRepoOptions::new(temp.path(), "mirror-mock-agent");
+        repo_opts.exec = Some(Arc::new(mock));
+        let repo = GitMemoryRepo::new(repo_opts).expect("repo");
+
+        // MirrorSync with exec None delegates to repo.exec()
+        let mirror = MirrorSync::new(&repo);
+        let result = mirror.push("https://alice:supersecret@example.com/mem.git", 10_000);
+
+        assert!(!result.pushed);
+        assert_eq!(timeout_observed.load(Ordering::SeqCst), 10_000);
+        assert!(!result.detail.contains("supersecret"));
+        assert!(!result.detail.contains("alice:"));
+        assert!(result.detail.contains("timed out after 10000ms"));
+    }
+}
