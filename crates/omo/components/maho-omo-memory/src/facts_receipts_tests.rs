@@ -2,7 +2,7 @@ use std::path::Path;
 use memory_core::{
     facts::failures_store::{FactsFailureStore, FactsFailureStoreOptions},
     identity::layout::build_identity_paths,
-    receipts::{read_memory_receipts, MemoryReceipt, MemoryReceiptInput},
+    receipts::{read_memory_receipts, MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions},
 };
 use crate::{
     facts_runner_types::FactsRunLedger,
@@ -54,7 +54,7 @@ impl crate::facts_terminal_writes::FactsTerminalIo for TestIo<'_> {
 }
 
 fn read_receipts(runtime_dir: &Path) -> Vec<MemoryReceipt> {
-    let mut list = read_memory_receipts(runtime_dir, Default::default()).unwrap().receipts;
+    let mut list = read_memory_receipts(runtime_dir, &ReadMemoryReceiptsOptions::default()).unwrap().receipts;
     list.reverse();
     list
 }
@@ -75,10 +75,10 @@ fn given_a_committed_batch_when_it_succeeds_then_one_committed_receipt_carries_t
 
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, "facts");
-    assert_eq!(list[0].batch_id.as_deref(), Some(batch_id.as_str()));
-    assert_eq!(list[0].event, "committed");
-    assert_eq!(list[0].sha.as_deref(), Some("f00d"));
+    assert_eq!(list[0].input.kind(), "facts");
+    assert!(matches!(&list[0].input, MemoryReceiptInput::Facts { batch_id: actual, .. } if actual == &batch_id));
+    assert_eq!(list[0].input.event(), "committed");
+    assert_eq!(list[0].input.sha(), Some("f00d"));
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn given_an_empty_extraction_when_it_succeeds_then_the_receipt_says_no_facts() {
 
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].event, "no_facts");
+    assert_eq!(list[0].input.event(), "no_facts");
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn given_a_failure_that_parks_its_endpoint_when_recorded_then_failed_and_parked_
     }
     impl MemoryReceiptsPort for RecordingPort<'_> {
         fn append(&self, runtime_dir: &Path, input: &MemoryReceiptInput) -> Result<bool, String> {
-            self.order.lock().unwrap().push((input.event.clone(), self.run_dir.join("final.json").exists()));
+            self.order.lock().unwrap().push((input.event().to_string(), self.run_dir.join("final.json").exists()));
             memory_core::receipts::append_memory_receipt_once(runtime_dir, input).map_err(|e| e.to_string())
         }
     }
@@ -138,7 +138,7 @@ fn given_a_failure_that_parks_its_endpoint_when_recorded_then_failed_and_parked_
             run_id: "facts-abc-1",
             batch_id: &batch_id,
             targets: &[target.clone()],
-            reason: memory_core::facts::FactsFailureReason::SecretLikeContent,
+            reason: memory_core::facts::FactsFailureReason::Other,
             detail: "refused",
             outcome: None,
         });
@@ -151,8 +151,8 @@ fn given_a_failure_that_parks_its_endpoint_when_recorded_then_failed_and_parked_
     assert!(recorded.iter().any(|(ev, sentinel)| ev == "failed" && *sentinel));
     assert!(recorded.iter().any(|(ev, sentinel)| ev == "parked" && *sentinel));
     let list = read_receipts(&paths.runtime);
-    assert!(list.iter().any(|r| r.batch_id.as_deref() == Some(&batch_id) && r.event == "failed"));
-    assert!(list.iter().any(|r| r.batch_id.as_deref() == Some(&batch_id) && r.event == "parked"));
+    assert!(list.iter().any(|r| matches!(&r.input, MemoryReceiptInput::Facts { batch_id: id, .. } if id == &batch_id) && r.input.event() == "failed"));
+    assert!(list.iter().any(|r| matches!(&r.input, MemoryReceiptInput::Facts { batch_id: id, .. } if id == &batch_id) && r.input.event() == "parked"));
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn given_a_failure_that_only_backs_off_when_recorded_then_failed_is_receipted_an
 
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].event, "failed");
+    assert_eq!(list[0].input.event(), "failed");
 }
 
 #[test]
@@ -203,13 +203,22 @@ fn given_a_run_reconciliation_cannot_prove_dead_when_abandoned_then_an_abandoned
     let ledger = FactsRunLedger {
         version: 1,
         run_id: "facts-abc-1".into(),
+        attempt: None,
+        model: None,
+        thinking: None,
         kind: "facts".into(),
         started_at: NOW.into(),
-        hard_deadline_at: 1,
-        termination_grace_ms: 1,
-        deadline_at: 2,
+        hard_deadline_at: 1.0,
+        termination_grace_ms: 1.0,
+        deadline_at: 2.0,
         batch_id: batch_id.clone(),
         queued: vec![],
+        head_before_apply: None,
+        apply_recovery: None,
+        pid: None,
+        process_start: None,
+        child_pid: None,
+        child_process_start: None,
     };
 
     writes.abandon(&run_dir, &ledger).unwrap();
@@ -217,9 +226,9 @@ fn given_a_run_reconciliation_cannot_prove_dead_when_abandoned_then_an_abandoned
     assert!(run_dir.join("abandoned.json").exists());
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].batch_id.as_deref(), Some(batch_id.as_str()));
-    assert_eq!(list[0].event, "abandoned");
-    assert_eq!(list[0].reason.as_deref(), Some("unknown_liveness"));
+    assert!(matches!(&list[0].input, MemoryReceiptInput::Facts { batch_id: id, .. } if id == &batch_id));
+    assert_eq!(list[0].input.event(), "abandoned");
+    assert_eq!(list[0].input.reason(), Some("unknown_liveness"));
 }
 
 #[test]
@@ -272,9 +281,9 @@ fn given_a_facts_batch_reserved_for_launch_when_its_run_dir_is_claimed_then_a_la
     assert!(run_dir.is_some());
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].kind, "facts");
-    assert_eq!(list[0].batch_id.as_deref(), Some("batch-launch"));
-    assert_eq!(list[0].event, "launched");
+    assert_eq!(list[0].input.kind(), "facts");
+    assert!(matches!(&list[0].input, MemoryReceiptInput::Facts { batch_id, .. } if batch_id == "batch-launch"));
+    assert_eq!(list[0].input.event(), "launched");
 }
 
 #[test]
@@ -319,9 +328,9 @@ fn given_a_committed_run_whose_receipt_write_was_lost_when_facts_reconcile_twice
 
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].batch_id.as_deref(), Some(batch_id.as_str()));
-    assert_eq!(list[0].event, "committed");
-    assert_eq!(list[0].sha.as_deref(), Some("f00d"));
+    assert!(matches!(&list[0].input, MemoryReceiptInput::Facts { batch_id: id, .. } if id == &batch_id));
+    assert_eq!(list[0].input.event(), "committed");
+    assert_eq!(list[0].input.sha(), Some("f00d"));
 }
 
 #[test]
@@ -355,7 +364,7 @@ fn given_a_terminal_run_whose_receipt_was_already_written_when_facts_reconcile_t
 
     let list = read_receipts(&paths.runtime);
     assert_eq!(list.len(), 1);
-    assert_eq!(list[0].event, "no_facts");
+    assert_eq!(list[0].input.event(), "no_facts");
 }
 
 #[test]
