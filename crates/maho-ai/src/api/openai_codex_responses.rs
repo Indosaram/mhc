@@ -3,12 +3,6 @@
 //! The Codex Responses wire API: an SSE (or cached-WebSocket) transport in front of the shared
 //! Responses processor. This module builds the Codex request body, maps the Codex event vocabulary
 //! onto the shared Responses events, and owns the retry/cache-affinity/compression behavior.
-//!
-//! Documented deviation: maho-ai declares no WebSocket client, so the transport reports senpi's own
-//! "WebSocket transport is not available in this runtime" and `stream` falls back to SSE exactly as
-//! senpi does when `globalThis.WebSocket` is missing. The session-cache half of the WebSocket path
-//! (fallback-state.ts, the cache-affinity headers, `scheduleSessionWebSocketExpiry`) is ported and
-//! tested; the dial/handshake/liveness half stays with the unported transport.
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -655,10 +649,6 @@ pub fn build_web_socket_headers(
     );
     apply_chat_gpt_subscription_cache_affinity_headers(&mut headers, Some(request_id));
     headers
-}
-
-pub fn connect_web_socket_error() -> CodexError {
-    CodexError::Other(String::from("WebSocket transport is not available in this runtime"))
 }
 
 async fn websocket_events(
@@ -1337,6 +1327,8 @@ fn _cached_socket_marker(socket: &dyn CachedWebSocket) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::accept_async;
 
     #[test]
     fn websocket_url_converts_http_schemes() {
@@ -1368,5 +1360,37 @@ mod tests {
         let collected: Vec<_> = adapter.collect().await;
         assert_eq!(collected.len(), 1);
         assert!(String::from_utf8_lossy(&collected[0].as_ref().expect("frame")).contains("response.completed"));
+    }
+
+    #[tokio::test]
+    async fn websocket_events_uses_a_local_tungstenite_server() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind websocket server");
+        let address = listener.local_addr().expect("websocket server address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept websocket");
+            let mut socket = accept_async(stream).await.expect("websocket handshake");
+            let message = socket.next().await.expect("request frame").expect("request frame is valid");
+            assert!(matches!(message, Message::Text(_)));
+            socket.send(Message::Text(json!({"type":"response.completed","response":{"status":"completed"}}).to_string().into())).await.expect("send completion");
+        });
+        let frames = websocket_events(&format!("ws://{address}"), &reqwest::header::HeaderMap::new(), "{}", Some(1_000)).await.expect("websocket response");
+        server.await.expect("server task");
+        assert_eq!(frames.len(), 1);
+        assert!(String::from_utf8_lossy(&frames[0]).contains("response.completed"));
+    }
+
+    #[tokio::test]
+    async fn websocket_events_reports_server_error_frames() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind websocket server");
+        let address = listener.local_addr().expect("websocket server address");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept websocket");
+            let mut socket = accept_async(stream).await.expect("websocket handshake");
+            let _ = socket.next().await;
+            socket.send(Message::Text(json!({"type":"error","error":{"message":"server failure"}}).to_string().into())).await.expect("send error");
+        });
+        let error = websocket_events(&format!("ws://{address}"), &reqwest::header::HeaderMap::new(), "{}", Some(1_000)).await.expect_err("error frame");
+        server.await.expect("server task");
+        assert!(error.message().contains("server failure"));
     }
 }

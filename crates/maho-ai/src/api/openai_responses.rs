@@ -609,13 +609,6 @@ pub fn build_websocket_headers(
     headers
 }
 
-pub fn connect_websocket_error() -> ResponsesApiError {
-    ResponsesApiError::Message(String::from("WebSocket transport is not available in this runtime"))
-}
-
-/// The slice of senpi's `WebSocketLike` the cached-session expiry touches. The transport itself is
-/// not ported (maho-ai declares no WebSocket client); this is the session-cache half of
-/// `openai-responses.ts`, kept so its idle-expiry contract stays testable.
 pub trait CachedWebSocket: Send + Sync {
     /// `readyState`; `None` mirrors senpi's `undefined` (a socket that never reported one).
     fn ready_state(&self) -> Option<u8>;
@@ -760,14 +753,6 @@ async fn drive(
         params = next.as_object().cloned().unwrap_or_default();
     }
     params = sanitize_unsupported_native_tools(params, &compat);
-
-    let transport = options.transport.unwrap_or(Transport::Sse);
-    if transport != Transport::Sse && compat.supports_web_socket {
-        let websocket_error = connect_websocket_error();
-        if transport == Transport::Websocket {
-            return Err(websocket_error);
-        }
-    }
 
     let base_url = responses_base_url(model, env);
     let url = format!("{}/responses", base_url.trim_end_matches('/'));
