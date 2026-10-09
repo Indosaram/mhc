@@ -1,0 +1,4 @@
+# Task 2 follow-up evidence - AgentSession dispose disposers and compaction override
+Audits (read-only, per-slice) found ctor and set_active_tools fully ported; dispose missing _toolContextDisposers; auto-compaction override not applied at 3 compaction read sites; after-tool-call image normalization missing (separate unit, needs image utils moved from maho-cli to maho-core).
+This commit: tool_context_disposers run first in dispose and only once; get_compaction_settings (port of _getCompactionSettings, senpi fe8c564b agent-session.ts 7376-7383) used at all compaction read sites. Orchestrator moved the new compaction test onto retry_session (faux model) because test_session has no model and rejected compaction as would-overflow.
+Verification (orchestrator): cargo nextest run -p maho-core --no-fail-fast: 1095 passed, 0 skipped; clippy -p maho-core -D warnings rc 0; parity-audit maho-core PASS.
