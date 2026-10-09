@@ -609,9 +609,6 @@ pub fn build_websocket_headers(
     headers
 }
 
-/// `connectWebSocket`: maho-ai declares no WebSocket client, so the transport reports senpi's own
-/// "not available in this runtime" error and `stream` falls back to SSE exactly as senpi does when
-/// `globalThis.WebSocket` is missing.
 pub fn connect_websocket_error() -> ResponsesApiError {
     ResponsesApiError::Message(String::from("WebSocket transport is not available in this runtime"))
 }

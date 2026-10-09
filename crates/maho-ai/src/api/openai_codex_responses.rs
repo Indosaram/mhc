@@ -17,8 +17,9 @@ use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Map, Value};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
 use crate::api::openai_prompt_cache::{apply_chat_gpt_subscription_cache_affinity_headers, clamp_openai_prompt_cache_key};
@@ -656,10 +657,73 @@ pub fn build_web_socket_headers(
     headers
 }
 
-/// `connectWebSocket`: maho-ai declares no WebSocket client, so the transport reports senpi's own
-/// "not available in this runtime" error.
 pub fn connect_web_socket_error() -> CodexError {
     CodexError::Other(String::from("WebSocket transport is not available in this runtime"))
+}
+
+async fn websocket_events(
+    url: &str,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+    timeout_ms: Option<u64>,
+) -> Result<Vec<Bytes>, CodexError> {
+    let mut request = http::Request::builder().uri(url);
+    for (name, value) in headers {
+        if let Ok(value) = value.to_str() {
+            request = request.header(name.as_str(), value);
+        }
+    }
+    let request = request.body(()).map_err(|error| CodexError::Other(error.to_string()))?;
+    let connect = connect_async(request);
+    let (mut socket, _) = match timeout_ms {
+        Some(ms) if ms > 0 => tokio::time::timeout(Duration::from_millis(ms), connect)
+            .await
+            .map_err(|_| CodexError::Other(format!("WebSocket connect timeout after {ms}ms")))?
+            .map_err(|error| CodexError::Other(error.to_string()))?,
+        _ => connect.await.map_err(|error| CodexError::Other(error.to_string()))?,
+    };
+    socket
+        .send(Message::Text(body.to_owned().into()))
+        .await
+        .map_err(|error| CodexError::Other(error.to_string()))?;
+    let mut frames = Vec::new();
+    while let Some(message) = socket.next().await {
+        let message = message.map_err(|error| CodexError::Other(error.to_string()))?;
+        match message {
+            Message::Text(text) => {
+                let value: Value = serde_json::from_str(&text)
+                    .map_err(|error| CodexError::Protocol(CodexProtocolError {
+                        message: format!("Invalid Codex WebSocket JSON: {error}"),
+                        payload: Some(Value::String(text.to_string())),
+                    }))?;
+                let event_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+                if event_type == "error" || event_type == "response.failed" {
+                    return Err(CodexError::Api(CodexApiError {
+                        message: get_codex_event_error_message(value.as_object().unwrap_or(&Map::new())),
+                        code: Some(get_codex_event_error_code(value.as_object().unwrap_or(&Map::new()))),
+                        payload: Some(value),
+                    }));
+                }
+                let done = matches!(event_type, "response.done" | "response.completed" | "response.incomplete");
+                frames.push(Bytes::from(format!("data: {value}\n\n")));
+                if done { break; }
+            }
+            Message::Binary(data) => {
+                let value: Value = serde_json::from_slice(&data)
+                    .map_err(|error| CodexError::Other(error.to_string()))?;
+                frames.push(Bytes::from(format!("data: {value}\n\n")));
+            }
+            Message::Ping(data) => {
+                socket.send(Message::Pong(data)).await.map_err(|error| CodexError::Other(error.to_string()))?;
+            }
+            Message::Close(_) => break,
+            Message::Pong(_) | Message::Frame(_) => {}
+        }
+    }
+    if frames.is_empty() {
+        return Err(CodexError::Other(String::from("WebSocket stream closed before response.completed")));
+    }
+    Ok(frames)
 }
 
 /// `SESSION_WEBSOCKET_MAX_AGE_MS`.
@@ -961,23 +1025,43 @@ async fn drive(
         record_web_socket_sse_fallback(cache_session_id.as_deref());
     }
 
-    // maho-ai has no WebSocket client: senpi's own runtime error is raised and, exactly as senpi
-    // does when the transport never opened, the turn falls back to SSE.
     if transport != Transport::Sse && !websocket_disabled_for_session {
-        let error = connect_web_socket_error();
-        if transport == Transport::Websocket {
-            return Err(error);
+        let websocket_url = resolve_codex_web_socket_url(Some(model.base_url.as_str()));
+        match websocket_events(&websocket_url, &_websocket_headers, &body_json, _websocket_connect_timeout_ms).await {
+            Ok(frames) => {
+                stream.push(AssistantMessageEvent::Start { partial: output.clone() });
+                let adapter = CodexEventStream {
+                    body: Box::pin(futures::stream::iter(frames.into_iter().map(Ok))),
+                    buffer: String::new(),
+                    done: false,
+                    state: Arc::new(Mutex::new(CodexStreamAdapterState::default())),
+                };
+                let service_tier = codex_options.service_tier.as_deref();
+                let stream_options = ResponsesStreamOptions {
+                    service_tier,
+                    grammar_tool_input_properties: &grammar_tool_input_properties,
+                    apply_service_tier_pricing: Some(&|usage: &mut Usage, service_tier: Option<&str>| {
+                        apply_codex_service_tier_pricing(usage, service_tier, model)
+                    }),
+                };
+                process_responses_stream(Box::pin(adapter), output, stream, model, &stream_options)
+                    .await
+                    .map_err(|error| CodexError::Other(error.message))?;
+                assert_successful_output(output)?;
+                stream.push(AssistantMessageEvent::Done { reason: get_done_reason(output.stop_reason), message: output.clone() });
+                stream.end(None);
+                return Ok(());
+            }
+            Err(error) if transport == Transport::Websocket => return Err(error),
+            Err(error) => {
+                append_assistant_message_diagnostic(
+                    &mut output.diagnostics,
+                    create_assistant_message_diagnostic("provider_transport_failure", &Thrown::error("Error", error.message()), None),
+                );
+                record_web_socket_failure(cache_session_id.as_deref(), &Thrown::error("Error", error.message()));
+                record_web_socket_sse_fallback(cache_session_id.as_deref());
+            }
         }
-        append_assistant_message_diagnostic(
-            &mut output.diagnostics,
-            create_assistant_message_diagnostic(
-                "provider_transport_failure",
-                &Thrown::error("Error", error.message()),
-                None,
-            ),
-        );
-        record_web_socket_failure(cache_session_id.as_deref(), &Thrown::error("Error", error.message()));
-        record_web_socket_sse_fallback(cache_session_id.as_deref());
     }
 
     let mut sse_headers = sse_headers;
@@ -1248,4 +1332,41 @@ pub use crate::api::openai_responses::CachedWebSocket as CodexCachedWebSocket;
 #[allow(dead_code)]
 fn _cached_socket_marker(socket: &dyn CachedWebSocket) -> Option<u8> {
     socket.ready_state()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn websocket_url_converts_http_schemes() {
+        assert_eq!(resolve_codex_web_socket_url(Some("https://example.test")), "wss://example.test/codex/responses");
+        assert_eq!(resolve_codex_web_socket_url(Some("http://example.test/codex")), "ws://example.test/codex/responses");
+    }
+
+    #[test]
+    fn websocket_headers_use_websocket_beta_and_affinity() {
+        let headers = build_web_socket_headers(None, None, None, "token", "request-id");
+        assert_eq!(headers.get("openai-beta").and_then(|value| value.to_str().ok()), Some("responses_websockets=2026-02-06"));
+        assert!(headers.get("accept").is_none());
+        assert!(headers.get("content-type").is_none());
+    }
+
+    #[tokio::test]
+    async fn websocket_event_parser_maps_completion_frames() {
+        let frames = vec![Bytes::from(format!(
+            "data: {}\n\n",
+            json!({"type":"response.completed","response":{"status":"completed"}})
+        ))];
+        let state = Arc::new(Mutex::new(CodexStreamAdapterState::default()));
+        let adapter = CodexEventStream {
+            body: Box::pin(futures::stream::iter(frames.into_iter().map(Ok))),
+            buffer: String::new(),
+            done: false,
+            state,
+        };
+        let collected: Vec<_> = adapter.collect().await;
+        assert_eq!(collected.len(), 1);
+        assert!(String::from_utf8_lossy(&collected[0].as_ref().expect("frame")).contains("response.completed"));
+    }
 }
