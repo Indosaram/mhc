@@ -1,5 +1,5 @@
 use crate::grok_mermaid::graph::{
-    empty_class_info, parse_dir, ClassInfo, Graph, Head, LineKind, Shape, MAX_EDGES,
+    empty_class_info, parse_dir, ClassInfo, Edge, Graph, Head, LineKind, Shape, MAX_EDGES,
     MAX_GROUP_DEPTH, MAX_GROUPS, MAX_MEMBERS, MAX_NODES,
 };
 use crate::grok_mermaid::labels::{
@@ -215,7 +215,14 @@ fn parse_statement(s: &str, g: &mut Graph) {
                 } else {
                     (f0, t0, lf, rt)
                 };
-                if !g.push_edge(f, t, lab.clone(), ht, hf, lk) { return; }
+                if !g.push_edge(Edge {
+                    from: f,
+                    to: t,
+                    label: lab.clone(),
+                    head_to: ht,
+                    head_from: hf,
+                    line: lk,
+                }) { return; }
             }
         }
         prev = to; i = j;
@@ -297,7 +304,7 @@ fn parse_state_decl(s: &str, g: &mut Graph) -> Option<()> {
         let label = &r[1..q];
         let z = r[q + 1..].trim();
         let id = z.strip_prefix("as").unwrap_or(label).trim();
-        g.node_label(id, &decode_html_entities(label))
+        g.node_label(id, &decode_html_entities(label)).map(|_| ())
     } else {
         let mut id = r;
         let mut sh = Shape::Round;
@@ -332,7 +339,14 @@ fn parse_transition(s: &str, g: &mut Graph) -> Option<()> {
             .unwrap_or((to_raw, None));
         let to_id = to0.trim().trim_start_matches('>').trim_end_matches('-').trim();
         let to = state_endpoint(g, to_id, false)?;
-        if !g.push_edge(from, to, lab.and_then(ne), Head::Arrow, Head::None, LineKind::Solid) {
+        if !g.push_edge(Edge {
+            from,
+            to,
+            label: lab.and_then(ne),
+            head_to: Head::Arrow,
+            head_from: Head::None,
+            line: LineKind::Solid,
+        }) {
             return Some(());
         }
         prev = Some(to);
@@ -346,7 +360,7 @@ fn parse_state_desc(s: &str, g: &mut Graph) -> Option<()> {
         let id = a.trim();
         let d = b.trim();
         if id.is_empty() || d.is_empty() || id.chars().any(char::is_whitespace) { return None; }
-        g.node_label(id, &decode_html_entities(d))
+        g.node_label(id, &decode_html_entities(d)).map(|_| ())
     } else {
         if s.chars().any(char::is_whitespace) { return None; }
         g.node_index(s, None, Shape::Round).map(|_| ())
