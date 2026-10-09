@@ -113,6 +113,31 @@ pub async fn load_radius_oauth(options: RadiusOAuthOptions) -> anyhow::Result<Ar
     )))
 }
 
+pub const BUILTIN_OAUTH_PROVIDERS: [(&str, &str); 8] = [
+    ("anthropic", "Anthropic (Claude Pro/Max)"),
+    ("chatgpt-subscription", "ChatGPT Subscription (Plus/Pro)"),
+    ("cursor", "Cursor (Pro/Ultra/Teams)"),
+    ("devin", "Devin"),
+    ("github-copilot", "GitHub Copilot"),
+    ("kimi-coding", "Kimi Code (subscription)"),
+    ("openrouter", "OpenRouter OAuth"),
+    ("xai", "xAI (Grok/X subscription)"),
+];
+
+pub async fn load_builtin_oauth(provider_id: &str) -> anyhow::Result<Option<Arc<dyn OAuthAuth>>> {
+    match provider_id {
+        "anthropic" => Ok(Some(load_anthropic_oauth().await?)),
+        "chatgpt-subscription" => Ok(Some(load_chatgpt_subscription_oauth().await?)),
+        "github-copilot" => Ok(Some(load_github_copilot_oauth().await?)),
+        "openrouter" => Ok(Some(load_open_router_oauth().await?)),
+        "kimi-coding" => Ok(Some(load_kimi_coding_oauth().await?)),
+        "xai" => Ok(Some(load_xai_oauth().await?)),
+        "cursor" => Ok(Some(load_cursor_oauth().await?)),
+        "devin" => Ok(Some(load_devin_oauth().await?)),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
