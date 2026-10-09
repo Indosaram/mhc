@@ -8,6 +8,7 @@
 //! `partial` in this crate's parity ledger.
 pub mod ansi;
 pub mod canvas;
+pub mod graph;
 pub mod labels;
 pub mod source_box;
 pub mod width;
