@@ -650,6 +650,14 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_bool)
     }
 
+    pub fn get_image_auto_resize(&self) -> bool {
+        self.settings
+            .get("images")
+            .and_then(|images| images.get("autoResize"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
+
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.settings.get(key).and_then(Value::as_f64)
     }
@@ -985,6 +993,15 @@ mod tests {
         assert!(manager.get_project().is_empty());
         assert!(!manager.is_project_trusted());
         assert_eq!(manager.get_value("theme"), Some(&serde_json::json!("custom")));
+    }
+
+    #[test]
+    fn image_auto_resize_defaults_to_true_and_reads_false() {
+        let missing = SettingsManager::in_memory(Settings::new(), false);
+        assert!(missing.get_image_auto_resize());
+
+        let configured = SettingsManager::in_memory(settings(r#"{"images":{"autoResize":false}}"#), false);
+        assert!(!configured.get_image_auto_resize());
     }
 
     #[test]

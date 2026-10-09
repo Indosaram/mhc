@@ -65,6 +65,7 @@ pub mod source_info;
 pub mod system_prompt;
 pub mod text;
 pub mod trust_manager;
+pub mod utils;
 
 pub mod agent_abort_provenance;
 pub mod agent_session_runtime;
