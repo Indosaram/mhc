@@ -30,6 +30,18 @@ impl FallbackLogger {
     pub fn log(&mut self,timestamp:&str,level:&str,event:&str,data:Option<&Map<String,Value>>) {
         if let Err(error)=self.write(timestamp,level,event,data)&&!self.reported_write_failure{self.reported_write_failure=true;eprintln!("Unable to write retry fallback debug log {error}");}
     }
+    pub fn warn(&mut self,event:&str,data:Option<&Map<String,Value>>) {
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.log(&ts, "warn", event, data);
+    }
+    pub fn info(&mut self,event:&str,data:Option<&Map<String,Value>>) {
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.log(&ts, "info", event, data);
+    }
+    pub fn debug(&mut self,event:&str,data:Option<&Map<String,Value>>) {
+        let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        self.log(&ts, "debug", event, data);
+    }
     fn write(&self,timestamp:&str,level:&str,event:&str,data:Option<&Map<String,Value>>)->Result<(),Box<dyn std::error::Error+Send+Sync>> {
         let text=format!("{}\n",format_line(timestamp,level,event,data)?);
         if let Some(parent)=self.path.parent(){fs::create_dir_all(parent)?;fs::set_permissions(parent,fs::Permissions::from_mode(0o700))?;}
