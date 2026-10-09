@@ -35,6 +35,13 @@ pub struct ReflectionWorktree {
     pub exec: Arc<dyn GitExec>,
 }
 
+impl ReflectionWorktree {
+    /// Returns the base commit SHA of the worktree checkout.
+    pub fn base_sha(&self) -> &str {
+        &self.base_commit_sha
+    }
+}
+
 /// Confirmation of cleaned filesystem and git branch resources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReflectionCleanupReceipt {
