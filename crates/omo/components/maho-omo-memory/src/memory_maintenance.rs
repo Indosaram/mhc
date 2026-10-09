@@ -130,8 +130,8 @@ fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOp
         let transcript = dir.join("transcript.jsonl");
         if !transcript.is_file() || fs::metadata(&transcript).ok().and_then(|m| m.len().checked_sub(0)).unwrap_or(1) != 0 { continue; }
         let Ok(modified) = fs::metadata(&dir).and_then(|m| m.modified()) else { continue; };
-        let age = modified.elapsed().unwrap_or_default().as_millis() as u64;
-        if now >= age && now - age > 10 * 60 * 1000 && fs::remove_dir_all(dir).is_ok() { removed += 1; }
+        let modified = modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        if now >= modified && now - modified > 10 * 60 * 1000 && fs::remove_dir_all(dir).is_ok() { removed += 1; }
     }
     if removed > 0 { if let Some(logger) = &options.logger { logger.info("omo-senpi memory removed empty transcript journals"); } }
 }
@@ -141,10 +141,81 @@ mod tests {
     use super::*;
     use memory_core::identity::layout::build_identity_paths;
     use crate::binding::create_memory_binding;
+    use std::process::Command;
+
+    #[derive(Clone, Default)]
+    struct Logger { info: Arc<Mutex<Vec<String>>>, warn: Arc<Mutex<Vec<String>>> }
+    impl MemoryMaintenanceLogger for Logger {
+        fn info(&self, message: &str) { self.info.lock().unwrap().push(message.into()); }
+        fn warn(&self, message: &str) { self.warn.lock().unwrap().push(message.into()); }
+    }
 
     fn context(root: &Path) -> MemoryIdentityContext {
         let paths = build_identity_paths(root, "agent");
         MemoryIdentityContext::new("agent".into(), paths.clone(), create_memory_binding("agent", paths.repo.to_string_lossy(), 1.0))
+    }
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        assert!(output.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn history(commits: usize) -> (tempfile::TempDir, MemoryIdentityContext) {
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path());
+        fs::create_dir_all(&context.identity_paths.repo).unwrap();
+        git(&context.identity_paths.repo, &["init", "-q"]);
+        git(&context.identity_paths.repo, &["config", "user.email", "test@example.com"]);
+        git(&context.identity_paths.repo, &["config", "user.name", "test"]);
+        for index in 0..commits {
+            fs::write(context.identity_paths.repo.join(format!("note-{index}.md")), format!("note {index}\n")).unwrap();
+            git(&context.identity_paths.repo, &["add", "."]);
+            git(&context.identity_paths.repo, &["commit", "-q", "-m", &format!("note {index}")]);
+        }
+        (root, context)
+    }
+
+    fn loose(repo: &Path) -> usize {
+        git(repo, &["count-objects", "-v"]).lines().find_map(|line| line.strip_prefix("count: ").and_then(|v| v.parse().ok())).unwrap()
+    }
+
+    fn logger() -> Logger { Logger::default() }
+
+    fn old_millis() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() }
+
+    fn empty_journal(context: &MemoryIdentityContext, name: &str, old: u64) -> std::path::PathBuf {
+        let dir = context.identity_paths.transcripts.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join("transcript.jsonl");
+        fs::write(&transcript, "").unwrap();
+        let timestamp = format!("@{}", old / 1000);
+        let status = Command::new("touch").args(["-d", &timestamp, transcript.to_str().unwrap(), dir.to_str().unwrap()]).status().unwrap();
+        assert!(status.success());
+        dir
+    }
+
+    #[tokio::test]
+    async fn packs_loose_objects_and_keeps_commits_readable() {
+        let (_root, context) = history(20); let log = logger(); let before = loose(&context.identity_paths.repo);
+        let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() });
+        maintenance.schedule(context.clone()); maintenance.settled().await;
+        assert!(before >= 60); assert!(loose(&context.identity_paths.repo) < before); assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory repo packed"]); assert!(log.warn.lock().unwrap().is_empty()); assert_eq!(git(&context.identity_paths.repo, &["rev-list", "--count", "HEAD"]).trim(), "20");
+    }
+
+    #[tokio::test]
+    async fn concurrent_commit_survives_pack() {
+        let (_root, context) = history(20); let repo = context.identity_paths.repo.clone();
+        let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_millis(50), min_loose_objects: 10, ..Default::default() }); maintenance.schedule(context.clone());
+        fs::write(repo.join("concurrent.md"), "written during maintenance\n").unwrap(); git(&repo, &["add", "."]); git(&repo, &["commit", "-q", "-m", "concurrent note"]); maintenance.settled().await;
+        assert!(git(&repo, &["log", "--format=%s"]).lines().any(|line| line == "concurrent note")); assert!(!git(&repo, &["fsck", "--connectivity-only"]).contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn recent_pass_skips_second_process() {
+        let (_root, context) = history(20); let first = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); first.schedule(context.clone()); first.settled().await;
+        for index in 20..40 { fs::write(context.identity_paths.repo.join(format!("note-{index}.md")), format!("note {index}\n")).unwrap(); git(&context.identity_paths.repo, &["add", "."]); git(&context.identity_paths.repo, &["commit", "-q", "-m", &format!("note {index}")]); }
+        let before = loose(&context.identity_paths.repo); let log = logger(); let second = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); second.schedule(context); second.settled().await; assert_eq!(loose(&context.identity_paths.repo), before); assert!(log.info.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -156,6 +227,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ten_runners_pack_once() { let (_root, context) = history(20); let log = logger(); let runners: Vec<_> = (0..10).map(|_| MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() })).collect(); for runner in &runners { runner.schedule(context.clone()); } for runner in &runners { runner.settled().await; } assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory repo packed"]); assert!(log.warn.lock().unwrap().is_empty()); assert_eq!(loose(&context.identity_paths.repo), 0); }
+
+    #[tokio::test]
+    async fn held_lock_skips_without_warning() { let (_root, context) = history(20); fs::create_dir_all(&context.identity_paths.locks).unwrap(); fs::write(context.identity_paths.locks.join("memory-maintenance.lock"), "held").unwrap(); let before = loose(&context.identity_paths.repo); let log = logger(); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); maintenance.schedule(context.clone()); maintenance.settled().await; assert_eq!(loose(&context.identity_paths.repo), before); assert!(log.info.lock().unwrap().is_empty()); assert!(log.warn.lock().unwrap().is_empty()); }
+
+    #[tokio::test]
+    async fn pending_loose_object_is_kept() { let (_root, context) = history(20); let pending_path = context.identity_paths.repo.join("pending.txt"); fs::write(&pending_path, "staged by a writer\n").unwrap(); let pending = git(&context.identity_paths.repo, &["hash-object", "-w", "pending.txt"]).trim().to_owned(); fs::remove_file(pending_path).unwrap(); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); maintenance.schedule(context.clone()); maintenance.settled().await; assert_eq!(git(&context.identity_paths.repo, &["cat-file", "-p", &pending]), "staged by a writer\n"); }
+
+    #[tokio::test]
+    async fn disposed_host_can_schedule_again() { let (_root, context) = history(20); let log = logger(); let host = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); host.schedule(context.clone()); host.dispose(); host.settled().await; host.schedule(context.clone()); host.settled().await; assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory repo packed"]); assert_eq!(loose(&context.identity_paths.repo), 0); }
+
+    #[tokio::test]
+    async fn stale_journals_removed_live_kept() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let old = old_millis(); let stale = empty_journal(&context, "stale-control", old); let live = empty_journal(&context, "live-control", old); let log = logger(); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, now: Arc::new(|| old_millis() + 60 * 60 * 1000), is_live_session: Arc::new(|id| id == "live-control"), ..Default::default() }); maintenance.schedule(context); maintenance.settled().await; assert!(!stale.exists()); assert!(live.exists()); assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory removed empty transcript journals"]); assert!(log.warn.lock().unwrap().is_empty()); }
+
+    #[tokio::test]
+    async fn dispose_still_sweeps_journal() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let dir = empty_journal(&context, "health-check", old_millis()); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| old_millis() + 60 * 60 * 1000), ..Default::default() }); maintenance.schedule(context); maintenance.dispose(); maintenance.settled().await; assert!(!dir.exists()); }
+
+    #[tokio::test]
+    async fn sweep_runs_once_per_identity() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| old_millis() + 60 * 60 * 1000), ..Default::default() }); maintenance.schedule(context.clone()); maintenance.dispose(); maintenance.settled().await; let dir = empty_journal(&context, "later-empty", old_millis()); maintenance.schedule(context); maintenance.dispose(); maintenance.settled().await; assert!(dir.exists()); }
+
+    #[tokio::test]
     async fn dispose_cancels_delayed_pass() {
         let root = tempfile::tempdir().unwrap();
         let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), ..Default::default() });
@@ -164,15 +256,5 @@ mod tests {
         maintenance.settled().await;
     }
 
-    #[test]
-    fn sweep_keeps_live_empty_journal() {
-        let root = tempfile::tempdir().unwrap();
-        let context = context(root.path());
-        fs::create_dir_all(context.identity_paths.transcripts.join("live")).unwrap();
-        fs::write(context.identity_paths.transcripts.join("live/transcript.jsonl"), "").unwrap();
-        let options = MemoryMaintenanceOptions { is_live_session: Arc::new(|id| id == "live"), now: Arc::new(|| 1_000), ..Default::default() };
-        sweep_journals(&context, &options);
-        assert!(context.identity_paths.transcripts.join("live").exists());
-    }
 }
 
