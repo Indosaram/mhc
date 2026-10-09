@@ -74,6 +74,10 @@ pub mod start_presentation;
 mod start_presentation_tests;
 #[cfg(test)]
 mod task_tool_fakes;
+#[cfg(test)]
+mod kernel_tools_default_config_tests;
+#[cfg(test)]
+mod kernel_tools_tests;
 pub mod tool;
 #[cfg(test)]
 mod tool_tests;
