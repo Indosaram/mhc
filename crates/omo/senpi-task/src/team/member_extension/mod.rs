@@ -6,6 +6,8 @@ mod identity_tests;
 pub mod index;
 #[cfg(test)]
 mod index_tests;
+#[cfg(test)]
+mod workpool_startup_tests;
 pub mod qa_inject_hold;
 #[cfg(test)]
 mod qa_inject_hold_tests;

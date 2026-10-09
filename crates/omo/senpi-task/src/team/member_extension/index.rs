@@ -333,6 +333,9 @@ pub fn register_member_extension(
     pi: &Arc<dyn ExtensionApi>,
     options: MemberExtensionOptions,
 ) -> Result<(), MemberExtensionError> {
+    if !options.env.contains_key(MEMBER_IDENTITY_ENV) {
+        return Ok(());
+    }
     if has_active_member_runtime(pi) {
         return Ok(());
     }

@@ -27,6 +27,7 @@ pub mod team;
 #[cfg(test)]
 mod test_support;
 pub mod tools;
+pub mod workpool;
 
 pub use delegate_adapter::DelegateFallbackEntry;
 pub use isolation::{IsolationRuntime, create_isolation_runtime, isolation_backends};
