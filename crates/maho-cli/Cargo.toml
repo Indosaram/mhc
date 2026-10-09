@@ -68,6 +68,8 @@ maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolut
 maho-omo-config-core = { path = "../omo/omo-config-core" }
 maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
 memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
+maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
+lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }
 senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
