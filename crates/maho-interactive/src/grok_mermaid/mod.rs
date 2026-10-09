@@ -11,6 +11,7 @@ pub mod canvas;
 pub mod graph;
 pub mod labels;
 pub mod parse;
+pub mod layout;
 pub mod source_box;
 pub mod width;
 pub mod width_data;
