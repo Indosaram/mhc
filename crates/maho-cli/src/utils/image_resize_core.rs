@@ -1,7 +1,5 @@
 use base64::Engine;
-pub struct ImageResizeOptions { pub max_width: u32, pub max_height: u32, pub max_bytes: f64, pub jpeg_quality: u8 }
-impl Default for ImageResizeOptions { fn default() -> Self { Self { max_width: 2000, max_height: 2000, max_bytes: 4.5 * 1024.0 * 1024.0, jpeg_quality: 80 } } }
-pub struct ResizedImage { pub data: String, pub mime_type: String, pub original_width: u32, pub original_height: u32, pub width: u32, pub height: u32, pub was_resized: bool }
+pub use maho_core::utils::{ImageResizeOptions, ResizedImage};
 pub fn resize_image_in_process(bytes: &[u8], mime: &str, options: &ImageResizeOptions) -> Option<ResizedImage> {
     std::panic::catch_unwind(|| {
         let raw = photon_rs::PhotonImage::new_from_byteslice(bytes.to_vec());

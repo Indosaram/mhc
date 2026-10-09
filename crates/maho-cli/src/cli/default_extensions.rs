@@ -1,5 +1,5 @@
 //! Concrete default factories shared by print, RPC and interactive startup.
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 use maho_ext_api::{Extension, ExtensionActions, ExtensionFailure};
 use maho_ext_host::loader::{NativeExtensionFactory, NativeAsyncExtensionFactory};
 
@@ -35,6 +35,7 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
+    let help_widget_sender = widget_sender.clone();
     let mcp_gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> = Arc::new(std::sync::Mutex::new(None));
     let tool_search_gate = mcp_gate.clone();
     let tool_search_service: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> = Arc::new(std::sync::Mutex::new(None));
@@ -72,15 +73,15 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("cache-keepalive", maho_ext_cache_keepalive::CacheKeepalive::default()),
             factory("help", maho_ext_help::Help { display: maho_ext_help::native_display(maho_ext_help::HelpUiBindings {
                 render: {
-                    let widget_sender = widget_sender.clone();
+                    let render_sender = help_widget_sender.clone();
                     Arc::new(move |_| {
-                        let widget_sender = widget_sender.clone();
-                        Arc::new(move || drop(widget_sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
+                        let widget_sender = render_sender.clone();
+                        Rc::new(move || drop(widget_sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
                     })
                 },
-                rows: Arc::new(|host| {
+                rows: Arc::new(|host: &dyn maho_ext_api::ExtensionTuiHost| {
                     let host = host.dimensions();
-                    Arc::new(move || usize::from(host.1))
+                    Rc::new(move || usize::from(host.1))
                 }),
                 theme: Arc::new(|theme| {
                     maho_interactive::theme::Theme::builtin(

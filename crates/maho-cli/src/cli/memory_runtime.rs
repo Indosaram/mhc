@@ -524,8 +524,11 @@ impl MemoryRuntime {
     async fn reconcile_worker(self: &Arc<Self>, worker: &Arc<IdentityWorker>) -> Result<(), String> {
         let identity = maho_omo_memory::identity_runtime::as_memory_identity(&worker.identity);
         let launch = |run: &ReservedRun| if let Err(error) = self.launch(worker.clone(), run.clone()) { (self.host.warn)(&error); };
+        let receipts = maho_omo_memory::receipts_port::DefaultReceiptsPort;
+        let warn = |message: &str, _fields: &BTreeMap<String, String>| (self.host.warn)(message);
         let context = worker::run_finalization_types::RunFinalizationContext {
             identity: &identity, reservation: worker.store.as_ref(), launch: Some(&launch), now_ms: &memory_core::support::time::now_millis,
+            receipts: Some(&receipts), warn: Some(&warn),
         };
         let gate = |dir: &Path, run: &str, operation: &mut dyn FnMut() -> Result<Option<worker::run_finalization_types::ReservationRunResult>, String>| terminal_gate(dir, run, operation);
         let recovery = worker::run_reconciliation::NativeReflectionRecovery { context: &context, terminal_gate: &gate };
