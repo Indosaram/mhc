@@ -91,7 +91,11 @@ pub async fn reconcile_reflection_runs_with_options(context:&RunFinalizationCont
     paths.sort();
     for path in paths {
         super::run_temporaries::sweep_stranded_run_temporaries(&path,(context.now_ms)() as f64,&liveness)?;
-        if path.join("final.json").exists()||path.join("abandoned.json").exists()||!path.join("ledger.json").exists(){continue;}
+        if path.join("final.json").exists()||path.join("abandoned.json").exists()||path.join("quarantined.json").exists(){
+            let _=super::run_receipt_backfill::backfill_run_receipt_sync(&context.identity.paths.runtime,&path,None,None);
+            continue;
+        }
+        if !path.join("ledger.json").exists(){continue;}
         let ledger=parse_reservation_run_ledger(read_run_json(&path.join("ledger.json")).map_err(|error|error.to_string())?).map_err(|error|error.to_string())?;
         if let Some(result)=reconcile_run(context,&path,ledger,recovery).await?{results.push((result.run_id,result.outcome));}
     }

@@ -80,13 +80,13 @@ impl FactsExtractorRunner{
         let now=(self.now)();let instant=chrono::DateTime::from_timestamp_millis(now).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
         let selected=memory_core::facts::select_launchable(&pending,Some(&failures),&instant).selected;if selected.is_empty(){return Ok(FactsLaunchResult::Empty);}
         let resolution=(input.resolve_model)()?;
-        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=&resolution{warn(&format!("facts extractor quick category unavailable: {cause}"));let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
+        if let ReflectionModelResolution::CategoryUnavailable{cause,..}=&resolution{warn(&format!("facts extractor quick category unavailable: {cause}"));let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};let terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.preflight_fail(&crate::facts_failure_recording::queue_entry_targets(&selected),&crate::facts_failure_recording::preflight_failure_id(None),memory_core::facts::FactsFailureReason::QuickCategoryUnavailable,cause).map_err(|error|error.to_string())?;return Ok(FactsLaunchResult::Skipped);}
         crate::engine_session::prepare_memory_engine_session(&self.identity.id,&self.identity.paths,Default::default()).map_err(|error|error.to_string())?;
         let people=crate::facts_people_payload::read_facts_people_payload(&self.identity.paths.repo);
         let envelope=memory_core::facts::FactsPayloadEnvelope{version:1,identity:self.identity.id.clone(),today:instant[..10].into(),known_people:people.known_people,primary_human:people.primary_human};
         let capped=memory_core::facts::select_capped_facts_batch(&memory_core::facts::CappedFactsBatchInput{entries:selected.clone(),envelope:envelope.clone(),now:instant.clone(),max_bytes:None,starvation_ms:None});
         let mut diagnostics=vec![];let refused={
-            let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
+            let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
             crate::facts_oversize::classify_oversize_payload(&mut terminal,&crate::facts_oversize::OversizeClassificationInput{envelope:&envelope,oversized:&capped.oversized,pending:&selected,envelope_oversized:capped.envelope_oversized,create_failure_id:None,max_bytes:None},&mut |message,fields|diagnostics.push(format!("{message}: {fields}")))
         };
         for diagnostic in diagnostics{warn(&diagnostic);}
@@ -94,13 +94,13 @@ impl FactsExtractorRunner{
         if capped.selected.is_empty(){warn(&format!("facts batch selection carried nothing within the payload cap: pending={}, oversized={}",selected.len(),capped.oversized.len()));return Ok(FactsLaunchResult::Empty);}
         let batch=memory_core::support::random::random_uuid();let launched_at=(self.now)();
         if aborted(){return Ok(FactsLaunchResult::Skipped);}
-        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None}).map_err(|error|error.to_string())?;
+        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&self.identity.paths.facts,locks_dir:&self.identity.paths.locks,entries:&capped.selected,batch_id:&batch,launched_at,deadline_ms:Some(input.deadline_ms),termination_grace_ms:Some(input.termination_grace_ms),lock_wait_ms:None,receipts_dir:Some(&self.identity.paths.runtime),receipts:None,warn:None}).map_err(|error|error.to_string())?;
         let Some(dir)=dir else{return Ok(FactsLaunchResult::Active);};if aborted(){return Ok(FactsLaunchResult::Skipped);}
         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
         let targets=crate::facts_failure_recording::queue_entry_targets(&capped.selected);
         let result=match execute(dir.clone(),envelope.to_payload(capped.selected),batch.clone(),resolution).await{
             Ok(result)=>result,
-            Err(error)=>{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:&dir,run_id:&run_id,batch_id:&batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;FactsLaunchResult::Failed{run_id}},
+            Err(error)=>{let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};terminal.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:&dir,run_id:&run_id,batch_id:&batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;FactsLaunchResult::Failed{run_id}},
         };
         self.prune(warn);Ok(result)
     }
@@ -114,7 +114,7 @@ impl FactsExtractorRunner{
             if dir.join("abandoned.json").exists(){return Ok(FactsLaunchResult::Failed{run_id:ledger.run_id.clone()});}
             let repo=memory_core::git::GitMemoryRepo::open(&self.identity.paths.repo,&self.identity.id).map_err(|error|error.to_string())?;
             let now=chrono::DateTime::from_timestamp_millis((self.now)()).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-            let mut io=FactsIo{queue:&self.queue,instant:&now,warn};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
+            let mut io=FactsIo{queue:&self.queue,instant:&now,warn,runtime_dir:Some(&self.identity.paths.runtime)};let mut terminal=crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io};
             crate::facts_run_finalize::finalize_claimed_facts_run(dir,&repo,&ledger,&mut terminal,&mut |records|{
                 crate::facts_batch_apply::apply_facts_with_retries(|attempt|{
                     let record=create_lock_record("memory-write",CreateLockRecordOptions{run_id:Some(format!("facts-{attempt}"))}).map_err(|error|WithLockError::User(format!("{error}")))?;
@@ -132,14 +132,14 @@ impl FactsExtractorRunner{
             Ok(child)=>child,
             Err(error)=>{
                 let instant=chrono::DateTime::from_timestamp_millis((self.now)()).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-                let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};
+                let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};
                 crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io}.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:dir,run_id:run,batch_id:batch,targets:&targets,reason:memory_core::facts::FactsFailureReason::ChildExit,detail:&error,outcome:None}).map_err(|error|error.to_string())?;
                 return Ok(FactsLaunchResult::Failed{run_id:run.into()});
             }
         };
         if child.child.timed_out||child.child.code!=Some(0){
             let instant=chrono::DateTime::from_timestamp_millis((self.now)()).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-            let mut io=FactsIo{queue:&self.queue,instant:&instant,warn};
+            let mut io=FactsIo{queue:&self.queue,instant:&instant,warn,runtime_dir:Some(&self.identity.paths.runtime)};
             crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.failures,io:&mut io}.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:dir,run_id:run,batch_id:batch,targets:&targets,reason:if child.child.timed_out{memory_core::facts::FactsFailureReason::DeadlineExceeded}else{memory_core::facts::FactsFailureReason::ChildExit},detail:if child.child.stderr.trim().is_empty(){"facts child failed"}else{child.child.stderr.trim()},outcome:None}).map_err(|error|error.to_string())?;
             return Ok(FactsLaunchResult::Failed{run_id:run.into()});
         }
@@ -161,17 +161,23 @@ impl crate::facts_run_reconcile::FactsReconciliationPort for FactsRecovery<'_>{
     fn finalize(&mut self,dir:&Path)->Result<(),String>{self.runner.finalize(dir,self.people,self.warn).map(|_|())}
     fn fail(&mut self,dir:&Path,ledger:&crate::facts_runner_types::FactsRunLedger,detail:&str)->Result<(),String>{
         let instant=chrono::DateTime::from_timestamp_millis((self.runner.now)()).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-        let mut io=FactsIo{queue:&self.runner.queue,instant:&instant,warn:self.warn};
+        let mut io=FactsIo{queue:&self.runner.queue,instant:&instant,warn:self.warn,runtime_dir:Some(&self.runner.identity.paths.runtime)};
         crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.runner.failures,io:&mut io}.fail(&crate::facts_terminal_writes::FactsFailureWrite{run_dir:dir,run_id:&ledger.run_id,batch_id:&ledger.batch_id,targets:&crate::facts_failure_recording::ledger_targets(&ledger.queued),reason:memory_core::facts::FactsFailureReason::ChildExit,detail,outcome:None}).map_err(|error|error.to_string())
     }
     fn abandon(&mut self,dir:&Path,ledger:&crate::facts_runner_types::FactsRunLedger)->Result<(),String>{
         let instant=chrono::DateTime::from_timestamp_millis((self.runner.now)()).ok_or("Invalid facts clock")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
-        let mut io=FactsIo{queue:&self.runner.queue,instant:&instant,warn:self.warn};crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.runner.failures,io:&mut io}.abandon(dir,ledger).map_err(|error|error.to_string())
+        let mut io=FactsIo{queue:&self.runner.queue,instant:&instant,warn:self.warn,runtime_dir:Some(&self.runner.identity.paths.runtime)};crate::facts_terminal_writes::FactsTerminalWrites{failures:&self.runner.failures,io:&mut io}.abandon(dir,ledger).map_err(|error|error.to_string())
     }
     fn warn(&mut self,run:&str,error:&String){(self.warn)(&format!("facts run reconcile failed: {run}: {error}"));}
+    fn receipts_dir(&self)->Option<&Path>{Some(&self.runner.identity.paths.runtime)}
 }
-struct FactsIo<'a>{queue:&'a FactsQueue,instant:&'a str,warn:&'a mut dyn FnMut(&str)}
-impl crate::facts_terminal_writes::FactsTerminalIo for FactsIo<'_>{fn now(&self)->String{self.instant.into()}fn mark_consumed(&mut self,entries:&[memory_core::facts::FactsQueueEntry])->std::io::Result<()>{self.queue.mark_consumed(entries).map_err(std::io::Error::other)}fn warn(&mut self,message:&str,detail:&str){(self.warn)(&format!("{message}: {detail}"));}}
+struct FactsIo<'a>{queue:&'a FactsQueue,instant:&'a str,warn:&'a mut dyn FnMut(&str),runtime_dir:Option<&'a Path>}
+impl crate::facts_terminal_writes::FactsTerminalIo for FactsIo<'_>{
+    fn now(&self)->String{self.instant.into()}
+    fn mark_consumed(&mut self,entries:&[memory_core::facts::FactsQueueEntry])->std::io::Result<()>{self.queue.mark_consumed(entries).map_err(std::io::Error::other)}
+    fn warn(&mut self,message:&str,detail:&str){(self.warn)(&format!("{message}: {detail}"));}
+    fn receipts_dir(&self)->Option<&Path>{self.runtime_dir}
+}
 pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::facts_run_cleanup::sweep_terminal_facts_runs(facts,&mut crate::facts_run_cleanup::remove_run_artifact,&mut |message,path,error|warn(&format!("{message}: {}: {error}",path.display())));}
 #[cfg(test)]mod tests{
     use super::*;
@@ -216,14 +222,14 @@ pub fn sweep_runner_artifacts(facts:&Path,warn:&mut dyn FnMut(&str)){crate::fact
     }
     #[test]fn abandoned_sentinel_replays_without_outcome_or_payload(){
         let root=tempfile::tempdir().unwrap();let runner=runner(root.path());
-        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&runner.identity.paths.facts,locks_dir:&runner.identity.paths.locks,entries:&[],batch_id:"c04edbea-90ea-4c67-9c22-1a9beb207535",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None}).unwrap().unwrap();
+        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&runner.identity.paths.facts,locks_dir:&runner.identity.paths.locks,entries:&[],batch_id:"c04edbea-90ea-4c67-9c22-1a9beb207535",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None,receipts_dir:None,receipts:None,warn:None}).unwrap().unwrap();
         std::fs::write(dir.join("abandoned.json"),"{}\n").unwrap();let people=memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200};
         let result=runner.finalize(&dir,&people,&mut |message|panic!("{message}")).unwrap();assert_eq!(result,FactsLaunchResult::Failed{run_id:dir.file_name().unwrap().to_string_lossy().into_owned()});assert!(!runner.identity.paths.repo.exists());assert!(!dir.join("outcome.json").exists());
     }
     #[test]fn real_extraction_commits_under_writer_lock_and_replays_receipt(){
         let root=tempfile::tempdir().unwrap();let runner=runner(root.path());
         crate::engine_session::prepare_memory_engine_session(&runner.identity.id,&runner.identity.paths,Default::default()).unwrap();
-        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&runner.identity.paths.facts,locks_dir:&runner.identity.paths.locks,entries:&[],batch_id:"c04edbea-90ea-4c67-9c22-1a9beb207535",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None}).unwrap().unwrap();
+        let dir=crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions{facts_dir:&runner.identity.paths.facts,locks_dir:&runner.identity.paths.locks,entries:&[],batch_id:"c04edbea-90ea-4c67-9c22-1a9beb207535",launched_at:0,deadline_ms:None,termination_grace_ms:None,lock_wait_ms:None,receipts_dir:None,receipts:None,warn:None}).unwrap().unwrap();
         let id=dir.file_name().unwrap().to_string_lossy();
         crate::worker::run_artifacts::write_run_json_atomic(&dir.join("facts-payload.json"),&FactsPayload{version:1,identity:"agent".into(),today:"1970-01-01".into(),known_people:vec![],primary_human:memory_core::facts::FactsPrimaryHuman{slug:"human".into(),aliases:vec![]},entries:vec![]},0o600).unwrap();
         crate::worker::run_artifacts::write_run_json_atomic(&dir.join("outcome.json"),&crate::worker::run_artifacts::RunOutcome{version:1,run_id:id.into_owned(),attempt:None,finished_at:"1970-01-01T00:00:00Z".into(),child_exit:crate::worker::run_artifacts::ChildExit{code:Some(0),signal:None},timed_out:false},0o600).unwrap();

@@ -87,6 +87,9 @@ pub mod shutdown_drain;
 pub mod memory_rpc_snapshot_state;
 pub mod memory_rpc_bridge;
 pub mod policy_guard;
+pub mod receipts_port;
+#[cfg(test)]
+mod facts_receipts_tests;
 pub mod skills_usage_ledger;
 pub mod skills_usage;
 pub mod skills_usage_tracker;
