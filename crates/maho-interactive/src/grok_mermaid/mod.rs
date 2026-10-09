@@ -7,6 +7,7 @@
 //! `render` reports no art and every mermaid block takes the source-box path. That is recorded as
 //! `partial` in this crate's parity ledger.
 pub mod ansi;
+pub mod canvas;
 pub mod labels;
 pub mod source_box;
 pub mod width;
