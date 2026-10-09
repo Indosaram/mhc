@@ -546,6 +546,7 @@ pub struct AgentSessionInner {
     /// snapshot on the shared bus reaches the session's retained snapshot without holding the
     /// `AgentSession`.
     mcp_wire_status_retention: Mutex<Option<maho_ext_api::BusSubscription>>,
+    tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
@@ -1703,6 +1704,7 @@ impl AgentSession {
             probe_task: Mutex::new(None),
             mcp_wire_status_order: tokio::sync::Mutex::new(()),
             mcp_wire_status_retention: Mutex::new(None),
+            tool_context_disposers: Mutex::new(Vec::new()),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -2047,12 +2049,7 @@ impl AgentSession {
         }
         if self.auto_compaction_enabled() && !self.is_compaction_delegated() && self.pending_model_switch().is_none() {
             let model = self.model();
-            let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
-            let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
-                .transpose().map_err(|error| error.to_string())?;
-            let resolved = crate::compaction_settings_resolver::resolve_compaction_settings(settings.as_ref(), Some(
-                crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
-            ))?;
+            let resolved = self.get_compaction_settings(Some(&model))?;
             if self.get_context_usage().and_then(|usage| usage.tokens).is_some_and(|tokens|
                 tokens.saturating_add(text.len().div_ceil(4) as u64) > model.context_window.saturating_sub(
                     if resolved.reserve_scaling_enabled { crate::compaction::compaction::resolve_reserve_tokens(
@@ -2371,12 +2368,7 @@ impl AgentSession {
         -> Result<crate::compaction::compaction::CompactionResult, String>
     {
         use crate::compaction::compaction::{CompactionResult, prepare_compaction};
-        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
-        let configured = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
-            .transpose().map_err(|error| error.to_string())?;
-        let mut resolved = crate::compaction_settings_resolver::resolve_compaction_settings(configured.as_ref(), Some(
-            crate::compaction_settings_access::CompactionModelSelector { provider: &budget_model.provider, id: &budget_model.id },
-        ))?;
+        let mut resolved = self.get_compaction_settings(Some(budget_model))?;
         if self.pending_model_switch().is_some_and(|pending| models_are_equal(Some(&pending.model), Some(budget_model))) {
             let window = budget_model.context_window;
             let ratio = match window {
@@ -2442,7 +2434,7 @@ impl AgentSession {
                     let event = maho_ext_api::SessionBeforeCompactEvent {
                         reason: compact_reason, will_retry, request_id: request_id.clone(),
                         preparation: maho_ext_api::CompactionPreparation {
-                            settings: maho_ext_api::CompactionSettings { enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens as u64,
+                            settings: maho_ext_api::CompactionSettings { enabled: self.get_compaction_settings(Some(budget_model))?.enabled, reserve_tokens: resolved.reserve_tokens as u64,
                                 keep_recent_tokens: resolved.keep_recent_tokens as u64 },
                             messages_to_summarize: preparation.messages_to_summarize.iter().cloned().map(session_message_from_value)
                                 .collect::<Result<_, _>>().map_err(|error| error.to_string())?,
@@ -4658,6 +4650,16 @@ impl AgentSession {
         self.state().lazy_tool_activators.push(activator);
     }
 
+    /// Register a tool context disposer callback, run on session dispose.
+    pub fn add_tool_context_disposer(&self, disposer: impl FnOnce() + Send + 'static) {
+        lock(&self.inner.tool_context_disposers).push(Box::new(disposer));
+    }
+
+    /// Register a tool context disposer callback, run on session dispose.
+    pub fn register_tool_context_disposer(&self, disposer: impl FnOnce() + Send + 'static) {
+        self.add_tool_context_disposer(disposer);
+    }
+
     /// Execute a tool by name through the same preparation and hook path the agent loop uses.
     pub async fn execute_tool(
         &self,
@@ -5890,6 +5892,10 @@ impl AgentSession {
         if self.state().disposed {
             return;
         }
+        let disposers = std::mem::take(&mut *lock(&self.inner.tool_context_disposers));
+        for dispose in disposers {
+            dispose();
+        }
         self.monitor_generation.fetch_add(1, Ordering::SeqCst);
         self.state().disposed = true;
         lock(&self.settled_delivery).cancel();
@@ -6393,6 +6399,30 @@ impl AgentSession {
         if let Some(mode) = follow_up.as_deref().and_then(queue_mode_from_str) {
             self.agent.set_follow_up_mode(mode);
         }
+    }
+
+    fn get_compaction_settings(
+        &self,
+        model: Option<&Model>,
+    ) -> Result<crate::compaction_settings_resolver::ResolvedCompactionSettings, String> {
+        let session_model = self.model();
+        let effective_model = model.unwrap_or(&session_model);
+        let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
+        let configured = raw
+            .map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let mut resolved = crate::compaction_settings_resolver::resolve_compaction_settings(
+            configured.as_ref(),
+            Some(crate::compaction_settings_access::CompactionModelSelector {
+                provider: &effective_model.provider,
+                id: &effective_model.id,
+            }),
+        )?;
+        if let Some(enabled) = self.state().auto_compaction_session_override {
+            resolved.enabled = enabled;
+        }
+        Ok(resolved)
     }
 
     fn emit_session_settings_changed(&self) {
@@ -11900,6 +11930,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registered_tool_context_disposer_runs_once_on_dispose() {
+        use std::sync::atomic::AtomicUsize;
+        let session = test_session();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_clone = ran.clone();
+        session.register_tool_context_disposer(move || {
+            ran_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        session.dispose().await;
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+
+        // Second dispose must not run the disposer again
+        session.dispose().await;
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn dispose_is_idempotent_and_cleans_resources() {
         let session = test_session();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -11942,6 +11991,53 @@ mod tests {
         session.set_auto_compaction_enabled(true);
         assert!(session.auto_compaction_enabled());
         assert_eq!(*lock(&events), vec![false, true]);
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_override_false_reflected_in_compaction_preparation() {
+        let session = retry_session(Vec::new(), 0);
+        session.with_settings_manager_mut(|manager| {
+            manager.apply_overrides(&Map::from_iter([
+                ("compaction".into(), serde_json::json!({ "enabled": true, "reserveTokens": 0, "reserveScalingEnabled": false, "keepRecentTokens": 1 })),
+            ]));
+        });
+        session.set_auto_compaction_enabled(false);
+        assert!(!session.auto_compaction_enabled());
+
+        for text in ["task-1".repeat(200), "task-2".repeat(200)] {
+            session.with_session_manager_mut(|manager| {
+                manager.append_message(serde_json::json!({ "role": "user", "content": text, "timestamp": 0 }));
+            });
+        }
+        session.rebuild_session_context().expect("context");
+
+        let preparation_enabled = Arc::new(Mutex::new(None));
+        let captured = preparation_enabled.clone();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:test-compaction-override>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::SessionBeforeCompact, vec![Arc::new(move |event, _| {
+            let maho_ext_api::ExtensionEvent::SessionBeforeCompact(event) = event else { panic!("expected session_before_compact"); };
+            *lock(&captured) = Some(event.preparation.settings.enabled);
+            Box::pin(async move {
+                Ok(maho_ext_api::EventResult::SessionBefore(maho_ext_api::SessionBeforeEventResult {
+                    compaction: Some(maho_ext_api::CompactionResult {
+                        summary: "digest".into(),
+                        first_kept_entry_id: event.preparation.first_kept_entry_id.clone(),
+                        tokens_before: event.preparation.tokens_before,
+                        details: None,
+                    }),
+                    ..Default::default()
+                }))
+            })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(
+            vec![extension],
+            Default::default(),
+            Default::default(),
+            test_extension_context(&session),
+        )).await;
+
+        session.compact(None).await.expect("compact");
+        assert_eq!(*lock(&preparation_enabled), Some(false));
     }
 
     #[tokio::test]
