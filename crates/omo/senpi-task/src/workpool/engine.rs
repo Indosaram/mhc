@@ -46,7 +46,7 @@ impl<'a> WorkpoolEngine<'a> {
             next
         })?;
         self.dispatcher.cancel(&owned.pool_id);
-        for worker in &cancelled.workers { let _ = self.admission.cancel(&worker.task_id); }
+        for worker in &cancelled.workers { std::mem::drop(self.admission.cancel(&worker.task_id)); }
         Ok(cancelled)
     }
 }
@@ -54,5 +54,5 @@ impl<'a> WorkpoolEngine<'a> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn engine_module_is_registered() { assert_eq!(super::WorkpoolDispatcher::new().is_disposed(), false); }
+    fn engine_module_is_registered() { assert!(!super::WorkpoolDispatcher::new().is_disposed()); }
 }
