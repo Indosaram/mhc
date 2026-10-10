@@ -132,6 +132,9 @@ impl FauxSession {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(temp.join("models.json")),
             auth_path: Some(temp.join("auth.json")),
+            credentials: Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([
+                ("faux".to_owned(), serde_json::json!({"type": "api_key", "key": "faux-test"})),
+            ].into_iter().collect()))),
             providers: Some(vec![provider.provider.clone()]), ..Default::default()
         });
         Ok(AgentSession::new(AgentSessionConfig {
