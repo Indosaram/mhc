@@ -2082,7 +2082,7 @@ impl AgentSession {
         let base_system_prompt = self.state().base_system_prompt.clone();
         let consumed = std::mem::take(&mut self.state().pending_next_turn_messages);
         let before = {
-            let mut runner = self.extension_runner.lock().await;
+            let mut runner = self.extension_runner.lock().await.clone();
             match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
                 prompt: text.clone(), images: images.clone(), system_prompt: base_system_prompt,
                 system_prompt_options: self.extension_system_prompt_options(),
@@ -2187,7 +2187,7 @@ impl AgentSession {
         streaming_behavior: Option<StreamingBehavior>,
     ) -> Result<Option<(String, Option<Vec<ImageContent>>, String)>, String> {
         let input_id = format!("{}:{}", self.session_id(), self.reserve_queued_input_order());
-        let mut runner = self.extension_runner.lock().await;
+        let mut runner = self.extension_runner.lock().await.clone();
         let Some(runner) = runner.as_mut() else { return Ok(Some((text.to_owned(), images, input_id))); };
         let result = runner.emit_input(maho_ext_api::InputEvent {
             input_id: input_id.clone(),
