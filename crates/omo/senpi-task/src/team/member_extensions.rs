@@ -8,6 +8,9 @@ pub fn assemble_member_extensions<S: AsRef<str>>(entry_path: &str, inherited_ext
     let mut seen: HashSet<&str> = HashSet::new();
     let mut assembled = Vec::new();
     for extension in std::iter::once(entry_path).chain(inherited_extensions.iter().map(AsRef::as_ref)) {
+        if extension == format!("{entry_path}/extensions/omo.js") || extension == format!("{entry_path}/extensions/omo-task.js") {
+            continue;
+        }
         if seen.insert(extension) {
             assembled.push(extension.to_string());
         }
