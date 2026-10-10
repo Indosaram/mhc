@@ -1,4 +1,4 @@
-use super::types::{WorkpoolItem, WorkpoolItemStatus, WorkpoolYieldError, WorkpoolYieldValue};
+use super::types::{WorkpoolItem, WorkpoolItemStatus, WorkpoolYieldValue};
 use super::yield_event::yield_digest;
 
 pub type YieldReceipt = Result<YieldAccepted, YieldRefusal>;

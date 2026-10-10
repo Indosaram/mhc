@@ -19,7 +19,16 @@ pub struct WorkpoolTool {
     pub parameters: Value,
     backend: Arc<dyn WorkpoolToolBackend>,
 }
+impl WorkpoolTool {
+    pub fn new(backend: Arc<dyn WorkpoolToolBackend>) -> Self {
+        Self { name: WORKPOOL_TOOL_NAME, label: WORKPOOL_TOOL_LABEL, description: WORKPOOL_DESCRIPTION, parameters: WORKPOOL_PARAMS.clone(), backend }
+    }
 
+    pub fn execute_json(&self, caller: &WorkpoolCaller, value: Value) -> Result<Value, WorkpoolError> {
+        let input = crate::workpool::schema::parse_input(value)?;
+        self.backend.execute(caller, input)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,17 +54,6 @@ mod tests {
         let caller = WorkpoolCaller { session_id: "s".into(), root_session_id: "s".into(), depth: 0, cwd: "/".into() };
         let result = tool.execute_json(&caller, serde_json::json!({"op":"inspect"})).expect("valid tool input");
         assert_eq!(result["op"], serde_json::json!(WorkpoolOperation::Inspect));
-    }
-}
-
-impl WorkpoolTool {
-    pub fn new(backend: Arc<dyn WorkpoolToolBackend>) -> Self {
-        Self { name: WORKPOOL_TOOL_NAME, label: WORKPOOL_TOOL_LABEL, description: WORKPOOL_DESCRIPTION, parameters: WORKPOOL_PARAMS.clone(), backend }
-    }
-
-    pub fn execute_json(&self, caller: &WorkpoolCaller, value: Value) -> Result<Value, WorkpoolError> {
-        let input = crate::workpool::schema::parse_input(value)?;
-        self.backend.execute(caller, input)
     }
 }
 
