@@ -41,6 +41,11 @@ fn targets(proposal: &UlwLoopSteeringProposal) -> Vec<String> {
             return vec![single.clone()];
         }
     }
+    if let Some(single) = &proposal.goal_id {
+        if !single.is_empty() {
+            return vec![single.clone()];
+        }
+    }
     if let Some(obj) = &proposal.raw_proposal {
         if let Some(gid) = text_field(obj, "goalId") {
             return vec![gid];
