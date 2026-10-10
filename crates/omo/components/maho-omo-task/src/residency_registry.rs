@@ -20,4 +20,5 @@ impl ResidencyRegistry for ManagerResidencyRegistry {
     fn entries(&self) -> Vec<Arc<dyn ResidentHandle>> { (self.get_manager)().resident_task_ids().iter().filter_map(|id| self.get(id)).collect() }
     fn forget(&self, task_id: &str) { (self.get_manager)().forget(task_id); }
     fn has_pending_sends(&self, _task_id: &str) -> bool { false }
+    fn is_launching(&self, task_id: &str) -> bool { (self.get_manager)().is_launching(task_id) }
 }

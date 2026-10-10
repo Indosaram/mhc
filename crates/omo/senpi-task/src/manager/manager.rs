@@ -27,6 +27,7 @@ use crate::manager::helpers::{
     now_iso, record_spawned_pid,
 };
 use crate::manager::isolation_wiring::{IsolationWiring, IsolationWiringPorts, create_isolation_wiring};
+use crate::manager::launch_fence::{launch_run_of, owns_run};
 use crate::manager::names::NameRegistry;
 use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outcome};
 use crate::manager::respawn::{RespawnInput, respawn_managed_task};
@@ -93,6 +94,8 @@ struct ChildSubscriber {
 #[derive(Default)]
 struct State {
     live: HashMap<String, LiveTask>,
+    /// Tasks whose child start is in flight: the child may already run before it reaches `live`.
+    launching: HashSet<String>,
     child_subscribers: HashMap<String, Vec<ChildSubscriber>>,
     released: HashMap<String, i64>,
     waiters: HashMap<String, Vec<(u64, Sender<TaskRecord>)>>,
@@ -700,6 +703,10 @@ impl TaskManager {
         })
     }
 
+    pub fn is_launching(&self, task_id: &str) -> bool {
+        lock(&self.inner.state).launching.contains(task_id)
+    }
+
     pub fn resident_task_ids(&self) -> Vec<String> {
         lock(&self.inner.state).live.keys().cloned().collect()
     }
@@ -1184,7 +1191,8 @@ impl Inner {
             self.settle_waiters(&record.task_id);
             return Err("task was cancelled before launch".to_string());
         }
-        let handle = match context.runner.start(&context.managed_spec) {
+        let started = self.start_marked(context);
+        let handle = match started {
             Ok(handle) => handle,
             Err(error) => {
                 let message = public_start_failure_message(&error);
@@ -1217,35 +1225,15 @@ impl Inner {
                 return Err(message.to_string());
             }
         };
-        if self
-            .try_load(&record.task_id)
-            .is_some_and(|current| current.status == TaskStatus::Cancelled)
-        {
-            lock(&self.state).live.insert(
-                record.task_id.clone(),
-                LiveTask {
-                    handle,
-                    model: context.model.clone(),
-                    unsubscribe: None,
-                    managed_spec: None,
-                    runner: None,
-                },
-            );
-            if let Err(error) = self
-                .destruction
-                .destroy_resident_task(&record.task_id, DestroyCause::Cancel)
-            {
-                log(
-                    "senpi-task manager cancel-during-launch destroy failed",
-                    &record.task_id,
-                    &error,
-                );
-            }
-            self.release_slot(&record.task_id, &context.model, epoch);
-            self.settle_waiters(&record.task_id);
-            return Err("task was cancelled during launch".to_string());
+        let current = self.try_load(&record.task_id);
+        let cancelled = current.as_ref().is_some_and(|current| current.status == TaskStatus::Cancelled);
+        if !owns_run(&launch_run_of(&context.record), current.as_ref()) {
+            self.discard_stale_launch(context, handle);
+            self.end_launch(&record.task_id);
+            return Err(if cancelled { "task was cancelled during launch" } else { "task stopped during launch" }.to_string());
         }
         self.attach_launched(context, &handle);
+        self.end_launch(&record.task_id);
         if let Err(error) = self.steering.notify_started(&record.task_id) {
             log(
                 "senpi-task manager notify started failed",
@@ -1254,6 +1242,45 @@ impl Inner {
             );
         }
         Ok(())
+    }
+
+    /// Starts the child while the task is marked launching, so a reconcile on this host cannot read
+    /// a started-but-unregistered child as an orphan and revive it over the still-running process.
+    /// The mark is cleared only after the caller attaches or discards the handle (see
+    /// [`Self::end_launch`]) — clearing it here would reopen the window before `live` holds it.
+    fn start_marked(&self, context: &LaunchContext) -> crate::manager::types::ManagedRunnerResult {
+        lock(&self.state).launching.insert(context.record.task_id.clone());
+        let started = context.runner.start(&context.managed_spec);
+        if started.is_err() {
+            self.end_launch(&context.record.task_id);
+        }
+        started
+    }
+
+    fn end_launch(&self, task_id: &str) {
+        lock(&self.state).launching.remove(task_id);
+    }
+
+    /// `#discardStaleLaunch`: a child whose start resolved after its launch went stale is torn down,
+    /// never attached. This run's own cancel goes through the destruction port so the disposal is
+    /// recorded; any other stale child is discarded directly.
+    fn discard_stale_launch(&self, context: &LaunchContext, handle: Arc<dyn ManagedChildHandle>) {
+        let task_id = &context.record.task_id;
+        let epoch = context.record.notification.run_epoch;
+        let current = self.try_load(task_id);
+        if current.as_ref().is_some_and(|current| current.status == TaskStatus::Cancelled && current.notification.run_epoch == epoch) {
+            lock(&self.state).live.insert(
+                task_id.clone(),
+                LiveTask { handle, model: context.model.clone(), unsubscribe: None, managed_spec: None, runner: None },
+            );
+            if let Err(error) = self.destruction.destroy_resident_task(task_id, DestroyCause::Cancel) {
+                log("senpi-task manager cancel-during-launch destroy failed", task_id, &error);
+            }
+        } else if let Err(error) = discard_managed_handle(handle.as_ref()) {
+            log("senpi-task manager stale launch discard failed", task_id, &error);
+        }
+        self.release_slot(task_id, &context.model, epoch);
+        self.settle_waiters(task_id);
     }
 
     fn attach_launched(&self, context: &LaunchContext, handle: &Arc<dyn ManagedChildHandle>) {
@@ -1548,8 +1575,17 @@ impl Inner {
             self.settle_waiters(task_id);
             return;
         }
-        match context.runner.start(&context.managed_spec) {
-            Ok(handle) => self.attach_launched(context, &handle),
+        match self.start_marked(context) {
+            // The start blocked: a cancel, interrupt or another owner may have moved the task meanwhile.
+            // A late child of a run that is no longer this one's is discarded, never attached.
+            Ok(handle) if !owns_run(&launch_run_of(&context.record), self.try_load(task_id).as_ref()) => {
+                self.discard_stale_launch(context, handle);
+                self.end_launch(task_id);
+            }
+            Ok(handle) => {
+                self.attach_launched(context, &handle);
+                self.end_launch(task_id);
+            }
             Err(error) => {
                 let message = public_start_failure_message(&error);
                 self.release_slot(task_id, &context.model, epoch);

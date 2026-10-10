@@ -57,6 +57,11 @@ pub trait ResidencyRegistry: Send + Sync {
     fn entries(&self) -> Vec<Arc<dyn ResidentHandle>>;
     fn forget(&self, task_id: &str);
     fn has_pending_sends(&self, task_id: &str) -> bool;
+    /// Whether this process is mid-launch for `task_id`: its child may already run while no handle is
+    /// registered yet, so reconcile must not treat the record as an orphan.
+    fn is_launching(&self, _task_id: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
