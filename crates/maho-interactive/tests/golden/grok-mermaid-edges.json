@@ -1,0 +1,79 @@
+{
+  "source": "pinned grok-mermaid (senpi fe8c564b node_modules/grok-mermaid) render(src).plain",
+  "cases": [
+    {
+      "name": "td",
+      "src": "graph TD\n  A[Start] --> B[Middle]\n  B --> C[End]\n  A -.-> C\n",
+      "plain": [
+        " ┌───────┐",
+        " │ Start ├╌┐",
+        " └───┬───┘ ╎",
+        "     │     ╎",
+        "     ▼     ╎",
+        "┌────────┐ ╎",
+        "│ Middle │ ╎",
+        "└────┬───┘ ╎",
+        "     │     ╎",
+        "     ▼     ╎",
+        "  ┌─────┐  ╎",
+        "  │ End │◄╌┘",
+        "  └─────┘"
+      ]
+    },
+    {
+      "name": "lr",
+      "src": "graph LR\n  A --> B\n  B ==> C\n",
+      "plain": [
+        "┌───┐    ┌───┐    ┌───┐",
+        "│ A ├───▶│ B ├━━━▶│ C │",
+        "└───┘    └───┘    └───┘"
+      ]
+    },
+    {
+      "name": "self",
+      "src": "graph TD\n  A --> A\n  A --> B\n",
+      "plain": [
+        " ┌─────┐",
+        " │  A  │",
+        " └──┬┬─┘",
+        "    ││▲",
+        "    │╰╯",
+        "    │",
+        "    ▼",
+        "  ┌───┐",
+        "  │ B │",
+        "  └───┘"
+      ]
+    },
+    {
+      "name": "cls",
+      "src": "classDiagram\n  Animal <|-- Dog\n  Animal : +name\n",
+      "plain": [
+        "┌────────┐",
+        "│ Animal │",
+        "├────────┤",
+        "│ +name  │",
+        "└────△───┘",
+        "     │",
+        "     │",
+        "  ┌─────┐",
+        "  │ Dog │",
+        "  └─────┘"
+      ]
+    },
+    {
+      "name": "labeled",
+      "src": "graph TD\n  A -->|yes| B\n  A -->|no| C\n",
+      "plain": [
+        "     ┌───┐",
+        "     │ A │",
+        "     └─┬─┘",
+        "   ┌───┴───┐",
+        "   ▼yes    ▼no",
+        " ┌───┐   ┌───┐",
+        " │ B │   │ C │",
+        " └───┘   └───┘"
+      ]
+    }
+  ]
+}
