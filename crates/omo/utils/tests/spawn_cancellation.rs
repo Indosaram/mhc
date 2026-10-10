@@ -6,7 +6,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use utils::{AbortController, AbortSignal, ProcessHandle, SpawnOptions, SpawnedProcess, StdioMode, spawn};
 
-const BOUND: Duration = Duration::from_secs(5);
+/// Hang guard only: every wait below is on the exact event (a line, an exit, an abort). The full
+/// workspace gate runs ~20k tests across all cores, where spawning a shell and its first line can
+/// take longer than 5s; a passing wait returns as soon as its event arrives, so this never slows it.
+const BOUND: Duration = Duration::from_secs(30);
 
 fn sh(script: &str) -> Vec<String> {
     vec!["/bin/sh".into(), "-c".into(), script.into()]
