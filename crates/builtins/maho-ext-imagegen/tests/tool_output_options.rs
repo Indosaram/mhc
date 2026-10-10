@@ -5,6 +5,11 @@ use maho_ai::types::ImagesBackground;
 use serde_json::json;
 use std::sync::Arc;
 
+fn base64_decode(value: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(value).expect("base64")
+}
+
 #[tokio::test]
 async fn defaults_to_sunburst_and_prices_from_the_static_catalog() {
     let _guard = support::GlobalStateGuard::acquire(None).await;
@@ -116,8 +121,8 @@ async fn rejects_invalid_output_option_combinations_before_any_request() {
 async fn sends_mask_image_path_and_requires_a_reference() {
     let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
-    std::fs::write(root.path().join("reference.png"), support::PNG_BASE64).expect("reference");
-    std::fs::write(root.path().join("mask.png"), support::PNG_BASE64).expect("mask");
+    std::fs::write(root.path().join("reference.png"), base64_decode(support::PNG_BASE64)).expect("reference");
+    std::fs::write(root.path().join("mask.png"), base64_decode(support::PNG_BASE64)).expect("mask");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "mask", json!({"prompt":"replace the sky","reference_image_paths":["reference.png"],"mask_image_path":"mask.png"})).await;
 
@@ -138,7 +143,7 @@ async fn sends_mask_image_path_and_requires_a_reference() {
 async fn rejects_a_mask_that_is_not_a_readable_image() {
     let _guard = support::GlobalStateGuard::acquire(None).await;
     let root = tempfile::tempdir().expect("temp");
-    std::fs::write(root.path().join("reference.png"), support::PNG_BASE64).expect("reference");
+    std::fs::write(root.path().join("reference.png"), base64_decode(support::PNG_BASE64)).expect("reference");
     std::fs::write(root.path().join("mask.png"), "not a png").expect("mask");
     let stub = Arc::new(support::StubImages::one());
     let result = support::run(root.path(), true, stub.clone(), "bad-mask", json!({"prompt":"x","reference_image_paths":["reference.png"],"mask_image_path":"mask.png"})).await;
