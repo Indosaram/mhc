@@ -5,6 +5,10 @@ edition.workspace = true
 publish.workspace = true
 license = "LicenseRef-SUL-1.0"
 
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
 [lints]
 workspace = true
 [dependencies]

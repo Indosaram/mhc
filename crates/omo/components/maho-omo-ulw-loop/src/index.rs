@@ -35,8 +35,14 @@ impl Default for UlwLoopComponent {
 }
 
 impl UlwLoopComponent {
-    pub fn from_env(_env: &std::collections::BTreeMap<String, String>) -> Self {
-        Self::default()
+    pub fn from_env(env: &std::collections::BTreeMap<String, String>) -> Self {
+        let mut component = Self::default();
+        component.bin = env
+            .get("OMO_AGENT_TOOLKIT_BIN")
+            .or_else(|| env.get("OMO_BIN"))
+            .filter(|value| !value.trim().is_empty())
+            .cloned();
+        component
     }
 }
 
