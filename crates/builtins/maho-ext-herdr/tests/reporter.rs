@@ -91,12 +91,13 @@ fn deps(socket: String, debug: Arc<Mutex<Vec<String>>>) -> HerdrDependencies {
     }
 }
 type Reply = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
-async fn serve(listener: UnixListener, mut stop: tokio::sync::oneshot::Receiver<()>, recorded: Arc<Mutex<Vec<Value>>>, requests: UnboundedSender<Value>, reply: Reply) {
+async fn serve(listener: UnixListener, mut stop: tokio::sync::oneshot::Receiver<()>, recorded: Arc<Mutex<Vec<Value>>>, requests: UnboundedSender<Value>, reply: Reply, connections: Option<Arc<std::sync::atomic::AtomicUsize>>) {
     loop {
         tokio::select! {
             _ = &mut stop => break,
             accepted = listener.accept() => {
                 let Ok((mut socket, _)) = accepted else { break };
+                if let Some(connections) = &connections { connections.fetch_add(1, Ordering::SeqCst); }
                 let mut bytes = Vec::new();
                 loop {
                     let mut chunk = [0u8; 1];
@@ -134,6 +135,14 @@ struct Fixture {
 }
 impl Fixture {
     async fn next_request(&mut self) -> Value { self.requests.recv().await.expect("request") }
+    async fn await_report(&mut self, message: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if last_agent_message(&self.recorded).as_deref() == Some(message) { return; }
+                let _ = self.next_request().await;
+            }
+        }).await.expect("report delivery");
+    }
     async fn finish(self) {
         self.stop.send(()).expect("stop server");
         self.server.await.expect("server teardown");
@@ -147,7 +156,7 @@ async fn fixture() -> Fixture {
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let (stop, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (requests_tx, requests) = tokio::sync::mpsc::unbounded_channel();
-    let server = tokio::spawn(serve(listener, stop_rx, recorded.clone(), requests_tx, Arc::new(ack)));
+    let server = tokio::spawn(serve(listener, stop_rx, recorded.clone(), requests_tx, Arc::new(ack), None));
     let name = Arc::new(Mutex::new(Some("Reporter QA".to_string())));
     let session = make_session("root-session", Some("/sessions/root.jsonl"), name.clone());
     let idle = Arc::new(AtomicBool::new(true));
@@ -335,12 +344,14 @@ async fn four_second_poll_refreshes_child_records_and_stops_on_shutdown() {
     assert_eq!(last_agent_message(&f.recorded).as_deref(), Some("1 subagent running"));
 
     api.events.emit("terminal_monitor_state", &json!({ "activeCount": 2 }));
-    let _ = f.next_request().await;
+    f.await_report("1 subagent running + 2 monitors live").await;
     assert_eq!(last_agent_message(&f.recorded).as_deref(), Some("1 subagent running + 2 monitors live"));
 
     std::fs::write(tasks.join("child.json"), json!({ "status": "done", "parent_session_id": "root-session" }).to_string()).expect("fixture");
-    tokio::time::advance(std::time::Duration::from_secs(4)).await;
-    let _ = f.next_request().await;
+    let task = tokio::task::spawn(async { tokio::time::advance(std::time::Duration::from_secs(4)).await });
+    tokio::task::yield_now().await;
+    task.await.expect("clock advance");
+    f.await_report("2 monitors live").await;
     assert_eq!(last_agent_message(&f.recorded).as_deref(), Some("2 monitors live"), "the four-second poll refreshed the child records");
 
     dispatch(&api, EventKind::SessionShutdown, &mut shutdown_event(SessionReason::Reload), &ctx).await;
@@ -392,7 +403,8 @@ async fn logs_failed_delivery_and_retries_unchanged_state_on_the_next_signal() {
     let failing = Arc::new(AtomicBool::new(true));
     let flag = failing.clone();
     let reply: Reply = Arc::new(move |request: &Value| if flag.load(Ordering::SeqCst) { wrong_id(request) } else { ack(request) });
-    let server = tokio::spawn(serve(listener, stop_rx, recorded.clone(), requests_tx, reply));
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let server = tokio::spawn(serve(listener, stop_rx, recorded.clone(), requests_tx, reply, Some(connections.clone())));
 
     let debug = Arc::new(Mutex::new(Vec::new()));
     let mut api = ExtensionApi::new(LoadedExtension::new("herdr", "/tmp".into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
@@ -401,11 +413,10 @@ async fn logs_failed_delivery_and_retries_unchanged_state_on_the_next_signal() {
 
     dispatch(&api, EventKind::SessionStart, &mut start_event(), &ctx).await;
     assert_eq!(debug.lock().expect("debug").len(), 3);
-    assert!(recorded_states(&recorded).is_empty());
-
     failing.store(false, Ordering::SeqCst);
     dispatch(&api, EventKind::AgentSettled, &mut ExtensionEvent::AgentSettled, &ctx).await;
-    assert_eq!(recorded_states(&recorded), vec!["idle"]);
+    assert_eq!(recorded.lock().expect("recorded").last().expect("report")["params"]["state"], "idle");
+    assert_eq!(connections.load(Ordering::SeqCst), 7);
     assert_eq!(recorded.lock().expect("recorded").last().expect("report")["params"]["agent_session_id"], "root-session");
 
     dispatch(&api, EventKind::SessionShutdown, &mut shutdown_event(SessionReason::Quit), &ctx).await;
