@@ -1,0 +1,12 @@
+== tampered sibling (lsp-daemon +1 byte)
+package-native: verification failed for /tmp/pkgqa.k3rPom/tamper
+  size mismatch: lsp-daemon (5243209 != 5243208)
+  sha256 mismatch: lsp-daemon
+RC=1
+== missing sibling (omo-git-bash removed)
+package-native: verification failed for /tmp/pkgqa.k3rPom/missing
+  missing: omo-git-bash
+RC=1
+== untampered
+package-native: /home/projects/mhc-wt/hg-integration/.omo/evidence/harness-gap-20261009/install verified (346 files)
+RC=0

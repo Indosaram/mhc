@@ -1,0 +1,13 @@
+HEAD dc53618f20021bd5ea55f389f2a1435fb12560b1
+TREE 97e3ca40556f6fb5c1661a9e908574cc195d475a
+   Compiling maho-ext-account v0.0.0 (/home/projects/mhc-wt/hg-integration/crates/builtins/maho-ext-account)
+   Compiling maho-ext-cursor-cli-oauth v0.0.0 (/home/projects/mhc-wt/hg-integration/crates/builtins/maho-ext-cursor-cli-oauth)
+   Compiling maho-server v0.0.0 (/home/projects/mhc-wt/hg-integration/crates/maho-server)
+   Compiling maho-cli v0.0.0 (/home/projects/mhc-wt/hg-integration/crates/maho-cli)
+    Finished `release` profile [optimized] target(s) in 8m 24s
+BUILD_RC=0
+-rwxr-xr-x 2 indo indo   4482312 Oct 10 22:12 /home/indo/.cargo-target/maho-code/integration/release/ast-grep-mcp
+-rwxr-xr-x 2 indo indo   5243208 Oct 10 22:12 /home/indo/.cargo-target/maho-code/integration/release/lsp-daemon
+-rwxr-xr-x 2 indo indo 160506392 Oct 10 22:18 /home/indo/.cargo-target/maho-code/integration/release/mhc
+-rwxr-xr-x 2 indo indo   1476760 Oct 10 22:12 /home/indo/.cargo-target/maho-code/integration/release/omo-git-bash
+-rwxr-xr-x 2 indo indo  18867088 Oct 10 22:12 /home/indo/.cargo-target/maho-code/integration/release/senpi-desktop-engine
