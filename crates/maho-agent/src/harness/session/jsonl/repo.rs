@@ -578,8 +578,18 @@ impl JsonlSessionRepo {
                     .and_then(|line| parse_jsonl_session_header(line).ok())
                     .is_some_and(|parsed| matches!(parsed, super::codec::JsonlParsedSessionHeader::V3Legacy(_)));
                 if is_legacy {
+                    let normalized = super::legacy_v3::LegacyV3Source::read(
+                        self.file_system.clone(),
+                        &source.path,
+                        &BACKGROUND_CONTEXT,
+                    )
+                    .await?;
+                    if normalized.header.id != source.id || normalized.header.cwd != source.cwd {
+                        return Err(session_invariant_error(format!("Session identity does not match header: {}", source.id)));
+                    }
                     Ok(JsonlForkInput::LegacyV3 {
-                        source: LegacyV3Source::read(self.file_system.clone(), &source.path, &BACKGROUND_CONTEXT).await?,
+                        metadata,
+                        normalized,
                     })
                 } else {
                     Ok(JsonlForkInput::Closed { metadata })
