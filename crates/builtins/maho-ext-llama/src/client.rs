@@ -589,6 +589,8 @@ mod tests {
                         let _ = stream.write_all(&bytes[split..]).await;
                         let _ = stream.flush().await;
                         tokio::time::sleep(Duration::from_secs(5)).await;
+                    } else if line.starts_with("POST /models/load") {
+                        let _ = stream.write_all(http_ok("{}").as_bytes()).await;
                     } else if line.starts_with("GET /models") {
                         let _ = stream.write_all(http_ok(r#"{"data":[]}"#).as_bytes()).await;
                     }
