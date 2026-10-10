@@ -9,6 +9,9 @@ pub fn settle_reservation_run(context: &RunFinalizationContext<'_>, run_dir: &Pa
     let now_ms = (context.now_ms)();
     let launch_notice = context.launch;
     let path = run_dir.join("ledger.json");
+    if !path.exists() {
+        write_run_json_atomic(&path, input.value(), 0o600).map_err(|error| error.to_string())?;
+    }
     let current = parse_reservation_run_ledger(read_run_json(&path).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
     if current.run_id() != input.run_id() { return Err("Finalization ledger run id changed".into()); }
     let value = current.value();

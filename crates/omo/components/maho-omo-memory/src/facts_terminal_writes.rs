@@ -35,6 +35,7 @@ impl FactsTerminalWrites<'_>{
     }
     fn batch_id_of(&mut self,run_dir:&Path,run_id:&str)->Option<String>{
         let ledger_path=run_dir.join("ledger.json");
+        if !ledger_path.exists() { return None; }
         let Ok(ledger)=crate::worker::run_artifacts::read_run_json::<serde_json::Value>(&ledger_path)else{
             self.io.warn("facts receipt skipped: ledger unreadable",&run_dir.display().to_string());
             return None;
