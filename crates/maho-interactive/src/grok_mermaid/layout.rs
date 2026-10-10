@@ -57,7 +57,8 @@ pub fn order_ranks(by_rank: &mut [Vec<usize>], edges: &[Edge], ranks: &[usize]) 
     let mut best = by_rank.to_vec(); let mut best_c = count_crossings(edges, ranks, &pos); if best_c == 0 { return; }
     for it in 0..8 { let indices: Vec<usize> = if it % 2 == 0 { (1..by_rank.len()).collect() } else { (0..by_rank.len()-1).rev().collect() }; let neigh = if it % 2 == 0 { &parents } else { &children };
         for ri in indices { sort_by_barycenter(&mut by_rank[ri], neigh, &pos); for (i,&v) in by_rank[ri].iter().enumerate() { pos[v] = i; } }
-        let c = count_crossings(edges, ranks, &pos); if c < best_c { best_c = c; best = by_rank.to_vec(); } if best_c == 0 { break; }
+        let c = count_crossings(edges, ranks, &pos); if c < best_c { best_c = c; best = by_rank.to_vec(); }
+        if best_c == 0 { break; }
     }
     by_rank.clone_from_slice(&best);
 }
@@ -110,19 +111,19 @@ fn lane_spans(graph: &Graph, ranks: &[usize], placed: &[Placed], vertical: bool)
 fn place_td(ranks: &[usize], max_rank: usize, by: &[Vec<usize>], sizes: &NodeSizes, graph: &Graph, placed: &mut [Placed]) -> RoutePlan {
     let centers = assign_positions(by, &sizes.lay_w, GAP_X, &graph.edges, ranks);
     let mut edge_bus = vec![0; graph.edges.len()]; let mut bus_tracks = vec![0; max_rank + 1];
-    for r in 0..max_rank { let spans = bus_spans(graph, ranks, &centers, r, false); if !spans.is_empty() { let (a,n)=assign_tracks(&spans); for (i,s) in a { edge_bus[i]=s; } bus_tracks[r]=n; } }
+    for (r, track) in bus_tracks.iter_mut().enumerate().take(max_rank) { let spans = bus_spans(graph, ranks, &centers, r, false); if !spans.is_empty() { let (a,n)=assign_tracks(&spans); for (i,s) in a { edge_bus[i]=s; } *track=n; } }
     let rank_h: Vec<usize> = by.iter().map(|row| row.iter().map(|&i| sizes.box_h[i]+sizes.extra_h[i]).max().unwrap_or(3)).collect();
     let mut rank_y=vec![0;max_rank+1]; for r in 1..=max_rank { rank_y[r]=rank_y[r-1]+rank_h[r-1]+GAP_Y.max(bus_tracks[r-1]+1); }
     let band_end=rank_y.iter().enumerate().map(|(r,y)|y+rank_h[r]).collect(); let mut diagram_w=1;
     for (r,row) in by.iter().enumerate() { for &i in row { let w=sizes.box_w[i]; let h=sizes.box_h[i]; let cx=centers[i]; let x=sat(cx,half(w)); let y=rank_y[r]+half(rank_h[r].saturating_sub(h+sizes.extra_h[i])); placed[i]=Placed{x,y,w,h,cx,cy:y+half(h),rank:r}; diagram_w=diagram_w.max(x+w+if sizes.extra_h[i]>0 {2+sizes.self_label_w[i]} else {0}); } }
-    let mut content_w=diagram_w; for e in &graph.edges { if e.from!=e.to { if let Some(l)=&e.label { let lw=string_width(l).min(MAX_LABEL); content_w=content_w.max(if ranks[e.to]==ranks[e.from]+1 {placed[e.to].cx+2+lw} else {diagram_w+lw+1}); } } }
+    let mut content_w=diagram_w; for e in &graph.edges { if e.from!=e.to && let Some(l)=&e.label { let lw=string_width(l).min(MAX_LABEL); content_w=content_w.max(if ranks[e.to]==ranks[e.from]+1 {placed[e.to].cx+2+lw} else {diagram_w+lw+1}); } }
     let lanes=lane_spans(graph,ranks,placed,true); let mut edge_lane=vec![0;graph.edges.len()]; let mut canvas_w=content_w; let mut lane_base=0; if !lanes.is_empty(){let(a,n)=assign_tracks(&lanes);for(i,s)in a{edge_lane[i]=s} canvas_w+=1+n;lane_base=content_w+1;}
     RoutePlan{canvas_w,canvas_h:rank_y[max_rank]+rank_h[max_rank],band_end,edge_bus,lane_base,edge_lane}
 }
 
 fn place_lr(ranks:&[usize],max_rank:usize,by:&[Vec<usize>],sizes:&NodeSizes,graph:&Graph,placed:&mut[Placed])->RoutePlan{
     let col_w:Vec<usize>=by.iter().map(|r|r.iter().map(|&i|sizes.box_w[i]).max().unwrap_or(0)).collect(); let max_label=graph.edges.iter().filter(|e|e.from==e.to||ranks[e.to]==ranks[e.from]+1).filter_map(|e|e.label.as_ref()).map(|s|string_width(s).min(MAX_LABEL)).max().unwrap_or(0); let base_gap=(GAP_X+1).max(max_label+3);
-    let centers=assign_positions(by,&sizes.lay_h,1,&graph.edges,ranks); let mut edge_bus=vec![0;graph.edges.len()];let mut tracks=vec![0;max_rank+1];for r in 0..max_rank{let s=bus_spans(graph,ranks,&centers,r,true);if !s.is_empty(){let(a,n)=assign_tracks(&s);for(i,x)in a{edge_bus[i]=x}tracks[r]=n;}}
+    let centers=assign_positions(by,&sizes.lay_h,1,&graph.edges,ranks); let mut edge_bus=vec![0;graph.edges.len()];let mut tracks=vec![0;max_rank+1];for(r,track)in tracks.iter_mut().enumerate().take(max_rank){let s=bus_spans(graph,ranks,&centers,r,true);if !s.is_empty(){let(a,n)=assign_tracks(&s);for(i,x)in a{edge_bus[i]=x}*track=n;}}
     let mut rank_x=vec![0;max_rank+1];for r in 1..=max_rank{rank_x[r]=rank_x[r-1]+col_w[r-1]+base_gap.max(tracks[r-1]+1)} let band_end=rank_x.iter().enumerate().map(|(r,x)|x+col_w[r]).collect(); let mut h=1;
     for(r,row)in by.iter().enumerate(){for &i in row{let x=rank_x[r];let y=sat(centers[i],half(sizes.box_h[i]+sizes.extra_h[i]));placed[i]=Placed{x,y,w:sizes.box_w[i],h:sizes.box_h[i],cx:x+half(sizes.box_w[i]),cy:y+half(sizes.box_h[i]),rank:r};h=h.max(y+sizes.box_h[i]+sizes.extra_h[i]);}}
     let lanes=lane_spans(graph,ranks,placed,false);let mut edge_lane=vec![0;graph.edges.len()];let mut canvas_h=h;let mut lane_base=0;if !lanes.is_empty(){let(a,n)=assign_tracks(&lanes);for(i,s)in a{edge_lane[i]=s}canvas_h+=1+n;lane_base=h+1;} RoutePlan{canvas_w:rank_x[max_rank]+col_w[max_rank],canvas_h,band_end,edge_bus,lane_base,edge_lane}
@@ -149,7 +150,7 @@ pub fn layout_canvas(graph:&Graph,extras:&[NodeExtra])->CanvasResult{
 pub fn orient(mut canvas:Canvas,graph:&Graph)->Canvas{if graph.dir==Dir::Up{canvas.flip_vertical()}else if graph.dir==Dir::Left{canvas.flip_horizontal()}canvas}
 pub fn layout_flowchart(graph:&Graph)->CanvasResult{layout_canvas(graph,&vec![NodeExtra::Plain;graph.nodes.len()]).map(|c|orient(c,graph))}
 pub fn layout_class(graph:&Graph,infos:&[ClassInfo])->CanvasResult{let e=graph.nodes.iter().enumerate().map(|(i,n)|{let mut t=Vec::new();if let Some(a)=&infos[i].annotation{t.push(format!("«{a}»"))}t.push(display_generics(&n.label));NodeExtra::Compartments(vec![t,infos[i].attrs.clone(),infos[i].methods.clone()])}).collect::<Vec<_>>();layout_canvas(graph,&e).map(|c|orient(c,graph))}
-fn display_generics(s:&str)->String{let(mut o,mut open)=(String::new(),false);for c in s.chars(){if c=='~'{o.push(if open{'>'}else{'<'});open=!open}else{o.push(c)}}o}
+fn display_generics(s:&str)->String{let(mut o,mut open)=(String::new(),false);for c in s.chars(){if c=='~'{o.push(if open{'>'}else{'<'});open = !open}else{o.push(c)}}o}
 type ItemKey = String;
 fn node_key(i: usize) -> ItemKey { format!("n{i}") }
 fn group_key(i: usize) -> ItemKey { format!("g{i}") }
@@ -158,7 +159,7 @@ pub fn layout_grouped(graph:&Graph)->CanvasResult {
     let mut proxy=std::collections::HashMap::new();for(gi,g)in graph.groups.iter().enumerate(){if let Some(&ni)=graph.index.get(&g.id){proxy.insert(ni,gi);}}
     let chain=|g:Option<usize>|{let mut out=Vec::new();let mut cur=g;while let Some(i)=cur{out.push(i);cur=graph.groups[i].parent}out.reverse();out};
     let endpoint=|n:usize|{if let Some(&gi)=proxy.get(&n){(group_key(gi),chain(graph.groups[gi].parent))}else{(node_key(n),chain(graph.node_group.get(n).copied().flatten()))}};
-    let mut scope_edges:std::collections::HashMap<Option<usize>,Vec<(ItemKey,ItemKey,usize)>>=std::collections::HashMap::new();let mut referenced=vec![false;graph.groups.len()];for(ei,e)in graph.edges.iter().enumerate(){let(f,fc)=endpoint(e.from);let(t,tc)=endpoint(e.to);let mut k=0;while k<fc.len()&&k<tc.len()&&fc[k]==tc[k]{k+=1}let scope=if k==0{None}else{Some(fc[k-1])};let fk=if fc.len()>k{group_key(fc[k])}else{f};let tk=if tc.len()>k{group_key(tc[k])}else{t};for key in [&fk,&tk]{if key.starts_with('g'){referenced[key[1..].parse::<usize>().unwrap_or(0)]=true}}scope_edges.entry(scope).or_default().push((fk,tk,ei));}
+    let mut scope_edges:std::collections::HashMap<Option<usize>,Vec<(ItemKey,ItemKey,usize)>>=std::collections::HashMap::new();let mut referenced=vec![false;graph.groups.len()];for(ei,e)in graph.edges.iter().enumerate(){let(f,fc)=endpoint(e.from);let(t,tc)=endpoint(e.to);let mut k=0;while k<fc.len()&&k<tc.len()&&fc[k]==tc[k]{k+=1}let scope=if k==0{None}else{Some(fc[k-1])};let fk=if fc.len()>k{group_key(fc[k])}else{f};let tk=if tc.len()>k{group_key(tc[k])}else{t};for key in [&fk,&tk]{if let Some(group)=key.strip_prefix('g'){referenced[group.parse::<usize>().unwrap_or(0)]=true}}scope_edges.entry(scope).or_default().push((fk,tk,ei));}
     let mut direct:std::collections::HashMap<Option<usize>,Vec<usize>>=std::collections::HashMap::new();for(ni,g)in graph.node_group.iter().enumerate(){if !proxy.contains_key(&ni){direct.entry(*g).or_default().push(ni);}}
     let mut keep=vec![false;graph.groups.len()];for gi in (0..graph.groups.len()).rev(){let nodes=!direct.get(&Some(gi)).unwrap_or(&Vec::new()).is_empty();let child=graph.groups.iter().enumerate().any(|(c,g)|g.parent==Some(gi)&&keep[c]);keep[gi]=nodes||child||referenced[gi];}build_scope(graph,None,&scope_edges,&direct,&keep).map(|c|orient(c,graph))
 }
@@ -169,10 +170,11 @@ fn build_scope(graph:&Graph,scope:Option<usize>,scope_edges:&std::collections::H
 }
 
 pub fn draw_box(canvas:&mut Canvas,p:Placed,lines:&[String],shape:Shape){let right=p.x+p.w-1;let bottom=p.y+p.h-1;let rounded=matches!(shape,Shape::Round|Shape::Diamond);canvas.set(p.x,p.y,if rounded{"╭"}else{"┌"},super::Cls::Border);canvas.set(right,p.y,if rounded{"╮"}else{"┐"},super::Cls::Border);canvas.set(p.x,bottom,if rounded{"╰"}else{"└"},super::Cls::Border);canvas.set(right,bottom,if rounded{"╯"}else{"┘"},super::Cls::Border);for x in p.x+1..right{canvas.add_bits(x,p.y,L|R,super::Cls::Border);canvas.add_bits(x,bottom,L|R,super::Cls::Border)}for y in p.y+1..bottom{canvas.add_bits(p.x,y,U|D,super::Cls::Border);canvas.add_bits(right,y,U|D,super::Cls::Border)}for y in p.y..=bottom{for x in p.x..=right{let idx=canvas.idx(x,y);canvas.occupied[idx]=1}}let inner=sat(p.w,2*PAD+2).max(1);for (i,l) in lines.iter().enumerate(){let t=fit_label(l,inner);draw_text(canvas,&t,p.x+1+PAD+half(sat(inner,string_width(&t))),p.y+1+i,super::Cls::Text)}}
-fn draw_class_box(c:&mut Canvas,p:Placed,s:&[Vec<String>]){draw_box(c,p,&[],Shape::Rect);let inner=sat(p.w,2*PAD+2).max(1);let mut row=p.y+1;let mut first=true;for (si,sec) in s.iter().enumerate(){if sec.is_empty(){continue}if !first{c.set(p.x,row,"├",super::Cls::Border);for x in p.x+1..p.x+p.w-1{c.set(x,row,"─",super::Cls::Border)}c.set(p.x+p.w-1,row,"┤",super::Cls::Border);row+=1}first=false;for l in sec{let t=fit_label(l,inner);draw_text_over_edges(c,&t,p.x+1+PAD+if si==0{half(sat(inner,string_width(&t)))}else{0},row,super::Cls::Text);row+=1}}}
+fn draw_class_box(c:&mut Canvas,p:Placed,s:&[Vec<String>]){draw_box(c,p,&[],Shape::Rect);let inner=sat(p.w,2*PAD+2).max(1);let mut row=p.y+1;let mut first=true;for (si,sec) in s.iter().enumerate(){if sec.is_empty(){continue}
+        if !first{c.set(p.x,row,"├",super::Cls::Border);for x in p.x+1..p.x+p.w-1{c.set(x,row,"─",super::Cls::Border)}c.set(p.x+p.w-1,row,"┤",super::Cls::Border);row+=1}first=false;for l in sec{let t=fit_label(l,inner);draw_text_over_edges(c,&t,p.x+1+PAD+if si==0{half(sat(inner,string_width(&t)))}else{0},row,super::Cls::Text);row+=1}}}
 fn draw_frame(c:&mut Canvas,p:Placed,title:&str,sub:&Canvas){draw_box(c,p,&[],Shape::Rect);let t=fit_label(title,sat(p.w,4));draw_text_over_edges(c,&format!(" {t} "),p.x+1,p.y,super::Cls::Text);c.blit(sub,p.x+1+half(p.w.saturating_sub(2+sub.w)),p.y+1+half(p.h.saturating_sub(2+sub.h)))}
 
-fn head_glyph<'a>(head: Head, arrow: &'a str) -> &'a str {
+fn head_glyph(head: Head, arrow: &str) -> &str {
     match head {
         Head::Circle => "o",
         Head::Cross => "×",
@@ -255,9 +257,7 @@ mod tests {
 
     #[test]
     fn compute_ranks_ignores_cycles() {
-        let mut g = Graph::default();
-        g.nodes = (0..3).map(|i| super::super::graph::Node { label: i.to_string(), shape: Shape::Rect }).collect();
-        g.edges = vec![edge(0, 1), edge(1, 2), edge(2, 0)];
+        let g = Graph { nodes: (0..3).map(|i| super::super::graph::Node { label: i.to_string(), shape: Shape::Rect }).collect(), edges: vec![edge(0, 1), edge(1, 2), edge(2, 0)], ..Graph::default() };
         assert_eq!(compute_ranks(&g), vec![0, 1, 2]);
     }
 
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn orient_flips_up_canvas() {
-        let mut g = Graph::default(); g.dir = Dir::Up; let c = Canvas::new(1, 1); assert_eq!(orient(c, &g).h, 1);
+        let g = Graph { dir: Dir::Up, ..Graph::default() }; let c = Canvas::new(1, 1); assert_eq!(orient(c, &g).h, 1);
     }
 
     #[test]

@@ -1521,7 +1521,7 @@ impl InteractiveMode {
         let text = text.trim();
         if text == "/login" || text.starts_with("/login ") {
             let provider_ref = text.strip_prefix("/login ").map(str::trim).filter(|value| !value.is_empty());
-            let options = maho_core::auth_providers::build_login_provider_infos(&self.session.model_registry(), None)
+            let options = maho_core::auth_providers::build_login_provider_infos(self.session.model_registry(), None)
                 .into_iter()
                 .filter(|option| provider_ref.is_none_or(|reference| option.id.eq_ignore_ascii_case(reference) || option.name.eq_ignore_ascii_case(reference)))
                 .map(|option| crate::components::oauth_selector::AuthSelectorProvider {
@@ -1540,7 +1540,7 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/logout" {
-            let options = maho_core::auth_providers::build_logout_provider_infos(&self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
+            let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
                 id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
             }).collect::<Vec<_>>();
             if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
