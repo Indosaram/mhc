@@ -411,6 +411,26 @@ fn resolve_legacy_id(
     Ok(entry.mapped_id.clone())
 }
 
+fn resolve_label_target_id(
+    entries: &HashMap<String, LegacyV3IndexEntry>,
+    legacy_id: &str,
+) -> Result<Option<String>, SessionError> {
+    let mut current_id = Some(legacy_id);
+    while let Some(id) = current_id {
+        let entry = entries.get(id).ok_or_else(|| {
+            SessionError::new(
+                SessionErrorKind::Io,
+                format!("Missing legacy v3 entry reference: {id}"),
+            )
+        })?;
+        if entry.is_retained() {
+            return Ok(entry.mapped_id.clone());
+        }
+        current_id = entry.parent_id.as_deref();
+    }
+    Ok(None)
+}
+
 fn resolve_branch_summary_from_id(
     entries: &HashMap<String, LegacyV3IndexEntry>,
     legacy_from_id: &str,
@@ -664,16 +684,20 @@ fn index_legacy_v3_entry(
     let mapped_parent_id = match entry.parent_id() {
         None => None,
         Some(pid) => {
-            let parent_entry = entries.get(pid).ok_or_else(|| {
-                SessionError::new(
-                    SessionErrorKind::Io,
-                    format!(
-                        "Legacy v3 entry {} has a missing or forward parent at line {line_number}: {pid}",
-                        entry.id()
-                    ),
-                )
-            })?;
-            parent_entry.mapped_id.clone()
+            if pid == "root" {
+                None
+            } else {
+                let parent_entry = entries.get(pid).ok_or_else(|| {
+                    SessionError::new(
+                        SessionErrorKind::Io,
+                        format!(
+                            "Legacy v3 entry {} has a missing or forward parent at line {line_number}: {pid}",
+                            entry.id()
+                        ),
+                    )
+                })?;
+                parent_entry.mapped_id.clone()
+            }
         }
     };
 
@@ -846,7 +870,7 @@ fn normalize_legacy_v3_values(
     for eid in &inventory.entry_order {
         let entry = &entries[eid];
         if let LegacyV3IndexKind::Label { target_id, label } = &entry.kind {
-            if let Some(mapped_target_id) = resolve_legacy_id(entries, Some(target_id))? {
+            if let Some(mapped_target_id) = resolve_label_target_id(entries, target_id)? {
                 match label {
                     Some(l) if !l.is_empty() => {
                         labels.insert(mapped_target_id, l.clone());
