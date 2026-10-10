@@ -1,0 +1,31 @@
+# Skipped tests in the workspace gate: environment-dependent N/A
+
+Integration HEAD at listing: e80fc02cc1379ceead3f30689ac92d7203e9e1b1. Command: `cargo nextest list --workspace --run-ignored only` (23 entries; equals the "23 skipped" in workspace-gate-6.txt).
+
+Decision (user, 2026-10-10): the "0 skipped" criterion is met by recording these pre-existing live desktop tests as environment-dependent N/A. They are `#[ignore]`d in the pinned port exactly as upstream ignores them; this plan added no `#[ignore]` (repo-wide `#[ignore]` count equals baseline b3c3c94f). They need a real display / D-Bus / desktop portal stack that the headless gate host does not provide.
+
+| Crate | Test | Required environment |
+|---|---|---|
+| maho-senpi-desktop-backend-atspi | live_tests::ax_tree_of_xterm_lists_window | a live AT-SPI session bus (dbus-run-session), an X display and xfce4-terminal; one test needs the session bus pointed at no bus |
+| maho-senpi-desktop-backend-atspi | live_tests::no_bus_reports_bus_unreachable | a live AT-SPI session bus (dbus-run-session), an X display and xfce4-terminal; one test needs the session bus pointed at no bus |
+| maho-senpi-desktop-backend-atspi | live_tests::permission_is_toolkits_silent_until_a_toolkit_publishes | a live AT-SPI session bus (dbus-run-session), an X display and xfce4-terminal; one test needs the session bus pointed at no bus |
+| maho-senpi-desktop-backend-wayland | backend::layout_tests::live_portal_screenshot_maps_through_the_compositor_layout | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | backend::layout_tests::live_portal_screenshot_refuses_a_layout_the_image_is_not | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | capture::live_tests::portal_screenshot_returns_png | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | capture::pipewire::live_tests::grabs_one_frame_from_a_pipewire_video_node | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | live_tests::live_session_without_portals_refuses_input_with_the_path_message | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | live_tests::live_session_without_portals_reports_capture_unavailable | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | live_tests::live_session_without_portals_reports_global_shortcuts_unavailable | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-wayland | live_tests::live_session_without_portals_reports_input_unavailable | a live Wayland session with xdg-desktop-portal (Screenshot/RemoteDesktop/GlobalShortcuts) or a portal-free sway --headless session, and PipeWire |
+| maho-senpi-desktop-backend-x11 | ax_owner_live_tests::ax_click_on_an_overlapped_windows_element_lands_in_that_window | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | ax_owner_live_tests::ax_owner_of_indistinguishable_same_process_windows_is_unknown | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | backend_live_tests::shared_restore_preserves_newer_user_focus_and_pointer | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | capture::live_tests::captures_a_partially_offscreen_window_in_a_targetable_full_frame | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | capture::live_tests::captures_root_window | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | input::live_tests::a_runtime_keyboard_mapping_change_is_used_without_reconnecting | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | input::live_tests::background_click_into_a_gtk_window_is_refused | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | input::live_tests::non_ewmh_foreground_delivery_confirms_core_focus_before_input | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | input::live_tests::xtest_click_into_xterm | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | stop_path::live_tests::raw_key_chord_latches_supervisor | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-backend-x11 | stop_path::live_tests::start_without_a_display_is_unavailable_and_not_live | Xvfb plus an EWMH window manager (xfwm4), xterm and a GTK window whose ids the QA script passes through SENPI_X11_* variables |
+| maho-senpi-desktop-core | clipboard::live_tests::a_written_text_reads_back_from_the_system_clipboard | writes the real system clipboard (a running display clipboard owner) |
