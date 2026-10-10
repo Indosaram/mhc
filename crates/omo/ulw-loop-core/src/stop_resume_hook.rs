@@ -62,9 +62,14 @@ pub fn run_stop_resume_hook(input: &Value) -> String {
         session_id: Some(payload.session_id.clone()),
         ..Default::default()
     };
-    let state_dir = ulw_loop_dir(&payload.cwd, Some(&scope));
-    let Ok(plan) = read_ulw_loop_plan(&payload.cwd, Some(&scope)) else {
-        return String::new();
+    let (state_dir, plan) = match read_ulw_loop_plan(&payload.cwd, Some(&scope)) {
+        Ok(plan) => (ulw_loop_dir(&payload.cwd, Some(&scope)), plan),
+        Err(_) => {
+            let Ok(plan) = read_ulw_loop_plan(&payload.cwd, None) else {
+                return String::new();
+            };
+            (ulw_loop_dir(&payload.cwd, None), plan)
+        }
     };
 
     if plan.aggregate_completion.as_ref().is_some_and(|a| a.status == "complete") {
@@ -162,9 +167,9 @@ fn render_resume_directive(plan: &UlwLoopPlan, goal: &UlwLoopItem, session_id: &
     vec![
         format!("The ulw-loop run in this session still has unfinished goals (next: {} — {}).", goal.id, goal.title),
         "The turn ended before the loop completed. Resume it now:".to_string(),
-        format!("1. Run `ulw-loop status{option} --json` to reload the plan, the active goal, and currentAttemptDir."),
+        format!("1. Run `omo-agent-toolkit ulw-loop status{option} --json` to reload the plan, the active goal, and currentAttemptDir."),
         "2. Continue the active goal's remaining success criteria, recording evidence with record-evidence.".to_string(),
-        format!("3. Checkpoint through `ulw-loop checkpoint{option}` when the goal's criteria are proven; a complete checkpoint prints the next goal instruction."),
+        format!("3. Checkpoint through `omo-agent-toolkit ulw-loop checkpoint{option}` when the goal's criteria are proven; a complete checkpoint prints the next goal instruction."),
         "If the loop is genuinely blocked on the user, checkpoint the goal as blocked with the reason instead.".to_string(),
     ].join("\n")
 }
