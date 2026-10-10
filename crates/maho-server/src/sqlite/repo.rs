@@ -101,9 +101,18 @@ impl SqliteSessionRepo {
         ));
         let tracking = Arc::downgrade(&self.sessions);
         let facade_tracking = Arc::downgrade(&self.facades);
-        self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
-        let storage_tracking=Arc::downgrade(&self.storages);
+        let storage_tracking = Arc::downgrade(&self.storages);
         let close_id = id.clone();
+        let facade_close_id = id.clone();
+        let session_close_id = close_id.clone();
+        let facade_tracking_on_session_close = facade_tracking.clone();
+        let storage_tracking_on_session_close = storage_tracking.clone();
+        let close_id_on_session_close = close_id.clone();
+        let facade_tracking_on_facade_close = facade_tracking.clone();
+        let storage_tracking_on_facade_close = storage_tracking.clone();
+        let close_id_on_facade_close = close_id.clone();
+        self.storages.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(),storage.clone());
+        let session_tracking = Arc::downgrade(&self.sessions);
         let session = Arc::new(StorageBackedSession::new(
             metadata,
             storage,
@@ -113,17 +122,27 @@ impl SqliteSessionRepo {
                         tracking
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .remove(&close_id);
+                            .remove(&session_close_id);
                     }
-                    if let Some(tracking)=facade_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id);}
-                    if let Some(tracking)=storage_tracking.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id);}
+                    if let Some(tracking)=facade_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
+                    if let Some(tracking)=storage_tracking_on_session_close.upgrade() {tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_session_close);}
                 })),
                 ..Default::default()
             },
         ));
         session.attach();
         sessions.insert(session.metadata().id.clone(), session.clone());
-        let facade = Arc::new(MemorySessionFacade::new(session.clone(), Arc::new(|| {})));
+        let facade = Arc::new(MemorySessionFacade::new(session.clone(), Arc::new(move || {
+            if let Some(tracking) = session_tracking.upgrade() {
+                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&facade_close_id);
+            }
+            if let Some(tracking) = facade_tracking_on_facade_close.upgrade() {
+                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_facade_close);
+            }
+            if let Some(tracking) = storage_tracking_on_facade_close.upgrade() {
+                tracking.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&close_id_on_facade_close);
+            }
+        })));
         facade.attach();
         self.facades.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, facade.clone());
         Box::new(facade)
