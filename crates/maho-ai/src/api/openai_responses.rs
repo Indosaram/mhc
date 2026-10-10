@@ -25,7 +25,7 @@ use crate::openai_responses_compat::SessionAffinityFormat;
 use crate::types::{
     AssistantMessage, AssistantMessageEvent, CacheRetention, Context, ErrorReason, Model, ModelThinkingLevel,
     ProviderEnv, ProviderHeaders, ProviderResponse, ServiceTierPreference, SimpleStreamOptions, StopReason,
-    StreamOptions, ThinkingLevel, Transport, Usage,
+    StreamOptions, ThinkingLevel, Usage,
 };
 use crate::utils::deferred_tools::split_deferred_tools;
 use crate::utils::error_body::{

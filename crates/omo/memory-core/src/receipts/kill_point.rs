@@ -15,20 +15,14 @@ pub const MEMORY_KILL_POINTS: [&str; 7] = [
 
 pub type MemoryKillPoint = &'static str;
 
+/// Injected kill function: `(pid, signal)`.
+pub type KillFn<'a> = &'a dyn Fn(u32, Option<&str>);
+
+#[derive(Default)]
 pub struct KillPointOptions<'a> {
-    pub kill: Option<&'a dyn Fn(u32, Option<&str>)>,
+    pub kill: Option<KillFn<'a>>,
     pub platform: Option<&'a str>,
     pub env_var: Option<&'a str>,
-}
-
-impl Default for KillPointOptions<'_> {
-    fn default() -> Self {
-        Self {
-            kill: None,
-            platform: None,
-            env_var: None,
-        }
-    }
 }
 
 /// Kills this process when `OMO_MEMORY_KILL_POINT` names `point`. Returns how it killed (a POSIX
