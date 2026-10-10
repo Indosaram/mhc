@@ -56,9 +56,9 @@ fn category_lines(config: &serde_json::Value, agent_dir: &str) -> Vec<String> {
     let mut unavailable = Vec::new();
     for name in DEFAULT_CATEGORIES {
         let pinned = categories.and_then(|items| items.get(*name)).and_then(|item| item.get("model")).and_then(serde_json::Value::as_str);
-        if pinned.is_some_and(|model| available.iter().any(|available| available == model)) {
-            usable.push((*name).to_owned());
-        } else if pinned.is_none() && !available.is_empty() {
+        if pinned.is_some_and(|model| available.iter().any(|available| available == model))
+            || (pinned.is_none() && !available.is_empty())
+        {
             usable.push((*name).to_owned());
         } else {
             unavailable.push((*name).to_owned());

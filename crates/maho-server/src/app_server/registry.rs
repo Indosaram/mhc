@@ -33,7 +33,7 @@ impl RegistryConnection {
         self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(action));
     }
     pub fn defer_task_until_responded(&self, action: impl FnOnce() -> tokio::task::JoinHandle<()> + Send + 'static) {
-        self.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(move || Box::pin(async move { let _ = action(); })));
+        self.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(move || Box::pin(async move { drop(action()); })));
     }
     pub async fn finish_response(&self) {
         let actions = std::mem::take(&mut *self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner));

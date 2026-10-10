@@ -68,12 +68,11 @@ pub async fn check_provider_auth(args: &Args, runtime: &ModelRuntime, refresh: b
 }
 
 pub async fn provider_credential(runtime: &ModelRuntime, provider: &str, refresh: bool) -> Result<Option<String>, String> {
-    if !refresh {
-        if let Some(value) = runtime.credentials.get(provider)
-            && maho_core::auth_storage::credential_kind(&value) == Some(maho_core::auth_storage::CredentialKind::Oauth)
-        {
-            return Ok(value.get("access").and_then(serde_json::Value::as_str).map(str::to_owned));
-        }
+    if !refresh
+        && let Some(value) = runtime.credentials.get(provider)
+        && maho_core::auth_storage::credential_kind(&value) == Some(maho_core::auth_storage::CredentialKind::Oauth)
+    {
+        return Ok(value.get("access").and_then(serde_json::Value::as_str).map(str::to_owned));
     }
     Ok(get_auth_credential(runtime.get_auth(provider).await.map_err(|_| "invalid auth state".to_owned())?.as_ref()).map(str::to_owned))
 }
