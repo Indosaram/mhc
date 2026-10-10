@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use ulw_loop_core::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs};
 use ulw_loop_core::domain_types::*;
 use ulw_loop_core::plan_io::write_plan;
@@ -25,3 +26,5 @@ fn blocked_preserves_blocker_fields_and_ledger() -> Result<(), Box<dyn std::erro
 
 #[test]
 fn blocked_skips_criteria_gate() { let tmp=setup(&plan(vec![goal("G001","in_progress",None,vec![criterion("pending")])])); let r=checkpoint_ulw_loop(tmp.path(),&args("G001","blocked","waiting for approval"),None,None); assert_eq!(r.unwrap().goal.status,"blocked"); }
+
+

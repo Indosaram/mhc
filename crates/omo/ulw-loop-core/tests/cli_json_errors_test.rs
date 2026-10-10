@@ -29,7 +29,7 @@ fn unknown_subcommand_json_error_is_not_help_text() {
     let error = UlwLoopError::new("Unknown ulw-loop subcommand: wat.", "ULW_LOOP_SUBCOMMAND_UNKNOWN");
     let payload = json_error(&error);
     assert_eq!(payload["ok"], false);
-    assert_ne!(payload.to_string().contains("Usage:"), true);
+    assert!(!payload.to_string().contains("Usage:"));
     assert!(payload["error"]["code"].is_string());
 }
 

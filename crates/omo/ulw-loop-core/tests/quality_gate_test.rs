@@ -82,9 +82,10 @@ fn test_validate_quality_gate_structure() {
     };
 
     let result = validate_quality_gate(&gate_json, Some(&opts));
-    if let Err(e) = &result { eprintln!("validation error: {:?}", e); }
-    assert!(result.is_ok());
-    let qg = result.unwrap();
+    let qg = match result {
+        Ok(qg) => qg,
+        Err(error) => panic!("validation failed: {error:?}"),
+    };
     assert_eq!(qg.manual_qa.status, "passed");
     assert_eq!(qg.gate_review.recommendation, "APPROVE");
 }
@@ -96,7 +97,7 @@ fn valid_gate_fixture() -> serde_json::Value {
         "gateReview":{"by":"lazycodex-gate-reviewer","recommendation":"APPROVE","reportPath":"gate.md","evidence":"approved","blockers":[]},"iteration":{"fullRerun":true,"status":"passed","rerunCommands":["test"],"evidence":"rerun"},"criteriaCoverage":{"totalCriteria":2,"passCount":2,"originalIntent":"intent","desiredOutcome":"outcome","userOutcomeReview":"user review","adversarialClassesCovered":["malformed_input"]}
     })
 }
-fn gate_error(value: serde_json::Value) -> ulw_loop_core::UlwLoopError { ulw_loop_core::quality_gate::validate_quality_gate(&value, None).unwrap_err() }
+fn gate_error(value: serde_json::Value) -> ulw_loop_core::UlwLoopError { match ulw_loop_core::quality_gate::validate_quality_gate(&value, None) { Ok(_) => panic!("expected quality gate validation error"), Err(error) => error } }
 
 #[test] fn quality_gate_fixture_has_five_sections() { let g=valid_gate_fixture(); for k in ["codeReview","manualQa","gateReview","iteration","criteriaCoverage"] { assert!(g.get(k).is_some()); } }
 #[test] fn quality_gate_fixture_fs_variant_is_structurally_valid() { let g=valid_gate_fixture(); assert!(g["manualQa"]["artifactRefs"].as_array().unwrap().len()==2); }

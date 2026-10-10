@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::fs;
 use ulw_loop_core::checkpoint_template::checkpoint_template;
 use ulw_loop_core::domain_types::*;
@@ -15,3 +16,4 @@ fn setup(p:UlwLoopPlan)->tempfile::TempDir{let t=tempfile::tempdir().unwrap();fs
 #[test]fn active_goal_used_when_goal_id_omitted(){let t=setup(plan(vec![goal("G001",1)],true));let x=checkpoint_template(t.path(),None,None,None).unwrap();assert_eq!(x.attempt_dir.as_deref(),Some(".omo/evidence/ulw/cli-test/G001/a1"));}
 #[test]fn explicit_non_active_goal_targets_its_attempt(){let t=setup(plan(vec![goal("G001",1),goal("G002",3)],true));let x=checkpoint_template(t.path(),None,Some("G002"),None).unwrap();assert_eq!(x.attempt_dir.as_deref(),Some(".omo/evidence/ulw/cli-test/G002/a3"));}
 #[test]fn v1_template_has_guidance_without_attempt(){let t=setup(plan(vec![goal("G001",1)],false));let x=checkpoint_template(t.path(),None,Some("G001"),None).unwrap();assert!(x.guidance.unwrap().contains("evidence-layout v1"));assert!(x.attempt_dir.is_none());let _=RealQualityGateFs;}
+
