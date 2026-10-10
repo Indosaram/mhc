@@ -1,9 +1,7 @@
 use std::fs;
 
 use ulw_loop_core::command_types::CreateUlwLoopOptions;
-use ulw_loop_core::domain_types::UlwLoopLedgerEntry;
 use ulw_loop_core::paths::UlwLoopScope;
-use ulw_loop_core::plan_commit::CommitMutation;
 use ulw_loop_core::plan_crud::create_ulw_loop_plan;
 use ulw_loop_core::plan_io::{read_ledger, read_ulw_loop_plan, with_ulw_loop_mutation_lock};
 use ulw_loop_core::plan_log::{log_names, plan_exists, read_newest_record, read_records};

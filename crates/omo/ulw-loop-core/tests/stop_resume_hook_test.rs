@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 use std::io::Write;
 use serde_json::{json, Value};
@@ -34,3 +36,4 @@ fn existing_non_stop_payload_is_ignored() {
 fn existing_active_stop_payload_is_ignored() {
     assert_eq!(run_stop_resume_hook(&json!({"hook_event_name":"Stop","session_id":"s1","cwd":"/tmp","transcript_path":"/tmp/t.jsonl","stop_hook_active":true})), "");
 }
+

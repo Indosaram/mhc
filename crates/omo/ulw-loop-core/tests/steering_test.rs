@@ -1,8 +1,10 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 
 use serde_json::{json, Value};
 use ulw_loop_core::domain_types::*;
-use ulw_loop_core::paths::{ulw_loop_goals_path, ulw_loop_ledger_path};
+use ulw_loop_core::paths::ulw_loop_ledger_path;
 use ulw_loop_core::plan_io::{read_steering_ledger_entries, read_ulw_loop_plan, write_plan};
 use ulw_loop_core::steering::{apply_steering_mutation, parse_ulw_loop_steering_directive, steer_ulw_loop, validate_ulw_loop_steering_proposal};
 use ulw_loop_core::steering_types::UlwLoopSteeringProposal;
@@ -142,3 +144,4 @@ fn test_parse_ulw_loop_steering_directive() {
     assert_eq!(p.kind, "annotate_ledger");
     assert_eq!(p.evidence, "proof");
 }
+

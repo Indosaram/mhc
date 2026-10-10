@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use ulw_loop_core::domain_types::*;
 use ulw_loop_core::plan_io::*;
 use ulw_loop_core::paths::{ulw_loop_dir, ulw_loop_goals_path, ulw_loop_ledger_path, UlwLoopScope};
@@ -99,3 +100,4 @@ fn test_lock_second_batch_works() { let tmp=tempfile::tempdir().unwrap(); for _ 
 fn test_distinct_roots_independent() { let a=tempfile::tempdir().unwrap(); let b=tempfile::tempdir().unwrap(); with_ulw_loop_mutation_lock(a.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); with_ulw_loop_mutation_lock(b.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); }
 #[test]
 fn test_distinct_scopes_independent() { let tmp=tempfile::tempdir().unwrap(); let a=UlwLoopScope::new("session-a"); with_ulw_loop_mutation_lock(tmp.path(),Some(&a),None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); with_ulw_loop_mutation_lock(tmp.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); }
+

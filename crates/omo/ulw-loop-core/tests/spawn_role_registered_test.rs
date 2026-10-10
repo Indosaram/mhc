@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 use serde_json::{json, Value};
 use ulw_loop_core::registered_agent_roles::registered_agent_roles;
@@ -86,3 +88,5 @@ fn bundled_roles_spawn_without_agents_directory() {
     assert!(denial(spawn(&root, &project, json!({"agent_type":"lazycodex-worker-medium"}))).is_none());
     assert!(denial(spawn(&root, &project, json!({"agent_type":"explorer"}))).is_none());
 }
+
+

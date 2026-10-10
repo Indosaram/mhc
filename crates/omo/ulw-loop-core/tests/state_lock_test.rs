@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 use std::time::{Duration, SystemTime};
 use ulw_loop_core::runtime::UlwLoopError;
@@ -80,3 +82,4 @@ fn sync_current_owner_times_out() { let (_d,path)=lock(); fs::create_dir_all(pat
 fn nested_replacement_is_not_removed() { let (_d,path)=lock(); with_state_lock(&path,None, |_| { fs::write(&path,record(std::process::id(),"replacement",None)).unwrap(); Ok::<_,UlwLoopError>(()) }).unwrap(); assert!(path.exists()); }
 #[test]
 fn lock_parent_directories_are_created() { let (_d,path)=lock(); with_state_lock(&path,None, |_| Ok::<_,UlwLoopError>(())).unwrap(); assert!(!path.exists()); }
+
