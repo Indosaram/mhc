@@ -377,8 +377,11 @@ pub fn apply_steering_mutation(
         next.goals.push(new_g);
     }
     if proposal.kind == "reorder_pending" {
-        let raw = proposal.raw_proposal.as_ref().unwrap_or(&Value::Null);
-        let order = pending_order(raw);
+        let order = proposal
+            .pending_order
+            .clone()
+            .or_else(|| proposal.raw_proposal.as_ref().map(pending_order))
+            .unwrap_or_default();
         let mut ordered_goals = Vec::new();
         for id in &order {
             if let Some(g) = next.goals.iter().find(|cand| cand.id == *id) {
