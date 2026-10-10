@@ -97,11 +97,12 @@ impl WebSocketTransportFailure {
         let fail = self.fail.clone();
         let reported = self.reported.clone();
         let grace_ms = self.grace_ms;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(grace_ms);
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
         let handle = handle.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(grace_ms)).await;
+            tokio::time::sleep_until(deadline).await;
             let mut reported = reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *reported {
                 return;
