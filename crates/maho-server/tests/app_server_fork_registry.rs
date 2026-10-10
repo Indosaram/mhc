@@ -11,17 +11,17 @@ fn missing_source_creates_a_parent_linked_session_without_history() {
     let missing = directory.path().join("absent.jsonl");
     let manager = fork_session_manager(Some(missing.to_str().unwrap()), directory.path().to_str().unwrap(), Some(directory.path().to_str().unwrap())).unwrap();
     assert!(manager.session_file().is_some());
-    let header = manager.entries().into_iter().next().unwrap();
+    let header = manager.header().unwrap();
     assert_eq!(header["type"], "session");
     assert_eq!(header["parentSession"], json!(missing.to_str().unwrap()));
-    assert_eq!(manager.entries().len(), 1);
+    assert_eq!(manager.entries().len(), 0);
 }
 
 #[test]
 fn absent_source_argument_creates_an_empty_session() {
     let directory = tempfile::tempdir().unwrap();
     let manager = fork_session_manager(None, directory.path().to_str().unwrap(), Some(directory.path().to_str().unwrap())).unwrap();
-    let header = manager.entries().into_iter().next().unwrap();
+    let header = manager.header().unwrap();
     assert!(header.get("parentSession").is_none());
 }
 
@@ -46,7 +46,7 @@ fn existing_source_copies_every_non_header_entry_under_a_new_identity() {
     assert_eq!(header["cwd"], directory.path().to_str().unwrap());
     assert_eq!(header["parentSession"], source.to_str().unwrap());
     assert!(contents.contains("\"persisted\""));
-    assert_eq!(manager.entries().len(), 3);
+    assert_eq!(manager.entries().len(), 2);
 }
 
 #[test]
