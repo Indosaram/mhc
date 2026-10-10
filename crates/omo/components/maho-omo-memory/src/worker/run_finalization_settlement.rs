@@ -1,6 +1,8 @@
 use std::path::Path;
+#[cfg(test)]
 use memory_core::identity::resolve::MemoryIdentity;
 use super::{completion::{ReflectionCompletionRecord, CompletionDelivery, DeliveryStatus, ensure_reflection_completion, read_reflection_completion}, health::read_reflection_health, reservation_run_ledger::{ReservationRunLedger, parse_reservation_run_ledger}, run_artifacts::{read_run_json, update_run_ledger, write_run_json_atomic}, run_finalization_types::{DurableFinalizationDecision, ReservationRunResult, RunFinalizationContext}};
+#[cfg(test)]
 use super::runner_types::ReflectionReservationPort;
 
 pub fn settle_reservation_run(context: &RunFinalizationContext<'_>, run_dir: &Path, input: &ReservationRunLedger, decision: DurableFinalizationDecision) -> Result<ReservationRunResult, String> {

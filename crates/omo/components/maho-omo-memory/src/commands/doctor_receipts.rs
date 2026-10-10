@@ -75,7 +75,7 @@ pub fn check_receipts(runtime_dir: &Path, now_ms: i64) -> (DoctorCheck, ReceiptS
         facts: facts_summary.clone(),
     };
 
-    let parts = vec![
+    let parts = [
         describe("dream", dream_summary.as_ref(), now_ms),
         describe("reflection", reflection_summary.as_ref(), now_ms),
         describe("facts", facts_summary.as_ref(), now_ms),

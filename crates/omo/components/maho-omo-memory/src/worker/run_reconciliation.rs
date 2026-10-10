@@ -92,7 +92,7 @@ pub async fn reconcile_reflection_runs_with_options(context:&RunFinalizationCont
     for path in paths {
         super::run_temporaries::sweep_stranded_run_temporaries(&path,(context.now_ms)() as f64,&liveness)?;
         if path.join("final.json").exists()||path.join("abandoned.json").exists()||path.join("quarantined.json").exists(){
-            let _=super::run_receipt_backfill::backfill_run_receipt_sync(&context.identity.paths.runtime,&path,None,None);
+            super::run_receipt_backfill::backfill_run_receipt_sync(&context.identity.paths.runtime,&path,None,None);
             continue;
         }
         if !path.join("ledger.json").exists(){continue;}
