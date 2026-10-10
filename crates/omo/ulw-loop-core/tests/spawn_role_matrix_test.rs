@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::fs;
 use std::io::Cursor;
 use serde_json::{json, Value};
@@ -40,3 +42,4 @@ fn native_spawns_cross_role_boundary_without_plan() {
 #[test] fn admits_hephaestus_examples() { let d=setup(); for role in ["explorer","lazycodex-worker-medium","librarian"] { assert_eq!(guard(&d,"multi_agent_v1.spawn_agent",json!({"agent_type":role,"message":"TASK: implement","fork_context":false})),""); } }
 #[test] fn enforces_admission_breaker_after_role_validation() { let d=setup(); fs::create_dir_all(d.path().join("data/spawn-breaker")).unwrap(); fs::write(d.path().join("data/spawn-breaker/matrix.json"),json!({"reason":"capacity"}).to_string()).unwrap(); assert!(denied(&guard(&d,"spawn_agent",json!({"agent_type":"explorer"})))); }
 #[test] fn malformed_input_denies_and_other_tools_pass() { let mut out=Vec::new(); run_spawn_guard_cli(Cursor::new("{bad-json"),&mut out); assert!(denied(std::str::from_utf8(&out).unwrap())); let d=setup(); assert_eq!(guard(&d,"read_file",json!({})),""); }
+

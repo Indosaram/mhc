@@ -36,7 +36,7 @@ fn corrupt_newest_falls_back_to_older_valid_record() {
 fn older_unreadable_directory_does_not_hide_newest_record() {
     let root = tempfile::tempdir().expect("tempdir"); let base = plan(root.path()); let dir = ulw_loop_dir(root.path(), Some(&scope()));
     let newest = seed(&dir, "000000010.json", 10, "ten", &base); fs::remove_file(dir.join("revisions/00000001.json")).expect("remove"); fs::create_dir(dir.join("revisions/00000001.json")).expect("directory");
-    let record = read_newest_record(&dir).expect("newest"); assert_eq!(record.revision, 10); assert_eq!(reconcile_plan(&dir).expect("plan").brief, newest.brief); assert!(read_records(&dir).len() >= 1);
+    let record = read_newest_record(&dir).expect("newest"); assert_eq!(record.revision, 10); assert_eq!(reconcile_plan(&dir).expect("plan").brief, newest.brief); assert!(!read_records(&dir).is_empty());
 }
 
 #[test]

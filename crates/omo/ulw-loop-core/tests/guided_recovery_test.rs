@@ -36,7 +36,7 @@ fn test_missing_plan_lists_existing_session_ids() {
 fn test_missing_plan_without_sessions_has_no_session_details() {
     let tmp = tempfile::tempdir().unwrap();
     let err = read_ulw_loop_plan(tmp.path(), None).unwrap_err();
-    assert!(err.details.unwrap().get("existingSessionIds").is_none());
+    assert!(!err.details.unwrap().contains_key("existingSessionIds"));
 }
 
 #[test]

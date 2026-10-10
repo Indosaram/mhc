@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use tempfile::tempdir;
 use ulw_loop_core::command_types::CreateGoalsOptions;
 use ulw_loop_core::sdk::factory::AgentToolkit;
@@ -20,3 +21,5 @@ fn complete_goals_resumes_without_second_ledger_entry() {
     match toolkit(&dir).complete_goals(Some(&args)) { ToolkitResponse::Success { result: ulw_loop_core::plan_crud::StartNextResult::Started { resumed, .. }, .. } => assert!(resumed), _ => panic!("resume failed") }
     let after = std::fs::read_to_string(dir.path().join(".omo/ulw-loop/cli-test/ledger.jsonl")).unwrap(); assert_eq!(before, after);
 }
+
+

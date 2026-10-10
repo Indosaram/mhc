@@ -4,8 +4,6 @@ use ulw_loop_core::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs};
 use ulw_loop_core::domain_types::*;
 use ulw_loop_core::goal_status::aggregate_codex_objective_for_scope;
 use ulw_loop_core::plan_io::{read_ulw_loop_plan, write_plan};
-use ulw_loop_core::quality_gate::validate_quality_gate;
-use ulw_loop_core::runtime::UlwLoopError;
 
 fn criterion(id: &str, status: &str) -> UlwLoopSuccessCriterion {
     UlwLoopSuccessCriterion {
