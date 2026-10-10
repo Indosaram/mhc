@@ -13,7 +13,7 @@ use crate::goal_status::is_final_run_completion_candidate;
 use crate::paths::{ulw_loop_attempt_evidence_dir, ulw_loop_dir, ulw_loop_state_lock_path, UlwLoopScope};
 use crate::plan_io::read_ulw_loop_plan;
 use crate::registered_agent_roles::registered_agent_roles;
-use crate::spawn_budget_io::{atomic_write_json, is_non_empty_file, read_admission_breaker, read_count, read_counts};
+use crate::spawn_budget_io::{atomic_write_json, is_non_empty_file, read_admission_breaker, read_admission_breaker_with_env, read_count, read_counts};
 use crate::spawn_role_guard::spawn_role_denial;
 use crate::state_lock::with_state_lock;
 use crate::surface::{
@@ -69,7 +69,7 @@ pub fn apply_spawn_budget_guards_with_env(
     if payload.hook_event_name != "PreToolUse" || !is_spawn_tool(&payload.tool_name) {
         return String::new();
     }
-    if let Some(breaker) = read_admission_breaker(&payload.session_id) {
+    if let Some(breaker) = read_admission_breaker_with_env(&payload.session_id, Some(Path::new(&payload.cwd)), get_env) {
         return deny(&format!(
             "Subagent admission failed earlier in this session ({breaker}). Do not spawn more workers or reviewers; report the capacity block and wait for the user."
         ));
@@ -249,7 +249,10 @@ fn missing_gate_artifact(payload: &PreToolUsePayload, plan: &crate::domain_types
         for name in &required_artifacts {
             let relative = format!("{attempt_dir}/{name}");
             if !is_non_empty_file(&Path::new(&payload.cwd).join(&relative)) {
-                return Some(relative);
+                let legacy = format!(".omo/evidence/{}", name);
+                if !is_non_empty_file(&Path::new(&payload.cwd).join(&legacy)) {
+                    return Some(relative);
+                }
             }
         }
         return None;
@@ -338,20 +341,7 @@ fn review_agent_type(tool_input: &Value) -> Option<String> {
 }
 
 fn active_surface_reviewer_alias(reviewer: &str) -> String {
-    let canonical = canonical_reviewer_agent_name(reviewer);
-    let active_roles = reviewer_roles_for(resolve_toolkit_surface());
-    for roles in crate::surface::all_reviewer_roles() {
-        if canonical == roles.code_review {
-            return active_roles.code_review.to_string();
-        }
-        if canonical == roles.manual_qa {
-            return active_roles.manual_qa.to_string();
-        }
-        if canonical == roles.gate_review {
-            return active_roles.gate_review.to_string();
-        }
-    }
-    canonical.to_string()
+    canonical_reviewer_agent_name(reviewer).to_string()
 }
 
 fn deny(reason: &str) -> String {

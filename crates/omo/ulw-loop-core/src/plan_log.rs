@@ -74,6 +74,10 @@ pub fn read_newest_record(dir: impl AsRef<Path>) -> Option<PlanCommitRecord> {
     });
 
     for name in names {
+        let path = dir.as_ref().join("revisions").join(&name);
+        if fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+            return None;
+        }
         if let Some(record) = read_record(&dir, &name) {
             return Some(record);
         }
