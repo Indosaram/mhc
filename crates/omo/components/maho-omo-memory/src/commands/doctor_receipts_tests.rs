@@ -1,15 +1,13 @@
 use std::path::Path;
-use memory_core::identity::layout::build_identity_paths;
 use crate::{
     commands::{
         doctor::handle_doctor,
         test_support::{fake_command_context, fake_deps, temp_identity, FakeContextOptions, FakeDepsOverrides},
-        types::NotifyLevel,
     },
 };
 
 const NOW_MS: i64 = 1791288000000; // 2026-10-06T12:00:00.000Z
-const HOUR_MS: i64 = 3600_000;
+const HOUR_MS: i64 = 3_600_000;
 
 fn at(ms_before_now: i64) -> String {
     chrono::DateTime::from_timestamp_millis(NOW_MS - ms_before_now)

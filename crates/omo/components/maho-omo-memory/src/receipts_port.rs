@@ -24,6 +24,7 @@ impl MemoryReceiptsPort for DefaultReceiptsPort {
 }
 
 pub type ReceiptWarn = Arc<dyn Fn(&str, &BTreeMap<String, String>) + Send + Sync>;
+type ReceiptWarning<'a> = dyn Fn(&str, &BTreeMap<String, String>) + 'a;
 
 #[derive(Clone, Debug)]
 pub struct RunReceiptLedger {
@@ -47,12 +48,12 @@ pub fn emit_memory_receipt(
     runtime_dir: &Path,
     input: &MemoryReceiptInput,
     port: Option<&dyn MemoryReceiptsPort>,
-    warn: Option<&dyn Fn(&str, &BTreeMap<String, String>)>,
+    warn: Option<&ReceiptWarning<'_>>,
 ) {
     let default_port = DefaultReceiptsPort;
     let effective_port = port.unwrap_or(&default_port);
-    if let Err(error) = effective_port.append(runtime_dir, input) {
-        if let Some(warn) = warn {
+    if let Err(error) = effective_port.append(runtime_dir, input)
+        && let Some(warn) = warn {
             let mut fields = BTreeMap::new();
             fields.insert("kind".to_string(), input.kind().to_string());
             fields.insert("event".to_string(), input.event().to_string());
@@ -61,7 +62,6 @@ pub fn emit_memory_receipt(
                 "memory receipt write failed; the run's own artifact still records its outcome",
                 &fields,
             );
-        }
     }
 }
 
