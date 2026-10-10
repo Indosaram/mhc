@@ -25,6 +25,9 @@ async fn refresh(state: &Mutex<Arbitration>, model: Option<&Model>, ctx: &Extens
     Ok(mode)
 }
 async fn ensure_fresh(state: &Mutex<Arbitration>, model: Option<&Model>, ctx: &ExtensionContext) -> Result<ImageGenMode, ExtensionFailure> {
+    if model.is_none() {
+        return Ok(state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mode);
+    }
     let key = model_key(model);
     let cached = { let state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner); (state.key == key).then_some(state.mode) };
     match cached { Some(mode) => Ok(mode), None => refresh(state, model, ctx).await }
@@ -39,7 +42,13 @@ impl Extension for OpenAiImageGen {
                 let state = state.clone();
                 Box::pin(async move {
                     let model = match event { ExtensionEvent::ModelSelect(event) => Some(&event.model), ExtensionEvent::BeforeProviderRequest {model,..} => model.as_ref().or(ctx.model.as_ref()), _ => ctx.model.as_ref() };
-                    let mode = if matches!(kind,EventKind::SessionStart|EventKind::ModelSelect) { refresh(&state,model,ctx).await? } else { ensure_fresh(&state,model,ctx).await? };
+                    let mode = if matches!(kind,EventKind::SessionStart|EventKind::ModelSelect) {
+                        refresh(&state,model,ctx).await?
+                    } else if matches!(kind, EventKind::BeforeAgentStart) {
+                        state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).mode
+                    } else {
+                        ensure_fresh(&state,model,ctx).await?
+                    };
                     Ok(match event {
                         ExtensionEvent::BeforeProviderRequest {payload,..} => EventResult::ProviderPayload(inject::apply_image_generation_tools(payload,mode)),
                         ExtensionEvent::BeforeAgentStart(event) if mode == ImageGenMode::Native => EventResult::BeforeAgentStart(maho_ext_api::BeforeAgentStartEventResult {message:None,system_prompt:Some(format!("{}\n{}",event.system_prompt,OPENAI_IMAGE_GEN_SECTION))}),
