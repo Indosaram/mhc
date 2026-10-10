@@ -20,7 +20,11 @@ impl McpWireStatusRegistry {
     pub fn new(global: Option<McpWireStatusAdapter>) -> Self {Self {global:global.map(|adapter|Arc::new(std::sync::Mutex::new(adapter))),threads:BTreeMap::new(),registrations:0,ready:Arc::new(tokio::sync::Notify::new())}}
     pub fn set_global(&mut self,adapter: McpWireStatusAdapter) {self.global = Some(Arc::new(std::sync::Mutex::new(adapter)));}
     pub fn register_thread(&mut self,id: String,adapter: Arc<std::sync::Mutex<McpWireStatusAdapter>>) {self.threads.insert(id,adapter);self.registrations+=1;self.ready.notify_one();}
-    pub fn remove_thread(&mut self,id: &str) {self.threads.remove(id);}
+    pub fn remove_thread(&mut self,id: &str) {
+        if let Some(adapter) = self.threads.remove(id) {
+            adapter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).dispose();
+        }
+    }
     /// Number of per-thread registrations performed so far (test-observable completion signal).
     pub fn registration_count(&self) -> u64 {self.registrations}
     /// A shared signal that fires (with a stored permit) on every per-thread registration, so a

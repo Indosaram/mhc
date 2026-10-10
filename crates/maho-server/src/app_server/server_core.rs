@@ -95,7 +95,9 @@ impl ServerCore {
             ClassifiedIncoming::Notification(_) | ClassifiedIncoming::Response(_) => return Ok(()),
         };
         (connection.send)(response).await?;
-        if let Some(connection) = dispatch_connection { connection.finish_response(); }
+        if let Some(connection) = dispatch_connection {
+            connection.finish_response().await;
+        }
         Ok(())
     }
     pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
