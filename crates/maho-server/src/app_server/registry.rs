@@ -19,10 +19,12 @@ impl JsonRpcError {
     }
 }
 pub type DeferredResponseActions = Arc<std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
+pub type AsyncDeferredResponseActions = Arc<std::sync::Mutex<Vec<Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>>>>;
 #[derive(Clone, Default)]
 pub struct RegistryConnection {
     pub id: String,
     pub deferred: DeferredResponseActions,
+    pub async_deferred: AsyncDeferredResponseActions,
     pub initialized: bool,
     pub experimental_api: bool,
 }
@@ -30,9 +32,14 @@ impl RegistryConnection {
     pub fn defer_until_responded(&self, action: impl FnOnce() + Send + 'static) {
         self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(action));
     }
-    pub fn finish_response(&self) {
+    pub fn defer_task_until_responded(&self, action: impl FnOnce() -> tokio::task::JoinHandle<()> + Send + 'static) {
+        self.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Box::new(move || Box::pin(async move { let _ = action(); })));
+    }
+    pub async fn finish_response(&self) {
         let actions = std::mem::take(&mut *self.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for action in actions { action(); }
+        let actions = std::mem::take(&mut *self.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for action in actions { tokio::task::yield_now().await; action().await; }
     }
 }
 #[derive(Clone)]
