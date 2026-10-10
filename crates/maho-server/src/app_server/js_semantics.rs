@@ -1,35 +1,25 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::cmp::Ordering;
 
-fn collation_key(character: char) -> (u8, u32, u8) {
+fn collation_key(character: char) -> (u8, u32) {
     if character.is_whitespace() || character.is_ascii_punctuation() {
-        (0, character as u32, 0)
+        (0, character as u32)
     } else if character.is_ascii_digit() {
-        (1, character as u32, 0)
+        (1, character as u32)
     } else if character.is_alphabetic() {
         let folded = character.to_lowercase().next().unwrap_or(character) as u32;
-        (2, folded, u8::from(character.is_uppercase()))
+        (2, folded)
     } else {
-        (3, character as u32, 0)
+        (3, character as u32)
     }
 }
 
 pub fn locale_compare(left: &str, right: &str) -> Ordering {
-    let mut left = left.chars();
-    let mut right = right.chars();
-    loop {
-        match (left.next(), right.next()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(left), Some(right)) => {
-                let order = collation_key(left).cmp(&collation_key(right));
-                if order != Ordering::Equal {
-                    return order;
-                }
-            }
-        }
+    let primary = left.chars().map(collation_key).cmp(right.chars().map(collation_key));
+    if primary != Ordering::Equal {
+        return primary;
     }
+    left.chars().map(|character| u8::from(character.is_uppercase())).cmp(right.chars().map(|character| u8::from(character.is_uppercase())))
 }
 
 pub fn to_locale_lowercase(value: &str) -> String {
