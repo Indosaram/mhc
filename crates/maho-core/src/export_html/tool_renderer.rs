@@ -6,8 +6,11 @@ use regex::Regex;
 
 use super::ansi_to_html::ansi_lines_to_html;
 
+/// Looks up the registered renderers for a tool name.
+pub type ToolRendererLookup = Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>;
+
 pub struct ToolHtmlRendererDeps {
-    pub get_tool_renderer: Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>,
+    pub get_tool_renderer: ToolRendererLookup,
     pub theme: Theme,
     pub cwd: PathBuf,
     pub width: Option<usize>,
@@ -20,7 +23,7 @@ pub struct ToolHtmlResult {
 }
 
 pub struct ToolHtmlRenderer {
-    get_tool_renderer: Arc<dyn Fn(&str) -> Option<Arc<dyn ErasedToolRenderers>> + Send + Sync>,
+    get_tool_renderer: ToolRendererLookup,
     theme: Theme,
     #[allow(dead_code)]
     cwd: PathBuf,
