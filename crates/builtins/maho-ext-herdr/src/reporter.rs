@@ -70,7 +70,7 @@ fn publish_begin(state:&mut ReporterState)->Option<(JoinHandle<std::io::Result<(
     enqueue(state,HerdrMethod::ReportAgent,params).map(|work|(work,key))
 }
 async fn publish_finish(state:Arc<Mutex<ReporterState>>,work:JoinHandle<std::io::Result<()>>,key:String){
-    if !work.await.is_ok_and(|result|result.is_ok()){
+    if !matches!(work.await,Ok(Ok(()))){
         let mut guard=state.lock().expect("reporter lock");
         if guard.last_report.as_ref()==Some(&key){guard.last_report=None;}
     }
@@ -119,15 +119,17 @@ impl Extension for HerdrExtension{
                             if let Some((work,key))=publish_begin(&mut guard){let state=callback.clone();guard.pending.push(tokio::spawn(publish_finish(state,work,key)));}
                         })));
                     }
-                    let poll_state=state.clone();let poll_ctx=ctx.clone();guard.poll=Some(tokio::spawn(async move{
-                        let mut interval=tokio::time::interval_at(tokio::time::Instant::now()+std::time::Duration::from_secs(4),std::time::Duration::from_secs(4));
-                        loop{interval.tick().await;{let mut guard=poll_state.lock().expect("reporter lock");if guard.stopped{break;}guard.state.child_count=count_running_child_tasks(&poll_ctx.cwd,poll_ctx.session_manager.session_id());}publish(poll_state.clone()).await;}
-                    }));
                 }
                 report_title(state.clone(),ctx).await;
                 let work={let mut guard=state.lock().expect("reporter lock");let mut params=guard.session_ref();params.insert("agent".into(),"pi".into());params.insert("session_start_source".into(),format!("{:?}",event.reason).to_lowercase().into());enqueue(&mut guard,HerdrMethod::ReportAgentSession,params)};
                 if let Some(work)=work{let _result=work.await;}
-                publish(state).await;Ok(EventResult::None)
+                publish(state.clone()).await;
+                let mut guard=state.lock().expect("reporter lock");
+                let poll_state=state.clone();let poll_ctx=ctx.clone();guard.poll=Some(tokio::spawn(async move{
+                    let mut interval=tokio::time::interval_at(tokio::time::Instant::now()+std::time::Duration::from_secs(4),std::time::Duration::from_secs(4));
+                    loop{interval.tick().await;{let mut guard=poll_state.lock().expect("reporter lock");if guard.stopped{break;}guard.state.child_count=count_running_child_tasks(&poll_ctx.cwd,poll_ctx.session_manager.session_id());}publish(poll_state.clone()).await;}
+                }));
+                Ok(EventResult::None)
             })
         }));
         for kind in [EventKind::SessionInfoChanged,EventKind::AgentStart,EventKind::AgentSettled,EventKind::SessionShutdown]{
