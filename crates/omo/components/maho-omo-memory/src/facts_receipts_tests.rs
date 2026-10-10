@@ -7,7 +7,7 @@ use memory_core::{
 use crate::{
     facts_runner_types::FactsRunLedger,
     facts_terminal_writes::{FactsFailureWrite, FactsTerminalWrites},
-    receipts_port::{MemoryReceiptsPort, emit_memory_receipt},
+    receipts_port::MemoryReceiptsPort,
 };
 
 const NOW: &str = "2026-08-11T10:00:00.000Z";
@@ -137,7 +137,7 @@ fn given_a_failure_that_parks_its_endpoint_when_recorded_then_failed_and_parked_
             run_dir: &run_dir,
             run_id: "facts-abc-1",
             batch_id: &batch_id,
-            targets: &[target.clone()],
+            targets: std::slice::from_ref(&target),
             reason: memory_core::facts::FactsFailureReason::PayloadEntryOversize,
             detail: "refused",
             outcome: None,
@@ -381,7 +381,7 @@ fn given_a_launched_receipt_write_that_fails_when_a_facts_run_dir_is_reserved_th
     }
 
     let failing = FailingPort;
-    let mut warn_fn = |msg: &str| warnings.lock().unwrap().push(msg.to_string());
+    let warn_fn = |msg: &str| warnings.lock().unwrap().push(msg.to_string());
 
     let run_dir = crate::facts_run_storage::reserve_facts_run_dir(&crate::facts_run_storage::ReserveFactsRunDirOptions {
         facts_dir: &paths.facts,
@@ -394,7 +394,7 @@ fn given_a_launched_receipt_write_that_fails_when_a_facts_run_dir_is_reserved_th
         lock_wait_ms: None,
         receipts_dir: Some(&paths.runtime),
         receipts: Some(&failing),
-        warn: Some(&mut warn_fn),
+        warn: Some(&warn_fn),
     }).unwrap();
 
     assert!(run_dir.is_some());

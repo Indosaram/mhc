@@ -2,18 +2,17 @@ use std::path::Path;
 use memory_core::{
     identity::layout::build_identity_paths,
     identity::resolve::MemoryIdentity,
-    receipts::{read_memory_receipts, receipt_identity, MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions},
+    receipts::{read_memory_receipts, MemoryReceipt, MemoryReceiptInput, ReadMemoryReceiptsOptions},
 };
 use crate::{
     receipts_port::MemoryReceiptsPort,
     worker::{
         reservation_run_ledger::{parse_reservation_run_ledger, ReservationRunLedger},
-        run_finalization_types::{RunFinalizationContext, ReservationRunResult},
+        run_finalization_types::RunFinalizationContext,
         run_artifacts::write_run_json_atomic,
     },
 };
 
-const NOW: &str = "2026-08-11T10:01:00.000Z";
 
 fn test_ledger(overrides: Option<serde_json::Value>) -> (ReservationRunLedger, serde_json::Value) {
     let mut val = serde_json::json!({
@@ -36,12 +35,11 @@ fn test_ledger(overrides: Option<serde_json::Value>) -> (ReservationRunLedger, s
         "commonConfigPath": "/tmp/config",
         "commonConfigSnapshot": null,
     });
-    if let Some(overrides) = overrides {
-        if let Some(obj) = overrides.as_object() {
+    if let Some(overrides) = overrides
+        && let Some(obj) = overrides.as_object() {
             for (k, v) in obj {
                 val[k] = v.clone();
             }
-        }
     }
     let parsed = parse_reservation_run_ledger(val.clone()).unwrap();
     (parsed, val)

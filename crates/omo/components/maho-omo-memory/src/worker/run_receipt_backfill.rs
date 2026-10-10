@@ -15,11 +15,13 @@ use crate::receipts_port::{
 use crate::worker::reservation_run_ledger::parse_reservation_run_ledger;
 use crate::worker::run_artifacts::read_run_json;
 
+type ReceiptWarning<'a> = dyn Fn(&str, &BTreeMap<String, String>) + 'a;
+
 pub async fn backfill_run_receipt(
     runtime_dir: &Path,
     run_dir: &Path,
     port: Option<&dyn MemoryReceiptsPort>,
-    warn: Option<&dyn Fn(&str, &BTreeMap<String, String>)>,
+    warn: Option<&ReceiptWarning<'_>>,
 ) {
     if let Some(receipt) = terminal_receipt(run_dir) {
         emit_memory_receipt(runtime_dir, &receipt, port, warn);
@@ -30,7 +32,7 @@ pub fn backfill_run_receipt_sync(
     runtime_dir: &Path,
     run_dir: &Path,
     port: Option<&dyn MemoryReceiptsPort>,
-    warn: Option<&dyn Fn(&str, &BTreeMap<String, String>)>,
+    warn: Option<&ReceiptWarning<'_>>,
 ) {
     if let Some(receipt) = terminal_receipt(run_dir) {
         emit_memory_receipt(runtime_dir, &receipt, port, warn);

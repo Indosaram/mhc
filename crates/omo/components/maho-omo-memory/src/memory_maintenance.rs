@@ -65,9 +65,8 @@ impl MemoryMaintenance {
         let task_identity = identity.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(options.delay).await;
-            if let Err(error) = maintain(&context, &options) {
-                if let Some(logger) = &options.logger { logger.warn(&format!("omo-senpi memory repo maintenance failed: {error}")); }
-            }
+            if let Err(error) = maintain(&context, &options)
+                && let Some(logger) = &options.logger { logger.warn(&format!("omo-senpi memory repo maintenance failed: {error}")); }
             scheduled.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
             tasks.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
         });
@@ -133,7 +132,7 @@ fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOp
         let modified = modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         if now >= modified && now - modified > 10 * 60 * 1000 && fs::remove_dir_all(dir).is_ok() { removed += 1; }
     }
-    if removed > 0 { if let Some(logger) = &options.logger { logger.info("omo-senpi memory removed empty transcript journals"); } }
+    if removed > 0 && let Some(logger) = &options.logger { logger.info("omo-senpi memory removed empty transcript journals"); }
 }
 
 #[cfg(test)]
