@@ -1,4 +1,5 @@
 use std::fs;
+use std::time::{Duration, SystemTime};
 use ulw_loop_core::runtime::UlwLoopError;
 use ulw_loop_core::state_lock::{with_state_lock, with_state_lock_sync, StateLockOptions, ULW_LOOP_LOCK_TIMEOUT_CODE};
 
@@ -53,7 +54,9 @@ fn young_legacy_live_record_is_not_stolen() {
 #[test]
 fn malformed_old_record_is_reclaimed() {
     let (_d,path)=lock(); fs::create_dir_all(path.parent().unwrap()).unwrap(); fs::write(&path, "not json").unwrap();
-    assert!(with_state_lock(&path, Some(&opts(0)), |_| Ok::<_, UlwLoopError>(())).is_ok());
+    let old = filetime::FileTime::from_system_time(SystemTime::now() - Duration::from_secs(120));
+    filetime::set_file_times(&path, old, old).unwrap();
+    assert!(with_state_lock(&path, Some(&StateLockOptions { timeout_ms: Some(1_000), stale_ms: Some(60_000), ..opts(1_000) }), |_| Ok::<_, UlwLoopError>(())).is_ok());
 }
 #[test]
 fn body_error_propagates() {
