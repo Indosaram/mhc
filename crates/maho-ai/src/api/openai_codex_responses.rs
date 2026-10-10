@@ -13,7 +13,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{SinkExt, Stream, StreamExt};
 use serde_json::{json, Map, Value};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{connect_async, tungstenite::{client::IntoClientRequest, Message}};
 
 use crate::api::constrained_sampling::create_grammar_tool_input_properties;
 use crate::api::openai_prompt_cache::{apply_chat_gpt_subscription_cache_affinity_headers, clamp_openai_prompt_cache_key};
@@ -657,13 +657,16 @@ async fn websocket_events(
     body: &str,
     timeout_ms: Option<u64>,
 ) -> Result<Vec<Bytes>, CodexError> {
-    let mut request = http::Request::builder().uri(url);
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| CodexError::Other(error.to_string()))?;
     for (name, value) in headers {
         if let Ok(value) = value.to_str() {
-            request = request.header(name.as_str(), value);
+            if let Ok(value) = http::HeaderValue::from_str(value) {
+                request.headers_mut().insert(name.clone(), value);
+            }
         }
     }
-    let request = request.body(()).map_err(|error| CodexError::Other(error.to_string()))?;
     let connect = connect_async(request);
     let (mut socket, _) = match timeout_ms {
         Some(ms) if ms > 0 => tokio::time::timeout(Duration::from_millis(ms), connect)

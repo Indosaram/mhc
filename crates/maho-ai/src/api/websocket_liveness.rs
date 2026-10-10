@@ -76,17 +76,17 @@ pub fn start_websocket_liveness(
     tokio::spawn(async move {
         let stopped = watch;
         let mut unanswered_pings: u32 = 0;
+        let mut deadline = tokio::time::Instant::now() + Duration::from_millis(policy.ping_interval_ms);
         loop {
             if stopped.load(Ordering::SeqCst) {
                 return;
             }
-            let delay = if unanswered_pings == 0 { policy.ping_interval_ms } else { policy.pong_timeout_ms };
-            let deadline = tokio::time::sleep(Duration::from_millis(delay));
-            tokio::pin!(deadline);
+            let timer = tokio::time::sleep_until(deadline);
+            tokio::pin!(timer);
 
             let mut saw_activity = false;
             tokio::select! {
-                () = &mut deadline => {}
+                () = &mut timer => {}
                 event = receiver.recv() => {
                     if event.is_none() {
                         return;
@@ -101,8 +101,9 @@ pub fn start_websocket_liveness(
 
             if saw_activity {
                 unanswered_pings = 0;
-                *recorded_since.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    tokio::time::Instant::now();
+                let now = tokio::time::Instant::now();
+                *recorded_since.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+                deadline = now + Duration::from_millis(policy.ping_interval_ms);
                 continue;
             }
 
@@ -128,6 +129,7 @@ pub fn start_websocket_liveness(
                 on_dead(WebSocketLivenessError { silent_ms, unanswered_pings });
                 return;
             }
+            deadline += Duration::from_millis(policy.pong_timeout_ms);
         }
     });
 

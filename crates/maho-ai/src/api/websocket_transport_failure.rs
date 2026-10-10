@@ -97,7 +97,10 @@ impl WebSocketTransportFailure {
         let fail = self.fail.clone();
         let reported = self.reported.clone();
         let grace_ms = self.grace_ms;
-        let handle = tokio::spawn(async move {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let handle = handle.spawn(async move {
             tokio::time::sleep(Duration::from_millis(grace_ms)).await;
             let mut reported = reported.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if *reported {
@@ -111,6 +114,7 @@ impl WebSocketTransportFailure {
     }
 
     pub fn on_close(&self, event: &WebSocketCloseEvent) {
+        self.dispose();
         let error = extract_web_socket_close_error(event);
         self.report(error.message);
     }
