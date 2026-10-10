@@ -17,7 +17,7 @@ use crate::plan_crud::{
     add_ulw_loop_goal, create_ulw_loop_plan, start_next_ulw_loop, summarize_ulw_loop_plan,
     AddGoalResult, StartNextResult,
 };
-use crate::plan_io::{list_ulw_loop_session_ids, read_ulw_loop_plan};
+use crate::plan_io::{list_ulw_loop_session_ids, read_ulw_loop_plan, read_ulw_loop_plan_sync};
 use crate::plan_missing_recovery::plan_missing_error;
 use crate::review_blockers::{record_final_review_blockers, RecordFinalReviewBlockersResult};
 use crate::runtime::UlwLoopError;
@@ -144,7 +144,7 @@ impl AgentToolkit {
 
     pub fn status(&self) -> ToolkitResponse<StatusResult> {
         let scope = self.scope();
-        let plan_res = read_ulw_loop_plan(&self.context.cwd, Some(&scope));
+        let plan_res = read_ulw_loop_plan_sync(&self.context.cwd, Some(&scope));
         match plan_res {
             Ok(plan) => {
                 let summary = summarize_ulw_loop_plan(&plan);

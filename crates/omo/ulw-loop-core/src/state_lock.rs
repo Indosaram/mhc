@@ -123,12 +123,15 @@ pub fn with_state_lock_sync<T>(
                                 }
                             }
                         }
-                    } else {
-                        // Corrupt lock file can be reclaimed
-                        can_reclaim = true;
+                    } else if let Ok(metadata) = fs::metadata(path) {
+                        if let Ok(modified) = metadata.modified() {
+                            if let Ok(elapsed) = modified.elapsed() {
+                                can_reclaim = elapsed.as_millis() as u64 > stale_ms;
+                            }
+                        }
                     }
                 } else {
-                    can_reclaim = true;
+                    can_reclaim = false;
                 }
 
                 if can_reclaim {

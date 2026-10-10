@@ -47,12 +47,11 @@ pub fn apply_spawn_guards_with_env(
     if payload.hook_event_name != "PreToolUse" || !is_spawn_tool(&payload.tool_name) {
         return String::new();
     }
-    if crate::surface::resolve_toolkit_surface_with_env(get_env) == UlwLoopToolkitSurface::LazyCodex
-        && payload.tool_input.get("agent_type").is_some()
-    {
-        let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
-        if let Some(r) = reason {
-            return deny(&r);
+    if crate::surface::resolve_toolkit_surface_with_env(get_env) == UlwLoopToolkitSurface::LazyCodex {
+        let scope = UlwLoopScope { session_id: Some(payload.session_id.clone()), ..Default::default() };
+        if read_ulw_loop_plan(&payload.cwd, Some(&scope)).is_ok() && payload.tool_input.get("agent_type").is_some() {
+            let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
+            if let Some(r) = reason { return deny(&r); }
         }
     }
     apply_spawn_budget_guards_with_env(payload, options, get_env)
