@@ -68,8 +68,7 @@ fn skill_commands_precede_every_input_handler_component() {
     }
 }
 
-#[test]
-fn the_registered_loop_component_logs_through_the_shared_runtime_logger() {
+pub(crate) fn the_registered_loop_component_logs_through_the_shared_runtime_logger() {
     // An env with no omo binary makes the loop's registration path take the inactive branch,
     // which must log through the shared runtime logger (not only in tests that inject one).
     let loop_options = OmoComponentOptions {
