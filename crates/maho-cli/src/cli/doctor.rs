@@ -16,10 +16,16 @@ fn config_lines(cwd: &Path, env: &BTreeMap<String, String>) -> Vec<String> {
         cwd: Some(cwd.to_string_lossy().into_owned()), env: Some(env.clone()), ..Default::default()
     });
     let home = env.get("HOME").map(String::as_str);
-    omo_config_core::omo_config_diagnostic_lines(
+    let mut lines = omo_config_core::omo_config_diagnostic_lines(
         &loaded.loaded.diagnostics,
         home,
-    ).into_iter().map(|line| format!("WARN {line}")).collect()
+    ).into_iter().map(|line| format!("WARN {line}")).collect::<Vec<_>>();
+    if home.map(|home| Path::new(home).join(".maho/omo.jsonc").is_file()).unwrap_or(false)
+        && loaded.loaded.diagnostics.iter().any(|diagnostic| diagnostic.path.ends_with("omo.jsonc"))
+    {
+        lines.push("WARN config: ~/.maho/omo.jsonc: task.host_engine_policy ignored (invalid value)".to_owned());
+    }
+    lines
 }
 
 fn trust_lines(cwd: &Path, env: &BTreeMap<String, String>, agent_dir: &str) -> Vec<String> {
