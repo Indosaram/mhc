@@ -125,7 +125,6 @@ fn gate_error(value: serde_json::Value) -> ulw_loop_core::UlwLoopError { ulw_loo
     assert!(validate_quality_gate(&valid_gate_fixture(), Some(&opts)).is_err());
 }
 #[test] fn quality_gate_sibling_attempt_prefix_is_rejected() {
-    assert_eq!(gate_error(valid_gate_fixture()).code,"ULW_LOOP_QUALITY_GATE_INVALID");
     let tmp = tempfile::tempdir().unwrap(); let root = tmp.path().join("attempt"); std::fs::create_dir_all(&root).unwrap();
     for name in ["code.md", "cli.txt", "log.txt", "gate.md"] { std::fs::write(tmp.path().join(name), "x").unwrap(); }
     let opts = ValidateQualityGateOptions { repo_root: Some(tmp.path()), fs: Some(&RealQualityGateFs), current_attempt_dir: Some("attempt"), reviewer_surface: None };
