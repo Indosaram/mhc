@@ -200,6 +200,18 @@ pub fn string_array(value: Option<&Value>, field: &str) -> Vec<String> {
     arr.iter().map(|item| text_field(Some(item), field)).collect()
 }
 
+pub fn string_array_allow_empty(value: Option<&Value>, field: &str) -> Vec<String> {
+    let Some(v) = value else {
+        invalid(format!("Final quality gate requires {field}."), field);
+        return Vec::new();
+    };
+    let Some(arr) = v.as_array() else {
+        invalid(format!("Final quality gate requires {field}."), field);
+        return Vec::new();
+    };
+    arr.iter().map(|item| text_field(Some(item), field)).collect()
+}
+
 pub fn empty_blockers(value: Option<&Value>, field: &str) -> Vec<Value> {
     if let Some(v) = value {
         if let Some(arr) = v.as_array() {

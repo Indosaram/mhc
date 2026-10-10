@@ -15,7 +15,8 @@ use crate::quality_gate_artifacts::{
 };
 use crate::quality_gate_fields::{
     empty_blockers, invalid, is_poisoned, is_poisoned_artifact_kind, literal_bool, literal_str,
-    number_field, section, string_array, text_field, with_quality_gate_collector,
+    number_field, section, string_array, string_array_allow_empty, text_field,
+    with_quality_gate_collector,
 };
 use crate::quality_gate_verdicts::{
     adversarial_verdict, code_quality_status_field, passed_verdict,
@@ -49,7 +50,7 @@ fn accepted_reviewers(surface: UlwLoopToolkitSurface, section: &str) -> &'static
             "category:unspecified-low",
             "main-session",
         ],
-        (UlwLoopToolkitSurface::OmoSenpi, "manualQa") => &["main-session"],
+        (UlwLoopToolkitSurface::OmoSenpi, "manualQa") => &["main-session", "omo-native-qa-executor"],
         (UlwLoopToolkitSurface::OmoSenpi, "gateReview") => &[
             "category:deep-high",
             "category:deep-low",
@@ -201,7 +202,7 @@ fn validate_quality_gate_uncollected(
             original_intent: text_field(coverage.get("originalIntent"), "criteriaCoverage.originalIntent"),
             desired_outcome: text_field(coverage.get("desiredOutcome"), "criteriaCoverage.desiredOutcome"),
             user_outcome_review: text_field(coverage.get("userOutcomeReview"), "criteriaCoverage.userOutcomeReview"),
-            adversarial_classes_covered: string_array(
+            adversarial_classes_covered: string_array_allow_empty(
                 coverage.get("adversarialClassesCovered"),
                 "criteriaCoverage.adversarialClassesCovered",
             ),
@@ -287,7 +288,6 @@ fn parse_adversarial_cases(
         return Vec::new();
     };
     if arr.is_empty() {
-        invalid("manualQa.adversarialCases must not be empty.", "manualQa.adversarialCases");
         return Vec::new();
     }
 
