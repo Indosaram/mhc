@@ -105,7 +105,7 @@ fn shard_suffix_stripped(stem: &str) -> String {
         && all_digits(&bytes[left_start..dash])
         && all_digits(&bytes[dash + 4..right_end])
     {
-        stem[..left_start - 1].to_owned()
+        format!("{}{}", &stem[..left_start - 1], &stem[right_end..])
     } else {
         stem.to_owned()
     }
