@@ -1056,6 +1056,23 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
         ..Default::default()
     });
     let model = faux.get_model(None).expect("faux provider ships a model");
+    let initial_handle = maho_ai::types::DeferredHandle {
+        provider: model.provider.clone(),
+        model_id: model.id.clone(),
+        api: model.api.clone(),
+        id: "fixture-deferred".into(),
+        expires_at: None,
+        poll_after_ms: None,
+        data: None,
+    };
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message(
+        "",
+        maho_ai::providers::faux::FauxAssistantMessageOptions {
+            stop_reason: Some(maho_ai::types::StopReason::Deferred),
+            deferred: Some(initial_handle),
+            ..Default::default()
+        },
+    ).into()]);
     let recorder = Arc::new(RecordingProvider::new(faux.provider.clone()));
     let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
     models.set_provider(recorder.clone());
@@ -1076,7 +1093,10 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
             tool_context: None,
             system_prompt: None,
             resources: None,
-            stream_options: None,
+            stream_options: Some(maho_agent::harness::types::AgentHarnessStreamOptions {
+                deferred: Some(maho_ai::types::DeferredOption::Enabled(true)),
+                ..Default::default()
+            }),
             retry: None,
             compaction: None,
             steering_mode: None,

@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use maho_agent::harness::context::{Context, BACKGROUND_CONTEXT};
 use maho_agent::harness::session::testing::StorageDecorator;
 use maho_agent::harness::session::types::{
-    CommitResult, Entry, EntryScan, EntryStructure, SessionMetadata, SessionStats, Storage,
+    CommitResult, Entry, EntryKind, EntryScan, EntryStructure, NewEntry, SessionMetadata, SessionStats, Storage,
     StorageBranchScan, UsageRow, UsageScan, Write,
 };
 use maho_agent::harness::session::values::{ListElement, ListReadOptions, StoredValue, Value, ValueList};
@@ -107,9 +107,10 @@ fn metadata() -> SessionMetadata {
 
 #[tokio::test]
 async fn close_waits_for_an_admitted_read_on_the_storage_backed_session() {
-    let storage = Arc::new(BlockingReadStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions {
+    let base_storage = Arc::new(MemoryStorage::new(MemoryStorageOptions {
         now: Some(Arc::new(|| NOW)),
-    }))));
+    }));
+    let storage = Arc::new(BlockingReadStorage::new(base_storage.clone()));
     let session = Arc::new(StorageBackedSession::new(
         metadata(),
         storage.clone(),
@@ -125,21 +126,36 @@ async fn close_waits_for_an_admitted_read_on_the_storage_backed_session() {
     };
     let facade = Arc::new(MemorySessionFacade::new(session.clone(), on_close));
     facade.attach();
+    base_storage
+        .commit(
+            vec![maho_agent::harness::session::commit::insert_entry(NewEntry {
+                id: "entry".into(),
+                parent_id: None,
+                kind: EntryKind::Custom { custom_type: "fixture".into(), data: None },
+            })],
+            &BACKGROUND_CONTEXT,
+        )
+        .await
+        .expect("fixture commit");
 
     let context = BACKGROUND_CONTEXT.clone();
     storage.armed.store(true, Ordering::SeqCst);
-    let mut read = Box::pin(facade.scan_branch(StorageBranchScan::new("entry"), &context));
+    let read = tokio::spawn({
+        let facade = facade.clone();
+        let context = context.clone();
+        async move { facade.scan_branch(StorageBranchScan::new("entry"), &context).await }
+    });
     tokio::time::timeout(std::time::Duration::from_secs(5), storage.entered.notified())
         .await
         .expect("the admitted read reaches storage");
-    assert!(futures::poll!(read.as_mut()).is_pending(), "the admitted read is still in flight");
+    assert!(!read.is_finished(), "the admitted read is still in flight");
 
     let mut closing = Box::pin(facade.close(&context));
     assert!(futures::poll!(closing.as_mut()).is_pending(), "close must wait for the admitted read");
     assert!(!closed.load(Ordering::SeqCst));
 
     storage.release.notify_one();
-    read.await.expect("read completes");
+    read.await.expect("read task completes").expect("read completes");
     closing.await;
     assert!(closed.load(Ordering::SeqCst));
 }
