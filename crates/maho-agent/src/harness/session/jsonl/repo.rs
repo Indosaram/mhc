@@ -14,6 +14,7 @@ use crate::harness::types::{FileInfo, FileSystem};
 use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader};
 use super::fork::{JsonlForkInput, JsonlForkSourceMetadata, run_jsonl_fork};
 use super::io::file_value;
+use super::legacy_v3::LegacyV3Source;
 use super::storage::JsonlStorage;
 use super::types::{
     JSONL_STORAGE_VERSION, JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
@@ -566,7 +567,24 @@ impl JsonlSessionRepo {
                 let next_seq = storage.capture_fork_next_seq(&BACKGROUND_CONTEXT).await?;
                 Ok(JsonlForkInput::Open { metadata, next_seq })
             }
-            None => Ok(JsonlForkInput::Closed { metadata }),
+            None => {
+                let content = file_value(
+                    self.file_system.read_text_file(&source.path, &BACKGROUND_CONTEXT).await,
+                    &format!("Failed to read session {}", source.path),
+                )?;
+                let is_legacy = content
+                    .lines()
+                    .next()
+                    .and_then(|line| parse_jsonl_session_header(line).ok())
+                    .is_some_and(|parsed| matches!(parsed, super::codec::JsonlParsedSessionHeader::V3Legacy(_)));
+                if is_legacy {
+                    Ok(JsonlForkInput::LegacyV3 {
+                        source: LegacyV3Source::read(self.file_system.clone(), &source.path, &BACKGROUND_CONTEXT).await?,
+                    })
+                } else {
+                    Ok(JsonlForkInput::Closed { metadata })
+                }
+            }
         }
     }
 }
