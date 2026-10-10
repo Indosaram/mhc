@@ -60,7 +60,7 @@ mod tests {
     }
 
     #[test]
-    fn omitted_mode_defaults_to_keep_alive_contract() { assert_eq!(crate::workpool::default_mode::WORKPOOL_DEFAULT_MODE, WorkpoolMode::Fresh); }
+    fn omitted_mode_defaults_to_keep_alive_contract() { assert_eq!(crate::workpool::default_mode::WORKPOOL_DEFAULT_MODE, WorkpoolMode::KeepAlive); }
 
     #[test]
     fn empty_closing_pool_delivers_one_empty_result() { assert_eq!(aggregate_results(&pool(WorkpoolStatus::Closing, vec![], None)), Some(vec![])); }
