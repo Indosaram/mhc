@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::domain_types::UlwLoopManualQaArtifactRef;
 use crate::paths::is_within_attempt_dir;
 use crate::quality_gate_fields::{
-    invalid, is_poisoned, mark_poisoned_artifact_kind, section, string_array, text_field,
+    invalid, is_poisoned, is_poisoned_artifact_kind, mark_poisoned_artifact_kind, section,
+    string_array, text_field,
 };
 
 pub const SUPPORTED_SURFACES: &[&str] = &["cli", "http", "tmux", "browser", "gui", "data"];
@@ -143,10 +144,6 @@ pub fn parse_artifact_refs(
         let Some(ref_obj) = section(Some(item), &prefix) else {
             continue;
         };
-        if is_poisoned(&prefix) {
-            continue;
-        }
-
         let path_field = format!("{prefix}.path");
         let id_field = format!("{prefix}.id");
         let kind_field_name = format!("{prefix}.kind");
@@ -200,6 +197,9 @@ pub fn referenced_artifacts(
     }
     let mut found = Vec::new();
     for id in ids {
+        if is_poisoned_artifact_kind(&id) {
+            continue;
+        }
         if let Some(art) = by_id.get(&id) {
             found.push(art.clone());
         } else {
