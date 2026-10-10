@@ -545,7 +545,7 @@ impl Lane {
             }
             let mut value = encoded(&operation.state)?;
             value["control"] = encoded(&Control::CancelRequested { requested_at: now_ms() })?;
-            operation.state = serde_json::from_value(value.clone()).map_err(|error| session_invariant_error(error.to_string()))?;
+            operation.state = crate::harness::runtime::restore::decode_operation_state(value.clone())?;
             state.operation = Some(operation);
             state.inbox = without_inbox_items(&state.inbox, &removed);
             let queues = read_lane_queues(reader, &state.inbox, &read_context).await?;

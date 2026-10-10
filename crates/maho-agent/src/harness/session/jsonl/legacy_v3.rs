@@ -462,10 +462,57 @@ fn resolve_branch_summary_from_id(
     legacy_from_id: &str,
 ) -> Result<Option<String>, SessionError> {
     if legacy_from_id == "root" {
-        Ok(None)
-    } else {
-        resolve_legacy_id(entries, Some(legacy_from_id))
+        return Ok(None);
     }
+    let mut current_id = Some(legacy_from_id);
+    while let Some(id) = current_id {
+        let entry = entries.get(id).ok_or_else(|| {
+            SessionError::new(
+                SessionErrorKind::Io,
+                format!("Missing legacy v3 entry reference: {id}"),
+            )
+        })?;
+        if entry.is_retained() {
+            return Ok(entry.mapped_id.clone());
+        }
+        let Some(parent) = entry.parent_id.as_deref() else {
+            return Ok(None);
+        };
+        if parent == "root" {
+            return Ok(None);
+        }
+        current_id = Some(parent);
+    }
+    Ok(None)
+}
+
+fn resolve_branch_summary_parent_id(
+    entries: &HashMap<String, LegacyV3IndexEntry>,
+    legacy_id: Option<&str>,
+) -> Result<Option<String>, SessionError> {
+    let Some(id) = legacy_id else {
+        return Ok(None);
+    };
+    let mut current_id = Some(id);
+    while let Some(id) = current_id {
+        let entry = entries.get(id).ok_or_else(|| {
+            SessionError::new(
+                SessionErrorKind::Io,
+                format!("Missing legacy v3 entry reference: {id}"),
+            )
+        })?;
+        if entry.is_retained() {
+            return Ok(entry.mapped_id.clone());
+        }
+        let Some(parent) = entry.parent_id.as_deref() else {
+            return Ok(None);
+        };
+        if parent == "root" {
+            return Ok(None);
+        }
+        current_id = Some(parent);
+    }
+    Ok(None)
 }
 
 fn project_context_message(
@@ -562,12 +609,16 @@ fn normalize_retained_entry(
     let mapped_id = indexed.mapped_id.clone().ok_or_else(|| {
         SessionError::new(SessionErrorKind::Io, "Unmapped retained entry")
     })?;
-    let parent_id = indexed
-        .parent_id
-        .as_deref()
-        .and_then(|id| entries.get(id))
-        .and_then(|parent| parent.mapped_id.clone())
-        .or(resolve_legacy_id(entries, indexed.parent_id.as_deref())?);
+    let parent_id = if matches!(entry, LegacyV3Entry::BranchSummary { .. }) {
+        resolve_branch_summary_parent_id(entries, indexed.parent_id.as_deref())?
+    } else {
+        indexed
+            .parent_id
+            .as_deref()
+            .and_then(|id| entries.get(id))
+            .and_then(|parent| parent.mapped_id.clone())
+            .or(resolve_legacy_id(entries, indexed.parent_id.as_deref())?)
+    };
     let seq = indexed.seq.unwrap_or(0);
     let ts = parse_iso_millis(match entry {
         LegacyV3Entry::Message { timestamp, .. }
@@ -721,6 +772,8 @@ fn index_legacy_v3_entry(
                 })?;
                 if parent_entry.is_retained() {
                     parent_entry.mapped_id.clone()
+                } else if matches!(entry, LegacyV3Entry::BranchSummary { .. }) {
+                    resolve_branch_summary_parent_id(entries, Some(pid))?
                 } else {
                     resolve_legacy_id(entries, Some(pid))?
                 }
