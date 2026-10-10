@@ -50,8 +50,20 @@ pub fn apply_spawn_guards_with_env(
     if crate::surface::resolve_toolkit_surface_with_env(get_env) == UlwLoopToolkitSurface::LazyCodex {
         let scope = UlwLoopScope { session_id: Some(payload.session_id.clone()), ..Default::default() };
         if read_ulw_loop_plan(&payload.cwd, Some(&scope)).is_ok() && payload.tool_input.get("agent_type").is_some() {
-            let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
-            if let Some(r) = reason { return deny(&r); }
+            let bypass_v1_keyword = payload
+                .tool_input
+                .get("agent_type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|agent_type| !GATE_REVIEWER_AGENT_NAMES.contains(&agent_type))
+                && payload
+                    .tool_input
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|message| message.to_lowercase().contains("final gate review"));
+            if !bypass_v1_keyword {
+                let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
+                if let Some(r) = reason { return deny(&r); }
+            }
         }
     }
     apply_spawn_budget_guards_with_env(payload, options, get_env)

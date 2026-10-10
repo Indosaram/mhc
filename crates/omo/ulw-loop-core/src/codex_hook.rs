@@ -113,6 +113,9 @@ pub fn apply_user_prompt_ulw_loop_steering(
         let ctx_opts = UltraworkAdditionalContextOptions {
             skill_file_path: options.ultrawork_skill_file_path.clone(),
         };
+        if options.ultrawork_skill_file_path.is_none() {
+            return crate::ultrawork_skill_pointer::build_ultrawork_additional_context(&ctx_opts);
+        }
         return build_ultrawork_directive_output(&input, &ctx_opts);
     }
 
