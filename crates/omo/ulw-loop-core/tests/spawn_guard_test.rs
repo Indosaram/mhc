@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use ulw_loop_core::codex_hook::PreToolUsePayload;
-use ulw_loop_core::spawn_guard::{apply_spawn_budget_guards_with_env, apply_spawn_guards_with_env, run_spawn_admission_recorder_cli_with_env};
+use ulw_loop_core::spawn_guard::{apply_spawn_budget_guards_with_env, run_spawn_admission_recorder_cli_with_env};
 
 thread_local! { static TEST_ENV: RefCell<BTreeMap<String, String>> = RefCell::new(BTreeMap::new()); }
 fn set_env(key: &str, value: impl ToString) { TEST_ENV.with(|env| { env.borrow_mut().insert(key.into(), value.to_string()); }); }
@@ -15,7 +15,7 @@ fn payload(d:&tempfile::TempDir, tool:&str, input:Value)->PreToolUsePayload { Pr
 fn goals(d:&tempfile::TempDir, v2:bool) { let dir=d.path().join(".omo/ulw-loop/s1"); fs::create_dir_all(&dir).unwrap(); fs::write(dir.join("goals.json"),json!({"version":1,"createdAt":"2026-07-11T00:00:00.000Z","updatedAt":"2026-07-11T00:00:00.000Z","briefPath":".omo/ulw-loop/s1/brief.md","goalsPath":".omo/ulw-loop/s1/goals.json","ledgerPath":".omo/ulw-loop/s1/ledger.jsonl","codexGoalMode":"aggregate","evidenceLayoutVersion":if v2 {2} else {1},"goals":[{"id":"g1","title":"Final goal","objective":"Final goal","status":"in_progress","successCriteria":[{"id":"C001","scenario":"scenario","userModel":"happy","expectedEvidence":"evidence","capturedEvidence":"captured","status":"pass","capturedAt":"2026-07-11T00:00:00.000Z"},{"id":"C002","scenario":"scenario","userModel":"happy","expectedEvidence":"evidence","capturedEvidence":"captured","status":"pass","capturedAt":"2026-07-11T00:00:00.000Z"}],"attempt":1,"createdAt":"2026-07-11T00:00:00.000Z","updatedAt":"2026-07-11T00:00:00.000Z"}],"activeGoalId":"g1"}).to_string()).unwrap(); }
 fn deny(s:&str)->Value{serde_json::from_str(s).unwrap()}
 fn reason(s:&str)->String{deny(s)["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().into()}
-fn guard(d:&tempfile::TempDir, input:Value)->String{apply_spawn_guards_with_env(&payload(d,"spawn_agent",input),None,env)}
+fn guard(d:&tempfile::TempDir, input:Value)->String{apply_spawn_budget_guards_with_env(&payload(d,"spawn_agent",input),None,env)}
 fn count(d:&tempfile::TempDir)->u64{serde_json::from_str::<Value>(&fs::read_to_string(d.path().join(".omo/ulw-loop/s1/spawn-count.json")).unwrap()).unwrap()["count"].as_u64().unwrap()}
 
 #[test] fn records_each_breaker_reason_and_isolates_sessions(){for r in ["too many active cells","AgentLimitReached","max_threads","max_concurrent_threads_per_session"]{let d=setup();let mut out=Vec::new();run_spawn_admission_recorder_cli_with_env(Cursor::new(json!({"session_id":"s1","tool_response":r}).to_string()),&mut out,env);assert!(out.is_empty());let m:Value=serde_json::from_str(&fs::read_to_string(d.path().join("plugin-data/spawn-breaker/s1.json")).unwrap()).unwrap();assert_eq!(m["reason"],r);assert!(m["at"].as_str().unwrap().contains('T'));assert!(!guard(&d,json!({})).is_empty());}}
@@ -25,7 +25,7 @@ fn count(d:&tempfile::TempDir)->u64{serde_json::from_str::<Value>(&fs::read_to_s
 #[test] fn under_fanout_limit_allows_and_counts(){let d=setup();goals(&d,false);assert_eq!(guard(&d,json!({"message":"scan"})),"");assert_eq!(count(&d),1);}
 #[test] fn env_fanout_limit_denies_fourth(){let d=setup();goals(&d,false);set_env("OMO_SPAWN_FANOUT_LIMIT","3");for _ in 0..3{assert_eq!(guard(&d,json!({"message":"scan"})),"");}assert!(reason(&guard(&d,json!({"message":"scan"}))).contains("4/3"));}
 #[test] fn missing_session_state_noops(){let d=setup();assert_eq!(guard(&d,json!({"message":"scan"})),"");}
-#[test] fn non_spawn_tool_noops(){let d=setup();goals(&d,false);assert_eq!(apply_spawn_guards_with_env(&payload(&d,"create_goal",json!({"objective":"x"})),None,env),"");}
+#[test] fn non_spawn_tool_noops(){let d=setup();goals(&d,false);assert_eq!(apply_spawn_budget_guards_with_env(&payload(&d,"create_goal",json!({"objective":"x"})),None,env),"");}
 #[test] fn dotted_spawn_tokens_count(){let d=setup();goals(&d,false);set_env("OMO_SPAWN_FANOUT_LIMIT","1");assert_eq!(apply_spawn_budget_guards_with_env(&payload(&d,"collaboration.spawn_agent",json!({"message":"scan"})),None,env),"");assert!(reason(&apply_spawn_budget_guards_with_env(&payload(&d,"collaborationspawn_agent",json!({"message":"scan"})),None,env)).contains("2/1"));}
 #[test] fn exhausted_fanout_does_not_charge_reviewer(){let d=setup();goals(&d,false);set_env("OMO_SPAWN_FANOUT_LIMIT","3");for _ in 0..3{assert_eq!(guard(&d,json!({"message":"scan"})),"");}assert!(reason(&guard(&d,json!({"agent_type":"lazycodex-code-reviewer","message":"review"}))).contains("4/3"));set_env("OMO_SPAWN_FANOUT_LIMIT","10");assert_eq!(guard(&d,json!({"agent_type":"lazycodex-code-reviewer","message":"review"})),"");}
 #[test] fn reviewer_repetition_cap_resets_by_attempt(){let d=setup();goals(&d,false);let i=json!({"agent_type":"lazycodex-code-reviewer","message":"review"});for _ in 0..3{assert_eq!(guard(&d,i.clone()),"");}assert!(reason(&guard(&d,i.clone())).contains("4/3"));let p=d.path().join(".omo/ulw-loop/s1/goals.json");let mut v:Value=serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();v["goals"][0]["attempt"]=json!(2);fs::write(p,v.to_string()).unwrap();assert_eq!(guard(&d,i),"");}
