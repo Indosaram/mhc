@@ -47,6 +47,7 @@ async fn registered_video_activation_and_attachment() -> Result<(), Box<dyn std:
         assert_ne!(result.is_error,Some(true));
         assert!(result.content.iter().any(|content|matches!(content,maho_ai::types::ContentBlock::Image(image) if image.mime_type=="video/mp4" && image.data=="ZmFrZS1tcDQtYnl0ZXM=")));
         let mut text_model=session.model();
+        text_model.id = "faux-text".into();
         text_model.input.retain(|input|*input!=maho_ai::types::InputModality::Video);
         session.set_session_model(text_model).await?;
         assert!(!session.get_active_tool_names().iter().any(|name|name=="read_video"));
