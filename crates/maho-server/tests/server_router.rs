@@ -196,22 +196,26 @@ async fn session_removal_invalidates_all_client_leases() {
 #[tokio::test]
 async fn concurrent_failed_open_shares_one_result_and_later_attach_retries() {
     use maho_server::server::testing::TestServerHost;
-    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-    host.state.lock().await.next_open_session_error=Some(ServerError::new("internal_error","faux open failure"));
-    let gate=host.gate_next_open_session().await;
-    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
-    let first={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
-    gate.entered.wait().await;
-    let second=router.attach("session-1").await.err().expect("second concurrent attach fails");
-    gate.release.resolve(());
-    let first=first.await.unwrap().err().expect("first concurrent attach fails");
-    assert_eq!(first,second);
-    assert_eq!(first.message,"faux open failure");
-    assert_eq!(host.state.lock().await.open_session_count,1);
-    let retried=router.attach("session-1").await.unwrap();
-    assert_eq!(host.state.lock().await.open_session_count,2);
-    retried.release().await.unwrap();
-    router.close().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+        host.state.lock().await.next_open_session_error=Some(ServerError::new("internal_error","faux open failure"));
+        let gate=host.gate_next_open_session().await;
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let first={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
+        gate.entered.wait().await;
+        let mut second=Box::pin(router.attach("session-1"));
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        gate.release.resolve(());
+        let second=second.await.err().expect("second concurrent attach fails");
+        let first=first.await.unwrap().err().expect("first concurrent attach fails");
+        assert_eq!(first,second);
+        assert_eq!(first.message,"faux open failure");
+        assert_eq!(host.state.lock().await.open_session_count,1);
+        let retried=router.attach("session-1").await.unwrap();
+        assert_eq!(host.state.lock().await.open_session_count,2);
+        retried.release().await.unwrap();
+        router.close().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
@@ -270,7 +274,7 @@ async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
     let mut events=router.invalidation_events();
     events.borrow_and_update();
     harness.terminate(ServerError::new("internal_error","session crashed")).await;
-    harness.closed.wait().await;
+    harness.terminated.wait().await;
     await_invalidation(&mut events,1).await;
     assert_eq!(harness.state.lock().await.attachment_release_count,1);
     assert_eq!(harness.state.lock().await.attached_clients,0);
