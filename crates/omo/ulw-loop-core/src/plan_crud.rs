@@ -185,6 +185,24 @@ pub fn add_ulw_loop_goal(
         let now = iso();
         let seed_opts = GoalSeedOptions {
             surface: Some(s),
+            success_criteria: args.success_criteria.as_ref().map(|criteria| {
+                criteria
+                    .iter()
+                    .map(|criterion| {
+                        let mut value = serde_json::json!({
+                            "scenario": criterion.scenario,
+                            "expectedEvidence": criterion.expected_evidence,
+                        });
+                        if let Some(user_model) = criterion.user_model.as_deref() {
+                            value["userModel"] = serde_json::json!(user_model);
+                        }
+                        if let Some(essential) = criterion.essential {
+                            value["essential"] = serde_json::json!(essential);
+                        }
+                        value
+                    })
+                    .collect()
+            }),
             ..Default::default()
         };
         let goal = append_goal_to_plan(&mut plan, &args.title, &args.objective, &now, Some(&seed_opts))?;
