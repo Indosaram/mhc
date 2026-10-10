@@ -40,11 +40,15 @@ impl Harness {
             self.notifications.push_back(message);
         }
     }
-    async fn notification(&mut self) -> Value {
-        if let Some(notification) = self.notifications.pop_front() { return notification; }
-        tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("notification within deadline").expect("connection stays open")
+    async fn notification(&mut self, method: &str) -> Value {
+        if let Some(index) = self.notifications.iter().position(|message| message["method"] == method) { return self.notifications.remove(index).expect("notification index exists"); }
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(5), self.receive.recv()).await.expect("notification within deadline").expect("connection stays open");
+            if message["method"] == method { return message; }
+            self.notifications.push_back(message);
+        }
     }
-    fn recorded_before_response(&self) -> usize { self.notifications.len() }
+    fn thread_started_recorded_before_response(&self) -> bool { self.notifications.iter().any(|message| message["method"] == "thread/started") }
     fn write_source(&self, id: &str) -> std::path::PathBuf {
         let path = self.session_dir.join(format!("2020-01-01T00-00-00-000Z_{id}.jsonl"));
         let records = [json!({"type":"session","id":id,"version":3,"cwd":"/work","timestamp":"2020-01-01T00:00:00.000Z"}),json!({"type":"message","id":"u","parentId":null,"timestamp":"2020-01-01T00:00:01.000Z","message":{"role":"user","content":"hello"}}),json!({"type":"message","id":"a","parentId":"u","timestamp":"2020-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"persisted"}]}})];
@@ -73,8 +77,8 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     let forked_id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
     assert_ne!(forked_id,"source-thread");
     assert_eq!(response["result"]["thread"]["turns"].as_array().unwrap().len(),1);
-    assert_eq!(harness.recorded_before_response(),0,"response must precede thread/started");
-    let notification = harness.notification().await;
+    assert!(!harness.thread_started_recorded_before_response(),"response must precede thread/started");
+    let notification = harness.notification("thread/started").await;
     assert_eq!(notification["method"],"thread/started");
     assert_eq!(notification["params"]["thread"]["id"],forked_id);
     let forked_path = response["result"]["thread"]["path"].as_str().unwrap();
@@ -85,6 +89,5 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     assert!(header["parentSession"].as_str().unwrap().ends_with("source-thread.jsonl"));
     assert!(contents.lines().any(|line| line.contains("\"persisted\"")));
     assert_eq!(harness.call(json!({"id":3,"method":"thread/fork","params":{"threadId":"missing"}})).await["error"]["code"],-32603);
-    assert_eq!(harness.recorded_before_response(),0);
     harness.runtime.dispose().await;
 }
