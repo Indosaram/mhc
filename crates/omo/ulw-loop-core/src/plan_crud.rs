@@ -240,9 +240,10 @@ pub fn start_next_ulw_loop(
         }
 
         if let Some(existing) = plan.goals.iter().find(|g| g.status == "in_progress" && is_schedule_eligible(g)) {
+            let goal = existing.clone();
             return Ok(StartNextResult::Started {
-                plan: plan.clone(),
-                goal: existing.clone(),
+                plan,
+                goal,
                 resumed: true,
             });
         }

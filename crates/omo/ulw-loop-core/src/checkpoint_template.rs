@@ -141,12 +141,11 @@ pub fn checkpoint_template(
         }
     }
 
-    let template_scope = scope
-        .cloned()
-        .or_else(|| Some(UlwLoopScope::new("cli-test")));
     let has_attempt = plan.evidence_layout_version == Some(2) && active.is_some();
+    let fallback_scope = UlwLoopScope::new("cli-test");
     let attempt_dir = if let (Some(a), true) = (active, has_attempt) {
-        ulw_loop_attempt_evidence_dir(&a.id, a.attempt, template_scope.as_ref())?
+        let template_scope = scope.or(Some(&fallback_scope));
+        ulw_loop_attempt_evidence_dir(&a.id, a.attempt, template_scope)?
     } else {
         ".omo/evidence".to_string()
     };
