@@ -12,6 +12,7 @@ fn forks_history_into_new_session_with_parent_source() {
         id: Some("source-session".to_owned()), ..Default::default()
     }));
     source.append_message(serde_json::json!({"role":"user", "content":"hello"}));
+    source.append_message(serde_json::json!({"role":"assistant","content":[],"stopReason":"stop","timestamp":2}));
     let source_path = source.session_file().expect("source path").to_owned();
 
     let target_cwd = directory.path().join("target");

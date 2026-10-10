@@ -68,9 +68,9 @@ fn skill_commands_precede_every_input_handler_component() {
     }
 }
 
-pub(crate) fn the_registered_loop_component_logs_through_the_shared_runtime_logger() {
-    // An env with no omo binary makes the loop's registration path take the inactive branch,
-    // which must log through the shared runtime logger (not only in tests that inject one).
+pub(crate) fn the_registered_loop_component_never_reports_itself_inactive() {
+    // Pinned omo-senpi ulw-loop runs in-process: with no toolkit CLI on the host the registered
+    // component still runs and never reports itself inactive through the shared runtime logger.
     let loop_options = OmoComponentOptions {
         skills_root: std::env::temp_dir().join("omo-skills"),
         state_dir: std::env::temp_dir().join("omo-state"),
@@ -86,8 +86,8 @@ pub(crate) fn the_registered_loop_component_logs_through_the_shared_runtime_logg
     extension.register(&mut new_api());
 
     assert!(
-        recording.entries().iter().any(|entry| entry.message.contains("ulw-loop inactive")),
-        "loop registration logs the inactive message through the shared logger: {:?}",
+        !recording.entries().iter().any(|entry| entry.message.contains("ulw-loop inactive")),
+        "the in-process loop never reports itself inactive: {:?}",
         recording.entries()
     );
 }
