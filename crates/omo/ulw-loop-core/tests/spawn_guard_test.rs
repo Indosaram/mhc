@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::fs;
 use std::io::Cursor;
 use std::cell::RefCell;
@@ -6,7 +7,7 @@ use serde_json::{json, Value};
 use ulw_loop_core::codex_hook::PreToolUsePayload;
 use ulw_loop_core::spawn_guard::{apply_spawn_budget_guards_with_env, run_spawn_admission_recorder_cli_with_env};
 
-thread_local! { static TEST_ENV: RefCell<BTreeMap<String, String>> = RefCell::new(BTreeMap::new()); }
+thread_local! { static TEST_ENV: RefCell<BTreeMap<String, String>> = const { RefCell::new(BTreeMap::new()) }; }
 fn set_env(key: &str, value: impl ToString) { TEST_ENV.with(|env| { env.borrow_mut().insert(key.into(), value.to_string()); }); }
 fn remove_env(key: &str) { TEST_ENV.with(|env| { env.borrow_mut().remove(key); }); }
 fn env(key: &str) -> Option<String> { TEST_ENV.with(|env| env.borrow().get(key).cloned()) }
@@ -52,3 +53,4 @@ fn count(d:&tempfile::TempDir)->u64{serde_json::from_str::<Value>(&fs::read_to_s
 #[test] fn denied_gate_then_artifacts_charges_only_allowed(){let d=setup();goals(&d,false);assert!(!guard(&d,json!({"agent_type":"lazycodex-gate-reviewer"})).is_empty());fs::create_dir_all(d.path().join(".omo/evidence")).unwrap();for n in ["g1-code-review.md","g1-manual-qa.md"]{fs::write(d.path().join(".omo/evidence").join(n),"x").unwrap();}assert_eq!(guard(&d,json!({"agent_type":"lazycodex-gate-reviewer"})),"");assert!(d.path().join(".omo/ulw-loop/s1/review-spawn-counts.json").exists());}
 #[test] fn live_state_lock_denies_without_counting(){let d=setup();goals(&d,false);fs::write(d.path().join(".omo/ulw-loop/s1/.state.lock"),json!({"pid":std::process::id(),"createdAt":"2026-07-11T00:00:00Z","token":"live"}).to_string()).unwrap();let s=apply_spawn_budget_guards_with_env(&payload(&d,"spawn_agent",json!({"message":"scan"})),Some(&ulw_loop_core::spawn_guard::SpawnGuardOptions{lock_timeout_ms:Some(100)}),env);assert!(reason(&s).contains("state lock"));assert!(!d.path().join(".omo/ulw-loop/s1/spawn-count.json").exists());}
 #[test] fn stale_lock_reclaims_and_counts(){let d=setup();goals(&d,false);fs::write(d.path().join(".omo/ulw-loop/s1/.state.lock"),json!({"pid":2147483646,"createdAt":"2026-01-01T00:00:00Z","token":"gone"}).to_string()).unwrap();assert_eq!(guard(&d,json!({"message":"scan"})),"");assert_eq!(count(&d),1);assert!(!d.path().join(".omo/ulw-loop/s1/.state.lock").exists());}
+

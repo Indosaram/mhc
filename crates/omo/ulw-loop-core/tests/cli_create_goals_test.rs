@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::fs;
 use tempfile::tempdir;
 use ulw_loop_core::command_types::CreateGoalsOptions;
@@ -36,3 +37,4 @@ fn empty_session_id_is_rejected_without_plan() { let d=tempdir().unwrap(); asser
 
 #[test]
 fn missing_session_id_is_rejected_without_plan() { let d=tempdir().unwrap(); assert!(AgentToolkit::new(ToolkitContext{cwd:d.path().to_string_lossy().into_owned(),session_id:"   ".into(),surface:resolve_toolkit_surface()},None).is_err()); assert!(fs::read_dir(d.path()).unwrap().next().is_none()); }
+

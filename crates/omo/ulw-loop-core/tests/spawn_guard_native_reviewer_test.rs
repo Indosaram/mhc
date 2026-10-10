@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use std::fs;
 use serde_json::{json, Value};
 use ulw_loop_core::codex_hook::PreToolUsePayload;
@@ -21,3 +22,4 @@ fn message_only_canonical_gate_reviewer_is_recognized() { let dir = tempfile::te
 fn fourth_canonical_gate_spawn_is_denied_by_cap() { let dir = tempfile::tempdir().unwrap(); write_goals(dir.path()); fs::create_dir_all(dir.path().join(".omo/evidence")).unwrap(); fs::write(dir.path().join(".omo/evidence/g1-code-review.md"), "report\n").unwrap(); fs::write(dir.path().join(".omo/evidence/g1-manual-qa.md"), "matrix\n").unwrap(); let input = json!({"agent_type":"omo-native-gate-reviewer","message":"audit"}); for _ in 0..3 { assert!(senpi_gate(dir.path(), "spawn_agent", input.clone()).is_empty()); } let out = senpi_gate(dir.path(), "spawn_agent", input); assert!(deny_reason(&out).contains("4/3")); assert_eq!(serde_json::from_str::<Value>(&fs::read_to_string(dir.path().join(".omo/ulw-loop/s1/review-spawn-counts.json")).unwrap()).unwrap()["omo-native-gate-reviewer:g1:a1"], 3); }
 #[test]
 fn legacy_gate_reviewer_without_manual_qa_remains_denied() { let dir = tempfile::tempdir().unwrap(); write_goals(dir.path()); let out = gate(dir.path(), "collaborationspawn_agent", json!({"agent_type":"omo-senpi-gate-reviewer","message":"audit"})); assert!(deny_reason(&out).contains("g1-manual-qa.md")); }
+

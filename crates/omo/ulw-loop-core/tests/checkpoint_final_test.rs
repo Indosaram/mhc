@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use ulw_loop_core::checkpoint::{checkpoint_ulw_loop, CheckpointUlwLoopArgs};
 use ulw_loop_core::domain_types::*;
 use ulw_loop_core::plan_io::write_plan;
@@ -18,3 +19,5 @@ fn snap(status:&str)->serde_json::Value{serde_json::json!({"goal":{"objective":"
 #[test]fn earlier_nonessential_pending_criteria_still_blocks_final(){let mut earlier=goal("G001","complete",vec![c("pass")]);earlier.success_criteria.push(UlwLoopSuccessCriterion{id:"C002".into(),scenario:"s".into(),user_model:"happy".into(),expected_evidence:"e".into(),status:"pending".into(),essential:Some(false),captured_evidence:None,captured_at:None,notes:None,artifacts:None});let p=plan(vec![earlier,goal("G002","in_progress",vec![c("pass")])]);assert!(attempt(p,"G002",Some(snap("complete")),Some(serde_json::json!({}))).is_err());}
 #[test]fn missing_artifact_gate_is_rejected(){let p=plan(vec![goal("G001","complete",vec![c("pass")]),goal("G002","in_progress",vec![c("pass")])]);let gate=serde_json::json!({"manualQa":{"artifactRefs":[{"id":"x","kind":"cli-transcript","description":"x","path":"missing.txt"}]}});assert!(attempt(p,"G002",Some(snap("complete")),Some(gate)).is_err());}
 #[test]fn per_story_mode_requires_all_criteria(){let mut p=plan(vec![goal("G001","in_progress",vec![c("pass"),UlwLoopSuccessCriterion{id:"C002".into(),scenario:"s".into(),user_model:"happy".into(),expected_evidence:"e".into(),status:"pending".into(),essential:Some(false),captured_evidence:None,captured_at:None,notes:None,artifacts:None}])]);p.codex_goal_mode=Some("per_story".into());assert!(attempt(p,"G001",Some(snap("complete")),None).is_err());}
+
+

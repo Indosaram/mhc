@@ -1,5 +1,5 @@
 use ulw_loop_core::command_types::CreateGoalsOptions;
-use ulw_loop_core::sdk::{ulw_loop_manifest, AgentToolkit, ToolkitContext, ToolkitDispatchRequest, ToolkitResponse, ULW_LOOP_OPERATIONS};
+use ulw_loop_core::sdk::{ulw_loop_manifest, AgentToolkit, ToolkitContext, ToolkitResponse, ULW_LOOP_OPERATIONS};
 use ulw_loop_core::surface::UlwLoopToolkitSurface;
 
 #[test] fn manifest_exposes_exact_operations() { let m=ulw_loop_manifest(); let names:Vec<_>=m.operations.iter().map(|o|o.name.as_str()).collect(); assert_eq!(names,ULW_LOOP_OPERATIONS); }
