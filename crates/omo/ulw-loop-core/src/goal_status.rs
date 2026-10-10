@@ -14,7 +14,7 @@ pub fn aggregate_codex_objective_for_scope(scope: Option<&UlwLoopScope>) -> Stri
 }
 
 pub fn codex_goal_mode(plan: &UlwLoopPlan) -> &str {
-    plan.codex_goal_mode.as_deref().unwrap_or("per_story")
+    plan.codex_goal_mode.as_deref().unwrap_or_else(|| "per_story")
 }
 
 pub fn is_resolved_status(status: &str) -> bool {
