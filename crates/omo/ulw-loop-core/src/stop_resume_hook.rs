@@ -140,9 +140,16 @@ fn consume_resume_budget(state_dir: &Path, goal_id: &str) -> bool {
 }
 
 fn is_inside_dir(dir: &Path, candidate: &Path) -> bool {
-    let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    // Simple path prefix check
-    candidate.starts_with(&canon_dir) || candidate.starts_with(dir)
+    let Ok(canon_dir) = dir.canonicalize() else {
+        return false;
+    };
+    let Some(parent) = candidate.parent() else {
+        return false;
+    };
+    let Ok(canon_parent) = parent.canonicalize() else {
+        return false;
+    };
+    canon_parent.starts_with(&canon_dir)
 }
 
 fn render_resume_directive(plan: &UlwLoopPlan, goal: &UlwLoopItem, session_id: &str) -> String {
