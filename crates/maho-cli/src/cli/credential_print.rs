@@ -17,8 +17,10 @@ pub async fn resolve_credential_for_print(args: &Args, runtime: &ModelRuntime, k
             if let Some(model) = model { runtime.get_auth_for_model(model, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
             else { runtime.get_auth_with_overrides(provider, &maho_ai::models::AuthResolutionOverrides { min_oauth_validity_ms: Some(min_expiry_ms.unwrap_or(DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS)), ..Default::default() }).await }
         } else if let Some(model) = model { runtime.get_auth_for_model(model, &Default::default()).await } else { runtime.get_auth(provider).await };
-        if let Some(auth) = auth.map_err(|_| "Failed to resolve credential".to_owned())? {
-            if let Some(value) = super::auth_command::get_auth_credential(Some(&auth)) { values.push((provider.clone(), value.to_owned())); }
+        if let Some(auth) = auth.map_err(|_| "Failed to resolve credential".to_owned())?
+            && let Some(value) = super::auth_command::get_auth_credential(Some(&auth))
+        {
+            values.push((provider.clone(), value.to_owned()));
         }
     }
     if values.len() == 1 { return Ok(values.remove(0).1); }

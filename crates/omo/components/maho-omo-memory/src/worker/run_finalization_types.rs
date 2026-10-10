@@ -1,7 +1,7 @@
 use memory_core::reflection::ReservedRun;
 use super::completion_contracts::ReflectionCompletionRecord;
 
-type WarnCallback = dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync;
+type WarnCallback<'a> = dyn Fn(&str, &std::collections::BTreeMap<String, String>) + Send + Sync + 'a;
 
 pub struct RunFinalizationContext<'a> {
     pub identity: &'a memory_core::identity::resolve::MemoryIdentity,
@@ -9,7 +9,7 @@ pub struct RunFinalizationContext<'a> {
     pub launch: Option<&'a dyn Fn(&ReservedRun)>,
     pub now_ms: &'a dyn Fn() -> i64,
     pub receipts: Option<&'a dyn crate::receipts_port::MemoryReceiptsPort>,
-    pub warn: Option<&'a WarnCallback>,
+    pub warn: Option<&'a WarnCallback<'a>>,
 }
 
 pub struct ReservationRunResult {
