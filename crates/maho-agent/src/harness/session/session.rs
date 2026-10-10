@@ -702,7 +702,7 @@ impl Session for StorageBackedSession {
         Box::pin(async move {
             self.assert_open()?;
             let query = query.unwrap_or_default();
-            let order = query.order.unwrap_or(super::types::ScanOrder::Desc);
+            let order = query.order.unwrap_or(super::types::ScanOrder::Asc);
             if let Some(cursor) = query.cursor {
                 if order == super::types::ScanOrder::Asc && cursor.seq == MAX_SAFE_INTEGER {
                     return Ok(Vec::new());

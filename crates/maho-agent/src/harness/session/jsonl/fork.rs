@@ -17,6 +17,7 @@ use crate::harness::session::values::physical_key;
 use crate::harness::types::{FileSystem, TextLineReader};
 
 use super::io::{file_value, parse_jsonl_transaction, publish_jsonl, read_jsonl_header};
+use super::legacy_v3::LegacyV3Source;
 use super::types::{JSONL_STORAGE_VERSION, JsonlStorageHeader};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct JsonlForkSourceMetadata {
 }
 
 /// Prepared fork input: format-4 file metadata or an already-normalized legacy source.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum JsonlForkInput {
     Open {
         metadata: JsonlForkSourceMetadata,
@@ -36,12 +37,16 @@ pub enum JsonlForkInput {
     Closed {
         metadata: JsonlForkSourceMetadata,
     },
+    LegacyV3 {
+        source: LegacyV3Source,
+    },
 }
 
 impl JsonlForkInput {
     fn metadata(&self) -> &JsonlForkSourceMetadata {
         match self {
             JsonlForkInput::Open { metadata, .. } | JsonlForkInput::Closed { metadata } => metadata,
+            JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy source has no v4 metadata"),
         }
     }
 }
@@ -377,6 +382,15 @@ pub async fn index_fork_input(
     context: &Context,
 ) -> Result<(JsonlForkIndex, i64), SessionError> {
     let mut index = JsonlForkIndex::new();
+    if let JsonlForkInput::LegacyV3 { source } = input {
+        for entry in source.entry_structures() {
+            index.apply_entry(&entry.id, entry.parent_id);
+        }
+        for value in &source.values {
+            index.apply_writes(&[CommittedWrite::Value(CommittedValueWrite::Set(value.clone()))]);
+        }
+        return Ok((index, source.next_seq));
+    }
     let metadata = input.metadata();
     let reader = file_value(
         file_system.open_text_line_reader(&metadata.path, context).await,
@@ -387,6 +401,7 @@ pub async fn index_fork_input(
         let stop_before_seq = match input {
             JsonlForkInput::Open { next_seq, .. } => Some(*next_seq),
             JsonlForkInput::Closed { .. } => None,
+            JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy input handled above"),
         };
         let mut highest_complete_seq = 0;
         for writes in read_jsonl_fork_transactions(reader.as_ref(), &metadata.path, stop_before_seq, context).await? {
@@ -398,6 +413,7 @@ pub async fn index_fork_input(
         let next_seq = match input {
             JsonlForkInput::Open { next_seq, .. } => *next_seq,
             JsonlForkInput::Closed { .. } => header.next_seq.unwrap_or(1).max(highest_complete_seq + 1),
+            JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy input handled above"),
         };
         Ok::<_, SessionError>((next_seq,))
     }
@@ -414,6 +430,9 @@ async fn stream_fork_writes(
     stop_before_seq: i64,
     context: &Context,
 ) -> Result<Vec<CommittedWrite>, SessionError> {
+    if let JsonlForkInput::LegacyV3 { source } = input {
+        return source.writes(context.clone(), None).await;
+    }
     let metadata = input.metadata();
     let reader = file_value(
         file_system.open_text_line_reader(&metadata.path, context).await,
@@ -440,7 +459,22 @@ pub async fn run_jsonl_fork(
     context: &Context,
 ) -> Result<(), SessionError> {
     let (mut index, next_seq) = index_fork_input(input, file_system, context).await?;
-    let plan = select_jsonl_fork_with_index(&mut index, fork)?;
+    let translated_fork = if let JsonlForkInput::LegacyV3 { source } = input {
+        match fork {
+            ForkOptions::Branch { id, branch, entry_id: Some(entry_id), position } => {
+                ForkOptions::Branch {
+                    id: id.clone(),
+                    branch: branch.clone(),
+                    entry_id: Some(source.translate_fork_entry_id(entry_id)?),
+                    position: *position,
+                }
+            }
+            _ => fork.clone(),
+        }
+    } else {
+        fork.clone()
+    };
+    let plan = select_jsonl_fork_with_index(&mut index, &translated_fork)?;
     let is_entry_copied = |entry_id: &str| -> bool {
         match plan {
             ForkCurrentStatePlan::Tree => true,
