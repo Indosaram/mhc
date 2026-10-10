@@ -195,6 +195,16 @@ pub fn checkpoint_ulw_loop(
             let final_candidate = is_final_run_completion_candidate(&plan, &plan.goals[goal_idx]);
             let closes_batch = batch_closed_by(&plan, &plan.goals[goal_idx].id).is_some();
 
+            if closes_batch {
+                require_batch_final_ready(&plan, &plan.goals[goal_idx])?;
+            }
+            if closes_batch && args.quality_gate_json.is_none() {
+                return Err(UlwLoopError::new(
+                    "Validation batch final checkpoint requires --quality-gate-json.",
+                    "ULW_LOOP_VALIDATION_BATCH_GATE_REQUIRED",
+                ));
+            }
+
             if final_candidate {
                 require_all_criteria_pass(&plan.goals[goal_idx])?;
                 require_all_plan_criteria_pass(&plan)?;
@@ -223,16 +233,6 @@ pub fn checkpoint_ulw_loop(
                 Err(err) => {
                     codex_validation_error = Some(err);
                 }
-            }
-
-            if closes_batch {
-                require_batch_final_ready(&plan, &plan.goals[goal_idx])?;
-            }
-            if closes_batch && args.quality_gate_json.is_none() {
-                return Err(UlwLoopError::new(
-                    "Validation batch final checkpoint requires --quality-gate-json.",
-                    "ULW_LOOP_VALIDATION_BATCH_GATE_REQUIRED",
-                ));
             }
 
             if final_candidate {
