@@ -3592,7 +3592,7 @@ impl AgentSession {
     }
 
     pub async fn fork(&self, entry_id: &str, include_entry: bool) -> Result<AssistantEditResult, String> {
-        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| "Invalid entry ID for forking".to_owned())?;
         let position = if include_entry { maho_ext_api::ForkPosition::At } else { maho_ext_api::ForkPosition::Before };
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork { entry_id: entry_id.to_owned(), position }).await?.cancel == Some(true) {
             return Ok(AssistantEditResult { cancelled: true, ..Default::default() });
