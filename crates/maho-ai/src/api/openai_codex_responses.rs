@@ -1362,7 +1362,7 @@ mod tests {
         };
         let collected: Vec<_> = adapter.collect().await;
         assert_eq!(collected.len(), 1);
-        assert!(String::from_utf8_lossy(&collected[0].as_ref().expect("frame")).contains("response.completed"));
+        assert!(String::from_utf8_lossy(collected[0].as_ref().expect("frame")).contains("response.completed"));
     }
 
     #[tokio::test]

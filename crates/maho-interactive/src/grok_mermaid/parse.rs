@@ -148,7 +148,7 @@ fn trailing_head(a: &[char], i: usize) -> Option<(Head, usize)> {
         Some('x') => Head::Cross,
         _ => return None,
     };
-    let ok = a.get(i + 1).map_or(true, |c| matches!(c, ' ' | '\t' | '|' | '&' | ';'));
+    let ok = a.get(i + 1).is_none_or(|c| matches!(c, ' ' | '\t' | '|' | '&' | ';'));
     ok.then_some((h, i + 1))
 }
 
@@ -168,9 +168,8 @@ fn parse_link(
     let op = a[b..i].iter().collect::<String>();
     if left == Head::None && op.starts_with('<') { left = Head::Arrow; }
     let mut right = if op.contains('>') { Head::Arrow } else { Head::None };
-    if right == Head::None {
-        if let Some((h, n)) = trailing_head(a, i) { right = h; i = n; }
-    }
+    if right == Head::None
+        && let Some((h, n)) = trailing_head(a, i) { right = h; i = n; }
     if a.get(i) == Some(&'|') {
         i += 1;
         let b = i;
@@ -189,9 +188,8 @@ fn parse_link(
             while j < a.len() && "-.=<>".contains(a[j]) { j += 1; }
             let op2 = a[z..j].iter().collect::<String>();
             right = if op2.contains('>') { Head::Arrow } else { Head::None };
-            if right == Head::None {
-                if let Some((h, n)) = trailing_head(a, j) { right = h; j = n; }
-            }
+            if right == Head::None
+                && let Some((h, n)) = trailing_head(a, j) { right = h; j = n; }
             let lk = if op == "-" { line_kind(&op2) } else { line_kind(&op) };
             return Some((left, right, lk, ne(clean_label(&text)), j));
         }
@@ -230,12 +228,11 @@ fn parse_statement(s: &str, g: &mut Graph) {
 }
 
 fn parse_subgraph_decl(s: &str) -> (String, String) {
-    if s.starts_with('"') {
-        if let Some(x) = s[1..].find('"') {
+    if s.starts_with('"')
+        && let Some(x) = s[1..].find('"') {
             let z = &s[1..x + 1];
             return (z.into(), decode_html_entities(z));
         }
-    }
     if let Some(x) = s.find('[') {
         let id = s[..x].trim().to_string();
         let label = clean_label(s[x + 1..].trim_end_matches(']').trim());
@@ -299,8 +296,8 @@ fn state_endpoint(g: &mut Graph, id: &str, source: bool) -> Option<usize> {
 fn parse_state_decl(s: &str, g: &mut Graph) -> Option<()> {
     let r = s["state".len()..].trim().trim_end_matches('{').trim();
     if r.is_empty() { return Some(()); }
-    if r.starts_with('"') {
-        let q = r[1..].find('"')? + 1;
+    if let Some(quoted) = r.strip_prefix('"') {
+        let q = quoted.find('"')? + 1;
         let label = &r[1..q];
         let z = r[q + 1..].trim();
         let id = z.strip_prefix("as").unwrap_or(label).trim();
@@ -322,8 +319,7 @@ fn parse_state_decl(s: &str, g: &mut Graph) -> Option<()> {
 fn parse_transition(s: &str, g: &mut Graph) -> Option<()> {
     let mut rest = s;
     let mut prev = None;
-    loop {
-        let Some((lhs, rhs)) = once(rest, "-->") else { break };
+    while let Some((lhs, rhs)) = once(rest, "-->") {
         let from_id = lhs.trim().trim_end_matches('-').trim();
         let from = if let Some(x) = prev {
             if !from_id.is_empty() { return None; }
@@ -397,8 +393,8 @@ pub fn parse_state(src: &str) -> Option<Graph> {
 }
 
 pub fn push_member(i: &mut ClassInfo, raw: &str) {
-    if raw.starts_with("<<") {
-        if let Some((a, _)) = once(&raw[2..], ">>") { i.annotation = Some(a.trim().into()); }
+    if let Some(rest) = raw.strip_prefix("<<") {
+        if let Some((a, _)) = once(rest, ">>") { i.annotation = Some(a.trim().into()); }
         return;
     }
     let x = decode_html_entities(&display_generics(raw.trim()));
@@ -423,21 +419,19 @@ struct ClassRel {
 
 fn strip_cardinality_suffix(s: &str) -> (String, String) {
     let t = s.trim_end();
-    if t.ends_with('"') {
-        if let Some(q) = t[..t.len() - 1].rfind('"') {
+    if t.ends_with('"')
+        && let Some(q) = t[..t.len() - 1].rfind('"') {
             return (t[..q].trim_end().into(), t[q + 1..t.len() - 1].into());
         }
-    }
     (t.into(), String::new())
 }
 
 fn strip_cardinality_prefix(s: &str) -> (String, String) {
     let t = s.trim_start();
-    if t.starts_with('"') {
-        if let Some(q) = t[1..].find('"') {
+    if t.starts_with('"')
+        && let Some(q) = t[1..].find('"') {
             return (t[q + 2..].trim_start().into(), t[1..q + 1].into());
         }
-    }
     (t.into(), String::new())
 }
 
@@ -507,8 +501,8 @@ pub fn parse_class(src: &str) -> Option<(Graph, Vec<ClassInfo>)> {
             if open { cur = Some(x); }
             continue;
         }
-        if s.starts_with("<<") {
-            let (a, b) = once(&s[2..], ">>")?;
+        if let Some(rest) = s.strip_prefix("<<") {
+            let (a, b) = once(rest, ">>")?;
             let n = b.trim();
             if n.is_empty() || n.chars().any(char::is_whitespace) { return None; }
             let x = g.node_index(n, None, Shape::Rect)?;
@@ -633,6 +627,12 @@ pub struct Sequence {
     pub items: Vec<SeqItem>,
 }
 
+impl Default for Sequence {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Sequence {
     pub fn new() -> Self {
         Self { labels: vec![], index: HashMap::new(), items: vec![] }
@@ -711,7 +711,7 @@ pub fn parse_sequence(src: &str) -> Option<Sequence> {
         } else if f == "autonumber" {
             auto = true;
         } else if f == "note" {
-            let (a, text) = parse_note_anchor(&s[first(s).len()..].trim(), &mut q)?;
+            let (a, text) = parse_note_anchor(s[first(s).len()..].trim(), &mut q)?;
             q.items.push(SeqItem::Note { anchor: a, text });
         } else if ["loop", "alt", "opt", "par", "critical", "break", "else", "and", "option"]
             .contains(&f.as_str()) {
