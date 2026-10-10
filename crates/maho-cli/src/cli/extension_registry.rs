@@ -231,8 +231,20 @@ pub fn builtin_extensions() -> &'static [NativeExtension] {
 }
 
 /// Pinned builtin ids whose constructor needs host state the CLI cannot build at registration.
-static DEFERRED_BUILTINS: [DeferredExtension; 5] = [
+static DEFERRED_BUILTINS: [DeferredExtension; 17] = [
+    DeferredExtension { id: "ask-user", crate_name: "maho-ext-ask-user", requirement: "host-constructed UI state" },
+    DeferredExtension { id: "gpt-apply-patch", crate_name: "maho-ext-gpt-apply-patch", requirement: "host-constructed patch state" },
+    DeferredExtension { id: "imagegen", crate_name: "maho-ext-imagegen", requirement: "host-constructed image state" },
+    DeferredExtension { id: "openai-image-gen", crate_name: "maho-ext-openai-image-gen", requirement: "host-constructed image state" },
     DeferredExtension { id: "todowrite", crate_name: "maho-ext-todotools", requirement: "host-constructed todo state" },
+    DeferredExtension { id: "redraws", crate_name: "maho-ext-redraws", requirement: "host-constructed renderer state" },
+    DeferredExtension { id: "service-tier", crate_name: "maho-ext-service-tier", requirement: "host-constructed service state" },
+    DeferredExtension { id: "reasoning", crate_name: "maho-ext-reasoning", requirement: "host-constructed reasoning state" },
+    DeferredExtension { id: "history-search", crate_name: "maho-ext-history-search", requirement: "host-constructed history state" },
+    DeferredExtension { id: "import-repro", crate_name: "maho-ext-import-repro", requirement: "host-constructed import state" },
+    DeferredExtension { id: "look-at", crate_name: "maho-ext-look-at", requirement: "host-constructed image state" },
+    DeferredExtension { id: "cache-keepalive", crate_name: "maho-ext-cache-keepalive", requirement: "host-constructed cache state" },
+    DeferredExtension { id: "gpt-account", crate_name: "maho-ext-gpt-account", requirement: "host-constructed account state" },
     DeferredExtension { id: "claude-sdk-oauth", crate_name: "maho-ext-anthropic-subscription", requirement: "host-constructed OAuth state" },
     DeferredExtension { id: "cursor-cli-oauth", crate_name: "maho-ext-cursor-cli-oauth", requirement: "host-constructed cursor state" },
     DeferredExtension { id: "tool-search", crate_name: "maho-ext-tool-search", requirement: "host-constructed shared service" },

@@ -190,6 +190,15 @@ impl MemoryRuntime {
     }
 
     pub fn new(host: MemoryRuntimeHost) -> Result<Arc<Self>, String> {
+        let mut host = host;
+        if !host.env.contains_key(memory_core::identity::layout::MEMORY_ROOT_ENV_VAR)
+            && let Some(home) = host.env.get("HOME")
+        {
+            host.env.insert(
+                memory_core::identity::layout::MEMORY_ROOT_ENV_VAR.to_owned(),
+                Path::new(home).join(".maho/memory").to_string_lossy().into_owned(),
+            );
+        }
         let initial = (host.load_config)()?;
         if initial.get("global").is_some() || initial.get("project").is_some() { return Err("memory builder requires live resolved OMO config, not a global/project envelope".into()); }
         maho_omo_memory::reflection_settings::resolve_memory_settings(initial.get("memory"))?;
@@ -392,8 +401,9 @@ impl MemoryRuntime {
         let this = self.clone();
         let write_notice: maho_omo_memory::tools::WriteNoticeGate = Arc::new(move || {
             let identity = this.active_identity();
-            let identity_str = identity.as_ref().map(|id| id.identity.as_str());
             let settings = this.settings().ok();
+            let configured_agent = settings.as_ref().and_then(|settings| settings["agent"].as_str());
+            let identity_str = configured_agent.or_else(|| identity.as_ref().map(|id| id.identity.as_str()));
             maho_omo_memory::reflection_settings::resolve_write_notice_enabled(settings.as_ref(), identity_str)
         });
         let cwd = self.host.cwd.clone(); let resolve_cwd = Arc::new(move || cwd.clone());
