@@ -250,8 +250,6 @@ impl ChaosHarness {
     /// pinned TS tracks a child outcome as a promise continuation, so the outcome is applied on the
     /// microtask queue the chaos bench drains with `flushMicrotasks()`; this port hands the settle to
     /// a watcher thread, so the harness waits for the watcher to consume it before it reads state.
-    /// Only a handle whose task is still non-terminal is waited on: a terminal task's watcher has
-    /// already returned, so its later settles have no consumer and would block forever.
     pub fn flush_outcomes(&self) {
         for engine in &self.engines {
             for handle in engine.in_process_runner.all_handles() {
@@ -271,6 +269,9 @@ impl ChaosHarness {
             .flatten()
             .is_some_and(|record| super::observing_store::is_terminal_status(record.status));
         if terminal {
+            return;
+        }
+        if !crate::manager::outcome::test_barrier::has_outstanding(handle as *const _ as usize) {
             return;
         }
         crate::manager::outcome::test_barrier::wait_until_consumed(handle as *const _ as usize);
