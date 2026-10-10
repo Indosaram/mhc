@@ -349,7 +349,11 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
             if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None,error_data:None}});}
             let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
-            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
+            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}
+                if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}
+                if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}
+                if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}
+                if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
         },
         RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
         RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
@@ -396,7 +400,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"login_start".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}});
         },
         RpcCommandBody::LoginCancel{provider}=>{
-            if let Some(active_logins)=active_logins{if let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}}
+            if let Some(active_logins)=active_logins&&let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}
             ("login_cancel",Ok(None))
         },
         RpcCommandBody::LoginApiKey{provider,key}=>{
@@ -439,8 +443,8 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let index=if content_index.is_finite()&&content_index.fract()==0.0&&*content_index>=0.0{*content_index as usize}else{usize::MAX};
             let content=session.messages().into_iter().find_map(|message|{
                 let result=message.as_tool_result()?;
-                (result.tool_call_id==*tool_call_id).then(||result.content.get(index)).flatten().and_then(|block|{
-                    matches!(block,maho_ai::types::ContentBlock::Image(_)).then(||serde_json::to_value(block).ok()).flatten()
+                (result.tool_call_id==*tool_call_id).then_some(result.content.get(index)).flatten().and_then(|block|{
+                    matches!(block,maho_ai::types::ContentBlock::Image(_)).then_some(serde_json::to_value(block).ok()).flatten()
                 })
             });
             let result=content.map(|content|Some(serde_json::json!({"toolCallId":tool_call_id,"contentIndex":content_index,"content":content}))).ok_or_else(||crate::rpc_types::RPC_ERROR_MEDIA_NOT_FOUND.to_owned());
@@ -453,7 +457,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::ExtensionRequest{name,data}=>{
             let name=name.trim();
             if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
-            else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(|data|Some(data)))}
+            else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
         },
         _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
     };
