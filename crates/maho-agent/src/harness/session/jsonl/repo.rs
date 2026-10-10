@@ -14,7 +14,6 @@ use crate::harness::types::{FileInfo, FileSystem};
 use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader};
 use super::fork::{JsonlForkInput, JsonlForkSourceMetadata, run_jsonl_fork};
 use super::io::file_value;
-use super::legacy_v3::LegacyV3Source;
 use super::storage::JsonlStorage;
 use super::types::{
     JSONL_STORAGE_VERSION, JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
