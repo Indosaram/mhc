@@ -14,7 +14,6 @@ use crate::harness::types::{FileInfo, FileSystem};
 use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader};
 use super::fork::{JsonlForkInput, JsonlForkSourceMetadata, run_jsonl_fork};
 use super::io::file_value;
-use super::legacy_v3::LegacyV3Source;
 use super::storage::JsonlStorage;
 use super::types::{
     JSONL_STORAGE_VERSION, JsonlSessionCreateOptions, JsonlSessionListOptions, JsonlSessionMetadata,
@@ -578,8 +577,18 @@ impl JsonlSessionRepo {
                     .and_then(|line| parse_jsonl_session_header(line).ok())
                     .is_some_and(|parsed| matches!(parsed, super::codec::JsonlParsedSessionHeader::V3Legacy(_)));
                 if is_legacy {
+                    let normalized = super::legacy_v3::LegacyV3Source::read(
+                        self.file_system.clone(),
+                        &source.path,
+                        &BACKGROUND_CONTEXT,
+                    )
+                    .await?;
+                    if normalized.header.id != source.id || normalized.header.cwd != source.cwd {
+                        return Err(session_invariant_error(format!("Session identity does not match header: {}", source.id)));
+                    }
                     Ok(JsonlForkInput::LegacyV3 {
-                        source: LegacyV3Source::read(self.file_system.clone(), &source.path, &BACKGROUND_CONTEXT).await?,
+                        metadata,
+                        normalized,
                     })
                 } else {
                     Ok(JsonlForkInput::Closed { metadata })
