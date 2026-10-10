@@ -50,8 +50,8 @@ fn completed_watch_has_one_terminal_update() {
     let mut watch = HandleWatch { initial: vec![task_snapshot(&record(TaskStatus::Running, 0), reference.clone(), "running")], updates: UpdateQueue::default() };
     let snapshot = task_snapshot(&record(TaskStatus::Completed, 0), reference.clone(), "completed");
     watch.offer(reference, snapshot, &mut HashMap::new());
-    assert!(watch.updates.next().is_some());
-    assert!(watch.updates.next().is_none());
+    assert!(watch.updates.take_next().is_some());
+    assert!(watch.updates.take_next().is_none());
 }
 
 #[test]
@@ -61,8 +61,8 @@ fn watch_updates_preserve_completion_arrival_order() {
     let mut queue = UpdateQueue::default();
     queue.push(task_snapshot(&record(TaskStatus::Completed, 0), b, "b"));
     queue.push(task_snapshot(&record(TaskStatus::Completed, 0), a, "a"));
-    assert_eq!(queue.next().map(|s| s.host_status), Some("b".into()));
-    assert_eq!(queue.next().map(|s| s.host_status), Some("a".into()));
+    assert_eq!(queue.take_next().map(|s| s.host_status), Some("b".into()));
+    assert_eq!(queue.take_next().map(|s| s.host_status), Some("a".into()));
 }
 
 #[test]
@@ -122,8 +122,8 @@ fn watch_drops_duplicate_revision_updates() {
     let mut latest = HashMap::new();
     watch.offer(reference.clone(), snapshot.clone(), &mut latest);
     watch.offer(reference, snapshot, &mut latest);
-    assert!(watch.updates.next().is_some());
-    assert!(watch.updates.next().is_none());
+    assert!(watch.updates.take_next().is_some());
+    assert!(watch.updates.take_next().is_none());
 }
 
 #[test]
@@ -179,6 +179,6 @@ fn update_queue_ends_only_after_buffer_drains() {
     queue.push(task_snapshot(&record(TaskStatus::Completed, 0), HandleRef { kind: HandleKind::Agent, id: "task-1".into(), run_epoch: 0 }, "done"));
     queue.end();
     assert!(!queue.is_ended());
-    assert!(queue.next().is_some());
+    assert!(queue.take_next().is_some());
     assert!(queue.is_ended());
 }

@@ -1,5 +1,5 @@
 use super::store::WorkpoolStore;
-use super::types::{PoolId, WorkpoolError, WorkpoolErrorCode, WorkpoolItem, WorkpoolItemStatus, WorkpoolDelivery, WorkpoolDeliveryPhase};
+use super::types::{PoolId, WorkpoolError, WorkpoolItem, WorkpoolItemStatus, WorkpoolDelivery, WorkpoolDeliveryPhase};
 
 pub type WorkerTurn = (PoolId, u32, String, u32);
 pub const WORKPOOL_TURN_MESSAGE: &str = "Process the admitted workpool assignments above. Use workpool yield for each key; do not spawn or schedule tasks.";

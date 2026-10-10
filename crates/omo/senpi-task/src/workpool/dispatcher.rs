@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use super::types::{WorkpoolWorker, WorkpoolWorkerStatus};
 
 /// Returns idle workers in the same stable priority order as senpi.

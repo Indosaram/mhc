@@ -117,7 +117,7 @@ fn yield_capability_rejects_parent_operations() {
 #[test]
 fn process_worker_exposes_only_assigned_identity() {
     assert!(register_process_workpool_worker(Some("/state"), Some("st_00000001")).expect("valid identity"));
-    assert_eq!(register_process_workpool_worker(None, None).expect("not a worker"), false);
+    assert!(!register_process_workpool_worker(None, None).expect("not a worker"));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn cancellation_during_admission_releases_lease() {
 fn reconcile_ack_loss_marks_unbound_assignment_uncertain() {
     let store = WorkpoolStore::new("/tmp/workpool-reconcile");
     let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
-    store.mutate(&pool.pool_id, |p| { let mut n=p.clone(); n.items.push(WorkpoolItem { key:"a".into(), input:json!(2), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }); n });
+    store.mutate(&pool.pool_id, |p| { let mut n=p.clone(); n.items.push(WorkpoolItem { key:"a".into(), input:json!(2), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }); n }).expect("insert assigned item");
     super::reconcile::reconcile_workpool(&store, &pool.pool_id).expect("reconcile");
     assert_eq!(store.load(&pool.pool_id).expect("load").items[0].error.as_ref().expect("error").code, "delivery_uncertain");
 }
