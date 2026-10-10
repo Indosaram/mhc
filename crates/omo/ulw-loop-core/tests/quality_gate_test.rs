@@ -117,5 +117,17 @@ fn gate_error(value: serde_json::Value) -> ulw_loop_core::UlwLoopError { ulw_loo
 #[test] fn quality_gate_reasonless_not_applicable_is_rejected() { let mut g=valid_gate_fixture(); g["manualQa"]["adversarialCases"][0]["verdict"]=serde_json::json!("not_applicable"); assert!(gate_error(g).message.contains("reason")); }
 #[test] fn quality_gate_surface_not_applicable_is_rejected() { let mut g=valid_gate_fixture(); g["manualQa"]["surfaceEvidence"][0]["verdict"]=serde_json::json!("not_applicable"); assert!(gate_error(g).message.contains("not_applicable")); }
 #[test] fn quality_gate_attempt_fixture_contains_artifacts() { let g=valid_gate_fixture(); assert_eq!(g["manualQa"]["artifactRefs"].as_array().unwrap().len(),2); }
-#[test] fn quality_gate_attempt_outside_path_is_rejected() { assert!(ulw_loop_core::quality_gate::validate_quality_gate(&valid_gate_fixture(), None).is_ok()); }
-#[test] fn quality_gate_sibling_attempt_prefix_is_rejected() { assert_eq!(gate_error(valid_gate_fixture()).code,"ULW_LOOP_QUALITY_GATE_INVALID"); }
+#[test] fn quality_gate_attempt_outside_path_is_rejected() {
+    assert!(ulw_loop_core::quality_gate::validate_quality_gate(&valid_gate_fixture(), None).is_ok());
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["code.md", "cli.txt", "log.txt", "gate.md"] { std::fs::write(tmp.path().join(name), "x").unwrap(); }
+    let opts = ValidateQualityGateOptions { repo_root: Some(tmp.path()), fs: Some(&RealQualityGateFs), current_attempt_dir: Some("attempt"), reviewer_surface: None };
+    assert!(validate_quality_gate(&valid_gate_fixture(), Some(&opts)).is_err());
+}
+#[test] fn quality_gate_sibling_attempt_prefix_is_rejected() {
+    assert_eq!(gate_error(valid_gate_fixture()).code,"ULW_LOOP_QUALITY_GATE_INVALID");
+    let tmp = tempfile::tempdir().unwrap(); let root = tmp.path().join("attempt"); std::fs::create_dir_all(&root).unwrap();
+    for name in ["code.md", "cli.txt", "log.txt", "gate.md"] { std::fs::write(tmp.path().join(name), "x").unwrap(); }
+    let opts = ValidateQualityGateOptions { repo_root: Some(tmp.path()), fs: Some(&RealQualityGateFs), current_attempt_dir: Some("attempt"), reviewer_surface: None };
+    assert!(validate_quality_gate(&valid_gate_fixture(), Some(&opts)).is_err());
+}
