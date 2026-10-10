@@ -33,6 +33,7 @@ fn split_complete_lines(content: &str) -> (Vec<String>, bool) {
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)] // Keep the normalized legacy source inline to match the ported storage backing.
 enum JsonlBacking {
     V4,
     V3(LegacyV3Source),
@@ -278,7 +279,7 @@ impl JsonlStorage {
         let adjustment = crate::harness::session::commit::insert_usage(NewUsageRow {
             id: maho_ai::utils::uuid::uuidv7(Some(timestamp as f64))
                 .map_err(|error| SessionError::new(SessionErrorKind::Io, error.to_string()))?,
-            usage: source.imported_usage.clone(),
+            usage: source.imported_usage,
             entry_id: None,
             adjustment: true,
             details: Some(serde_json::json!({"source": "v3-import"})),

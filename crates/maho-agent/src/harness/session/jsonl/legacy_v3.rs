@@ -33,6 +33,8 @@ use super::types::{
     JsonlSessionMetadata, JsonlStorageHeader, JSONL_FORMAT_VERSION, JSONL_STORAGE_VERSION,
 };
 
+type EntrySelection = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 enum LegacyV3Entry {
@@ -220,7 +222,11 @@ enum LegacyV3IndexKind {
     Message,
     Custom,
     CustomMessage,
-    BranchSummary { from_id: String, from_hook: bool },
+    BranchSummary {
+        #[allow(dead_code)] // Preserved from the pinned legacy branch_summary entry's fromId field.
+        from_id: String,
+        from_hook: bool,
+    },
     Compaction { first_kept_entry_id: String, from_hook: bool },
     Label { target_id: String, label: Option<String> },
     ModelChange { provider: String, model_id: String },
@@ -717,23 +723,21 @@ fn selected_configuration(
         }
         let entry = entries_by_id.get(cid)?;
         match &entry.kind {
-            LegacyV3IndexKind::ModelChange { provider, model_id } => {
-                if remaining.remove("model_change") {
-                    model = Some(LaneModelRef {
-                        provider: provider.clone(),
-                        model_id: model_id.clone(),
-                    });
-                }
+            LegacyV3IndexKind::ModelChange { provider, model_id } if remaining.remove("model_change") => {
+                model = Some(LaneModelRef {
+                    provider: provider.clone(),
+                    model_id: model_id.clone(),
+                });
             }
-            LegacyV3IndexKind::ThinkingLevelChange { thinking_level: tl } => {
-                if remaining.remove("thinking_level_change") {
-                    thinking_level = Some(*tl);
-                }
+            LegacyV3IndexKind::ThinkingLevelChange { thinking_level: tl }
+                if remaining.remove("thinking_level_change") =>
+            {
+                thinking_level = Some(*tl);
             }
-            LegacyV3IndexKind::ActiveToolsChange { active_tool_names: atn } => {
-                if remaining.remove("active_tools_change") {
-                    active_tool_names = Some(atn.clone());
-                }
+            LegacyV3IndexKind::ActiveToolsChange { active_tool_names: atn }
+                if remaining.remove("active_tools_change") =>
+            {
+                active_tool_names = Some(atn.clone());
             }
             _ => {}
         }
@@ -951,15 +955,15 @@ fn normalize_legacy_v3_values(
     let mut labels = HashMap::new();
     for eid in &inventory.entry_order {
         let entry = &entries[eid];
-        if let LegacyV3IndexKind::Label { target_id, label } = &entry.kind {
-            if let Some(mapped_target_id) = resolve_label_target_id(entries, target_id)? {
-                match label {
-                    Some(l) if !l.is_empty() => {
-                        labels.insert(mapped_target_id, l.clone());
-                    }
-                    _ => {
-                        labels.remove(&mapped_target_id);
-                    }
+        if let LegacyV3IndexKind::Label { target_id, label } = &entry.kind
+            && let Some(mapped_target_id) = resolve_label_target_id(entries, target_id)?
+        {
+            match label {
+                Some(l) if !l.is_empty() => {
+                    labels.insert(mapped_target_id, l.clone());
+                }
+                _ => {
+                    labels.remove(&mapped_target_id);
                 }
             }
         }
@@ -1159,14 +1163,14 @@ impl LegacyV3Source {
 
     fn collect_required_tail_message_ids(
         &self,
-        is_entry_selected: Option<&Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+        is_entry_selected: Option<&EntrySelection>,
     ) -> Result<HashSet<String>, SessionError> {
         let mut required_ids = HashSet::new();
         for eid in &self.entry_order {
             let entry = &self.entries[eid];
                 if let LegacyV3IndexKind::Compaction { first_kept_entry_id, .. } = &entry.kind {
                 let mapped_id = entry.mapped_id.as_deref().unwrap_or("");
-                let compaction_is_selected = is_entry_selected.map_or(true, |f| f(mapped_id));
+                let compaction_is_selected = is_entry_selected.is_none_or(|f| f(mapped_id));
                 if !compaction_is_selected {
                     continue;
                 }
@@ -1191,7 +1195,7 @@ impl LegacyV3Source {
     pub async fn writes(
         &self,
         context: Context,
-        is_entry_selected: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+        is_entry_selected: Option<EntrySelection>,
     ) -> Result<Vec<CommittedWrite>, SessionError> {
         let required_tail_ids = self.collect_required_tail_message_ids(is_entry_selected.as_ref())?;
         let mut tail_messages = HashMap::new();
@@ -1232,20 +1236,20 @@ impl LegacyV3Source {
                     return Err(SessionError::new(SessionErrorKind::Io, "Legacy v3 source changed"));
                 }
 
-                if required_tail_ids.contains(raw_entry.id()) {
-                    if let Some(msg) = project_context_message(&raw_entry, &self.entries)? {
-                        tail_messages.insert(raw_entry.id().to_owned(), msg);
-                    }
+                if required_tail_ids.contains(raw_entry.id())
+                    && let Some(msg) = project_context_message(&raw_entry, &self.entries)?
+                {
+                    tail_messages.insert(raw_entry.id().to_owned(), msg);
                 }
 
                 if !indexed.is_retained() || !raw_entry.is_retained() {
                     continue;
                 }
                 let mapped_id = indexed.mapped_id.as_deref().unwrap_or("");
-                if let Some(f) = is_entry_selected.as_ref() {
-                    if !f(mapped_id) {
-                        continue;
-                    }
+                if let Some(f) = is_entry_selected.as_ref()
+                    && !f(mapped_id)
+                {
+                    continue;
                 }
 
                 let mut retained_tail = Vec::new();

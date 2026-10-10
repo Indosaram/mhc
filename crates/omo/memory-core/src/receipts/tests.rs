@@ -368,8 +368,8 @@ fn given_one_run_in_two_generations_when_identities_are_compared_then_generation
 fn given_kill_points_when_the_variable_is_unset_different_or_matching_then_only_a_match_kills_this_process_with_the_platforms_signal(
 ) {
     // given
-    let kills: Arc<std::sync::Mutex<Vec<(u32, Option<String>)>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    type KillRecord = (u32, Option<String>);
+    let kills: Arc<std::sync::Mutex<Vec<KillRecord>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let kills_clone = kills.clone();
     let kill = move |pid: u32, sig: Option<&str>| {
         kills_clone
