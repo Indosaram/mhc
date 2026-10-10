@@ -498,32 +498,26 @@ pub async fn run_jsonl_fork(
             .await;
         }
     }
-    if let JsonlForkInput::LegacyV3 { normalized, .. } = input {
-        if !matches!(fork, ForkOptions::Tree { .. }) {
-            return Err(session_invariant_error("Legacy v3 forks only support tree scope"));
-        }
-        let writes = normalized.writes(context.clone(), None).await?;
-        let mut header = destination_header.clone();
-        header.next_seq = Some(normalized.next_seq);
-        return publish_jsonl(
-            file_system.clone(),
-            destination_path.to_owned(),
-            &header,
-            context,
-            Arc::new(move |append| {
-                let writes = writes.clone();
-                Box::pin(async move {
-                    for write in writes {
-                        append(vec![write]).await?;
-                    }
-                    Ok(())
-                })
-            }),
-        )
-        .await;
-    }
     let (mut index, next_seq) = index_fork_input(input, file_system, context).await?;
-    let plan = select_jsonl_fork_with_index(&mut index, fork)?;
+    let translated_fork = if let JsonlForkInput::LegacyV3 { normalized, .. } = input {
+        match fork {
+            ForkOptions::Branch {
+                id,
+                branch,
+                entry_id: Some(entry_id),
+                position,
+            } => ForkOptions::Branch {
+                id: id.clone(),
+                branch: branch.clone(),
+                entry_id: Some(normalized.translate_fork_entry_id(entry_id)?),
+                position: *position,
+            },
+            _ => fork.clone(),
+        }
+    } else {
+        fork.clone()
+    };
+    let plan = select_jsonl_fork_with_index(&mut index, &translated_fork)?;
     let is_entry_copied = |entry_id: &str| -> bool {
         match plan {
             ForkCurrentStatePlan::Tree => true,
