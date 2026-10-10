@@ -314,8 +314,21 @@ pub fn check_abandoned_runs(reflection_dir: &Path) -> DoctorCheck {
     let mut abandoned: Vec<String> = entries
         .filter_map(Result::ok)
         .filter(|entry| {
-            entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
-                && entry.path().join("abandoned.json").exists()
+            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                return false;
+            }
+            let sentinel = entry.path().join("abandoned.json");
+            if !sentinel.exists() {
+                return false;
+            }
+            let Ok(content) = std::fs::read_to_string(sentinel) else {
+                return true;
+            };
+            serde_json::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|value| value.get("reason").and_then(serde_json::Value::as_str).map(str::to_owned))
+                .as_deref()
+                != Some("launch_interrupted")
         })
         .map(|entry| entry.path().display().to_string())
         .collect();
