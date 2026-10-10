@@ -82,7 +82,7 @@ enum LegacyV3Entry {
         #[serde(default)]
         usage: Option<Usage>,
         #[serde(rename = "fromHook", default)]
-        from_hook: Option<bool>,
+        from_hook: bool,
     },
     #[serde(rename = "compaction")]
     Compaction {
@@ -100,7 +100,7 @@ enum LegacyV3Entry {
         #[serde(default)]
         usage: Option<Usage>,
         #[serde(rename = "fromHook", default)]
-        from_hook: Option<bool>,
+        from_hook: bool,
     },
     #[serde(rename = "model_change")]
     ModelChange {
@@ -220,8 +220,8 @@ enum LegacyV3IndexKind {
     Message,
     Custom,
     CustomMessage,
-    BranchSummary { from_id: String },
-    Compaction { first_kept_entry_id: String },
+    BranchSummary { from_id: String, from_hook: bool },
+    Compaction { first_kept_entry_id: String, from_hook: bool },
     Label { target_id: String, label: Option<String> },
     ModelChange { provider: String, model_id: String },
     ThinkingLevelChange { thinking_level: ThinkingLevel },
@@ -362,15 +362,23 @@ fn parse_legacy_v3_entry(line: &str) -> Result<LegacyV3Entry, SessionError> {
         )
     })?;
     let record_type = val.get("type").and_then(JsonValue::as_str).unwrap_or("");
+    let from_hook = val.get("fromHook").and_then(JsonValue::as_bool).unwrap_or(false);
     match record_type {
         "message" | "custom" | "custom_message" | "branch_summary" | "compaction"
         | "model_change" | "thinking_level_change" | "active_tools_change"
-        | "session_info" | "label" => serde_json::from_value::<LegacyV3Entry>(val).map_err(|e| {
-            SessionError::new(
-                SessionErrorKind::Io,
-                format!("Invalid legacy v3 JSONL record: {e}"),
-            )
-        }),
+        | "session_info" | "label" => {
+            let mut val = val;
+            if matches!(record_type, "branch_summary" | "compaction") {
+                val["fromHook"] = JsonValue::Bool(from_hook);
+            }
+            let entry = serde_json::from_value::<LegacyV3Entry>(val).map_err(|e| {
+                SessionError::new(
+                    SessionErrorKind::Io,
+                    format!("Invalid legacy v3 JSONL record: {e}"),
+                )
+            })?;
+            Ok(entry)
+        }
         other => Err(SessionError::new(
             SessionErrorKind::Io,
             format!("Unsupported legacy v3 record type: {other}"),
@@ -548,34 +556,26 @@ fn normalize_retained_entry(
             ),
             terminate: None,
         },
-        LegacyV3Entry::BranchSummary {
-            summary,
-            from_id,
-            details,
-            usage,
-            from_hook,
-            ..
-        } => EntryKind::BranchSummary {
+        LegacyV3Entry::BranchSummary { summary, from_id, details, usage, .. } => EntryKind::BranchSummary {
             from_id: resolve_branch_summary_from_id(entries, from_id)?,
             summary: summary.clone(),
             details: details.clone(),
             usage: *usage,
-            from_hook: from_hook.unwrap_or(false),
+            from_hook: match &indexed.kind {
+                LegacyV3IndexKind::BranchSummary { from_hook, .. } => *from_hook,
+                _ => false,
+            },
         },
-        LegacyV3Entry::Compaction {
-            summary,
-            tokens_before,
-            details,
-            usage,
-            from_hook,
-            ..
-        } => EntryKind::Compaction {
+        LegacyV3Entry::Compaction { summary, tokens_before, details, usage, .. } => EntryKind::Compaction {
             summary: summary.clone(),
             retained_tail,
             tokens_before: *tokens_before,
             details: details.clone(),
             usage: *usage,
-            from_hook: from_hook.unwrap_or(false),
+            from_hook: match &indexed.kind {
+                LegacyV3IndexKind::Compaction { from_hook, .. } => *from_hook,
+                _ => false,
+            },
         },
         LegacyV3Entry::Custom {
             custom_type,
@@ -724,11 +724,13 @@ fn index_legacy_v3_entry(
     })?;
 
     let kind = match entry {
-        LegacyV3Entry::BranchSummary { from_id, .. } => LegacyV3IndexKind::BranchSummary {
+        LegacyV3Entry::BranchSummary { from_id, from_hook, .. } => LegacyV3IndexKind::BranchSummary {
             from_id: from_id.clone(),
+            from_hook: *from_hook,
         },
-        LegacyV3Entry::Compaction { first_kept_entry_id, .. } => LegacyV3IndexKind::Compaction {
+        LegacyV3Entry::Compaction { first_kept_entry_id, from_hook, .. } => LegacyV3IndexKind::Compaction {
             first_kept_entry_id: first_kept_entry_id.clone(),
+            from_hook: *from_hook,
         },
         LegacyV3Entry::Message { .. } => LegacyV3IndexKind::Message,
         LegacyV3Entry::Custom { .. } => LegacyV3IndexKind::Custom,
@@ -1055,7 +1057,7 @@ impl LegacyV3Source {
         let mut required_ids = HashSet::new();
         for eid in &self.entry_order {
             let entry = &self.entries[eid];
-            if let LegacyV3IndexKind::Compaction { first_kept_entry_id } = &entry.kind {
+                if let LegacyV3IndexKind::Compaction { first_kept_entry_id, .. } = &entry.kind {
                 let mapped_id = entry.mapped_id.as_deref().unwrap_or("");
                 let compaction_is_selected = is_entry_selected.map_or(true, |f| f(mapped_id));
                 if !compaction_is_selected {
@@ -1140,7 +1142,7 @@ impl LegacyV3Source {
                 }
 
                 let mut retained_tail = Vec::new();
-                if let LegacyV3IndexKind::Compaction { first_kept_entry_id } = &indexed.kind {
+                if let LegacyV3IndexKind::Compaction { first_kept_entry_id, .. } = &indexed.kind {
                     let ancestors = retained_tail_structure(
                         &indexed.id,
                         first_kept_entry_id,
