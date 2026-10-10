@@ -110,6 +110,9 @@ pub fn write_plan(
     mut plan: UlwLoopPlan,
     scope: Option<&UlwLoopScope>,
 ) -> Result<(), UlwLoopError> {
+    if plan.revision.is_none() {
+        plan.revision = reconcile_plan(ulw_loop_dir(&repo_root, scope)).and_then(|current| current.revision);
+    }
     let mut entries = Vec::new();
     commit(
         repo_root,

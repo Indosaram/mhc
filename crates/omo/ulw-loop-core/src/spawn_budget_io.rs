@@ -7,8 +7,24 @@ use std::path::Path;
 use serde_json::Value;
 
 pub fn read_admission_breaker(session_id: &str) -> Option<String> {
-    let data_dir = env::var("PLUGIN_DATA").ok()?;
-    let path = Path::new(&data_dir).join("spawn-breaker").join(format!("{session_id}.json"));
+    read_admission_breaker_with_env(session_id, None, |key| env::var(key).ok())
+}
+
+pub fn read_admission_breaker_with_env(
+    session_id: &str,
+    repo_root: Option<&Path>,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let data_dir = get_env("PLUGIN_DATA")?;
+    let data_dir = Path::new(&data_dir);
+    let data_dir = if data_dir.is_absolute() {
+        data_dir.to_path_buf()
+    } else if let Some(root) = repo_root {
+        root.join(data_dir)
+    } else {
+        data_dir.to_path_buf()
+    };
+    let path = data_dir.join("spawn-breaker").join(format!("{session_id}.json"));
     let content = fs::read_to_string(path).ok()?;
     let parsed: Value = serde_json::from_str(&content).ok()?;
     let reason = parsed.get("reason").and_then(|v| v.as_str());

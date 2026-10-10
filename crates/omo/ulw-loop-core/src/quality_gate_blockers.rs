@@ -56,8 +56,8 @@ pub fn classify_external_authorization_blocker(evidence: &str) -> Option<String>
             || w.starts_with("omit")
             || *w == "not set"
             || *w == "not available"
-        || *w == "package"
-        || *w == "packages"
+            || *w == "package"
+            || *w == "packages"
     }) || normalized.contains("not set")
         || normalized.contains("not available")
         || normalized.contains("read package")
@@ -71,6 +71,7 @@ pub fn classify_external_authorization_blocker(evidence: &str) -> Option<String>
         *w == "ghcr"
             || w.starts_with("ghcr")
             || w.starts_with("ghcr.")
+            || w.starts_with("ghcr/")
             || *w == "imagepullsecret"
             || *w == "anonymous"
     }) || normalized.contains("github container registry")
