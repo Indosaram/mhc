@@ -1,7 +1,7 @@
 use crate::{client::{HerdrClient,HerdrMethod},state::{HerdrState,HerdrStateEvent,reduce_herdr_state,select_herdr_report,is_herdr_blocked_event}};
 use maho_ext_api::{Extension,ExtensionApi,ExtensionContext,ExtensionEvent,EventKind,EventResult,ExtensionMode,SessionReason,SessionManager,BusSubscription};
 use serde_json::{Value,json};
-use std::{sync::{Arc,Mutex},path::Path,io::Read};
+use std::{sync::{Arc,Mutex},path::Path,io::Read,future::Future,pin::Pin};
 use tokio::task::JoinHandle;
 
 pub type HerdrEnv = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -48,16 +48,17 @@ impl ReporterState{
     fn owns(&self,ctx:&ExtensionContext)->bool{!self.stopped&&self.bound.as_ref().is_some_and(|bound|Arc::ptr_eq(bound,&ctx.session_manager))}
     fn session_ref(&self)->serde_json::Map<String,Value>{let Some(bound)=&self.bound else{return Default::default()};match bound.session_file(){Some(path)=>json!({"agent_session_path":path.to_string_lossy()}).as_object().expect("object").clone(),None=>json!({"agent_session_id":bound.session_id()}).as_object().expect("object").clone()}}
 }
-fn enqueue(state:&mut ReporterState,method:HerdrMethod,params:serde_json::Map<String,Value>)->Option<JoinHandle<std::io::Result<()>>>{
+type Delivery=Pin<Box<dyn Future<Output=std::io::Result<()>>+Send>>;
+fn enqueue(state:&mut ReporterState,method:HerdrMethod,params:serde_json::Map<String,Value>)->Option<Delivery>{
     let work=state.client.as_ref()?.send(method,params);
     let debug=state.deps.debug.clone();
-    Some(tokio::spawn(async move{
+    Some(Box::pin(async move{
         let result=work.await;
         if let Err(error)=&result{debug(&error.to_string());}
         result
     }))
 }
-fn publish_begin(state:&mut ReporterState)->Option<(JoinHandle<std::io::Result<()>>,String)>{
+fn publish_begin(state:&mut ReporterState)->Option<(Delivery,String)>{
     if state.stopped||state.bound.is_none(){return None;}
     let report=select_herdr_report(&state.state);
     let key=serde_json::to_string(&report).expect("report serializes");
@@ -69,8 +70,8 @@ fn publish_begin(state:&mut ReporterState)->Option<(JoinHandle<std::io::Result<(
     if let Some(message)=report.message{params.insert("message".into(),message.into());}
     enqueue(state,HerdrMethod::ReportAgent,params).map(|work|(work,key))
 }
-async fn publish_finish(state:Arc<Mutex<ReporterState>>,work:JoinHandle<std::io::Result<()>>,key:String){
-    if !matches!(work.await,Ok(Ok(()))){
+async fn publish_finish(state:Arc<Mutex<ReporterState>>,work:Delivery,key:String){
+    if work.await.is_err(){
         let mut guard=state.lock().expect("reporter lock");
         if guard.last_report.as_ref()==Some(&key){guard.last_report=None;}
     }
@@ -82,7 +83,7 @@ async fn publish(state:Arc<Mutex<ReporterState>>){
 async fn report_title(state:Arc<Mutex<ReporterState>>,ctx:&ExtensionContext){
     let title=ctx.session_manager.get_session_name().unwrap_or_default();
     let work={let mut guard=state.lock().expect("reporter lock");if guard.title.as_ref()==Some(&title){return;}guard.title=Some(title.clone());enqueue(&mut guard,HerdrMethod::ReportMetadata,json!({"title":title,"display_agent":title}).as_object().expect("object").clone())};
-    if let Some(work)=work && !work.await.is_ok_and(|result|result.is_ok()){let mut guard=state.lock().expect("reporter lock");if guard.title.as_ref()==Some(&title){guard.title=None;}}
+    if let Some(work)=work && work.await.is_err(){let mut guard=state.lock().expect("reporter lock");if guard.title.as_ref()==Some(&title){guard.title=None;}}
 }
 pub struct Herdr;
 impl Extension for Herdr{ fn register(&self,api:&mut ExtensionApi){ HerdrExtension::default().register(api); } }
@@ -105,7 +106,8 @@ impl Extension for HerdrExtension{
                     guard.bound=Some(ctx.session_manager.clone());guard.client=Some(Arc::new(HerdrClient::new(socket,pane,deps.now.clone())));
                     guard.state.turn_active = !ctx.is_idle();guard.state.child_count=count_running_child_tasks(&ctx.cwd,ctx.session_manager.session_id());
                     for channel in ["herdr:blocked","terminal_monitor_state"]{
-                        let callback=state.clone();guard.subscriptions.push(bus.on(channel,Arc::new(move|value|{
+                        let callback=state.clone();
+                        guard.subscriptions.push(bus.on(channel,Arc::new(move|value|{
                             let mut guard=callback.lock().expect("reporter lock");if guard.stopped{return;}
                             let event=if channel=="herdr:blocked"{
                                 if !is_herdr_blocked_event(value){return;}
@@ -116,7 +118,10 @@ impl Extension for HerdrExtension{
                             };
                             guard.state=reduce_herdr_state(guard.state.clone(),event);
                             guard.pending.retain(|handle|!handle.is_finished());
-                            if let Some((work,key))=publish_begin(&mut guard){let state=callback.clone();guard.pending.push(tokio::spawn(publish_finish(state,work,key)));}
+                            if let Some((work,key))=publish_begin(&mut guard){
+                                let state=callback.clone();
+                                guard.pending.push(tokio::spawn(publish_finish(state,work,key)));
+                            }
                         })));
                     }
                 }
