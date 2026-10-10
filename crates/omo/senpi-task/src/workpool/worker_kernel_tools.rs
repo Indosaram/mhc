@@ -10,13 +10,13 @@ fn denied_code(code: &str) -> WorkpoolErrorCode {
 }
 
 pub fn resolve_pool_kernel_tools(
-    names: &[String], capability: &dyn KernelToolCapability, _spec: &WorkpoolSpec, existing: &[String], allow: Option<&[String]>, deny: Option<&[String]>,
+    names: &[String], capability: &dyn KernelToolCapability, spec: &WorkpoolSpec, existing: &[String], allow: Option<&[String]>, deny: Option<&[String]>,
 ) -> Result<Option<KernelToolGrant>, WorkpoolError> {
     if names.is_empty() { return Ok(None); }
     let mut granted = Vec::with_capacity(names.len());
     for name in names {
-        if existing.iter().any(|other| other == name) { return Err(WorkpoolError::new(denied_code("tools_unavailable"), format!("Kernel tool unavailable: {name}"))); }
-        if deny.is_some_and(|items| items.iter().any(|item| item == name)) || allow.is_some_and(|items| !items.iter().any(|item| item == name)) { return Err(WorkpoolError::new(denied_code("policy_denied"), format!("Kernel tool denied: {name}"))); }
+        if existing.iter().any(|other| other == name) { return Err(WorkpoolError::new(WorkpoolErrorCode::ToolNameCollision, format!("Kernel tool unavailable: {name}"))); }
+        if deny.is_some_and(|items| items.iter().any(|item| item == name)) || spec.plan.tool_denylist.as_ref().is_some_and(|items| items.iter().any(|item| item == name)) || allow.is_some_and(|items| !items.iter().any(|item| item == name)) { return Err(WorkpoolError::new(denied_code("policy_denied"), format!("Kernel tool denied: {name}"))); }
         if !capability.available(name) { return Err(WorkpoolError::new(denied_code("kernel_tool_missing"), format!("Kernel tool is unavailable: {name}"))); }
         granted.push(name.clone());
     }
