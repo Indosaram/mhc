@@ -661,10 +661,10 @@ async fn websocket_events(
         .into_client_request()
         .map_err(|error| CodexError::Other(error.to_string()))?;
     for (name, value) in headers {
-        if let Ok(value) = value.to_str() {
-            if let Ok(value) = http::HeaderValue::from_str(value) {
-                request.headers_mut().insert(name.clone(), value);
-            }
+        if let Ok(value) = value.to_str()
+            && let Ok(value) = http::HeaderValue::from_str(value)
+        {
+            request.headers_mut().insert(name.clone(), value);
         }
     }
     let connect = connect_async(request);

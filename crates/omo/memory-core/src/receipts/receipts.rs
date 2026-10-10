@@ -230,10 +230,10 @@ pub fn read_memory_receipts(
         })
         .collect();
     matching.reverse();
-    if let Some(limit) = options.limit {
-        if matching.len() > limit {
-            matching.truncate(limit);
-        }
+    if let Some(limit) = options.limit
+        && matching.len() > limit
+    {
+        matching.truncate(limit);
     }
     Ok(MemoryReceiptsRead {
         receipts: matching,
