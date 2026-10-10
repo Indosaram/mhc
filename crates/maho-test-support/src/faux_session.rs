@@ -135,7 +135,7 @@ impl FauxSession {
             credentials: Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([
                 ("faux".to_owned(), serde_json::json!({"type": "api_key", "key": "faux-test"})),
             ].into_iter().collect()))),
-            providers: Some(vec![provider.provider.clone()]), ..Default::default()
+            providers: Some(vec![provider.provider.clone()]),
         });
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {
