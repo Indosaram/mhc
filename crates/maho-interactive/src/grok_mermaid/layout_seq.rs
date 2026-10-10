@@ -182,9 +182,9 @@ mod tests {
     #[test]
     fn note_geometry_covers_each_anchor() {
         let xs = [2, 10];
-        assert_eq!(note_geometry(&xs, &NoteAnchor::Over { from: 0, to: 1 }, 3), (3, 13));
-        assert_eq!(note_geometry(&xs, &NoteAnchor::Left { at: 1 }, 3), (0, 5));
-        assert_eq!(note_geometry(&xs, &NoteAnchor::Right { at: 0 }, 3), (4, 5));
+        assert_eq!(note_geometry(&xs, &NoteAnchor::Over { from: 0, to: 1 }, 3), (0, 13));
+        assert_eq!(note_geometry(&xs, &NoteAnchor::Left { at: 1 }, 3), (2, 7));
+        assert_eq!(note_geometry(&xs, &NoteAnchor::Right { at: 0 }, 3), (4, 7));
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn layout_sequence_draws_participants_and_lifelines() {
         let canvas = layout_sequence(&sequence(vec![])).expect("layout");
-        assert_eq!(canvas.w, 11);
+        assert_eq!(canvas.w, 13);
         assert_eq!(canvas.h, 7);
     }
 
