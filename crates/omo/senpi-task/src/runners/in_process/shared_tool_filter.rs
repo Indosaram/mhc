@@ -17,7 +17,7 @@ pub trait ChildTool: Send + Sync {
 pub type ChildToolRef = Arc<dyn ChildTool>;
 
 pub fn is_task_or_team_family_tool(name: &str) -> bool {
-    name == "dag" || name == "task" || name.starts_with("task_") || name.starts_with("team_")
+    name == "dag" || name == "task" || name.starts_with("task_") || name.starts_with("team_") || name == "workpool"
 }
 
 pub fn filter_shared_parent_tools(
