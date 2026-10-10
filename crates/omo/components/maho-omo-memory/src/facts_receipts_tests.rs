@@ -138,7 +138,7 @@ fn given_a_failure_that_parks_its_endpoint_when_recorded_then_failed_and_parked_
             run_id: "facts-abc-1",
             batch_id: &batch_id,
             targets: &[target.clone()],
-            reason: memory_core::facts::FactsFailureReason::Other,
+            reason: memory_core::facts::FactsFailureReason::PayloadEntryOversize,
             detail: "refused",
             outcome: None,
         });

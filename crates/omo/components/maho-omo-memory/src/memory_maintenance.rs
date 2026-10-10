@@ -56,14 +56,14 @@ impl MemoryMaintenance {
 
     pub fn schedule(&self, context: MemoryIdentityContext) {
         if !self.scheduled.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone()) { return; }
+        let should_sweep = self.swept.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone());
+        if should_sweep { sweep_journals(&context, &self.options); }
         let options = self.options.clone();
-        let swept = self.swept.clone();
         let scheduled = self.scheduled.clone();
         let tasks = self.tasks.clone();
         let identity = context.identity.clone();
         let task_identity = identity.clone();
         let handle = tokio::spawn(async move {
-            if swept.lock().unwrap_or_else(|e| e.into_inner()).insert(task_identity.clone()) { sweep_journals(&context, &options); }
             tokio::time::sleep(options.delay).await;
             if let Err(error) = maintain(&context, &options) {
                 if let Some(logger) = &options.logger { logger.warn(&format!("omo-senpi memory repo maintenance failed: {error}")); }
