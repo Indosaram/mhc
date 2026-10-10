@@ -206,7 +206,7 @@ async fn compaction_rejects_unloaded_threads_and_defers_native_work_until_acknow
     assert_eq!(accepted,json!({"id":3,"result":{}}));
     assert!(runtime.turn_log.lock().await.read_turns(&id).is_empty());
     assert!(receive.try_recv().is_err());
-    connection.finish_response();
+    connection.finish_response().await;
     let started = tokio::time::timeout(std::time::Duration::from_secs(3),receive.recv()).await.unwrap().unwrap();
     assert_eq!(started["method"],"item/started");
     assert_eq!(started["params"]["item"]["type"],"contextCompaction");
