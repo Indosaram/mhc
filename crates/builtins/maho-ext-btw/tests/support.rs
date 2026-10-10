@@ -117,7 +117,8 @@ impl BtwUi {
         self.inputs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
     pub fn feed_input(&self, data: &str) {
-        for handler in self.inputs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+        let handlers = self.inputs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for handler in handlers {
             handler(data);
         }
     }
