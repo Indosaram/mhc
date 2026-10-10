@@ -38,7 +38,8 @@ pub enum JsonlForkInput {
         metadata: JsonlForkSourceMetadata,
     },
     LegacyV3 {
-        source: LegacyV3Source,
+        metadata: JsonlForkSourceMetadata,
+        normalized: LegacyV3Source,
     },
 }
 
@@ -46,7 +47,7 @@ impl JsonlForkInput {
     fn metadata(&self) -> &JsonlForkSourceMetadata {
         match self {
             JsonlForkInput::Open { metadata, .. } | JsonlForkInput::Closed { metadata } => metadata,
-            JsonlForkInput::LegacyV3 { .. } => unreachable!("legacy source has no v4 metadata"),
+            JsonlForkInput::LegacyV3 { metadata, .. } => metadata,
         }
     }
 }
@@ -382,14 +383,14 @@ pub async fn index_fork_input(
     context: &Context,
 ) -> Result<(JsonlForkIndex, i64), SessionError> {
     let mut index = JsonlForkIndex::new();
-    if let JsonlForkInput::LegacyV3 { source } = input {
-        for entry in source.entry_structures() {
+    if let JsonlForkInput::LegacyV3 { normalized, .. } = input {
+        for entry in normalized.entry_structures() {
             index.apply_entry(&entry.id, entry.parent_id);
         }
-        for value in &source.values {
+        for value in &normalized.values {
             index.apply_writes(&[CommittedWrite::Value(CommittedValueWrite::Set(value.clone()))]);
         }
-        return Ok((index, source.next_seq));
+        return Ok((index, normalized.next_seq));
     }
     let metadata = input.metadata();
     let reader = file_value(
@@ -430,8 +431,8 @@ async fn stream_fork_writes(
     stop_before_seq: i64,
     context: &Context,
 ) -> Result<Vec<CommittedWrite>, SessionError> {
-    if let JsonlForkInput::LegacyV3 { source } = input {
-        return source.writes(context.clone(), None).await;
+    if let JsonlForkInput::LegacyV3 { normalized, .. } = input {
+        return normalized.writes(context.clone(), None).await;
     }
     let metadata = input.metadata();
     let reader = file_value(
@@ -458,17 +459,59 @@ pub async fn run_jsonl_fork(
     fork: &ForkOptions,
     context: &Context,
 ) -> Result<(), SessionError> {
-    let (mut index, next_seq) = index_fork_input(input, file_system, context).await?;
-    let translated_fork = if let JsonlForkInput::LegacyV3 { source } = input {
-        match fork {
-            ForkOptions::Branch { id, branch, entry_id: Some(entry_id), position } => {
-                ForkOptions::Branch {
-                    id: id.clone(),
-                    branch: branch.clone(),
-                    entry_id: Some(source.translate_fork_entry_id(entry_id)?),
-                    position: *position,
-                }
+    if matches!(input, JsonlForkInput::Closed { .. }) {
+        let metadata = input.metadata();
+        let reader = file_value(
+            file_system.open_text_line_reader(&metadata.path, context).await,
+            &format!("Failed to open JSONL fork source {}", metadata.path),
+        )?;
+        let parsed = read_jsonl_header(reader.as_ref(), &metadata.path, context).await;
+        reader.close(context).await;
+        if matches!(parsed?, super::codec::JsonlParsedSessionHeader::V3Legacy(_)) {
+            let normalized = super::legacy_v3::LegacyV3Source::read(
+                file_system.clone(),
+                &metadata.path,
+                context,
+            )
+            .await?;
+            if !matches!(fork, ForkOptions::Tree { .. }) {
+                return Err(session_invariant_error("Legacy v3 forks only support tree scope"));
             }
+            let writes = normalized.writes(context.clone(), None).await?;
+            let mut header = destination_header.clone();
+            header.next_seq = Some(normalized.next_seq);
+            return publish_jsonl(
+                file_system.clone(),
+                destination_path.to_owned(),
+                &header,
+                context,
+                Arc::new(move |append| {
+                    let writes = writes.clone();
+                    Box::pin(async move {
+                        for write in writes {
+                            append(vec![write]).await?;
+                        }
+                        Ok(())
+                    })
+                }),
+            )
+            .await;
+        }
+    }
+    let (mut index, next_seq) = index_fork_input(input, file_system, context).await?;
+    let translated_fork = if let JsonlForkInput::LegacyV3 { normalized, .. } = input {
+        match fork {
+            ForkOptions::Branch {
+                id,
+                branch,
+                entry_id: Some(entry_id),
+                position,
+            } => ForkOptions::Branch {
+                id: id.clone(),
+                branch: branch.clone(),
+                entry_id: Some(normalized.translate_fork_entry_id(entry_id)?),
+                position: *position,
+            },
             _ => fork.clone(),
         }
     } else {
