@@ -261,6 +261,10 @@ pub(crate) mod test_barrier {
         state().cv.notify_all();
     }
 
+    pub(crate) fn has_outstanding(ptr: usize) -> bool {
+        lock().get(&ptr).is_some_and(|entry| entry.consumed < entry.issued)
+    }
+
     /// Drops every entry; called between chaos iterations so a reused allocation cannot inherit a
     /// previous iteration's accounting.
     pub(crate) fn clear() {
