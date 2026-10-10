@@ -229,6 +229,13 @@ fn parse_surface_evidence(
     let mut out = Vec::new();
     for (index, item) in arr.iter().enumerate() {
         let prefix = format!("manualQa.surfaceEvidence[{index}]");
+        if !item.is_object() {
+            invalid(
+                format!("Final quality gate requires object at {prefix}."),
+                &prefix,
+            );
+            continue;
+        }
         let Some(row) = section(Some(item), &prefix) else { continue };
         if is_poisoned(&prefix) {
             continue;
@@ -287,6 +294,13 @@ fn parse_adversarial_cases(
     let mut out = Vec::new();
     for (index, item) in arr.iter().enumerate() {
         let prefix = format!("manualQa.adversarialCases[{index}]");
+        if !item.is_object() {
+            invalid(
+                format!("Final quality gate requires object at {prefix}."),
+                &prefix,
+            );
+            continue;
+        }
         let Some(row) = section(Some(item), &prefix) else { continue };
         if is_poisoned(&prefix) {
             continue;
