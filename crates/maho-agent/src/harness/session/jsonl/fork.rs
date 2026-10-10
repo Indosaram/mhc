@@ -29,6 +29,7 @@ pub struct JsonlForkSourceMetadata {
 
 /// Prepared fork input: format-4 file metadata or an already-normalized legacy source.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)] // Keep the normalized legacy source inline to match the ported fork input API.
 pub enum JsonlForkInput {
     Open {
         metadata: JsonlForkSourceMetadata,
