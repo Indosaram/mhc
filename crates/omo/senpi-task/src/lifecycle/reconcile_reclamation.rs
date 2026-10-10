@@ -224,6 +224,16 @@ pub fn revive_claimed(
             "spawn spec unavailable",
         ));
     }
+    // Everything above can wait on the old child's termination: a stop or another owner that landed
+    // meanwhile ends this revival here, so two owners never both respawn the same record.
+    if !is_same_claim(context, &fresh)? {
+        return Ok(rollback_or_deferred(
+            context,
+            &fresh.task_id,
+            rollback,
+            "foreign_live_owner",
+        ));
+    }
     let ports = context
         .reattach_ports
         .clone()
@@ -378,7 +388,8 @@ fn mark_lost(
 
 pub fn is_orphan(context: &LifecycleContext, record: &TaskRecord) -> bool {
     if record.host_pid == Some(context.host_pid) {
-        return !has_live_handle(context, &record.task_id);
+        return !has_live_handle(context, &record.task_id)
+            && !context.registry.is_launching(&record.task_id);
     }
     record
         .host_pid
@@ -392,6 +403,16 @@ pub(crate) fn has_live_handle(context: &LifecycleContext, task_id: &str) -> bool
             .entries()
             .iter()
             .any(|handle| handle.task_id() == task_id)
+}
+
+fn is_same_claim(context: &LifecycleContext, claimed: &TaskRecord) -> Result<bool, LifecycleError> {
+    let Some(now) = context.store.load(&claimed.task_id)? else {
+        return Ok(false);
+    };
+    Ok(is_claim_held(context, &now, &claimed.parent_session_id)
+        && now.killed != Some(true)
+        && now.status == claimed.status
+        && now.notification.run_epoch == claimed.notification.run_epoch)
 }
 
 pub fn is_claim_held(

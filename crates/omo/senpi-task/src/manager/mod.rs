@@ -8,6 +8,7 @@ pub mod execution_mode;
 pub mod helpers;
 pub mod interrupted_turn;
 pub mod isolation_wiring;
+pub mod launch_fence;
 #[expect(
     clippy::module_inception,
     reason = "mirrors the TS `manager/manager.ts` module path"

@@ -99,6 +99,10 @@ impl ResidencyRegistry for EngineRegistry {
     fn has_pending_sends(&self, _task_id: &str) -> bool {
         false
     }
+
+    fn is_launching(&self, task_id: &str) -> bool {
+        self.manager().is_launching(task_id)
+    }
 }
 
 struct EngineDestruction(Arc<Mutex<Option<Arc<TaskLifecycle>>>>);
