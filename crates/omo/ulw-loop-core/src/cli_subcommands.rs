@@ -115,6 +115,13 @@ pub fn create_goals(
 }
 
 pub fn status(repo_root: &Path, json: bool, scope: Option<&UlwLoopScope>) -> Result<i32, UlwLoopError> {
+    let session_id = scope.and_then(|s| s.session_id.as_deref()).ok_or_else(|| {
+        UlwLoopError::new("Missing --session-id.", "ULW_LOOP_SESSION_ID_REQUIRED")
+    })?;
+    let plan_path = repo_root.join(".omo/ulw-loop").join(session_id).join("goals.json");
+    if !plan_path.is_file() {
+        return Err(UlwLoopError::new("No ulw-loop plan exists for this session.", "ULW_LOOP_PLAN_MISSING"));
+    }
     let toolkit = toolkit_for(repo_root, scope)?;
     let resp = toolkit.status();
     match resp {
