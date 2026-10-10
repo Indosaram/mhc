@@ -47,7 +47,7 @@ impl Harness {
     fn recorded_before_response(&self) -> usize { self.notifications.len() }
     async fn start_thread(&mut self) -> String {
         let response = self.call(json!({"id":2,"method":"thread/start","params":{}})).await;
-        assert_eq!(self.recorded_before_response(),0,"response must precede thread/started");
+        assert_eq!(self.recorded_before_response(),0,"response must precede thread/started; queued: {:#?}",self.notifications);
         assert_eq!(self.notification().await["method"],"thread/started");
         response["result"]["thread"]["id"].as_str().expect("thread id present").to_owned()
     }
@@ -62,9 +62,11 @@ impl Harness {
 async fn harness() -> Harness {
     let directory = tempfile::tempdir().expect("temp dir");
     let runtime = AppServerRuntime::new(directory.path().join("agent").display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().join("sessions").display().to_string()),Some(factory())).await;
-    let (send,receive) = tokio::sync::mpsc::unbounded_channel();
+    let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
     runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).expect("connection stays open");Box::pin(async {Ok(())})}));
     runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.expect("initialize succeeds");
+    let initialized = tokio::time::timeout(std::time::Duration::from_secs(5), receive.recv()).await.expect("initialize response within deadline").expect("connection stays open");
+    assert_eq!(initialized["id"],1);
     Harness { runtime, receive, notifications:VecDeque::new(), _directory:directory }
 }
 
@@ -98,14 +100,25 @@ async fn goal_set_updates_status_and_budget_and_rejects_unknown_thread_without_s
     let paused = harness.call_notifying(json!({"id":4,"method":"thread/goal/set","params":{"threadId":thread,"status":"paused"}}),"thread/goal/updated").await.0;
     assert_eq!(paused["result"]["goal"]["status"],"paused");
     assert_eq!(paused["result"]["goal"]["tokenBudget"],json!(5000.0));
-    assert_eq!(harness.call(json!({"id":5,"method":"thread/goal/set","params":{"threadId":"missing","objective":"Nope"}})).await["error"]["code"],-32600);
-    assert_eq!(harness.call(json!({"id":6,"method":"thread/goal/set","params":{"threadId":thread,"objective":"Fresh"}})).await["error"]["code"],-32600);
-    assert_eq!(harness.call(json!({"id":7,"method":"thread/goal/set","params":{"threadId":thread,"status":"bogus"}})).await["error"]["code"],-32602);
-    assert_eq!(harness.call(json!({"id":8,"method":"thread/goal/set","params":{"threadId":thread,"status":"blocked"}})).await["error"]["code"],-32600);
+    let unknown_thread = harness.call(json!({"id":5,"method":"thread/goal/set","params":{"threadId":"missing","objective":"Nope"}})).await;
+    assert_eq!(unknown_thread.get("error").and_then(|error|error.get("code")).and_then(Value::as_i64),Some(-32600),"actual response {unknown_thread:?}");
+    let untouched = harness.call(json!({"id":6,"method":"thread/goal/get","params":{"threadId":thread}})).await;
+    assert_eq!(untouched["result"]["goal"]["status"],"paused","unknown-thread rejection must not change the goal");
+    assert_eq!(untouched["result"]["goal"]["objective"],"Tracked");
+    assert_eq!(untouched["result"]["goal"]["tokenBudget"],json!(5000.0));
+    let replaced = harness.call(json!({"id":7,"method":"thread/goal/set","params":{"threadId":thread,"objective":"Fresh"}})).await;
+    assert_eq!(replaced["result"]["goal"]["objective"],"Fresh");
+    assert_eq!(replaced["result"]["goal"]["status"],"active","a changed objective reactivates the goal");
+    assert_eq!(replaced["result"]["goal"]["tokensUsed"],json!(0.0));
+    assert_eq!(replaced["result"]["goal"]["tokenBudget"],json!(5000.0));
+    let bogus = harness.call(json!({"id":8,"method":"thread/goal/set","params":{"threadId":thread,"status":"bogus"}})).await;
+    assert_eq!(bogus["error"]["code"],-32602,"id8 actual {bogus:?}");
+    let blocked = harness.call(json!({"id":9,"method":"thread/goal/set","params":{"threadId":thread,"status":"blocked"}})).await;
+    assert_eq!(blocked["error"]["code"],-32600,"id9 actual {blocked:?}");
     assert_eq!(harness.recorded_before_response(),0);
-    let unchanged = harness.call(json!({"id":9,"method":"thread/goal/get","params":{"threadId":thread}})).await;
-    assert_eq!(unchanged["result"]["goal"]["status"],"paused");
-    assert_eq!(unchanged["result"]["goal"]["objective"],"Tracked");
+    let unchanged = harness.call(json!({"id":10,"method":"thread/goal/get","params":{"threadId":thread}})).await;
+    assert_eq!(unchanged["result"]["goal"]["status"],"active","a rejected status must not change the goal");
+    assert_eq!(unchanged["result"]["goal"]["objective"],"Fresh");
     harness.runtime.dispose().await;
 }
 
