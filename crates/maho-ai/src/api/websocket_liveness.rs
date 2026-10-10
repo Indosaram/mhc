@@ -69,6 +69,7 @@ pub fn start_websocket_liveness(
         return WebSocketLivenessMonitor { activity, stopped };
     }
     let monitor_stopped = stopped.clone();
+    let initial_deadline = tokio::time::Instant::now() + Duration::from_millis(policy.ping_interval_ms);
 
     let silent_since = Arc::new(Mutex::new(tokio::time::Instant::now()));
     let recorded_since = silent_since.clone();
@@ -76,7 +77,7 @@ pub fn start_websocket_liveness(
     tokio::spawn(async move {
         let stopped = watch;
         let mut unanswered_pings: u32 = 0;
-        let mut deadline = tokio::time::Instant::now() + Duration::from_millis(policy.ping_interval_ms);
+        let mut deadline = initial_deadline;
         loop {
             if stopped.load(Ordering::SeqCst) {
                 return;
@@ -86,6 +87,7 @@ pub fn start_websocket_liveness(
 
             let mut saw_activity = false;
             tokio::select! {
+                biased;
                 () = &mut timer => {}
                 event = receiver.recv() => {
                     if event.is_none() {
@@ -93,6 +95,15 @@ pub fn start_websocket_liveness(
                     }
                     saw_activity = true;
                 }
+            }
+
+            if !saw_activity {
+                saw_activity = receiver.try_recv().is_ok();
+            }
+
+            let activity_after_deadline = saw_activity && tokio::time::Instant::now() >= deadline;
+            if activity_after_deadline {
+                saw_activity = false;
             }
 
             if stopped.load(Ordering::SeqCst) {
@@ -128,6 +139,13 @@ pub fn start_websocket_liveness(
                 monitor_stopped.store(true, Ordering::SeqCst);
                 on_dead(WebSocketLivenessError { silent_ms, unanswered_pings });
                 return;
+            }
+            if activity_after_deadline {
+                unanswered_pings = 0;
+                let now = tokio::time::Instant::now();
+                *recorded_since.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+                deadline = now + Duration::from_millis(policy.ping_interval_ms);
+                continue;
             }
             deadline += Duration::from_millis(policy.pong_timeout_ms);
         }
@@ -198,16 +216,8 @@ mod tests {
             WebSocketLivenessPolicy { ping_interval_ms: 30, pong_timeout_ms: 10, max_unanswered_pings: 2 },
         );
 
-        let mut error = None;
-        for _ in 0..32 {
-            tokio::time::advance(Duration::from_millis(10)).await;
-            tokio::task::yield_now().await;
-            if let Ok(dead) = rx.try_recv() {
-                error = Some(dead);
-                break;
-            }
-        }
-        let error = error.expect("the monitor declares the connection dead");
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let error = rx.recv().await.expect("the monitor declares the connection dead");
         assert_eq!(error.unanswered_pings, 2);
         assert_eq!(socket.pings.load(Ordering::SeqCst), 2);
         monitor.stop();
