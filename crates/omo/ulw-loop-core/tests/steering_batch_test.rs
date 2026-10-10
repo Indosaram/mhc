@@ -1,4 +1,4 @@
-use ulw_loop_core::domain_types::{UlwLoopItem, UlwLoopPlan};
+use ulw_loop_core::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopValidationBatch};
 use ulw_loop_core::plan_io::{read_steering_ledger_entries,read_ulw_loop_plan,write_plan};
 use ulw_loop_core::steering_batch::steer_ulw_loop_batch;
 use ulw_loop_core::steering_types::UlwLoopSteeringProposal;
@@ -9,6 +9,6 @@ fn proposal(kind:&str)->UlwLoopSteeringProposal { UlwLoopSteeringProposal{kind:k
 fn repo()->tempfile::TempDir { let d=tempfile::tempdir().unwrap(); write_plan(d.path(),plan(),None).unwrap(); d }
 #[test] fn valid_batch_commits_both_mutations(){let d=repo();let mut a=proposal("add_subgoal");a.idempotency_key=Some("b1".into());let mut b=proposal("add_subgoal");b.idempotency_key=Some("b2".into());let r=steer_ulw_loop_batch(d.path(),&[a,b],None).unwrap();assert!(r.accepted);assert_eq!(r.results.len(),2);assert_eq!(read_ulw_loop_plan(d.path(),None).unwrap().goals.len(),4);}
 #[test] fn rejected_batch_records_rejection_audit(){let d=repo();let mut p=proposal("reorder_pending");p.pending_order=Some(vec!["missing".into()]);let r=steer_ulw_loop_batch(d.path(),&[p],None).unwrap();assert!(!r.accepted);assert_eq!(read_steering_ledger_entries(d.path(),None).iter().filter(|e|e.kind=="steering_rejected").count(),1);}
-#[test] fn split_proposal_updates_validation_batch(){let d=repo();let mut p=proposal("split_subgoal");p.target_goal_id=Some("G001".into());let r=steer_ulw_loop_batch(d.path(),&[p],None).unwrap();assert!(r.accepted);}
+#[test] fn split_proposal_updates_validation_batch(){let d=repo();let mut seeded=read_ulw_loop_plan(d.path(),None).unwrap();seeded.validation_batches=Some(vec![UlwLoopValidationBatch{batch_id:"VB001".into(),member_ids:vec!["G001".into(),"G002".into()],final_goal_id:"G002".into()}]);write_plan(d.path(),seeded,None).unwrap();let mut p=proposal("split_subgoal");p.target_goal_id=Some("G001".into());p.child_goals=Some(vec![ulw_loop_core::steering_types::UlwLoopSteeringChildGoal{title:"Child".into(),objective:"Do child".into()}]);let r=steer_ulw_loop_batch(d.path(),&[p],None).unwrap();assert!(r.accepted);assert_eq!(r.plan.validation_batches.unwrap()[0].member_ids,vec!["G003","G002"]);assert_eq!(read_steering_ledger_entries(d.path(),None).last().unwrap().kind,"batch_updated");}
 #[test] fn prior_idempotency_key_is_deduped(){let d=repo();let mut p=proposal("add_subgoal");p.idempotency_key=Some("same".into());steer_ulw_loop_batch(d.path(),std::slice::from_ref(&p),None).unwrap();let r=steer_ulw_loop_batch(d.path(),&[p],None).unwrap();assert!(r.accepted&&r.results[0].deduped);}
 #[test] fn empty_change_set_is_stable(){let d=repo();let r=steer_ulw_loop_batch(d.path(),&[],None).unwrap();assert!(r.accepted);assert!(r.results.is_empty());}

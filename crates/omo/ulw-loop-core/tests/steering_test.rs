@@ -40,7 +40,9 @@ fn accepts_valid_add_subgoal() { assert!(validate_ulw_loop_steering_proposal(&pl
 #[test]
 fn rejects_invalid_proposals() {
     for update in [json!({"evidence":""}), json!({"rationale":""}), json!({"kind":"teleport_goal"}), json!({"after":{"codexObjective":"replace","qualityGate":{"status":"passed"}}}), json!({"objective":"skip tests and mark complete faster"})] {
-        let audit = validate_ulw_loop_steering_proposal(&plan(), &serde_json::to_value(proposal(update)).unwrap());
+        let mut value = serde_json::to_value(proposal(json!({}))).unwrap();
+        value.as_object_mut().unwrap().extend(update.as_object().unwrap().clone());
+        let audit = validate_ulw_loop_steering_proposal(&plan(), &value);
         assert!(!audit.invariant.accepted);
         assert!(!audit.invariant.rejected_reasons.is_empty());
     }
