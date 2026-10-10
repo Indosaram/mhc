@@ -14,7 +14,11 @@ pub fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: O
 }
 pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
     let entries = load_entries_from_file(source_file);
-    if entries.is_empty() { return Err(format!("Cannot fork: source session file is empty or invalid: {source_file}")); }
+    if entries.is_empty() {
+        let has_content = std::fs::read_to_string(source_file).map(|contents| contents.lines().any(|line| !line.trim().is_empty())).unwrap_or(false);
+        let reason = if has_content { "no header" } else { "empty or invalid" };
+        return Err(format!("Cannot fork: source session {reason}: {source_file}"));
+    }
     if !entries.iter().any(|entry| entry.get("type").and_then(Value::as_str) == Some("session")) { return Err(format!("Cannot fork: source session has no header: {source_file}")); }
     let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(cwd));
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
@@ -79,7 +83,13 @@ impl ThreadRegistry {
         entry
     }
     pub async fn create_thread(&self, cwd: String, model: Option<maho_ai::model::Model>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
-        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(SessionManager::create(&cwd, self.session_dir.as_deref(), None)), model, ..Default::default() }).await?;
+        let manager = SessionManager::create(&cwd, self.session_dir.as_deref(), None);
+        if let Some(path) = manager.session_file()
+            && !std::path::Path::new(path).exists()
+            && let Some(header) = manager.header() {
+            std::fs::write(path, format!("{}\n", serialize_entry(&header))).map_err(|error| error.to_string())?;
+        }
+        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), model, ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
         Ok(self.register_session(session, cwd, None).await)
     }

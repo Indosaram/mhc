@@ -88,10 +88,11 @@ impl AppServerRuntime {
                     if let Some(name) = requested_name {
                         entry.session.set_session_name(&name);
                         let id = entry.id.clone();
-                        context.connection.defer_until_responded(move || {tokio::spawn(async move {
+                        context.connection.defer_task_until_responded(move || tokio::spawn(async move {
+                            tokio::task::yield_now().await;
                             if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
                                 && let Err(error) = core.read().await.broadcast_notification(json!({"method":"thread/name/updated","params":{"threadId":id,"threadName":name}}),chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server name notification: {}",error.message);}
-                        });});
+                        }));
                         return Ok(json!({}));
                     }
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
@@ -108,7 +109,8 @@ impl AppServerRuntime {
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
                     let lifecycle = if method == "thread/start" {json!({"method":"thread/started","params":{"thread":response["thread"]}})} else {json!({"method":"thread/status/changed","params":{"threadId":entry.id,"status":{"type":"idle"}}})};
-                    context.connection.defer_until_responded(move || {tokio::spawn(async move {
+                    context.connection.defer_task_until_responded(move || tokio::spawn(async move {
+                        tokio::task::yield_now().await;
                         if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
                             let core = core.read().await;
                             if let Some(connection) = core.get_connection(&client_id) {
@@ -132,7 +134,7 @@ impl AppServerRuntime {
                             if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
                             mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
                         }
-                    });});
+                    }));
                     Ok(response)
                 })
             }) });
@@ -170,7 +172,8 @@ impl AppServerRuntime {
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
                     let started = json!({"method":"thread/started","params":{"thread":response["thread"]}});
-                    context.connection.defer_until_responded(move || {tokio::spawn(async move {
+                    context.connection.defer_task_until_responded(move || tokio::spawn(async move {
+                        tokio::task::yield_now().await;
                         if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
                             let core = core.read().await;
                             if let Some(connection) = core.get_connection(&client_id) {
@@ -194,7 +197,7 @@ impl AppServerRuntime {
                             if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
                             mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
                         }
-                    });});
+                    }));
                     Ok(response)
                 })
             })});
