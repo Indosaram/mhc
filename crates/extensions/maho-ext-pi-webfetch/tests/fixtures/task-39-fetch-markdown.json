@@ -17,7 +17,7 @@
   },
   {
     "html": "<p><code>a`b```c</code> <a href='a(b) c' title='a&amp;quot;b'>link</a><img src='i' alt='[x]'></p>",
-    "markdown": "``a`b```c`` [link](<a\\(b\\) c> \"a&quot;b\")[!\\[x\\]](i)"
+    "markdown": "``a`b```c`` [link](<a\\(b\\) c> \"a&quot;b\")![\\[x\\]](i)"
   },
   {
     "html": "  a <em> b </em> c <img> d <p> e \n f </p><pre>  x\n y </pre><!--noise--> ",
