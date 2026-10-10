@@ -11,7 +11,7 @@ use crate::harness::session::session::{
 use crate::harness::session::types::{ForkOptions, Session};
 use crate::harness::types::{FileInfo, FileSystem};
 
-use super::codec::parse_jsonl_session_header;
+use super::codec::{parse_jsonl_session_header, JsonlParsedSessionHeader};
 use super::fork::{JsonlForkInput, JsonlForkSourceMetadata, run_jsonl_fork};
 use super::io::file_value;
 use super::storage::JsonlStorage;
@@ -339,10 +339,20 @@ impl JsonlSessionRepo {
             return Ok(None);
         };
         match parsed {
-            super::codec::JsonlParsedSessionHeader::V4(header) => {
+            JsonlParsedSessionHeader::V4(header) => {
                 Ok(Some(metadata_from_header(&header, &file.path, file.mtime_ms as i64)))
             }
-            super::codec::JsonlParsedSessionHeader::V3Legacy(_) => Ok(None),
+            JsonlParsedSessionHeader::V3Legacy(header) => {
+                let mut metadata = super::legacy_v3::metadata_from_legacy_v3_header(
+                    &self.file_system,
+                    &header,
+                    context,
+                )
+                .await;
+                metadata.path = file.path.clone();
+                metadata.modified_at = file.mtime_ms as i64;
+                Ok(Some(metadata))
+            }
         }
     }
 }
