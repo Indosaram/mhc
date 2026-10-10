@@ -49,7 +49,7 @@ fn make_plan(goals: Vec<UlwLoopItem>, active_goal_id: Option<String>) -> UlwLoop
     UlwLoopPlan {
         version: 1,
         revision: Some(1),
-        codex_goal_mode: Some("aggregate".into()),
+        codex_goal_mode: None,
         brief: Some("brief".into()),
         ledger_reset_revision: None,
         evidence_layout_version: Some(2),

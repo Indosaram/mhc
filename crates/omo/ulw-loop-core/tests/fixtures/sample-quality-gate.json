@@ -21,24 +21,8 @@
 				"artifactRefs": ["artifact-cli-pass"]
 			},
 			{
-				"id": "surface-http-pass",
-				"criterionRef": "C2",
-				"surface": "http",
-				"invocation": "curl -i http://127.0.0.1:8787/quality-gate",
-				"verdict": "passed",
-				"artifactRefs": ["artifact-http-dump"]
-			},
-			{
-				"id": "surface-browser-pass",
-				"criterionRef": "C3",
-				"surface": "browser",
-				"invocation": "page.goto('http://127.0.0.1:8787/quality-gate'); page.screenshot()",
-				"verdict": "passed",
-				"artifactRefs": ["artifact-browser-shot"]
-			},
-			{
 				"id": "surface-data-pass",
-				"criterionRef": "C4",
+				"criterionRef": "C2",
 				"surface": "data",
 				"invocation": "diff -u before.json after.json",
 				"verdict": "passed",

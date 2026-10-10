@@ -56,9 +56,11 @@ pub fn classify_external_authorization_blocker(evidence: &str) -> Option<String>
             || w.starts_with("omit")
             || *w == "not set"
             || *w == "not available"
-            || *w == "packages"
+        || *w == "package"
+        || *w == "packages"
     }) || normalized.contains("not set")
         || normalized.contains("not available")
+        || normalized.contains("read package")
         || normalized.contains("read packages");
 
     if !has_missing {
@@ -67,6 +69,8 @@ pub fn classify_external_authorization_blocker(evidence: &str) -> Option<String>
 
     let has_ghcr = words.iter().any(|w| {
         *w == "ghcr"
+            || w.starts_with("ghcr")
+            || w.starts_with("ghcr.")
             || *w == "imagepullsecret"
             || *w == "anonymous"
     }) || normalized.contains("github container registry")
