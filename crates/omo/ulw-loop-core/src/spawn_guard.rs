@@ -16,10 +16,7 @@ use crate::registered_agent_roles::registered_agent_roles;
 use crate::spawn_budget_io::{atomic_write_json, is_non_empty_file, read_admission_breaker, read_admission_breaker_with_env, read_count, read_counts};
 use crate::spawn_role_guard::spawn_role_denial;
 use crate::state_lock::with_state_lock;
-use crate::surface::{
-    canonical_reviewer_agent_name, resolve_toolkit_surface, reviewer_roles_for,
-    GATE_REVIEWER_AGENT_NAMES, UlwLoopToolkitSurface,
-};
+use crate::surface::{canonical_reviewer_agent_name, resolve_toolkit_surface, reviewer_roles_for, GATE_REVIEWER_AGENT_NAMES, UlwLoopToolkitSurface};
 
 pub const DEFAULT_FANOUT_LIMIT: u32 = 24;
 const DEFAULT_REVIEW_SPAWN_LIMIT: u32 = 3;
@@ -48,23 +45,8 @@ pub fn apply_spawn_guards_with_env(
         return String::new();
     }
     if crate::surface::resolve_toolkit_surface_with_env(get_env) == UlwLoopToolkitSurface::LazyCodex {
-        let scope = UlwLoopScope { session_id: Some(payload.session_id.clone()), ..Default::default() };
-        if read_ulw_loop_plan(&payload.cwd, Some(&scope)).is_ok() && payload.tool_input.get("agent_type").is_some() {
-            let bypass_v1_keyword = payload
-                .tool_input
-                .get("agent_type")
-                .and_then(|v| v.as_str())
-                .is_some_and(|agent_type| !GATE_REVIEWER_AGENT_NAMES.contains(&agent_type))
-                && payload
-                    .tool_input
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|message| message.to_lowercase().contains("final gate review"));
-            if !bypass_v1_keyword {
-                let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
-                if let Some(r) = reason { return deny(&r); }
-            }
-        }
+        let reason = spawn_role_denial(&payload.tool_input, || registered_agent_roles(Path::new(&payload.cwd), None));
+        if let Some(r) = reason { return deny(&r); }
     }
     apply_spawn_budget_guards_with_env(payload, options, get_env)
 }
@@ -113,7 +95,7 @@ fn evaluate_guards(payload: &PreToolUsePayload, plan: &crate::domain_types::UlwL
     if let Some(reason) = peek_fan_out_budget(state_dir, get_env) {
         return deny(&reason);
     }
-    if let Some(missing) = missing_gate_artifact(payload, plan) {
+    if let Some(missing) = missing_gate_artifact(payload, plan, get_env) {
         return deny(&format!("record manual QA first; gate audits its artifacts: missing {missing}"));
     }
     if let Some(reason) = consume_review_spawn_budget(payload, plan, state_dir, get_env) {
@@ -215,7 +197,7 @@ fn consume_review_spawn_budget(
     state_dir: &Path,
     get_env: impl Fn(&str) -> Option<String> + Copy,
 ) -> Option<String> {
-    let agent_type = review_agent_type(&payload.tool_input)?;
+    let agent_type = review_agent_type(&payload.tool_input, get_env)?;
     let goal = plan
         .goals
         .iter()
@@ -238,8 +220,8 @@ fn consume_review_spawn_budget(
     None
 }
 
-fn missing_gate_artifact(payload: &PreToolUsePayload, plan: &crate::domain_types::UlwLoopPlan) -> Option<String> {
-    if !is_gate_reviewer_spawn(&payload.tool_input) {
+fn missing_gate_artifact(payload: &PreToolUsePayload, plan: &crate::domain_types::UlwLoopPlan, get_env: impl Fn(&str) -> Option<String> + Copy) -> Option<String> {
+    if !is_gate_reviewer_spawn(&payload.tool_input, get_env) {
         return None;
     }
     let goal = plan.goals.iter().find(|g| is_final_run_completion_candidate(plan, g))?;
@@ -278,14 +260,14 @@ fn missing_gate_artifact(payload: &PreToolUsePayload, plan: &crate::domain_types
     }
 }
 
-fn is_gate_reviewer_spawn(tool_input: &Value) -> bool {
-    let Some(agent_type) = review_agent_type(tool_input) else {
+fn is_gate_reviewer_spawn(tool_input: &Value, get_env: impl Fn(&str) -> Option<String> + Copy) -> bool {
+    let Some(agent_type) = review_agent_type(tool_input, get_env) else {
         return false;
     };
     GATE_REVIEWER_AGENT_NAMES.contains(&agent_type.as_str())
 }
 
-fn review_agent_type(tool_input: &Value) -> Option<String> {
+fn review_agent_type(tool_input: &Value, get_env: impl Fn(&str) -> Option<String> + Copy) -> Option<String> {
     let obj = tool_input.as_object()?;
     if let Some(agent_type) = obj.get("agent_type").and_then(|v| v.as_str()) {
         let mut all_roles = Vec::new();
@@ -300,7 +282,7 @@ fn review_agent_type(tool_input: &Value) -> Option<String> {
         if !all_roles.contains(&agent_type) {
             return None;
         }
-        return Some(active_surface_reviewer_alias(agent_type));
+        return Some(active_surface_reviewer_alias(agent_type, get_env));
     }
 
     let message = obj.get("message").and_then(|v| v.as_str())?;
@@ -330,7 +312,7 @@ fn review_agent_type(tool_input: &Value) -> Option<String> {
     }
 
     if let Some((name, _)) = explicit_assignment {
-        return Some(active_surface_reviewer_alias(name));
+        return Some(active_surface_reviewer_alias(name, get_env));
     }
 
     let re_act_as = Regex::new(r"\bact as (?:an? )?\S+").expect("valid regex");
@@ -340,20 +322,33 @@ fn review_agent_type(tool_input: &Value) -> Option<String> {
 
     for name in &all_roles {
         if normalized.contains(name) {
-            return Some(active_surface_reviewer_alias(name));
+            return Some(active_surface_reviewer_alias(name, get_env));
         }
     }
 
     let re_gate = Regex::new(r"(?i)lazycodex-gate-reviewer|omo-native-gate-reviewer|omo-senpi-gate-reviewer|final gate review").expect("valid regex");
     if re_gate.is_match(message) {
-        Some(reviewer_roles_for(resolve_toolkit_surface()).gate_review.to_string())
+        Some(reviewer_roles_for(crate::surface::resolve_toolkit_surface_with_env(get_env)).gate_review.to_string())
     } else {
         None
     }
 }
 
-fn active_surface_reviewer_alias(reviewer: &str) -> String {
-    canonical_reviewer_agent_name(reviewer).to_string()
+fn active_surface_reviewer_alias(reviewer: &str, get_env: impl Fn(&str) -> Option<String>) -> String {
+    let canonical = canonical_reviewer_agent_name(reviewer);
+    let active_roles = reviewer_roles_for(crate::surface::resolve_toolkit_surface_with_env(get_env));
+    for roles in crate::surface::all_reviewer_roles() {
+        if canonical == roles.code_review {
+            return active_roles.code_review.to_string();
+        }
+        if canonical == roles.manual_qa {
+            return active_roles.manual_qa.to_string();
+        }
+        if canonical == roles.gate_review {
+            return active_roles.gate_review.to_string();
+        }
+    }
+    canonical.to_string()
 }
 
 fn deny(reason: &str) -> String {
