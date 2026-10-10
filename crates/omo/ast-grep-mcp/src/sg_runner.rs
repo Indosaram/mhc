@@ -180,6 +180,12 @@ impl State {
         self.serialized_records_bytes = next_aggregate;
         if self.records.len() > self.max_matches {
             self.records.truncate(self.max_matches);
+            self.serialized_records_bytes = self
+                .records
+                .iter()
+                .map(|record| Value::Object(record.clone()).to_string().len())
+                .sum::<usize>()
+                + self.records.len().saturating_sub(1);
             self.truncation_reason = Some(SgTruncationReason::MatchLimit);
             self.stop(StopReason::Limit);
             return false;
