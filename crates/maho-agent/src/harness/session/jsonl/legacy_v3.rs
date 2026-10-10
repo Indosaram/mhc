@@ -361,14 +361,18 @@ fn parse_legacy_v3_entry(line: &str) -> Result<LegacyV3Entry, SessionError> {
             format!("Invalid legacy v3 JSONL record: not valid JSON: {e}"),
         )
     })?;
-    let record_type = val.get("type").and_then(JsonValue::as_str).unwrap_or("");
+    let record_type = val
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_owned();
     let from_hook = val.get("fromHook").and_then(JsonValue::as_bool).unwrap_or(false);
-    match record_type {
+    match record_type.as_str() {
         "message" | "custom" | "custom_message" | "branch_summary" | "compaction"
         | "model_change" | "thinking_level_change" | "active_tools_change"
         | "session_info" | "label" => {
             let mut val = val;
-            if matches!(record_type, "branch_summary" | "compaction") {
+            if matches!(record_type.as_str(), "branch_summary" | "compaction") {
                 val["fromHook"] = JsonValue::Bool(from_hook);
             }
             let entry = serde_json::from_value::<LegacyV3Entry>(val).map_err(|e| {
@@ -416,7 +420,21 @@ fn resolve_legacy_id(
             format!("Missing legacy v3 entry reference: {id}"),
         )
     })?;
-    Ok(entry.mapped_id.clone())
+    let mut current = entry;
+    loop {
+        if current.is_retained() {
+            return Ok(current.mapped_id.clone());
+        }
+        let Some(parent) = current.parent_id.as_deref() else {
+            return Ok(None);
+        };
+        current = entries.get(parent).ok_or_else(|| {
+            SessionError::new(
+                SessionErrorKind::Io,
+                format!("Missing legacy v3 entry reference: {parent}"),
+            )
+        })?;
+    }
 }
 
 fn resolve_label_target_id(
@@ -544,7 +562,12 @@ fn normalize_retained_entry(
     let mapped_id = indexed.mapped_id.clone().ok_or_else(|| {
         SessionError::new(SessionErrorKind::Io, "Unmapped retained entry")
     })?;
-    let parent_id = resolve_legacy_id(entries, indexed.parent_id.as_deref())?;
+    let parent_id = indexed
+        .parent_id
+        .as_deref()
+        .and_then(|id| entries.get(id))
+        .and_then(|parent| parent.mapped_id.clone())
+        .or(resolve_legacy_id(entries, indexed.parent_id.as_deref())?);
     let seq = indexed.seq.unwrap_or(0);
     let ts = parse_iso_millis(match entry {
         LegacyV3Entry::Message { timestamp, .. }
@@ -696,7 +719,11 @@ fn index_legacy_v3_entry(
                         ),
                     )
                 })?;
-                parent_entry.mapped_id.clone()
+                if parent_entry.is_retained() {
+                    parent_entry.mapped_id.clone()
+                } else {
+                    resolve_legacy_id(entries, Some(pid))?
+                }
             }
         }
     };
@@ -825,7 +852,7 @@ async fn read_legacy_v3_inventory(
         }
         final_id = Some(eid.clone());
         if let LegacyV3Entry::SessionInfo { name: entry_name, .. } = &entry {
-            name = entry_name.clone().filter(|n| !n.is_empty());
+            name = entry_name.clone().filter(|name| !name.is_empty());
         }
         if let Some(usage) = legacy_entry_usage(&entry) {
             imported_usage = add_usage(&imported_usage, &usage);
@@ -901,24 +928,25 @@ fn normalize_legacy_v3_values(
     }
 
     // 3. branch tip
-    let final_mapped_id = resolve_legacy_id(entries, inventory.final_id.as_deref())?;
-    let op = set_value(
-        &branch_tip("main"),
-        match final_mapped_id {
-            Some(id) => JsonValue::String(id),
-            None => JsonValue::Null,
-        },
-    );
-    if let crate::harness::session::values::ValueWrite::Set(set) = op {
-        values.push(CommittedValueSetWrite {
-            kind: WriteKind::Value,
-            op: crate::harness::session::commit::ValueOp::Set,
-            seq: next_seq,
-            namespace: set.namespace,
-            key: set.key,
-            value: set.value,
-        });
-        next_seq += 1;
+    if inventory.final_id.is_some() {
+        let op = set_value(
+            &branch_tip("main"),
+            match resolve_legacy_id(entries, inventory.final_id.as_deref())? {
+                Some(id) => JsonValue::String(id),
+                None => JsonValue::Null,
+            },
+        );
+        if let crate::harness::session::values::ValueWrite::Set(set) = op {
+            values.push(CommittedValueSetWrite {
+                kind: WriteKind::Value,
+                op: crate::harness::session::commit::ValueOp::Set,
+                seq: next_seq,
+                namespace: set.namespace,
+                key: set.key,
+                value: set.value,
+            });
+            next_seq += 1;
+        }
     }
 
     // 4. configuration
@@ -978,6 +1006,7 @@ pub struct LegacyV3Source {
     path: String,
     entries: HashMap<String, LegacyV3IndexEntry>,
     entry_order: Vec<String>,
+    pub session_name: Option<String>,
 }
 
 impl LegacyV3Source {
@@ -1015,6 +1044,7 @@ impl LegacyV3Source {
                 path: path.to_owned(),
                 entries: inventory.entries,
                 entry_order: inventory.entry_order,
+                session_name: inventory.name,
             })
         }
         .await;
