@@ -110,8 +110,7 @@ fn consume_resume_budget_locked(lock_path: &Path, state_dir: &Path, goal_id: &st
 }
 
 fn consume_resume_budget(state_dir: &Path, goal_id: &str) -> bool {
-    let ledger = read_ledger_at(state_dir);
-    let ledger_line_count = ledger.len();
+    let ledger_line_count = read_ledger_at(state_dir).len();
     let counter_path = state_dir.join(format!("auto-resume-{goal_id}.json"));
     let stuck_path = state_dir.join(format!("auto-resume-{goal_id}.stuck"));
 
