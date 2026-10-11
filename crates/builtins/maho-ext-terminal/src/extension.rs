@@ -118,7 +118,7 @@ impl Extension for TerminalExtension {
                 if kind==EventKind::SessionParked {monitors.park();}else {monitors.unpark();}
                 let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;
                 if let Some(task)=status.take() {task.abort();}
-                if kind==EventKind::SessionResumed {let ui=ctx.ui.clone();let tui=matches!(ctx.mode,maho_ext_api::types::ExtensionMode::Tui);*status=Some(crate::monitor_status_ticker::bind_monitor_status(monitors.subscribe_state(),move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref())));}
+                if kind==EventKind::SessionResumed {let ui=ctx.ui.clone();let session=ctx.session_manager.clone();let tui=matches!(ctx.mode,maho_ext_api::types::ExtensionMode::Tui);*status=Some(crate::monitor_status_ticker::bind_monitor_status(monitors.subscribe_state(),move |text| {if session.extension_context_actions().is_some_and(|actions|actions.assert_active().is_err()) {return;}ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref());}));}
                 Ok(EventResult::None)
             })}));
         }
@@ -126,7 +126,8 @@ impl Extension for TerminalExtension {
         api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let monitors=status_monitors.clone();let status=start_status.clone();Box::pin(async move {
             let mut status=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?;if let Some(task)=status.take() {task.abort();}
             let receiver=monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.subscribe_state();let ui=ctx.ui.clone();let tui=matches!(ctx.mode,maho_ext_api::types::ExtensionMode::Tui);
-            *status=Some(crate::monitor_status_ticker::bind_monitor_status(receiver,move |text|ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref())));
+            let session=ctx.session_manager.clone();
+            *status=Some(crate::monitor_status_ticker::bind_monitor_status(receiver,move |text| {if session.extension_context_actions().is_some_and(|actions|actions.assert_active().is_err()) {return;}ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,crate::monitor_status::render_monitor_status(if tui {"tui"} else {"plain"},&ui.theme(),text.as_deref()).as_deref());}));
             Ok(EventResult::None)
         })}));
         let sender=Arc::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone()));
@@ -327,7 +328,7 @@ impl Extension for TerminalExtension {
         let shutdown_bundle=bundle.clone();
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let tasks=completion_tasks.clone();let notifier=cleanup_terminal_notifier.clone();Box::pin(async move {for task in tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.drain(..) {task.abort();}*notifier.lock().map_err(|_|ExtensionFailure::new("terminal notifier state poisoned"))?=crate::notify::TerminalNotifier::default();Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let task=telemetry_task.clone();Box::pin(async move {if let Some(task)=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?.take() {task.abort();}Ok(EventResult::None)})}));
-        api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {if let Some(task)=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take() {task.abort();}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
+        api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {let task=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take();if let Some(task)=task {task.abort();if let Err(error)=task.await && !error.is_cancelled() {return Err(ExtensionFailure::new(error.to_string()));}}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();Box::pin(async move {
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason!=maho_ext_api::types::SessionReason::Reload) {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();}
             let session_id=ctx.session_manager.session_id().to_owned();
