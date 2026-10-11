@@ -10,8 +10,6 @@ impl ServiceTierHost for Host{
     fn remembered(&self,_:&ExtensionContext,model:&Model)->Result<Option<ServiceTier>,ExtensionFailure>{self.reads.lock().expect("reads").push(model.id.clone());Ok(*self.memory.lock().expect("memory"))}
     fn global_tier(&self,_:&ExtensionContext)->Result<Option<ServiceTier>,ExtensionFailure>{Ok(None)}
     fn persist<'a>(&'a self,_:&'a ExtensionContext,_:&'a Model,_:ServiceTier)->ExtensionFuture<'a,()>{Box::pin(async{panic!("pin refusal must not persist")})}
-    fn thinking_level(&self,_:&ExtensionContext)->Result<Option<maho_ai::types::ModelThinkingLevel>,ExtensionFailure>{panic!("model-select does not normalize startup thinking")}
-    fn restore_thinking_level(&self,_:&ExtensionContext,_:maho_ai::types::ModelThinkingLevel)->Result<(),ExtensionFailure>{panic!("model-select does not normalize startup thinking")}
 }
 #[tokio::test]
 async fn registered_fast_pin_refusal_and_model_memory_do_not_mutate_settings()->Result<(),Box<dyn std::error::Error>>{

@@ -350,6 +350,7 @@ pub struct EditorTheme {
 pub trait EditorTuiHost {
     fn request_render(&self);
     fn terminal_rows(&self) -> usize;
+    fn full_redraws(&self) -> u64 { 0 }
 }
 
 #[derive(Default)]

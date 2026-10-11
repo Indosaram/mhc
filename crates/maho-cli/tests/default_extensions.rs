@@ -15,6 +15,10 @@ async fn concrete_default_factories_register_tools_and_commands() {
         assert!(commands.contains(&command), "Missing command {command}: {commands:?}");
     }
     let names = loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>();
+    assert!(names.contains(&"<builtin:service-tier>"), "Missing builtin:service-tier: {names:?}");
+    for id in ["reasoning", "redraws", "import-repro", "gpt-account", "diff", "files", "prompt-url-widget", "tps"] {
+        assert_eq!(names.iter().filter(|path| **path == format!("<builtin:{id}>")).count(), 1);
+    }
     for path in ["<builtin:codemode>", "<builtin:compaction>", "<builtin:webfetch>", "<builtin:websearch>", "<builtin:rules>", "<builtin:goal>", "<builtin:look-at>"] {
         assert!(names.contains(&path), "Missing factory {path}");
     }
@@ -29,9 +33,15 @@ async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
     let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()));
     let paths = factories.iter().map(|factory| factory.path.clone()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(paths.len(), factories.len());
-    for path in ["<builtin:gpt-apply-patch>", "<builtin:todotools>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<user:pi-ast-grep>"] {
+    for path in ["<builtin:gpt-apply-patch>", "<builtin:todowrite>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<user:pi-ast-grep>"] {
         assert!(paths.contains(path), "Missing factory {path}");
     }
+    let registered = factories.iter().filter_map(|factory| factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>')))
+        .filter(|id| maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.contains(id)).collect::<Vec<_>>();
+    let expected = maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.iter().copied().filter(|id| registered.contains(id)).collect::<Vec<_>>();
+    assert_eq!(registered, expected);
+    let defaults = factories.iter().take(4).map(|factory| factory.path.as_str()).collect::<Vec<_>>();
+    assert_eq!(defaults, ["<builtin:diff>", "<builtin:files>", "<builtin:prompt-url-widget>", "<builtin:tps>"]);
     let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     assert_eq!(loaded.extensions.len(), paths.len());
