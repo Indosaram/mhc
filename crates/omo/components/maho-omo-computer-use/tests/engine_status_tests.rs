@@ -68,8 +68,12 @@ async fn test_probe_computer_use_engine_success() {
     let engine_script = dir.path().join("fake_engine.sh");
     let script_content = format!(
         r#"#!/bin/sh
+IFS= read -r hello || exit 1
 cat << 'EOF'
 {{"jsonrpc":"2.0","result":{{"abi":"{ENGINE_ABI}","protocolVersion":"{PROTOCOL_VERSION}","engineVersion":"1.0.0","buildSha":"abc1234"}},"id":1}}
+EOF
+IFS= read -r capabilities || exit 1
+cat << 'EOF'
 {{"jsonrpc":"2.0","result":{{"backend":"test","capture":true,"input":true,"ax":true,"backgroundWindowInput":false,"deliveryModes":[],"capturePermission":"granted","inputPermission":"granted","axPermission":"granted","displayCount":1,"focusGuard":false,"stopPath":"global","screenLocked":false}},"id":2}}
 EOF
 "#
