@@ -40,7 +40,9 @@ impl OmoMount {
             .unwrap_or_else(maho_omo::builtin_skills_root);
         if !skills_root.is_dir() { eprintln!("omo mount: packaged skills directory is missing: {}", skills_root.display()); }
         Ok(Self::shipped(task, memory, &maho_omo::OmoComponentOptions {
-            skills_root, state_dir: cwd.join(".maho"), env: environment,
+            skills_root, state_dir: cwd.join(".maho"),
+            facts_read_only_bootstrap: environment.get("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some_and(|value|value=="1")&&maho_core::lockfile_policy::facts_lock_broker_enabled(),
+            env: environment,
         }, Default::default(), provisioning))
     }
     pub fn shipped(

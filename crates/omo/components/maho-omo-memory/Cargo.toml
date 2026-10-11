@@ -7,6 +7,7 @@ license = "LicenseRef-SUL-1.0"
 
 [dependencies]
 maho-memory-core.workspace = true
+maho-core = { path = "../../../maho-core", version = "=0.0.0" }
 maho-ext-api = { path = "../../../maho-ext-api", version = "=0.0.0" }
 maho-tools = { path = "../../../maho-tools", version = "=0.0.0" }
 maho-omo-config-core = { path = "../../omo-config-core", version = "=0.0.0" }
@@ -16,7 +17,7 @@ serde_json.workspace = true
 sha1 = "=0.10.6"
 chrono = { workspace = true, features = ["std"] }
 notify = "=8.2.0"
-tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt", "time", "process", "io-util", "io-std", "signal", "net", "fs"] }
 
 [dev-dependencies]
 maho-rpc = { path = "../../../maho-rpc", version = "=0.0.0" }

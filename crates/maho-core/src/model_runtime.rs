@@ -94,7 +94,7 @@ pub struct ModelRuntime {
 impl ModelRuntime {
     pub fn create_sync(options: CreateModelRuntimeOptions) -> Self {
         let credentials = options.credentials.unwrap_or_else(|| Arc::new(options.auth_path.as_ref().map_or_else(||crate::auth_storage::AuthStorage::in_memory(Default::default()),|path|crate::auth_storage::AuthStorage::create(&path.to_string_lossy()))));
-        let config = Arc::new(RwLock::new(ModelConfig::load_sync(options.models_path.as_deref())));
+        let config = Arc::new(RwLock::new(ModelConfig::load_sync_with_migration(options.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
         let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),auth_path:options.auth_path};
         let mut runtime = Self {
@@ -256,7 +256,7 @@ impl ModelRuntime {
         crate::provider_composer::resolve_compatibility_request_headers(model,config.as_ref(),extension.as_ref(),env).await
     }
     pub async fn refresh(&mut self,options:ModelsRefreshOptions) -> ModelsRefreshResult {
-        let config = ModelConfig::load(self.models_path.as_deref()).await;
+        let config = ModelConfig::load_with_migration(self.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled()).await;
         *self.config.write().unwrap_or_else(|p|p.into_inner()) = config;
         self.rebuild_providers(); self.models.refresh(options).await
     }

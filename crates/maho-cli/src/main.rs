@@ -118,6 +118,14 @@ fn run() -> Result<(), String> {
     if parsed.mode == Some(maho_cli::cli::args::Mode::Rpc) && !parsed.file_args.is_empty() { return Err("Error: @file arguments are not supported in RPC mode".to_owned()); }
     maho_cli::cli::startup::validate_fork_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
     maho_cli::cli::startup::validate_session_id_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
+    if std::env::var_os("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some() {
+        #[cfg(unix)] {
+            let config=maho_core::lockfile_policy::facts_lock_broker_config_from_environment()?.ok_or("facts bootstrap requires a lock broker endpoint")?;
+            maho_core::lockfile_policy::install_facts_lock_broker(config);
+        }
+        #[cfg(not(unix))]
+        return Err("facts read-only bootstrap broker requires Unix sockets".into());
+    }
     if parsed.help { return output(&maho_cli::cli::args::help_text(grok, "")); }
     if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {

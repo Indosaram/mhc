@@ -3552,6 +3552,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "maho-ai",
+ "maho-core",
  "maho-ext-api",
  "maho-ext-host",
  "maho-memory-core",
