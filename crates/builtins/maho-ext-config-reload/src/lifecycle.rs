@@ -71,23 +71,46 @@ impl Extension for ConfigReload {
                         ctx.ui.notify(&format!("Hot-reloaded: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
                         let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
                         logger.log(LogLevel::Info, LogEvent::ReloadCompleted { duration_ms: handoff.requested.elapsed().as_secs_f64() * 1000.0 });
-                        let (changed, rejected) = {
+                        let (changed, groups, ungrouped) = {
                             let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
                             let changed = compare_snapshots(&handoff.hashes, &state.hashes);
                             let snapshot = state.hashes.clone();
-                            let mut rejected = None;
+                            let mut groups = Vec::new();
+                            let mut ungrouped = Vec::new();
                             if !changed.is_empty() {
                                 state.contents = handoff.contents;
                                 let significant = significant_changed_paths(&changed, &snapshot, &mut state.contents, &ctx.agent_dir, &ctx.cwd, &mut logger);
-                                let errors = validate_builtin_paths(&significant, &ctx.agent_dir, &ctx.cwd);
-                                if errors.is_empty() && !significant.is_empty() { state.pending.add("builtin", &significant); }
-                                else if !errors.is_empty() { rejected = Some((significant, errors)); }
+                                let registrations = state.registrations.snapshot();
+                                let targets = build_external_watch_targets(&ctx.cwd, &registrations);
+                                for (registration_id, paths) in group_changed_paths(&significant, &targets) {
+                                    if registration_id == "builtin" {
+                                        ungrouped.extend(paths);
+                                    } else {
+                                        let validator = state.registrations.validator(&registration_id);
+                                        groups.push((registration_id, paths, validator));
+                                    }
+                                }
                             }
-                            (changed, rejected)
+                            (changed, groups, ungrouped)
                         };
-                        if let Some((paths, errors)) = rejected {
-                            ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
-                            events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":"builtin","paths":paths,"errors":errors}));
+
+                        for (registration_id, paths, validator) in groups {
+                            let errors = validate_external_paths(validator, &paths);
+                            if errors.is_empty() {
+                                state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.pending.add(&registration_id, &paths);
+                            } else {
+                                ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
+                                events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":registration_id,"paths":paths,"errors":errors}));
+                            }
+                        }
+                        if !ungrouped.is_empty() {
+                            let errors = validate_builtin_paths(&ungrouped, &ctx.agent_dir, &ctx.cwd);
+                            if errors.is_empty() {
+                                state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.pending.add("builtin", &ungrouped);
+                            } else {
+                                ctx.ui.notify(&format!("Config change rejected: {}", errors.join("; ")), NotificationType::Error);
+                                events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({"registrationId":"builtin","paths":ungrouped,"errors":errors}));
+                            }
                         }
                         if !changed.is_empty() { schedule_flush(state, ctx.clone(), None)?; }
                     }
