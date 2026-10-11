@@ -261,6 +261,17 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         if !options.defer_extension_start { session.bind_extensions(Default::default()).await; }
         drop(construction.session.take());
     }
+    session.set_cursor_exec_bridge_factory(Arc::new({
+        let session_ref: crate::cursor_exec_bridge_session::SessionRef = session.weak_accessor();
+         move |run_signal| {
+             let Some(session) = session_ref() else {
+                 return Arc::new(Default::default());
+             };
+             Arc::new(crate::cursor_exec_bridge_session::create_session_cursor_exec_bridge(
+                 session_ref.clone(), session.agent().clone(), run_signal,
+             ))
+         }
+    }));
     Ok(CreateAgentSessionResult { session, model_fallback_message: None })
 }
 
