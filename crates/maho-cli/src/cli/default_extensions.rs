@@ -1,10 +1,33 @@
 //! Concrete default factories shared by print, RPC and interactive startup.
-use std::{rc::Rc, sync::Arc};
+use std::{rc::Rc, sync::{Arc, OnceLock}};
 use maho_ext_api::{Extension, ExtensionActions, ExtensionFailure};
 use maho_ext_host::loader::{NativeExtensionFactory, NativeAsyncExtensionFactory};
 
+pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::AgentSession, theme_paths: Vec<std::path::PathBuf>) {
+    let agent_dir = std::path::PathBuf::from(session.agent_dir());
+    let (registered, diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::ColorMode::Truecolor);
+    for diagnostic in diagnostics { eprintln!("{diagnostic}"); }
+    let themes_dir = agent_dir.join("themes");
+    let config_theme = session.with_settings_manager(|manager| manager.get_string("theme")).unwrap_or_else(|| "dark".into());
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    session.set_html_theme_resolver(Arc::new(move |requested| {
+        let setting = requested.unwrap_or(&config_theme);
+        let terminal_theme = maho_interactive::theme::detection::detect_terminal_background_from_env(colorfgbg.as_deref()).theme;
+        let name = maho_interactive::theme::resolve_theme_setting(Some(setting), terminal_theme)
+            .unwrap_or("dark");
+        let mut registry = maho_interactive::theme::registry::ThemeRegistry::new(
+            themes_dir.clone(), "dark", maho_interactive::theme::ColorMode::Truecolor,
+        ).map_err(|error|error.to_string())?;
+        registry.set_registered_themes(registered.clone()).map_err(|error|error.to_string())?;
+        let theme = registry.load_theme(name).map_err(|error|error.to_string())?;
+        let api_theme = maho_interactive::interactive_extension_ui::extension_theme(&theme);
+        Ok((api_theme, Some((theme.resolved_colors(), theme.export_colors().clone()))))
+    }));
+}
+
 fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionFactory {
-    NativeExtensionFactory { path: format!("<builtin:{name}>"), source_info: Default::default(), extension: Box::new(extension) }
+    let path = format!("<builtin:{name}>");
+    NativeExtensionFactory { source_info: maho_ext_api::SourceInfo { path: path.clone(), source: "builtin".into(), ..Default::default() }, path, extension: Box::new(extension) }
 }
 
 pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {

@@ -12,6 +12,7 @@
 //! still outstanding.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 #[path = "monitor_invocation.rs"]
@@ -554,7 +555,10 @@ pub struct AgentSessionInner {
     /// `AgentSession`.
     mcp_wire_status_retention: Mutex<Option<maho_ext_api::BusSubscription>>,
     tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+    html_theme_resolver: Mutex<Option<HtmlThemeResolver>>,
 }
+
+pub type HtmlThemeResolver = Arc<dyn Fn(Option<&str>) -> Result<(maho_ext_api::Theme, Option<(BTreeMap<String, String>, BTreeMap<String, String>)>), String> + Send + Sync>;
 
 struct SessionFallbackDeps(std::sync::Weak<AgentSessionInner>);
 
@@ -1671,6 +1675,7 @@ impl AgentSession {
             mcp_wire_status_order: tokio::sync::Mutex::new(()),
             mcp_wire_status_retention: Mutex::new(None),
             tool_context_disposers: Mutex::new(Vec::new()),
+            html_theme_resolver: Mutex::new(None),
         }) };
 
         let initial_model = session.agent.state().model;
@@ -4316,8 +4321,58 @@ impl AgentSession {
     }
 
     pub fn export_to_html(&self, output_path: Option<&str>, theme_name: Option<&str>) -> Result<String, String> {
+        let configured = theme_name.map(str::to_owned).or_else(|| self.with_settings_manager(|manager| manager.get_string("theme")));
+        let resolved = lock(&self.inner.html_theme_resolver).clone().map(|resolver| resolver(configured.as_deref())).transpose()?;
+        match resolved {
+            Some((render_theme, colors)) => self.export_to_html_with_theme(output_path, theme_name, render_theme, colors),
+            None => self.export_to_html_with_theme(output_path, theme_name, maho_ext_api::Theme::default(), None),
+        }
+    }
+
+    pub fn set_html_theme_resolver(
+        &self,
+        resolver: HtmlThemeResolver,
+    ) {
+        *lock(&self.inner.html_theme_resolver) = Some(resolver);
+    }
+
+    pub fn export_to_html_with_theme(
+        &self, output_path: Option<&str>, theme_name: Option<&str>, render_theme: maho_ext_api::Theme,
+        colors: Option<(std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, String>)>,
+    ) -> Result<String, String> {
+        // Pinned: the explicit theme wins, else the configured theme.
+        let theme = theme_name.map(str::to_owned).or_else(|| self.with_settings_manager(|manager| manager.get_string("theme")));
+        let tools = serde_json::Value::Array(self.agent.state().tools().iter().map(|tool| serde_json::json!({
+            "name": tool.tool.name, "description": tool.tool.description, "parameters": tool.tool.parameters,
+        })).collect());
+        let runner = self.extension_runner.try_lock().map_err(|error| error.to_string())?.clone();
+        let renderers = runner.as_ref().map(|runner| runner.get_all_registered_tools().into_iter()
+            .filter_map(|tool| runner.get_erased_tool_renderers(&tool.definition.name).map(|renderers| (tool.definition.name, renderers)))
+            .collect::<std::collections::HashMap<_, _>>()).unwrap_or_default();
+        let mut renderer = crate::export_html::tool_renderer::ToolHtmlRenderer::new(
+            crate::export_html::tool_renderer::ToolHtmlRendererDeps {
+                get_tool_renderer: Arc::new(move |name| renderers.get(name).cloned()),
+                theme: render_theme, cwd: PathBuf::from(self.cwd()), width: None,
+            },
+        );
         self.with_session_manager(|manager| {
-            crate::export_html::index::export_session_to_html(manager, output_path, theme_name, Some(self.system_prompt()))
+            let file = manager.session_file().ok_or_else(|| "Cannot export in-memory session to HTML".to_owned())?;
+            if !std::path::Path::new(file).exists() {
+                return Err("Nothing to export yet - start a conversation first".to_owned());
+            }
+            let default_output = format!("maho-session-{}.html", std::path::Path::new(file).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned()));
+            let entries = manager.entries();
+            let rendered = crate::export_html::index::pre_render_custom_tools(&entries, &mut renderer);
+            if let Some((colors, export_colors)) = colors {
+                return crate::export_html::index::export_session_to_html_with_theme(
+                    manager, Some(output_path.unwrap_or(&default_output)), theme.as_deref(),
+                    (Some(self.system_prompt()), Some(tools), Some(rendered)), (colors, export_colors),
+                );
+            }
+            crate::export_html::index::export_session_data_to_html(
+                manager.header().unwrap_or(serde_json::Value::Null), entries, manager.leaf_id().map(str::to_owned),
+                Some(output_path.unwrap_or(&default_output)), theme.as_deref(), (Some(self.system_prompt()), Some(tools), Some(rendered)),
+            )
         })
     }
 

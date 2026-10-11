@@ -817,6 +817,16 @@ impl InteractiveMode {
         match self.session_host.clone() { Some(host) => host.export_jsonl(output_path.map(str::to_owned)).await, None => self.session.export_to_jsonl(output_path).map(Some).map_err(|error| error.to_string()) }
     }
 
+    async fn host_export_html(&self, output_path: Option<&str>, theme_name: &str) -> Result<Option<String>, String> {
+        if let Some(host) = self.session_host.clone() {
+            return host.export_html(output_path.map(str::to_owned), Some(theme_name.to_owned())).await;
+        }
+        self.session.export_to_html_with_theme(
+            output_path, Some(theme_name), crate::interactive_extension_ui::extension_theme(&self.theme),
+            Some((self.theme.resolved_colors(), self.theme.export_colors().clone())),
+        ).map(Some)
+    }
+
     /// Fire-and-forget session-name set for the synchronous rename-input path; the typed `/rename`
     /// command awaits the host through `apply_session_name`.
     fn fire_set_session_name(&self, name: &str) {
@@ -1404,15 +1414,21 @@ impl InteractiveMode {
             else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
-        if text.trim().starts_with("/export ") {
-            // The host export is async, so `/export` is handled on the async `submit` path (its only
-            // reachable entry: the key handler only dispatches `/model`, `/tree`, `/fork`, `/rename`).
-            let path = get_path_command_argument(text.trim(), "/export").ok_or("Missing export path")?;
-            if path.ends_with(".jsonl") {
-                let exported = self.host_export_jsonl(Some(&path)).await?.unwrap_or_else(|| path.clone());
-                self.show_status(format!("Session exported to: {exported}"));
-                return Ok(PromptDisposition::Handled);
+        if text.trim() == "/export" || text.trim().starts_with("/export ") {
+            // senpi `handleExportCommand`: `.jsonl` exports JSONL, anything else (or no path) HTML.
+            let path = get_path_command_argument(text.trim(), "/export");
+            let result = if path.as_deref().is_some_and(|path| path.ends_with(".jsonl")) {
+                self.host_export_jsonl(path.as_deref()).await
+            } else {
+                if self.session_host.is_none() { return Err("HTML export is not integrated in the native interactive mode".into()); }
+                let theme_name = self.theme.name.clone();
+                self.host_export_html(path.as_deref(), &theme_name).await
+            };
+            match result {
+                Ok(exported) => self.show_status(format!("Session exported to: {}", exported.or(path).unwrap_or_default())),
+                Err(error) => self.show_error(&format!("Failed to export session: {error}")),
             }
+            return Ok(PromptDisposition::Handled);
         }
         if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
             let name = name.trim();

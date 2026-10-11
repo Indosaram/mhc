@@ -29,6 +29,14 @@ pub struct ToolHtmlRenderer {
     cwd: PathBuf,
     width: usize,
     rendered_args: HashMap<String, JsonValue>,
+    rendered_states: HashMap<String, ToolRenderState>,
+}
+
+#[derive(Default)]
+struct ToolRenderState {
+    call_lines: Option<Vec<String>>,
+    collapsed_lines: Option<Vec<String>>,
+    result_lines: Option<Vec<String>>,
 }
 
 impl ToolHtmlRenderer {
@@ -39,14 +47,17 @@ impl ToolHtmlRenderer {
             cwd: deps.cwd,
             width: deps.width.unwrap_or(100),
             rendered_args: HashMap::new(),
+            rendered_states: HashMap::new(),
         }
     }
 
     pub fn render_call(&mut self, tool_call_id: &str, tool_name: &str, args: JsonValue) -> Option<String> {
         let renderer = (self.get_tool_renderer)(tool_name)?;
         self.rendered_args.insert(tool_call_id.to_owned(), args.clone());
+        let state = self.rendered_states.entry(tool_call_id.to_owned()).or_default();
         catch_unwind(AssertUnwindSafe(|| {
             let lines = renderer.render_call(&args, &self.theme, self.width)?;
+            state.call_lines = Some(lines.clone());
             Some(ansi_lines_to_html(&lines))
         })).ok().flatten()
     }
@@ -59,12 +70,28 @@ impl ToolHtmlRenderer {
         _is_error: bool,
     ) -> Option<ToolHtmlResult> {
         let renderer = (self.get_tool_renderer)(tool_name)?;
+        let state = self.rendered_states.entry(tool_call_id.to_owned()).or_default();
         catch_unwind(AssertUnwindSafe(|| {
             let args = self.rendered_args.get(tool_call_id).unwrap_or(&JsonValue::Null);
-            let lines = renderer.render_result(args, result, &self.theme, self.width)?;
-            let expanded = ansi_lines_to_html(&trim_rendered_result_lines(lines));
-            Some(ToolHtmlResult { collapsed: None, expanded })
+            let collapsed_lines = renderer.render_result(args, result, &self.theme, self.width)?;
+            let collapsed_lines = trim_rendered_result_lines(collapsed_lines);
+            let expanded_lines = renderer.render_result(args, result, &self.theme, self.width)?;
+            let expanded_lines = trim_rendered_result_lines(expanded_lines);
+            state.collapsed_lines = Some(collapsed_lines.clone());
+            state.result_lines = Some(expanded_lines.clone());
+            let collapsed = ansi_lines_to_html(&collapsed_lines);
+            let expanded = ansi_lines_to_html(&expanded_lines);
+            Some(ToolHtmlResult { collapsed: (collapsed != expanded).then_some(collapsed), expanded })
         })).ok().flatten()
+    }
+
+    pub fn rendered_html(&self, tool_call_id: &str) -> Option<serde_json::Value> {
+        let state = self.rendered_states.get(tool_call_id)?;
+        let mut rendered = serde_json::Map::new();
+        if let Some(lines) = &state.call_lines { rendered.insert("callHtml".into(), ansi_lines_to_html(lines).into()); }
+        if let Some(lines) = &state.collapsed_lines { rendered.insert("resultHtmlCollapsed".into(), ansi_lines_to_html(lines).into()); }
+        if let Some(lines) = &state.result_lines { rendered.insert("resultHtmlExpanded".into(), ansi_lines_to_html(lines).into()); }
+        (!rendered.is_empty()).then_some(serde_json::Value::Object(rendered))
     }
 }
 
@@ -104,4 +131,5 @@ mod tests {
     fn result_lines_all_blank_become_empty() {
         assert!(trim_rendered_result_lines(vec!["".into(), "\x1b[1m  \x1b[0m".into()]).is_empty());
     }
+
 }
