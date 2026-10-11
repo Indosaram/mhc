@@ -43,8 +43,8 @@ pub fn request_signature(key: &SigningKey, id: &str, ts: &str, version: &str, se
 
 #[derive(Default)]
 struct State { checked: Option<f64>, key: Option<SigningKey> }
-pub struct Signing { states: Mutex<BTreeMap<String, std::sync::Arc<tokio::sync::Mutex<State>>>>, gate: String, handshake: String }
-impl Default for Signing { fn default() -> Self { Self { states: Mutex::default(), gate: SIGNING_GATE_URL.into(), handshake: SIGNING_HANDSHAKE_URL.into() } } }
+pub struct Signing { states: Mutex<BTreeMap<String, std::sync::Arc<tokio::sync::Mutex<State>>>>, pub(crate) gate: String, pub(crate) handshake: String, pub(crate) now: std::sync::Arc<dyn Fn() -> f64 + Send + Sync> }
+impl Default for Signing { fn default() -> Self { Self { states: Mutex::default(), gate: SIGNING_GATE_URL.into(), handshake: SIGNING_HANDSHAKE_URL.into(), now: std::sync::Arc::new(crate::oauth::now_ms) } } }
 impl Signing {
     async fn resolve_inner(&self, headers: &BTreeMap<String, Option<String>>) -> Result<BTreeMap<String, String>, ExtensionFailure> {
         if headers.get("X-ZCode-Agent").and_then(|value| value.as_deref()) != Some("glm") { return Ok(BTreeMap::new()); }
@@ -56,7 +56,7 @@ impl Signing {
         let state = self.states.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(api_key.into()).or_default().clone();
         let mut state = state.lock().await;
         let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().map_err(|error| ExtensionFailure::new(error.to_string()))?;
-        if !state.checked.is_some_and(|checked| crate::oauth::now_ms() - checked < 3_600_000.0) {
+        if !state.checked.is_some_and(|checked| (self.now)() - checked < 3_600_000.0) {
             let mut request = client.get(&self.gate).header("x-api-key", api_key).timeout(Duration::from_secs(15));
             for (key, value) in headers {
                 if key != "X-ZCode-Agent" && key != "Authorization" && !key.starts_with("x-") && !key.starts_with("X-Client") && let Some(value) = value.as_ref().filter(|value| !value.is_empty()) { request = request.header(key, value); }
@@ -65,21 +65,23 @@ impl Signing {
             if !response.status().is_success() { state.checked = None; return Ok(BTreeMap::new()); }
             let payload: Value = response.json().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
             if payload.get("code").and_then(Value::as_i64) != Some(0) || payload.pointer("/data/codingPlanSignature/enable") != Some(&Value::Bool(true)) { state.checked = None; return Ok(BTreeMap::new()); }
-            state.checked = Some(crate::oauth::now_ms());
+            state.checked = Some((self.now)());
         }
         if state.key.is_none() {
-            let ts = crate::oauth::now_ms().floor().to_string();
+            let ts = (self.now)().floor().to_string();
             let nonce = random_nonce();
             let signature = handshake_signature(id, secret, &ts, &nonce)?;
             let response = client.post(&self.handshake).header("Authorization", api_key).json(&json!({"apiKey":api_key,"nonce":nonce,"sig":signature,"ts":ts})).timeout(Duration::from_secs(10)).send().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
             if response.status().as_u16() != 200 { return Err(ExtensionFailure::new(format!("glm-zcode: signing handshake HTTP status {}", response.status().as_u16()))); }
             let payload: Value = response.json().await.map_err(|error| ExtensionFailure::new(error.to_string()))?;
+            if !payload.is_object() { return Err(ExtensionFailure::new("glm-zcode: signing handshake response was not an object")); }
+            if payload.get("code").and_then(Value::as_i64) == Some(500) { return Err(ExtensionFailure::new("glm-zcode: signing handshake reported code 500")); }
             if payload.get("code").and_then(Value::as_i64) != Some(200) { return Err(ExtensionFailure::new("glm-zcode: signing handshake was rejected")); }
             let cipher = payload.pointer("/data/privateCipher").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or_else(|| ExtensionFailure::new("glm-zcode: signing handshake omitted privateCipher"))?;
             state.key = Some(decrypt_private_key(id, secret, cipher)?);
         }
         let key = state.key.as_ref().ok_or_else(|| ExtensionFailure::new("glm-zcode: signing key unavailable"))?;
-        let ts = crate::oauth::now_ms().floor().to_string();
+        let ts = (self.now)().floor().to_string();
         let nonce = random_nonce();
         let pow = solve_pow(id, session_id(), &ts, &nonce)?;
         let version = crate::models::app_version();
@@ -140,6 +142,7 @@ mod tests {
                 loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } let lower = line.to_lowercase(); if let Some(value) = lower.strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } headers.push_str(&lower); }
                 let payload = if endpoint == "/gate" {
                     assert!(headers.contains("x-api-key: kid123.sec456")); assert!(!headers.contains("x-zcode-agent:"));
+                    assert!(headers.contains("x-title: fixture")); assert!(!headers.contains("x-client-sig:")); assert!(!headers.contains("x-query-id:")); assert!(!headers.contains("authorization:"));
                     json!({"code":0,"data":{"codingPlanSignature":{"enable":true}}})
                 } else {
                     assert!(headers.contains("authorization: kid123.sec456")); let mut bytes = vec![0;length]; reader.read_exact(&mut bytes).unwrap(); let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -150,9 +153,8 @@ mod tests {
             }
         });
         let signing = Signing { gate: format!("{base}/gate"), handshake: format!("{base}/handshake"), ..Default::default() };
-        let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
-        let first = signing.resolve(&headers).await; peer.join().unwrap();
-        let second = signing.resolve(&headers).await;
+        let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into())),("X-Title".into(),Some("fixture".into())),("X-Client-Sig".into(),Some("old-signature".into())),("x-query-id".into(),Some("old-query".into()))]);
+        let (first,second) = tokio::join!(signing.resolve(&headers),signing.resolve(&headers)); peer.join().unwrap();
         assert_ne!(first["X-Client-Nonce"],second["X-Client-Nonce"]);
         assert_eq!(first["X-Session-Id"],second["X-Session-Id"]);
         for headers in [first,second] {
@@ -175,5 +177,57 @@ mod tests {
         let signing = Signing { gate: format!("{base}/gate"), handshake: format!("{base}/handshake"), ..Default::default() };
         let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
         assert!(signing.resolve(&headers).await.is_empty()); assert!(signing.resolve(&headers).await.is_empty()); peer.join().unwrap();
+    }
+    #[tokio::test]
+    async fn gate_affirmative_is_cached_for_the_ttl_and_rechecked_after_expiry() {
+        use std::io::{BufRead,Read,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let (cipher,_) = encrypted_key();
+        let peer = std::thread::spawn(move || {
+            for endpoint in ["/gate","/handshake","/gate"] {
+                let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.contains(endpoint),"{line}");
+                let mut length = 0; loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } else if let Some(value) = line.to_lowercase().strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } }
+                let mut request_body = vec![0;length]; reader.read_exact(&mut request_body).unwrap();
+                let payload = if endpoint == "/gate" { json!({"code":0,"data":{"codingPlanSignature":{"enable":true}}}) } else { json!({"code":200,"data":{"privateCipher":cipher.clone()}}) };
+                let body = payload.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        let clock = std::sync::Arc::new(Mutex::new(0.0f64)); let clock_reader = std::sync::Arc::clone(&clock);
+        let signing = Signing { gate:format!("{base}/gate"),handshake:format!("{base}/handshake"),now:std::sync::Arc::new(move || *clock_reader.lock().unwrap_or_else(std::sync::PoisonError::into_inner)),..Default::default() };
+        let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
+        assert!(!signing.resolve(&headers).await.is_empty()); assert!(!signing.resolve(&headers).await.is_empty());
+        *clock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = 3_600_001.0;
+        assert!(!signing.resolve(&headers).await.is_empty()); peer.join().unwrap();
+    }
+    #[tokio::test]
+    async fn rejected_gate_responses_are_never_cached_or_handshaked() {
+        use std::io::{BufRead,Write};
+        for (status,payload) in [(200,json!({"code":1,"data":{}})),(500,json!({})),(200,json!({"code":0,"data":{"codingPlanSignature":{"enable":false}}}))] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || { for _ in 0..2 { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with("GET /gate "),"unexpected non-gate request {line}");
+                loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } }
+                let body = payload.to_string(); write!(stream,"HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); } });
+            let signing = Signing { gate:format!("{base}/gate"),handshake:format!("{base}/handshake"),..Default::default() };
+            let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
+            assert!(signing.resolve(&headers).await.is_empty()); assert!(signing.resolve(&headers).await.is_empty()); peer.join().unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn malformed_handshake_responses_fail_open_and_retry() {
+        use std::io::{BufRead,Read,Write};
+        for payload in [json!({"code":500}),json!([1,2]),json!({"code":200,"data":{}}),json!({"code":200,"data":{"privateCipher":"not-base64!!"}})] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || { for path in ["/gate","/handshake","/handshake"] { let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.contains(path),"{line}");
+                let mut length = 0; loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } else if let Some(value) = line.to_lowercase().strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } }
+                let mut request_body = vec![0;length]; reader.read_exact(&mut request_body).unwrap();
+                let response = if path == "/gate" { json!({"code":0,"data":{"codingPlanSignature":{"enable":true}}}) } else { payload.clone() };
+                let body = response.to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap(); } });
+            let signing = Signing { gate:format!("{base}/gate"),handshake:format!("{base}/handshake"),..Default::default() };
+            let headers = BTreeMap::from([("X-ZCode-Agent".into(),Some("glm".into())),("Authorization".into(),Some("Bearer kid123.sec456".into()))]);
+            assert!(signing.resolve(&headers).await.is_empty()); assert!(signing.resolve(&headers).await.is_empty()); peer.join().unwrap();
+        }
     }
 }
