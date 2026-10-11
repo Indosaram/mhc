@@ -108,7 +108,7 @@ pub fn omo_components(
     options: &OmoComponentOptions,
 ) -> Vec<OmoSenpiComponent> {
     let skills_root = options.skills_root.clone();
-    let mut components = Vec::with_capacity(25);
+    let mut components = Vec::with_capacity(24);
     components.push(component("config-startup", maho_omo_config_startup::ConfigStartupComponent::default()));
     components.push(component("model-profile", maho_omo_model_profile::ModelProfileComponent::new(
         maho_omo_model_profile::ModelProfileComponentOptions { load_config: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
@@ -126,7 +126,6 @@ pub fn omo_components(
             });
         component.register(api);
     }));
-    components.push(component("native-badge", maho_omo_native_badge::NativeBadgeComponent));
     components.push(component(
         "onboarding",
         maho_omo_onboarding::OnboardingComponent {
@@ -215,7 +214,6 @@ pub fn omo_component_names() -> Vec<&'static str> {
         "model-profile",
         "bundled-skills",
         "skill-commands",
-        "native-badge",
         "onboarding",
         "init-deep-advisor",
         "telemetry",

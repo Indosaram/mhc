@@ -43,6 +43,7 @@ pub mod markdown_transform;
 pub mod mermaid;
 pub mod model_favorites;
 pub mod model_selector;
+pub mod neon_border;
 pub mod oauth_selector;
 pub mod progressive_transcript_container;
 pub mod render_signature;

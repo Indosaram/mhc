@@ -105,7 +105,6 @@ members = [
     "crates/omo/senpi-desktop-run",
     "crates/omo/senpi-desktop-tool",
     "crates/omo/components/maho-omo-agent-home",
-    "crates/omo/components/maho-omo-native-badge",
     "crates/omo/components/maho-omo-onboarding",
     "crates/omo/components/maho-omo-mass-ulw",
     "crates/omo/components/maho-omo-todo-fanout-reminder",
