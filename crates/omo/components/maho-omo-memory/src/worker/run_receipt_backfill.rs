@@ -46,15 +46,7 @@ fn terminal_receipt(run_dir: &Path) -> Option<MemoryReceiptInput> {
         let final_val = read_sentinel(&final_path)?;
         let outcome_str = final_val.get("outcome")?.as_str()?;
         let outcome = parse_outcome(outcome_str)?;
-        let ledger = ledger.or_else(|| {
-            Some(RunReceiptLedger {
-                kind: final_val.get("kind")?.as_str()?.to_string(),
-                run_id: final_val.get("runId")?.as_str()?.to_string(),
-                trigger: final_val.get("trigger").and_then(|v| v.as_str()).unwrap_or("manual").to_string(),
-                origin: final_val.get("origin").and_then(|v| v.as_str()).map(str::to_string),
-                started_at: final_val.get("generation")?.as_str()?.to_string(),
-            })
-        })?;
+        let ledger = ledger?;
         let settled = if let Some(generation_str) = final_val.get("generation").and_then(|v| v.as_str()) {
             RunReceiptLedger {
                 started_at: generation_str.to_string(),

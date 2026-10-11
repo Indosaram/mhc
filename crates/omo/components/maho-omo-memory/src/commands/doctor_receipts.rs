@@ -48,12 +48,9 @@ pub struct QuarantinedRun {
     pub evidence: Vec<String>,
 }
 
-pub fn check_receipts(runtime_dir: &Path, now_ms: i64) -> (DoctorCheck, ReceiptSummaries) {
-    let read_res = read_memory_receipts(runtime_dir, &ReadMemoryReceiptsOptions::default());
-    let (receipts, skipped_partial_lines) = match read_res {
-        Ok(read) => (read.receipts, read.skipped_partial_lines),
-        Err(_) => (Vec::new(), 0),
-    };
+pub fn check_receipts(runtime_dir: &Path, now_ms: i64) -> Result<(DoctorCheck, ReceiptSummaries), String> {
+    let read = read_memory_receipts(runtime_dir, &ReadMemoryReceiptsOptions::default())?;
+    let (receipts, skipped_partial_lines) = (read.receipts, read.skipped_partial_lines);
 
     let find_newest = |kind: &str| -> Option<ReceiptSummary> {
         receipts.iter().find_map(|r| {
@@ -101,7 +98,7 @@ pub fn check_receipts(runtime_dir: &Path, now_ms: i64) -> (DoctorCheck, ReceiptS
         detail: format!("{}{}", parts.join("; "), skipped),
     };
 
-    (check, summaries)
+    Ok((check, summaries))
 }
 
 pub fn check_quarantined_runs(reflection_dir: &Path) -> (DoctorCheck, Vec<QuarantinedRun>) {
@@ -271,18 +268,10 @@ fn describe(kind: &str, summary: Option<&ReceiptSummary>, now_ms: i64) -> String
     let label = if let Some(reason) = &summary.reason {
         reason.clone()
     } else if let Some(run_id) = &summary.run_id {
-        let prefix = if run_id.len() > 8 {
-            &run_id[..8]
-        } else {
-            run_id
-        };
+        let prefix = String::from_utf16_lossy(&run_id.encode_utf16().take(8).collect::<Vec<_>>());
         format!("run {prefix}")
     } else if let Some(batch_id) = &summary.batch_id {
-        let prefix = if batch_id.len() > 8 {
-            &batch_id[..8]
-        } else {
-            batch_id
-        };
+        let prefix = String::from_utf16_lossy(&batch_id.encode_utf16().take(8).collect::<Vec<_>>());
         format!("batch {prefix}")
     } else {
         String::new()
@@ -322,9 +311,9 @@ fn age(at: &str, now_ms: i64) -> String {
 }
 
 fn bound(text: &str) -> String {
-    if text.len() <= TEXT_LIMIT {
+    if text.encode_utf16().count() <= TEXT_LIMIT {
         text.to_string()
     } else {
-        format!("{}...", &text[..TEXT_LIMIT - 3])
+        format!("{}...", String::from_utf16_lossy(&text.encode_utf16().take(TEXT_LIMIT - 3).collect::<Vec<_>>()))
     }
 }

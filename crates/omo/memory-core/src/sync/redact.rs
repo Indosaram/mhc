@@ -45,7 +45,7 @@ pub fn contains_secret_like_material(value: &str) -> bool {
 }
 
 /// Mask every secret-like pattern in upstream order, then every complete PEM block.
-fn redact_secret_like_material(value: &str) -> String {
+pub fn redact_secret_like_material(value: &str) -> String {
     let mut units: Vec<u16> = value.encode_utf16().collect();
     for pattern in SECRET_PATTERNS.iter() {
         units = replace_all_ucs2(pattern, &units);
