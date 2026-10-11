@@ -116,9 +116,7 @@ impl std::fmt::Display for McpServerSource {
         f.write_str(match self { Self::Global => "global", Self::Claude => "claude", Self::Project => "project", Self::Skill => "skill", Self::Extension => "extension" })
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum McpServerState { Enabled, Disabled, Untrusted }
+pub use maho_ext_api::mcp_wire::McpServerState;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedMcpServer {
