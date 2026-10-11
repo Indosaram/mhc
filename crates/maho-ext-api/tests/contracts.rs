@@ -124,6 +124,22 @@ fn extension_tool_executor_is_published_only_after_factory_commit() {
 }
 
 #[test]
+fn context_executor_and_renderers_register_together() {
+    let runtime = ExtensionRuntime::default();
+    let scope = runtime.registration_scope();
+    let mut api = api(scope.clone());
+    let definition = ToolDefinition::new("combined", "combined", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("legacy")) })));
+    let execute: ExtensionToolExecutor = Arc::new(|_, _, _, _, _| Box::pin(async { Ok(AgentToolResult::text("done")) }));
+    let renderers = ToolRenderers::<(), JsonValue> { render_call: None, render_result: None };
+    api.register_tool_with_extension_context_and_renderers(definition, execute, renderers).unwrap();
+    assert!(api.registered.erased_tool_renderers.contains_key("combined"));
+    assert!(runtime.extension_tool_executor("test", "combined").is_none());
+    scope.commit_registration().unwrap();
+    assert!(runtime.extension_tool_executor("test", "combined").is_some());
+    assert!(runtime.live_erased_tool_renderer("test", "combined").is_some_and(|renderer| renderer.is_some()));
+}
+
+#[test]
 fn captured_api_event_bus_rejects_access_after_runtime_replacement() {
     let runtime = ExtensionRuntime::default();
     let api = api(runtime.clone());
@@ -360,6 +376,22 @@ fn typed_tool_renderer_retains_state_across_render_calls() {
     api.register_tool(ToolDefinition::new("rendered", "replacement", JsonValue::Object(Default::default()),
         Arc::new(|_| Box::pin(async { Ok(ToolResult::text("replacement")) }))));
     assert!(!api.registered.tool_renderers.contains_key("rendered"));
+}
+
+#[test]
+fn context_executor_and_renderers_publish_without_a_registration_scope() {
+    let mut api = api(ExtensionRuntime::default());
+    let executor: ExtensionToolExecutor = Arc::new(|_, _, _, _, _| Box::pin(async { Ok(AgentToolResult::text("done")) }));
+    let renderers = ToolRenderers::<(), JsonValue> { render_call: None, render_result: None };
+    api.register_tool_with_extension_context_and_renderers(
+        ToolDefinition::new("combined", "combined", JsonValue::Object(Default::default()),
+            Arc::new(|_| Box::pin(async { Ok(ToolResult::text("done")) }))),
+        executor,
+        renderers,
+    ).unwrap();
+
+    assert!(api.registered.erased_tool_renderers.contains_key("combined"));
+    assert!(api.runtime.extension_tool_executor("test", "combined").is_some());
 }
 
 #[test]
