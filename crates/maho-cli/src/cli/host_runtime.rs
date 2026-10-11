@@ -261,6 +261,17 @@ pub async fn mount_agent_session_runtime(
         },
     )
     .await?;
+    let mut theme_paths = Vec::new();
+    let cwd = created.session.cwd();
+    let agent_dir = created.session.agent_dir();
+    let mut theme_settings = maho_core::settings_manager::SettingsManager::in_memory(created.session.with_settings_manager(|settings| settings.get_global().clone()), false);
+    let packages = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut theme_settings });
+    match packages.resolve(None).await {
+        Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource|resource.enabled).map(|resource|PathBuf::from(resource.path))),
+        Err(error) => eprintln!("package themes: {error}"),
+    }
+    theme_paths.extend(config.resolved_theme_paths().into_iter().map(PathBuf::from));
+    super::default_extensions::configure_rpc_html_theme_with_paths(&created.session, theme_paths);
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&launch_config, settings));
     created.session.set_hook_sources(Some(hooks));
