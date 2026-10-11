@@ -534,6 +534,7 @@ pub struct AgentSessionInner {
     fallback_validation_warnings: Vec<String>,
     agent_subscription: Mutex<Option<maho_agent::agent::AgentSubscription>>,
     prompt_admission: tokio::sync::Mutex<()>,
+    reload_admission: tokio::sync::Mutex<()>,
     binding_readiness: Mutex<Option<BindingPromptReadiness>>,
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
@@ -1662,6 +1663,7 @@ impl AgentSession {
             fallback_validation_warnings,
             agent_subscription: Mutex::new(None),
             prompt_admission: tokio::sync::Mutex::new(()),
+            reload_admission: tokio::sync::Mutex::new(()),
             binding_readiness: Mutex::new(None),
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
@@ -4026,6 +4028,7 @@ impl AgentSession {
     }
 
     pub async fn reload(&self) -> Result<bool, String> {
+        let _reload = self.reload_admission.lock().await;
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
         self.ensure_extension_recreation().await?;
         self.abort().await;
@@ -9134,6 +9137,50 @@ mod tests {
         })).await.expect("bounded faux request").expect("prompt");
         session.dispose().await;
         assert_eq!(*lock(&received), vec![Some(rebuilt)]);
+    }
+
+    #[tokio::test]
+    async fn concurrent_reload_keeps_each_runtime_active_until_its_shutdown() {
+        let session = test_session();
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let blocked = release.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = calls.clone();
+        let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
+            path: "<inline:reload-order>".into(), source_info: Default::default(),
+            factory: Arc::new(move |api| {
+                let runtime = api.runtime.clone();
+                let started = started.clone(); let blocked = blocked.clone(); let count = count.clone();
+                api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+                    let runtime = runtime.clone(); let started = started.clone(); let blocked = blocked.clone(); let count = count.clone();
+                    Box::pin(async move {
+                        if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            started.send(()).expect("shutdown observer");
+                            blocked.notified().await;
+                        }
+                        runtime.assert_active()?;
+                        Ok(maho_ext_api::EventResult::None)
+                    })
+                }));
+                Box::pin(async { Ok(()) })
+            }),
+        };
+        let runner = maho_ext_host::ExtensionRunner::from_async_factories(vec![factory], test_extension_context(&session), Default::default()).await.expect("factory");
+        session.set_extension_runner(runner).await;
+        let first_session = session.clone();
+        let first = tokio::spawn(async move { first_session.reload().await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), starts.recv()).await.expect("shutdown starts").expect("shutdown event");
+        let second = session.reload(); tokio::pin!(second);
+        assert!(futures::poll!(&mut second).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            assert!(first.await.expect("first task").expect("first reload"));
+            assert!(second.await.expect("second reload"));
+        }).await.expect("bounded reloads");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        session.dispose().await;
     }
 
     #[tokio::test]
