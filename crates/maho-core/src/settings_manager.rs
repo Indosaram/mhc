@@ -642,6 +642,22 @@ impl SettingsManager {
         self.settings.get(key)
     }
 
+    pub fn get_model_service_tier(&self, provider: &str, model_id: &str) -> Option<&str> {
+        let key = format!("{provider}/{model_id}");
+        self.settings.get("modelServiceTiers")?.get(&key)?.as_str()
+            .filter(|tier| matches!(*tier, "auto" | "flex" | "priority"))
+    }
+
+    pub fn set_model_service_tier(&mut self, provider: &str, model_id: &str, tier: &str) -> Result<(), String> {
+        if !matches!(tier, "auto" | "flex" | "priority") {
+            return Err(format!("Invalid model service tier: {tier}"));
+        }
+        let mut tiers = self.global_settings.get("modelServiceTiers")
+            .and_then(Value::as_object).cloned().unwrap_or_default();
+        tiers.insert(format!("{provider}/{model_id}"), Value::String(tier.to_owned()));
+        self.set(SettingsScope::Global, &Settings::from_iter([("modelServiceTiers".into(), Value::Object(tiers))]))
+    }
+
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.settings.get(key).and_then(Value::as_str).map(str::to_owned)
     }
@@ -853,6 +869,16 @@ mod tests {
     fn strips_a_byte_order_mark() {
         let parsed = settings("\u{feff}{\"a\":1}");
         assert_eq!(parsed["a"], 1);
+    }
+
+    #[test]
+    fn model_service_tier_is_global_validated_and_persisted() {
+        let mut manager = SettingsManager::in_memory(settings(r#"{"modelServiceTiers":{"openai/codex":"priority","openai/invalid":"bogus"}}"#), false);
+        assert_eq!(manager.get_model_service_tier("openai", "codex"), Some("priority"));
+        assert_eq!(manager.get_model_service_tier("openai", "invalid"), None);
+        manager.set_model_service_tier("openai", "codex", "auto").expect("persist tier");
+        assert_eq!(manager.get_global()["modelServiceTiers"]["openai/codex"], "auto");
+        assert!(manager.set_model_service_tier("openai", "codex", "bogus").is_err());
     }
 
     #[test]

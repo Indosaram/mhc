@@ -48,7 +48,12 @@ impl ModelsAuth for RuntimeAuth {
                 return Ok(Some(AuthResolution{auth,env:overrides.env.clone()}));
             }
             drop(mutation);
-            let key = overrides.api_key.as_deref().or_else(|| stored.as_ref().and_then(crate::auth_storage::credential_key));
+            let stored_key = if overrides.api_key.is_none() && let Some(raw) = stored.as_ref().and_then(crate::auth_storage::credential_key) {
+                let credential_env = stored.as_ref().and_then(crate::auth_storage::credential_env);
+                let Some(key) = crate::resolve_config_value::resolve_config_value(raw, credential_env.as_ref()).await else { return Ok(None); };
+                Some(key)
+            } else { None };
+            let key = overrides.api_key.as_deref().or(stored_key.as_deref());
             let env = overrides.env.as_ref().map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
             let auth = crate::provider_api_key_auth::resolve_configured_auth(provider.id(),config.as_ref(),extension.as_ref().map(|e|&e.config),key,env.as_ref()).await
                 .map_err(|e| ModelsError::new(ModelsErrorCode::Auth,e))?;
