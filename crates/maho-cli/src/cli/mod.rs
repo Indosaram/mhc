@@ -42,4 +42,5 @@ pub mod codemode_services;
 pub mod task_runners;
 pub mod doctor;
 pub mod default_extensions;
+pub mod user_extensions;
 pub mod task_session;
