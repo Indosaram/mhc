@@ -10,21 +10,41 @@ impl maho_tui::components::editor::EditorTuiHost for EditorHost {
 }
 
 fn native_mode() -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
-    native_mode_at(None)
+    native_mode_with_provider(None, "faux", "faux-1", false)
+}
+
+fn native_mode_with_provider(
+    cwd_override: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    unknown_initial_model: bool,
+) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
+    native_mode_with_session_and_provider(cwd_override, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), provider_id, model_id, unknown_initial_model)
 }
 
 fn native_mode_at(cwd_override:Option<&str>) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
-    native_mode_with_session(cwd_override, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None))
+    native_mode_with_provider(cwd_override, "faux", "faux-1", false)
 }
 
 fn native_mode_with_session(cwd_override:Option<&str>, session_manager: impl FnOnce(&str) -> maho_core::session_manager::SessionManager) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
+    native_mode_with_session_and_provider(cwd_override, session_manager, "faux", "faux-1", false)
+}
+
+fn native_mode_with_session_and_provider(cwd_override:Option<&str>, session_manager: impl FnOnce(&str) -> maho_core::session_manager::SessionManager, provider_id: &str, model_id: &str, unknown_initial_model: bool) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir) {
+    let (mode, directory, _) = native_mode_with_session_and_provider_retaining_session(cwd_override, session_manager, provider_id, model_id, unknown_initial_model);
+    (mode, directory)
+}
+
+fn native_mode_with_session_and_provider_retaining_session(cwd_override:Option<&str>, session_manager: impl FnOnce(&str) -> maho_core::session_manager::SessionManager, provider_id: &str, model_id: &str, unknown_initial_model: bool) -> (maho_interactive::interactive_mode::InteractiveMode, tempfile::TempDir, std::sync::Arc<maho_core::agent_session::AgentSession>) {
     use std::sync::Arc;
-    use maho_ai::providers::faux::{FauxAssistantMessageOptions, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider, faux_streams};
     use maho_core::agent_session::{AgentSession, AgentSessionConfig};
     let directory = tempfile::tempdir().expect("directory");
     let cwd = cwd_override.map_or_else(||directory.path().to_string_lossy().into_owned(),str::to_owned);
-    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), tokens_per_second: Some(0.0), ..Default::default() });
-    let model = provider.get_model(Some("faux-1")).expect("model");
+    let provider = faux_provider(RegisterFauxProviderOptions { api: Some("faux".into()), provider: Some(provider_id.into()), models: Some(vec![FauxModelDefinition { id: model_id.into(), ..Default::default() }]), tokens_per_second: Some(0.0), ..Default::default() });
+    let model = if unknown_initial_model {
+        maho_ai::types::Model { provider: "unknown".into(), id: "unknown".into(), ..provider.get_model(Some(model_id)).expect("model") }
+    } else { provider.get_model(Some(model_id)).expect("model") };
     provider.set_responses(vec![faux_assistant_message("hello", FauxAssistantMessageOptions { timestamp: Some(0), ..Default::default() }).into()]);
     let streams = faux_streams(provider.core.clone());
     let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
@@ -49,8 +69,9 @@ fn native_mode_with_session(cwd_override:Option<&str>, session_manager: impl FnO
         default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None, excluded_tool_names: None, base_tools_override: None,
         session_start_event: None, auto_title_sessions: Some(false),
     }).expect("session");
-    let mode = maho_interactive::interactive_mode::InteractiveMode::new(Arc::new(session), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
-    (mode, directory)
+    let session = Arc::new(session);
+    let mode = maho_interactive::interactive_mode::InteractiveMode::new(session.clone(), maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme"), std::rc::Rc::new(EditorHost));
+    (mode, directory, session)
 }
 
 #[tokio::test]
@@ -108,6 +129,125 @@ async fn enter_captures_editor_text_clears_draft_and_submits_native_prompt() {
     assert_eq!(mode.submit_editor().await.expect("submit"), Some(maho_core::agent_session::PromptDisposition::Started));
     assert!(mode.render(80).join("\n").contains("hello"));
     assert_eq!(mode.submit_editor().await.expect("empty submission queue"), None);
+}
+
+async fn next_auth_lifecycle_event(
+    mode: &mut maho_interactive::interactive_mode::InteractiveMode,
+    events: &mut tokio::sync::broadcast::Receiver<maho_interactive::interactive_mode::AuthLifecycleEvent>,
+    mut wanted: impl FnMut(&maho_interactive::interactive_mode::AuthLifecycleEvent) -> bool,
+) -> maho_interactive::interactive_mode::AuthLifecycleEvent {
+    let mut observed = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                event = events.recv() => {
+                    let event = event.expect("authentication lifecycle channel");
+                    if wanted(&event) { return event; }
+                    observed.push(event);
+                }
+                event = mode.drain_next_auth_event() => {
+                    event.expect("authentication event channel");
+                }
+            }
+        }
+    }).await.unwrap_or_else(|_| panic!("bounded authentication lifecycle event; observed: {observed:?}"))
+}
+
+#[tokio::test]
+async fn login_api_key_saves_credential_and_logout_removes_it() {
+    use maho_interactive::interactive_mode::{AuthLifecycleEvent, AuthLifecycleOutcome};
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    let auth_path = directory.path().join("auth.json");
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/login-provider faux api_key", None);
+    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
+    mode.handle_input("test-key");
+    mode.handle_input("\r");
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCompleted { provider_name, method: maho_interactive::login_outcome::LoginMethod::ApiKey, outcome: AuthLifecycleOutcome::Success }
+            if provider_name == "faux"));
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCatalogCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCatalogCompleted { provider_name, outcome: Ok(()), selection_error: None } if provider_name == "faux"));
+    let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&auth_path).expect("auth file")).expect("auth json");
+    assert_eq!(stored["faux"]["key"], "test-key");
+
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/logout", None);
+    assert_eq!(mode.dispatch_submission().await.expect("logout"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    mode.handle_input("\r");
+    assert_eq!(mode.dispatch_submission().await.expect("logout provider"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LogoutCompleted { .. })).await,
+        AuthLifecycleEvent::LogoutCompleted { provider_name, auth_type: maho_interactive::components::oauth_selector::AuthSelectorAuthType::ApiKey, outcome: Ok(()) }
+            if provider_name == "faux"));
+    let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&auth_path).expect("auth file")).expect("auth json");
+    assert!(stored.get("faux").is_none(), "logout must remove the stored credential: {stored}");
+}
+
+#[tokio::test]
+async fn login_cached_default_is_selected_before_catalog_refresh_completes() {
+    use maho_interactive::interactive_mode::{AuthLifecycleEvent, AuthLifecycleOutcome};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
+    let session_id = session.session_id();
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
+    mode.handle_input("test-key");
+    mode.handle_input("\r");
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCompleted { provider_name, method: maho_interactive::login_outcome::LoginMethod::ApiKey, outcome: AuthLifecycleOutcome::Success } if provider_name == "anthropic"));
+    assert_eq!(session.model().provider, "anthropic");
+    assert_eq!(session.model().id, "claude-opus-4-8");
+    assert_eq!(session.session_id(), session_id);
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCatalogCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCatalogCompleted { outcome: Ok(()), selection_error: None, .. }));
+    assert_eq!(session.model().provider, "anthropic");
+    assert_eq!(session.model().id, "claude-opus-4-8");
+    assert_eq!(session.session_id(), session_id);
+}
+
+#[tokio::test]
+async fn login_catalog_completion_does_not_replace_a_new_session_model() {
+    use maho_interactive::interactive_mode::{AuthLifecycleEvent, AuthLifecycleOutcome};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
+    mode.handle_input("test-key");
+    mode.handle_input("\r");
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCompleted { outcome: AuthLifecycleOutcome::Success, .. }));
+    session.new_session(None).await.expect("new session");
+    let new_session_id = session.session_id();
+    let new_model = session.model();
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCatalogCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCatalogCompleted { outcome: Ok(()), selection_error: None, .. }));
+    assert_eq!(session.session_id(), new_session_id);
+    assert_eq!(session.model().provider, new_model.provider);
+    assert_eq!(session.model().id, new_model.id);
+}
+
+#[tokio::test]
+async fn login_cancel_shows_neutral_status_and_leaves_auth_unchanged() {
+    use maho_interactive::interactive_mode::{AuthLifecycleEvent, AuthLifecycleOutcome};
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    let auth_path = directory.path().join("auth.json");
+    let before = std::fs::read_to_string(&auth_path).ok();
+    let mut events = mode.subscribe_auth_lifecycle();
+    mode.enqueue_submission("/login-provider faux api_key", None);
+    assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
+    mode.handle_input("\u{1b}");
+    assert!(matches!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::LoginCompleted { .. })).await,
+        AuthLifecycleEvent::LoginCompleted { provider_name, method: maho_interactive::login_outcome::LoginMethod::ApiKey, outcome: AuthLifecycleOutcome::Cancelled }
+            if provider_name == "faux"));
+    assert_eq!(std::fs::read_to_string(&auth_path).ok(), before);
 }
 
 #[tokio::test]
@@ -1344,6 +1484,13 @@ async fn replacement_commands_route_through_the_mounted_session_host() {
             let calls = self.calls.clone();
             Box::pin(async move { calls.lock().expect("calls").push(format!("fork:{entry_id}:{include_entry}")); Ok(ForkOutcome { outcome: ReplacementOutcome::Replaced, editor_text: Some("selected".into()) }) })
         }
+        fn export_html(&self, output_path: Option<String>, theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
+            let calls = self.calls.clone();
+            Box::pin(async move {
+                calls.lock().expect("calls").push(format!("export_html:{}:{}", output_path.as_deref().unwrap_or(""), theme_name.as_deref().unwrap_or("")));
+                Ok(output_path)
+            })
+        }
         fn dispose(&self) -> SessionFuture<'_, ()> { Box::pin(async {}) }
     }
 
@@ -1355,6 +1502,8 @@ async fn replacement_commands_route_through_the_mounted_session_host() {
     mode.submit("/fork entry-1", Default::default()).await.expect("fork");
     assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session", "fork:entry-1:false"], "the mounted host receives /fork");
     assert_eq!(mode.editor.editor.get_text(), "selected", "the host fork's selected text prefills the editor");
+    mode.submit("/export remote.html", Default::default()).await.expect("remote export");
+    assert_eq!(calls.lock().expect("calls").last().map(String::as_str), Some("export_html:remote.html:dark"));
 }
 
 #[tokio::test]
