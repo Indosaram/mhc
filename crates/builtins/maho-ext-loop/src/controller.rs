@@ -56,6 +56,9 @@ impl NativeLoopController {
         let ticker=crate::status::LoopStatusTicker::new(Arc::new(move |key,text| { ui.set_status(key,text); Ok(()) }),self.now.clone());
         let mut session=Session { runtime,context:context.clone(),reference,timers:NodeTimerPort::new(),ticker,named:false };
         if session.runtime.store_failure.is_some() { self.refresh(&mut session).await?; *owner=Some(session); return Ok(()); }
+        // Upstream `loop/index.ts:766-775` seeds each loop's delivery state from its persisted
+        // sentinel, forcing full when the anchor is gone from the compaction-aware context.
+        session.runtime.restore_anchors(&crate::anchors::compaction_aware_entries(context));
         let restored=session.runtime.scheduler.restore((self.now)(),&[],|| (self.ids)("delivery"));
         self.persist(&mut session).await?;
         for tick in restored.recovery_ticks { self.dispatch(&mut session,&tick).await?; }

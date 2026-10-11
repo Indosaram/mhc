@@ -87,6 +87,105 @@ async fn vetoed_change_retries_and_completes_real_session_reload() {
     real_reload(true).await;
 }
 
+#[tokio::test]
+async fn external_handoff_change_is_rejected_under_its_registration_id() {
+    use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
+    use maho_ext_config_reload::protocol::*;
+    use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
+    let root = tempfile::tempdir().expect("reload fixture operation must succeed");
+    let external = tempfile::tempdir().expect("reload fixture operation must succeed");
+    let cwd = root.path().to_string_lossy().into_owned();
+    let external_path = external.path().join("external.json");
+    std::fs::write(&external_path, "{}").expect("external baseline created");
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = provider.get_model(Some("faux-1")).expect("reload fixture operation must succeed");
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+        models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default()
+    });
+    let session = create_agent_session(CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        settings_manager: Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false)),
+        auto_title_sessions: Some(false), ..Default::default()
+    }).await.expect("reload fixture operation must succeed").session;
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.session_manager = Arc::new(BoundSession(session.extension_context_actions()));
+    let (event_sender, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let subscriptions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let retained = Arc::clone(&subscriptions);
+    let watched_path = external_path.clone();
+    let factory: maho_ext_host::runner::RuntimeFactory = Arc::new(move |ctx| {
+        let event_sender = event_sender.clone();
+        let retained = Arc::clone(&retained);
+        let watched = watched_path.clone();
+        Box::pin(async move {
+            let before_reload_path = watched.clone();
+            let registration = RegisteredConfigWatch {
+                id: "external-config".into(),
+                display_name: "external config".into(),
+                targets: vec![ConfigWatchTargetSpec { path: watched.clone(), kind: maho_ext_api::ConfigWatchTargetKind::File, filter_globs: vec![] }],
+                validate: Arc::new(move |paths| {
+                    if paths.iter().any(|path| path == &before_reload_path) {
+                        ConfigWatchValidation::Rejected { errors: vec!["external config rejected".into()] }
+                    } else { ConfigWatchValidation::Ok }
+                }),
+            };
+            struct ConfigWatchOwner(RegisteredConfigWatch);
+            impl Extension for ConfigWatchOwner {
+                fn register(&self, api: &mut ExtensionApi) { api.register_config_watch(self.0.clone()); }
+            }
+            struct ChangeDuringReload { path: std::path::PathBuf, armed: Arc<std::sync::atomic::AtomicBool> }
+            impl Extension for ChangeDuringReload {
+                fn register(&self, api: &mut ExtensionApi) {
+                    let path = self.path.clone();
+                    let armed = Arc::clone(&self.armed);
+                    api.on(EventKind::SessionBeforeReload, Arc::new(move |_, _| {
+                        let path = path.clone();
+                        let armed = Arc::clone(&armed);
+                        Box::pin(async move {
+                            if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                                std::fs::write(path, "{\"changed\":true}").expect("handoff fixture changed");
+                            }
+                            Ok(EventResult::SessionBefore(SessionBeforeEventResult::default()))
+                        })
+                    }));
+                }
+            }
+            let loaded = load_extensions(vec![
+                NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) },
+                NativeExtensionFactory { path: "config-watch-owner".into(), source_info: Default::default(), extension: Box::new(ConfigWatchOwner(registration)) },
+                NativeExtensionFactory { path: "change-during-reload".into(), source_info: Default::default(), extension: Box::new(ChangeDuringReload { path: watched, armed: Arc::new(std::sync::atomic::AtomicBool::new(true)) }) },
+            ], &ctx.cwd, Default::default());
+            assert!(loaded.errors.is_empty());
+            let reloaded_sender = event_sender.clone();
+            let subscription = loaded.events.on(CONFIG_WATCH_RELOADED, Arc::new(move |value| { let _ = reloaded_sender.send(("reloaded", value.clone())); }));
+            retained.lock().expect("reload fixture operation must succeed").push(subscription);
+            let rejected_sender = event_sender.clone();
+            let subscription = loaded.events.on(CONFIG_WATCH_REJECTED, Arc::new(move |value| { rejected_sender.send(("rejected", value.clone())).expect("event receiver active"); }));
+            retained.lock().expect("reload fixture operation must succeed").push(subscription);
+            Ok(ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, ctx))
+        })
+    });
+    let mut runner = factory(ctx).await.expect("reload fixture operation must succeed");
+    runner.set_runtime_factory(factory);
+    session.set_extension_runner(runner).await;
+    session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    let staged = tempfile::NamedTempFile::new_in(root.path()).expect("reload fixture operation must succeed");
+    std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").expect("reload fixture operation must succeed");
+    std::fs::rename(staged.path(), root.path().join("keybindings.json")).expect("reload fixture operation must succeed");
+
+    let (first_kind, first) = tokio::time::timeout(std::time::Duration::from_secs(5), observed.recv()).await.expect("reload completion delivered").expect("event channel open");
+    assert_eq!(first_kind, "reloaded", "ordinary watcher validation must not satisfy the handoff regression");
+    assert_eq!(first["registrationId"], "builtin");
+    let (second_kind, rejection) = tokio::time::timeout(std::time::Duration::from_secs(5), observed.recv()).await.expect("handoff rejection delivered").expect("event channel open");
+    assert_eq!(second_kind, "rejected");
+    assert_eq!(rejection["registrationId"], "external-config");
+    assert_eq!(rejection["paths"], serde_json::json!([external_path.clone()]));
+    assert_eq!(rejection["errors"], serde_json::json!(["external config rejected"]));
+    session.dispose().await;
+}
+
 async fn real_reload(veto_once: bool) {
     use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
     use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
