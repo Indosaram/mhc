@@ -333,10 +333,10 @@ pub trait OAuthAuth: Send + Sync {
     async fn check(
         &self,
         _ctx: &dyn AuthContext,
-        _credential: Option<&OAuthCredential>,
+        credential: Option<&OAuthCredential>,
         _signal: &crate::utils::abort::AbortSignal,
     ) -> anyhow::Result<Option<AuthCheck>> {
-        Ok(None)
+        Ok(credential.map(|_| AuthCheck { source: Some("OAuth".to_owned()), auth_type: AuthType::OAuth }))
     }
 
     /// Side-effect-free derivation of request auth from a valid credential.

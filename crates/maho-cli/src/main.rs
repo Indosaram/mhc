@@ -80,7 +80,8 @@ fn run() -> Result<(), String> {
                 return output(&format!("{credential}\n"));
             }
             let requested = maho_cli::cli::auth_check::requested_provider(&parsed);
-            let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: Some(agent.join("auth.json")), ..Default::default() });
+            let auth_path = agent.join("auth.json");
+            let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: auth_path.exists().then_some(auth_path), ..Default::default() });
             let mut result = maho_cli::cli::auth_check::check_provider_auth(&parsed, &model_runtime, !command.no_refresh).await.unwrap_or(maho_cli::cli::auth_check::AuthCheckResult { status: maho_cli::cli::auth_check::AuthCheckStatus::Invalid, provider: requested, reason: Some(maho_cli::cli::auth_check::AuthCheckReason::InvalidState), auth_type: None });
             let mut credential = None;
             if command.credentials && result.status == maho_cli::cli::auth_check::AuthCheckStatus::Ready {
