@@ -45,4 +45,5 @@ pub mod default_extensions;
 pub mod reasoning_host;
 pub mod gpt_account_host;
 pub mod kernel_tools_host;
+pub mod user_extensions;
 pub mod task_session;
