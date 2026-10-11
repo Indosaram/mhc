@@ -22,7 +22,12 @@ fn parked_bundles()->&'static Mutex<std::collections::BTreeMap<String,TerminalSe
 pub fn park_bundle(session_key:&str,mut bundle:TerminalSessionBundle)->Result<(),crate::runtime_session::RuntimeError> {
     bundle.park();
     let previous=parked_bundles().lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.insert(session_key.to_owned(),bundle);
-    if let Some(mut previous)=previous {previous.teardown()?;}
+    // Re-parking the same generation (its arcs are shared with the bundle just stored) must not
+    // tear down the live terminals; only a genuinely different stale bundle is torn down.
+    if let Some(mut previous)=previous {
+        let same=parked_bundles().lock().map_err(|_|crate::runtime_session::RuntimeError::Poisoned)?.get(session_key).is_some_and(|stored|Arc::ptr_eq(&stored.manager,&previous.manager));
+        if !same {previous.teardown()?;}
+    }
     Ok(())
 }
 pub fn claim_parked_bundle(session_key:&str)->Option<TerminalSessionBundle> {parked_bundles().lock().expect("parked bundles").remove(session_key)}
@@ -132,6 +137,16 @@ mod tests {
         assert!(!manager.get(&id).unwrap().exited().unwrap());
         drop(manager);
         live.teardown().unwrap();
+    }
+    #[test]
+    fn park_same_bundle_twice_keeps_live_sessions() {
+        let live=TerminalSessionBundle::new(2);
+        let id=live.manager.lock().unwrap().create("sleeper",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read line")).unwrap();
+        park_bundle("park-twice-test",live.clone()).unwrap();
+        park_bundle("park-twice-test",live.clone()).unwrap();
+        assert!(!live.manager.lock().unwrap().get(&id).unwrap().exited().unwrap());
+        let mut claimed=claim_parked_bundle("park-twice-test").expect("parked bundle");
+        claimed.teardown().unwrap();
     }
     #[tokio::test]
     async fn parked_monitor_completion_flushes_into_new_owner() {
