@@ -452,15 +452,21 @@ fn parent_death_exits_the_proxy_while_stdin_stays_open() {
         ..inert_options(&root)
     };
     let (done_tx, done_rx) = mpsc::channel();
+    let (output_tx, output_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut output = Vec::new();
+        let mut output = ChannelOutput(output_tx);
         let outcome = run_mcp_stdio_proxy(input, &mut output, options).unwrap();
-        let _sent = done_tx.send((outcome, output));
+        let _sent = done_tx.send(outcome);
     });
-    parent_alive.store(false, Ordering::SeqCst);
-    let (outcome, output) = done_rx.recv_timeout(common::TIMEOUT).unwrap();
-    assert_eq!(outcome, ServerOutcome::ParentExit);
+    let mut output = Vec::new();
+    let deadline = std::time::Instant::now() + common::TIMEOUT;
+    while !output.contains(&b'\n') {
+        output.extend(output_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).unwrap());
+    }
     assert!(parse_responses(&output)[0]["result"]["serverInfo"].is_object());
+    parent_alive.store(false, Ordering::SeqCst);
+    let outcome = done_rx.recv_timeout(common::TIMEOUT).unwrap();
+    assert_eq!(outcome, ServerOutcome::ParentExit);
 }
 
 #[test]
