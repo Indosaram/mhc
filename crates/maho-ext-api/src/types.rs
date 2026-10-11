@@ -353,11 +353,14 @@ impl EventKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ExtensionMode { Tui, Rpc, AppServer, Json, #[default] Print }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SourceScope { User, Project, #[default] Temporary, System }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SourceOrigin { Package, #[default] TopLevel }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceInfo { pub path: String, pub source: String, pub scope: SourceScope, pub origin: SourceOrigin, pub base_dir: Option<String> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Skill { pub name: String, pub description: String, pub file_path: String, pub base_dir: String, pub source_info: SourceInfo, pub disable_model_invocation: bool }
@@ -428,6 +431,14 @@ pub trait ModelRegistry: Send + Sync {
     fn get_all(&self) -> Vec<Model>;
     fn get_available(&self) -> Vec<Model>;
     fn find(&self, provider: &str, id: &str) -> Option<Model>;
+    fn upstream_model_id(&self, model: &Model) -> String { model.upstream_model_id.clone().unwrap_or_else(|| model.id.clone()) }
+    fn catalog_service_tier(&self, model: &Model) -> Option<ServiceTier> {
+        model.service_tier.map(|tier| match tier {
+            maho_ai::types::ServiceTierPreference::Auto => ServiceTier::Auto,
+            maho_ai::types::ServiceTierPreference::Flex => ServiceTier::Flex,
+            maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
+        })
+    }
     fn has_configured_auth(&self, model: &Model) -> bool;
     /// senpi `registry.getProviderAuthStatus(provider)`: the configured/source status. The default
     /// body reports an absent accessor; the production registry overrides it with the runtime source.
@@ -530,6 +541,9 @@ pub struct WarmAnchorSnapshot { pub first_kept_entry_id: String, pub prefix_entr
 pub struct ApplyCompactionOptions { pub reason: CompactionReason, pub expected_revision: Option<u64>, pub expected_warm_anchor: Option<WarmAnchorSnapshot>, pub signal: Option<AbortSignal> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApplyCompactionResult { Applied, Stale, Rejected }
+#[derive(Clone, Debug, PartialEq)]
+pub struct FastModeResult { pub enabled: bool, pub applied: bool, pub recorded_tier: ServiceTier, pub message: String, pub memory_model: Option<Model> }
+pub type FastModeAction = Arc<dyn Fn(bool, ExtensionContext) -> ExtensionFuture<'static, FastModeResult> + Send + Sync>;
 #[derive(Clone, Debug)]
 pub struct BeginCompactionOptions { pub reason: CompactionReason }
 #[derive(Clone, Debug)]
@@ -576,6 +590,10 @@ pub trait ExtensionContextActions: Send + Sync {
     fn get_model(&self) -> Option<Model>;
     fn get_service_tier(&self) -> Option<ServiceTier>;
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.get_service_tier() }
+    /// The shared `applyFastMode` behind `/fast` and RPC `set_fast_mode`.
+    fn apply_fast_mode(&self, _enabled: bool, _context: ExtensionContext) -> ExtensionFuture<'static, FastModeResult> {
+        Box::pin(async { Err(ExtensionFailure::new("Fast mode is not available in this session")) })
+    }
     fn get_scoped_models(&self) -> Vec<ScopedModel>;
     fn get_agent_dir(&self) -> PathBuf;
     fn is_idle(&self) -> bool;
@@ -686,6 +704,11 @@ pub type ComponentFactory = Arc<dyn Fn(&Theme) -> Box<dyn Component> + Send + Sy
 pub trait ExtensionTuiHost {
     fn request_render(&self);
     fn dimensions(&self) -> (u16, u16);
+    fn dimensions_reader(&self) -> std::rc::Rc<dyn Fn() -> (u16, u16)> {
+        let dimensions = self.dimensions();
+        std::rc::Rc::new(move || dimensions)
+    }
+    fn full_redraws(&self) -> u64 { 0 }
 }
 pub trait ReadonlyFooterDataProvider {
     fn get_git_branch(&self) -> Option<String>;
@@ -891,6 +914,12 @@ impl ExtensionContext {
     pub fn current_ui(&self) -> Result<Arc<dyn ExtensionUi>, ExtensionFailure> {
         if let Some(actions) = self.session_manager.extension_context_actions() { actions.assert_active()?; }
         Ok(Arc::clone(&self.ui))
+    }
+    pub fn apply_fast_mode(&self, enabled: bool) -> ExtensionFuture<'static, FastModeResult> {
+        match self.actions() {
+            Ok(actions) => actions.apply_fast_mode(enabled, self.clone()),
+            Err(error) => Box::pin(async move { Err(error) }),
+        }
     }
     pub fn abort(&self, source: Option<AbortSource>) -> Result<(), ExtensionFailure> { self.actions()?.abort(source); Ok(()) }
     pub fn has_pending_messages(&self) -> Result<bool, ExtensionFailure> { Ok(self.actions()?.has_pending_messages()) }
@@ -1542,13 +1571,14 @@ pub struct LoadedExtension {
     pub tool_renderers: BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>,
     pub erased_tool_renderers: BTreeMap<String, Arc<dyn ErasedToolRenderers>>,
     pub config_watch_registrations: Vec<RegisteredConfigWatch>,
+    pub fast_mode_action: Option<FastModeAction>,
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
         Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new() }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
     }
 }
 #[derive(Clone, Default)]
@@ -1906,6 +1936,14 @@ impl ExtensionApi {
         if self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {
             self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live_rpc_handlers.insert(self.registered.identity.path.clone(), self.registered.rpc_handlers.clone());
         }
+        Ok(())
+    }
+    pub fn register_fast_mode_action(&mut self, action: FastModeAction) -> Result<(), ExtensionFailure> {
+        self.runtime.assert_active()?;
+        if self.registered.fast_mode_action.is_some() {
+            return Err(ExtensionFailure::new("Fast mode action already registered"));
+        }
+        self.registered.fast_mode_action = Some(action);
         Ok(())
     }
     pub fn rpc_emit(&self, name: &str, data: &JsonValue) -> Result<(), ExtensionFailure> {

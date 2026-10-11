@@ -3,10 +3,11 @@ use maho_tui::{components::editor::EditorTuiHost, terminal::{ProcessTerminal, Te
 
 use super::shared_host::{is_truthy_env_flag, join_shared_host, should_join_shared_host, shared_host_setting_enabled, SharedHostMount, SHARED_HOST_ENABLE_ENV_SUFFIX};
 
-struct EditorHost { rows: Cell<usize>, render: Cell<bool> }
+struct EditorHost { rows: Cell<usize>, render: Cell<bool>, full_redraws: Cell<u64> }
 impl EditorTuiHost for EditorHost {
     fn request_render(&self) { self.render.set(true); }
     fn terminal_rows(&self) -> usize { self.rows.get() }
+    fn full_redraws(&self) -> u64 { self.full_redraws.get() }
 }
 
 struct RenderedMode(Vec<String>);
@@ -55,7 +56,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = ProcessTerminal::default();
-    let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true) });
+    let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
     let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
         mode.set_session_host(host);
@@ -130,6 +131,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             screen.base_mut().request_render(false, now);
             screen.do_render(&mut terminal);
+            host.full_redraws.set(screen.base_mut().full_redraws());
             terminal.pump(16).map_err(|error| error.to_string())?;
             tokio::task::yield_now().await;
         }

@@ -60,7 +60,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("permission-system", maho_ext_permission_system::PermissionSystem),
             factory("gpt-apply-patch", maho_ext_gpt_apply_patch::index::ApplyPatchExtension),
             factory("tool-search", ToolSearch { mcp_native_enabled: Arc::new(move || tool_search_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|gate| gate.enabled())), service: tool_search_slot }),
-            factory("todotools", Todo(widget_sender)),
+            factory("todowrite", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
                 provider_native_bypass: Arc::new(|model| {
                     maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model)
@@ -77,6 +77,37 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
                     })))),
             }),
             factory("account", maho_ext_account::Account),
+            factory("service-tier", maho_ext_builtin_loose::service_tier::ServiceTierExtension {
+                host: Arc::new(ServiceTierHost),
+            }),
+            factory("reasoning", maho_ext_reasoning::Reasoning {
+                host: Arc::new(super::reasoning_host::NativeReasoningHost::new(Arc::new({
+                    let parent = parent.clone();
+                    move || parent.get().and_then(|parent| parent())
+                }))),
+            }),
+            factory("import-repro", maho_ext_builtin_loose::import_repro::ImportRepro {
+                session_dir: Arc::new(|ctx| ctx.session_manager.get_session_dir().ok_or_else(|| ExtensionFailure::new("Session directory is unavailable"))),
+                fetch: maho_ext_builtin_loose::import_repro::github_fetch(),
+            }),
+            factory("diff", maho_ext_builtin_loose::diff::Diff { render_binding: file_render.clone() }),
+            factory("files", maho_ext_builtin_loose::files::Files { render_binding: file_render }),
+            factory("prompt-url-widget", maho_ext_builtin_loose::prompt_url_widget::PromptUrlWidget),
+            factory("tps", maho_ext_builtin_loose::tps::Tps),
+            factory("redraws", maho_ext_builtin_loose::redraws::Redraws { full_redraws: Arc::new(|host| host.full_redraws()) }),
+            factory("gpt-account", maho_ext_builtin_loose::gpt_account::GptAccount {
+                open_browser: maho_ext_builtin_loose::oauth_login_interaction::platform_open_browser(),
+                login: Arc::new({
+                    let parent = parent.clone();
+                    move |ctx| {
+                        let session = parent.get().and_then(|parent| parent());
+                        Box::pin(async move {
+                            let session = session.ok_or_else(|| ExtensionFailure::new("No live session"))?;
+                            super::gpt_account_host::login_account(&ctx, session.model_runtime()).await
+                        })
+                    }
+                }),
+            }),
             factory("ask-user", maho_ext_ask_user::AskUser),
             factory("video-in", maho_ext_video_in::VideoIn),
             factory("anthropic-web-search", maho_ext_anthropic_web_search::AnthropicWebSearch),
@@ -95,8 +126,8 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
                     })
                 },
                 rows: Arc::new(|host: &dyn maho_ext_api::ExtensionTuiHost| {
-                    let host = host.dimensions();
-                    Rc::new(move || usize::from(host.1))
+                    let dimensions = host.dimensions_reader();
+                    Rc::new(move || usize::from(dimensions().1))
                 }),
                 theme: Arc::new(|theme| {
                     maho_interactive::theme::Theme::builtin(
@@ -132,6 +163,39 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
                 factory: Arc::new(move |api| { extension.register(api); Box::pin(async { Ok(()) }) }) }
         }).collect()
 }
+
+#[doc(hidden)]
+pub struct ServiceTierHost;
+impl maho_ext_builtin_loose::service_tier::ServiceTierHost for ServiceTierHost {
+    fn catalog_tier(&self, model: &maho_ext_api::Model) -> Option<maho_ext_api::ServiceTier> {
+        model.service_tier.map(|tier| match tier {
+            maho_ai::types::ServiceTierPreference::Auto => maho_ext_api::ServiceTier::Auto,
+            maho_ai::types::ServiceTierPreference::Flex => maho_ext_api::ServiceTier::Flex,
+            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority,
+        })
+    }
+    fn upstream_id(&self, model: &maho_ext_api::Model) -> String {
+        model.upstream_model_id.clone().unwrap_or_else(|| model.id.clone())
+    }
+    fn remembered(&self, ctx: &maho_ext_api::ExtensionContext, model: &maho_ext_api::Model) -> Result<Option<maho_ext_api::ServiceTier>, ExtensionFailure> {
+        let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&maho_core::config::home_dir(),(ctx.is_project_trusted_fn)());
+        Ok(manager.get_model_service_tier(&model.provider,&model.id).and_then(parse_service_tier))
+    }
+    fn global_tier(&self,ctx:&maho_ext_api::ExtensionContext)->Result<Option<maho_ext_api::ServiceTier>,ExtensionFailure>{
+        let manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&maho_core::config::home_dir(),(ctx.is_project_trusted_fn)());
+        Ok(manager.get_string("openai.serviceTier").as_deref().and_then(parse_service_tier))
+    }
+    fn persist<'a>(&'a self,ctx:&'a maho_ext_api::ExtensionContext,model:&'a maho_ext_api::Model,tier:maho_ext_api::ServiceTier)->maho_ext_api::ExtensionFuture<'a,()>{
+        Box::pin(async move{
+            let mut manager=maho_core::settings_manager::SettingsManager::create(&ctx.cwd.to_string_lossy(),&ctx.agent_dir.to_string_lossy(),&maho_core::config::home_dir(),(ctx.is_project_trusted_fn)());
+            let tier=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"};
+            manager.set_model_service_tier(&model.provider,&model.id,tier).map_err(ExtensionFailure::new)
+        })
+    }
+}
+fn parse_service_tier(tier:&str)->Option<maho_ext_api::ServiceTier>{match tier{"auto"=>Some(maho_ext_api::ServiceTier::Auto),"flex"=>Some(maho_ext_api::ServiceTier::Flex),"priority"=>Some(maho_ext_api::ServiceTier::Priority),_=>None}}
+
+pub fn test_service_tier_host() -> impl maho_ext_builtin_loose::service_tier::ServiceTierHost { ServiceTierHost }
 
 struct RuntimeActions(maho_ext_api::ExtensionRuntime);
 pub type TaskParent = Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::agent_session::AgentSession> + Send + Sync>>>;
