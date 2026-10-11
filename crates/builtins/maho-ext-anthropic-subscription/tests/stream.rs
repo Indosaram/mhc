@@ -19,7 +19,7 @@ async fn turn(mut frame: serde_json::Value, resident: bool) -> maho_ai::types::A
     let model = maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
     let settings = Arc::new(|| maho_ext_anthropic_subscription::settings::load(&serde_json::json!({}), &serde_json::Value::Null, &Default::default()));
     let oauth = Arc::new(AnthropicSubscriptionOAuth { store: Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new()), flow: Arc::new(Flow), settings, ambient: maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(Arc::new(|| Box::pin(async { Ok(false) })), Arc::new(|| 1), 30_000) });
-    let extension = AnthropicSubscriptionExtension::native(oauth, executable, directory.path().into(), directory.path().join("agent"), BTreeMap::new());
+    let extension = AnthropicSubscriptionExtension::native(oauth, executable, None, directory.path().into(), directory.path().join("agent"), BTreeMap::new());
     let registry = extension.registry.clone();
     let options = resident.then(|| {
         let mut options = maho_ai::types::SimpleStreamOptions::default();
@@ -78,7 +78,7 @@ async fn managed_native_failure_rotates_only_before_visible_delta() {
         store.modify("anthropic-subscription",Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
         let settings=Arc::new(||maho_ext_anthropic_subscription::settings::load(&serde_json::json!({}),&serde_json::Value::Null,&Default::default()));
         let oauth=Arc::new(AnthropicSubscriptionOAuth {store:store.clone(),flow:Arc::new(Flow),settings,ambient:maho_ext_anthropic_subscription::availability::AmbientAuthStatusReader::new(Arc::new(||Box::pin(async {Ok(false)})),Arc::new(||1),30000)});
-        let extension=AnthropicSubscriptionExtension::native(oauth,executable,directory.path().into(),directory.path().join("agent"),Default::default());
+        let extension=AnthropicSubscriptionExtension::native(oauth,executable,None,directory.path().into(),directory.path().join("agent"),Default::default());
         let model=maho_ai::models_generated::MODELS["anthropic"].values().next().expect("model").clone();
         let stream=(extension.stream)(&model,&Context {messages:vec![Message::User(UserMessage {content:UserContent::Text("hello".into()),timestamp:1})],..Default::default()},None);
         let output=tokio::time::timeout(std::time::Duration::from_secs(10),stream.result()).await.expect("bounded turn").expect("output");

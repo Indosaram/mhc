@@ -3,7 +3,46 @@ use std::future::Future;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use std::time::Duration;
 use maho_ext_api::IdleInjectionSource;
-use maho_omo::{DeferredScheduler, IdleInjectionQueue, TurnBarrier};
+use maho_omo::{DeferredScheduler, IdleInjectionQueue, TurnBarrier, runtime_macrotask, runtime_microtask};
+
+#[tokio::test]
+async fn runtime_deferred_helpers_signal_after_the_current_task_yields() {
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let microtask_observed = Arc::clone(&observed);
+    let macrotask_observed = Arc::clone(&observed);
+    let (microtask_sender, microtask_receipt) = tokio::sync::oneshot::channel();
+    let (macrotask_sender, macrotask_receipt) = tokio::sync::oneshot::channel();
+
+    runtime_microtask()(Box::new(move || {
+        microtask_observed.store(true, Ordering::SeqCst);
+        let _ = microtask_sender.send(());
+    }));
+    runtime_macrotask()(Box::new(move || {
+        macrotask_observed.store(true, Ordering::SeqCst);
+        let _ = macrotask_sender.send(());
+    }));
+
+    assert!(!observed.load(Ordering::SeqCst));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        microtask_receipt.await.unwrap();
+        macrotask_receipt.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn runtime_microtask_fallback_runs_off_the_callers_stack() {
+    let (sender, receipt) = std::sync::mpsc::channel();
+    let deferred = runtime_microtask();
+    let caller = std::thread::current().id();
+
+    deferred(Box::new(move || {
+        let _ = sender.send(std::thread::current().id());
+    }));
+
+    assert_ne!(receipt.recv_timeout(Duration::from_secs(5)).unwrap(), caller);
+}
 
 #[tokio::test]
 async fn deferred_pass_waits_for_the_whole_turn() {
@@ -40,6 +79,26 @@ async fn consecutive_producers_in_one_turn_deliver_one_batch() {
     tokio::time::timeout(Duration::from_secs(5), receipt).await.unwrap().unwrap();
     assert_eq!(log.calls().len(), 1);
     assert_eq!(log.calls()[0].message.content, "complete\n\ncontinue");
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_scheduler_waits_for_the_configured_batch_window() {
+    let barrier = TurnBarrier::new();
+    let scheduler = DeferredScheduler::runtime(Arc::clone(&barrier), Some(Duration::from_millis(10)));
+    let (sender, mut receipt) = tokio::sync::oneshot::channel();
+    scheduler.schedule(Box::new(move || {
+        let _ = sender.send(());
+    }));
+
+    tokio::task::yield_now().await;
+    assert_eq!(scheduler.pending_count(), 0, "the batch has been taken and its delay registered");
+    tokio::time::advance(Duration::from_millis(9)).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(receipt.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(1), receipt).await.unwrap().unwrap();
 }
 
 #[test]

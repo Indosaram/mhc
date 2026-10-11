@@ -4,6 +4,7 @@ use serde_json::json;
 
 pub struct StreamDeps {
     pub executable: PathBuf,
+    pub source: Option<crate::executable::ExecutableSource>,
     pub cwd: PathBuf,
     pub agent_dir: PathBuf,
     pub environment: BTreeMap<String, String>,
@@ -163,7 +164,10 @@ pub fn stream_anthropic_subscription(model: Model, context: Context, options: Op
                 let aborted = signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted);
                 mapper.output.stop_reason = if aborted { StopReason::Aborted } else { StopReason::Error };
                 let mut message = crate::stream_guidance::with_auth_guidance(&error);
-                if let Some(guidance) = crate::guidance::version_floor_guidance(&message, None, &deps.executable.to_string_lossy()) { message.push('\n'); message.push_str(&guidance); }
+                if error.downcast_ref::<crate::affinity::AllAccountsBlockedError>().is_none()
+                    && let Some(guidance) = crate::guidance::version_floor_guidance(&message, deps.source, &deps.executable.to_string_lossy()) {
+                    message.push('\n'); message.push_str(&guidance);
+                }
                 mapper.output.error_message = Some(message);
                 events.push(Event::Error { reason: if aborted { ErrorReason::Aborted } else { ErrorReason::Error }, error: mapper.output });
             },

@@ -6,6 +6,11 @@ fn rfc_levels_map_to_logger_methods() {
     for (level,method) in [("debug",LoggerMethod::Debug),("notice",LoggerMethod::Info),("warning",LoggerMethod::Warn),("critical",LoggerMethod::Error)]{assert_eq!(log.message(level,&json!("value"),Some("sub"),0.0),Some((method,"[server:sub] value".into())));}
 }
 #[test]
+fn non_string_logging_payload_is_preserved_as_json_output() {
+    let mut log=McpServerLogging::new(None,None,0.0);
+    assert_eq!(log.message("info",&json!({"count":2,"active":true}),None,0.0),Some((LoggerMethod::Info,"[server] {\"count\":2,\"active\":true}".into())));
+}
+#[test]
 fn below_threshold_messages_are_filtered() {
     let mut log=McpServerLogging::new(Some("warning"),None,0.0);assert!(log.message("info",&json!("hidden"),None,0.0).is_none());assert!(log.message("error",&json!("kept"),None,0.0).is_some());
 }
