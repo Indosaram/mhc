@@ -3,6 +3,7 @@
 pub mod cursor;
 pub mod entries;
 pub mod lock;
+pub mod sweep;
 pub mod store;
 
 pub use cursor::{
@@ -18,8 +19,9 @@ pub use entries::{
 pub use lock::{
     ACQUISITION_WAIT_MS, DefaultJournalLock, JournalLock, JournalLockTimeoutError, ProcessLiveness,
     RETRY_DELAY_MS, get_pid_liveness, get_process_start_identity, try_reclaim_stale_lock,
-    with_local_journal_lock,
+    try_with_local_journal_lock, with_local_journal_lock,
 };
+pub use sweep::{EmptyJournalKeepReason, EmptyJournalSweepError, EmptyJournalSweepResult, sweep_empty_transcript_journals};
 pub use store::{
     AppendResult, JournalError, TranscriptJournal, TranscriptJournalOptions,
     sync_journal_directory, sync_journal_file,
