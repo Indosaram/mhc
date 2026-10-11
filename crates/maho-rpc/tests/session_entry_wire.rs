@@ -3,6 +3,57 @@ use maho_rpc::connection_handler::handle_input_line;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn fast_mode_rpc_uses_registered_action_and_reports_refusal() {
+    use std::sync::{Arc, Mutex};
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = provider.get_model(Some("faux-1")).unwrap();
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions {
+        models_path: Some(temp.path().join("models.json")), auth_path: Some(temp.path().join("auth.json")),
+        providers: Some(vec![provider.provider]), ..Default::default()
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let captured = calls.clone();
+    let factory = maho_ext_host::loader::NativeAsyncExtensionFactory {
+        path: "<builtin:service-tier>".into(), source_info: Default::default(),
+        factory: Arc::new(move |api| {
+            let calls = captured.clone();
+            let sender = Arc::new(maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone()));
+            Box::pin(async move {
+                api.register_fast_mode_action(Arc::new(move |enabled, context| {
+                    let calls = calls.clone();
+                    let sender = sender.clone();
+                    Box::pin(async move {
+                        calls.lock().unwrap().push(enabled);
+                        if enabled { sender.set_session_fast_mode(true)?; }
+                        Ok(maho_ext_api::FastModeResult {
+                            enabled: true, applied: enabled, recorded_tier: maho_ext_api::ServiceTier::Priority,
+                            message: "refused-by-action".into(), memory_model: context.model,
+                        })
+                    })
+                }))
+            })
+        }),
+    };
+    let session = create_agent_session(CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model_runtime: Some(runtime), model: Some(model.clone()),
+        session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+        settings_manager: Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), false)),
+        extension_factories: vec![factory], no_tools: Some(NoToolsMode::All), auto_title_sessions: Some(false), ..Default::default()
+    }).await.unwrap().session;
+    let response: Value = serde_json::from_str(&handle_input_line(&session, "{\"type\":\"set_fast_mode\",\"enabled\":true}").await.unwrap().unwrap()).unwrap();
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"], json!({"enabled":true,"serviceTier":"priority","provider":model.provider,"modelId":model.id}));
+    let response: Value = serde_json::from_str(&handle_input_line(&session, "{\"type\":\"set_fast_mode\",\"enabled\":false}").await.unwrap().unwrap()).unwrap();
+    assert_eq!(response["success"], false);
+    assert_eq!(response["error"], "refused-by-action");
+    assert!(session.is_fast_mode_active(), "refusal must not directly toggle session fast mode");
+    assert_eq!(*calls.lock().unwrap(), vec![true, false]);
+    session.dispose().await;
+}
+
+#[tokio::test]
 async fn entries_export_and_cleanup_use_the_real_session() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().to_string_lossy().into_owned();
