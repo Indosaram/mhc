@@ -99,12 +99,20 @@ pub enum ChildCompletionPolicy {
 /// Host session events are untrusted JSON (`{ type, message? }`).
 pub type ChildSessionListener = Arc<dyn Fn(&Value) + Send + Sync>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkpoolChildIdentity {
+    pub task_id: String,
+    pub state_dir: String,
+    pub run_epoch: u32,
+}
+
 /// The host agent-session surface an in-process child drives. `prompt` blocks until the turn ends.
 pub trait ChildSession: Send + Sync {
     fn session_id(&self) -> String;
     fn prompt(&self, text: &str) -> Result<(), HostError>;
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
+    fn rebind_workpool_identity(&self, _identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> { None }
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ChildSessionListener) -> Unsubscribe;
     fn get_last_assistant_text(&self) -> Option<String>;
@@ -385,6 +393,10 @@ impl ManagedChildHandle for InProcessChildHandle {
 
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.follow_up_turn(text)
+    }
+
+    fn rebind_workpool_identity(&self, identity: crate::manager::child_handle::WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
+        self.session.rebind_workpool_identity(WorkpoolChildIdentity { task_id: identity.task_id, state_dir: identity.state_dir, run_epoch: identity.run_epoch })
     }
 
     fn abort(&self) -> Result<(), HostError> {

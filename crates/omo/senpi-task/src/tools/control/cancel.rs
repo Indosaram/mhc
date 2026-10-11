@@ -107,6 +107,10 @@ pub fn run_task_cancel(manager: &dyn CancelManager, params: &TaskCancelInput) ->
                 reason,
             },
         ),
+        CancelOutcome::Stale { task_id, status, run_epoch, reason } => tool_result(
+            &reason,
+            CancelResultDetails::Stale { task_id, status, run_epoch, reason: reason.clone() },
+        ),
         CancelOutcome::NotFound { reason } => tool_result(
             &reason,
             CancelResultDetails::NotFound {

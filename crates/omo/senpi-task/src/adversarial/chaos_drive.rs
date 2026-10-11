@@ -276,6 +276,7 @@ fn managed_spec(state: &ChaosState, task_id: &str, prompt: &str) -> ManagedStart
         task_id: task_id.to_string(),
         cwd: state.harness.store.state_dir().to_string_lossy().into_owned(),
         state_dir: state.harness.store.state_dir().to_string_lossy().into_owned(),
+        workpool_state_dir: None,
         prompt: prompt.to_string(),
         depth: 1,
         parent_session_id: CHAOS_SESSION.to_string(),

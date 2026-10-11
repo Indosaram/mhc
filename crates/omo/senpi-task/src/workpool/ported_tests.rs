@@ -56,7 +56,7 @@ fn inherited_extension_resolution_is_fresh_per_call() {
 
 #[test]
 fn host_workpool_factory_has_one_native_surface() {
-    assert_eq!(default_mode::WORKPOOL_DEFAULT_MODE, WorkpoolMode::Fresh);
+    assert_eq!(default_mode::WORKPOOL_DEFAULT_MODE, WorkpoolMode::KeepAlive);
 }
 
 #[test]
@@ -92,7 +92,8 @@ fn reserved_and_gated_tools_fail_closed() {
 
 #[test]
 fn only_exact_parent_scope_can_access_pool() {
-    let store = WorkpoolStore::new("/tmp/workpool-scope");
+    let root = tempfile::tempdir().expect("temporary state directory");
+    let store = WorkpoolStore::new(root.path());
     let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
     let foreign = WorkpoolCaller { session_id: "root".into(), ..caller() };
     let result = store.owned(&foreign, &pool.pool_id);
@@ -109,8 +110,12 @@ fn canonical_duplicate_inputs_are_stable() {
 
 #[test]
 fn yield_capability_rejects_parent_operations() {
-    let store = WorkpoolStore::new("/tmp/workpool-yield");
-    let error = create_workpool_yield_capability(store, "st_00000001", 0)(json!({"op":"create"})).expect_err("yield-only capability");
+    let root = tempfile::tempdir().expect("temporary state directory");
+    let store = WorkpoolStore::new(root.path());
+    let tasks = crate::store::TaskRecordStore::new(&crate::store::StateDirConfig {
+        project_dir: root.path().into(), task_state_dir: Some(root.path().into()),
+    });
+    let error = create_workpool_yield_capability(store, tasks, "st_00000001", 0, None)(json!({"op":"create"})).expect_err("yield-only capability");
     assert_eq!(error.code, WorkpoolErrorCode::InvalidInput);
 }
 
@@ -130,7 +135,8 @@ fn queued_policy_admission_fails_closed() {
 
 #[test]
 fn persisted_pool_is_visible_to_same_store_after_manager_reset() {
-    let store = WorkpoolStore::new("/tmp/workpool-persist");
+    let root = tempfile::tempdir().expect("temporary state directory");
+    let store = WorkpoolStore::new(root.path());
     let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
     assert_eq!(store.load(&pool.pool_id).expect("inspect").pool_id, pool.pool_id);
 }
@@ -169,7 +175,8 @@ fn cancellation_during_admission_releases_lease() {
 
 #[test]
 fn reconcile_ack_loss_marks_unbound_assignment_uncertain() {
-    let store = WorkpoolStore::new("/tmp/workpool-reconcile");
+    let root = tempfile::tempdir().expect("temporary state directory");
+    let store = WorkpoolStore::new(root.path());
     let pool = store.create(&caller(), &input(), WorkpoolMode::Fresh, spec()).expect("create");
     store.mutate(&pool.pool_id, |p| { let mut n=p.clone(); n.items.push(WorkpoolItem { key:"a".into(), input:json!(2), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }); n }).expect("insert assigned item");
     super::reconcile::reconcile_workpool(&store, &pool.pool_id).expect("reconcile");
@@ -180,15 +187,15 @@ fn reconcile_ack_loss_marks_unbound_assignment_uncertain() {
 fn reconcile_missing_yield_is_typed() { let item=WorkpoolItem { key:"a".into(), input:json!(null), item_id:"i".into(), status:WorkpoolItemStatus::Assigned, binding:None, delivery:None, data:None, error:None, yield_sha256:None }; assert_eq!(super::reconcile::uncertain_item(item).error.expect("error").code,"delivery_uncertain"); }
 
 #[test]
-fn reconcile_cancelled_pool_is_unchanged() { let store=WorkpoolStore::new("/tmp/workpool-reconcile-cancel"); let mut pool=store.create(&caller(),&input(),WorkpoolMode::Fresh,spec()).expect("create"); pool.status=WorkpoolStatus::Cancelled; store.mutate(&pool.pool_id, |_| pool.clone()).expect("save"); super::reconcile::reconcile_workpool(&store,&pool.pool_id).expect("reconcile"); assert_eq!(store.load(&pool.pool_id).expect("load").revision,0); }
+fn reconcile_cancelled_pool_is_unchanged() { let root=tempfile::tempdir().expect("temporary state directory"); let store=WorkpoolStore::new(root.path()); let mut pool=store.create(&caller(),&input(),WorkpoolMode::Fresh,spec()).expect("create"); pool.status=WorkpoolStatus::Cancelled; store.mutate(&pool.pool_id, |_| pool.clone()).expect("save"); let path=root.path().join("workpools").join(format!("{}.json",pool.pool_id)); let cancelled=std::fs::read(&path).expect("cancelled record"); super::reconcile::reconcile_workpool(&store,&pool.pool_id).expect("reconcile"); assert_eq!(std::fs::read(&path).expect("loaded record"),cancelled); }
 
-fn reuse_setup() -> (WorkpoolStore, WorkpoolCaller, WorkpoolCreate) { let store=WorkpoolStore::new("/tmp/workpool-reuse"); let mut request=input(); request.name="batch".into(); (store,caller(),request) }
-#[test] fn reuse_different_tool_is_conflict() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
-#[test] fn reuse_conflict_does_not_reveal_grant() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret_tool".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); let e=s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict"); assert!(!e.message.contains("secret_tool")); }
-#[test] fn reuse_grant_to_no_tools_is_conflict() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=None; assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
-#[test] fn reuse_without_tools_cannot_widen() { let (s,c,mut i)=reuse_setup(); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["secret".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
-#[test] fn reuse_same_grant_in_other_order_reuses_pool() { let (s,c,mut i)=reuse_setup(); i.tools=Some(vec!["a".into(),"b".into()]); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["b".into(),"a".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
-#[test] fn reuse_empty_grant_reuses_pool() { let (s,c,i)=reuse_setup(); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); let mut empty=i.clone(); empty.tools=Some(vec![]); assert_eq!(s.create(&c,&empty,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
+fn reuse_setup() -> (tempfile::TempDir, WorkpoolStore, WorkpoolCaller, WorkpoolCreate) { let root=tempfile::tempdir().expect("temporary state directory"); let store=WorkpoolStore::new(root.path()); let mut request=input(); request.name="batch".into(); (root,store,caller(),request) }
+#[test] fn reuse_different_tool_is_conflict() { let (_root,s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_conflict_does_not_reveal_grant() { let (_root,s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret_tool".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["other".into()]); let e=s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict"); assert!(!e.message.contains("secret_tool")); }
+#[test] fn reuse_grant_to_no_tools_is_conflict() { let (_root,s,c,mut i)=reuse_setup(); i.tools=Some(vec!["secret".into()]); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=None; assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_without_tools_cannot_widen() { let (_root,s,c,mut i)=reuse_setup(); s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["secret".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).err().expect("conflict").code,WorkpoolErrorCode::PoolNameConflict); }
+#[test] fn reuse_same_grant_in_other_order_reuses_pool() { let (_root,s,c,mut i)=reuse_setup(); i.tools=Some(vec!["a".into(),"b".into()]); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); i.tools=Some(vec!["b".into(),"a".into()]); assert_eq!(s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
+#[test] fn reuse_empty_grant_reuses_pool() { let (_root,s,c,i)=reuse_setup(); let first=s.create(&c,&i,WorkpoolMode::Fresh,spec()).expect("first"); let mut empty=i.clone(); empty.tools=Some(vec![]); assert_eq!(s.create(&c,&empty,WorkpoolMode::Fresh,spec()).expect("reuse").pool_id,first.pool_id); }
 
 #[test]
 fn kernel_denylist_removing_parent_write_tool_refuses_grant() {

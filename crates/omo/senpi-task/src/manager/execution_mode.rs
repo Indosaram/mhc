@@ -1,6 +1,7 @@
 //! Execution mode precedence (`manager/execution-mode.ts`).
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ExecutionMode {
     #[default]
     InProcess,

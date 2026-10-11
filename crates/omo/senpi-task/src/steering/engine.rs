@@ -4,8 +4,8 @@
 //! `pending_steering`, so the queue survives a restart and drains in persisted order when the
 //! child launches. The record is the single source of truth - no in-memory shadow.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::{Value, json};
 
@@ -30,6 +30,18 @@ const NOT_FOUND_SUGGESTION: &str =
 
 pub struct SteeringEngine {
     port: SteeringPort,
+    active_sends: Mutex<HashSet<String>>,
+}
+
+struct SendLease<'a> {
+    active: &'a Mutex<HashSet<String>>,
+    task_id: String,
+}
+
+impl Drop for SendLease<'_> {
+    fn drop(&mut self) {
+        self.active.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.task_id);
+    }
 }
 
 fn deliver_as_str(deliver_as: DeliverAs) -> &'static str {
@@ -57,9 +69,30 @@ fn not_found(id_or_name: &str) -> SendOutcome {
     }
 }
 
+fn stale_send(record: &TaskRecord) -> SendOutcome {
+    SendOutcome::Stale {
+        task_id: record.task_id.clone(),
+        run_epoch: record.notification.run_epoch,
+        reason: format!("Task {}: the handle names an earlier run of this task.", record.task_id),
+    }
+}
+
+fn stale_cancel(record: &TaskRecord) -> CancelOutcome {
+    CancelOutcome::Stale {
+        task_id: record.task_id.clone(),
+        status: record.status,
+        run_epoch: record.notification.run_epoch,
+        reason: format!("Task {}: the handle names an earlier run of this task.", record.task_id),
+    }
+}
+
 impl SteeringEngine {
     pub fn new(port: SteeringPort) -> Self {
-        Self { port }
+        Self { port, active_sends: Mutex::new(HashSet::new()) }
+    }
+
+    fn begin_send(&self, task_id: &str) -> bool {
+        self.active_sends.lock().unwrap_or_else(PoisonError::into_inner).insert(task_id.to_string())
     }
 
     fn event(&self, task_id: &str, event_type: &str, payload: Value) -> Result<(), SteeringError> {
@@ -101,6 +134,23 @@ impl SteeringEngine {
         if let Some(denied) = scope_denied(&record, input) {
             return Ok(denied);
         }
+        if let Some(expected) = input.expected_run_epoch
+            && record.notification.run_epoch != expected
+        {
+            return Ok(stale_send(&record));
+        }
+        if !self.begin_send(&record.task_id) {
+            return Ok(SendOutcome::NotContinuable {
+                task_id: record.task_id.clone(),
+                reason: format!("Task {} already has a steering operation in progress.", record.task_id),
+                suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
+            });
+        }
+        let _lease = SendLease { active: &self.active_sends, task_id: record.task_id.clone() };
+        self.send_resolved(input, record)
+    }
+
+    fn send_resolved(&self, input: &SendInput, record: TaskRecord) -> Result<SendOutcome, SteeringError> {
         // One-shot policy runs after ownership is established but BEFORE the pending enqueue.
         if let Some(one_shot) = one_shot_policy_denial(&record) {
             return Ok(one_shot);
@@ -127,12 +177,21 @@ impl SteeringEngine {
                 suggestion: TASK_OUTPUT_SUGGESTION.to_string(),
             });
         };
+        let Some(fresh) = self.port.store.load(&record.task_id)? else {
+            return Ok(not_found(&record.task_id));
+        };
+        if fresh.notification.run_epoch != record.notification.run_epoch
+            || fresh.status != record.status
+            || fresh.residency_state != record.residency_state
+        {
+            return Ok(stale_send(&fresh));
+        }
         if mode == Messageability::Steer {
             deliver(handle.as_ref(), deliver_as, &input.message)?;
             self.event(
                 &record.task_id,
                 "steered",
-                json!({ "delivered": deliver_as_str(deliver_as) }),
+                json!({ "delivered": deliver_as_str(deliver_as), "run_epoch": record.notification.run_epoch }),
             )?;
             return Ok(SendOutcome::Steered {
                 task_id: record.task_id,
@@ -141,15 +200,39 @@ impl SteeringEngine {
             });
         }
         // Revive is a follow-up prompt on the SAME session, not a fresh child.
-        handle.follow_up(&input.message)?;
-        let revived = build_revived(&record, self.now_iso());
-        self.port.store.replace(&revived)?;
+        let mut revived_record = None;
+        let updated = self.port.store.mutate(&record.task_id, |fresh| {
+            if fresh.notification.run_epoch != record.notification.run_epoch
+                || fresh.status != record.status
+                || fresh.residency_state != record.residency_state
+                || !fresh.status.is_terminal()
+            {
+                return fresh.clone();
+            }
+            let next = build_revived(fresh, self.now_iso());
+            revived_record = Some(next.clone());
+            next
+        })?;
+        let Some(revived) = revived_record.filter(|_| updated.is_some()) else {
+            let fresh = self.port.store.load(&record.task_id)?.ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(record.task_id.clone())))?;
+            return Ok(stale_send(&fresh));
+        };
         let run_epoch = revived.notification.run_epoch;
         self.event(
             &record.task_id,
             "revived",
             json!({ "run_epoch": run_epoch }),
         )?;
+        handle.follow_up(&input.message)?;
+        let Some(acknowledged) = self.port.store.load(&record.task_id)? else {
+            return Ok(not_found(&record.task_id));
+        };
+        if acknowledged.status != TaskStatus::Running
+            || acknowledged.host_pid != revived.host_pid
+            || acknowledged.notification.run_epoch != run_epoch
+        {
+            return Ok(stale_send(&acknowledged));
+        }
         (self.port.reacquire_for_revive)(&record.task_id);
         Ok(SendOutcome::Revived {
             task_id: record.task_id,
@@ -171,6 +254,7 @@ impl SteeringEngine {
                 id: format!("ps-{now}-{}", queue.len() + 1),
                 message: message.to_string(),
                 deliver_as,
+                workpool: None,
             });
             position = queue.len();
             TaskRecord {
@@ -324,6 +408,20 @@ impl SteeringEngine {
                 reason: format!("No task found for \"{id_or_name}\"."),
             });
         };
+        if !self.begin_send(&record.task_id) {
+            return Ok(CancelOutcome::Noop {
+                task_id: record.task_id.clone(),
+                status: record.status,
+                reason: format!("Task {} has a steering operation in progress.", record.task_id),
+            });
+        }
+        let _lease = SendLease { active: &self.active_sends, task_id: record.task_id.clone() };
+        if let Some(expected) = options.expected_run_epoch
+            && record.notification.run_epoch != expected
+        {
+            return Ok(stale_cancel(&record));
+        }
+        let expected_run_epoch = options.expected_run_epoch;
         let skip_abort = options.abort == CancelAbort::Skip;
         let destruction_cause = if skip_abort {
             DestroyCause::CancelWithoutAbort
@@ -338,14 +436,21 @@ impl SteeringEngine {
             payload
         };
         if record.status == TaskStatus::Pending {
-            let result = self.port.store.transition(
+            let result = self.port.store.transition_expected_epoch(
                 &record.task_id,
                 &TaskTransition::Cancel {
                     timestamp: self.now_iso(),
                     error_message: reason.map(str::to_string),
                     run_stats: None,
                 },
+                expected_run_epoch,
             )?;
+            let Some(result) = result else {
+                let fresh = self.port.store.load(&record.task_id)?.ok_or_else(|| {
+                    SteeringError::Store(crate::store::StoreError::NotFound(record.task_id.clone()))
+                })?;
+                return Ok(stale_cancel(&fresh));
+            };
             if !result.applied {
                 return Ok(CancelOutcome::Noop {
                     reason: format!(
@@ -384,14 +489,21 @@ impl SteeringEngine {
             });
         }
         let run_stats = (self.port.run_stats_snapshot)(&record.task_id);
-        let result = self.port.store.transition(
+        let result = self.port.store.transition_expected_epoch(
             &record.task_id,
             &TaskTransition::Cancel {
                 timestamp: self.now_iso(),
                 error_message: reason.map(str::to_string),
                 run_stats,
             },
+            expected_run_epoch,
         )?;
+        let Some(result) = result else {
+            let fresh = self.port.store.load(&record.task_id)?.ok_or_else(|| {
+                SteeringError::Store(crate::store::StoreError::NotFound(record.task_id.clone()))
+            })?;
+            return Ok(stale_cancel(&fresh));
+        };
         if !result.applied {
             return Ok(CancelOutcome::Noop {
                 reason: format!(

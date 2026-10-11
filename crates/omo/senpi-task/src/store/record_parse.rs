@@ -227,6 +227,7 @@ fn read_optional_pending_steering(
             id: id.to_string(),
             message: message.to_string(),
             deliver_as,
+            workpool: entry.get("workpool").map(|value| serde_json::from_value(value.clone()).map_err(|error| format!("pending_steering[{index}] has invalid workpool metadata: {error}"))).transpose()?,
         });
     }
     Ok(Some(parsed))

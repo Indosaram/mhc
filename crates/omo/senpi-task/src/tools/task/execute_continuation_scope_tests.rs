@@ -169,6 +169,7 @@ fn ctx_for(session_id: &str) -> TaskToolContext {
 
 fn tool_deps() -> TaskToolDeps {
     TaskToolDeps {
+        start: None,
         omo_config: Default::default(),
         agents: Default::default(),
         load_skills: Some(Arc::new(|_: &[String], _: &str| {

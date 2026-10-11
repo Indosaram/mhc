@@ -63,6 +63,7 @@ fn build_task_tool_params() -> Value {
                 "items": { "type": "string" },
                 "description": "Skill names whose SKILL.md content is prepended to the child prompt. Defaults to []."
             },
+            "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to capture from the parent session for this child." },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -114,7 +115,8 @@ fn build_task_tool_params() -> Value {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "Skills loaded for this task."
-                        }
+                        },
+                        "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool names to capture from the parent session for this child." }
                     },
                     "required": ["prompt"]
                 },

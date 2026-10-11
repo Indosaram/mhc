@@ -70,6 +70,8 @@ pub fn build_managed_spec(
         task_id: record.task_id.clone(),
         cwd: spec.cwd.clone().unwrap_or_else(|| cwd.to_string()),
         state_dir: child_state_dir(state_dir, &record.task_id),
+        workpool_state_dir: None,
+        workpool_run_epoch: None,
         prompt,
         depth: spec.depth,
         parent_session_id: spec.parent_session_id.clone(),

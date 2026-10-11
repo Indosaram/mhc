@@ -22,6 +22,8 @@ pub struct ManagedStartSpec {
     pub task_id: String,
     pub cwd: String,
     pub state_dir: String,
+    pub workpool_state_dir: Option<String>,
+    pub workpool_run_epoch: Option<u32>,
     pub prompt: String,
     pub depth: u32,
     pub parent_session_id: String,
@@ -79,7 +81,7 @@ impl ManagedRunners {
 }
 
 /// The caller's start request (`ManagerStartSpec`).
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ManagerStartSpec {
     pub prompt: String,
     pub task_summary: Option<String>,
@@ -96,6 +98,7 @@ pub struct ManagerStartSpec {
     pub instructions: Option<String>,
     pub allowed_subagents: Option<Vec<String>>,
     pub run_in_background: bool,
+    #[serde(skip)]
     pub member_scoped_tools: Option<Vec<ChildToolRef>>,
     pub extensions: Option<Vec<String>>,
     pub member_env: Option<BTreeMap<String, String>>,
@@ -107,7 +110,7 @@ pub struct ManagerStartSpec {
     pub apply: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedChildPlan {
     pub model: String,
     pub requested_model: Option<ResolvedModelRecord>,

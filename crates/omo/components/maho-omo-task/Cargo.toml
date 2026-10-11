@@ -19,6 +19,7 @@ maho-omo-lsp = { path = "../maho-omo-lsp" }
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
+maho-ai = { path = "../../../maho-ai" }
 tempfile = "=3.27.0"
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 

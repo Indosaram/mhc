@@ -49,6 +49,39 @@ pub fn native_child_session_manager(
     )
 }
 
+pub(crate) fn workpool_yield_tool(identity: &senpi_task::runners::in_process::child_options::WorkpoolChildIdentity, cwd: &str) -> maho_ext_api::ToolDefinition {
+    workpool_yield_tool_with_events(identity, cwd, None)
+}
+
+pub type WorkpoolEvents = Arc<dyn Fn(senpi_task::workpool::types::WorkpoolEvent) + Send + Sync>;
+
+pub(crate) fn workpool_yield_tool_with_events(identity: &senpi_task::runners::in_process::child_options::WorkpoolChildIdentity, cwd: &str, emit: Option<WorkpoolEvents>) -> maho_ext_api::ToolDefinition {
+        let store = senpi_task::workpool::store::WorkpoolStore::new(&identity.state_dir);
+        let tasks = senpi_task::store::TaskRecordStore::new(&senpi_task::store::StateDirConfig {
+            project_dir: cwd.into(), task_state_dir: Some(identity.state_dir.clone().into()),
+        });
+        let yield_result = Arc::new(senpi_task::workpool::worker_capability::create_workpool_yield_capability(
+            store, tasks, identity.task_id.clone(), identity.run_epoch, emit.map(|emit| Box::new(move |event| emit(event)) as senpi_task::workpool::worker_capability::WorkpoolEventSink),
+        ));
+        maho_ext_api::ToolDefinition::new(
+            "workpool", "Yield keyed results for this worker's current assignment.",
+            serde_json::json!({"type":"object","additionalProperties":false,"required":["op","results"],"properties":{"op":{"const":"yield"},"results":{"type":"array","items":{}}}}),
+            Arc::new(move |call| {
+                let yield_result = yield_result.clone();
+                Box::pin(async move {
+                    let (pool_id, generation, receipts) = yield_result(call.params).map_err(|error| maho_tools::ToolError::Message(error.to_string()))?;
+                    let results = receipts.into_iter().map(|receipt| match receipt {
+                        senpi_task::workpool::worker_capability::WorkpoolYieldReceipt::Accepted { key, item_id } => serde_json::json!({"key":key,"item_id":item_id,"accepted":true}),
+                        senpi_task::workpool::worker_capability::WorkpoolYieldReceipt::Duplicate { key, item_id } => serde_json::json!({"key":key,"item_id":item_id,"accepted":true,"duplicate":true}),
+                        senpi_task::workpool::worker_capability::WorkpoolYieldReceipt::Refused(error) => serde_json::json!({"accepted":false,"code":error.code,"message":error.message,"key":error.key}),
+                    }).collect::<Vec<_>>();
+                    let result = serde_json::json!({"pool_id":pool_id,"generation":generation,"results":results});
+                    Ok(maho_ext_api::ToolResult { content: vec![maho_ext_api::ToolContent::text(result.to_string())], details: Some(result) })
+                })
+            }),
+        )
+}
+
 struct NativeParentTool {
     name: String,
     description: String,
@@ -58,12 +91,15 @@ struct NativeParentTool {
 
 pub fn native_child_sdk_options(
     child: &senpi_task::runners::in_process::child_options::ChildSessionOptions,
-    custom_tools: Vec<maho_ext_api::ToolDefinition>,
+    mut custom_tools: Vec<maho_ext_api::ToolDefinition>,
 ) -> Result<maho_core::sdk::CreateAgentSessionOptions, senpi_task::host::HostError> {
     let failure = |message: String| senpi_task::host::HostError { message };
     if custom_tools.len() != child.custom_tools.len()
         || custom_tools.iter().zip(&child.custom_tools).any(|(native, child)| native.name != child.name()) {
         return Err(failure("Native child definitions must preserve the imported custom tool inventory and order".into()));
+    }
+    if let Some(identity) = &child.workpool_identity {
+        custom_tools.push(workpool_yield_tool(identity, &child.cwd));
     }
     let auth_storage = child.auth_storage.clone().map(|handle| handle.downcast::<maho_core::auth_storage::AuthStorage>()
         .map_err(|_| failure("Child auth storage is not native AuthStorage".into()))).transpose()?;
@@ -157,13 +193,20 @@ impl senpi_task::runners::in_process::shared_tool_filter::ChildTool for NativePa
 
     fn execute(&self, tool_call_id: &str, input: &serde_json::Value) -> Result<serde_json::Value, senpi_task::host::HostError> {
         let failure = |message: String| senpi_task::host::HostError { message };
-        if tokio::runtime::Handle::try_current().is_ok() {
-            return Err(failure("Synchronous child tools must execute on the task worker, not the host executor".into()));
-        }
         let parent = (self.parent)().ok_or_else(|| failure("Parent session retired".into()))?;
-        let result = self.executor.block_on(parent.execute_tool_with_call_id(tool_call_id, &self.name, input.clone(),
-            maho_core::agent_session::ExecuteToolOptions { signal: None, activate_inactive_tool: None }))
-            .map_err(|error| failure(error.to_string()))?;
+        let executor = self.executor.clone();
+        let name = self.name.clone();
+        let tool_call_id = tool_call_id.to_owned();
+        let input = input.clone();
+        let execute = move || executor.block_on(parent.execute_tool_with_call_id(&tool_call_id, &name, input,
+            maho_core::agent_session::ExecuteToolOptions { signal: None, activate_inactive_tool: None }));
+        let result = if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::Builder::new().name("native-parent-tool".into()).spawn(execute)
+                .map_err(|error| failure(error.to_string()))?.join()
+                .map_err(|_| failure("Native parent tool worker panicked".into()))?
+        } else {
+            execute()
+        }.map_err(|error| failure(error.to_string()))?;
         if result.is_error == Some(true) {
             let message = result.content.iter().filter_map(|part| match part {
                 maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()),

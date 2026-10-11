@@ -10,8 +10,24 @@ use crate::host::HostError;
 pub trait ChildTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+    fn parameters(&self) -> Option<Value> { None }
     /// Runs the tool; the result is the host's `{ content: [...] }` tool-result JSON.
     fn execute(&self, tool_call_id: &str, input: &Value) -> Result<Value, HostError>;
+
+    fn execute_async<'a>(
+        &'a self,
+        tool_call_id: &'a str,
+        input: &'a Value,
+        signal: Option<maho_ai::utils::abort::AbortSignal>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, HostError>> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(signal) = signal {
+                signal.throw_if_aborted().map_err(|error| HostError { message: error.to_string() })?;
+            }
+            self.execute(tool_call_id, input)
+        })
+    }
+
 }
 
 pub type ChildToolRef = Arc<dyn ChildTool>;
