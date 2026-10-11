@@ -5,6 +5,9 @@ async fn concrete_default_factories_register_tools_and_commands() {
     let root = tempfile::tempdir().expect("isolated factory directory");
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let factories = maho_cli::cli::default_extensions::factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()));
+    let search = factories.iter().find(|factory| factory.path == "<builtin:tool-search>").expect("native search factory");
+    assert_eq!(search.source_info.source, "builtin");
+    assert_eq!(search.source_info.path, search.path);
     let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     let commands = loaded.extensions.iter().flat_map(|extension| &extension.commands).map(|command| command.name.as_str()).collect::<Vec<_>>();

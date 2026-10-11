@@ -1,7 +1,7 @@
 use crate::service_types::McpWireStatusSnapshot;
-pub const MCP_CONTROL_INVENTORY_REQUEST_EVENT:&str="senpi.rpc.mcp_inventory.request";
+pub use maho_ext_api::mcp_wire::MCP_CONTROL_INVENTORY_REQUEST_EVENT;
 pub const MCP_CONTROL_INVENTORY_CHANGED_EVENT:&str="senpi.rpc.mcp_inventory.changed";
-pub struct McpControlInventoryRequest {pub session_id:String,pub respond:tokio::sync::oneshot::Sender<McpWireStatusSnapshot>}
+pub use maho_ext_api::mcp_wire::McpControlInventoryRequest;
 #[derive(Clone,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct McpControlInventoryChanged {pub session_id:String,pub snapshot:McpWireStatusSnapshot}

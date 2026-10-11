@@ -7,6 +7,13 @@ pub fn register_mcp_lifecycle(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry
 pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Arc<HostMcpRegistry>,owner:u64,tool_search:Option<Arc<tokio::sync::Mutex<maho_ext_tool_search::service::ToolSearchService>>>)->Arc<tokio::sync::Mutex<McpService>> {
     let service=Arc::new(tokio::sync::Mutex::new(McpService::new(registry,owner)));
     let publish_events=api.events.clone();
+    let inventory_service=service.clone();
+    let inventory=api.events.on_native::<crate::control_inventory::McpControlInventoryRequest>(crate::control_inventory::MCP_CONTROL_INVENTORY_REQUEST_EVENT,Arc::new(move |request| {
+        let sender=request.respond.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let service=inventory_service.clone();
+        if let Some(sender)=sender { tokio::spawn(async move { let snapshot=service.lock().await.wire_status_snapshot().await; match serde_json::to_value(snapshot) { Ok(snapshot) => { if sender.send(snapshot).is_err() { /* Requesting connection was disposed. */ } }, Err(error) => eprintln!("MCP inventory serialization failed: {error}") } }); }
+    }));
+    let inventory=Arc::new(std::sync::Mutex::new(Some(inventory)));
     let registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>=Arc::new(crate::tool_registrar::SessionMcpToolRegistrar::from_api(api));
     let command_service=service.clone();
     let command_events=publish_events.clone();
@@ -52,7 +59,7 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
         });
         Ok(EventResult::None)
     })}));
-    let shutdown=service.clone();api.on(EventKind::SessionShutdown,Arc::new(move |_,_|{let service=shutdown.clone();Box::pin(async move {service.lock().await.dispose().await.map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));
+    let shutdown=service.clone();api.on(EventKind::SessionShutdown,Arc::new(move |_,_|{inventory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();let service=shutdown.clone();Box::pin(async move {service.lock().await.dispose().await.map_err(|error|ExtensionFailure::new(error.to_string()))?;Ok(EventResult::None)})}));
     // Upstream `before_agent_start` only awaits the in-flight attach
     // (`whenAttachSettled`) and injects instructions; it does NOT re-register.
     let before=service.clone();api.on(EventKind::BeforeAgentStart,Arc::new(move |event,_|{let service=before.clone();Box::pin(async move {

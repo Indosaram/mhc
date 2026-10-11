@@ -13,7 +13,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use maho_ai::auth::types::{
-    AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, OAuthAuth,
+    AccountLoginOrigin, AccountLoginReceipt, AuthEvent, AuthInteraction, AuthPrompt, AuthPromptKind, Credential, OAuthAuth, OAuthCredential,
     ProviderAuthInteraction,
 };
 use maho_ai::compat::extension_oauth_types::{
@@ -636,6 +636,79 @@ impl AuthStorage {
         }
     }
 
+    /// Atomically appends a completed OAuth login to the provider's credential pool.
+    /// The receipt is returned only after the serialized auth.json write succeeds.
+    pub async fn append_oauth_account(
+        &self,
+        provider_id: &str,
+        credential: OAuthCredential,
+        signal: Option<AbortSignal>,
+    ) -> Result<Option<AccountLoginReceipt>, String> {
+        let _mutation = self.account_mutation.lock().await;
+        if let Some(signal) = &signal {
+            signal.throw_if_aborted().map_err(|reason| reason.message)?;
+        }
+        let flat = Credential::OAuth(credential);
+        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut receipt = None;
+        let result: Result<AuthStorageData, String> = match &self.storage {
+            AuthStorageBackend::File(backend) => backend.with_lock(|current| {
+                if let Some(signal) = &signal {
+                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
+                }
+                let (mut data, _, _) = Self::parse_storage_content(current)?;
+                let current = data.get(provider_id).cloned()
+                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
+                    .transpose()?;
+                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
+                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
+                    receipt = Some(AccountLoginReceipt {
+                        provider_id: provider_id.to_owned(),
+                        name: name.to_owned(),
+                        origin: match origin {
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
+                        },
+                    });
+                })?;
+                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
+                Ok((data.clone(), Some(serialize_auth_data(&data))))
+            }),
+            AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
+                if let Some(signal) = &signal {
+                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
+                }
+                let (mut data, _, _) = Self::parse_storage_content(current)?;
+                let current = data.get(provider_id).cloned()
+                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
+                    .transpose()?;
+                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
+                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
+                    receipt = Some(AccountLoginReceipt {
+                        provider_id: provider_id.to_owned(),
+                        name: name.to_owned(),
+                        origin: match origin {
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
+                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
+                        },
+                    });
+                })?;
+                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
+                Ok((data.clone(), Some(serialize_auth_data(&data))))
+            }),
+        };
+        match result {
+            Ok(data) => {
+                *cached = data;
+                Ok(receipt)
+            }
+            Err(error) => {
+                self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(error.clone());
+                Err(error)
+            }
+        }
+    }
+
     pub fn delete(&self, provider_id: &str) -> Result<(), String> {
         self.set(provider_id, None)
     }
@@ -943,6 +1016,54 @@ mod tests {
         assert!(storage.get("anthropic").is_none());
         let persisted = std::fs::read_to_string(&path).expect("read");
         assert_eq!(persisted, "{}\n");
+    }
+
+    #[tokio::test]
+    async fn append_oauth_account_preserves_existing_accounts_and_pin_on_disk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        let storage = AuthStorage::create(&path);
+        storage.set("chatgpt-subscription", Some(json!({
+            "type": "oauth", "access": "first-a", "refresh": "first-r", "expires": 1.0,
+            "accounts": [{"name":"default","access":"first-a","refresh":"first-r","expires":1.0,"source":"login"}],
+            "pinned": "default"
+        }))).expect("seed");
+
+        let receipt = storage.append_oauth_account(
+            "chatgpt-subscription",
+            OAuthCredential::new("second-a", "second-r", 2.0),
+            None,
+        ).await.expect("append").expect("generated account receipt");
+
+        assert_eq!(receipt.provider_id, "chatgpt-subscription");
+        assert_eq!(receipt.name, "login-2");
+        assert_eq!(receipt.origin, AccountLoginOrigin::Generated);
+        let disk: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read persisted auth")).expect("json");
+        assert_eq!(disk["chatgpt-subscription"]["pinned"], "default");
+        assert_eq!(disk["chatgpt-subscription"]["accounts"].as_array().expect("accounts").len(), 2);
+        assert_eq!(disk["chatgpt-subscription"]["accounts"][1]["access"], "second-a");
+        assert_eq!(storage.get("chatgpt-subscription").expect("cached pool")["accounts"].as_array().expect("accounts").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn append_oauth_account_rejects_cancellation_without_changing_disk_or_cache() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        let initial = "{\n  \"chatgpt-subscription\": {\n    \"type\": \"oauth\",\n    \"access\": \"first-a\",\n    \"refresh\": \"first-r\",\n    \"expires\": 1.0\n  }\n}\n";
+        std::fs::write(&path, initial).expect("seed auth file");
+        let storage = AuthStorage::create(&path);
+        let controller = AbortController::new();
+        controller.abort(None);
+
+        let error = storage.append_oauth_account(
+            "chatgpt-subscription",
+            OAuthCredential::new("second-a", "second-r", 2.0),
+            Some(controller.signal()),
+        ).await.expect_err("cancelled append");
+
+        assert!(!error.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).expect("read auth file"), initial);
+        assert_eq!(storage.get("chatgpt-subscription").expect("cached credential")["access"], "first-a");
     }
 
     #[tokio::test]
