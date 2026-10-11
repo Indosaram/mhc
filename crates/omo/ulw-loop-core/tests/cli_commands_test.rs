@@ -28,7 +28,7 @@ fn create_plan(dir: &tempfile::TempDir) -> UlwLoopPlan {
 }
 
 #[test]
-fn prints_usage_when_no_subcommand() { assert!(ULW_LOOP_HELP.contains("omo-agent-toolkit ulw-loop")); }
+fn prints_usage_when_no_subcommand() { assert!(ULW_LOOP_HELP.contains("mhc ulw-loop")); }
 
 #[test]
 fn status_summary_includes_criteria_counts() {

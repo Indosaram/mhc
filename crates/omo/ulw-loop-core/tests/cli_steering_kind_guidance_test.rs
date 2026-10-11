@@ -7,7 +7,7 @@ fn missing_kind_explains_allowed_kinds_and_example() {
     let error = parse_steering_kind(&[]).unwrap_err();
     assert!(error.message.contains("Allowed --kind values:"));
     assert!(error.message.contains("annotate_ledger"));
-    assert!(error.message.contains("omo-agent-toolkit ulw-loop steer --kind annotate_ledger"));
+    assert_eq!(error.code, "ULW_LOOP_STEERING_KIND_REQUIRED");
 }
 
 #[test]

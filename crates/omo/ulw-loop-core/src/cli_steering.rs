@@ -20,7 +20,7 @@ Kind-specific required flags:\n\
   revise_criterion: --goal-id, --criterion-id, one of --scenario/--expected-evidence/--user-model, --evidence, --rationale\n\
   annotate_ledger: --evidence, --rationale\n\
   mark_blocked_superseded: --goal-id, optional --replacements, --evidence, --rationale\n\
-Example: omo-agent-toolkit ulw-loop steer --kind annotate_ledger --evidence \"observed behavior\" --rationale \"why this changes the plan\" --json";
+Example: mhc ulw-loop steer --kind annotate_ledger --evidence \"observed behavior\" --rationale \"why this changes the plan\" --json";
 
 pub fn parse_steering_kind(argv: &[String]) -> Result<String, UlwLoopError> {
     let val = read_value(argv, "--kind");

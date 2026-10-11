@@ -16,6 +16,11 @@ fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().is_some_and(|arg| arg == "ulw-loop") {
+        let code = ulw_loop_core::cli::main_cli(&argv);
+        if code != 0 { std::process::exit(code); }
+        return Ok(());
+    }
     let memory_role = argv.first().map(String::as_str);
     if memory_role == Some("--memory-supervisor") || memory_role == Some("--child-bootstrap") {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
