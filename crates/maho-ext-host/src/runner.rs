@@ -147,6 +147,16 @@ impl ExtensionContextActions for ContextSessionManager {
     fn get_model(&self) -> Option<Model> { self.active(); self.actions.get_model() }
     fn get_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_service_tier() }
     fn get_effective_service_tier(&self) -> Option<ServiceTier> { self.active(); self.actions.get_effective_service_tier() }
+    fn apply_fast_mode(&self, enabled: bool, context: ExtensionContext) -> ExtensionFuture<'static, FastModeResult> {
+        let actions = self.actions.clone();
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            runtime.assert_active()?;
+            let result = actions.apply_fast_mode(enabled, context).await?;
+            runtime.assert_active()?;
+            Ok(result)
+        })
+    }
     fn get_scoped_models(&self) -> Vec<ScopedModel> { self.active(); self.actions.get_scoped_models() }
     fn get_agent_dir(&self) -> std::path::PathBuf { self.active(); self.actions.get_agent_dir() }
     fn is_idle(&self) -> bool { self.active(); self.actions.is_idle() }
@@ -403,6 +413,15 @@ impl ExtensionRunner {
             None => (resolved.command.handler)(args, &context.context).await,
         }?;
         self.runtime.assert_active()
+    }
+    pub async fn apply_fast_mode(&self, enabled: bool, context: &ExtensionContext) -> Result<FastModeResult, ExtensionFailure> {
+        self.runtime.assert_active()?;
+        let extension=self.extensions.iter().find(|extension|extension.identity.path=="<builtin:service-tier>")
+            .ok_or_else(||ExtensionFailure::new("Fast mode extension is not registered"))?;
+        let action=extension.fast_mode_action.as_ref().ok_or_else(||ExtensionFailure::new("Fast mode action is not registered"))?;
+        let result=action(enabled,context.clone()).await?;
+        self.runtime.assert_active()?;
+        Ok(result)
     }
     pub fn get_shortcuts(&self) -> BTreeMap<String, ExtensionShortcut> {
         let mut shortcuts = BTreeMap::new();

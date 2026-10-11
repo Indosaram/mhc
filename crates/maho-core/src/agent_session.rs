@@ -601,6 +601,14 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
     fn get_all(&self) -> Vec<Model> { self.registry.get_all() }
     fn get_available(&self) -> Vec<Model> { self.registry.get_available() }
     fn find(&self, provider: &str, id: &str) -> Option<Model> { self.registry.find(provider, id) }
+    fn upstream_model_id(&self, model: &Model) -> String { self.registry.get_upstream_model_id(model).unwrap_or_else(|| model.id.clone()) }
+    fn catalog_service_tier(&self, model: &Model) -> Option<maho_ext_api::ServiceTier> {
+        self.registry.get_service_tier(model).map(|tier| match tier {
+            maho_ai::types::ServiceTierPreference::Auto => maho_ext_api::ServiceTier::Auto,
+            maho_ai::types::ServiceTierPreference::Flex => maho_ext_api::ServiceTier::Flex,
+            maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority,
+        })
+    }
     fn has_configured_auth(&self, model: &Model) -> bool { self.registry.has_configured_auth(model) }
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
         Box::pin(async move { Ok(self.registry.get_api_key_for_provider(provider).await) })
@@ -816,6 +824,14 @@ impl maho_ext_api::ExtensionSessionSettings for SessionExtensionActions {
 
 impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn assert_active(&self) -> Result<(), maho_ext_api::ExtensionFailure> { self.session().map(|_| ()) }
+    fn apply_fast_mode(&self, enabled: bool, context: maho_ext_api::ExtensionContext) -> maho_ext_api::ExtensionFuture<'static, maho_ext_api::FastModeResult> {
+        let actions=SessionExtensionActions(self.0.clone());
+        Box::pin(async move {
+            let session=actions.session()?;
+            let runner=session.extension_runner.lock().await.clone().ok_or_else(||maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?;
+            runner.apply_fast_mode(enabled,&context).await
+        })
+    }
     fn set_approved_monitor_parent(&self, id: &str, input: &Value, parent: &std::path::Path) -> Result<(), maho_ext_api::ExtensionFailure> {
         let session = self.session()?;
         monitor_invocation::CURRENT.try_with(|invocation| {
@@ -5619,10 +5635,37 @@ impl AgentSession {
         runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))).ok()
     }
 
+    pub async fn apply_fast_mode(&self, enabled: bool) -> Result<maho_ext_api::FastModeResult, maho_ext_api::ExtensionFailure> {
+        let runner=self.extension_runner.lock().await.clone().ok_or_else(||maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?;
+        let context=runner.create_context()?;
+        runner.apply_fast_mode(enabled,&context).await
+    }
+
     pub async fn extension_runner_request(&self, name: &str, data: Value) -> Result<Value, String> {
         self.extension_runner.lock().await.clone()
             .ok_or_else(|| "Extension runner is not bound".to_owned())?
             .handle_rpc_request(name, data).await.map_err(|error| error.message)
+    }
+
+    pub async fn loaded_extension_surfaces(&self) -> Vec<Value> {
+        let runner = self.extension_runner.lock().await.clone();
+        runner.map(|runner| runner.extensions.iter().map(|extension| {
+            let path = &extension.identity.path;
+            let name = if (path.starts_with("<builtin:") || path.starts_with("<inline:")) && path.ends_with('>') {
+                path.trim_start_matches('<').trim_end_matches('>').split_once(':').map_or(path.as_str(), |(_, id)| id).to_owned()
+            } else {
+                let file = Path::new(path);
+                let stem = file.file_stem().map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+                if stem == "index" {
+                    let parent = file.parent().unwrap_or(file);
+                    let parent_name = parent.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                    if parent_name == "src" || parent_name == "dist" {
+                        parent.parent().and_then(Path::file_name).map_or(parent_name, |name| name.to_string_lossy().into_owned())
+                    } else { parent_name }
+                } else { stem }
+            };
+            serde_json::json!({"name":name,"path":path,"sourceInfo":extension.source_info,"enabled":true})
+        }).collect()).unwrap_or_default()
     }
 
     /// Subscribe to live per-session MCP wire-status snapshots. `T` is the MCP extension's
@@ -5639,6 +5682,10 @@ impl AgentSession {
     /// mismatch. `T` is the MCP extension's `McpWireStatusSnapshot`.
     pub fn mcp_wire_status_snapshot<T: Clone + Send + Sync + 'static>(&self) -> Option<T> {
         self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned()
+    }
+
+    pub async fn emit_native_extension_event<T: Send + Sync + 'static>(&self, channel: &str, payload: &T) {
+        if let Some(runner) = self.extension_runner.lock().await.clone() { runner.events.emit_native(channel, payload); }
     }
 
     /// Bind to this session's MCP wire status, delivering the retained initial snapshot first and

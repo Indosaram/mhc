@@ -24,6 +24,8 @@ maho-ext-help = { path = "../builtins/maho-ext-help" }
 maho-ext-history-search = { path = "../builtins/maho-ext-history-search" }
 maho-ext-model-fallback = { path = "../builtins/maho-ext-model-fallback" }
 maho-ext-account = { path = "../builtins/maho-ext-account" }
+maho-ext-builtin-loose = { path = "../builtins/maho-ext-builtin-loose" }
+maho-ext-reasoning = { path = "../builtins/maho-ext-reasoning" }
 maho-ext-ask-user = { path = "../builtins/maho-ext-ask-user" }
 maho-ext-video-in = { path = "../builtins/maho-ext-video-in" }
 maho-ext-anthropic-web-search = { path = "../builtins/maho-ext-anthropic-web-search" }
