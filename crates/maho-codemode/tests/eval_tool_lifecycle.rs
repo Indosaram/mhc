@@ -77,7 +77,7 @@ async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
         let (sender,mut admitted)=tokio::sync::mpsc::unbounded_channel();
         let kernel=Arc::new(CapacityKernel {admitted:sender,pending:Mutex::new(HashMap::new())});
         let (host,_unused)=tokio::sync::mpsc::unbounded_channel();
-        let tool=create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings:loaded.settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"tui".into(),active_kernel_preludes:None})).unwrap();
+        let tool=create_eval_tool(Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings:loaded.settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells.clone(),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"tui".into(),active_kernel_preludes:None})).unwrap();
         for index in 0..=capacity {
             let execute=tool.execute.clone();
             let call=tokio::spawn(async move {execute(ToolCall {id:&format!("capacity-{index}"),params:json!({"language":"js","code":"fixture","summary":"capacity"}),signal:AbortSignal::default(),on_update:None,context:None}).await});
@@ -98,7 +98,7 @@ async fn callable_eval_is_cancelled_by_session_replacement_before_worker_retirem
     let proxy=Arc::new(SessionManagerProxy::default());
     assert!(proxy.replace(proxy.begin_replacement(), Arc::new(Manager(kernel.clone()))).await);
     let (started, mut events)=tokio::sync::mpsc::unbounded_channel();
-    let options=Arc::new(CreateEvalToolOptions { kernel_manager:proxy.clone(), executor:Arc::new(Executor(started)), list_tools:None, complete:None, settings:Default::default(), artifacts_dir:None, image_sdk:Arc::new(Images), cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))), on_cell_settled:None, prompt:Default::default(), runtimes:HashMap::new(), mode:"print".into(), active_kernel_preludes:None });
+    let options=Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None, kernel_manager:proxy.clone(), executor:Arc::new(Executor(started)), list_tools:None, complete:None, settings:Default::default(), artifacts_dir:None, image_sdk:Arc::new(Images), cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))), on_cell_settled:None, prompt:Default::default(), runtimes:HashMap::new(), mode:"print".into(), active_kernel_preludes:None });
     let tool=create_eval_tool(options).unwrap();
     let execute=tool.execute.clone();
     let mut run=tokio::spawn(async move { execute(ToolCall { id:"lifecycle-cell", params:json!({"language":"js","code":"await tool.park({}); 42", "summary":"lifecycle proof", "on_timeout":"error"}), signal:AbortSignal::default(), on_update:None, context:None }).await });

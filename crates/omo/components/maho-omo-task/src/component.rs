@@ -22,10 +22,17 @@ pub struct TaskComponent {
     team: Mutex<Option<Arc<TeamRuntime>>>,
     team_routing: Arc<Mutex<Option<senpi_task::tools::control::send_shutdown::TaskSendTeamRouting>>>,
     mutation_sync: Mutex<Option<u64>>,
+    eval_handles: Mutex<Option<Arc<crate::eval_handle_host::TaskMutationObserver>>>,
     before_suspend: Mutex<Option<BeforeSuspendCallback>>,
     dag: Mutex<Option<Arc<crate::dag_engine::TaskDagEngine>>>,
 }
 impl TaskComponent {
+    pub fn bind_eval_workpools(&self, api: &mut ExtensionApi, workpools: Arc<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let observer = self.eval_handles.lock().unwrap_or_else(PoisonError::into_inner).clone().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Task handle observer disposed"))?;
+        let runtime = self.engine.runtime.clone();
+        api.provide_eval_handle_host(Arc::new(crate::eval_handle_host::NativeEvalHandleHost::with_shared_workpools(self.engine.manager.clone(), workpools, observer, Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)))?));
+        Ok(())
+    }
     pub fn register_with_process_sweep(api: &mut ExtensionApi, engine: TaskEngine, spawn: senpi_task::tools::task::execute_spec::TaskToolDeps, ownership: senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps, member_process: bool, sweep: crate::process_sweep::SessionStartProcessSweepOptions) -> Result<Option<Arc<Self>>, maho_ext_api::ExtensionFailure> {
         if member_process { return Ok(None); }
         crate::process_sweep::wire_session_start_process_sweep(api, sweep);
@@ -47,9 +54,13 @@ impl TaskComponent {
         let dag_status_timers = status_timers;
         let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
-        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), before_suspend:Mutex::new(None), dag:Mutex::new(None) });
+        let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), eval_handles: Mutex::new(None), before_suspend:Mutex::new(None), dag:Mutex::new(None) });
+        let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
+        *component.eval_handles.lock().unwrap_or_else(PoisonError::into_inner) = Some(eval_handles.clone());
         let weak = Arc::downgrade(&component);
+        let mutation_eval_handles = eval_handles.clone();
         component.engine.store.set_mutation_listener(Some(Arc::new(move || {
+            mutation_eval_handles.notify();
             if let Some(component) = weak.upgrade() {
                 let mut pending = component.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(handle) = pending.take() { component.status.timers.clear(handle); }
@@ -62,6 +73,10 @@ impl TaskComponent {
                 }), 250));
                 component.channels.emit_if_changed();
             }
+        })));
+        api.provide_eval_handle_host(Arc::new(crate::eval_handle_host::NativeEvalHandleHost::new(component.engine.manager.clone(), crate::workpool_admission::create_workpool_engine(&component.engine), eval_handles.clone(), {
+            let runtime = component.engine.runtime.clone();
+            Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned))
         })));
         let state = component.engine.runtime.clone();
         let events = api.events.clone();
@@ -214,6 +229,7 @@ impl TaskComponent {
     pub fn dispose(&self) {
         self.set_team_routing(None);
         self.engine.store.set_mutation_listener(None);
+        if let Some(observer) = self.eval_handles.lock().unwrap_or_else(PoisonError::into_inner).take() { observer.close(); }
         if let Some(handle) = self.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner).take() { self.status.timers.clear(handle); }
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
         for waiter in waiters.values() { waiter.signal.abort(); }

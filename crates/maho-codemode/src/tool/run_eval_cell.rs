@@ -89,7 +89,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let complete=complete.clone();let context=invocation.context.clone();
         Arc::new(move |request,signal,_|complete(request,signal,context.clone())) as super::cell_handler::CellCompletionHandler
     });
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete,deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:options.executor.clone(),tools:options.list_tools.clone(),settings:options.settings.clone(),signal:bridge_signal,complete,eval_handle_host:options.eval_handle_host.clone(),owner_session_id:invocation.owner_session_id.clone(),completion_handles:options.completion_handles.clone(),deliver_reply:Arc::new(move |reply|{let _=reply_kernel.deliver_tool_reply(reply);})});
     let status_tx=messages_tx.clone();
     handler.set_status_emitter(Arc::new(move |event|{let _=status_tx.send(serde_json::json!({"type":"status","event":event}));}));
     let live=Arc::new(Mutex::new(handler.builder.live_result()));
@@ -128,6 +128,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let event_language=invocation.input.language;
     let kernel_tools=if event_language==super::types::EvalLanguage::Js {kernel.clone().kernel_tools()} else {None};
     let steering_active=active.clone();
+    let outer_kernel_tools = kernel_tools.clone();
     let run_bound=async move {
         let _context_guard=context_guard;
         let operation=kernel.run(run_input);
@@ -159,7 +160,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                     } else if message["type"]=="status" && message["event"]["op"]==crate::bridge::reserved::TIMEOUT_RESUME_OP {
                         work_execution.resume();work_manager.lock().expect("cell manager lock").resume(&work_cell);
                     } else if message["type"]=="tool-call" {
-                        bridge_calls.push(handler.begin_tool_call(&message));
+                        bridge_calls.push(Box::pin(maho_ext_api::with_kernel_tools(kernel_tools.clone(), handler.begin_tool_call(&message))));
                     } else {
                         let pending=work_execution.wait(handler.handle(&message));
                         tokio::pin!(pending);
@@ -183,7 +184,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                 handler.builder.state.run_started_at=work_cell.lock().expect("managed cell lock").source.run_started_at_ms;
                 handler.builder.state.status="running".into();handler.builder.state.queued_behind=None;
             } else if active.load(std::sync::atomic::Ordering::SeqCst) && message["type"]=="tool-call" {
-                bridge_calls.push(handler.begin_tool_call(&message));
+                bridge_calls.push(Box::pin(maho_ext_api::with_kernel_tools(kernel_tools.clone(), handler.begin_tool_call(&message))));
             } else if active.load(std::sync::atomic::Ordering::SeqCst) && let Err(error)=work_execution.wait(handler.handle(&message)).await {
                 work_execution.cancel(AbortReason::new("Error",error.clone()));
                 result=Err(error);
@@ -254,7 +255,7 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
         let _=result_tx.send(final_result);
     };
     tokio::spawn(async move {
-        match kernel_tools {
+        match outer_kernel_tools {
             Some(tools)=>maho_ext_host::kernel_tools_context::with_kernel_tools(tools,run_bound).await,
             None=>run_bound.await,
         }
