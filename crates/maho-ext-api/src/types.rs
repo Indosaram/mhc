@@ -1611,7 +1611,7 @@ pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRende
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
-struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>, tools: BTreeMap<String, Vec<RegisteredTool>>, eval_handle_host: Option<SharedEvalHandleHost> }
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>, tools: BTreeMap<String, Vec<RegisteredTool>>, tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>, erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>, eval_handle_host: Option<SharedEvalHandleHost> }
 enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
@@ -1627,6 +1627,8 @@ impl ExtensionRuntime {
                 for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
                 state.extension_tool_executors.extend(pending.tool_executors);
                 state.live_tools.extend(pending.tools);
+                state.live_tool_renderers.extend(pending.tool_renderers);
+                state.live_erased_tool_renderers.extend(pending.erased_tool_renderers);
                 if let Some(host) = pending.eval_handle_host { state.eval_handle_host = Some(host); }
             }
             for change in pending.providers { match change {
@@ -1985,6 +1987,20 @@ impl ExtensionApi {
         self.publish_tools();
         Ok(())
     }
+    pub fn register_tool_with_extension_context_and_renderers<TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwned + Send + 'static>(
+        &mut self,
+        definition: ToolDefinition,
+        execute: ExtensionToolExecutor,
+        renderers: ToolRenderers<TState, TArgs>,
+    ) -> Result<(), ExtensionFailure> {
+        let name = definition.name.clone();
+        self.register_tool_with_extension_context(definition, execute)?;
+        let renderers = Arc::new(renderers);
+        self.registered.erased_tool_renderers.insert(name.clone(), erase_tool_renderers(Arc::clone(&renderers), self.cwd.clone()));
+        self.registered.tool_renderers.insert(name, renderers);
+        self.publish_tools();
+        Ok(())
+    }
     pub fn try_register_tool(&mut self, definition: ToolDefinition) -> Result<(), ExtensionFailure> {
         self.runtime.assert_active()?;
         if definition.name == "tool_search" && self.registered.source_info.source != "builtin" {
@@ -2013,6 +2029,8 @@ impl ExtensionApi {
         let mut pending = self.runtime.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(pending) = pending.as_mut() {
             pending.tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
+            pending.tool_renderers.insert(self.registered.identity.path.clone(), self.registered.tool_renderers.clone());
+            pending.erased_tool_renderers.insert(self.registered.identity.path.clone(), self.registered.erased_tool_renderers.clone());
         } else {
             let mut state = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.live_tools.insert(self.registered.identity.path.clone(), self.registered.tools.clone());
