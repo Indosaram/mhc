@@ -10,6 +10,7 @@ name = "senpi_task"
 path = "src/lib.rs"
 
 [dependencies]
+maho-ai = { path = "../../maho-ai" }
 maho-delegate-core.workspace = true
 maho-isolation-core.workspace = true
 maho-omo-config-core.workspace = true
@@ -26,6 +27,7 @@ regex.workspace = true
 serde_yaml.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+tokio = "=1.52.3"
 unicode-width.workspace = true
 
 [dev-dependencies]

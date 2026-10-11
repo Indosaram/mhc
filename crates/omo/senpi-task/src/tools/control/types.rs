@@ -56,6 +56,11 @@ pub struct ControlSendInput {
 /// Outcome of the manager `send_to_task` call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SendOutcome {
+    Stale {
+        task_id: String,
+        run_epoch: u64,
+        reason: String,
+    },
     Steered {
         task_id: String,
         status: TaskStatus,
@@ -102,6 +107,12 @@ pub enum CancelOutcome {
         task_id: String,
         previous_status: TaskStatus,
     },
+    Stale {
+        task_id: String,
+        status: TaskStatus,
+        run_epoch: i64,
+        reason: String,
+    },
     Noop {
         task_id: String,
         status: TaskStatus,
@@ -125,6 +136,7 @@ impl SendManager for TaskManager {
         let outcome = TaskManager::send_to_task(
             self,
             &SteeringSendInput {
+                expected_run_epoch: None,
                 id_or_name: input.id_or_name.clone(),
                 message: input.message.clone(),
                 deliver_as: Some(DeliverAs::Steer),
@@ -186,6 +198,11 @@ impl SendManager for TaskManager {
                 reason,
             },
             SteeringSendOutcome::NotFound { reason, .. } => SendOutcome::NotFound { reason },
+            SteeringSendOutcome::Stale { task_id, run_epoch, reason } => SendOutcome::Stale {
+                task_id,
+                run_epoch: u64::try_from(run_epoch).unwrap_or_default(),
+                reason,
+            },
         })
     }
 
@@ -215,6 +232,12 @@ impl CancelManager for TaskManager {
             }) => CancelOutcome::Cancelled {
                 task_id,
                 previous_status,
+            },
+            Ok(SteeringCancelOutcome::Stale { task_id, status, run_epoch, reason }) => CancelOutcome::Stale {
+                task_id,
+                status,
+                run_epoch,
+                reason,
             },
             Ok(SteeringCancelOutcome::Noop {
                 task_id,
@@ -293,6 +316,11 @@ pub enum SendResultDetails {
         task_id: String,
         run_epoch: u64,
     },
+    Stale {
+        task_id: String,
+        run_epoch: u64,
+        reason: String,
+    },
     Queued {
         task_id: String,
         queue_position: usize,
@@ -345,6 +373,7 @@ impl SendResultDetails {
         match self {
             Self::Steered { .. } => "steered",
             Self::Revived { .. } => "revived",
+            Self::Stale { .. } => "stale",
             Self::Queued { .. } => "queued",
             Self::NotContinuable { .. } => "not_continuable",
             Self::OneShotAgent { .. } => "one_shot_agent",
@@ -369,6 +398,13 @@ pub enum CancelResultDetails {
         #[serde(serialize_with = "serialize_task_status")]
         status: TaskStatus,
     },
+    Stale {
+        task_id: String,
+        #[serde(serialize_with = "serialize_task_status")]
+        status: TaskStatus,
+        run_epoch: i64,
+        reason: String,
+    },
     Noop {
         task_id: String,
         #[serde(serialize_with = "serialize_task_status")]
@@ -387,6 +423,7 @@ impl CancelResultDetails {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Cancelled { .. } => "cancelled",
+            Self::Stale { .. } => "stale",
             Self::Noop { .. } => "noop",
             Self::NotFound { .. } => "not_found",
             Self::InvalidArguments { .. } => "invalid_arguments",

@@ -403,6 +403,36 @@ async fn shared_parent_tool_obeys_registered_admission_hooks() {
     assert_eq!(admitted_id.lock().expect("observed call ID").as_deref(), Some("child-call"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_child_tool_bridges_sync_execution_from_runtime_context() {
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().expect("isolated native parent tool");
+    let cwd = dir.path().to_string_lossy().into_owned();
+    let tool = maho_ext_api::ToolDefinition::new("sync_child_tool", "sync child fixture",
+        serde_json::json!({"type":"object","properties":{}}), Arc::new(|_| Box::pin(async {
+            Ok(maho_ext_api::ToolResult::text("parent result"))
+        })));
+    let created = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(cwd.clone()),
+        agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(maho_ai::providers::faux::faux_provider(Default::default())
+            .get_model(Some("faux-1")).expect("model")),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)),
+        tools: Some(vec!["sync_child_tool".into()]), custom_tools: vec![tool], minimal_resources: true,
+        ..Default::default()
+    }).await.expect("native parent");
+    let session = Arc::new(created.session);
+    let child_tool = maho_cli::cli::task_runners::live_parent_tools(
+        session.weak_accessor(), tokio::runtime::Handle::current())()
+        .into_iter().find(|tool| tool.name() == "sync_child_tool").expect("live parent tool");
+
+    let result = child_tool.execute("child-call", &serde_json::json!({}));
+    session.dispose().await;
+
+    let result = result.expect("synchronous child execution");
+    assert_eq!(result["content"][0]["text"], "parent result");
+}
+
 #[tokio::test]
 async fn native_shared_definition_cancels_an_entered_parent_tool() {
     use std::sync::Arc;

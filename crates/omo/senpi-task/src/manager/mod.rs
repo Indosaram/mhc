@@ -22,6 +22,9 @@ pub mod runner;
 pub mod runtime_fallback_event;
 pub mod transcript_log;
 pub mod types;
+pub mod workpool_admission;
+#[cfg(test)]
+pub(crate) mod workpool_admission_tests;
 
 #[cfg(test)]
 pub(crate) mod manager_tests;

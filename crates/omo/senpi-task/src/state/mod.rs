@@ -21,7 +21,7 @@ pub use transitions::{
     resolved_reasoning_fields, transition_task_record,
 };
 pub use types::{
-    DeliverAs, HostSessionIdentity, Messageability, PendingSteeringEntry, RESIDENCY_STATES,
+    DeliverAs, HostSessionIdentity, Messageability, PendingSteeringEntry, PendingSteeringWorkpoolMetadata, RESIDENCY_STATES,
     RESOLVED_MODEL_SOURCES, ResidencyState, ResolvedModelRecord, ResolvedModelSource, RunnerKind,
     SpawnSpecV1, TASK_STATUSES, TaskNotification, TaskRecord, TaskRecordInput, TaskRunStats,
     TaskSpawnSpec, TaskStatus, TaskTransition, TaskTransitionAudit, TaskTransitionResult,

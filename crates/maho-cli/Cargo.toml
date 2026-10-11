@@ -75,6 +75,8 @@ memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
 maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
 lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }
 senpi-task = { package = "maho-senpi-task", path = "../omo/senpi-task" }
+delegate-core = { package = "maho-delegate-core", path = "../omo/delegate-core" }
+indexmap.workspace = true
 maho-ext-anthropic-subscription = { path = "../builtins/maho-ext-anthropic-subscription" }
 maho-ext-cursor-cli-oauth = { path = "../builtins/maho-ext-cursor-cli-oauth" }
 async-trait = "=0.1.92"

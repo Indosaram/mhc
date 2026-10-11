@@ -28,6 +28,9 @@ pub enum ContinueResult {
 
 pub fn to_continue_result(outcome: SendOutcome) -> ContinueResult {
     match outcome {
+        SendOutcome::Stale { task_id, reason, .. } => ContinueResult::NotContinuable {
+            task_id: Some(task_id), reason, suggestion: CONTINUE_SUGGESTION.into(),
+        },
         SendOutcome::Steered {
             task_id,
             status,

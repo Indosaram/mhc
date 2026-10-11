@@ -23,6 +23,7 @@ fn managed_spec() -> ManagedStartSpec {
         task_id: "st_00000001".to_string(),
         cwd: "/tmp/project".to_string(),
         state_dir: STATE_DIR.to_string(),
+        workpool_state_dir: None,
         prompt: "do it".to_string(),
         depth: 1,
         parent_session_id: "parent-1".to_string(),
@@ -117,6 +118,7 @@ fn given_managed_spec_when_in_process_started_then_maps_to_child_spec_and_inject
 
     let (child, _) = captured_child(&captured);
     assert_eq!(child.task_id, "st_00000001");
+    assert_eq!(child.workpool_run_epoch, None);
     assert_eq!(child.agent_dir.as_deref(), Some("/home/user/.senpi/agent"));
     let runtime = child.model_runtime.expect("model runtime");
     assert!(Arc::ptr_eq(&runtime, &model_runtime));
@@ -126,6 +128,25 @@ fn given_managed_spec_when_in_process_started_then_maps_to_child_spec_and_inject
         Some(resolve_child_session_dir(STATE_DIR, "st_00000001"))
     );
     assert_eq!(outcome, RunnerOutcome::completed("ok"));
+}
+
+#[test]
+fn given_managed_spec_workpool_epoch_when_in_process_started_then_epoch_is_copied_without_recomputing() {
+    let runner = CapturingInProcess::default();
+    let captured = Arc::clone(&runner.captured);
+    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| InProcessSessionContext::default());
+    managed.start(&ManagedStartSpec { workpool_run_epoch: Some(12), ..managed_spec() }).expect("started");
+    assert_eq!(captured_child(&captured).0.workpool_run_epoch, Some(12));
+}
+
+#[test]
+fn given_managed_workpool_epoch_when_in_process_started_then_epoch_reaches_child_spec() {
+    let runner = CapturingInProcess::default();
+    let captured = Arc::clone(&runner.captured);
+    let managed = create_in_process_managed_runner(runner, |_: &ManagedStartSpec| InProcessSessionContext::default());
+    managed.start(&ManagedStartSpec { workpool_run_epoch: Some(7), ..managed_spec() }).expect("started");
+    let (child, _) = captured_child(&captured);
+    assert_eq!(child.workpool_run_epoch, Some(7));
 }
 
 #[test]

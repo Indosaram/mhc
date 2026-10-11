@@ -1,7 +1,7 @@
 //! Translated from `steering/engine.test.ts` and `steering/engine-one-shot.test.ts`.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use pretty_assertions::assert_eq;
 
@@ -17,6 +17,7 @@ use crate::state::{
 use crate::store::{StateDirConfig, TaskRecordDiagnostic, TaskRecordStore};
 
 type Shared<T> = Arc<Mutex<T>>;
+type FollowUpGate = Arc<(Mutex<(bool, bool)>, Condvar)>;
 
 fn now_iso() -> String {
     crate::shared::iso_from_ms(chrono::Utc::now().timestamp_millis())
@@ -45,6 +46,7 @@ struct FakeHandle {
     /// Ordered `steer:x` / `followUp:x` log (the TS orderTrackingHandle wrapper).
     order: Shared<Vec<String>>,
     last_text: Shared<Option<String>>,
+    follow_up_gate: Option<FollowUpGate>,
 }
 
 impl FakeHandle {
@@ -94,6 +96,17 @@ impl ManagedChildHandle for FakeHandle {
         Ok(())
     }
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
+        if let Some(gate) = &self.follow_up_gate {
+            let (state, changed) = &**gate;
+            let mut state = lock(state);
+            state.0 = true;
+            changed.notify_all();
+            while !state.1 {
+                state = changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
         lock(&self.order).push(format!("followUp:{text}"));
         lock(&self.follow_up_calls).push(text.to_string());
         Ok(())
@@ -337,6 +350,60 @@ fn running_resident_child_steer_lands_mid_run_on_the_live_handle() {
 }
 
 #[test]
+fn concurrent_send_to_same_task_is_serialized_without_overwriting_record() {
+    let h = harness();
+    let record = h.seed_record();
+    h.to_completed(&record);
+    let fresh_marker = "fresh concurrent metadata".to_string();
+    h.store.mutate(&record.task_id, |fresh| TaskRecord {
+        description: Some(fresh_marker.clone()),
+        ..fresh.clone()
+    }).expect("fresh mutation");
+    let follow_up_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let mut gated = FakeHandle::build(&record.task_id, Flavor::InProcess, false);
+    gated.follow_up_gate = Some(follow_up_gate.clone());
+    let fake = Arc::new(gated);
+    h.set_live(&record.task_id, fake.clone());
+    std::thread::scope(|scope| {
+        let engine = &h.engine;
+        let id = record.task_id.clone();
+        let first = scope.spawn(move || engine.send_to_task(&SendInput::new(id, "first")));
+        let (state, changed) = &*follow_up_gate;
+        let mut state = lock(state);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !state.0 {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, timeout) = changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+            if timeout.timed_out() {
+                break;
+            }
+        }
+        let entered = state.0;
+        drop(state);
+        let second = entered.then(|| {
+            h.engine
+                .send_to_task(&SendInput::new(&record.task_id, "second"))
+        });
+        {
+            let (state, changed) = &*follow_up_gate;
+            lock(state).1 = true;
+            changed.notify_all();
+        }
+        assert!(entered, "follow_up was not entered in time");
+        let second = second.expect("second send result").expect("send");
+        assert!(matches!(second, SendOutcome::NotContinuable { .. }), "{second:?}");
+        assert!(matches!(first.join().expect("first send").expect("send"), SendOutcome::Revived { .. }));
+    });
+    assert_eq!(h.load(&record.task_id).description.as_deref(), Some(fresh_marker.as_str()));
+}
+
+#[test]
 fn completed_resident_child_revives_on_the_same_instance_with_incremented_epoch() {
     for flavor in FLAVORS {
         let h = harness();
@@ -359,6 +426,43 @@ fn completed_resident_child_revives_on_the_same_instance_with_incremented_epoch(
         assert_eq!(revived.notification.run_epoch, 1);
         assert!(lock(&h.revive_calls).contains(&record.task_id));
     }
+}
+
+#[test]
+fn send_from_an_earlier_epoch_is_stale_and_not_delivered() {
+    let h = harness();
+    let record = h.seed_record();
+    h.to_completed(&record);
+    let fake = FakeHandle::new(&record.task_id, Flavor::InProcess);
+    h.set_live(&record.task_id, fake.clone());
+    let _ = send(&h, SendInput::new(&record.task_id, "advance epoch"));
+    let outcome = send(
+        &h,
+        SendInput {
+            expected_run_epoch: Some(0),
+            ..SendInput::new(&record.task_id, "must not land")
+        },
+    );
+    assert!(matches!(outcome, SendOutcome::Stale { run_epoch: 1, .. }));
+    assert_eq!(fake.follow_ups(), vec!["advance epoch"]);
+}
+
+#[test]
+fn cancel_from_an_earlier_epoch_is_stale_and_does_not_cancel() {
+    let h = harness();
+    let record = h.seed_record();
+    h.to_completed(&record);
+    let fake = FakeHandle::new(&record.task_id, Flavor::InProcess);
+    h.set_live(&record.task_id, fake.clone());
+    let _ = send(&h, SendInput::new(&record.task_id, "advance epoch"));
+    let outcome = h.engine.cancel_task(
+        &record.task_id,
+        None,
+        CancelOptions { expected_run_epoch: Some(0), ..CancelOptions::default() },
+    ).expect("cancel");
+    assert!(matches!(outcome, CancelOutcome::Stale { run_epoch: 1, .. }));
+    assert_eq!(h.load(&record.task_id).status, TaskStatus::Running);
+    assert_eq!(fake.aborts(), 0);
 }
 
 #[test]

@@ -34,7 +34,7 @@ use crate::manager::respawn::{RespawnInput, respawn_managed_task};
 use crate::manager::transcript_log::subscribe_transcript_log;
 use crate::manager::types::{
     Clock, FallibleAdmit, ListScope, ListedTask, ManagedRunner, ManagedRunnerError,
-    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, ResolvedChildPlan,
+    ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, PlanResolutionCode, PlanResolutionError, ResolvedChildPlan,
     RpcRespawnRunner, SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::run_stats::{RunStatsTracker, create_run_stats_tracker};
@@ -367,7 +367,162 @@ impl TaskManager {
         &self.inner.store
     }
 
+    pub fn has_free_slot(&self, model: &str) -> bool { lock(&self.inner.concurrency).has_free_slot(model) }
+    pub fn state_dir(&self) -> &Path { self.inner.store.state_dir() }
+    pub fn run_epoch(&self, task_id: &str) -> Option<i64> { self.inner.try_load(task_id).map(|record| record.notification.run_epoch) }
+    pub fn next_workpool_epoch(&self, task_id: &str) -> Option<i64> { self.run_epoch(task_id).map(|epoch| epoch.saturating_add(1)) }
+
+    pub fn workpool_worker_eligible(&self, task_id: &str, parent_session_id: &str, expected_epoch: i64) -> bool {
+        let Some(record) = self.inner.try_load(task_id) else { return false; };
+        record.parent_session_id == parent_session_id
+            && record.killed != Some(true)
+            && record.notification.run_epoch.checked_add(1) == Some(expected_epoch)
+            && crate::state::messageability(record.status, record.residency_state) == crate::state::Messageability::Revive
+            && self.inner.live_handle(task_id).is_some()
+            && record.pending_steering.as_ref().is_none_or(Vec::is_empty)
+    }
+
+    pub fn workpool_worker_record(&self, task_id: &str) -> Option<TaskRecord> { self.inner.try_load(task_id) }
+
+    pub fn reserve_slot(&self, model: &str, task_id: &str, epoch: i64) -> bool {
+        let mut concurrency = lock(&self.inner.concurrency);
+        if !concurrency.has_free_slot(model) { return false; }
+        concurrency.acquire(model, task_id);
+        lock(&self.inner.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
+        true
+    }
+
+    pub fn allocate_workpool_record(&self, spec: &crate::workpool::types::WorkpoolSpec, task_id: &str, host_pid: i64) -> Result<(TaskRecord, ManagedStartSpec), crate::state::TaskIdSpaceExhaustedError> {
+        let mode = spec.start.execution_mode.unwrap_or_default();
+        let input = crate::manager::helpers::build_record_input(&spec.start, &spec.plan, task_id, mode);
+        let mut record = create_task_record(input, u64::try_from((self.inner.now)()).ok())?;
+        record.task_id = task_id.to_string();
+        record.host_pid = Some(host_pid);
+        record.notify_on_terminal = false;
+        let managed = build_managed_spec(&record, &spec.start, &spec.plan, &self.inner.cwd, self.inner.store.state_dir());
+        record.spawn_spec = Some(TaskSpawnSpec::V1(build_spawn_spec_v1(&managed)));
+        Ok((record, managed))
+    }
+
+    pub fn enqueue_workpool(&self, model: &str, task_id: &str, epoch: i64, grant: crate::manager::concurrency::Grant) -> (usize, bool) {
+        let mut grant = Some(grant);
+        let (position, immediate) = {
+            let mut concurrency = lock(&self.inner.concurrency);
+            lock(&self.inner.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
+            if concurrency.has_free_slot(model) {
+                concurrency.acquire(model, task_id);
+                (0, true)
+            } else {
+                (concurrency.enqueue(model, task_id, grant.take().expect("pending grant")), false)
+            }
+        };
+        if immediate { std::thread::spawn(grant.expect("immediate grant")); }
+        (position, immediate)
+    }
+
+    pub fn remove_workpool_waiter(&self, model: &str, task_id: &str) -> bool {
+        lock(&self.inner.concurrency).remove(model, task_id)
+    }
+
+    pub fn release_reserved_slot(&self, task_id: &str, model: &str, epoch: i64) { self.inner.release_slot(task_id, model, epoch); }
+
+    pub fn resolve_workpool_spec(
+        &self,
+        caller: &crate::workpool::types::WorkpoolCaller,
+        agent: &crate::workpool::types::WorkpoolAgent,
+    ) -> Result<crate::workpool::types::WorkpoolSpec, crate::workpool::ports::WorkpoolAdmissionError> {
+        let mut spec = match agent {
+            crate::workpool::types::WorkpoolAgent::Category { prompt, model, category } => ManagerStartSpec { prompt: prompt.clone(), model: model.clone(), category: Some(category.clone()), ..ManagerStartSpec::default() },
+            crate::workpool::types::WorkpoolAgent::SubagentType { prompt, model, subagent_type } => ManagerStartSpec { prompt: prompt.clone(), model: model.clone(), subagent_type: Some(subagent_type.clone()), ..ManagerStartSpec::default() },
+        };
+        spec.parent_session_id = caller.session_id.clone();
+        spec.root_session_id = Some(caller.root_session_id.clone());
+        spec.depth = caller.depth.saturating_add(1);
+        spec.cwd = Some(caller.cwd.clone());
+        let plan = (self.inner.planner)(&spec).map_err(|error| crate::workpool::ports::WorkpoolAdmissionError(error.message.clone()))?;
+        let target = spec.subagent_type.as_deref().or(plan.agent_type.as_deref());
+        let allowed = plan.allowed_subagents.as_deref().unwrap_or_default();
+        if let crate::manager::depth_policy::DepthDecision::Denied { reason } = crate::manager::depth_policy::decide_depth_policy(&crate::manager::depth_policy::DepthPolicyInput {
+            child_depth: spec.depth, max_depth: plan.max_depth.unwrap_or(self.inner.config.max_depth), target_agent_type: target, allowed_subagents: Some(allowed),
+        }) { return Err(crate::workpool::ports::WorkpoolAdmissionError(reason)); }
+        spec.execution_mode = Some(crate::manager::execution_mode::resolve_execution_mode(crate::manager::execution_mode::ExecutionModeSources {
+            spec_mode: None, agent_mode: plan.agent_execution_mode, config_mode: Some(self.inner.config.default_execution_mode),
+        }));
+        Ok(crate::workpool::types::WorkpoolSpec { start: spec, plan })
+    }
+
+    pub fn admission_authorize(&self, session_id: &str) -> Result<(), crate::workpool::ports::WorkpoolAdmissionError> {
+        let admission = if let Some(admit) = &self.inner.fallible_admit {
+            admit(session_id).map_err(|error| crate::workpool::ports::WorkpoolAdmissionError(error.to_string()))?
+        } else if let Some(admit) = &self.inner.admit { admit(session_id) } else { return Ok(()); };
+        match admission {
+            SpawnAdmission::Rejected { message } => Err(crate::workpool::ports::WorkpoolAdmissionError(message)),
+            SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => Ok(()),
+        }
+    }
+
+    pub fn launch_prepared(&self, record: TaskRecord, managed_spec: ManagedStartSpec) -> Result<(), String> {
+        let mode = ExecutionMode::parse(&record.execution_mode).ok_or_else(|| "Invalid worker execution mode".to_owned())?;
+        let context = LaunchContext { runner: Arc::clone(self.inner.runners.get(mode)), model: record.model.clone(), managed_spec, record };
+        self.inner.launch(&context)
+    }
+
+    pub fn revive_workpool_task(&self, task_id: &str, epoch: i64, message: &str) -> Result<SendOutcome, SteeringError> {
+        let record = self.inner.try_load(task_id).ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string())))?;
+        if record.notification.run_epoch.checked_add(1) != Some(epoch) || crate::state::messageability(record.status, record.residency_state) != crate::state::Messageability::Revive {
+            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Worker run epoch changed before revival.".into(), suggestion: "Inspect the task before retrying.".into() });
+        }
+        let handle = self.inner.live_handle(task_id).ok_or_else(|| SteeringError::Host(crate::host::HostError { message: "worker has no resident session for revival".into() }))?;
+        let identity = crate::manager::child_handle::WorkpoolChildIdentity { task_id: task_id.to_string(), state_dir: self.inner.store.state_dir().to_string_lossy().into_owned(), run_epoch: u32::try_from(epoch).map_err(|error| SteeringError::Host(crate::host::HostError { message: error.to_string() }))? };
+        let mut revived = record.clone();
+        revived.final_response = None;
+        revived.error_message = None;
+        revived.run_stats = None;
+        revived.status = TaskStatus::Running;
+        revived.residency_state = ResidencyState::Resident;
+        revived.updated_at = self.inner.now_iso();
+        revived.notification.run_epoch = epoch;
+        let mut pending = revived.clone();
+        pending.status = TaskStatus::Pending;
+        self.inner.store.replace(&pending).map_err(SteeringError::Store)?;
+        let rebind = handle.rebind_workpool_identity(identity);
+        match rebind {
+            Some(Ok(())) => {}
+            Some(Err(_error)) => {
+                self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
+                self.inner.settle_failed_workpool_revival(task_id, epoch, "Resident worker refused workpool identity rebinding.")?;
+                return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Resident worker refused workpool identity rebinding.".into(), suggestion: "Start a fresh worker instead of reusing this session.".into() });
+            }
+            None => {
+                self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
+                self.inner.settle_failed_workpool_revival(task_id, epoch, "Resident worker does not support workpool identity rebinding.")?;
+                return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Resident worker does not support workpool identity rebinding.".into(), suggestion: "Start a fresh worker instead of reusing this session.".into() });
+            }
+        }
+        if let Err(error) = handle.follow_up(message) {
+            self.inner.store.replace(&revived).map_err(SteeringError::Store)?;
+            self.inner.settle_failed_workpool_revival(task_id, epoch, "Workpool turn delivery is uncertain after identity rebinding.")?;
+            self.inner.store.append_event(task_id, &PersistedTaskEvent { event_type: "workpool_revival_delivery_uncertain".into(), payload: serde_json::json!({"run_epoch":epoch,"error":error.to_string()}) }).map_err(SteeringError::Store)?;
+            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Workpool turn delivery is uncertain after identity rebinding.".into(), suggestion: "Do not retry this assignment; start a fresh worker.".into() });
+        }
+        let mut running = self.inner.try_load(task_id).ok_or_else(|| SteeringError::Store(crate::store::StoreError::NotFound(task_id.to_string())))?;
+        if running.notification.run_epoch != epoch {
+            return Ok(SendOutcome::NotContinuable { task_id: task_id.to_string(), reason: "Worker run epoch changed during revival.".into(), suggestion: "Inspect the task before retrying.".into() });
+        }
+        running.status = TaskStatus::Running;
+        running.residency_state = ResidencyState::Resident;
+        running.updated_at = self.inner.now_iso();
+        self.inner.store.replace(&running).map_err(SteeringError::Store)?;
+        let _ = self.inner.store.append_event(task_id, &PersistedTaskEvent { event_type: "task_revived".into(), payload: serde_json::json!({"run_epoch":epoch}) });
+        self.inner.reacquire_for_revive(task_id, epoch);
+        Ok(SendOutcome::Revived { task_id: task_id.to_string(), run_epoch: epoch })
+    }
+
     pub fn start(&self, spec: &ManagerStartSpec) -> StartResult {
+        self.start_prepared(spec, |_, _, _| Ok(()))
+    }
+
+    pub fn start_prepared(&self, spec: &ManagerStartSpec, prepare: impl FnOnce(&mut ManagerStartSpec, &ResolvedChildPlan, ExecutionMode) -> Result<(), String>) -> StartResult {
         let plan = match (self.inner.planner)(spec) {
             Ok(plan) => plan,
             Err(error) => return StartResult::PlanUnresolved(*error),
@@ -375,7 +530,15 @@ impl TaskManager {
         if let Some(rejected) = self.admission_rejection(spec, &plan) {
             return rejected;
         }
-        self.inner.start_resolved(spec, &plan, None)
+        let mut spec = spec.clone();
+        let mode = resolve_execution_mode(ExecutionModeSources {
+            spec_mode: spec.execution_mode, agent_mode: plan.agent_execution_mode,
+            config_mode: Some(self.inner.config.default_execution_mode),
+        });
+        if let Err(message) = prepare(&mut spec, &plan, mode) {
+            return StartResult::PlanUnresolved(PlanResolutionError::new(PlanResolutionCode::InvalidTarget, message));
+        }
+        self.inner.start_resolved(&spec, &plan, None)
     }
 
     pub fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> OwnedStartResult {
@@ -703,6 +866,7 @@ impl TaskManager {
         })
     }
 
+
     pub fn is_launching(&self, task_id: &str) -> bool {
         lock(&self.inner.state).launching.contains(task_id)
     }
@@ -800,9 +964,7 @@ fn steering_port(
                 .is_some_and(|inner| inner.dequeue_pending(task_id))
         }),
         reacquire_for_revive: Arc::new(move |task_id| {
-            if let Some(inner) = revive.upgrade() {
-                inner.reacquire_for_revive(task_id);
-            }
+            if let Some(inner) = revive.upgrade() && let Some(record) = inner.try_load(task_id) { inner.reacquire_for_revive(task_id, record.notification.run_epoch); }
         }),
         destruction,
         run_stats_snapshot: Arc::new(move |task_id| stats.upgrade()?.run_stats_snapshot(task_id)),
@@ -1613,7 +1775,7 @@ impl Inner {
         removed
     }
 
-    fn reacquire_for_revive(&self, task_id: &str) {
+    fn reacquire_for_revive(&self, task_id: &str, epoch: i64) {
         let Some((handle, model)) = lock(&self.state)
             .live
             .get(task_id)
@@ -1621,10 +1783,8 @@ impl Inner {
         else {
             return;
         };
-        let epoch = self
-            .try_load(task_id)
-            .map_or(0, |record| record.notification.run_epoch);
         lock(&self.concurrency).acquire(&model, task_id);
+        lock(&self.state).released.insert(task_id.to_string(), epoch.saturating_sub(1));
         let now = self.now.clone();
         let clock: Box<dyn Fn() -> u64 + Send> =
             Box::new(move || u64::try_from(now()).unwrap_or_default());
@@ -1634,6 +1794,21 @@ impl Inner {
             create_run_stats_tracker(started_at, clock),
         );
         track_outcome(self.arc(), task_id.to_string(), handle, model, epoch);
+    }
+
+    fn settle_failed_workpool_revival(&self, task_id: &str, epoch: i64, reason: &str) -> Result<(), SteeringError> {
+        let model = lock(&self.state).live.get(task_id).map(|live| live.model.clone());
+        let transition = self.store.transition(task_id, &TaskTransition::Fail { timestamp: self.now_iso(), error_message: reason.to_string(), killed: false, run_stats: None });
+        if let Some(model) = &model { self.release_slot(task_id, model, epoch); }
+        self.settle_waiters(task_id);
+        let transition = transition?;
+        if !transition.applied {
+            return Err(SteeringError::Store(crate::store::StoreError::Parse("failed workpool revival did not reach terminal state".into())));
+        }
+        if let Err(error) = self.destruction.destroy_resident_task(task_id, DestroyCause::Cancel) {
+            log("senpi-task manager failed workpool revival destruction failed", task_id, &error);
+        }
+        Ok(())
     }
 
     fn release_slot(&self, task_id: &str, model: &str, epoch: i64) {

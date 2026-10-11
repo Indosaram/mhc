@@ -115,6 +115,10 @@ pub fn map_send_outcome(outcome: SendOutcome) -> Result<SendToolResult, SendInva
             &format!("Revived {task_id} (run epoch {run_epoch})."),
             SendResultDetails::Revived { task_id, run_epoch },
         ),
+        SendOutcome::Stale { task_id, run_epoch, reason } => tool_result(
+            &reason,
+            SendResultDetails::Stale { task_id, run_epoch, reason: reason.clone() },
+        ),
         SendOutcome::Queued {
             task_id,
             queue_position,

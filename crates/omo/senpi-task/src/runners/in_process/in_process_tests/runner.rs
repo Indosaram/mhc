@@ -214,6 +214,44 @@ fn given_a_started_child_when_the_session_is_constructed_then_a_persisted_sessio
 }
 
 #[test]
+fn given_workpool_identity_on_child_spec_when_session_options_are_built_then_task_state_directory_and_fixed_epoch_are_preserved()
+{
+    let dir = tmp();
+    let fake = FakeSession::immediate("workpool-child", None);
+    let session = fake.clone();
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, move || session.clone());
+    let mut spec = base_spec(&dir.path().to_string_lossy());
+    spec.task_id = "st_00000042".into();
+    spec.state_dir = dir.path().join("children/st_00000042").to_string_lossy().into_owned();
+    spec.session_dir = Some(
+        dir.path()
+            .join("children/st_00000042/sessions/st_00000042")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    spec.workpool_run_epoch = Some(9);
+    let handle = runner.start(&spec).expect("start");
+    fake.resolve_prompt();
+    handle.wait_for_idle();
+    assert_eq!(last_options(&captured).workpool_identity, Some(crate::runners::in_process::child_options::WorkpoolChildIdentity {
+        task_id: "st_00000042".into(), state_dir: spec.state_dir.clone(), run_epoch: 9,
+    }));
+}
+
+#[test]
+fn given_no_workpool_epoch_when_child_session_options_are_built_then_identity_is_absent()
+{
+    let dir = tmp();
+    let fake = FakeSession::immediate("ordinary-child", None);
+    let session = fake.clone();
+    let (runner, captured) = capturing_runner(Vec::new(), &[], None, move || session.clone());
+    let handle = runner.start(&base_spec(&dir.path().to_string_lossy())).expect("start");
+    fake.resolve_prompt();
+    handle.wait_for_idle();
+    assert_eq!(last_options(&captured).workpool_identity, None);
+}
+
+#[test]
 fn given_a_completed_child_when_the_runner_finishes_then_it_never_disposes_and_dispose_stays_idempotent()
  {
     let dir = tmp();

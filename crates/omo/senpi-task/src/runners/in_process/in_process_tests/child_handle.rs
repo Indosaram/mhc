@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 
 use super::fake_session::FakeSession;
-use crate::manager::child_handle::ManagedChildHandle;
+use crate::manager::child_handle::{ManagedChildHandle, WorkpoolChildIdentity};
 use crate::runners::in_process::child_handle::{
     ChildCompletionPolicy, InProcessChildHandle, RunnerFailureKind, RunnerOutcome,
 };
@@ -26,6 +26,17 @@ fn failure_message(outcome: &RunnerOutcome) -> &str {
         RunnerOutcome::Error { failure, .. } => &failure.message,
         other => panic!("expected error outcome, got {other:?}"),
     }
+}
+
+#[test]
+fn resident_handle_forwards_captured_workpool_identity_to_child_session() {
+    let fake = FakeSession::new("workpool-session");
+    let handle = InProcessChildHandle::restored("st_00000019", fake.clone());
+    let identity = WorkpoolChildIdentity { task_id: "st_00000019".into(), state_dir: "/state/children/st_00000019".into(), run_epoch: 6 };
+    assert!(handle.rebind_workpool_identity(identity.clone()).expect("in-process session supports rebinding").is_ok());
+    assert_eq!(fake.workpool_identity(), Some(crate::runners::in_process::child_handle::WorkpoolChildIdentity {
+        task_id: identity.task_id, state_dir: identity.state_dir, run_epoch: identity.run_epoch,
+    }));
 }
 
 #[test]

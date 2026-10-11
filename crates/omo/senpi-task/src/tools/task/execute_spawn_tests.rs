@@ -18,6 +18,31 @@ use crate::tools::task::validation::SpawnParamsInput;
 
 const PARENT_SESSION: &str = "parent-session-1";
 
+#[test]
+fn requested_kernel_tools_reach_the_resolved_start_hook_before_spawn() {
+    let harness = default_manager();
+    let manager = harness.manager.clone();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let tool = TaskToolDeps {
+        start: Some(std::sync::Arc::new(move |spec, names| manager.start_prepared(spec, |_, plan, mode| {
+            captured.lock().expect("capture lock").push((names.to_vec(), plan.model.clone(), mode));
+            Err("grant refused".into())
+        }))),
+        ..Default::default()
+    };
+    let mut input = params("lookup", "quick", Some(true));
+    input.tools = Some(vec!["lookup".into()]);
+    let result = build_task_execute(TaskExecuteDeps { manager: &harness.manager, tool: &tool, policy: &tool }, ForegroundWaitOptions::default())
+        .execute("kernel-grant", &input, None, None, &ctx()).expect("execute");
+    let seen = seen.lock().expect("capture lock");
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, vec!["lookup".to_owned()]);
+    assert!(!seen[0].1.is_empty());
+    assert_eq!(result.details.status, "plan_error");
+    assert!(harness.manager.resident_task_ids().is_empty());
+}
+
 /// `CTX` from the TS fixtures.
 fn ctx() -> TaskToolContext {
     TaskToolContext {

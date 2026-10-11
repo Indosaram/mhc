@@ -14,12 +14,14 @@ pub struct TaskToolsDeps {
     pub policy: Arc<dyn SpawnPolicyDeps + Send + Sync>,
     pub team_routing: Arc<std::sync::Mutex<Option<TaskSendTeamRouting>>>,
 }
+
 fn native_result(result: impl Serialize) -> Result<ToolResult, ToolError> { Ok(serde_json::from_value(serde_json::to_value(result)?)?) }
 
 #[derive(Deserialize, Default)]
 struct SpawnInput {
     prompt: Option<String>, category: Option<String>, subagent_type: Option<String>, model: Option<String>,
     task_summary: Option<String>, description: Option<String>, name: Option<String>, load_skills: Option<Vec<String>>,
+    tools: Option<Vec<String>>,
     isolated: Option<bool>, apply: Option<bool>, merge: Option<senpi_task::state::IsolationMergeMode>,
     run_in_background: Option<bool>, tasks: Option<Vec<SpawnItem>>,
 }
@@ -27,11 +29,12 @@ struct SpawnInput {
 struct SpawnItem {
     prompt: String, category: Option<String>, subagent_type: Option<String>, model: Option<String>,
     task_summary: Option<String>, description: Option<String>, name: Option<String>, load_skills: Option<Vec<String>>,
+    tools: Option<Vec<String>>,
     isolated: Option<bool>, apply: Option<bool>, merge: Option<senpi_task::state::IsolationMergeMode>,
 }
 impl From<SpawnInput> for SpawnParamsInput {
     fn from(input: SpawnInput) -> Self {
-        Self { prompt: input.prompt, category: input.category, subagent_type: input.subagent_type, model: input.model, task_summary: input.task_summary, description: input.description, name: input.name, load_skills: input.load_skills, isolated: input.isolated, apply: input.apply, merge: input.merge, run_in_background: input.run_in_background, tasks: input.tasks.map(|items| items.into_iter().map(|item| SpawnItemInput { prompt: item.prompt, category: item.category, subagent_type: item.subagent_type, model: item.model, task_summary: item.task_summary, description: item.description, name: item.name, load_skills: item.load_skills, isolated: item.isolated, apply: item.apply, merge: item.merge }).collect()) }
+        Self { prompt: input.prompt, category: input.category, subagent_type: input.subagent_type, model: input.model, task_summary: input.task_summary, description: input.description, name: input.name, load_skills: input.load_skills, tools: input.tools, isolated: input.isolated, apply: input.apply, merge: input.merge, run_in_background: input.run_in_background, tasks: input.tasks.map(|items| items.into_iter().map(|item| SpawnItemInput { prompt: item.prompt, category: item.category, subagent_type: item.subagent_type, model: item.model, task_summary: item.task_summary, description: item.description, name: item.name, load_skills: item.load_skills, tools: item.tools, isolated: item.isolated, apply: item.apply, merge: item.merge }).collect()) }
     }
 }
 pub fn register_task_tools(api: &mut ExtensionApi, deps: TaskToolsDeps) {
@@ -47,6 +50,11 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
             let params = SpawnParamsInput::from(serde_json::from_value::<SpawnInput>(call.params)?);
             let context = call.context.ok_or_else(|| ToolError::Message("task requires a session context".into()))?;
             let ctx = TaskToolContext { cwd: context.cwd().to_string_lossy().into_owned(), session_id: context.session_manager().session_id().into(), get_prompt_cache_safe_wait_seconds: None };
+            let mut spawn = deps.spawn.clone();
+            if let Some(start) = spawn.start.take() {
+                let capability = maho_ext_api::current_kernel_tools();
+                spawn.start = Some(Arc::new(move |spec, names| maho_ext_api::with_kernel_tools_sync(capability.clone(), || start(spec, names))));
+            }
             call.signal.check()?;
             let id = call.id.to_owned();
             let signal = senpi_task::manager::AbortSignal::default();
@@ -64,7 +72,7 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
             }) as Arc<senpi_task::tools::task::execute_single::TaskToolUpdate>);
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let worker = std::thread::spawn(move || {
-                let execute = build_task_execute(TaskExecuteDeps { manager: &deps.manager, tool: &deps.spawn, policy: deps.policy.as_ref() }, ForegroundWaitOptions::default());
+                let execute = build_task_execute(TaskExecuteDeps { manager: &deps.manager, tool: &spawn, policy: deps.policy.as_ref() }, ForegroundWaitOptions::default());
                 let result = execute.execute(&id, &params, Some(&signal), on_update, &ctx);
                 let _ = sender.send(result);
             });

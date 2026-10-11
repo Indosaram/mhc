@@ -245,6 +245,9 @@ fn task_send_result_row(details: &SendResultDetails) -> ResultRow {
             ThemeColor::Success,
             format!("task_send revived {task_id} epoch {run_epoch}"),
         ),
+        SendResultDetails::Stale { task_id, run_epoch, reason } => row(
+            ThemeColor::Error, format!("task_send stale {task_id} epoch {run_epoch}: {reason}"),
+        ),
         SendResultDetails::Queued {
             task_id,
             queue_position,
@@ -343,6 +346,9 @@ fn team_message_row(details: &TeamSendDetails) -> ResultRow {
 
 fn task_cancel_result_row(details: &CancelResultDetails) -> ResultRow {
     match details {
+        CancelResultDetails::Stale { task_id, status, run_epoch, reason } => row(
+            status_theme_color(status.as_str()), format!("task_cancel stale {task_id} epoch {run_epoch}: {reason}"),
+        ),
         CancelResultDetails::Cancelled {
             task_id,
             previous_status,

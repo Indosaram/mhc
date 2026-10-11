@@ -58,12 +58,24 @@ pub struct TaskOmoConfig {
 }
 
 /// Task tool dependencies used by spec building.
+pub type TaskStart = Arc<dyn Fn(&ManagerStartSpec, &[String]) -> crate::manager::types::StartResult + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct TaskToolDeps {
+    pub start: Option<TaskStart>,
     pub resolve_ancestry: Option<ResolveAncestry>,
     pub load_skills: Option<Arc<SkillLoader>>,
     pub agents: HashMap<String, TaskAgentDefinition>,
     pub omo_config: TaskOmoConfig,
+}
+
+impl TaskToolDeps {
+    pub fn start_task(&self, manager: &crate::manager::TaskManager, spec: &ManagerStartSpec, tools: Option<&[String]>) -> crate::manager::types::StartResult {
+        match (&self.start, tools.filter(|names| !names.is_empty())) {
+            (Some(start), Some(names)) => start(spec, names),
+            (None, Some(_)) => crate::manager::types::StartResult::PlanUnresolved(crate::manager::types::PlanResolutionError::new(crate::manager::types::PlanResolutionCode::InvalidTarget, "Kernel tools require a live parent capability resolver.")),
+            _ => manager.start(spec),
+        }
+    }
 }
 
 /// The TS `TaskToolDeps` carries no spawn-policy seams of its own: `invocationGateDenial` and
@@ -96,6 +108,7 @@ pub struct SingleSpawnParams {
     pub name: Option<String>,
     pub model: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub tools: Option<Vec<String>>,
     pub isolated: Option<bool>,
     pub apply: Option<bool>,
     pub merge: Option<IsolationMergeMode>,
@@ -218,7 +231,7 @@ fn resolved_agent_mode(target: &SpawnTarget, deps: &TaskToolDeps) -> Option<Exec
     })
 }
 
-fn resolved_task_execution_mode(target: &SpawnTarget, deps: &TaskToolDeps) -> ExecutionMode {
+pub fn resolved_task_execution_mode(target: &SpawnTarget, deps: &TaskToolDeps) -> ExecutionMode {
     let agent_mode = resolved_agent_mode(target, deps);
     resolve_execution_mode(ExecutionModeSources {
         spec_mode: None,
@@ -249,6 +262,7 @@ pub fn single_spawn_params(
         name: item.name.clone(),
         model: item.model.clone(),
         load_skills: Some(item.load_skills.clone()),
+        tools: item.tools.clone(),
         isolated: item.isolated,
         apply: item.apply,
         merge: item.merge,
