@@ -1,6 +1,7 @@
 globalThis.__senpi_reserved_agent_tool__ = globalThis.__senpi_module_context__.reservedAgentTool;
 globalThis.__senpi_reserved_output_tool__ = globalThis.__senpi_module_context__.reservedOutputTool;
 globalThis.__senpi_reserved_schema_tool__ = globalThis.__senpi_module_context__.reservedSchemaTool;
+globalThis.__senpi_call_handle__ = async (operation, fields) => await globalThis.tool(globalThis.__senpi_module_context__.reservedHandleTool)({ operation, ...fields });
 globalThis.__senpi_timeout_pause_op__ = globalThis.__senpi_module_context__.timeoutPauseOp;
 globalThis.__senpi_timeout_resume_op__ = globalThis.__senpi_module_context__.timeoutResumeOp;
 globalThis.__senpi_import__ = async (source, options) => {

@@ -1,6 +1,6 @@
 use std::{collections::HashMap,path::PathBuf,sync::{Arc,Mutex}};
 use maho_ai::utils::abort::AbortSignal;
-use maho_ext_api::AgentToolResult;
+use maho_ext_api::{AgentToolResult, EvalHandleHost};
 use maho_tools::definition::KernelPrelude;
 use crate::{bridges::{output_bridge::OutputExecuteTool,schema_bridge::EvalToolCatalog},config::settings::CodemodeSettings,prompt::eval_prompt::EvalPromptOptions};
 use super::{types::{EvalKernel,EvalKernelFuture,EvalLanguage,EvalRuntimeInfo,EvalToolInput},detached_cell_manager::EvalDetachedCellManager,cell_handler::CellCompletionHandler,image_resize::EvalImageSdk};
@@ -34,6 +34,9 @@ pub struct CreateEvalToolOptions {
     pub runtimes: HashMap<EvalLanguage,EvalRuntimeInfo>,
     pub mode: String,
     pub active_kernel_preludes: Option<ActiveKernelPreludes>,
+    pub eval_handle_host: Option<Arc<dyn EvalHandleHost>>,
+    pub owner_session_id: Option<String>,
+    pub completion_handles: Arc<crate::bridges::handles::CompletionHandleRegistry>,
 }
 
 impl CreateEvalToolOptions {
@@ -57,6 +60,9 @@ impl CreateEvalToolOptions {
             runtimes: HashMap::new(),
             mode: "print".into(),
             active_kernel_preludes: None,
+            eval_handle_host: None,
+            owner_session_id: None,
+            completion_handles: Arc::new(Default::default()),
         }
     }
 }
@@ -70,4 +76,5 @@ pub struct EvalCellInvocation {
     pub context: Option<EvalInvocationContext>,
     pub model: Option<maho_ai::model::Model>,
     pub mode: String,
+    pub owner_session_id: Option<String>,
 }

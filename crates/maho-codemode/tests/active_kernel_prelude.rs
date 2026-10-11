@@ -111,7 +111,7 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
     });
 
     let cells = Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default())));
-    let options = Arc::new(CreateEvalToolOptions {
+    let options = Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,
         kernel_manager: session.clone(),
         executor: executor.clone(),
         list_tools: None,

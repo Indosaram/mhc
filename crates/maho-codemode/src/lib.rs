@@ -31,12 +31,13 @@ struct ExtensionState {
     context: Option<ExtensionContext>,
     model_id: Option<String>,
     generation: u64,
+    completion_handles: Arc<bridges::handles::CompletionHandleRegistry>,
 }
 
 pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Result<(), ExtensionFailure> {
     let options=Arc::new(options);
     let proxy=Arc::new(extension::session_manager_proxy::SessionManagerProxy::default());
-    let state=Arc::new(Mutex::new(ExtensionState {runtime:None,cells:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),context:None,model_id:None,generation:0}));
+    let state=Arc::new(Mutex::new(ExtensionState {runtime:None,cells:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),context:None,model_id:None,generation:0,completion_handles:Arc::new(Default::default())}));
     let host=Arc::new(Mutex::new(ExtensionApi::new(api.registered.clone(),api.profile.clone(),api.events.clone(),api.runtime.clone())));
     let ticker_context=Arc::downgrade(&state);
     let ticker=Arc::new(Mutex::new(extension::eval_status_ticker::EvalStatusTicker::new(Arc::new(move |status| {
@@ -57,6 +58,7 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
         let host=start_host.clone();let state=start_state.clone();let proxy=start_proxy.clone();let options=start_options.clone();let ticker=start_ticker.clone();let notifier=start_notifier.clone();
         Box::pin(async move {
             let previous=state.lock().expect("extension state").cells.clone();
+            { let mut state=state.lock().expect("extension state"); state.completion_handles.dispose(); state.completion_handles=Arc::new(Default::default()); }
             EvalDetachedCellManager::dispose(&previous).await.map_err(ExtensionFailure::new)?;
             let generation=proxy.begin_replacement();
             state.lock().expect("extension state").generation=generation;
@@ -88,7 +90,7 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
     for event in [EventKind::SessionShutdown,EventKind::SessionBeforeSwitch,EventKind::SessionBeforeFork] {
         let state=state.clone();let proxy=proxy.clone();let ticker=ticker.clone();
         api.on(event,Arc::new(move |_,_| {let state=state.clone();let proxy=proxy.clone();let ticker=ticker.clone();Box::pin(async move {
-            let cells={let mut state=state.lock().expect("extension state");state.generation+=1;state.runtime=None;state.model_id=None;state.cells.clone()};
+            let cells={let mut state=state.lock().expect("extension state");state.generation+=1;state.runtime=None;state.model_id=None;state.completion_handles.dispose();state.cells.clone()};
             ticker.lock().expect("ticker").stop();
             let result=EvalDetachedCellManager::dispose(&cells).await;
             state.lock().expect("extension state").context=None;
@@ -160,7 +162,7 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
     let prompt_tools=api.get_all_tools().unwrap_or_default().into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:tool.kernel_prelude}).collect::<Vec<_>>();
     let prompt_preludes=extension::kernel_preludes::active_kernel_preludes(&prompt_active,&prompt_tools);
     let prompt=prompt::eval_prompt::EvalPromptOptions {model_id:state.model_id.clone(),spawns:runtime.as_ref().is_some_and(|runtime|runtime.spawns),monitor:runtime.is_some() && api.get_all_tools()?.iter().any(|tool|tool.name=="monitor"),spawn_default_agent:Some(settings.task_tools.task.clone()),js_runtime:Some(options.js_runtime.clone()),kernel_preludes:prompt_preludes,..Default::default()};
-    let definition=tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:proxy.clone(),executor,list_tools:Some(catalog),complete:Some(completion),settings,artifacts_dir:runtime.as_ref().map(|runtime|runtime.artifacts_dir.clone()),image_sdk:options.image_sdk.clone(),cell_manager:cells,on_cell_settled:Some(on_settled),prompt,runtimes:runtime.as_ref().map_or_else(HashMap::new,|runtime|runtime.runtimes.iter().cloned().collect()),mode:state.context.as_ref().map_or("print",|context|if matches!(context.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {"print"} else {"interactive"}).into(),active_kernel_preludes:Some(active_preludes_fn)})).map_err(ExtensionFailure::new)?;
+    let definition=tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:proxy.clone(),executor,list_tools:Some(catalog),complete:Some(completion),settings,artifacts_dir:runtime.as_ref().map(|runtime|runtime.artifacts_dir.clone()),image_sdk:options.image_sdk.clone(),cell_manager:cells,on_cell_settled:Some(on_settled),prompt,runtimes:runtime.as_ref().map_or_else(HashMap::new,|runtime|runtime.runtimes.iter().cloned().collect()),mode:state.context.as_ref().map_or("print",|context|if matches!(context.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {"print"} else {"interactive"}).into(),active_kernel_preludes:Some(active_preludes_fn),eval_handle_host:api.runtime.eval_handle_host()?,owner_session_id:state.context.as_ref().map(|context|context.session_manager.session_id().to_owned()),completion_handles:state.completion_handles.clone()})).map_err(ExtensionFailure::new)?;
     api.try_register_tool(definition)
 }
 

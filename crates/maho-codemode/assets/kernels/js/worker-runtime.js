@@ -7,6 +7,7 @@ import { terminateProcessTrees } from "./process-tree.js";
 import { awaitMaybePromise, indirectEval, wrapUserCode } from "./worker-indirect-eval.js";
 import { installShellCapture } from "./worker-shell-capture.js";
 import { createWorkpool } from "./workpool.js";
+import { createHandleHelpers } from "./handles.js";
 import { inKernelToolInvoke } from "./kernel-tools-context.js";
 import { kernelToolError } from "./kernel-tools-errors.js";
 import { createKernelToolRegistry, createToolNamespace } from "./kernel-tools-registry.js";
@@ -122,6 +123,9 @@ export class JsWorkerRuntime {
 		globalThis.tool_schema = async name => await this.#toolSchema(name);
 		globalThis.agent = async (prompt, options, ...rest) => await this.#agent(prompt, options, rest);
 		globalThis.workpool = (agent, name, options) => createWorkpool((toolName, args) => this.#callTool(toolName, args), agent, name, options);
+		const handles = createHandleHelpers(async (toolName, args) => await this.#callTool(toolName, args));
+		globalThis.wait = handles.wait;
+		globalThis.handle = value => handles.handle(value);
 		globalThis.parallel = async thunks => await this.#parallel(thunks);
 		globalThis.pipeline = async (items, ...stages) => await this.#pipeline(items, stages);
 		globalThis.completion = async (prompt, opts) => await this.#callTool("completion", { prompt, opts });

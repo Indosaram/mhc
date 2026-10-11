@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use serde_json::{Value, json};
-use maho_ext_api::ExecuteToolOptions;
+use maho_ext_api::{EvalHandleHost, ExecuteToolOptions};
 use crate::{bridges::{agent_bridge::AgentBridge, output_bridge::OutputExecuteTool, schema_bridge::EvalToolCatalog, reserved_dispatch::{ReservedDispatchContext, is_reserved_tool_name, run_reserved_tool}, schema_hint::append_schema_hint}, config::settings::CodemodeSettings};
 use super::{cell_runtime::CellResultBuilder, call_capture::*, tool_result_marshal::{marshal_tool_result, tool_result_is_error}, status_events::upsert_status_event};
 
@@ -12,6 +12,9 @@ pub struct CellBridgeRuntime {
     pub signal: maho_ai::utils::abort::AbortSignal,
     pub deliver_reply: Arc<dyn Fn(Value) + Send + Sync>,
     pub complete: Option<CellCompletionHandler>,
+    pub eval_handle_host: Option<Arc<dyn EvalHandleHost>>,
+    pub owner_session_id: Option<String>,
+    pub completion_handles: Arc<crate::bridges::handles::CompletionHandleRegistry>,
 }
 
 
@@ -67,6 +70,7 @@ impl CellHandler {
         let args=bound_tool_call_args(&message["args"]);
         let capture=ToolCallCapture {call_id:cap_code_points(call_id,MAX_CAPTURED_IDENTIFIER_CODE_POINTS),args:args.args,started_at:started,metric,include_details:name!=crate::bridge::reserved::RESERVED_SCHEMA_TOOL,args_truncated:args.truncated};
         let runtime=self.runtime.clone();
+        let completion_deadline_ms=self.builder.state.started_at+runtime.settings.hard_limit_seconds*1000.0;
         let agent_bridge=self.agent_bridge.clone();
         let emit_status=self.emit_status.clone();
         let message=message.clone();
@@ -77,9 +81,28 @@ impl CellHandler {
         let mut error_code=None;
         let reply = if name=="completion" && let Some(complete)=runtime.complete.as_ref() {
             match crate::completion::tool_bridge::to_completion_request(&message["args"]) {
+                Ok(mut request) if request.opts.as_ref().is_some_and(|opts|opts["handle"]==true) => {
+                    let tier=request.model.as_deref().or_else(||request.opts.as_ref().and_then(|opts|opts["model"].as_str()));
+                    if request.prompt.trim().is_empty(){Err("eval_handle_invalid_arguments: completion(prompt, {handle: true}) needs a non-empty prompt".into())}
+                    else if tier.is_some_and(|tier|!matches!(tier,"smol"|"default"|"slow")){Err(format!("eval_handle_invalid_arguments: completion(prompt, {{handle: true}}) got model tier \"{}\"; expected \"smol\", \"default\", or \"slow\"",tier.unwrap_or_default()))}
+                    else {
+                    let mut opts=request.opts.take().unwrap_or(Value::Null);if let Some(object)=opts.as_object_mut(){object.remove("handle");}request.opts=Some(opts);
+                    let handles=runtime.completion_handles.clone();let complete=complete.clone();
+                    match handles.start(completion_deadline_ms,move |signal|Box::pin(async move { complete(request,signal,None).await.map(|result|result.get("value").or_else(||result.get("text")).cloned().unwrap_or(Value::Null)).map_err(|error|maho_ext_api::EvalHandleError{code:"completion_failed".into(),message:error.0,details:None}) })) {
+                        Ok(reference)=>Ok((json!({"kind":"completion","id":reference.id,"run_epoch":reference.run_epoch,"handle":format!("completion://{}",reference.id)}),true,None,None)),
+                        Err(error)=>Err(error.message),
+                    }
+                    }
+                    }
                 Ok(request)=>complete(request,runtime.signal.clone(),None).await.map(|result| (result.get("value").or_else(||result.get("text")).cloned().unwrap_or(Value::Null),true,None,None)).map_err(|error|error.0),
                 Err(error)=>Err(error.0),
             }
+        } else if crate::bridges::eval_handle_bridge::is_handle_tool_name(name) {
+            if let Some(owner_session_id)=runtime.owner_session_id.as_deref() {
+                crate::bridges::eval_handle_bridge::run_handle_tool(name,&message["args"],crate::bridges::eval_handle_bridge::EvalHandleBridgeOptions {
+                    host:runtime.eval_handle_host.as_deref(),completions:&runtime.completion_handles,owner_session_id,signal:Some(runtime.signal.clone()),
+                }).await.map_err(|error|error.to_string()).map(|value|(value,true,None,None))
+            } else { Err("eval handle requires an owning session id".to_string()) }
         } else if name=="eval" {
             Err("recursive eval is not allowed".into())
         } else if is_reserved_tool_name(name) {

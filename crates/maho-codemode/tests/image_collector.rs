@@ -74,7 +74,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
     let (sender,mut replies)=tokio::sync::mpsc::unbounded_channel();
     let controller=maho_ai::utils::abort::AbortController::new();
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:Arc::new(Executor),tools:None,complete:None,settings:maho_codemode::config::settings::CodemodeSettings::default(),signal:controller.signal(),deliver_reply:Arc::new(move |reply|{sender.send(reply).expect("reply receiver");})});
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,executor:Arc::new(Executor),tools:None,complete:None,settings:maho_codemode::config::settings::CodemodeSettings::default(),signal:controller.signal(),deliver_reply:Arc::new(move |reply|{sender.send(reply).expect("reply receiver");})});
     handler.handle(&serde_json::json!({"type":"tool-call","toolName":"echo","callId":"call","args":{}})).await.unwrap();
     let reply=replies.recv().await.unwrap();
     assert_eq!(reply["value"]["text"],"reply");
@@ -90,7 +90,7 @@ async fn cell_handler_dispatches_native_tools_and_blocks_recursive_eval() {
     assert_eq!(replies.recv().await.unwrap()["error"]["code"],"blocked");
     let state=handler.builder.state;
     let builder=CellResultBuilder::new(state,EvalOutputOptions {artifact_path:None,head_bytes:20480,max_columns:768,provider:None,api:None,image_sdk:Arc::new(Sdk)});
-    let mut handler=CellHandler::new(builder,CellBridgeRuntime {executor:Arc::new(Executor),tools:Some(Arc::new(||Err("native catalog unavailable".into()))),complete:None,settings:Default::default(),signal:controller.signal(),deliver_reply:Arc::new(|_|panic!("a failed schema-hint lookup cannot publish a reply"))});
+    let mut handler=CellHandler::new(builder,CellBridgeRuntime {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,executor:Arc::new(Executor),tools:Some(Arc::new(||Err("native catalog unavailable".into()))),complete:None,settings:Default::default(),signal:controller.signal(),deliver_reply:Arc::new(|_|panic!("a failed schema-hint lookup cannot publish a reply"))});
     let failure=handler.handle(&serde_json::json!({"type":"tool-call","toolName":"__schema__","callId":"schema-failure","args":{}})).await;
     assert_eq!(failure,Err("native catalog unavailable".into()));
 }
