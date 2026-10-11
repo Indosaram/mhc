@@ -1391,7 +1391,10 @@ async fn concurrent_context_reload_requests_share_one_host_operation() {
     runner.bind_context_actions(actions.clone()).unwrap();
     let first = runner.create_context().unwrap();
     let second = runner.create_context().unwrap();
-    let (one, two) = tokio::join!(first.request_reload(), second.request_reload());
+    let mut admitted = Box::pin(first.request_reload());
+    assert!(matches!(admitted.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())), std::task::Poll::Pending));
+    assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let (one, two) = tokio::join!(admitted, second.request_reload());
     one.unwrap();
     two.unwrap();
     assert_eq!(actions.revision.load(std::sync::atomic::Ordering::SeqCst), 1);

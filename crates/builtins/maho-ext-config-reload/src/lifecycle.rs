@@ -317,6 +317,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     let (paths, handoff) = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         if state.generation != generation || state.in_flight || state.pending.is_empty() { return Ok(None); }
+        if !ctx.is_idle() || ctx.has_pending_messages()? || ctx.is_compacting() { return Ok(None); }
         state.veto.reset();
         state.in_flight = true;
         let changes = state.pending.snapshot();
@@ -324,13 +325,14 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
         let handoff = ReloadHandoff { hashes: state.hashes.clone(), contents: state.contents.clone(), requested: std::time::Instant::now(), changes };
         (paths, handoff)
     };
-    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.set(handoff_key(&state, &ctx)?, handoff);
+    let key = handoff_key(&state, &ctx)?;
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.set(key.clone(), handoff);
     let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
     logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "config changed", paths: &logged_paths });
     ctx.ui.notify(&format!("Hot-reloading: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
     let result = ctx.request_reload().await;
-    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(&handoff_key(&state, &ctx)?);
+    HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(&key);
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     if state.generation == generation { state.in_flight = false; }
     if let Err(error) = result { logger.log(LogLevel::Error, LogEvent::WatcherError { path: "reload", message: &error.to_string() }); }

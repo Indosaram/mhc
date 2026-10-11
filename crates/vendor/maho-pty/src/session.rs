@@ -248,7 +248,11 @@ impl PtySession {
         match self.signal_number(kill_signal()) {
             Ok(()) => Ok(()),
             Err(error) if error.to_string().contains("No such process") => Ok(()),
-            Err(_) => self.killer.kill().map_err(PtyError::from),
+            Err(_) => match self.killer.kill().map_err(PtyError::from) {
+                Ok(()) => Ok(()),
+                Err(error) if error.to_string().contains("No such process") => Ok(()),
+                Err(error) => Err(error),
+            },
         }
     }
 
@@ -313,6 +317,16 @@ fn drain_output(
     master: &Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     reader_thread: &Arc<Mutex<Option<JoinHandle<()>>>>,
 ) {
+    // POSIX reaches EOF/EIO when the child closes the slave. Drain before dropping
+    // portable-pty's writer: its Drop writes newline/EOT, which must not be echoed
+    // into the raw output stream after the child has exited.
+    #[cfg(unix)]
+    {
+        let reader_thread = reader_thread.lock().ok().and_then(|mut guard| guard.take());
+        if let Some(reader_thread) = reader_thread {
+            let _ = reader_thread.join();
+        }
+    }
     if let Ok(mut guard) = writer.lock() {
         guard.take();
     }

@@ -329,7 +329,7 @@ impl Extension for TerminalExtension {
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let task=telemetry_task.clone();Box::pin(async move {if let Some(task)=task.lock().map_err(|_|ExtensionFailure::new("monitor telemetry state poisoned"))?.take() {task.abort();}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {let status=status_task.clone();Box::pin(async move {if let Some(task)=status.lock().map_err(|_|ExtensionFailure::new("monitor status state poisoned"))?.take() {task.abort();}ctx.ui.set_status(crate::monitor_status::MONITOR_STATUS_KEY,None);Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |event,ctx| {let bundle=shutdown_bundle.clone();let notifier=notifier.clone();Box::pin(async move {
-            notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();
+            if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason!=maho_ext_api::types::SessionReason::Reload) {notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?.take();}
             let session_id=ctx.session_manager.session_id().to_owned();
             if matches!(event,maho_ext_api::types::ExtensionEvent::SessionShutdown(event) if event.reason==maho_ext_api::types::SessionReason::Reload) {
                 bundle.lock().map_err(|_|ExtensionFailure::new("terminal bundle state poisoned"))?.monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.detach_delivery();
