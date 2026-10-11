@@ -386,7 +386,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::GetAuthProviders=>{
             let registry=session.model_registry();
-            let providers=maho_core::auth_providers::build_login_provider_infos(registry,None).into_iter().map(|info|{
+            let providers=maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::Oauth)).into_iter().chain(maho_core::auth_providers::build_login_provider_infos(registry,Some(maho_core::auth_storage::CredentialKind::ApiKey))).map(|info|{
                 let status=registry.get_provider_auth_status(&info.id);
                 serde_json::json!({"id":info.id,"name":info.name,"authType":match info.auth_type{maho_core::auth_storage::CredentialKind::Oauth=>"oauth",maho_core::auth_storage::CredentialKind::ApiKey=>"api_key"},"status":{"configured":status.configured,"source":status.source,"label":status.label}})
             }).collect::<Vec<_>>();
@@ -397,27 +397,40 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let active_logins=active_logins.unwrap_or_else(||std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
             let controller=maho_ai::utils::abort::AbortController::new();
             if let Some(previous)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(provider.clone(),controller.clone()){previous.abort(None);}
-            let provider=provider.clone();let storage=session.model_registry().auth_storage.clone();let active_logins=active_logins.clone();let event_sink=sink.clone();let ui=ui.unwrap_or_else(||std::sync::Arc::new(crate::connection_handler::RpcExtensionUi::new(event_sink.clone(),Default::default(),Default::default(),Vec::new())));
+            let provider=provider.clone();let storage=session.model_registry().auth_storage.clone();let mut runtime=session.model_registry().model_runtime.clone();let active_logins=active_logins.clone();let event_sink=sink.clone();let ui=ui.unwrap_or_else(||std::sync::Arc::new(crate::connection_handler::RpcExtensionUi::new(event_sink.clone(),Default::default(),Default::default(),Vec::new())));
             tokio::spawn(async move{
-                let callbacks=std::sync::Arc::new(crate::login_prompts::RpcLoginPromptCallbacks::with_sink(controller.signal(),provider.clone(),event_sink.clone(),ui));
+                let settled=maho_ai::utils::abort::AbortController::new();
+                let combined=maho_ai::utils::abort::AbortController::new();
+                let combined_signal=combined.signal();
+                let login_signal=controller.signal();
+                let settled_signal=settled.signal();
+                let combined_for_login=combined.clone();
+                let _login_listener=login_signal.add_abort_listener(move |_|combined_for_login.abort(None));
+                let combined_for_settled=combined.clone();
+                let _settled_listener=settled_signal.add_abort_listener(move |_|combined_for_settled.abort(None));
+                let callbacks=std::sync::Arc::new(crate::login_prompts::RpcLoginPromptCallbacks::with_sink(combined_signal,provider.clone(),event_sink.clone(),ui));
                 let result=storage.login(&provider,callbacks).await;
+                if result.is_ok(){let _=runtime.refresh(Default::default()).await;}
+                if provider=="anthropic-subscription"&&result.is_ok(){event_sink(serde_json::json!({"type":"provider_accounts_changed","provider":provider}));}
                 let mut end=serde_json::json!({"type":"auth_login_end","provider":provider,"success":result.is_ok()});
                 if let Err(error)=result{end["error"]=error.into();}
                 event_sink(end);
-                active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&provider);
+                settled.abort(None);
+                let mut logins=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if logins.get(&provider).is_some_and(|current|current.signal().same_signal(&controller.signal())){logins.remove(&provider);}
             });
             return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"login_start".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}});
         },
         RpcCommandBody::LoginCancel{provider}=>{
-            if let Some(active_logins)=active_logins&&let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}
+            if let Some(active_logins)=active_logins && let Some(controller)=active_logins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(provider){controller.abort(None);}
             ("login_cancel",Ok(None))
         },
         RpcCommandBody::LoginApiKey{provider,key}=>{
-            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|Some(serde_json::Value::Null));
+            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});Some(serde_json::Value::Null)});
             ("login_api_key",result)
         },
         RpcCommandBody::Logout{provider}=>{
-            let result=session.model_registry().auth_storage.logout(provider).map(|()|Some(serde_json::Value::Null));
+            let result=session.model_registry().auth_storage.logout(provider).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});Some(serde_json::Value::Null)});
             ("logout",result)
         },
         RpcCommandBody::GetProviderAccounts{provider}=>{
@@ -478,15 +491,31 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("get_media",result)
         },
         RpcCommandBody::GetLoadedSurfaces=>{
-            let mcp_servers=session.mcp_wire_status_snapshot::<serde_json::Value>().and_then(|value|value.get("servers").cloned()).unwrap_or_else(||serde_json::json!([]));
-            ("get_loaded_surfaces",Ok(Some(serde_json::json!({"extensions":[],"mcpServers":mcp_servers}))))
+            let result = async {
+            let (respond, receive) = tokio::sync::oneshot::channel();
+            let request = maho_ext_api::mcp_wire::McpControlInventoryRequest { session_id: session.session_id(), respond: std::sync::Mutex::new(Some(respond)) };
+            session.emit_native_extension_event(maho_ext_api::mcp_wire::MCP_CONTROL_INVENTORY_REQUEST_EVENT, &request).await;
+            let claimed = request.respond.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().is_none();
+            let snapshot = if claimed { serde_json::from_value::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(receive.await.map_err(|error|format!("MCP inventory request failed: {error}"))?).map_err(|error|format!("MCP inventory response invalid: {error}"))? } else { session.mcp_wire_status_snapshot::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>().unwrap_or_default() };
+            let mcp_servers = snapshot.servers.iter().map(|server| {
+                let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
+                serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+            }).collect::<Vec<_>>();
+            let extensions=session.loaded_extension_surfaces().await;
+            Ok(Some(serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers})))
+            }.await;
+            ("get_loaded_surfaces",result)
         },
         RpcCommandBody::ExtensionRequest{name,data}=>{
             let name=name.trim();
             if name.is_empty(){("extension_request",Err("Extension RPC request name cannot be empty".into()))}
             else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
         },
-        _=>{let kind=serde_json::to_value(&command.body).ok()?.get("type")?.as_str()?.to_owned();return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.clone(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:format!("RPC command requires unfinished runtime binding: {kind}"),error_code:None,error_data:None}});},
+        RpcCommandBody::SetClientInfo{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_client_info".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}}),
+        RpcCommandBody::GetProtocolInfo=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Error{error:"get_protocol_info requires the RPC host runtime".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:"open_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"close_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:None,result:RpcResponseResult::Error{error:"list_sessions requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
 }
@@ -595,6 +624,8 @@ pub struct RpcConnectionHandler{
     questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,
     shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>,
     active_logins:ActiveLogins,
+    loaded_surfaces_subscription: std::sync::Mutex<Option<maho_ext_api::BusSubscription>>,
+    loaded_surfaces_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl RpcConnectionHandler{
     /// Build a handler over `session` and install the RPC extension UI on it.
@@ -608,7 +639,30 @@ impl RpcConnectionHandler{
         // The CLI mount already starts host sessions; attach only replaces the connection context.
         if session.has_started_extension_lifecycle() {session.rebind_extension_context(bindings).await;}
         else {session.bind_extensions(bindings).await;}
-        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default()}
+        let inventory_session = session.weak_accessor();
+        let inventory_out = out.clone();
+        let (inventory_tx, mut inventory_rx) = tokio::sync::mpsc::unbounded_channel::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>();
+        let loaded_surfaces_subscription = session.bind_mcp_wire_status::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>(std::sync::Arc::new(move |snapshot| {
+            let _ = inventory_tx.send(snapshot.clone());
+        })).await;
+        let loaded_surfaces_task = tokio::spawn(async move {
+            let mut fingerprint = None::<serde_json::Value>;
+            while let Some(snapshot) = inventory_rx.recv().await {
+                let Some(session) = inventory_session() else { break; };
+                let extensions = session.loaded_extension_surfaces().await;
+                let mcp_servers = snapshot.servers.iter().map(|server| {
+                    let status = server.status.as_ref().map(|status|serde_json::json!(status)).unwrap_or_else(||serde_json::json!(if server.server_info.is_some() { "connected" } else if server.auth_status == maho_ext_api::mcp_wire::McpWireAuthStatus::NotLoggedIn { "needs_auth" } else { "enabled" }));
+                    serde_json::json!({"name":server.name,"toolCount":server.tools.len(),"status":status,"authStatus":server.auth_status})
+                }).collect::<Vec<_>>();
+                let value = serde_json::json!({"extensions":extensions,"mcpServers":mcp_servers});
+                let skills = session.loaded_skills().unwrap_or_default().skills.into_iter().map(|skill| serde_json::json!({"name":skill.name,"path":skill.file_path,"sourceInfo":skill.source_info,"enabled":!skill.disable_model_invocation})).collect::<Vec<_>>();
+                let current = serde_json::json!({"skills":skills,"extensions":value["extensions"],"mcpServers":value["mcpServers"]});
+                let changed = fingerprint.as_ref().is_some_and(|prior|prior != &current);
+                fingerprint = Some(current);
+                if changed { inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"})); }
+            }
+        });
+        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task))}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
@@ -627,7 +681,7 @@ impl RpcConnectionHandler{
     /// Cancel UI requests that can no longer be answered by this connection.
     pub fn cancel_pending_extension_ui_requests(&self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all();self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all(0);}
     /// Tear down subscriptions and dispose the session runtime. Never exits the process.
-    pub async fn dispose(&self){self.cancel_pending_extension_ui_requests();self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
+    pub async fn dispose(&self){self.loaded_surfaces_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();if let Some(task)=self.loaded_surfaces_task.lock().await.take(){task.abort();if let Err(error)=task.await && !error.is_cancelled(){eprintln!("RPC inventory consumer failed: {error}");}}self.cancel_pending_extension_ui_requests();self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
 }
 
 #[cfg(test)]
