@@ -22,3 +22,33 @@ fn retained_terminal_rows_resize_and_clamp_existing_scroll(){
     let mut fresh=HelpPanel::new(&content,Theme::builtin("dark",ColorMode::Truecolor).expect("theme"),Rc::new(||100),Rc::new(||{}),Rc::new(||{}));
     assert_eq!(expanded,fresh.render(60));
 }
+
+#[test]
+fn viewport_rows_are_read_again_after_each_render(){
+    let rows=Rc::new(Cell::new(12));let dimensions=rows.clone();
+    let content=(0..20).map(|index|format!("paragraph {index}")).collect::<Vec<_>>().join("\n\n");
+    let mut panel=HelpPanel::new(&content,Theme::builtin("dark",ColorMode::Truecolor).expect("theme"),Rc::new(move||dimensions.get()),Rc::new(||{}),Rc::new(||{}));
+    assert_eq!(panel.render(60).len(),8);
+    rows.set(7);assert_eq!(panel.render(60).len(),3);
+    rows.set(0);assert_eq!(panel.render(60).len(),1);
+}
+
+#[test]
+fn mounted_host_dimensions_reader_survives_factory_borrow_and_tracks_resize(){
+    use maho_ext_api::ExtensionTuiHost;
+    struct Editor;
+    impl maho_tui::components::editor::EditorTuiHost for Editor {
+        fn request_render(&self) {}
+        fn terminal_rows(&self)->usize {12}
+    }
+    let dimensions=Rc::new(Cell::new((80,12)));
+    let reader={
+        let host=maho_interactive::interactive_ui_host::InteractiveUiHost(Rc::new(Editor),dimensions.clone());
+        host.dimensions_reader()
+    };
+    let content=(0..20).map(|index|format!("paragraph {index}")).collect::<Vec<_>>().join("\n\n");
+    let mut panel=HelpPanel::new(&content,Theme::builtin("dark",ColorMode::Truecolor).expect("theme"),Rc::new(move||usize::from(reader().1)),Rc::new(||{}),Rc::new(||{}));
+    assert_eq!(panel.render(60).len(),8);
+    dimensions.set((80,7));
+    assert_eq!(panel.render(60).len(),3);
+}
