@@ -494,3 +494,41 @@ fn test_typed_timeout_error_is_thrown_when_live_foreign_owner_keeps_lock_and_dea
         )
     );
 }
+
+#[test]
+fn qualified_zero_wait_journal_lock_skips_live_foreign_owner_without_running_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let lock_path = temp_dir.path().join("state.lock");
+    std::fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
+    let mut task_runs = 0;
+    let result = crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None);
+    assert!(matches!(result, Err(JournalError::LockTimeout(_))));
+    assert_eq!(task_runs, 0);
+    assert!(lock_path.exists());
+}
+
+#[test]
+fn zero_wait_journal_lock_reclaims_stale_owner_and_runs_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let lock_path = temp_dir.path().join("state.lock");
+    let mut child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let dead_pid = child.id();
+    let _ = child.wait();
+    std::fs::write(&lock_path, format!("{dead_pid}\n")).unwrap();
+    let mut task_runs = 0;
+    crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None).unwrap();
+    assert_eq!(task_runs, 1);
+    assert!(!lock_path.exists());
+}
+
+#[test]
+fn zero_wait_journal_lock_skips_live_foreign_owner_without_running_task() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let lock_path = temp_dir.path().join("state.lock");
+    std::fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
+    let mut task_runs = 0;
+    let result = crate::journal::lock::try_with_local_journal_lock(&lock_path, || { task_runs += 1; Ok(()) }, None);
+    assert!(matches!(result, Err(JournalError::LockTimeout(_))));
+    assert_eq!(task_runs, 0);
+    assert!(lock_path.exists());
+}

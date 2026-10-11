@@ -3,11 +3,11 @@
 use crate::context::MemoryIdentityContext;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const STAMP_KEY: &str = "omo.maintenanceAt";
 const DEFAULT_DELAY_MS: u64 = 30_000;
 const DEFAULT_INTERVAL_MS: u64 = 12 * 60 * 60 * 1000;
 const DEFAULT_MIN_LOOSE_OBJECTS: usize = 2_000;
@@ -24,6 +24,7 @@ pub struct MemoryMaintenanceOptions {
     pub interval: Duration,
     pub min_loose_objects: usize,
     pub timeout: Duration,
+    pub executable: Option<PathBuf>,
     pub now: Arc<dyn Fn() -> u64 + Send + Sync>,
     pub is_live_session: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }
@@ -36,6 +37,7 @@ impl Default for MemoryMaintenanceOptions {
             interval: Duration::from_millis(DEFAULT_INTERVAL_MS),
             min_loose_objects: DEFAULT_MIN_LOOSE_OBJECTS,
             timeout: Duration::from_secs(600),
+            executable: None,
             now: Arc::new(|| SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64),
             is_live_session: Arc::new(|_| false),
         }
@@ -47,35 +49,63 @@ pub struct MemoryMaintenance {
     scheduled: Arc<Mutex<HashSet<String>>>,
     swept: Arc<Mutex<HashSet<String>>>,
     tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    cancellation: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    wake: Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
 }
 
 impl MemoryMaintenance {
     pub fn new(options: MemoryMaintenanceOptions) -> Self {
-        Self { options, scheduled: Arc::new(Mutex::new(HashSet::new())), swept: Arc::new(Mutex::new(HashSet::new())), tasks: Arc::new(Mutex::new(HashMap::new())) }
+        Self { options, scheduled: Arc::new(Mutex::new(HashSet::new())), swept: Arc::new(Mutex::new(HashSet::new())), tasks: Arc::new(Mutex::new(HashMap::new())), cancellation: Arc::new(Mutex::new(HashMap::new())), wake: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     pub fn schedule(&self, context: MemoryIdentityContext) {
+        if self.tasks.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&context.identity) { return; }
         if !self.scheduled.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone()) { return; }
         let should_sweep = self.swept.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone());
         if should_sweep { sweep_journals(&context, &self.options); }
         let options = self.options.clone();
         let scheduled = self.scheduled.clone();
         let tasks = self.tasks.clone();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.cancellation.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone(), cancellation.clone());
+        let cancellation_map = self.cancellation.clone();
+        let (wake_tx, mut wake_rx) = tokio::sync::watch::channel(false);
+        self.wake.lock().unwrap_or_else(|e| e.into_inner()).insert(context.identity.clone(), wake_tx);
+        let wake_map = self.wake.clone();
         let identity = context.identity.clone();
         let task_identity = identity.clone();
+        let (registered, registration) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn(async move {
-            tokio::time::sleep(options.delay).await;
-            if let Err(error) = maintain(&context, &options)
+            if registration.await.is_err() { return; }
+            tokio::select! { _ = tokio::time::sleep(options.delay) => {}, _ = wake_rx.changed() => {} }
+            if cancellation.load(Ordering::Acquire) {
+                scheduled.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+                tasks.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+                cancellation_map.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+                wake_map.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+                return;
+            }
+            let result = tokio::task::spawn_blocking({
+                let context = context.clone();
+                let options = options.clone();
+                let cancellation = cancellation.clone();
+                move || maintain(&context, &options, &cancellation)
+            }).await.map_err(|error| error.to_string()).and_then(|result| result);
+            if let Err(error) = result
+                && !cancellation.load(Ordering::Acquire)
                 && let Some(logger) = &options.logger { logger.warn(&format!("omo-senpi memory repo maintenance failed: {error}")); }
             scheduled.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
             tasks.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+            cancellation_map.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
+            wake_map.lock().unwrap_or_else(|e| e.into_inner()).remove(&task_identity);
         });
         self.tasks.lock().unwrap_or_else(|e| e.into_inner()).insert(identity, handle);
+        let _ = registered.send(());
     }
 
     pub fn dispose(&self) {
-        for (_, task) in self.tasks.lock().unwrap_or_else(|e| e.into_inner()).drain() { task.abort(); }
-        self.scheduled.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        for token in self.cancellation.lock().unwrap_or_else(|e| e.into_inner()).values() { token.store(true, Ordering::Release); }
+        for sender in self.wake.lock().unwrap_or_else(|e| e.into_inner()).values() { let _ = sender.send(true); }
     }
 
     pub async fn settled(&self) {
@@ -84,55 +114,32 @@ impl MemoryMaintenance {
     }
 }
 
-fn maintain(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) -> Result<(), String> {
+fn maintain(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions, cancelled: &AtomicBool) -> Result<(), String> {
     if !context.identity_paths.repo.exists() { return Ok(()); }
     let lock_path = context.identity_paths.locks.join("memory-maintenance.lock");
     fs::create_dir_all(&context.identity_paths.locks).map_err(|e| e.to_string())?;
     let lock = match OpenOptions::new().write(true).create_new(true).open(&lock_path) { Ok(file) => file, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()), Err(error) => return Err(error.to_string()) };
-    let result = maintain_locked(context, options);
+    let result = maintain_locked(context, options, cancelled);
     drop(lock);
     let _ = fs::remove_file(lock_path);
     result
 }
 
-fn maintain_locked(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) -> Result<(), String> {
-    let previous = run_git(&context.identity_paths.repo, &["config", "--get", STAMP_KEY], options.timeout).ok().and_then(|value| value.trim().parse::<u64>().ok());
-    let now = (options.now)();
-    if previous.is_some_and(|last| now.saturating_sub(last) < options.interval.as_millis() as u64) { return Ok(()); }
-    run_git(&context.identity_paths.repo, &["config", STAMP_KEY, &now.to_string()], options.timeout)?;
-    let count = run_git(&context.identity_paths.repo, &["count-objects", "-v"], options.timeout)?;
-    let loose = count.lines().find_map(|line| line.strip_prefix("count: ").and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
-    if loose < options.min_loose_objects { return Ok(()); }
-    run_git(&context.identity_paths.repo, &["repack", "-d", "-l"], options.timeout)?;
-    run_git(&context.identity_paths.repo, &["prune-packed"], options.timeout)?;
-    if let Some(logger) = &options.logger { logger.info("omo-senpi memory repo packed"); }
-    Ok(())
-}
-
-fn run_git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut command = std::process::Command::new("git");
-    command.args(args).current_dir(repo);
-    let output = command.output().map_err(|e| e.to_string())?;
-    let _ = timeout;
-    if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim().to_string()); }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
 fn sweep_journals(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions) {
-    let Ok(entries) = fs::read_dir(&context.identity_paths.transcripts) else { return; };
-    let now = (options.now)();
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let session = entry.file_name().to_string_lossy().into_owned();
-        if (options.is_live_session)(&session) { continue; }
-        let dir = entry.path();
-        let transcript = dir.join("transcript.jsonl");
-        if !transcript.is_file() || fs::metadata(&transcript).ok().and_then(|m| m.len().checked_sub(0)).unwrap_or(1) != 0 { continue; }
-        let Ok(modified) = fs::metadata(&dir).and_then(|m| m.modified()) else { continue; };
-        let modified = modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
-        if now >= modified && now - modified > 10 * 60 * 1000 && fs::remove_dir_all(dir).is_ok() { removed += 1; }
+    match memory_core::journal::sweep_empty_transcript_journals(&context.identity_paths.transcripts, (options.now)(), 10 * 60 * 1000, options.is_live_session.as_ref()) {
+        Ok(result) if !result.removed.is_empty() => if let Some(logger) = &options.logger { logger.info("omo-senpi memory removed empty transcript journals"); },
+        Ok(_) => {},
+        Err(error) => if let Some(logger) = &options.logger { logger.warn(&format!("omo-senpi memory empty transcript sweep failed: {error}")); },
     }
-    if removed > 0 && let Some(logger) = &options.logger { logger.info("omo-senpi memory removed empty transcript journals"); }
+}
+
+fn maintain_locked(context: &MemoryIdentityContext, options: &MemoryMaintenanceOptions, cancelled: &AtomicBool) -> Result<(), String> {
+    let now = (options.now)();
+    match memory_core::git::maintain_repository(&context.identity_paths.repo, "omo.maintenanceAt", now, options.interval.as_millis() as u64, &memory_core::git::GitMaintenanceOptions { min_loose_objects: options.min_loose_objects, timeout_ms: options.timeout.as_millis() as u64, executable: options.executable.clone() }, cancelled).map_err(|e| e.to_string())? {
+        memory_core::git::GitMaintenanceResult::Skipped { .. } | memory_core::git::GitMaintenanceResult::IntervalSuppressed => {},
+        memory_core::git::GitMaintenanceResult::Packed { .. } => if let Some(logger) = &options.logger { logger.info("omo-senpi memory repo packed"); },
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -141,6 +148,7 @@ mod tests {
     use memory_core::identity::layout::build_identity_paths;
     use crate::binding::create_memory_binding;
     use std::process::Command;
+    use std::path::Path;
 
     #[derive(Clone, Default)]
     struct Logger { info: Arc<Mutex<Vec<String>>>, warn: Arc<Mutex<Vec<String>>> }
@@ -180,19 +188,6 @@ mod tests {
     }
 
     fn logger() -> Logger { Logger::default() }
-
-    fn old_millis() -> u64 { u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap_or(u64::MAX) }
-
-    fn empty_journal(context: &MemoryIdentityContext, name: &str, old: u64) -> std::path::PathBuf {
-        let dir = context.identity_paths.transcripts.join(name);
-        fs::create_dir_all(&dir).unwrap();
-        let transcript = dir.join("transcript.jsonl");
-        fs::write(&transcript, "").unwrap();
-        let timestamp = format!("@{}", old / 1000);
-        let status = Command::new("touch").args(["-d", &timestamp, transcript.to_str().unwrap(), dir.to_str().unwrap()]).status().unwrap();
-        assert!(status.success());
-        dir
-    }
 
     #[tokio::test]
     async fn packs_loose_objects_and_keeps_commits_readable() {
@@ -238,21 +233,112 @@ mod tests {
     async fn disposed_host_can_schedule_again() { let (_root, context) = history(20); let log = logger(); let host = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, min_loose_objects: 10, ..Default::default() }); host.schedule(context.clone()); host.dispose(); host.settled().await; host.schedule(context.clone()); host.settled().await; assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory repo packed"]); assert_eq!(loose(&context.identity_paths.repo), 0); }
 
     #[tokio::test]
-    async fn stale_journals_removed_live_kept() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let old = old_millis(); let stale = empty_journal(&context, "stale-control", old); let live = empty_journal(&context, "live-control", old); let log = logger(); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { logger: Some(Arc::new(log.clone())), delay: Duration::ZERO, now: Arc::new(|| old_millis() + 60 * 60 * 1000), is_live_session: Arc::new(|id| id == "live-control"), ..Default::default() }); maintenance.schedule(context); maintenance.settled().await; assert!(!stale.exists()); assert!(live.exists()); assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory removed empty transcript journals"]); assert!(log.warn.lock().unwrap().is_empty()); }
-
-    #[tokio::test]
-    async fn dispose_still_sweeps_journal() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let dir = empty_journal(&context, "health-check", old_millis()); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| old_millis() + 60 * 60 * 1000), ..Default::default() }); maintenance.schedule(context); maintenance.dispose(); maintenance.settled().await; assert!(!dir.exists()); }
-
-    #[tokio::test]
-    async fn sweep_runs_once_per_identity() { let root = tempfile::tempdir().unwrap(); let context = context(root.path()); let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| old_millis() + 60 * 60 * 1000), ..Default::default() }); maintenance.schedule(context.clone()); maintenance.dispose(); maintenance.settled().await; let dir = empty_journal(&context, "later-empty", old_millis()); maintenance.schedule(context); maintenance.dispose(); maintenance.settled().await; assert!(dir.exists()); }
-
-    #[tokio::test]
     async fn dispose_cancels_delayed_pass() {
         let root = tempfile::tempdir().unwrap();
         let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), ..Default::default() });
         maintenance.schedule(context(root.path()));
         maintenance.dispose();
         maintenance.settled().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispose_kills_and_reaps_running_git_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path());
+        fs::create_dir_all(&context.identity_paths.repo).unwrap();
+        let executable = root.path().join("fake-git");
+        let started_fifo = root.path().join("started.fifo");
+        let release_fifo = root.path().join("release.fifo");
+        let child_pid_path = root.path().join("child-pid");
+        assert!(Command::new("mkfifo").arg(&started_fifo).status().unwrap().success());
+        assert!(Command::new("mkfifo").arg(&release_fifo).status().unwrap().success());
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$$\" > '{}'\nprintf 'started\\n' > '{}'\nIFS= read -r line < '{}'\n", child_pid_path.display(), started_fifo.display(), release_fifo.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let maintenance = MemoryMaintenance::new(MemoryMaintenanceOptions {
+            delay: Duration::ZERO,
+            interval: Duration::ZERO,
+            min_loose_objects: 0,
+            timeout: Duration::from_secs(30),
+            now: Arc::new(|| 1_000),
+            executable: Some(executable),
+            ..Default::default()
+        });
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let fifo = started_fifo.clone();
+        let reader = std::thread::spawn(move || {
+            let file = fs::File::open(fifo).unwrap();
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut std::io::BufReader::new(file), &mut line).unwrap();
+            started_tx.send(line).unwrap();
+        });
+        maintenance.schedule(context);
+        let started = tokio::task::spawn_blocking(move || started_rx.recv_timeout(Duration::from_secs(10))).await.unwrap().unwrap();
+        assert_eq!(started, "started\n");
+        reader.join().unwrap();
+        let child_pid = fs::read_to_string(child_pid_path).unwrap().trim().parse::<u32>().unwrap();
+        maintenance.dispose();
+        tokio::time::timeout(Duration::from_secs(10), maintenance.settled()).await.unwrap();
+        assert!(!std::path::Path::new(&format!("/proc/{child_pid}")).exists());
+    }
+
+    #[tokio::test]
+    async fn journal_sweep_keeps_live_session_and_removes_idle_empty_session() {
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path());
+        for id in ["stale", "live"] {
+            let dir = context.identity_paths.transcripts.join(id);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("transcript.jsonl"), "").unwrap();
+            fs::write(dir.join("state.json"), r#"{"schema_version":"v3_assistant_steps","total_completed_steps":0}"#).unwrap();
+        }
+        let log = logger();
+        let host = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::ZERO, now: Arc::new(|| u64::MAX), is_live_session: Arc::new(|id| id == "live"), logger: Some(Arc::new(log.clone())), ..Default::default() });
+        host.schedule(context.clone());
+        host.settled().await;
+        assert!(!context.identity_paths.transcripts.join("stale").exists());
+        assert!(context.identity_paths.transcripts.join("live").exists());
+        assert_eq!(*log.info.lock().unwrap(), vec!["omo-senpi memory removed empty transcript journals"]);
+        assert!(log.warn.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn immediate_dispose_preserves_completed_journal_sweep() {
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path());
+        let dir = context.identity_paths.transcripts.join("health-check");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("transcript.jsonl"), "").unwrap();
+        let host = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| u64::MAX), ..Default::default() });
+        host.schedule(context);
+        host.dispose();
+        host.settled().await;
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn journal_sweep_runs_only_once_per_identity_after_dispose() {
+        let root = tempfile::tempdir().unwrap();
+        let context = context(root.path());
+        let host = MemoryMaintenance::new(MemoryMaintenanceOptions { delay: Duration::from_secs(60), now: Arc::new(|| u64::MAX), ..Default::default() });
+        host.schedule(context.clone());
+        host.dispose();
+        host.settled().await;
+        let dir = context.identity_paths.transcripts.join("later-empty");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("transcript.jsonl"), "").unwrap();
+        host.schedule(context);
+        host.dispose();
+        host.settled().await;
+        assert!(dir.exists());
     }
 
 }
