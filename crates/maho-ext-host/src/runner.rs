@@ -40,7 +40,7 @@ impl ExtensionCommandContextActions for CommandActions {
         Box::pin(async move { self.runtime.assert_active()?; coalesced_reload(self.reload.clone(), Box::pin(async move { actions.reload().await })).await })
     }
 }
-async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static, ()>) -> Result<(), ExtensionFailure> {
+async fn coalesced_reload(state: ReloadState, mut operation: ExtensionFuture<'static, ()>) -> Result<(), ExtensionFailure> {
     let request = {
         let mut current = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(request) = current.as_ref() { Arc::clone(request) } else {
@@ -48,8 +48,14 @@ async fn coalesced_reload(state: ReloadState, operation: ExtensionFuture<'static
             *current = Some(Arc::clone(&request));
             let state = state.clone();
             let pending = request.clone();
+            // JS starts reloadHandler synchronously up to its first await. Do not
+            // move that admission into a later task behind an incoming prompt.
+            let started = operation.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
             tokio::spawn(async move {
-                let result = operation.await;
+                let result = match started {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => operation.await,
+                };
                 *pending.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
                 *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 pending.ready.notify_waiters();
