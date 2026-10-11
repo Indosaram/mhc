@@ -9,6 +9,21 @@ use crate::{
 const NOW_MS: i64 = 1791288000000; // 2026-10-06T12:00:00.000Z
 const HOUR_MS: i64 = 3_600_000;
 
+#[test]
+fn receipt_read_failure_is_not_a_successful_never_summary() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("receipts.jsonl")).unwrap();
+    assert!(super::doctor_receipts::check_receipts(root.path(), NOW_MS).is_err());
+}
+
+#[test]
+fn unicode_receipt_identifier_does_not_panic_in_doctor_summary() {
+    let root = tempfile::tempdir().unwrap();
+    write_receipts(root.path(), &[serde_json::json!({"at":at(0),"kind":"facts","batchId":"\u{ac00}".repeat(12),"trigger":"settle","event":"committed"})], "");
+    let (check, _) = super::doctor_receipts::check_receipts(root.path(), NOW_MS).unwrap();
+    assert!(check.detail.contains(&"\u{ac00}".repeat(8)));
+}
+
 fn at(ms_before_now: i64) -> String {
     chrono::DateTime::from_timestamp_millis(NOW_MS - ms_before_now)
         .unwrap()

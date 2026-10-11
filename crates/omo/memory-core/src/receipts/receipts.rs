@@ -88,7 +88,7 @@ impl MemoryReceiptInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MemoryReceipt {
     pub v: u32,
     pub at: String,
@@ -96,6 +96,20 @@ pub struct MemoryReceipt {
     pub pid: u32,
     #[serde(flatten)]
     pub input: MemoryReceiptInput,
+    #[serde(skip)]
+    pub raw: Option<serde_json::Value>,
+}
+
+impl Serialize for MemoryReceipt {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(raw) = &self.raw { return raw.serialize(serializer); }
+        let mut value = serde_json::to_value(&self.input).map_err(serde::ser::Error::custom)?;
+        value["v"] = self.v.into();
+        value["at"] = self.at.clone().into();
+        value["host"] = self.host.clone().into();
+        value["pid"] = self.pid.into();
+        value.serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,15 +334,17 @@ fn to_receipt(input: &MemoryReceiptInput) -> MemoryReceipt {
         host: hostname(),
         pid: std::process::id(),
         input: bound_input,
+        raw: None,
     }
 }
 
 fn bound_detail(detail: &str) -> String {
-    let masked = crate::sync::redact_url(detail);
-    if masked.len() <= DETAIL_LIMIT {
+    let masked = crate::sync::redact::redact_secret_like_material(detail);
+    if masked.encode_utf16().count() <= DETAIL_LIMIT {
         masked
     } else {
-        format!("{}...", &masked[..DETAIL_LIMIT - 3])
+        let prefix = masked.encode_utf16().take(DETAIL_LIMIT - 3).collect::<Vec<_>>();
+        format!("{}...", String::from_utf16_lossy(&prefix))
     }
 }
 
@@ -398,20 +414,14 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
         return None;
     }
     let at = obj.get("at")?.as_str()?;
-    if at.is_empty() {
-        return None;
-    }
     let event = obj.get("event")?.as_str()?;
-    if event.is_empty() {
-        return None;
-    }
-    let host = obj.get("host")?.as_str()?.to_string();
-    let pid = obj.get("pid")?.as_u64()? as u32;
+    let host = obj.get("host").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+    let pid = obj.get("pid").and_then(serde_json::Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or_default();
 
     let kind = obj.get("kind")?.as_str()?;
     let input = if kind == "facts" {
         let batch_id = obj.get("batchId")?.as_str()?;
-        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or("settle").to_string();
+        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let sha = obj.get("sha").and_then(|v| v.as_str()).map(str::to_string);
         let reason = obj.get("reason").and_then(|v| v.as_str()).map(str::to_string);
         let detail = obj.get("detail").and_then(|v| v.as_str()).map(str::to_string);
@@ -427,7 +437,7 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
     } else if kind == "reflection" || kind == "dream" {
         let run_id = obj.get("runId")?.as_str()?;
         let generation = obj.get("generation")?.as_str()?;
-        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or("manual").to_string();
+        let trigger = obj.get("trigger").and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let sha = obj.get("sha").and_then(|v| v.as_str()).map(str::to_string);
         let reason = obj.get("reason").and_then(|v| v.as_str()).map(str::to_string);
         let detail = obj.get("detail").and_then(|v| v.as_str()).map(str::to_string);
@@ -451,5 +461,6 @@ fn parse_receipt(line: &str) -> Option<MemoryReceipt> {
         host,
         pid,
         input,
+        raw: Some(val),
     })
 }
