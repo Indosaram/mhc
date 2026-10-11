@@ -326,10 +326,18 @@ struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeT
 impl Extension for Mcp {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         let tool_search = self.tool_search.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let registry = Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default());
         let extension = maho_ext_mcp::index::McpExtension {
-            registry: Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), owner: 1, tool_search,
+            registry: registry.clone(), owner: 1, tool_search,
         };
         let service = extension.register_with_service(api);
+        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+            let registry = registry.clone();
+            Box::pin(async move {
+                registry.dispose().await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                Ok(maho_ext_api::EventResult::None)
+            })
+        }));
         if let Ok(service) = service.try_lock() {
             *self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service.native_tool_search_gate());
         }
