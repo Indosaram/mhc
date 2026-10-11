@@ -98,7 +98,7 @@ pub enum Messageability {
     NotContinuable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolvedModelSource {
     Category,
@@ -122,7 +122,7 @@ impl ResolvedModelSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedModelRecord {
     pub provider: String,
     pub model_id: String,
@@ -301,7 +301,25 @@ pub struct PendingSteeringEntry {
     pub id: String,
     pub message: String,
     pub deliver_as: DeliverAs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workpool: Option<PendingSteeringWorkpoolMetadata>,
 }
+
+impl PendingSteeringEntry {
+    pub fn new(id: String, message: String, deliver_as: DeliverAs) -> Self {
+        Self { id, message, deliver_as, workpool: None }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSteeringWorkpoolMetadata {
+    pub pool_id: String,
+    pub generation: u32,
+    pub item_id: String,
+    pub key: String,
+    pub run_epoch: u32,
+}
+
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskRecordInput {

@@ -907,6 +907,7 @@ fn cancel_task(context: &DagSchedulerContext, task_id: &str, reason: Option<&str
     }
     context.task_manager.cancel_task(task_id, reason, CancelOptions {
         abort: crate::steering::CancelAbort::Skip,
+        expected_run_epoch: None,
     }).map(|_| ()).map_err(|error| error.to_string())
 }
 

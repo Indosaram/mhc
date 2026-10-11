@@ -40,6 +40,8 @@ pub struct SendInput {
     pub deliver_as: Option<DeliverAs>,
     pub caller_session_id: Option<String>,
     pub all_scope: bool,
+    /// Deliver only if the task is still on this run epoch.
+    pub expected_run_epoch: Option<i64>,
 }
 
 impl SendInput {
@@ -54,6 +56,11 @@ impl SendInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendOutcome {
+    Stale {
+        task_id: String,
+        run_epoch: i64,
+        reason: String,
+    },
     Steered {
         task_id: String,
         status: TaskStatus,
@@ -110,6 +117,12 @@ pub enum CancelOutcome {
         task_id: String,
         previous_status: TaskStatus,
     },
+    Stale {
+        task_id: String,
+        status: TaskStatus,
+        run_epoch: i64,
+        reason: String,
+    },
     Noop {
         task_id: String,
         status: TaskStatus,
@@ -130,6 +143,8 @@ pub enum CancelAbort {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CancelOptions {
     pub abort: CancelAbort,
+    /// Cancel only if the task is still on this run epoch.
+    pub expected_run_epoch: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]

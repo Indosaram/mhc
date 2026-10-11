@@ -36,6 +36,9 @@ pub enum ChildPromptEnvelope {
 pub struct ChildSpec {
     pub task_id: String,
     pub cwd: String,
+    pub workpool_run_epoch: Option<u32>,
+    pub state_dir: String,
+    pub workpool_state_dir: Option<String>,
     /// Mandatory in practice; `None` models a legacy persisted spec.
     pub session_dir: Option<String>,
     pub agent_dir: Option<String>,

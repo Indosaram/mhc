@@ -166,11 +166,26 @@ impl TaskRecordStore {
         task_id: &str,
         transition: &TaskTransition,
     ) -> Result<TaskTransitionResult, StoreError> {
+        self.transition_expected_epoch(task_id, transition, None)
+            .and_then(|result| {
+                result.ok_or_else(|| StoreError::Parse("unfenced transition was unexpectedly stale".to_string()))
+            })
+    }
+
+    pub fn transition_expected_epoch(
+        &self,
+        task_id: &str,
+        transition: &TaskTransition,
+        expected_run_epoch: Option<i64>,
+    ) -> Result<Option<TaskTransitionResult>, StoreError> {
         let parsed = parse_task_id(task_id)?;
         let path = self.task_path(parsed);
         let result = with_task_record_lock(&path, || {
             let record = read_record(&path, &mut Vec::new())?
                 .ok_or_else(|| StoreError::NotFound(task_id.to_string()))?;
+            if expected_run_epoch.is_some_and(|expected| record.notification.run_epoch != expected) {
+                return Ok(None);
+            }
             let result = transition_task_record(&record, transition);
             let payload = serde_json::to_value(&result.audit).unwrap_or(Value::Null);
             append_task_event(
@@ -184,9 +199,11 @@ impl TaskRecordStore {
             if result.applied {
                 self.write_record(&result.record, WriteMode::Replace)?;
             }
-            Ok(result)
+            Ok(Some(result))
         })?;
-        self.notify_mutation();
+        if result.is_some() {
+            self.notify_mutation();
+        }
         Ok(result)
     }
 

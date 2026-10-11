@@ -299,6 +299,7 @@ fn momus_params(prompt: &str) -> SpawnParamsInput {
 
 fn send_input(id_or_name: &str, message: &str) -> SendInput {
     SendInput {
+        expected_run_epoch: None,
         id_or_name: id_or_name.to_string(),
         message: message.to_string(),
         deliver_as: Some(DeliverAs::Steer),
@@ -317,6 +318,7 @@ fn given_an_open_plan_session_when_the_full_momus_lifecycle_is_driven_then_forci
     let in_process = &harness.in_process;
 
     let tool = TaskToolDeps {
+        start: None,
         omo_config: Default::default(),
         agents: Default::default(),
         load_skills: Some(Arc::new(|_: &[String], _: &str| SkillResolution::default())),

@@ -90,6 +90,7 @@ mod api_tripwire {
             settings: RetryFallbackSettings::default(),
             tools: Some(vec!["read".to_string(), "bash".to_string()]),
             exclude_tools: None,
+            workpool_identity: None,
         };
 
         assert!(Arc::ptr_eq(&options.session_manager, &session_manager));

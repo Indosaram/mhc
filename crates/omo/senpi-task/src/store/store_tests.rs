@@ -201,6 +201,28 @@ fn store_completed_record_round_trips() {
 }
 
 #[test]
+fn expected_epoch_transition_is_atomic_and_leaves_moved_run_unchanged() {
+    let project = project();
+    let store = store_for(project.path());
+    let record = base_record("st_00000001");
+    let running = transition_task_record(&record, &start(9876)).record;
+    let mut revived = running.clone();
+    revived.notification.run_epoch = 2;
+    store.save(&revived).expect("save");
+    let result = store.transition_expected_epoch(
+        &record.task_id,
+        &TaskTransition::Cancel {
+            timestamp: "2026-07-06T01:00:00.000Z".into(),
+            error_message: None,
+            run_stats: None,
+        },
+        Some(1),
+    ).expect("fenced transition");
+    assert!(result.is_none());
+    assert_eq!(store.load(&record.task_id).expect("load"), Some(revived));
+}
+
+#[test]
 fn store_description_survives_round_trip() {
     let project = project();
     let store = store_for(project.path());
@@ -1045,6 +1067,7 @@ fn steering(id: &str, message: &str, deliver_as: DeliverAs) -> PendingSteeringEn
         id: id.into(),
         message: message.into(),
         deliver_as,
+        workpool: None,
     }
 }
 

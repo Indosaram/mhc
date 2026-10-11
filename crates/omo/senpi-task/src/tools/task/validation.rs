@@ -52,6 +52,7 @@ pub struct SpawnItemInput {
     pub description: Option<String>,
     pub name: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub tools: Option<Vec<String>>,
     pub isolated: Option<bool>,
     pub apply: Option<bool>,
     pub merge: Option<IsolationMergeMode>,
@@ -68,6 +69,7 @@ pub struct SpawnParamsInput {
     pub description: Option<String>,
     pub name: Option<String>,
     pub load_skills: Option<Vec<String>>,
+    pub tools: Option<Vec<String>>,
     pub isolated: Option<bool>,
     pub apply: Option<bool>,
     pub merge: Option<IsolationMergeMode>,
@@ -263,6 +265,7 @@ pub fn resolve_spawn_items(
                 .load_skills
                 .or_else(|| params.load_skills.clone())
                 .unwrap_or_default(),
+            tools: input.tools.or_else(|| params.tools.clone()),
             target,
         });
     }
