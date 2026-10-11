@@ -41,6 +41,10 @@ impl ExtensionCommandContextActions for CommandActions {
     }
 }
 async fn coalesced_reload(state: ReloadState, mut operation: ExtensionFuture<'static, ()>) -> Result<(), ExtensionFailure> {
+    let scope = maho_ai::node::provider_scope::active_provider_scope();
+    if scope.as_ref().is_some_and(|scope| scope.state() == maho_ai::node::provider_scope::ScopeState::Closed) {
+        return Err(ExtensionFailure::new(maho_ai::node::provider_scope::ProviderScopeError::Closed.to_string()));
+    }
     let request = {
         let mut current = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(request) = current.as_ref() { Arc::clone(request) } else {
@@ -54,7 +58,13 @@ async fn coalesced_reload(state: ReloadState, mut operation: ExtensionFuture<'st
             tokio::spawn(async move {
                 let result = match started {
                     std::task::Poll::Ready(result) => result,
-                    std::task::Poll::Pending => operation.await,
+                    std::task::Poll::Pending => match &scope {
+                        Some(scope) => match maho_ai::node::provider_scope::run_with_provider_scope_async(scope, operation).await {
+                            Ok(result) => result,
+                            Err(error) => Err(ExtensionFailure::new(error.to_string())),
+                        },
+                        None => operation.await,
+                    },
                 };
                 *pending.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
                 *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
