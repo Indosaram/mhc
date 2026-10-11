@@ -51,3 +51,64 @@ async fn native_runtime_install_command_and_disposal_keep_scope_until_settled(){
     let completion=registry.close_marked(&handle,10000).await.unwrap().unwrap();match completion{maho_rpc::session_teardown::RuntimeCloseCompletion::Settled(result)=>result.unwrap().unwrap(),maho_rpc::session_teardown::RuntimeCloseCompletion::Draining(task)=>task.await.unwrap().unwrap()};
     assert_eq!(scope.state(),maho_ai::node::provider_scope::ScopeState::Closed);assert_eq!(registry.size(),0);
 }
+
+#[tokio::test]
+async fn host_close_waits_for_draining_runtime_disposal_before_acknowledging(){
+    use maho_ext_api::{ExtensionUi,ExtensionUiDialogOptions,UiFuture,NotificationType,WidgetContent,ExtensionWidgetOptions,ComponentFactory,CustomUiOptions,ExtensionFuture,JsonValue,Theme};
+    use maho_core::{agent_session_runtime::AgentSessionRuntime,model_runtime::{CreateModelRuntimeOptions,ModelRuntime},sdk::{create_agent_session,CreateAgentSessionOptions,NoToolsMode},session_manager::SessionManager,settings_manager::{SettingsManager,InMemorySettingsStorage}};
+    use maho_rpc::multi_session_host::{HostCore,HostCoreOptions,HostRuntimeFactory};
+    use maho_rpc::session_event_writer::SessionWriterActor;
+    use maho_rpc::session_registry::RpcSessionLaunchProfile;
+    use std::sync::Arc;
+    use tokio::io::AsyncBufReadExt;
+    let temp=tempfile::tempdir().unwrap();let cwd=temp.path().to_string_lossy().into_owned();let model_path=temp.path().join("models.json");
+    let (started_tx,started_rx)=tokio::sync::oneshot::channel::<()>();let started_tx=Arc::new(std::sync::Mutex::new(Some(started_tx)));
+    let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();let release_rx=Arc::new(std::sync::Mutex::new(Some(release_rx)));
+    let runtime_cwd=cwd.clone();
+    let create_runtime:HostRuntimeFactory=Arc::new(move |_profile:RpcSessionLaunchProfile|{
+        let cwd=runtime_cwd.clone();let model_path=model_path.clone();let started_tx=started_tx.clone();let release_rx=release_rx.clone();
+        Box::pin(async move{
+            let provider=maho_ai::providers::faux::faux_provider(Default::default());let model=provider.get_model(Some("faux-1")).unwrap();
+            let model_runtime=ModelRuntime::create_sync(CreateModelRuntimeOptions{models_path:Some(model_path),auth_path:None,providers:Some(vec![provider.provider]),..Default::default()});
+            let session=create_agent_session(CreateAgentSessionOptions{cwd:Some(cwd.clone()),agent_dir:Some(cwd.clone()),model_runtime:Some(model_runtime),model:Some(model),session_manager:Some(SessionManager::in_memory(&cwd,None,None)),settings_manager:Some(SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false)),no_tools:Some(NoToolsMode::All),auto_title_sessions:Some(false),..Default::default()}).await.map_err(|error|error.to_string())?.session;
+            let mut extension=maho_ext_api::LoadedExtension::new("<inline:held-close>",cwd.clone().into(),Default::default());
+            extension.handlers.insert(maho_ext_api::EventKind::SessionShutdown,vec![Arc::new(move |_,_|{
+                if let Some(started)=started_tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){let _=started.send(());}
+                let receiver=release_rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+                Box::pin(async move{if let Some(receiver)=receiver{let _=receiver.await;}Ok(maho_ext_api::EventResult::None)})
+            })]);
+            struct NoopUi;
+            impl ExtensionUi for NoopUi{
+                fn select<'a>(&'a self,_:&'a str,_:&'a [String],_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
+                fn confirm<'a>(&'a self,_:&'a str,_:&'a str,_:ExtensionUiDialogOptions)->UiFuture<'a,bool>{Box::pin(async{false})}
+                fn input<'a>(&'a self,_:&'a str,_:Option<&'a str>,_:ExtensionUiDialogOptions)->UiFuture<'a,Option<String>>{Box::pin(async{None})}
+                fn notify(&self,_:&str,_:NotificationType){}
+                fn set_status(&self,_:&str,_:Option<&str>){}
+                fn set_widget(&self,_:&str,_:Option<WidgetContent>,_:ExtensionWidgetOptions){}
+                fn set_header(&self,_:Option<ComponentFactory>){}
+                fn set_footer(&self,_:Option<ComponentFactory>){}
+                fn set_title(&self,_:&str){}
+                fn paste_to_editor(&self,_:&str){}
+                fn set_editor_text(&self,_:&str){}
+                fn get_editor_text(&self)->String{String::new()}
+                fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue>{Box::pin(async{Ok(JsonValue::Null)})}
+                fn theme(&self)->Theme{Theme::default()}
+            }
+            session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension],Default::default(),Default::default(),session.extension_context(Arc::new(NoopUi)))).await;
+            let models=session.model_registry().clone();let services=maho_core::agent_session_services::AgentSessionServices{cwd:cwd.clone(),agent_dir:cwd.clone(),auth_storage:Arc::clone(&models.auth_storage),model_registry:models,settings_manager:SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()),false),diagnostics:vec![]};
+            Ok(AgentSessionRuntime::new(session,services,vec![],None,None))
+        }) as std::pin::Pin<Box<dyn std::future::Future<Output=Result<maho_core::agent_session_runtime::AgentSessionRuntime,String>>+Send>>
+    });
+    let(writer,reader)=tokio::io::duplex(64*1024);let core=Arc::new(HostCore::new(HostCoreOptions{agent_dir:temp.path().to_path_buf(),cwd:cwd.clone(),create_runtime,capabilities:Vec::new(),close_grace_ms:0},Arc::new(SessionWriterActor::new(writer))));
+    core.handle(None,&serde_json::json!({"type":"open_session","cwd":cwd,"retainOnDisconnect":false}).to_string()).await.unwrap();
+    let mut reader=tokio::io::BufReader::new(reader);let mut line=String::new();reader.read_line(&mut line).await.unwrap();
+    let handle=core.registry.lock().await.list_sessions(true)[0]["sessionId"].as_str().unwrap().to_owned();
+    let command=serde_json::json!({"type":"close_session","sessionId":handle}).to_string();
+    let mut close=Box::pin(core.handle(None,&command));
+    tokio::select!{biased;result=&mut close=>panic!("close acknowledged before disposal release: {result:?}"),result=started_rx=>result.unwrap()};
+    assert!(futures::poll!(&mut close).is_pending(),"close acknowledged before disposal release");
+    let _=release_tx.send(());close.await.unwrap();
+    line.clear();reader.read_line(&mut line).await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["command"],"close_session");
+}
+
