@@ -257,10 +257,10 @@ mod startup_ownership_tests {
         let options=SubprocessKernelOptions {command:"python3".into(),args:vec!["-c".into(),code],cwd:root.path().into(),env:None,session_env:None,session_id:"shared-drop".into(),connection:crate::bridge::protocol::BridgeConnectionConfig {port:1,token:"test".into(),local_roots:None,artifacts_dir:None,parallel_pool_width:None},on_message:None};
         let signal=maho_ai::utils::abort::AbortController::new().signal();
         let mut startup=Box::pin(spawn_process_with_signal(&options,&signal));
-        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=listener.accept()=>stream.unwrap().0,result=&mut startup=>panic!("silent startup settled: {}",result.err().unwrap())}}).await;
+        let accepted=tokio::time::timeout(Duration::from_secs(5),async {tokio::select! {stream=async {let mut stream=listener.accept().await.unwrap().0;let mut started=[0;7];stream.read_exact(&mut started).await.unwrap();assert_eq!(&started,b"STARTED");stream}=>stream,result=&mut startup=>panic!("silent startup settled: {}",result.err().unwrap())}}).await;
         drop(startup);
         let mut stream=accepted.unwrap();let mut bytes=Vec::new();
         tokio::time::timeout(Duration::from_secs(5),stream.read_to_end(&mut bytes)).await.unwrap().unwrap();
-        assert_eq!(bytes,b"STARTED");
+        assert!(bytes.is_empty());
     }
 }

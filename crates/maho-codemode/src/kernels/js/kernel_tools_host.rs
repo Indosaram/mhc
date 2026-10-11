@@ -72,7 +72,7 @@ impl KernelToolHostPump {
     pub async fn invoke(&self, request: KernelToolsInvokeRequest, options: KernelToolsInvokeOptions) -> Result<Value, KernelToolError> {
         let _ = self.events.send("nestedInvoke");
         let mut message = json!({"type":"kernel-tool-invoke","requestId":crate::bridge::protocol::generate_correlation_id(),"name":request.name,"kernel_generation":request.kernel_generation,"definition_revision":request.definition_revision,"args":request.args,"call_id":request.call_id});
-        if let Some(scope) = options.scope && (scope.allow.is_some() || scope.deny.is_some()) {
+        if let Some(scope) = options.scope {
             let mut tools = serde_json::Map::new();
             if let Some(allow) = scope.allow { tools.insert("allow".into(), json!(allow)); }
             if let Some(deny) = scope.deny { tools.insert("deny".into(), json!(deny)); }
@@ -83,6 +83,12 @@ impl KernelToolHostPump {
         if reply["ok"] != true { return Err(reply_error(&reply)); }
         Ok(reply["value"].clone())
     }
+}
+
+pub fn capture_active_kernel_tools(
+    kernel: Arc<super::context_manager::JavaScriptKernel>,
+) -> Arc<dyn maho_ext_api::ExtensionKernelTools> {
+    kernel
 }
 
 fn reply_error(reply: &Value) -> KernelToolError {
