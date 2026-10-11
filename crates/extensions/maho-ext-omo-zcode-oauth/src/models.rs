@@ -7,7 +7,8 @@ pub const CATALOG_TTL_MS: i64 = 86_400_000;
 pub const ULTRA_BASE_URL: &str = "https://zcode.z.ai/api/v1/ultra-zai/anthropic";
 pub fn printable_ascii(value: &str) -> String { value.chars().filter(|character| (' '..='~').contains(character)).collect() }
 pub fn resolve_base_url() -> String { let value = printable_ascii(&std::env::var("ZCODE_ANTHROPIC_BASE_URL").unwrap_or_default()); if value.is_empty() { ULTRA_BASE_URL.into() } else { value } }
-pub fn app_version() -> String { printable_ascii(&std::env::var("ZCODE_APP_VERSION").ok().filter(|value| !value.is_empty()).unwrap_or_else(|| "3.11.2".into())) }
+pub fn app_version_from(env: impl Fn(&str) -> Option<String>) -> String { printable_ascii(&env("ZCODE_APP_VERSION").filter(|value| !value.is_empty()).unwrap_or_else(|| "3.11.2".into())) }
+pub fn app_version() -> String { app_version_from(|key| std::env::var(key).ok()) }
 pub fn os_category(platform: &str) -> &'static str { match platform { "darwin" => "macos", "win32" => "windows", _ => "linux" } }
 fn anthropic_compat(compat: &ModelCompat) -> ModelCompat {
     let flags = ["supportsEagerToolInputStreaming","supportsLongCacheRetention","sendSessionAffinityHeaders","supportsCacheControlOnTools","supportsDisabledThinking","supportsTemperature","supportsToolChoice","supportsForcedToolChoice","forceAdaptiveThinking","allowEmptySignature","supportsStrictTools","supportsToolReferences","supportsWebSearch"];
@@ -56,6 +57,21 @@ pub fn stored_to_config(stored: Option<&ModelsStoreEntry>) -> Vec<ProviderModelC
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_catalog_fixture_round_trips_all_valid_models() {
+        let models = parse_catalog(&json!({"zai-coding-plan":{"models":{
+            "glm-text":{"name":"GLM Text","reasoning":true,"reasoning_options":[{"type":"effort"}],"limit":{"context":1_000_000,"output":131_072},"modalities":{"input":["text"]}},
+            "glm-multimodal":{"name":"GLM Multimodal","reasoning":false,"reasoning_options":[{"type":"toggle"}],"limit":{"context":250_000,"output":32_768},"modalities":{"input":["text","image","video","pdf"]}},
+            "glm-broken":{"limit":{"output":4096}},"glm-noname":{"reasoning":true,"limit":{"context":500_000,"output":8192}},"glm-notarecord":"not-an-object"
+        }}}));
+        assert_eq!(models.len(),3);
+        let multi = models.iter().find(|model|model.id == "glm-multimodal").unwrap();
+        assert_eq!(multi.input,[InputModality::Text,InputModality::Image,InputModality::Video]); assert!(multi.compat.is_none());
+        let unnamed = models.iter().find(|model|model.id == "glm-noname").unwrap();
+        assert_eq!(unnamed.name,"glm-noname"); assert!(unnamed.reasoning);
+        let stored = ModelsStoreEntry { models:persisted(&models), ..Default::default() };
+        assert_eq!(persisted(&stored_to_config(Some(&stored))),stored.models);
+    }
     #[test] fn catalog_ignores_invalid_context() { assert!(parse_catalog(&json!({"zai-coding-plan":{"models":{"bad":{"limit":{"context":0}}}}})).is_empty()); }
     #[test] fn catalog_filters_modalities() { let models = parse_catalog(&json!({"zai-coding-plan":{"models":{"m":{"limit":{"context":100},"modalities":{"input":["bad","image"]}}}}})); assert_eq!(models[0].input, [InputModality::Image]); }
     #[test] fn catalog_preserves_toggle_thinking() { let models = parse_catalog(&json!({"zai-coding-plan":{"models":{"m":{"limit":{"context":100},"reasoning_options":[{"type":"toggle"}]}}}})); assert!(models[0].compat.is_none()); }
