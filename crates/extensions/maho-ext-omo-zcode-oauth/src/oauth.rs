@@ -294,6 +294,13 @@ mod tests {
     #[tokio::test] async fn refresh_passes_cancellation_into_provisioning() { let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None); let credential = OAuthCredentials::new("key","upstream",0.0); assert!(OAuthClient::default().refresh(&credential,&controller.signal()).await.unwrap_err().to_string().contains("cancelled")); }
     #[tokio::test]
     async fn provisioning_uses_default_project_and_reuses_named_key() {
+        provisioning_fixture(false).await;
+    }
+    #[tokio::test]
+    async fn refresh_reuses_named_key_and_preserves_jwt_without_broker() {
+        provisioning_fixture(true).await;
+    }
+    async fn provisioning_fixture(refresh: bool) {
         use std::io::{BufRead, Read, Write};
         let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap();
         let base = format!("http://{}",listener.local_addr().unwrap());
@@ -317,12 +324,14 @@ mod tests {
             }
         });
         let client = OAuthClient { api: base, ..Default::default() };
-        let credential = client.provision("upstream",&maho_ai::utils::abort::operation_signal(None)).await.unwrap();
+        let signal = maho_ai::utils::abort::operation_signal(None);
+        let credential = if refresh { let mut old = OAuthCredentials::new("old","upstream",0.0); old.extra.insert("zcodeJwtToken".into(),json!("retained-jwt")); client.refresh(&old,&signal).await.unwrap() } else { client.provision("upstream",&signal).await.unwrap() };
         peer.join().unwrap();
         assert_eq!(credential.access,"key-id.fixture-secret");
         assert_eq!(credential.refresh,"upstream");
         assert_eq!(credential.get_extra_str("email"),Some("user@example.com"));
         assert_eq!(credential.get_extra_str("accountId"),Some("42"));
+        assert_eq!(credential.get_extra_str("zcodeJwtToken"),refresh.then_some("retained-jwt"));
         assert!(credential.expires > now_ms() + 315_000_000_000.0);
     }
 }
