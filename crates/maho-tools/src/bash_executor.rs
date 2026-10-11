@@ -5,6 +5,7 @@ pub type BashAsyncChunkCallback = Arc<dyn Fn(String) -> ToolFuture<'static, ()> 
 #[derive(Default)]
 pub struct BashExecutorOptions { pub on_chunk: Option<BashChunkCallback>, pub on_chunk_async: Option<BashAsyncChunkCallback>, pub signal: AbortSignal }
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BashResult { pub output: String, pub exit_code: Option<i32>, pub cancelled: bool, pub truncated: bool, pub full_output_path: Option<PathBuf> }
 pub async fn execute_bash_with_operations(command: &str, cwd: &Path, operations: &dyn BashOperations, options: BashExecutorOptions) -> Result<BashResult, ToolError> {
     let output = Arc::new(Mutex::new(OutputAccumulator::new(OutputAccumulatorOptions { temp_file_prefix: "pi-bash".into(), ..Default::default() })));

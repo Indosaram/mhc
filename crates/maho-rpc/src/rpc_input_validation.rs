@@ -38,6 +38,9 @@ pub fn rpc_command_shape_error(command: &Value) -> Option<&'static str> {
 }
 pub fn rpc_command_payload_error(command: &Value) -> Option<&'static str> {
     match command.get("type").and_then(Value::as_str) {
+        Some("edit_user_message") if command.get("entryId").and_then(Value::as_str).is_none_or(str::is_empty) || !string(command,"text") => Some("edit_user_message requires a non-empty entryId and a text string"),
+        Some("edit_assistant_message") if command.get("entryId").and_then(Value::as_str).is_none_or(str::is_empty) || !string(command,"text") => Some("edit_assistant_message requires a non-empty entryId and a text string"),
+        Some("set_fast_mode") if !command.get("enabled").is_some_and(Value::is_boolean) => Some("set_fast_mode requires a boolean 'enabled' field."),
         Some("append_user_message") if !command.get("content").is_some_and(valid_content) => Some("append_user_message content must be a string or text/image content array."),
         Some("append_session_entry") if !command.get("entry").is_some_and(valid_entry) => Some("append_session_entry entry is malformed."),
         _ => None,
