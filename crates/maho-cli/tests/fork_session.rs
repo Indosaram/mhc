@@ -23,4 +23,21 @@ fn forks_history_into_new_session_with_parent_source() {
     assert_eq!(forked.cwd(), target_cwd_text);
     assert_eq!(forked.header().expect("header")["parentSession"], source_path);
     assert_eq!(forked.entries(), source.entries());
+    let original = std::fs::read(&source_path).expect("source bytes");
+    let by_prefix = fork_session("source-", &target_cwd_text, Some(&session_dir_text), None).expect("prefix fork");
+    assert_eq!(by_prefix.entries(), source.entries());
+    assert_ne!(by_prefix.session_id(), source.session_id());
+    assert_eq!(std::fs::read(&source_path).expect("unchanged source"), original);
+    assert_eq!(fork_session("missing-id", &target_cwd_text, Some(&session_dir_text), None).expect_err("unknown ID"), "No session found matching 'missing-id'");
+    assert_eq!(fork_session(&source_path, &target_cwd_text, Some(&session_dir_text), Some("source-session")).expect_err("duplicate target"), "Session already exists with id 'source-session'");
+    let mut local = SessionManager::create(&target_cwd_text, Some(&session_dir_text), Some(maho_core::session_manager::NewSessionOptions {
+        id: Some("source-local".to_owned()), ..Default::default()
+    }));
+    local.append_message(serde_json::json!({"role":"user","content":"local priority"}));
+    local.append_message(serde_json::json!({"role":"assistant","content":[],"stopReason":"stop","timestamp":3}));
+    let prioritized = fork_session("source-", &target_cwd_text, Some(&session_dir_text), None).expect("local prefix priority");
+    assert_eq!(prioritized.entries(), local.entries());
+    let global = fork_session("source-session", &target_cwd_text, Some(&session_dir_text), None).expect("custom global fallback");
+    assert_eq!(global.entries(), source.entries());
+    assert_eq!(fork_session(&source_path, &target_cwd_text, Some(&session_dir_text), Some("source-local")).expect_err("distinct duplicate target"), "Session already exists with id 'source-local'");
 }
