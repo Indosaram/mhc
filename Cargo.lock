@@ -4362,7 +4362,6 @@ dependencies = [
  "maho-omo-lsp",
  "maho-omo-memory",
  "maho-omo-model-profile",
- "maho-omo-native-badge",
  "maho-omo-onboarding",
  "maho-omo-skill-commands",
  "maho-omo-skill-pointers",
@@ -4671,17 +4670,6 @@ dependencies = [
  "maho-utils",
  "serde_json",
  "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "maho-omo-native-badge"
-version = "0.0.0"
-dependencies = [
- "maho-ext-api",
- "maho-ext-host",
- "maho-test-support",
- "serde_json",
  "tokio",
 ]
 

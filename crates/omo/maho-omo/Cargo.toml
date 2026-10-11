@@ -32,7 +32,6 @@ maho-omo-init-deep-advisor = { path = "../components/maho-omo-init-deep-advisor"
 maho-omo-lsp = { path = "../components/maho-omo-lsp" }
 maho-omo-skill-pointers = { path = "../components/maho-omo-skill-pointers" }
 maho-omo-memory = { path = "../components/maho-omo-memory" }
-maho-omo-native-badge = { path = "../components/maho-omo-native-badge" }
 maho-omo-onboarding = { path = "../components/maho-omo-onboarding" }
 maho-omo-start-work-continuation = { path = "../components/maho-omo-start-work-continuation" }
 maho-omo-telemetry = { path = "../components/maho-omo-telemetry" }
