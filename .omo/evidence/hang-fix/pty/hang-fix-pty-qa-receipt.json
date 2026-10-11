@@ -1,0 +1,19 @@
+{
+  "schema": "hang-fix-pty-qa/v1",
+  "binary": "/home/projects/mhc-wt/hg-hang-fix/.omo/evidence/hang-fix/package/mhc",
+  "startedAt": "2026-10-11T16:20:12.041Z",
+  "assertions": {
+    "componentWarningInHiddenDebugLog": true,
+    "mahoOmoWarningAbsentFromRawTerminal": true,
+    "realReadToolCall": true,
+    "responsiveSecondTurn": true
+  },
+  "cleanup": {
+    "ptyExited": true,
+    "providerClosed": true,
+    "tempHomeRemoved": true
+  },
+  "providerRequests": 3,
+  "result": "passed",
+  "finishedAt": "2026-10-11T16:20:16.950Z"
+}

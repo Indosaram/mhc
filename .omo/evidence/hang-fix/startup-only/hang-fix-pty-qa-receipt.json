@@ -1,0 +1,16 @@
+{
+  "schema": "hang-fix-pty-qa/v1",
+  "binary": "/home/indo/.local/bin/mhc",
+  "startedAt": "2026-10-11T16:29:54.638Z",
+  "assertions": {
+    "componentWarningInHiddenDebugLog": true,
+    "mahoOmoWarningAbsentFromRawTerminal": true
+  },
+  "cleanup": {
+    "ptyExited": true,
+    "providerClosed": true,
+    "tempHomeRemoved": true
+  },
+  "result": "passed",
+  "finishedAt": "2026-10-11T16:29:58.402Z"
+}
