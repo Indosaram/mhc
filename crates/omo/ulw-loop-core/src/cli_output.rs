@@ -5,39 +5,24 @@ use crate::domain_types::{UlwLoopItem, UlwLoopPlan};
 use crate::runtime::UlwLoopError;
 
 pub const ULW_LOOP_HELP: &str = "Usage:\n\
-  omo-agent-toolkit ulw-loop <command> [options]\n\
-  omo-agent-toolkit hook user-prompt-submit [--with-ultrawork]  (Codex UserPromptSubmit hook)\n\
-  omo-agent-toolkit help | --help | -h                          (this message)\n\
-  omo-agent-toolkit ulw-loop help\n\
-  omo-agent-toolkit ulw-loop create-goals --brief \"...\" [--brief-file <path>] [--from-stdin] [--codex-goal-mode aggregate|per_story] [--validation-batch-json <json-or-path>] [--force] [--json]\n\
-  omo-agent-toolkit ulw-loop status [--json]\n\
-  omo-agent-toolkit ulw-loop complete-goals [--retry-failed] [--json]\n\
-  omo-agent-toolkit ulw-loop criteria --goal-id <id> [--json]\n\
-  omo-agent-toolkit ulw-loop record-evidence --goal-id <id> --criterion-id <id> --status pass|fail|blocked --evidence \"...\" [--notes \"...\"] [--json]\n\
-  omo-agent-toolkit ulw-loop checkpoint --print-template [--goal-id <id>] [--json]\n\
-  omo-agent-toolkit ulw-loop checkpoint --goal-id <id> --status complete|failed|blocked --evidence \"...\" --codex-goal-json <...> [--quality-gate-json <...>] [--no-advance] [--json]\n\
-  omo-agent-toolkit ulw-loop steer --kind <kind> ... --evidence \"...\" --rationale \"...\" [--proposals-json <json-or-path>] [--json]\n\
-  omo-agent-toolkit ulw-loop add-goal --title \"...\" --objective \"...\" [--json]\n\
-  omo-agent-toolkit ulw-loop record-review-blockers --goal-id <id> --title \"...\" --objective \"...\" --evidence \"...\" --codex-goal-json <...> [--json]\n\
-  ulw-loop hook user-prompt-submit [--with-ultrawork]  (Codex UserPromptSubmit hook)\n\
-  ulw-loop help | --help | -h                          (this message)\n\
-  ulw-loop ulw-loop help\n\
-  ulw-loop ulw-loop create-goals --brief \"...\" [--brief-file <path>] [--from-stdin] [--codex-goal-mode aggregate|per_story] [--validation-batch-json <json-or-path>] [--force] [--json]\n\
-  ulw-loop ulw-loop status [--json]\n\
-  ulw-loop ulw-loop complete-goals [--retry-failed] [--json]\n\
-  ulw-loop ulw-loop criteria --goal-id <id> [--json]\n\
-  ulw-loop ulw-loop record-evidence --goal-id <id> --criterion-id <id> --status pass|fail|blocked --evidence \"...\" [--notes \"...\"] [--json]\n\
-  ulw-loop ulw-loop checkpoint --print-template [--goal-id <id>] [--json]\n\
-  ulw-loop ulw-loop checkpoint --goal-id <id> --status complete|failed|blocked --evidence \"...\" --codex-goal-json <...> [--quality-gate-json <...>] [--no-advance] [--json]\n\
-  ulw-loop ulw-loop steer --kind <kind> ... --evidence \"...\" --rationale \"...\" [--proposals-json <json-or-path>] [--json]\n\
-  ulw-loop ulw-loop add-goal --title \"...\" --objective \"...\" [--json]\n\
-  ulw-loop ulw-loop record-review-blockers --goal-id <id> --title \"...\" --objective \"...\" --evidence \"...\" --codex-goal-json <...> [--json]\n\
+  mhc ulw-loop <command> [options]\n\
+  mhc ulw-loop help\n\
+  mhc ulw-loop create-goals --brief \"...\" [--brief-file <path>] [--from-stdin] [--codex-goal-mode aggregate|per_story] [--validation-batch-json <json-or-path>] [--force] [--json]\n\
+  mhc ulw-loop status [--json]\n\
+  mhc ulw-loop complete-goals [--retry-failed] [--json]\n\
+  mhc ulw-loop criteria --goal-id <id> [--json]\n\
+  mhc ulw-loop record-evidence --goal-id <id> --criterion-id <id> --status pass|fail|blocked --evidence \"...\" [--notes \"...\"] [--json]\n\
+  mhc ulw-loop checkpoint --print-template [--goal-id <id>] [--json]\n\
+  mhc ulw-loop checkpoint --goal-id <id> --status complete|failed|blocked --evidence \"...\" --codex-goal-json <...> [--quality-gate-json <...>] [--no-advance] [--json]\n\
+  mhc ulw-loop steer --kind <kind> ... --evidence \"...\" --rationale \"...\" [--proposals-json <json-or-path>] [--json]\n\
+  mhc ulw-loop add-goal --title \"...\" --objective \"...\" [--json]\n\
+  mhc ulw-loop record-review-blockers --goal-id <id> --title \"...\" --objective \"...\" --evidence \"...\" --codex-goal-json <...> [--json]\n\
 \n\
 Every state subcommand needs a session scope: [--session-id <id>] or the session env (OMO_ULW_LOOP_SESSION_ID / CODEX_SESSION_ID / CODEX_THREAD_ID / PI_SESSION_ID); state lives under .omo/ulw-loop/<id>/ and the unscoped root is never used implicitly. status --json exposes the currentAttemptDir; put all quality-gate artifacts under it.\n\
 Every subcommand accepts --help | -h to print its own usage line.";
 
 pub fn subcommand_help(subcommand: &str) -> String {
-    let prefix = format!("ulw-loop ulw-loop {subcommand}");
+    let prefix = format!("mhc ulw-loop {subcommand}");
     let lines: Vec<&str> = ULW_LOOP_HELP
         .lines()
         .filter(|line| line.trim_start().starts_with(&prefix))

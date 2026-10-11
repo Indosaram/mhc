@@ -195,7 +195,7 @@ fn includes_optional_notes_when_present() {
 #[test]
 fn help_mentions_cli_and_every_subcommand() {
     for command in [
-        "omo-agent-toolkit ulw-loop", "create-goals", "complete-goals", "status", "checkpoint", "steer",
+        "mhc ulw-loop", "create-goals", "complete-goals", "status", "checkpoint", "steer",
         "record-evidence", "criteria", "add-goal", "record-review-blockers",
     ] {
         assert!(ULW_LOOP_HELP.contains(command), "missing {command}");
