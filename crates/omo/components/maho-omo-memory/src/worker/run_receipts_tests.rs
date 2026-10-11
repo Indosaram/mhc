@@ -200,6 +200,16 @@ fn given_a_dead_run_nobody_can_finish_when_abandoned_then_abandoned_receipt_foll
 }
 
 #[test]
+fn final_sentinel_without_ledger_does_not_backfill_a_run_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let run_dir = root.path().join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(run_dir.join("final.json"), serde_json::json!({"outcome":"merged","kind":"dream","runId":"run","trigger":"idle","generation":"g1"}).to_string()).unwrap();
+    crate::worker::run_receipt_backfill::backfill_run_receipt_sync(root.path(), &run_dir, None, None);
+    assert!(read_receipts(root.path()).is_empty());
+}
+
+#[test]
 fn given_a_merged_run_whose_receipt_write_failed_when_reconciled_twice_then_exactly_one_merged_receipt_exists() {
     let root = tempfile::tempdir().unwrap();
     let (identity, run_dir) = identity_with_run(root.path(), "run-1", true);
@@ -280,7 +290,7 @@ fn given_a_normally_receipted_run_when_reconciled_after_a_restart_then_no_second
 #[test]
 fn given_a_run_dir_reused_by_a_fresh_generation_when_each_generation_is_reconciled_then_two_distinct_merged_receipts_exist() {
     let root = tempfile::tempdir().unwrap();
-    let (identity, run_dir) = identity_with_run(root.path(), "run-1", false);
+    let (identity, run_dir) = identity_with_run(root.path(), "run-1", true);
 
     write_run_json_atomic(&run_dir.join("final.json"), &serde_json::json!({
         "version": 1,
