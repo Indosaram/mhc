@@ -193,7 +193,14 @@ impl HostCore{
                 match admitted{
                     Err(error)=>self.error(connection,command.id.clone(),"close_session",error,Some(session_id)),
                     Ok(_)=>{if let Some(binding)=self.bindings.lock().await.remove(&session_id){binding.dispose().await;}
-                        match self.registry.lock().await.close_marked(&session_id,self.options.close_grace_ms).await{Err(error)=>self.error(connection,command.id.clone(),"close_session",error.to_string(),Some(session_id)),Ok(_)=>self.success(connection,command.id.clone(),"close_session",None,Some(session_id))}}
+                        let completion=self.registry.lock().await.close_marked(&session_id,self.options.close_grace_ms).await;
+                        let result=match completion{
+                            Err(error)=>Err(error.to_string()),
+                            Ok(Some(crate::session_teardown::RuntimeCloseCompletion::Settled(result)))=>result.map_err(|error|error.to_string()).and_then(|result|result.map_err(|error|error.to_string())),
+                            Ok(Some(crate::session_teardown::RuntimeCloseCompletion::Draining(task)))=>task.await.map_err(|error|error.to_string()).and_then(|result|result.map_err(|error|error.to_string())),
+                            Ok(None)=>Ok(()),
+                        };
+                        match result{Ok(())=>self.success(connection,command.id.clone(),"close_session",None,Some(session_id)),Err(error)=>self.error(connection,command.id.clone(),"close_session",error,Some(session_id))}}
                 }
             },
             _=>{
