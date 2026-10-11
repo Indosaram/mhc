@@ -127,4 +127,14 @@ impl LoopRuntime {
         crate::creation::create_dynamic(&mut runtime.scheduler,crate::index::StartDynamicRequest { original_args:"work".into(),prompt:"work".into() },"a".into(),0.0);
         assert!(runtime.persist(&reference).await.is_err()); assert!(runtime.scheduler.armed_timers.is_empty()); assert!(runtime.ended_with_error.contains("a")); assert!(runtime.store_failure.is_some());
     }
+    #[test] fn restore_anchors_forces_full_when_the_compacted_anchor_is_absent() {
+        let mut runtime=LoopRuntime::new("s",None,&Default::default());
+        crate::creation::create_dynamic(&mut runtime.scheduler,crate::index::StartDynamicRequest { original_args:"work".into(),prompt:"work".into() },"a".into(),0.0);
+        if let Some(CronEntry::Dynamic { fields,.. })=runtime.scheduler.state.entries.get_mut("a") { fields.sentinel_delivery.autonomous_preamble_delivered=true; }
+        runtime.restore_anchors(&[]);
+        assert!(runtime.delivery_states["a"].force_full_delivery); assert!(runtime.delivery_states["a"].autonomous_preamble_delivered);
+        let anchored=maho_ext_api::SessionEntry { id:"e".into(),parent_id:None,timestamp:String::new(),kind:"custom".into(),data:serde_json::json!({"customType":crate::index::LOOP_TICK_ENTRY_TYPE,"data":{"loopId":"a","deliveryId":"d"}}) };
+        runtime.restore_anchors(&[anchored]);
+        assert!(!runtime.delivery_states["a"].force_full_delivery);
+    }
 }

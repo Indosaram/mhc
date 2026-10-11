@@ -34,13 +34,31 @@ impl ExtensionUi for Ui {
     fn custom(&self,_:ComponentFactory,_:CustomUiOptions)->ExtensionFuture<'_,JsonValue> { Box::pin(async { Err("UI unavailable".into()) }) }
     fn theme(&self)->Theme { Theme::default() }
 }
-fn context()->ExtensionContext {
+pub(crate) fn context()->ExtensionContext {
     ExtensionContext { ui:Arc::new(Ui),mode:ExtensionMode::Tui,has_ui:true,cwd:"/tmp".into(),agent_dir:"/tmp/agent".into(),session_manager:Arc::new(Session),model_registry:Arc::new(Registry),model:None,thinking_level:None,service_tier:None,effective_service_tier:None,scoped_models:Vec::new(),goal_store_file:None,loaded_extension_paths:Vec::new(),signal:None,steering_signal:None,is_idle_fn:Arc::new(||true),wait_for_idle_fn:Arc::new(||Box::pin(async {})),is_project_trusted_fn:Arc::new(||true),is_compacting_fn:Arc::new(||false),get_system_prompt_fn:Arc::new(String::new),get_system_prompt_options_fn:Arc::new(BuildSystemPromptOptions::default),registered_mcp_servers:Vec::new(),update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
 fn real_session()->maho_core::agent_session::AgentSession {
     use maho_core::{agent_session::*,settings_manager::*,session_manager::SessionManager,model_runtime::*};
     let stream:maho_agent::types::StreamFn=Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant());
     AgentSession::new(AgentSessionConfig { agent:maho_agent::Agent::new(maho_agent::AgentOptions { stream_fn:Some(stream),..Default::default() }),session_manager:SessionManager::in_memory("/tmp",None,None),settings_manager:SettingsManager::from_storage(Box::<InMemorySettingsStorage>::default(),false),cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:Vec::new(),favorite_models:Vec::new(),flag_values:Default::default(),custom_tools:Vec::new(),model_runtime:Some(ModelRuntime::create_sync(CreateModelRuntimeOptions { providers:Some(Vec::new()),..Default::default() })),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false) }).unwrap()
+}
+#[tokio::test] async fn registered_session_start_forces_full_delivery_when_anchor_is_missing() {
+    let dir=tempfile::tempdir().unwrap();
+    let session=real_session();
+    let reference=crate::types::LoopStoreRef { base_dir:dir.path().into(),session_id:session.session_id() };
+    let mut runtime=crate::runtime::LoopRuntime::new(&reference.session_id,None,&Default::default());
+    crate::creation::create_dynamic(&mut runtime.scheduler,StartDynamicRequest { original_args:"check".into(),prompt:"check".into() },"loop-a".into(),1000.0);
+    if let Some(crate::types::CronEntry::Dynamic { fields,.. })=runtime.scheduler.state.entries.get_mut("loop-a") { fields.sentinel_delivery.autonomous_preamble_delivered=true; }
+    runtime.persist(&reference).await.unwrap();
+    let mut extension=LoopExtension::new(Arc::new({let base=dir.path().to_path_buf();move |ctx|crate::types::LoopStoreRef { base_dir:base.clone(),session_id:ctx.session_manager.session_id().into() }}));
+    extension.now=Arc::new(||1000.0);
+    session.set_extension_runner(maho_ext_host::ExtensionRunner::from_static(vec![Box::new(extension)],context())).await;
+    session.bind_extensions(Default::default()).await;
+    let restored=crate::store::read_loop_state(&reference).await.unwrap().unwrap();
+    let crate::types::CronEntry::Dynamic { fields,.. }=&restored.entries["loop-a"] else { panic!("expected dynamic") };
+    assert!(fields.sentinel_delivery.force_full_delivery);
+    assert!(fields.sentinel_delivery.autonomous_preamble_delivered);
+    session.dispose().await;
 }
 #[tokio::test] async fn registered_session_creation_dispatch_wakeup_pause_and_shutdown() {
     let dir=tempfile::tempdir().unwrap(); let base=dir.path().to_path_buf();
