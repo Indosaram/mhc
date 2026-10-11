@@ -538,6 +538,8 @@ pub struct AgentSessionInner {
     retry_fallback: tokio::sync::Mutex<Option<crate::retry_fallback::controller::RetryFallbackController<SessionFallbackDeps>>>,
     work_barrier: Arc<crate::session_work_barrier::SessionWorkBarrier>,
     settling_with_background_work: std::sync::atomic::AtomicBool,
+    /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
+    agent_run_active: std::sync::atomic::AtomicBool,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
@@ -864,7 +866,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_scoped_models(&self) -> Vec<maho_ext_api::ScopedModel> { self.session().map_or_else(|_| Vec::new(), |session| session.scoped_models().into_iter().map(|model|
         maho_ext_api::ScopedModel { model: model.model, thinking_level: model.thinking_level, service_tier: model.service_tier }).collect()) }
     fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
-    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| session.is_idle() && !session.settling_with_background_work.load(Ordering::SeqCst)) }
+    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.agent_run_active.load(Ordering::SeqCst) && !session.settling_with_background_work.load(Ordering::SeqCst)) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok().or_else(|| self.session().ok()?.state().extension_event_signal.clone()) }
     fn get_compaction_preparation(&self) -> Option<maho_ext_api::CompactionPreparationDetails> { EXTENSION_COMPACTION_PREPARATION.try_with(Clone::clone).ok() }
@@ -1664,6 +1666,7 @@ impl AgentSession {
             retry_fallback: tokio::sync::Mutex::new(None),
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
             settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
+            agent_run_active: std::sync::atomic::AtomicBool::new(false),
             wake_source_subscription: Mutex::new(None),
             settings_source_subscription: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
@@ -2117,6 +2120,7 @@ impl AgentSession {
         *disposition_reported = true;
         drop(readiness.take());
         if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Started); }
+        self.agent_run_active.store(true, Ordering::SeqCst);
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -5331,6 +5335,7 @@ impl AgentSession {
                 self.state().message_revision += 1;
             }
         }
+        self.agent_run_active.store(true, Ordering::SeqCst);
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -5388,6 +5393,7 @@ impl AgentSession {
     }
 
     async fn emit_agent_settled(&self) {
+        self.agent_run_active.store(false, Ordering::SeqCst);
         let generation = self.user_abort_generation.load(Ordering::SeqCst);
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
         let epoch = self.settlement_epoch.fetch_add(1, Ordering::SeqCst) + 1;
@@ -9973,9 +9979,12 @@ mod tests {
         let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
         assert!(maho_ext_api::ExtensionContextActions::is_idle(&actions));
         let work = session.work_barrier.begin();
-        assert!(!session.is_streaming());
+        // senpi: input hooks run before `_isAgentRunActive` flips, so admission work alone is idle.
+        assert!(maho_ext_api::ExtensionContextActions::is_idle(&actions));
+        session.agent_run_active.store(true, Ordering::SeqCst);
         assert!(!maho_ext_api::ExtensionContextActions::is_idle(&actions));
         drop(work);
+        session.emit_agent_settled().await;
         assert!(maho_ext_api::ExtensionContextActions::is_idle(&actions));
         session.dispose().await;
     }
