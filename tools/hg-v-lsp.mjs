@@ -151,7 +151,7 @@ async function toolScenario(name, server) {
 	const deadline = setTimeout(() => { error = "bounded scenario deadline exceeded"; finish(); }, TIMEOUT_MS);
 	try {
 		const ready = new Promise((resolvePromise, reject) => {
-			const watcher = watch(ctx.root, () => { if (existsSync(hostSocket)) { watcher.close(); clearTimeout(timer); resolvePromise(); } });
+			const watcher = watch(ctx.root, () => { if (existsSync(hostSocket) && (statSync(hostSocket).mode & 0o777) === 0o600) { watcher.close(); clearTimeout(timer); resolvePromise(); } });
 			const timer = setTimeout(() => { watcher.close(); reject(new Error("host socket readiness timeout")); }, 10_000);
 		});
 		proc = Bun.spawn(invocation, { cwd: ctx.cwd, env: fixtureEnv, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
