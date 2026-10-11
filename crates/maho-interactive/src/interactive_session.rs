@@ -72,6 +72,7 @@ pub trait InteractiveSession: Send + Sync {
     /// Fetch the host's session stats, generation-tagged, to `sender`. A no-op locally.
     fn request_remote_stats(&self, _generation: u64, _sender: tokio::sync::mpsc::UnboundedSender<(u64, Result<serde_json::Value, String>)>) {}
     fn export_jsonl(&self, _output_path: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> { Box::pin(async { Err("export_jsonl is not implemented for this session host".to_owned()) }) }
+    fn export_html(&self, _output_path: Option<String>, _theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> { Box::pin(async { Err("export_html is not implemented for this session host".to_owned()) }) }
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
     fn switch_session(&self, session_path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>>;
@@ -217,6 +218,10 @@ impl InteractiveSession for LocalInteractiveSession {
     fn export_jsonl(&self, output_path: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { self.session.export_to_jsonl(output_path.as_deref()).map(Some).map_err(|error| error.to_string()) })
     }
+
+    fn export_html(&self, output_path: Option<String>, theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async move { self.session.export_to_html(output_path.as_deref(), theme_name.as_deref()).map(Some) })
+    }
 }
 
 fn remote_outcome(
@@ -337,6 +342,10 @@ impl InteractiveSession for RemoteInteractiveRuntime {
 
     fn export_jsonl(&self, output_path: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move { Ok(self.proxy().export_jsonl(output_path.as_deref()).await.map_err(|error| error.to_string())?.get("path").and_then(serde_json::Value::as_str).map(str::to_owned)) })
+    }
+
+    fn export_html(&self, output_path: Option<String>, theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async move { Ok(self.proxy().export_html(output_path.as_deref(), theme_name.as_deref()).await.map_err(|error| error.to_string())?.get("path").and_then(serde_json::Value::as_str).map(str::to_owned)) })
     }
 
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
