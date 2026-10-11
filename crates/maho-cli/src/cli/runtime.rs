@@ -156,6 +156,38 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
 }
 
 pub fn fork_session(source_path: &str, cwd: &str, session_dir: Option<&str>, session_id: Option<&str>) -> Result<SessionManager, String> {
+    let local_dir = session_dir.map(str::to_owned).unwrap_or_else(|| maho_core::session_manager::get_default_session_dir(cwd));
+    let mut local = maho_core::session_discovery::list_sessions_from_dir(&local_dir, None, 0, None);
+    local.sort_by_key(|session| std::cmp::Reverse(session.modified));
+    let custom_sessions = local.clone();
+    if let Some(id) = session_id
+        && local.iter().any(|session| session.id == id)
+    { return Err(format!("Session already exists with id '{id}'")); }
+    if session_dir.is_some() && local_dir != maho_core::session_manager::get_default_session_dir(cwd) {
+        let resolved_cwd = maho_core::paths::resolve_path(cwd, cwd, &maho_core::paths::PathInputOptions::default());
+        local.retain(|session| maho_core::paths::resolve_path(&session.cwd, cwd, &maho_core::paths::PathInputOptions::default()) == resolved_cwd);
+    }
+    let resolved;
+    let source_path = if source_path.contains('/') || source_path.contains('\\') || source_path.ends_with(".jsonl") {
+        resolved = maho_core::paths::resolve_path(source_path, cwd, &maho_core::paths::PathInputOptions::expanding_tilde(maho_core::config::home_dir()));
+        resolved.as_str()
+    } else {
+        let mut all = custom_sessions;
+        if session_dir.is_none()
+            && let Ok(directories) = std::fs::read_dir(maho_core::config::get_sessions_dir())
+        {
+            for directory in directories.filter_map(Result::ok).filter(|entry| entry.path().is_dir()) {
+                all.extend(maho_core::session_discovery::list_sessions_from_dir(&directory.path().to_string_lossy(), None, 0, None));
+            }
+        }
+        all.sort_by_key(|session| std::cmp::Reverse(session.modified));
+        let matched = local.iter().find(|session| session.id == source_path)
+            .or_else(|| local.iter().find(|session| session.id.starts_with(source_path)))
+            .or_else(|| all.iter().find(|session| session.id == source_path))
+            .or_else(|| all.iter().find(|session| session.id.starts_with(source_path)));
+        resolved = matched.map(|session| session.path.clone()).ok_or_else(|| format!("No session found matching '{source_path}'"))?;
+        resolved.as_str()
+    };
     let source_entries = maho_core::session_manager::load_entries_from_file(source_path);
     if source_entries.is_empty() {
         return Err(format!("Cannot fork: source session file is empty or invalid: {source_path}"));
