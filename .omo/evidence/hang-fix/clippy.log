@@ -1,0 +1,207 @@
+    Blocking waiting for file lock on build directory
+    Checking zerofrom v0.1.6
+    Checking serde v1.0.228
+    Checking yoke v0.8.3
+    Checking zerovec v0.11.8
+    Checking tokio v1.52.3
+    Checking tinystr v0.8.4
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.4
+    Checking zerotrie v0.2.5
+    Checking icu_provider v2.3.1
+    Checking icu_collections v2.3.0
+    Checking futures-util v0.3.34
+    Checking icu_normalizer v2.3.0
+    Checking icu_properties v2.3.0
+    Checking thiserror v2.0.18
+    Checking tracing v0.1.44
+    Checking aws-lc-sys v0.45.0
+    Checking idna_adapter v1.2.1
+    Checking aws-lc-rs v1.18.1
+    Checking idna v1.1.0
+    Checking rustls-webpki v0.103.15
+    Checking rustls v0.23.45
+    Checking url v2.5.8
+    Checking tokio-util v0.7.18
+    Checking serde_yaml v0.9.34+deprecated
+    Checking h2 v0.4.19
+   Compiling prost-derive v0.14.4
+    Checking tower v0.5.3
+    Checking tokio-rustls v0.26.4
+   Compiling prost v0.14.4
+   Compiling derive_more-impl v2.1.1
+    Checking futures-executor v0.3.34
+    Checking hyper v1.8.1
+    Checking tower-http v0.6.8
+    Checking futures v0.3.34
+    Checking derive_more v2.1.1
+   Compiling prost-types v0.14.4
+    Checking hyper-util v0.1.20
+    Checking serde_urlencoded v0.7.1
+   Compiling prost-build v0.14.4
+    Checking hyper-rustls v0.27.7
+    Checking rustix v1.1.4
+    Checking icu_locale_fallback v2.3.0
+    Checking tungstenite v0.28.0
+    Checking thiserror v1.0.69
+   Compiling maho-ai v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-ai)
+    Checking reqwest v0.12.28
+    Checking tokio-tungstenite v0.28.0
+    Checking filedescriptor v0.8.3
+    Checking portable-pty v0.9.0
+    Checking tempfile v3.27.0
+    Checking icu_segmenter v2.3.0
+    Checking crossterm v0.29.0
+    Checking maho-pty v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/vendor/maho-pty)
+    Checking maho-tui v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-tui)
+   Compiling phf_macros v0.11.3
+    Checking phf v0.11.3
+    Checking palette v0.6.1
+    Checking photon-rs v0.3.3
+    Checking icu_collator v2.3.1
+    Checking plist v1.10.1
+    Checking bincode v1.3.3
+    Checking syntect v5.3.0
+    Checking maho-omo-config-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/omo-config-core)
+    Checking maho-utils v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/utils)
+    Checking maho-omo-config-resolution v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-config-resolution)
+   Compiling phf_macros v0.13.1
+    Checking maho-model-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/model-core)
+    Checking phf v0.13.1
+    Checking regress v0.12.0
+    Checking maho-memory-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/memory-core)
+    Checking maho-tmux-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/tmux-core)
+    Checking maho-agent v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-agent)
+   Compiling string_cache_codegen v0.6.1
+    Checking filetime v0.2.27
+    Checking maho-isolation-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/isolation-core)
+   Compiling web_atoms v0.2.6
+    Checking maho-team-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/team-core)
+    Checking maho-delegate-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/delegate-core)
+    Checking maho-senpi-task v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/senpi-task)
+    Checking maho-tools v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-tools)
+    Checking maho-ext-api v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-ext-api)
+    Checking maho-comment-checker-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/comment-checker-core)
+    Checking maho-ext-host v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-ext-host)
+    Checking maho-ext-ask-user v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-ask-user)
+    Checking maho-mcp-stdio-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/mcp-stdio-core)
+    Checking maho-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-core)
+    Checking maho-omo-agent-home v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-agent-home)
+    Checking maho-lsp-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/lsp-core)
+    Checking maho-lsp-daemon v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/lsp-daemon)
+    Checking maho-omo-post-mutation v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-post-mutation)
+    Checking maho-omo-ultrawork v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-ultrawork)
+    Checking gethostname v1.1.0
+    Checking maho-telemetry-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/telemetry-core)
+    Checking maho-omo-formatter v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-formatter)
+    Checking zip v2.4.2
+    Checking maho-omo-bundled-skills v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-bundled-skills)
+    Checking maho-omo-fallback-architect v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-fallback-architect)
+    Checking maho-boulder-state v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/boulder-state)
+    Checking cssparser v0.37.0
+    Checking maho-omo-start-work-continuation v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-start-work-continuation)
+    Checking maho-omo-lsp v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-lsp)
+    Checking maho-omo-telemetry v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-telemetry)
+    Checking maho-rpc v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-rpc)
+    Checking maho-ext-recommended-models v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-recommended-models)
+    Checking maho-test-support v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-test-support)
+    Checking maho-omo-model-profile v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-model-profile)
+    Checking maho-omo-onboarding v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-onboarding)
+    Checking markup5ever v0.39.0
+    Checking maho-config-migration v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/config-migration)
+    Checking ulw-loop-core v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/ulw-loop-core)
+    Checking axum-core v0.5.6
+    Checking maho-interactive v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-interactive)
+    Checking cssparser v0.36.0
+    Checking maho-omo-ulw-loop v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-ulw-loop)
+    Checking maho-omo-config-startup v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-config-startup)
+    Checking html5ever v0.39.0
+    Checking maho-omo-init-deep-advisor v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-init-deep-advisor)
+    Checking maho-omo-memory v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-memory)
+    Checking maho-ext-gpt-apply-patch v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-gpt-apply-patch)
+    Checking maho-ext-permission-system v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-permission-system)
+    Checking maho-ext-builtin-loose v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-builtin-loose)
+    Checking maho-omo-task v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-task)
+    Checking selectors v0.38.0
+    Checking rustls-platform-verifier v0.6.2
+    Checking maho-omo-skill-commands v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-skill-commands)
+    Checking maho-omo-x-search v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-x-search)
+    Checking maho-omo-comment-checker v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-comment-checker)
+    Checking maho-omo-todo-fanout-reminder v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-todo-fanout-reminder)
+    Checking maho-omo-gateway v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-gateway)
+    Checking maho-omo-config-watch v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-config-watch)
+    Checking maho-omo-builtin-mcps v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-builtin-mcps)
+    Checking maho-omo-skill-pointers v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-skill-pointers)
+    Checking maho-omo-git-master v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-git-master)
+    Checking maho-omo-browser-bridge v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-browser-bridge)
+    Checking maho-omo-native-badge v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-native-badge)
+    Checking maho-omo-ast-grep v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/components/maho-omo-ast-grep)
+    Checking markup5ever v0.38.0
+    Checking axum v0.8.9
+    Checking html5ever v0.38.0
+    Checking curve25519-dalek v4.1.3
+    Checking dom_query v0.28.0
+    Checking reqwest v0.13.2
+    Checking maho-ext-todotools v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-todotools)
+    Checking maho-ext-tool-search v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-tool-search)
+    Checking selectors v0.36.1
+    Checking aead v0.5.2
+    Checking html-escape v0.2.15
+    Checking flagset v0.4.7
+    Checking gjson v0.8.1
+    Checking dom_query v0.27.0
+    Checking dom_smoothie v0.18.2
+    Checking aes-gcm v0.10.3
+    Checking hkdf v0.12.4
+    Checking maho-ext-mcp v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-mcp)
+    Checking maho-ext-goal v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-goal)
+    Checking ed25519-dalek v2.2.0
+    Checking maho-omo v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/omo/maho-omo)
+    Checking maho-ext-anthropic-subscription v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-anthropic-subscription)
+    Checking maho-ext-compaction v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-compaction)
+    Checking maho-ext-rule-activation v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-rule-activation)
+    Checking maho-ext-imagegen v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-imagegen)
+    Checking maho-ext-anthropic-bash v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-anthropic-bash)
+    Checking maho-ext-bash-timeout v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-bash-timeout)
+    Checking maho-ext-btw v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-btw)
+    Checking maho-ext-openai-image-gen v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-openai-image-gen)
+    Checking maho-ext-rules v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-rules)
+    Checking maho-ext-cursor-cli-oauth v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-cursor-cli-oauth)
+    Checking maho-server v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-server)
+    Checking maho-ext-omo-zcode-oauth v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-omo-zcode-oauth)
+    Checking maho-ext-pi-webfetch v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-pi-webfetch)
+    Checking maho-ext-webfetch v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-webfetch)
+    Checking maho-ext-websearch v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-websearch)
+    Checking maho-ext-herdr v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-herdr)
+    Checking maho-ext-account v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-account)
+    Checking maho-ext-help v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-help)
+    Checking maho-ext-llama v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-llama)
+    Checking maho-ext-history-search v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-history-search)
+    Checking maho-ext-look-at v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-look-at)
+    Checking maho-ext-quiet-model-profile v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-quiet-model-profile)
+    Checking maho-ext-loop v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-loop)
+    Checking maho-ext-hooks v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-hooks)
+    Checking maho-ext-config-reload v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-config-reload)
+    Checking maho-ext-prompt-preset v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-prompt-preset)
+    Checking maho-ext-model-fallback v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-model-fallback)
+    Checking maho-ext-terminal v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-terminal)
+    Checking maho-ext-cache-keepalive v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-cache-keepalive)
+    Checking maho-ext-reasoning v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-reasoning)
+    Checking maho-ext-pi-ast-grep v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-pi-ast-grep)
+    Checking maho-codemode v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-codemode)
+    Checking maho-ext-loop-guard v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-loop-guard)
+    Checking maho-ext-pi-comment-checker v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-pi-comment-checker)
+    Checking maho-ext-orca-titlebar-spinner v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-orca-titlebar-spinner)
+    Checking maho-ext-orca-prefill v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-orca-prefill)
+    Checking maho-ext-video-in v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-video-in)
+    Checking maho-ext-herdr-agent-state v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-herdr-agent-state)
+    Checking maho-ext-orca-agent-status v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-orca-agent-status)
+    Checking maho-ext-pi-nested-agents-md v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-pi-nested-agents-md)
+    Checking maho-ext-tool-pair-guard v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-tool-pair-guard)
+    Checking maho-ext-anthropic-web-search v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-anthropic-web-search)
+    Checking maho-ext-ttsr v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-ttsr)
+    Checking maho-ext-nested-agents-md v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-nested-agents-md)
+    Checking maho-ext-ferryx-agent-state v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/extensions/maho-ext-ferryx-agent-state)
+    Checking maho-ext-openai-web-search v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/builtins/maho-ext-openai-web-search)
+    Checking maho-cli v0.0.0 (/home/projects/mhc-wt/hg-hang-fix/crates/maho-cli)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5m 44s

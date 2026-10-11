@@ -1869,9 +1869,9 @@ impl AgentSession {
         };
         if let AgentEvent::MessageEnd { message } = &mut event {
             let replacement = {
-                let mut runner = self.extension_runner.lock().await;
-                match runner.as_mut() {
-                    Some(runner) => runner.emit_message_end(message.clone()).await,
+                let runner = self.extension_runner.lock().await.clone();
+                match runner {
+                    Some(mut runner) => runner.emit_message_end(message.clone()).await,
                     None => Ok(None),
                 }
             };
@@ -2428,8 +2428,8 @@ impl AgentSession {
         let execution = async {
             let messages_before_extension = self.messages();
             let before = {
-                let mut runner = self.extension_runner.lock().await;
-                if let Some(runner) = runner.as_mut() {
+                let runner = self.extension_runner.lock().await.clone();
+                if let Some(mut runner) = runner {
                     let event = maho_ext_api::SessionBeforeCompactEvent {
                         reason: compact_reason, will_retry, request_id: request_id.clone(),
                         preparation: maho_ext_api::CompactionPreparation {
@@ -3338,9 +3338,9 @@ impl AgentSession {
         self.agent.set_model(model.clone());
         self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, thinking));
         let result = {
-            let mut runner = self.extension_runner.lock().await;
-            match runner.as_mut() {
-                Some(runner) if context_changed => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
+            let runner = self.extension_runner.lock().await.clone();
+            match runner {
+                Some(mut runner) if context_changed => runner.emit_model_select(maho_ext_api::ModelSelectEvent {
                     model: model.clone(), previous_model: Some(previous.clone()), source,
                     system_prompt: old_prompt.clone(), system_prompt_options: self.extension_system_prompt_options(),
                 }).await.map_err(|error| error.to_string()),
@@ -4398,16 +4398,16 @@ impl AgentSession {
     }
 
     pub fn model(&self) -> Model {
-        self.agent.state().model
+        self.agent.model()
     }
 
     /// The agent carries `"off" | ThinkingLevel`; senpi's `ThinkingLevel` includes `"off"`.
     pub fn thinking_level(&self) -> ModelThinkingLevel {
-        self.agent.state().thinking_level
+        self.agent.thinking_level()
     }
 
     pub fn thinking_selection(&self) -> Option<ThinkingSelection> {
-        self.agent.state().thinking_selection
+        self.agent.thinking_selection()
     }
 
     pub fn service_tier(&self) -> Option<ServiceTier> {
@@ -4428,7 +4428,7 @@ impl AgentSession {
     }
 
     pub fn is_streaming(&self) -> bool {
-        self.agent.state().is_streaming
+        self.agent.is_streaming()
     }
 
     pub fn is_idle(&self) -> bool {
@@ -4438,7 +4438,7 @@ impl AgentSession {
     }
 
     pub fn system_prompt(&self) -> String {
-        self.agent.state().system_prompt
+        self.agent.system_prompt()
     }
 
     pub fn set_system_prompt_sources(&self, custom: Option<String>, append: Vec<String>) {
@@ -6396,7 +6396,7 @@ impl AgentSession {
     fn has_configured_fallback_chain(&self) -> bool {
         let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
         let chains = crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref()).chains;
-        crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.agent.state().thinking_level), &chains)
+        crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.agent.thinking_level()), &chains)
             .is_some()
     }
 
@@ -6761,7 +6761,7 @@ impl AgentSession {
     fn apply_thinking_level(&self, level: ModelThinkingLevel, update_global_default: bool) {
         let available = self.get_available_thinking_levels();
         let effective = if available.contains(&level) { level } else { clamp_thinking_level(level, &available) };
-        let previous = self.agent.state().thinking_level;
+        let previous = self.agent.thinking_level();
         let changing = effective != previous;
         if changing && let Ok(mut controller) = self.retry_fallback.try_lock()
             && let Some(controller) = controller.as_mut() {
@@ -6794,7 +6794,7 @@ impl AgentSession {
 
     fn emit_high_reasoning_warning_if_needed(&self) {
         let model = self.model();
-        let level = self.agent.state().thinking_level;
+        let level = self.agent.thinking_level();
         if !crate::high_reasoning_warning::should_warn_high_reasoning(&model.id, level) {
             return;
         }
@@ -6818,7 +6818,7 @@ impl AgentSession {
         if levels.is_empty() {
             return None;
         }
-        let current = self.agent.state().thinking_level;
+        let current = self.agent.thinking_level();
         let index = levels.iter().position(|level| *level == current).unwrap_or(levels.len() - 1);
         let next = levels[(index + 1) % levels.len()];
         self.set_thinking_level(next);

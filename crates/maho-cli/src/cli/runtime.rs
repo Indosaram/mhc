@@ -25,6 +25,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
     if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
+    struct InteractiveStderr;
+    impl Drop for InteractiveStderr {
+        fn drop(&mut self) { maho_interactive::interactive_stderr_guard::restore_interactive_stderr(); }
+    }
+    let _interactive_stderr = if mode == AppMode::Interactive {
+        maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
+        Some(InteractiveStderr)
+    } else { None };
     let stdout_is_tty = std::io::stdout().is_terminal();
     let mut indicator = super::startup_loading_indicator::StartupLoadingIndicator::new(
         super::startup_loading_indicator::StartupLoadingIndicatorOptions::new(|text| {

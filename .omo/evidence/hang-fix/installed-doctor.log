@@ -1,0 +1,7 @@
+PASS project resources: no project-local resources require trust
+WARN task categories: 7 of 8 usable with your connected providers (artistry, quick, ultrabrain, unspecified-high, unspecified-low, visual-engineering, writing)
+WARN Category "architect" has no usable model: none of its fallback-chain providers are connected (anthropic, anthropic-api, github-copilot, opencode, vercel). Connect one with /login <provider>, or pin categories.architect.model in omo.json.
+PASS native executable: mhc
+PASS native executable: ast-grep-mcp
+PASS native executable: omo-git-bash
+PASS native executable: lsp-daemon
