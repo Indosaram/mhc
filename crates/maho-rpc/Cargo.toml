@@ -26,6 +26,8 @@ rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled
 tokio = { workspace = true, features = ["io-util", "io-std", "sync", "rt", "macros", "net", "time", "fs", "signal"] }
 
 [dev-dependencies]
+anyhow = "=1.0.104"
+async-trait = "=0.1.92"
 tempfile.workspace = true
 maho-ext-host = { path = "../maho-ext-host" }
 maho-test-support = { path = "../maho-test-support", features = ["sdk"] }
