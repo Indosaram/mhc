@@ -82,7 +82,10 @@ pub async fn handle_doctor(
             .ok()
             .and_then(|settings| settings["compile_warn_tokens"].as_u64())
             .unwrap_or(0) as usize;
-        let (receipts_check, receipts_map) = super::doctor_receipts::check_receipts(&identity.identity_paths.runtime, deps.now_ms());
+        let (receipts_check, receipts_map) = match super::doctor_receipts::check_receipts(&identity.identity_paths.runtime, deps.now_ms()) {
+            Ok(result) => result,
+            Err(error) => return respond(ctx, error, NotifyLevel::Error),
+        };
         receipts_summary = Some(receipts_map);
         let (quarantine_check, quarantine_list) = super::doctor_receipts::check_quarantined_runs(&identity.identity_paths.reflection);
         quarantined_runs = quarantine_list;

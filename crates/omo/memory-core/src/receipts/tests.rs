@@ -169,6 +169,33 @@ fn given_a_long_or_secret_bearing_detail_when_appended_then_it_is_cut_to_400_cha
 }
 
 #[test]
+fn loose_receipt_metadata_is_accepted_and_preserved_without_defaults() {
+    let root = tempfile::tempdir().unwrap();
+    let raw = serde_json::json!({"v":1,"at":"","event":"","kind":"facts","batchId":"loose","host":false,"pid":4294967297_u64,"extra":{"retained":true}});
+    std::fs::write(receipts_path(root.path()), format!("{raw}\n")).unwrap();
+    let result = read_memory_receipts(root.path(), &ReadMemoryReceiptsOptions::default()).unwrap();
+    assert_eq!(result.skipped_partial_lines, 0);
+    assert_eq!(serde_json::to_value(&result.receipts[0]).unwrap(), raw);
+    assert!(!append_memory_receipt_once(root.path(), &MemoryReceiptInput::Facts { kind:"facts".into(), batch_id:"loose".into(), trigger:"settle".into(), event:"".into(), sha:None, reason:None, detail:None }).unwrap());
+}
+
+#[test]
+fn receipt_reason_and_detail_bound_utf16_without_splitting_utf8() {
+    let root = tempfile::tempdir().unwrap();
+    let input = MemoryReceiptInput::Facts {
+        kind: "facts".into(), batch_id: "unicode".into(), trigger: "settle".into(), event: "failed".into(), sha: None,
+        reason: Some(format!("token=abc123456 {}", "\u{ac00}".repeat(600))),
+        detail: Some("\u{ac00}".repeat(600)),
+    };
+    append_memory_receipt(root.path(), &input).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&lines(root.path())[0]).unwrap();
+    assert_eq!(value["detail"], format!("{}...", "\u{ac00}".repeat(397)));
+    let reason = value["reason"].as_str().unwrap();
+    assert!(!reason.contains("abc123456"));
+    assert_eq!(reason.encode_utf16().count(), 400);
+}
+
+#[test]
 fn given_mixed_kinds_and_a_line_cut_off_by_a_crash_when_read_then_the_newest_of_one_kind_return_and_the_partial_line_is_counted(
 ) {
     // given
