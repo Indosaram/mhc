@@ -45,6 +45,7 @@ pub struct CliRuntimeConfiguration {
     pub list_tips: bool,
     pub session_dir: Option<String>,
     pub extensions: Vec<String>,
+    pub no_extensions: bool,
     pub skills: Vec<String>,
     pub prompt_templates: Vec<String>,
     pub themes: Vec<String>,
@@ -68,6 +69,7 @@ impl Default for CliRuntimeConfiguration {
             list_tips: false,
             session_dir: None,
             extensions: Vec::new(),
+            no_extensions: false,
             skills: Vec::new(),
             prompt_templates: Vec::new(),
             themes: Vec::new(),
@@ -87,6 +89,7 @@ impl CliRuntimeConfiguration {
             model: parsed.model.clone(),
             models: parsed.models.clone().unwrap_or_default(),
             thinking: parsed.thinking.clone(),
+            no_extensions: parsed.no_extensions,
             auto_title_sessions: parsed.auto_title_sessions.then_some(true),
             help: parsed.help,
             list_models: parsed.list_models.is_some(),
@@ -229,8 +232,8 @@ pub async fn mount_agent_session_runtime(
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
     launch_config.cwd = cwd.clone();
-    let services = create_agent_session_services(CreateAgentSessionServicesOptions {
-        cwd,
+    let mut services = create_agent_session_services(CreateAgentSessionServicesOptions {
+        cwd: cwd.clone(),
         agent_dir: Some(config.agent_dir.clone()),
         settings_manager,
         model_runtime,
@@ -238,7 +241,16 @@ pub async fn mount_agent_session_runtime(
     });
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let extension_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
+    let mut extension_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
+    if !config.no_extensions {
+        let discovery = super::user_extensions::resolve_and_discover(
+            &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(),
+        ).await.map_err(|error| error.to_string())?;
+        if !discovery.errors.is_empty() {
+            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
+        }
+        extension_factories.extend(discovery.factories);
+    }
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {

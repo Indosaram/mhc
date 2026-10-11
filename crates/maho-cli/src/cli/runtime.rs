@@ -37,7 +37,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         indicator.set_phase(Some("loading settings".into()));
     }
     let migrations = indicator.during_surface_write(|| crate::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir))).map_err(|error| error.to_string())?;
-    let settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
+    let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
@@ -51,6 +51,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
+    if !parsed.no_extensions {
+        let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
+        if !discovery.errors.is_empty() {
+            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
+        }
+        base_factories.extend(discovery.factories);
+    }
     let environment = super::oauth_providers::environment_from_process();
     let store = super::credentials::AuthStorageCredentialStore::create(
         &std::path::Path::new(&agent_dir).join("auth.json").to_string_lossy(),
