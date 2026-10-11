@@ -1673,6 +1673,27 @@ impl AgentSession {
         *lock(&session.agent_subscription) = Some(subscription);
 
         let weak = Arc::downgrade(&session.inner);
+        session.agent.set_resolve_unknown_tool_call(Some(Arc::new(move |requested, _context| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                let mut callable = session.get_active_tool_names();
+                for (name, entry) in &session.state().tool_definitions {
+                    let exposure = normalize_tool_exposure(&entry.definition, entry.source_info.clone());
+                    if exposure.exposure == ToolExposure::Search && exposure.allow_lazy_activation {
+                        callable.push(name.clone());
+                    }
+                }
+                let resolved = resolve_tool_name_alias(&requested, callable).unwrap_or(requested);
+                if !session.activate_lazy_tool(&resolved) {
+                    return None;
+                }
+                session.agent.state().tools().iter().find(|tool| tool.name() == resolved).cloned()
+            })
+        })));
+
+        let weak = Arc::downgrade(&session.inner);
         let subscription = session.with_settings_manager(|manager| manager.subscribe_to_source_selection(Arc::new(move |source| {
             if let Some(inner) = weak.upgrade() {
                 AgentSession { inner }.emit(AgentSessionEvent::SettingsSourceSelected { selection: serde_json::json!({
@@ -4529,7 +4550,8 @@ impl AgentSession {
         if !exposure.allow_lazy_activation {
             return false;
         }
-        if self.state().lazy_tool_activators.iter().any(|activate| activate(tool_name)) {
+        let activators = self.state().lazy_tool_activators.clone();
+        if activators.iter().any(|activate| activate(tool_name)) {
             return true;
         }
         if exposure.exposure == ToolExposure::Search && !self.get_active_tool_names().iter().any(|name| name == tool_name) {
@@ -4611,6 +4633,29 @@ impl AgentSession {
         state.tool_registry.insert(definition.name.clone(), tool);
         state.base_tool_definitions.insert(definition.name.clone(), definition.clone());
         state.tool_definitions.insert(definition.name.clone(), ToolDefinitionEntry { definition, source_info });
+    }
+
+    pub fn replace_custom_tool(&self, definition: ToolDefinition) -> Result<(), String> {
+        if self.is_streaming() { return Err("Cannot replace a tool during an active turn".into()); }
+        let weak = self.weak_accessor();
+        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+            let session = weak().expect("Custom tool session retained during tool execution");
+            Arc::new(crate::sdk::extension_context::create(&session))
+        });
+        let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition.clone(), Some(context));
+        let name = definition.name.clone();
+        {
+            let mut state = self.state();
+            if let Some(existing) = state.custom_tools.iter_mut().find(|existing| existing.name == name) {
+                *existing = definition.clone();
+            } else {
+                state.custom_tools.push(definition.clone());
+            }
+        }
+        self.register_tool_definition(definition, SourceInfo { source: "sdk".into(), ..Default::default() }, tool);
+        let active = self.get_active_tool_names();
+        self.set_active_tools_by_name(active);
+        Ok(())
     }
 
     fn register_extension_tool(&self, definition: ToolDefinition, source_info: SourceInfo, tool: AgentTool) {
@@ -4712,9 +4757,10 @@ impl AgentSession {
                 tool = self.state().tool_registry.get(tool_name).cloned();
             }
         }
+        let registered = self.state().tool_definitions.contains_key(tool_name);
         if tool.is_none()
             && options.activate_inactive_tool == Some(true)
-            && self.state().tool_definitions.contains_key(tool_name)
+            && registered
             && self.activate_lazy_tool(tool_name)
         {
             active_tools = self.get_active_tool_names();
@@ -5592,6 +5638,7 @@ impl AgentSession {
     /// extension runner is bound.
     pub async fn bind_mcp_wire_status<T: Clone + Send + Sync + 'static>(&self, handler: Arc<dyn Fn(&T) + Send + Sync>) -> Option<maho_ext_api::BusSubscription> {
         let _order = self.mcp_wire_status_order.lock().await;
+        if self.state().disposed { return None; }
         let runner = self.extension_runner.lock().await.clone()?;
         let subscription = runner.events.on_native::<Arc<dyn std::any::Any + Send + Sync>>(MCP_WIRE_STATUS_CHANGED_EVENT, downcast_handler(handler.clone()));
         let retained = self.state().mcp_wire_status.as_ref().and_then(|value| value.downcast_ref::<T>()).cloned();
@@ -5946,6 +5993,8 @@ impl AgentSession {
 
     /// Subscribe to session events. The returned handle unsubscribes when dropped.
     pub fn subscribe(&self, listener: AgentSessionEventListener) -> AgentSessionSubscription {
+        let id = self.next_listener_id.fetch_add(1, Ordering::SeqCst);
+        self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, listener.clone()));
         let (resume_req, resume_slice) = {
             let state = self.state();
             (state.resume_compaction_requirement.clone(), state.resume_slice.clone())
@@ -5972,8 +6021,6 @@ impl AgentSession {
                 }),
             });
         }
-        let id = self.next_listener_id.fetch_add(1, Ordering::SeqCst);
-        self.event_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, listener));
         AgentSessionSubscription { listeners: Arc::clone(&self.event_listeners), id }
     }
 
@@ -8690,6 +8737,24 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn lazy_activation_releases_session_state_before_extension_callback() {
+        let session = test_session();
+        session.register_tool_definition(test_definition("hidden"), empty_source_info(), test_tool("hidden"));
+        let weak = Arc::downgrade(&session.inner);
+        session.add_lazy_tool_activator(Arc::new(move |name| {
+            let inner = weak.upgrade().expect("live session");
+            assert!(inner.state.try_lock().is_ok(), "extension callbacks must not inherit the session lock");
+            AgentSession { inner }.set_active_tools_by_name(vec![name.to_owned()]);
+            true
+        }));
+        let result = session.execute_tool("hidden", serde_json::json!({}), ExecuteToolOptions {
+            activate_inactive_tool: Some(true), ..Default::default()
+        }).await.expect("lazy tool executes");
+        assert!(!result.content.is_empty());
+        assert!(session.get_active_tool_names().contains(&"hidden".to_owned()));
+    }
+
     #[test]
     fn an_unresolvable_tool_name_is_returned_unchanged() {
         let session = test_session();
@@ -8732,6 +8797,38 @@ mod tests {
         session.set_active_tools_by_name(vec!["read".to_owned()]);
         assert_eq!(session.system_prompt(), "turn hook override");
         assert_eq!(session.message_revision(), revision + 1);
+    }
+
+    #[tokio::test]
+    async fn active_tool_change_rebuilds_prompt_in_next_provider_request() {
+        use maho_ai::providers::faux::{faux_provider, faux_streams, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            tokens_per_second: Some(0.0), ..Default::default()
+        });
+        provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into()]);
+        let streams = faux_streams(provider.core.clone());
+        let session = test_session_with_stream_function(false);
+        session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
+        let mut definition = test_definition("read");
+        definition.prompt_snippet = Some("fixture-active-tool-contributor".to_owned());
+        session.register_tool_definition(definition, empty_source_info(), test_tool("read"));
+        session.set_active_tools_by_name(Vec::new());
+        let old_prompt = session.system_prompt();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let observed = received.clone();
+        session.agent.set_stream_function(Arc::new(move |model, context, options| {
+            lock(&observed).push(context.system_prompt.clone());
+            streams.stream_simple(model, context, options.map(|options| options.simple))
+        }));
+
+        session.set_active_tools_by_name(vec!["read".to_owned()]);
+        let rebuilt = session.system_prompt();
+        assert_ne!(rebuilt, old_prompt, "tool change must distinguish the rebuilt prompt from stale context");
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", PromptOptions {
+            session_title_prompt: Some(SessionTitlePrompt::Disabled), ..Default::default()
+        })).await.expect("bounded faux request").expect("prompt");
+        session.dispose().await;
+        assert_eq!(*lock(&received), vec![Some(rebuilt)]);
     }
 
     #[tokio::test]
@@ -12017,12 +12114,18 @@ mod tests {
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let observed = events.clone();
+        let reentrant_session = session.clone();
         let _sub = session.subscribe(Arc::new(move |event| {
             lock(&observed).push(event.clone());
+            if matches!(event, AgentSessionEvent::ResumeCompactionRequired { .. }) {
+                reentrant_session.emit(AgentSessionEvent::AgentIdle);
+            }
         }));
 
         let captured = lock(&events).clone();
         assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::ResumeCompactionRequired { .. })));
+        let resume_index = captured.iter().position(|e| matches!(e, AgentSessionEvent::ResumeCompactionRequired { .. })).expect("resume replay");
+        assert!(matches!(captured.get(resume_index + 1), Some(AgentSessionEvent::AgentIdle)));
         assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::ResumeContextReduced { .. })));
         assert!(captured.iter().any(|e| matches!(e, AgentSessionEvent::SettingsSourceSelected { .. })));
 
@@ -12072,6 +12175,234 @@ mod tests {
         // Subscribing after dispose works without panic
         let sub2 = session.subscribe(Arc::new(|_| {}));
         drop(sub2);
+    }
+
+    #[tokio::test]
+    async fn dispose_aborts_running_bash_and_removes_listeners() {
+        let session = test_session();
+        let root = tempfile::tempdir().expect("tempdir");
+        let fifo = root.path().join("blocked-input");
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let started = Arc::new(Mutex::new(Some(started)));
+        let callback: maho_tools::bash_executor::BashChunkCallback = Arc::new(move |chunk| {
+            if chunk.contains("BASH_READY")
+                && let Some(sender) = lock(&started).take() {
+                let _ = sender.send(());
+            }
+            Ok(())
+        });
+        let _subscription = session.subscribe(Arc::new(|_| {}));
+        let command = format!("mkfifo '{}' && printf BASH_READY && read -r value < '{}'", fifo.display(), fifo.display());
+        let execution = session.execute_bash(&command, Some(callback), true, None, None);
+        let disposal = async {
+            ready.await.expect("bash startup signal");
+            assert!(session.is_bash_running());
+            session.dispose().await;
+            assert!(lock(&session.inner.event_listeners).is_empty());
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(execution, disposal)
+        }).await.expect("running bash must settle after disposal");
+        assert!(result.expect("cancelled bash result").cancelled);
+        assert!(!session.is_bash_running());
+    }
+
+    mod compaction_log_attempts {
+        use super::*;
+
+        fn fixture() -> (tempfile::TempDir, AgentSession) {
+            fixture_with_settings(SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false))
+        }
+
+        fn fixture_with_settings(settings_manager: SettingsManager) -> (tempfile::TempDir, AgentSession) {
+            let root = tempfile::tempdir().expect("log fixture");
+            let runtime = ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
+                providers: Some(Vec::new()), ..Default::default()
+            });
+            let session = AgentSession::new(AgentSessionConfig {
+                agent: stub_agent(),
+                session_manager: SessionManager::in_memory("/tmp", None, None),
+                settings_manager,
+                cwd: "/tmp".to_owned(), agent_dir: Some(root.path().to_string_lossy().into_owned()),
+                fallback_now: None, retry_random: None, scoped_models: Vec::new(), favorite_models: Vec::new(),
+                flag_values: BTreeMap::new(), custom_tools: Vec::new(), model_runtime: Some(runtime),
+                model_registry: None, uses_default_stream_function: Some(false), initial_active_tool_names: None,
+                default_tool_names: None, eval_only_tool_names: None, allowed_tool_names: None,
+                excluded_tool_names: None, base_tools_override: None, session_start_event: None,
+                auto_title_sessions: None,
+            }).expect("session");
+            (root, session)
+        }
+
+        #[test]
+        fn malformed_raw_fallback_chain_logs_startup_validation_warning() {
+            let mut settings = SettingsManager::from_storage(
+                Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false);
+            settings.apply_overrides(&Map::from_iter([("retry".to_owned(), serde_json::json!({
+                "enabled":true, "fallbackChains":{"faux/faux-1":"not-an-array"}
+            }))]));
+            let (root, session) = fixture_with_settings(settings);
+            assert!(!session.fallback_validation_warnings().is_empty());
+            let rows: Vec<Value> = std::fs::read_to_string(root.path().join("logs/fallback.log"))
+                .expect("fallback log").lines().map(|line| serde_json::from_str(line).expect("log JSON")).collect();
+            assert!(rows.iter().any(|row| row["event"] == "validation_warning"));
+        }
+
+        fn decisions(root: &tempfile::TempDir) -> Vec<Value> {
+            std::fs::read_to_string(root.path().join("logs/session.log")).expect("session log")
+                .lines().map(|line| serde_json::from_str::<Value>(line).expect("log JSON"))
+                .filter(|entry| entry["event"] == "compaction_decision").collect()
+        }
+
+        fn start(session: &AgentSession, id: &str, reason: maho_ext_api::CompactionReason) {
+            session.emit(AgentSessionEvent::CompactionStart { reason, request_id: Some(id.to_owned()) });
+        }
+
+        fn end(session: &AgentSession, id: Option<&str>, accepted: bool) {
+            session.emit(AgentSessionEvent::CompactionEnd {
+                reason: maho_ext_api::CompactionReason::Threshold, result: None, aborted: false,
+                will_retry: false, request_id: id.map(str::to_owned), accepted: Some(accepted),
+                rejection_cause: None, error_message: (!accepted).then(|| "fixture failure".to_owned()),
+            });
+        }
+
+        #[test]
+        fn retry_exhaustion_does_not_invent_an_attempt() {
+            let (root, session) = fixture();
+            end(&session, None, false);
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["action"], "none");
+            assert_eq!(rows[0]["disposition"], "skipped");
+            assert!(rows[0].get("attemptId").is_none());
+        }
+
+        #[test]
+        fn accepted_end_without_attempt_is_committed() {
+            let (root, session) = fixture();
+            end(&session, None, true);
+            let rows = decisions(&root);
+            assert_eq!(rows[0]["action"], "compact");
+            assert_eq!(rows[0]["disposition"], "committed");
+            assert_eq!(rows[0]["skipped"], false);
+            assert!(rows[0].get("attemptId").is_none());
+        }
+
+        #[test]
+        fn superseded_starts_keep_distinct_attempt_identifiers() {
+            let (root, session) = fixture();
+            start(&session, "first", maho_ext_api::CompactionReason::Threshold);
+            start(&session, "second", maho_ext_api::CompactionReason::Overflow);
+            end(&session, Some("second"), false);
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["attemptId"], "first");
+            assert_eq!(rows[0]["disposition"], "superseded");
+            assert_eq!(rows[1]["attemptId"], "second");
+            assert_eq!(rows[1]["disposition"], "failed");
+        }
+
+        #[test]
+        fn stale_same_reason_end_cannot_commit_newer_attempt() {
+            let (root, session) = fixture();
+            start(&session, "first", maho_ext_api::CompactionReason::Threshold);
+            start(&session, "second", maho_ext_api::CompactionReason::Threshold);
+            end(&session, Some("first"), true);
+            assert_eq!(session.state().active_compaction_log_attempt.as_ref().expect("active").id, "second");
+            end(&session, Some("second"), true);
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["disposition"], "superseded");
+            assert_eq!(rows[1]["attemptId"], "second");
+            assert_eq!(rows[1]["disposition"], "committed");
+        }
+
+        #[test]
+        fn stale_terminal_is_suppressed_after_more_than_64_supersessions() {
+            let (root, session) = fixture();
+            for id in 0..66 { start(&session, &id.to_string(), maho_ext_api::CompactionReason::Threshold); }
+            end(&session, Some("0"), true);
+            end(&session, Some("65"), true);
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 66);
+            assert_eq!(rows.iter().filter(|row| row["attemptId"] == "0").count(), 1);
+            assert_eq!(rows[0]["disposition"], "superseded");
+            assert_eq!(rows.last().expect("latest")["attemptId"], "65");
+            assert_eq!(rows.last().expect("latest")["disposition"], "committed");
+        }
+
+        #[test]
+        fn no_id_exhaustion_does_not_consume_active_attempt() {
+            let (root, session) = fixture();
+            start(&session, "active", maho_ext_api::CompactionReason::Threshold);
+            end(&session, None, false);
+            assert_eq!(session.state().active_compaction_log_attempt.as_ref().expect("active").id, "active");
+            end(&session, Some("active"), true);
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 2);
+            assert!(rows[0].get("attemptId").is_none());
+            assert_eq!(rows[0]["disposition"], "skipped");
+            assert_eq!(rows[1]["attemptId"], "active");
+            assert_eq!(rows[1]["disposition"], "committed");
+        }
+
+        #[test]
+        fn committed_attempt_records_active_token_reduction() {
+            let (root, session) = fixture();
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+                "role":"user", "content":[{"type":"text","text":"persisted payload ".repeat(40)}], "timestamp":0
+            })));
+            start(&session, "commit", maho_ext_api::CompactionReason::Threshold);
+            session.agent.set_messages(Vec::new());
+            end(&session, Some("commit"), true);
+            let rows = decisions(&root);
+            assert_eq!(rows[0]["disposition"], "committed");
+            assert!(rows[0]["tokensAfter"].as_u64().expect("after") < rows[0]["tokensBefore"].as_u64().expect("before"));
+            assert!(session.state().active_compaction_log_attempt.is_none());
+        }
+
+        #[test]
+        fn consecutive_threshold_attempts_remain_independently_observable() {
+            let (root, session) = fixture();
+            for id in ["first", "second"] {
+                session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+                    "role":"user", "content":[{"type":"text","text":"persisted payload ".repeat(40)}], "timestamp":0
+                })));
+                start(&session, id, maho_ext_api::CompactionReason::Threshold);
+                session.agent.set_messages(Vec::new());
+                end(&session, Some(id), true);
+            }
+            let rows = decisions(&root);
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0]["attemptId"], "first");
+            assert_eq!(rows[1]["attemptId"], "second");
+            for row in rows {
+                assert_eq!(row["disposition"], "committed");
+                assert!(row["tokensAfter"].as_u64().expect("after") < row["tokensBefore"].as_u64().expect("before"));
+            }
+            assert!(session.state().active_compaction_log_attempt.is_none());
+        }
+
+        #[test]
+        fn overflow_rollback_uses_persisted_token_snapshot() {
+            let (root, session) = fixture();
+            session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
+                "role":"user", "content":[{"type":"text","text":"persisted payload ".repeat(40)}], "timestamp":0
+            })));
+            let persisted = session.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages);
+            let expected = crate::compaction::estimate_context_tokens(&crate::messages::filter_context_excluded_messages(persisted)).tokens;
+            start(&session, "rollback", maho_ext_api::CompactionReason::Overflow);
+            session.emit(AgentSessionEvent::CompactionEnd {
+                reason: maho_ext_api::CompactionReason::Overflow, request_id: Some("rollback".to_owned()),
+                result: None, aborted: true, will_retry: false, accepted: Some(false),
+                rejection_cause: Some(maho_ext_api::CompactionRejectionCause::CancelledByExtension), error_message: None,
+            });
+            let rows = decisions(&root);
+            assert_eq!(rows[0]["disposition"], "rejected");
+            assert_eq!(rows[0]["tokensBefore"], expected);
+            assert_eq!(rows[0]["tokensAfter"], expected);
+        }
     }
 
     #[tokio::test]
