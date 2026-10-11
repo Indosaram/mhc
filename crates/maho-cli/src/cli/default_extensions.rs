@@ -30,12 +30,27 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
     let native = super::extension_registry::native_extension_factories().into_iter()
         .filter(|factory| !paths.contains(&factory.path)).collect();
     assembled.extend(async_factories(native));
+    assembled.sort_by_key(|factory| {
+        let id = factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>'));
+        if let Some(position) = id.and_then(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.iter().position(|candidate| *candidate == id)) {
+            position
+        } else {
+            super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.len()
+                + id.and_then(|id| super::extension_registry::BUILTIN_EXTENSION_IDS.iter().position(|candidate| *candidate == id))
+                    .unwrap_or(super::extension_registry::BUILTIN_EXTENSION_IDS.len())
+        }
+    });
     assembled
 }
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
     let help_widget_sender = widget_sender.clone();
+    let file_widget_sender = widget_sender.clone();
+    let file_render: maho_ext_builtin_loose::files::RenderBinding = Arc::new(move |_| {
+        let sender = file_widget_sender.clone();
+        Rc::new(move || drop(sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
+    });
     let mcp_gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>> = Arc::new(std::sync::Mutex::new(None));
     let tool_search_gate = mcp_gate.clone();
     let tool_search_service: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> = Arc::new(std::sync::Mutex::new(None));
@@ -164,13 +179,25 @@ impl Extension for Task {
                 let Some(parent) = parent.get().and_then(|parent| parent()) else { return Ok(maho_ext_api::EventResult::None); };
                 if registered.load(std::sync::atomic::Ordering::Acquire) { return Ok(maho_ext_api::EventResult::None); }
                 let executor = tokio::runtime::Handle::current(); let weak = parent.weak_accessor();
+                let workpool_ref = Arc::new(OnceLock::<std::sync::Weak<tokio::sync::Mutex<senpi_task::workpool::engine::WorkpoolEngine>>>::new());
+                let event_ref = workpool_ref.clone();
+                let event_executor = executor.clone();
+                let workpool_events: super::task_runners::WorkpoolEvents = Arc::new(move |event| {
+                    if !matches!(event.kind, senpi_task::workpool::types::WorkpoolEventKind::ItemResult | senpi_task::workpool::types::WorkpoolEventKind::WorkerIdle | senpi_task::workpool::types::WorkpoolEventKind::AdmissionFailed) { return; }
+                    let Some(engine) = event_ref.get().and_then(std::sync::Weak::upgrade) else { return; };
+                    event_executor.spawn(async move {
+                        if let Err(error) = engine.lock().await.flush_aggregate(&event.pool_id) {
+                            eprintln!("Workpool aggregate failed: {error}");
+                        }
+                    });
+                });
                 let parent_registry = super::task_runners::live_parent_registry(weak.clone());
                 let process = super::task_runners::authenticated_rpc_options(super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
                     &maho_core::config::get_agent_dir(), environment.clone(), Vec::new()), weak.clone());
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
                     shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth: 3,
-                    create_session: super::task_session::factory(executor.clone(), parent.weak_accessor()), parent_registry, rpc_options: process.clone(),
+                    create_session: super::task_session::factory_with_workpool_events(executor.clone(), parent.weak_accessor(), Some(workpool_events.clone())), parent_registry, rpc_options: process.clone(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
@@ -185,12 +212,60 @@ impl Extension for Task {
                 };
                 let handlers = {
                     let mut api = registration.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut workpools = senpi_task::workpool::engine::WorkpoolEngine::with_events(
+                        engine.store.state_dir(), maho_omo_task::workpool_admission::from_engine(&engine),
+                        workpool_events,
+                    );
+                    let aggregate_coordinator = coordinator.0.clone();
+                    workpools.set_aggregate_port(Arc::new(move |message: senpi_task::workpool::aggregate::WorkpoolAggregateMessage, receipts: senpi_task::workpool::aggregate::WorkpoolAggregateReceipts| {
+                        let ack = receipts.ack.clone();
+                        let fail = receipts.fail.clone();
+                        let accepted = aggregate_coordinator.enqueue(maho_ext_api::IdleInjection {
+                            key: format!("workpool-aggregate:{}:{}", message.pool_id, message.generation),
+                            source: maho_ext_api::IdleInjectionSource::WorkpoolAggregate,
+                            custom_type: Some("workpool-aggregate".into()),
+                            content: serde_json::to_string(&message.results).map_err(|error| error.to_string())?,
+                            display: Some(false), passive: Some(false), details: Some(serde_json::to_value(&message).map_err(|error| error.to_string())?),
+                            on_flushed: Some(ack), on_delivery_failed: Some(Arc::new(move |error| fail(Some(error.to_owned())))),
+                        });
+                        if !accepted { return Err("idle-injection coordinator retired on session shutdown; injection not delivered".into()); }
+                        aggregate_coordinator.flush_soon();
+                        Ok(())
+                    }));
+                    let workpools = Arc::new(tokio::sync::Mutex::new(workpools));
+                    workpool_ref.set(Arc::downgrade(&workpools)).map_err(|_| ExtensionFailure::new("Workpool host already initialized"))?;
+                    workpools.try_lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.recover().map_err(|error| ExtensionFailure::new(error.to_string()))?;
+                    let shutdown_pools = workpools.clone();
+                    api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+                        let pools = shutdown_pools.clone();
+                        Box::pin(async move {
+                            pools.lock().await.dispose();
+                            Ok(maho_ext_api::EventResult::None)
+                        })
+                    }));
+                    maho_omo_task::workpool_tool::register_workpool_tool(&mut api, Arc::new(maho_omo_task::workpool_backend::NativeWorkpoolBackend {
+                        engine: workpools.clone(),
+                        resolve_kernel_tools: Arc::new(|names, spec| Box::pin(async move {
+                            super::kernel_tools_host::capture_pool_tools(names, &spec).await
+                        })),
+                    }));
                     let ownership = senpi_task::team::liveness_ownership::TeamMemberOwnershipDeps {
                         state_dir: senpi_task::store::StateDirConfig { project_dir: ctx.cwd.clone(), task_state_dir: Some(engine.store.state_dir().into()) },
                         team_bounds: super::task_session::configured_team_bounds(&engine.config)?, load_runtime_state: None,
                     };
                     let manager = engine.manager.clone();
+                    let tool_manager = manager.clone();
+                    let tool_executor = tokio::runtime::Handle::current();
                     let spawn = senpi_task::tools::task::execute_spec::TaskToolDeps {
+                        start: Some(Arc::new(move |spec, names| tool_manager.start_prepared(spec, |spec, plan, mode| {
+                            let existing = spec.member_scoped_tools.as_deref().unwrap_or_default().iter().map(|tool| tool.name().to_owned()).collect();
+                            let tools = tool_executor.block_on(super::kernel_tools_host::capture_requested_tools(
+                                names.to_vec(), mode, spec.subagent_type.clone().or_else(|| plan.agent_type.clone()),
+                                plan.tool_allowlist.clone(), plan.tool_denylist.clone(), existing,
+                            )).map_err(|error| error.message)?;
+                            spec.member_scoped_tools = Some(tools);
+                            Ok(())
+                        }))),
                         resolve_ancestry: Some(Arc::new(move |session| manager.list(&senpi_task::manager::types::ListScope::All).into_iter()
                             .find(|entry| entry.record.child_session_id.as_deref() == Some(session))
                             .map(|entry| senpi_task::tools::task::execute_spec::TaskAncestry { root_session_id: entry.record.root_session_id, depth: u64::from(entry.record.depth) }))),

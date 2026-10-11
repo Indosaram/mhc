@@ -405,7 +405,7 @@ pub fn run_spawn(
         deps.tool,
         &ctx.cwd,
     );
-    let started = match deps.manager.start(&spec) {
+    let started = match deps.tool.start_task(deps.manager, &spec, effective_params.tools.as_deref()) {
         StartResult::Started(started) => started,
         StartResult::PlanUnresolved(error) => {
             return Ok(result(

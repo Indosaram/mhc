@@ -1,4 +1,6 @@
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::tools::workpool_schema::{WORKPOOL_PARAMS, WorkpoolToolParams};
@@ -9,7 +11,7 @@ pub const WORKPOOL_TOOL_LABEL: &str = "Workpool";
 pub const WORKPOOL_DESCRIPTION: &str = "Create and inspect engine-owned keyed work queues. Push returns durable IDs without waiting for capacity. Omitted mode uses the approved keep_alive default; fresh remains selectable. Inspect reads durable keyed data or errors; close delivers one aggregate; uncertain delivery is never retried automatically.";
 
 pub trait WorkpoolToolBackend: Send + Sync {
-    fn execute(&self, caller: &WorkpoolCaller, input: WorkpoolToolParams) -> Result<Value, WorkpoolError>;
+    fn execute<'a>(&'a self, caller: &'a WorkpoolCaller, input: WorkpoolToolParams) -> Pin<Box<dyn Future<Output = Result<Value, WorkpoolError>> + Send + 'a>>;
 }
 
 pub struct WorkpoolTool {
@@ -24,9 +26,9 @@ impl WorkpoolTool {
         Self { name: WORKPOOL_TOOL_NAME, label: WORKPOOL_TOOL_LABEL, description: WORKPOOL_DESCRIPTION, parameters: WORKPOOL_PARAMS.clone(), backend }
     }
 
-    pub fn execute_json(&self, caller: &WorkpoolCaller, value: Value) -> Result<Value, WorkpoolError> {
-        let input = crate::workpool::schema::parse_input(value)?;
-        self.backend.execute(caller, input)
+    pub async fn execute_json(&self, caller: &WorkpoolCaller, value: Value) -> Result<Value, WorkpoolError> {
+        let input = crate::workpool::schema::parse_command(value)?;
+        self.backend.execute(caller, input).await
     }
 }
 #[cfg(test)]
@@ -36,8 +38,8 @@ mod tests {
 
     struct Backend;
     impl WorkpoolToolBackend for Backend {
-        fn execute(&self, _caller: &WorkpoolCaller, input: WorkpoolToolParams) -> Result<Value, WorkpoolError> {
-            Ok(serde_json::json!({"op": input.op}))
+        fn execute<'a>(&'a self, _caller: &'a WorkpoolCaller, input: WorkpoolToolParams) -> Pin<Box<dyn Future<Output = Result<Value, WorkpoolError>> + Send + 'a>> {
+            Box::pin(async move { Ok(serde_json::json!({"op": input.op})) })
         }
     }
 
@@ -48,12 +50,30 @@ mod tests {
         assert_eq!(tool.label, "Workpool");
     }
 
-    #[test]
-    fn tool_decodes_operation_before_backend_execution() {
+    #[tokio::test]
+    async fn tool_decodes_operation_before_backend_execution() {
         let tool = WorkpoolTool::new(Arc::new(Backend));
         let caller = WorkpoolCaller { session_id: "s".into(), root_session_id: "s".into(), depth: 0, cwd: "/".into() };
-        let result = tool.execute_json(&caller, serde_json::json!({"op":"inspect"})).expect("valid tool input");
+        let result = tool.execute_json(&caller, serde_json::json!({"op":"inspect","pool_id":"wp_00000000000000000000000000000000"})).await.expect("valid tool input");
         assert_eq!(result["op"], serde_json::json!(WorkpoolOperation::Inspect));
+    }
+
+    #[tokio::test]
+    async fn strict_commands_reject_missing_fields_and_cross_operation_fields() {
+        let tool = WorkpoolTool::new(Arc::new(Backend));
+        let caller = WorkpoolCaller { session_id: "s".into(), root_session_id: "s".into(), depth: 0, cwd: "/".into() };
+        for input in [
+            serde_json::json!({"op":"inspect"}),
+            serde_json::json!({"op":"inspect","pool_id":"wp_00000000000000000000000000000000","name":"unexpected"}),
+            serde_json::json!({"op":"create","name":"pool","agent":{"category":"quick","subagent_type":"worker","prompt":"run"}}),
+            serde_json::json!({"op":"push","pool_id":"wp_00000000000000000000000000000000","items":[{"key":" ","input":null}]}),
+            serde_json::json!({"op":"yield","results":[{"key":"a","data":null,"error":{"code":"x","message":"x"}}]}),
+        ] {
+            assert_eq!(tool.execute_json(&caller, input).await.expect_err("invalid command").code, crate::workpool::types::WorkpoolErrorCode::InvalidInput);
+        }
+        let parsed = crate::workpool::schema::parse_command(serde_json::json!({"op":"create","name":" pool ","agent":{"category":" quick ","prompt":" run "}})).expect("trimmed command");
+        assert_eq!(parsed.name.as_deref(), Some("pool"));
+        assert!(matches!(parsed.agent, Some(crate::tools::workpool_schema::WorkpoolToolAgent::Category { category, prompt, .. }) if category == "quick" && prompt == "run"));
     }
 }
 

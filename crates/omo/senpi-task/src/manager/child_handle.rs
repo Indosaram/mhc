@@ -12,6 +12,13 @@ pub use crate::shared::ManagedChildEvent;
 pub type ManagedChildListener = Arc<dyn Fn(&ManagedChildEvent) + Send + Sync>;
 pub type Unsubscribe = Box<dyn FnOnce() + Send>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkpoolChildIdentity {
+    pub task_id: String,
+    pub state_dir: String,
+    pub run_epoch: u32,
+}
+
 /// Blocking handle surface. `wait_for_outcome` blocks until the current turn settles.
 pub trait ManagedChildHandle: Send + Sync {
     fn task_id(&self) -> &str;
@@ -22,6 +29,7 @@ pub trait ManagedChildHandle: Send + Sync {
     }
     fn steer(&self, text: &str) -> Result<(), HostError>;
     fn follow_up(&self, text: &str) -> Result<(), HostError>;
+    fn rebind_workpool_identity(&self, _identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> { None }
     fn abort(&self) -> Result<(), HostError>;
     fn subscribe(&self, listener: ManagedChildListener) -> Unsubscribe;
     fn wait_for_outcome(&self) -> RunnerOutcome;

@@ -237,7 +237,8 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
         .flatten()
         .map(|record| record.notification.run_epoch);
     if let Some(owner) = owner {
-        let _ = owner.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+        let outcomes = owner.lifecycle.reconcile_on_session_start(Some(CHAOS_SESSION));
+        eprintln!("[chaos reclaim] task={} before={before:?} outcomes={outcomes:?}", resident.task_id);
         state.harness.observe_reconcile();
     }
     let after = state.harness.store.load(&resident.task_id).ok().flatten();

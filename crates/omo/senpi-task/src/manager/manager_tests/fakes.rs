@@ -82,6 +82,8 @@ struct HandleState {
     unsubscribe_calls: usize,
     steer_calls: Vec<String>,
     follow_up_calls: Vec<String>,
+    workpool_rebinding: bool,
+    workpool_identity: Option<crate::manager::child_handle::WorkpoolChildIdentity>,
     abort_calls: usize,
     dispose_calls: usize,
 }
@@ -174,6 +176,9 @@ impl FakeHandle {
         lock(&self.state).follow_up_calls.clone()
     }
 
+    pub fn enable_workpool_rebinding(&self) { lock(&self.state).workpool_rebinding = true; }
+    pub fn workpool_identity(&self) -> Option<crate::manager::child_handle::WorkpoolChildIdentity> { lock(&self.state).workpool_identity.clone() }
+
     pub fn abort_calls(&self) -> usize {
         lock(&self.state).abort_calls
     }
@@ -236,6 +241,13 @@ impl ManagedChildHandle for FakeHandle {
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         lock(&self.state).follow_up_calls.push(text.to_string());
         Ok(())
+    }
+
+    fn rebind_workpool_identity(&self, identity: crate::manager::child_handle::WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
+        let mut state = lock(&self.state);
+        if !state.workpool_rebinding { return None; }
+        state.workpool_identity = Some(identity);
+        Some(Ok(()))
     }
 
     fn abort(&self) -> Result<(), HostError> {

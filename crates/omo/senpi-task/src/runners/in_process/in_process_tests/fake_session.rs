@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::host::HostError;
 use crate::manager::child_handle::Unsubscribe;
-use crate::runners::in_process::child_handle::{ChildSession, ChildSessionListener};
+use crate::runners::in_process::child_handle::{ChildSession, ChildSessionListener, WorkpoolChildIdentity};
 
 #[derive(Default)]
 struct FakeState {
@@ -22,6 +22,7 @@ struct FakeState {
     listeners: Vec<(usize, ChildSessionListener)>,
     next_listener: usize,
     disposed: usize,
+    workpool_identity: Option<WorkpoolChildIdentity>,
 }
 
 pub(super) type OnPrompt = Box<dyn Fn() + Send + Sync>;
@@ -97,6 +98,8 @@ impl FakeSession {
         self.lock().follow_up_calls.clone()
     }
 
+    pub(super) fn workpool_identity(&self) -> Option<WorkpoolChildIdentity> { self.lock().workpool_identity.clone() }
+
     pub(super) fn disposed(&self) -> usize {
         self.lock().disposed
     }
@@ -155,6 +158,11 @@ impl ChildSession for FakeSession {
     fn follow_up(&self, text: &str) -> Result<(), HostError> {
         self.lock().follow_up_calls.push(text.to_string());
         Ok(())
+    }
+
+    fn rebind_workpool_identity(&self, identity: WorkpoolChildIdentity) -> Option<Result<(), HostError>> {
+        self.lock().workpool_identity = Some(identity);
+        Some(Ok(()))
     }
 
     fn abort(&self) -> Result<(), HostError> {

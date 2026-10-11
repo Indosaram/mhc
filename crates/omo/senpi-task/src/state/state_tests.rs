@@ -111,11 +111,13 @@ fn record_pending_steering_round_trips_through_json() {
             id: "msg-1".into(),
             message: "prefer the south gate".into(),
             deliver_as: DeliverAs::Steer,
+            workpool: None,
         },
         PendingSteeringEntry {
             id: "msg-2".into(),
             message: "bring the ledger".into(),
             deliver_as: DeliverAs::FollowUp,
+            workpool: None,
         },
     ];
     let record = create_task_record(

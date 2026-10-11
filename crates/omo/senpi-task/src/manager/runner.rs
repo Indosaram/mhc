@@ -180,9 +180,15 @@ pub fn to_rpc_spec(spec: &ManagedStartSpec) -> RpcRunnerSpec {
 /// `stateDir` is already `children/<taskId>`; the session dir nests `sessions/<taskId>/` under
 /// it, the same layout as an RPC child.
 pub fn to_child_spec(spec: &ManagedStartSpec, context: InProcessSessionContext) -> ChildSpec {
+    let workpool_state_dir = spec.workpool_state_dir.clone().or_else(|| {
+        spec.workpool_run_epoch.map(|_| spec.state_dir.clone())
+    });
     ChildSpec {
         task_id: spec.task_id.clone(),
         cwd: spec.cwd.clone(),
+        state_dir: spec.state_dir.clone(),
+        workpool_run_epoch: spec.workpool_run_epoch,
+        workpool_state_dir,
         session_dir: Some(resolve_child_session_dir(&spec.state_dir, &spec.task_id)),
         depth: spec.depth,
         parent_session_id: spec.parent_session_id.clone(),

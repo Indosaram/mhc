@@ -176,7 +176,7 @@ impl TaskExecute<'_> {
             if let Some(skills) = skills {
                 lock(&skill_summaries).insert(item_key(item), skills);
             }
-            Ok(deps.manager.start(&spec))
+            Ok(deps.tool.start_task(deps.manager, &spec, item_params.tools.as_deref()))
         };
         let skill_summary_for = |item: &ResolvedSpawnItem| -> Option<TaskSkillSummary> {
             lock(&skill_summaries).get(&item_key(item)).cloned()
