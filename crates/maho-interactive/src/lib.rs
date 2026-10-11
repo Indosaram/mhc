@@ -16,7 +16,7 @@ pub mod interactive_session;
 mod interactive_clipboard;
 pub mod interactive_changelog;
 pub mod interactive_terminal;
-mod interactive_ui_host;
+pub mod interactive_ui_host;
 pub mod interactive_stderr_guard;
 pub mod jsdiff;
 pub mod keybindings_command;
