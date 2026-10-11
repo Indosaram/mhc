@@ -42,6 +42,7 @@ pub mod codemode_services;
 pub mod task_runners;
 pub mod doctor;
 pub mod default_extensions;
+pub mod reasoning_host;
 pub mod gpt_account_host;
 pub mod kernel_tools_host;
 pub mod task_session;
