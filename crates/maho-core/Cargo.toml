@@ -35,6 +35,7 @@ photon-rs = { version = "=0.3.3", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+flate2 = { workspace = true }
 maho-ext-recommended-models = { path = "../builtins/maho-ext-recommended-models" }
 maho-ext-permission-system = { path = "../builtins/maho-ext-permission-system" }
 
