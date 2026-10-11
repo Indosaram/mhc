@@ -1384,6 +1384,93 @@ impl ExtensionKernelTools for KernelCapabilities {
     fn invoke(&self, _: KernelToolInvokeRequest, _: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Ok(JsonValue::Null) }) }
 }
 
+struct GatedReloadActions {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    scope_seen: Arc<Mutex<Option<bool>>>,
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+impl ExtensionCommandContextActions for GatedReloadActions {
+    fn wait_for_idle(&self) -> ExtensionFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    fn new_session(&self, _: NewSessionOptions) -> ExtensionFuture<'_, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: true }) }) }
+    fn fork<'a>(&'a self, _: &'a str, _: ForkOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
+    fn navigate_tree<'a>(&'a self, _: &'a str, _: ExtensionTreeNavigationOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
+    fn edit_assistant_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult::default()) }) }
+    fn edit_user_message<'a>(&'a self, _: &'a str, _: &'a str, _: EditMessageOptions) -> ExtensionFuture<'a, EditMessageResult> { Box::pin(async { Ok(EditMessageResult::default()) }) }
+    fn switch_session<'a>(&'a self, _: &'a str, _: SwitchSessionOptions) -> ExtensionFuture<'a, SessionNavigationResult> { Box::pin(async { Ok(SessionNavigationResult { cancelled: false }) }) }
+    fn reload(&self) -> ExtensionFuture<'_, ()> {
+        let calls = Arc::clone(&self.calls);
+        let scope_seen = Arc::clone(&self.scope_seen);
+        let started = self.started.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let release = self.release.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        Box::pin(async move {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(started) = started { let _ = started.send(()); }
+            if let Some(release) = release { let _ = release.await; }
+            *scope_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(maho_ai::node::provider_scope::active_provider_scope().is_some());
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn pending_coalesced_reload_preserves_scope_and_rejects_closed_scope() {
+    let runner = runner(vec![]);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let actions = Arc::new(GatedReloadActions {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scope_seen: Arc::new(Mutex::new(None)),
+        started: Mutex::new(Some(started_tx)),
+        release: Mutex::new(Some(release_rx)),
+    });
+    let context = runner.create_command_context(actions.clone()).unwrap();
+    let scope = maho_ai::node::provider_scope::ProviderScope::new();
+    let reload_scope = scope.clone();
+    let reload = tokio::spawn(async move {
+        maho_ai::node::provider_scope::run_with_provider_scope_async(&reload_scope, async { context.reload().await }).await.unwrap().unwrap();
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), started_rx).await.unwrap().unwrap();
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), reload).await.unwrap().unwrap();
+    assert_eq!(*actions.scope_seen.lock().unwrap(), Some(true));
+
+    let (_closed_release_tx, closed_release_rx) = tokio::sync::oneshot::channel();
+    let closed_actions = Arc::new(GatedReloadActions {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scope_seen: Arc::new(Mutex::new(None)),
+        started: Mutex::new(None),
+        release: Mutex::new(Some(closed_release_rx)),
+    });
+    let closed_context = runner.create_command_context(closed_actions.clone()).unwrap();
+    let closed_scope = maho_ai::node::provider_scope::ProviderScope::new();
+    let result = maho_ai::node::provider_scope::run_with_provider_scope_async(&closed_scope, async {
+        std::future::poll_fn(|cx| {
+            closed_scope.close();
+            let mut reload = Box::pin(closed_context.reload());
+            std::task::Poll::Ready(reload.as_mut().poll(cx))
+        }).await
+    }).await.unwrap();
+    let std::task::Poll::Ready(result) = result else { panic!("closed scope must reject synchronously") };
+    assert_eq!(result.unwrap_err().message, maho_ai::node::provider_scope::ProviderScopeError::Closed.to_string());
+    assert_eq!(closed_actions.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let (unscoped_started_tx, unscoped_started_rx) = tokio::sync::oneshot::channel();
+    let (unscoped_release_tx, unscoped_release_rx) = tokio::sync::oneshot::channel();
+    let unscoped_actions = Arc::new(GatedReloadActions {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        scope_seen: Arc::new(Mutex::new(None)),
+        started: Mutex::new(Some(unscoped_started_tx)),
+        release: Mutex::new(Some(unscoped_release_rx)),
+    });
+    let unscoped_context = runner.create_command_context(unscoped_actions.clone()).unwrap();
+    let unscoped_reload = tokio::spawn(async move { unscoped_context.reload().await.unwrap(); });
+    tokio::time::timeout(std::time::Duration::from_secs(1), unscoped_started_rx).await.unwrap().unwrap();
+    unscoped_release_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), unscoped_reload).await.unwrap().unwrap();
+    assert_eq!(*unscoped_actions.scope_seen.lock().unwrap(), Some(false));
+}
+
 #[tokio::test]
 async fn concurrent_context_reload_requests_share_one_host_operation() {
     let actions = Arc::new(ContextActions { revision: std::sync::atomic::AtomicU64::new(0), aborted: Mutex::new(None), monitor: Mutex::new(None) });
