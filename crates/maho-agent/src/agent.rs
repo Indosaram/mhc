@@ -345,6 +345,31 @@ impl Agent {
         lock(&self.inner.state).clone()
     }
 
+    /// `state.model` alone, without cloning the transcript and tool list.
+    pub fn model(&self) -> Model {
+        lock(&self.inner.state).model.clone()
+    }
+
+    /// `state.thinkingLevel` alone.
+    pub fn thinking_level(&self) -> ModelThinkingLevel {
+        lock(&self.inner.state).thinking_level
+    }
+
+    /// `state.thinkingSelection` alone.
+    pub fn thinking_selection(&self) -> Option<ThinkingSelection> {
+        lock(&self.inner.state).thinking_selection.clone()
+    }
+
+    /// `state.isStreaming` alone.
+    pub fn is_streaming(&self) -> bool {
+        lock(&self.inner.state).is_streaming
+    }
+
+    /// `state.systemPrompt` alone.
+    pub fn system_prompt(&self) -> String {
+        lock(&self.inner.state).system_prompt.clone()
+    }
+
     /// Assign `state.tools`, copying the provided top-level array.
     pub fn set_tools(&self, tools: Vec<AgentTool>) {
         lock(&self.inner.state).set_tools(tools);
