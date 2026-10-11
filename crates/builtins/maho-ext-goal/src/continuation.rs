@@ -91,4 +91,69 @@ pub fn has_goal_continuation_progress(input: &GoalContinuationInput<'_>) -> bool
     #[test] fn raw_empty_tool_use_is_malformed() { let message = assistant(StopReason::ToolUse); let result = is_malformed_tool_use_turn(&message); assert!(result); }
     #[test] fn demotion_diagnostic_preserves_malformed_admission() { let mut message = assistant(StopReason::Stop); message.diagnostics = Some(vec![maho_ai::utils::diagnostics::AssistantMessageDiagnostic { kind: maho_agent::EMPTY_TOOL_USE_DEMOTION_DIAGNOSTIC.into(), timestamp: 0, error: None, details: None }]); let result = is_malformed_tool_use_turn(&message); assert!(result); }
     #[test] fn aborted_error_tool_result_prevents_continuation() { let goal = goal(); let messages = vec![maho_ai::types::Message::Assistant(Box::new(assistant(StopReason::Stop))).into(), maho_ai::types::Message::ToolResult(maho_ai::types::ToolResultMessage { tool_call_id: "call".into(), tool_name: "wait".into(), content: vec![maho_ai::types::ContentBlock::text("Operation aborted")], details: None, usage: None, added_tool_names: None, is_error: true, timestamp: 0 }).into()]; let result = should_queue_goal_continuation_after_agent_end(Some(&goal), false, &messages); assert!(!result); }
+    // Mirrors upstream `goal-continuation-verdict.test.ts` cases beyond the ones above.
+    #[test] fn denies_not_eligible_across_path_and_goal_gates() {
+        let paused = Goal { status: GoalStatus::Paused, ..goal() };
+        assert_eq!(evaluate_goal_continuation(&input(&paused)), GoalContinuationVerdict::Deny(DenyReason::NotEligible));
+        let active = goal();
+        let mut pending = input(&active); pending.has_pending_messages = true;
+        assert_eq!(evaluate_goal_continuation(&pending), GoalContinuationVerdict::Deny(DenyReason::NotEligible));
+        let mut unclean = input(&active); unclean.last_stop_reason = Some(StopReason::Error);
+        assert_eq!(evaluate_goal_continuation(&unclean), GoalContinuationVerdict::Deny(DenyReason::NotEligible));
+        for path in [GoalContinuationPath::MonitorDelayed, GoalContinuationPath::UserGrace, GoalContinuationPath::SessionStart] {
+            let mut not_idle = input(&active); not_idle.path = path; not_idle.is_idle = false;
+            assert_eq!(evaluate_goal_continuation(&not_idle), GoalContinuationVerdict::Deny(DenyReason::NotEligible), "{path:?}");
+        }
+    }
+    #[test] fn unattended_limit_applies_to_every_counted_path_and_admits_below() {
+        let at_limit = Goal { unattended_continuations: Some(GOAL_UNATTENDED_CONTINUATION_LIMIT), ..goal() };
+        for path in [GoalContinuationPath::Immediate, GoalContinuationPath::UserGrace, GoalContinuationPath::SessionStart, GoalContinuationPath::SystemRecovery, GoalContinuationPath::ProviderRecovery] {
+            let mut input = input(&at_limit); input.path = path;
+            assert_eq!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Deny(DenyReason::Unattended), "{path:?}");
+        }
+        let below = Goal { unattended_continuations: Some(GOAL_UNATTENDED_CONTINUATION_LIMIT - 1), ..goal() };
+        assert!(matches!(evaluate_goal_continuation(&input(&below)), GoalContinuationVerdict::Continue { .. }));
+    }
+    #[test] fn cap_admits_below_the_boundary_and_denies_at_it() {
+        let active = goal(); let mut input = input(&active); input.consecutive_continuations = GOAL_CONTINUATION_CAP - 1;
+        assert!(matches!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Continue { .. }));
+        input.consecutive_continuations = GOAL_CONTINUATION_CAP;
+        assert_eq!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Deny(DenyReason::Cap));
+    }
+    #[test] fn per_path_eligibility_survives_an_unclean_stop() {
+        let active = goal();
+        for path in [GoalContinuationPath::MonitorDelayed, GoalContinuationPath::UserGrace, GoalContinuationPath::SessionStart] {
+            let mut input = input(&active); input.path = path; input.last_stop_reason = Some(StopReason::Error);
+            assert!(matches!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Continue { .. }), "{path:?}");
+        }
+        let mut system = input(&active); system.path = GoalContinuationPath::SystemRecovery; system.is_idle = false; system.last_stop_reason = Some(StopReason::Error);
+        assert!(matches!(evaluate_goal_continuation(&system), GoalContinuationVerdict::Continue { .. }));
+    }
+    #[test] fn malformed_tool_use_admits_only_when_no_tool_call_was_produced() {
+        let active = goal(); let mut input = input(&active); input.last_stop_reason = Some(StopReason::ToolUse); input.last_turn_was_malformed_tool_use = true;
+        assert!(matches!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Continue { .. }));
+        input.last_turn_was_malformed_tool_use = false;
+        assert_eq!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Deny(DenyReason::NotEligible));
+    }
+    #[test] fn provider_recovery_stays_eligible_while_settling() {
+        let active = goal(); let mut input = input(&active); input.path = GoalContinuationPath::ProviderRecovery; input.is_idle = false; input.last_stop_reason = Some(StopReason::Aborted);
+        assert!(matches!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Continue { .. }));
+    }
+    #[test] fn stall_notice_is_set_at_the_toolless_threshold() {
+        let active = goal();
+        for (streak, expected) in [(GOAL_STALL_TOOLLESS_THRESHOLD - 1, false), (GOAL_STALL_TOOLLESS_THRESHOLD, true), (GOAL_STALL_TOOLLESS_THRESHOLD + 1, true)] {
+            let mut input = input(&active); input.toolless_continuation_streak = streak;
+            assert_eq!(evaluate_goal_continuation(&input), GoalContinuationVerdict::Continue { prompt: ContinuationPrompt::Full, stall_notice: expected });
+        }
+    }
+    #[test] fn hash_matches_the_pinned_constant_and_signature_ignores_updated_at() {
+        assert_eq!(hash_assistant_text("Hello world"), "d58b3fa7");
+        let hash = hash_assistant_text("Made progress");
+        assert_eq!(build_goal_continuation_signature(&Goal { updated_at: 1, ..goal() }, 2, 5, &hash), format!("g:2/5:{hash}"));
+        assert_eq!(build_goal_continuation_signature(&Goal { updated_at: 9_999, ..goal() }, 2, 5, &hash), format!("g:2/5:{hash}"));
+    }
+    #[test] fn policy_constants_match_pinned() {
+        assert_eq!(GOAL_CONTINUATION_CAP, 8); assert_eq!(GOAL_STALL_TOOLLESS_THRESHOLD, 3); assert_eq!(GOAL_REPETITION_HASH_STREAK, 3);
+        assert_eq!(GOAL_LENGTH_RECOVERY_LIMIT, 1); assert_eq!(GOAL_UNATTENDED_CONTINUATION_LIMIT, 150); assert_eq!(GOAL_USER_GRACE_DELAY_MS, 10_000);
+    }
 }
