@@ -26,6 +26,41 @@ pub fn is_ls_tool_result(event: &ToolResultEvent) -> bool { event.tool_name == "
 
 pub type ExtensionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ExtensionFailure>> + Send + 'a>>;
 pub type UiFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EvalHandleKind { Agent, Completion, Workpool }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EvalHandleRef { pub kind: EvalHandleKind, pub id: String, pub run_epoch: i64 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalHandlePhase { Pending, Succeeded, Failed, Cancelled, Lost }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalHandleSnapshot { pub reference: EvalHandleRef, pub phase: EvalHandlePhase, pub host_status: String, pub revision: i64 }
+#[derive(Clone, Debug, PartialEq)]
+pub enum EvalHandleOutcome {
+    Fulfilled { reference: EvalHandleRef, value: JsonValue },
+    Rejected { reference: EvalHandleRef, error: EvalHandleError },
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvalHandleError { pub code: String, pub message: String, pub details: Option<JsonValue> }
+#[derive(Clone, Debug)]
+pub struct EvalHandleCallContext { pub owner_session_id: String, pub signal: Option<maho_ai::utils::abort::AbortSignal> }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvalHandleOutputRequest { pub tail: bool, pub offset: Option<usize>, pub limit: Option<usize> }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalHandleOutputSnapshot { pub reference: EvalHandleRef, pub text: String, pub offset: usize, pub total: usize, pub truncated: bool }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalHandleCancelReceipt { pub reference: EvalHandleRef, pub cancelled: bool, pub phase: EvalHandlePhase }
+pub trait EvalHandleUpdateStream: Send {
+    fn poll_next(self: Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Option<EvalHandleSnapshot>>;
+}
+pub struct EvalHandleWatch { pub initial: Vec<EvalHandleSnapshot>, pub updates: Pin<Box<dyn EvalHandleUpdateStream>>, pub close: Arc<dyn Fn() + Send + Sync> }
+pub trait EvalHandleHost: Send + Sync {
+    fn watch<'a>(&'a self, references: Vec<EvalHandleRef>, context: EvalHandleCallContext) -> ExtensionFuture<'a, EvalHandleWatch>;
+    fn result<'a>(&'a self, reference: EvalHandleRef, context: EvalHandleCallContext) -> ExtensionFuture<'a, EvalHandleOutcome>;
+    fn send<'a>(&'a self, reference: EvalHandleRef, message: String, context: EvalHandleCallContext) -> ExtensionFuture<'a, EvalHandleSnapshot>;
+    fn cancel<'a>(&'a self, reference: EvalHandleRef, context: EvalHandleCallContext) -> ExtensionFuture<'a, EvalHandleCancelReceipt>;
+    fn output<'a>(&'a self, reference: EvalHandleRef, request: EvalHandleOutputRequest, context: EvalHandleCallContext) -> ExtensionFuture<'a, EvalHandleOutputSnapshot>;
+}
+pub type SharedEvalHandleHost = Arc<dyn EvalHandleHost>;
 pub type ToolHookStatusUpdater = Arc<dyn Fn(&str) + Send + Sync>;
 pub type ExtensionToolExecutor = Arc<dyn for<'a> Fn(&'a str, JsonValue, Option<maho_ai::utils::abort::AbortSignal>, Option<maho_agent::types::AgentToolUpdateCallback>, &'a ExtensionContext) -> ExtensionFuture<'a, AgentToolResult> + Send + Sync>;
 #[derive(Clone, Debug, PartialEq)]
@@ -517,6 +552,18 @@ pub trait ExtensionKernelTools: Send + Sync {
     fn invoke_scope(&self) -> bool;
     fn describe<'a>(&'a self, names: &'a [String]) -> ExtensionFuture<'a, JsonValue>;
     fn invoke(&self, request: KernelToolInvokeRequest, options: KernelToolInvokeOptions) -> ExtensionFuture<'_, JsonValue>;
+}
+tokio::task_local! {
+    static ACTIVE_KERNEL_TOOLS: Option<Arc<dyn ExtensionKernelTools>>;
+}
+pub fn current_kernel_tools() -> Option<Arc<dyn ExtensionKernelTools>> {
+    ACTIVE_KERNEL_TOOLS.try_with(Clone::clone).ok().flatten()
+}
+pub async fn with_kernel_tools<F: std::future::Future>(capability: Option<Arc<dyn ExtensionKernelTools>>, future: F) -> F::Output {
+    ACTIVE_KERNEL_TOOLS.scope(capability, future).await
+}
+pub fn with_kernel_tools_sync<T>(capability: Option<Arc<dyn ExtensionKernelTools>>, operation: impl FnOnce() -> T) -> T {
+    ACTIVE_KERNEL_TOOLS.sync_scope(capability, operation)
 }
 pub trait ExtensionContextActions: Send + Sync {
     fn assert_active(&self) -> Result<(), ExtensionFailure> { Ok(()) }
@@ -1527,13 +1574,14 @@ struct RuntimeState {
     live_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn std::any::Any + Send + Sync>>>,
     live_erased_tool_renderers: BTreeMap<String, BTreeMap<String, Arc<dyn ErasedToolRenderers>>>,
     extension_tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>,
+    eval_handle_host: Option<SharedEvalHandleHost>,
 }
 pub type LiveCommandRegistrations = (Vec<RegisteredCommand>, BTreeMap<String, CommandContextHandler>);
 pub type LiveEntryRenderers = BTreeMap<String, (EntryRenderer, Option<EntryRendererOptions>)>;
 #[derive(Clone, Default)]
 pub struct ExtensionRuntime { state: Arc<Mutex<RuntimeState>>, registration_stale: Arc<Mutex<Option<String>>>, registration_pending: Arc<Mutex<Option<RegistrationPending>>>, registration_classifiers: Arc<Mutex<Vec<u64>>> }
 #[derive(Default)]
-struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>, tools: BTreeMap<String, Vec<RegisteredTool>> }
+struct RegistrationPending { flags: BTreeMap<String, FlagValue>, providers: Vec<ProviderRegistrationChange>, tool_executors: BTreeMap<(String, String), ExtensionToolExecutor>, tools: BTreeMap<String, Vec<RegisteredTool>>, eval_handle_host: Option<SharedEvalHandleHost> }
 enum ProviderRegistrationChange { Register(ProviderRegistration, String), Unregister(String, String) }
 pub struct RuntimeRegistrationCheckpoint(RuntimeState);
 impl ExtensionRuntime {
@@ -1549,6 +1597,7 @@ impl ExtensionRuntime {
                 for (name, value) in pending.flags { state.flags.entry(name).or_insert(value); }
                 state.extension_tool_executors.extend(pending.tool_executors);
                 state.live_tools.extend(pending.tools);
+                if let Some(host) = pending.eval_handle_host { state.eval_handle_host = Some(host); }
             }
             for change in pending.providers { match change {
                 ProviderRegistrationChange::Register(registration, path) => self.register_provider(registration, &path)?,
@@ -1587,6 +1636,17 @@ impl ExtensionRuntime {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).actions.clone()
             .ok_or_else(|| ExtensionFailure::new("Extension message actions are unavailable during registration"))
     }
+    pub fn eval_handle_host(&self) -> Result<Option<SharedEvalHandleHost>, ExtensionFailure> {
+        self.assert_active()?;
+        Ok(self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).eval_handle_host.clone())
+    }
+    pub fn provide_eval_handle_host(&self, host: SharedEvalHandleHost) -> Result<(), ExtensionFailure> {
+        self.assert_active()?;
+        let mut pending = self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pending) = pending.as_mut() { pending.eval_handle_host = Some(host); }
+        else { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).eval_handle_host = Some(host); }
+        Ok(())
+    }
     fn assert_active_or_panic(&self) {
         if let Err(error) = self.assert_active() { std::panic::panic_any(error); }
     }
@@ -1607,6 +1667,7 @@ impl ExtensionRuntime {
         state.live_markdown_transformers.clear(); state.live_rpc_handlers.clear();
         state.live_flags.clear();
         state.live_tools.clear(); state.live_tool_renderers.clear(); state.live_erased_tool_renderers.clear(); state.extension_tool_executors.clear();
+        state.eval_handle_host = None;
         state.live_mcp_servers.clear();
         state.live_message_renderers.clear(); state.live_entry_renderers.clear();
         state.live_filesystem_policies.clear();
@@ -1778,6 +1839,9 @@ impl ExtensionApi {
     pub fn new(registered: LoadedExtension, profile: ExtensionSessionProfile, mut events: EventBus, runtime: ExtensionRuntime) -> Self {
         events.bind_runtime(runtime.clone());
         Self { cwd: registered.registration_cwd.clone(), profile, events, runtime, registered }
+    }
+    pub fn provide_eval_handle_host(&self, host: SharedEvalHandleHost) {
+        if let Err(error) = self.runtime.provide_eval_handle_host(host) { std::panic::panic_any(error); }
     }
     pub fn on(&mut self, event: EventKind, handler: ExtensionHandler) {
         self.runtime.assert_active_or_panic();

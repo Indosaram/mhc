@@ -30,7 +30,7 @@ fn request(described: &Value, name: &str) -> KernelToolInvokeRequest {
     KernelToolInvokeRequest { name:name.into(), kernel_generation:descriptor["kernel_generation"].as_u64().expect("descriptor generation"), definition_revision:descriptor["definition_revision"].as_u64().expect("descriptor revision"), args:json!({"value":41}), call_id:"scope-consumer".into() }
 }
 fn invocation(id: &str, code: &str) -> EvalCellInvocation {
-    EvalCellInvocation {steering_signal:None,cell_id:id.into(), input:EvalToolInput {language:EvalLanguage::Js,code:code.into(),summary:"scope proof".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
+    EvalCellInvocation {owner_session_id:None,steering_signal:None,cell_id:id.into(), input:EvalToolInput {language:EvalLanguage::Js,code:code.into(),summary:"scope proof".into(),action:None,timeout:None,on_timeout:Some(TimeoutBehavior::Error),reset:None},signal:maho_ai::utils::abort::AbortController::new().signal(),on_update:None,mode:"print".into(),model:None,context:None}
 }
 async fn define(kernel: &JavaScriptKernel, code: &str) {
     let result=kernel.run(maho_codemode::kernels::shared::subprocess_contract::KernelRunInput {cell_id:"define".into(),code:code.into(),timeout_ms:Some(5000)}, |_|{}).await.expect("definition cell completes");
@@ -42,7 +42,7 @@ async fn real_eval_consumer_retains_live_capability_and_nested_scope_restores_ou
     assert!(current_kernel_tools().is_none());
     let kernel=Arc::new(JavaScriptKernel::start(std::path::Path::new(env!("CARGO_MANIFEST_DIR")),"scope-consumer",4,None).await.unwrap());
     let consumer=Arc::new(Consumer(Mutex::new(None)));
-    let options=Arc::new(CreateEvalToolOptions {kernel_manager:Arc::new(Manager(kernel.clone())),executor:consumer.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None});
+    let options=Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(Manager(kernel.clone())),executor:consumer.clone(),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None});
     let proof=tokio::time::timeout(Duration::from_secs(10),async {
         let result=run_eval_cell(options,invocation("consume","tool(function increment(value) { return value+1; }); display(await tool.consume({}));")).await.unwrap();
         assert_eq!(result.details["cells"][0]["status"],"complete","{result:?}");

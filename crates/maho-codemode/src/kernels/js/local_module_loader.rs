@@ -33,7 +33,8 @@ pub fn runtime_context(options: &LocalModuleLoaderOptions) -> Result<Value, std:
     }
     if let Some(artifacts) = &options.artifacts_dir && !roots.contains_key("local") { roots.insert("local".into(), json!(directory_url(&artifacts.join("local"))?)); }
     Ok(json!({"cwdUrl":directory_url(&options.cwd)?, "localRootUrls":roots,
-        "reservedAgentTool":RESERVED_AGENT_TOOL, "reservedSchemaTool":RESERVED_SCHEMA_TOOL, "reservedOutputTool":RESERVED_OUTPUT_TOOL,
+        "reservedAgentTool":RESERVED_AGENT_TOOL, "reservedOutputTool":RESERVED_OUTPUT_TOOL,
+        "reservedSchemaTool":RESERVED_SCHEMA_TOOL,
         "timeoutPauseOp":TIMEOUT_PAUSE_OP, "timeoutResumeOp":TIMEOUT_RESUME_OP}))
 }
 

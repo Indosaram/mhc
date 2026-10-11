@@ -306,6 +306,7 @@ impl Extension for Task {
                         Arc::new(move |m: &str| warn_log.warn(m, None)),
                     );
                     if let Some(component) = maho_omo_task::component::TaskComponent::register_with_process_sweep(&mut api, engine, spawn, ownership, member, sweep)? {
+                        component.bind_eval_workpools(&mut api, workpools)?;
                         super::task_session::mount_team_runtime(&mut api, &component, team_ownership, actions.clone(), coordinator.clone())?;
                     }
                     let handlers = std::mem::take(&mut api.registered.handlers);
