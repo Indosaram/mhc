@@ -39,7 +39,7 @@ pub struct RpcCommand {
 #[serde(tag="type",rename_all="snake_case",rename_all_fields="camelCase")]
 pub enum RpcCommandBody {
     Prompt { message:String, #[serde(skip_serializing_if="Option::is_none")] images:Option<Vec<Value>>, #[serde(skip_serializing_if="Option::is_none")] streaming_behavior:Option<StreamingBehavior>, #[serde(skip_serializing_if="Option::is_none")] thinking_level:Option<String>, #[serde(skip_serializing_if="Option::is_none")] session_title_prompt:Option<SessionTitlePrompt>, #[serde(skip_serializing_if="Option::is_none")] expand_prompt_templates:Option<bool> },
-    SendCustomMessage { custom_type:String, content:Value, display:bool, #[serde(skip_serializing_if="Option::is_none")] details:Option<Value>, #[serde(skip_serializing_if="Option::is_none")] trigger_turn:Option<bool>, #[serde(skip_serializing_if="Option::is_none")] deliver_as:Option<DeliveryMode> },
+    SendCustomMessage { custom_type:String, #[serde(default)] content:Value, display:bool, #[serde(skip_serializing_if="Option::is_none")] details:Option<Value>, #[serde(skip_serializing_if="Option::is_none")] trigger_turn:Option<bool>, #[serde(skip_serializing_if="Option::is_none")] deliver_as:Option<DeliveryMode> },
     AppendUserMessage { content:Value },
     AppendSessionEntry { entry:Value },
     Steer { message:String, #[serde(skip_serializing_if="Option::is_none")] images:Option<Vec<Value>>, #[serde(skip_serializing_if="Option::is_none")] enqueue_order:Option<f64> },

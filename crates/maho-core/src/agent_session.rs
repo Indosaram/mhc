@@ -169,6 +169,12 @@ pub struct AssistantEditResult {
 
 pub type UserEditResult = AssistantEditResult;
 
+#[derive(Debug, Clone)]
+pub struct MessageEditFailure { pub message: String, pub code: Option<&'static str> }
+impl From<String> for MessageEditFailure {
+    fn from(message: String) -> Self { Self { message, code: None } }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptDisposition {
     Handled,
@@ -3582,35 +3588,43 @@ impl AgentSession {
     }
 
     pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
-        if self.is_streaming() { return Err(crate::edited_assistant_message::SessionStreamingError.to_string()); }
+        self.edit_assistant_message_coded(entry_id, text, options).await.map_err(|error| error.message)
+    }
+
+    pub async fn edit_assistant_message_coded(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, MessageEditFailure> {
+        if self.is_streaming() { return Err(MessageEditFailure { message: crate::edited_assistant_message::SessionStreamingError.to_string(), code: Some("streaming") }); }
         self.with_session_manager(|manager| crate::edited_assistant_message::assert_expected_leaf(
-            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| error.to_string())?;
-        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| MessageEditFailure { code: Some(error.reason.code()), message: error.to_string() })?;
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| MessageEditFailure { message: format!("Entry {entry_id} not found"), code: Some("not_found") })?;
         if entry["type"] != "message" || entry["message"]["role"] != "assistant" {
-            return Err(format!("Entry {entry_id} is not an assistant message"));
+            return Err(MessageEditFailure { message: format!("Entry {entry_id} is not an assistant message"), code: Some("not_assistant") });
         }
         let message: maho_ai::types::AssistantMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
-        let replacement = crate::edited_assistant_message::build_edited_assistant_message(&message, text).map_err(|error| error.to_string())?;
+        let replacement = crate::edited_assistant_message::build_edited_assistant_message(&message, text).map_err(|error| MessageEditFailure { code: Some(error.reason.code()), message: error.to_string() })?;
         if crate::edited_assistant_message::assistant_text_equals(&message, text) {
             return Ok(AssistantEditResult { unchanged: Some(true), ..Default::default() });
         }
-        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement))))).await
+        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(replacement))))).await.map_err(Into::into)
     }
 
     pub async fn edit_user_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<UserEditResult, String> {
-        if self.is_streaming() { return Err(crate::edited_assistant_message::SessionStreamingError.to_string()); }
+        self.edit_user_message_coded(entry_id, text, options).await.map_err(|error| error.message)
+    }
+
+    pub async fn edit_user_message_coded(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<UserEditResult, MessageEditFailure> {
+        if self.is_streaming() { return Err(MessageEditFailure { message: crate::edited_assistant_message::SessionStreamingError.to_string(), code: Some("streaming") }); }
         self.with_session_manager(|manager| crate::edited_user_message::assert_expected_user_leaf(
-            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| error.to_string())?;
-        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| format!("Entry {entry_id} not found"))?;
+            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| MessageEditFailure { code: Some(error.reason.code()), message: error.to_string() })?;
+        let entry = self.with_session_manager(|manager| manager.entry(entry_id)).ok_or_else(|| MessageEditFailure { message: format!("Entry {entry_id} not found"), code: Some("not_found") })?;
         if entry["type"] != "message" || entry["message"]["role"] != "user" {
-            return Err(format!("Entry {entry_id} is not a user message"));
+            return Err(MessageEditFailure { message: format!("Entry {entry_id} is not a user message"), code: Some("not_user") });
         }
         let message: maho_ai::types::UserMessage = serde_json::from_value(entry["message"].clone()).map_err(|error| error.to_string())?;
-        let replacement = crate::edited_user_message::build_edited_user_message(&message, text).map_err(|error| error.to_string())?;
+        let replacement = crate::edited_user_message::build_edited_user_message(&message, text).map_err(|error| MessageEditFailure { code: Some(error.reason.code()), message: error.to_string() })?;
         if crate::edited_user_message::user_text_equals(&message, text) {
             return Ok(UserEditResult { unchanged: Some(true), ..Default::default() });
         }
-        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::User(replacement)))).await
+        self.navigate_tree_internal(entry_id, options, Some(AgentMessage::Llm(maho_ai::types::Message::User(replacement)))).await.map_err(Into::into)
     }
 
     async fn navigate_tree_internal(&self, target_id: &str, mut options: TreeNavigationOptions, replacement: Option<AgentMessage>) -> Result<AssistantEditResult, String> {
