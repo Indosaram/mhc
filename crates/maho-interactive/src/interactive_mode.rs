@@ -12,6 +12,7 @@ use crate::grok::chrome::InteractiveChrome;
 type ImageSubmissions = std::collections::VecDeque<(String, Vec<maho_ai::types::ImageContent>)>;
 type CustomUiBuild = std::pin::Pin<Box<dyn std::future::Future<Output=Result<Box<dyn Component>, maho_ext_api::ExtensionFailure>>>>;
 type QuestionActions = Rc<RefCell<std::collections::VecDeque<QuestionAction>>>;
+type AuthUiEvents = tokio::sync::mpsc::UnboundedReceiver<AuthUiEvent>;
 /// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
 type PendingTreeEdit = (String, String, Option<String>);
 /// A queued tree-navigation choice: `(entryId, summarize, customInstructions)`.
@@ -34,6 +35,56 @@ enum QuestionAction {
     Progress(String, crate::components::ask_user_question_state::QuestionDraft),
     ExpandRequest(String),
     CloseList,
+}
+
+/// One login or logout flow's messages from its runtime task back to the single-threaded UI.
+enum AuthUiEvent {
+    Prompt(maho_ai::auth::types::AuthPrompt, tokio::sync::oneshot::Sender<Result<String, String>>),
+    Notify(maho_ai::auth::types::AuthEvent),
+    LoginFinished { provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, result: Result<(), crate::login_outcome::LoginFailure>, selection_error: Option<String> },
+    LoginCatalogFinished { provider_name: String, action: String, result: Result<(), String>, selection_error: Option<String> },
+    LogoutFinished { provider_name: String, auth_type: crate::components::oauth_selector::AuthSelectorAuthType, result: Result<(), String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthLifecycleOutcome {
+    Success,
+    Cancelled,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthLifecycleEvent {
+    PromptReady,
+    LoginCompleted { provider_name: String, method: crate::login_outcome::LoginMethod, outcome: AuthLifecycleOutcome },
+    LoginCatalogCompleted { provider_name: String, outcome: Result<(), String>, selection_error: Option<String> },
+    LogoutCompleted { provider_name: String, auth_type: crate::components::oauth_selector::AuthSelectorAuthType, outcome: Result<(), String> },
+}
+
+/// A select prompt's answer slot: the selector callbacks fill it, `drain_auth_ui_events` forwards it.
+type AuthSelectReply = Rc<RefCell<Option<Result<String, String>>>>;
+
+struct InteractiveAuthInteraction {
+    sender: tokio::sync::mpsc::UnboundedSender<AuthUiEvent>,
+    signal: maho_ai::utils::abort::AbortSignal,
+}
+
+#[async_trait::async_trait]
+impl maho_ai::auth::types::AuthInteraction for InteractiveAuthInteraction {
+    fn signal(&self) -> Option<maho_ai::utils::abort::AbortSignal> { Some(self.signal.clone()) }
+
+    async fn prompt(&self, prompt: maho_ai::auth::types::AuthPrompt) -> anyhow::Result<String> {
+        if self.signal.aborted() { anyhow::bail!(crate::login_outcome::LOGIN_CANCELLED_NOTICE); }
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.sender.send(AuthUiEvent::Prompt(prompt, reply)).map_err(|_| anyhow::anyhow!(crate::login_outcome::LOGIN_CANCELLED_NOTICE))?;
+        // senpi `showAuthPrompt`: the dialog's answer races the abort signal.
+        tokio::select! {
+            answer = receiver => answer.map_err(|_| anyhow::anyhow!(crate::login_outcome::LOGIN_CANCELLED_NOTICE))?.map_err(anyhow::Error::msg),
+            () = self.signal.cancelled() => anyhow::bail!(crate::login_outcome::LOGIN_CANCELLED_NOTICE),
+        }
+    }
+
+    fn notify(&self, event: maho_ai::auth::types::AuthEvent) { let _ = self.sender.send(AuthUiEvent::Notify(event)); }
 }
 
 /// senpi `ExpandableText` (`interactive-mode.ts:339`): a `Text` whose body follows the collapsed or
@@ -142,6 +193,7 @@ pub struct InteractiveMode {
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
+    login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
     /// senpi `headerContainer`: the document header slot holding the built-in header (with its tip
     /// sibling) or an extension header.
@@ -171,6 +223,15 @@ pub struct InteractiveMode {
     tool_cards: Vec<Rc<RefCell<ToolExecutionComponent>>>,
     pub tools_expanded: bool,
     local_dialog_reply: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
+    auth_ui_events: AuthUiEvents,
+    auth_ui_sender: tokio::sync::mpsc::UnboundedSender<AuthUiEvent>,
+    auth_lifecycle_events: tokio::sync::broadcast::Sender<AuthLifecycleEvent>,
+    /// The running login's dialog cancellation; Escape in the dialog aborts the provider flow.
+    auth_abort: Option<maho_ai::utils::abort::AbortController>,
+    /// A text/secret/manual prompt awaiting the dialog's submitted value.
+    pending_auth_prompt: Option<AuthPromptReply>,
+    /// A select prompt awaiting the selector's choice.
+    pending_auth_select: Option<(AuthSelectReply, tokio::sync::oneshot::Sender<Result<String, String>>)>,
     working_started_ms: Option<f64>,
     working_message: Option<String>,
     working_visible: bool,
@@ -199,8 +260,19 @@ pub struct InteractiveMode {
     changelog_markdown: Option<String>,
     startup_notices_shown: bool,
 }
+type AuthPromptReply = (tokio::sync::oneshot::Receiver<String>, tokio::sync::oneshot::Sender<Result<String, String>>);
 
 impl InteractiveMode {
+    pub fn subscribe_auth_lifecycle(&self) -> tokio::sync::broadcast::Receiver<AuthLifecycleEvent> {
+        self.auth_lifecycle_events.subscribe()
+    }
+
+    pub async fn drain_next_auth_event(&mut self) -> Result<(), &'static str> {
+        let event = self.auth_ui_events.recv().await.ok_or("Authentication event channel closed")?;
+        self.handle_auth_ui_event(event);
+        Ok(())
+    }
+
     pub(crate) fn tick_now(&mut self) { self.tick(self.clock.elapsed().as_secs_f64()*1000.0); }
     pub fn install_native_tool_renderers<S: Default + 'static>(&mut self, name: String, renderers: Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>) {
         self.native_tool_renderer_snapshots.insert(name, Rc::new(RefCell::new(crate::tools::renderers::native::NativeToolRenderers::new(renderers))));
@@ -468,10 +540,18 @@ impl InteractiveMode {
                 captured.borrow_mut().push_back(text.trim().into());
             }
         }));
+        let (auth_ui_sender, auth_ui_events) = tokio::sync::mpsc::unbounded_channel();
+        let (auth_lifecycle_events, _) = tokio::sync::broadcast::channel(32);
+        let mermaid_session = session.clone();
+        let mermaid_transformer = crate::components::mermaid::create_mermaid_markdown_transformer(
+            Rc::new(move || mermaid_session.with_settings_manager(|settings| {
+                crate::components::mermaid::MermaidRenderingMode::from_setting(settings.get_value("mermaidRenderingMode"))
+            })), Some(theme.clone()),
+        );
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: Vec::new(), reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -672,6 +752,61 @@ impl InteractiveMode {
 
     async fn host_set_model(&self, provider: &str, id: &str) -> Result<(), String> {
         match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await, None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|_| ()) } }
+    }
+
+    fn complete_provider_authentication(&mut self, provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, immediate_selection_error: Option<String>) {
+        let action = match method { crate::login_outcome::LoginMethod::Oauth => format!("Logged in to {provider_name}"), crate::login_outcome::LoginMethod::ApiKey => format!("Saved API key for {provider_name}") };
+        let previous_model = self.session.model();
+        let session_id = self.session.session_id();
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let defer_selection = previous_model.provider == "unknown" && previous_model.id == "unknown"
+            && maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().any(|(provider, _)| *provider == provider_id);
+        if let Some(error) = &immediate_selection_error { self.show_status(error.clone()); }
+        else if defer_selection { self.show_status(format!("{action}. Credentials saved to {}. Refreshing model catalog...", maho_core::config::get_auth_path())); }
+        else { self.show_status(format!("{action}. Credentials saved to {}", maho_core::config::get_auth_path())); }
+        let sender = self.auth_ui_sender.clone();
+        let session = self.session.clone();
+        let host = self.session_host.clone();
+        let providers = if provider_id == "cursor" { vec![provider_id.clone(), "cursor-cli-oauth".to_owned()] } else { vec![provider_id.clone()] };
+        tokio::spawn(async move {
+            let mut runtime = runtime;
+            let abort = maho_ai::utils::abort::AbortController::new();
+            let timeout_abort = abort.clone();
+            let timeout = tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; timeout_abort.abort(None); });
+            let refresh = runtime.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(true), providers: Some(providers), signal: Some(abort.signal()), ..Default::default() }).await;
+            timeout.abort();
+            let mut selection_error = immediate_selection_error;
+            if previous_model.provider == "unknown" && previous_model.id == "unknown" && session.model() == previous_model && session.session_id() == session_id {
+                let models = runtime.get_available(Some(&provider_id)).await;
+                let provider_models = models.iter().filter(|model| model.provider == provider_id).collect::<Vec<_>>();
+                if provider_id == "llama.cpp" {
+                    selection_error = Some(if provider_models.is_empty() { format!("{action}. No llama.cpp models are loaded. Use /llama to load a model, then /model to select it.") } else { format!("{action}. Use /model to select a loaded llama.cpp model, or /llama to manage models.") });
+                } else if !maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().any(|(provider, _)| *provider == provider_id) {
+                    selection_error = Some(format!("{action}, but no default model is configured for provider \"{provider_id}\". Use /model to select a model."));
+                } else if provider_models.is_empty() {
+                    selection_error = Some(format!("{action}, but no models are available for that provider. Use /model to select a model."));
+                } else {
+                    let default_id = maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().find(|(provider, _)| *provider == provider_id).map(|(_, id)| *id);
+                    let selected = provider_models.iter().find(|model| Some(model.id.as_str()) == default_id).copied()
+                        .or_else(|| if provider_id == "radius" { provider_models.first().copied() } else { None });
+                    match selected {
+                        None => selection_error = Some(format!("{action}, but its default model \"{}\" is not available. Use /model to select a model.", default_id.unwrap_or(""))),
+                        Some(model) => {
+                            let result = match host {
+                                Some(host) => host.set_model(provider_id.clone(), model.id.clone()).await,
+                                None => session.set_model(model.clone()).await.map(|_| ()).map_err(|error| error.to_string()),
+                            };
+                            match result {
+                                Ok(()) => { let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name: provider_name.clone(), action: format!("{action}. Selected {}.", model.id), result: Ok(()), selection_error: None }); return; }
+                                Err(error) => selection_error = Some(format!("{action}, but selecting its default model failed: {error}. Use /model to select a model.")),
+                            }
+                        }
+                    }
+                }
+            }
+            let error = refresh.errors.values().next().map(|error| error.to_string());
+            let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name, action, result: if refresh.aborted { Err("aborted".into()) } else if let Some(error) = error { Err(error) } else { Ok(()) }, selection_error });
+        });
     }
 
     async fn host_cycle_model(&self, forward: bool) -> Result<Option<String>, String> {
@@ -903,7 +1038,7 @@ impl InteractiveMode {
             self.collapse_shown_question(); return;
         }
         if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); self.settle_questions(); return; }
-        if self.ui_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
+        if self.ui_dialog.is_some() || self.login_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
@@ -1520,26 +1655,32 @@ impl InteractiveMode {
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
         let text = text.trim();
         if text == "/login" || text.starts_with("/login ") {
+            // senpi `handleLoginCommand`.
             let provider_ref = text.strip_prefix("/login ").map(str::trim).filter(|value| !value.is_empty());
-            let options = maho_core::auth_providers::build_login_provider_infos(self.session.model_registry(), None)
-                .into_iter()
-                .filter(|option| provider_ref.is_none_or(|reference| option.id.eq_ignore_ascii_case(reference) || option.name.eq_ignore_ascii_case(reference)))
-                .map(|option| crate::components::oauth_selector::AuthSelectorProvider {
-                    id: option.id,
-                    name: option.name,
-                    auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey },
-                    method_name: None,
-                    status: None,
-                }).collect::<Vec<_>>();
-            if options.is_empty() { self.show_status("No login providers available.".into()); return Ok(true); }
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
-            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Login, options,
-                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/login {id}")); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), provider_ref)));
+            let Some(provider_ref) = provider_ref else { self.show_login_auth_type_selector(None); return Ok(true); };
+            if let Some(rejection) = maho_ai::legacy_provider_ids::legacy_provider_id_rejection(provider_ref) { self.show_error(&rejection); return Ok(true); }
+            let reference = provider_ref.to_lowercase();
+            let matches = self.login_provider_options(None).into_iter()
+                .filter(|provider| provider.id.to_lowercase() == reference || provider.name.to_lowercase() == reference).collect::<Vec<_>>();
+            if matches.len() == 1 { self.start_provider_login(&matches[0]); return Ok(true); }
+            if matches.len() > 1 && matches.iter().all(|provider| provider.id == matches[0].id) { self.show_login_auth_type_selector(Some(matches)); return Ok(true); }
+            self.show_login_provider_selector(None, Some(provider_ref));
+            return Ok(true);
+        }
+        if let Some(args) = text.strip_prefix("/login-select-provider ") {
+            let auth_type = match args.trim() { "oauth" => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, "api_key" => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey, _ => return Ok(true) };
+            self.show_login_provider_selector(Some(auth_type), None);
+            return Ok(true);
+        }
+        if text == "/login-auth-type" { self.show_login_auth_type_selector(None); return Ok(true); }
+        if let Some(args) = text.strip_prefix("/login-provider ") {
+            let Some((provider_id, method)) = args.trim().split_once(' ') else { return Ok(true); };
+            let auth_type = match method { "oauth" => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, "api_key" => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey, _ => return Ok(true) };
+            if let Some(provider) = self.login_provider_options(Some(auth_type)).into_iter().find(|provider| provider.id == provider_id) { self.start_provider_login(&provider); }
             return Ok(true);
         }
         if text == "/logout" {
+            // senpi `showOAuthSelector("logout")`.
             let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
                 id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
             }).collect::<Vec<_>>();
@@ -1549,6 +1690,24 @@ impl InteractiveMode {
             self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
                 Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), None)));
+            return Ok(true);
+        }
+        if let Some(provider_id) = text.strip_prefix("/logout-provider ") {
+            let provider_id = provider_id.trim();
+            let Some(provider) = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().find(|provider| provider.id == provider_id) else { return Ok(true); };
+            let runtime = self.session.model_registry().model_runtime.clone();
+            let sender = self.auth_ui_sender.clone();
+            let auth_type = match provider.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey };
+            tokio::spawn(async move {
+                // senpi bounds logout with `AbortSignal.timeout(15_000)`.
+                let abort = maho_ai::utils::abort::AbortController::new();
+                let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
+                    Ok(result) => result.map_err(|error| error.to_string()),
+                    Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
+                };
+                let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
+            });
             return Ok(true);
         }
         if text == "/changelog" {
@@ -2002,6 +2161,230 @@ impl InteractiveMode {
         self.drain_remote_stats();
         while let Ok(event) = self.events.try_recv() {
             self.handle_session_event(&event);
+        }
+        self.drain_auth_ui_events();
+    }
+
+    /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
+    fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        let registry = self.session.model_registry();
+        let mut options = maho_core::auth_providers::build_login_provider_infos(registry, None).into_iter().filter_map(|info| {
+            let kind = match info.auth_type { maho_core::auth_storage::CredentialKind::Oauth => AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => AuthSelectorAuthType::ApiKey };
+            if auth_type.is_some_and(|wanted| wanted != kind) { return None; }
+            let status = registry.model_runtime.get_provider_auth_status(&info.id);
+            let status = status.configured.then(|| maho_ai::auth::types::AuthCheck {
+                auth_type: if registry.model_runtime.is_using_oauth(&info.id) { maho_ai::auth::types::AuthType::OAuth } else { maho_ai::auth::types::AuthType::ApiKey },
+                source: status.label.or(status.source),
+            });
+            Some(crate::components::oauth_selector::AuthSelectorProvider { id: info.id, name: info.name, auth_type: kind, method_name: None, status })
+        }).collect::<Vec<_>>();
+        options.sort_by(|left, right| left.name.cmp(&right.name));
+        options
+    }
+
+    /// senpi `showLoginAuthTypeSelector`.
+    fn show_login_auth_type_selector(&mut self, provider_options: Option<Vec<crate::components::oauth_selector::AuthSelectorProvider>>) {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        const SUBSCRIPTION: &str = "Sign in with an account";
+        const API_KEY: &str = "Sign in with an API key";
+        let available = provider_options.as_ref().map_or_else(|| vec![AuthSelectorAuthType::OAuth, AuthSelectorAuthType::ApiKey], |providers| providers.iter().map(|provider| provider.auth_type).collect());
+        let mut labels = Vec::new();
+        if available.contains(&AuthSelectorAuthType::OAuth) { labels.push(SUBSCRIPTION.to_owned()); }
+        if available.contains(&AuthSelectorAuthType::ApiKey) { labels.push(API_KEY.to_owned()); }
+        if labels.is_empty() { self.show_status("No login methods available.".into()); return; }
+        if let Some(providers) = &provider_options && labels.len() == 1 && let Some(provider) = providers.first().cloned() { self.start_provider_login(&provider); return; }
+        let title = provider_options.as_ref().and_then(|providers| providers.first()).map_or_else(|| "Select authentication method:".to_owned(), |provider| format!("Select authentication method for {}:", provider.name));
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+        let provider_id = provider_options.as_ref().and_then(|providers| providers.first()).map(|provider| provider.id.clone());
+        self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, labels,
+            Box::new(move |label| {
+                let method = if label == SUBSCRIPTION { "oauth" } else { "api_key" };
+                submissions.borrow_mut().push_back(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") });
+                selected.borrow_mut().take();
+            }),
+            Box::new(move || { cancelled.borrow_mut().take(); }), Default::default())));
+    }
+
+    /// senpi `showLoginProviderSelector`.
+    fn show_login_provider_selector(&mut self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>, initial_search: Option<&str>) {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        let options = self.login_provider_options(auth_type);
+        if options.is_empty() {
+            self.show_status(match auth_type { Some(AuthSelectorAuthType::OAuth) => "No subscription providers available.", Some(AuthSelectorAuthType::ApiKey) => "No API key providers available.", None => "No login providers available." }.into());
+            return;
+        }
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone(); let back = self.submissions.clone();
+        self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Login, options,
+            Box::new(move |id, kind| { submissions.borrow_mut().push_back(format!("/login-provider {id} {}", match kind { AuthSelectorAuthType::OAuth => "oauth", AuthSelectorAuthType::ApiKey => "api_key" })); selected.borrow_mut().take(); }),
+            // Cancelling a typed-provider list returns to the method selector, as pinned.
+            Box::new(move || { if auth_type.is_some() { back.borrow_mut().push_back("/login-auth-type".into()); } cancelled.borrow_mut().take(); }),
+            initial_search)));
+    }
+
+    /// senpi `startProviderLogin` -> `showLoginDialog` / `showApiKeyLoginDialog`: mount the dialog
+    /// and run `modelRuntime.login` on the runtime, answering its prompts through the UI channel.
+    fn start_provider_login(&mut self, provider: &crate::components::oauth_selector::AuthSelectorProvider) {
+        use crate::components::oauth_selector::AuthSelectorAuthType;
+        let method = match provider.auth_type { AuthSelectorAuthType::OAuth => crate::login_outcome::LoginMethod::Oauth, AuthSelectorAuthType::ApiKey => crate::login_outcome::LoginMethod::ApiKey };
+        let mut dialog = crate::components::login_dialog::LoginDialogComponent::new(&self.theme, &provider.id, Box::new(|_, _| {}), Some(&provider.name), None);
+        if provider.id == "amazon-bedrock" && provider.auth_type == AuthSelectorAuthType::ApiKey {
+            dialog.show_details(&[
+                self.theme.fg(crate::theme::ThemeColor::Text, "You can also use an AWS profile, IAM keys, or role-based credentials."),
+                self.theme.fg(crate::theme::ThemeColor::Muted, "See:"),
+                self.theme.fg(crate::theme::ThemeColor::Accent, &format!("  {}", std::path::Path::new(&maho_core::config::get_docs_path()).join("providers.md").display())),
+            ]);
+        }
+        maho_tui::tui::Focusable::set_focused(&mut dialog, true);
+        self.login_dialog = Some(dialog);
+        let abort = maho_ai::utils::abort::AbortController::new();
+        let interaction = Arc::new(InteractiveAuthInteraction { sender: self.auth_ui_sender.clone(), signal: abort.signal() });
+        self.auth_abort = Some(abort);
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let sender = self.auth_ui_sender.clone();
+        let (provider_id, provider_name, auth_type) = (provider.id.clone(), provider.name.clone(), maho_ai::auth::types::AuthType::from(provider.auth_type));
+        let event_provider_id = provider_id.clone();
+        let session = self.session.clone();
+        let previous_model = session.model();
+        let session_id = session.session_id();
+        let host = self.session_host.clone();
+        tokio::spawn(async move {
+            let result = runtime.login(&provider_id, auth_type, interaction).await.map(|_| ()).map_err(|error| {
+                if error.message == crate::login_outcome::LOGIN_CANCELLED_NOTICE || error.message.contains("aborted") { crate::login_outcome::LoginFailure::Cancelled }
+                else { crate::login_outcome::LoginFailure::Failed { message: error.message } }
+            });
+            let mut selection_error = None;
+            if result.is_ok() && previous_model.provider == "unknown" && previous_model.id == "unknown"
+                && session.model() == previous_model && session.session_id() == session_id {
+                let models = runtime.get_available(Some(&provider_id)).await;
+                let default_id = maho_core::model_resolver::DEFAULT_MODEL_PER_PROVIDER.iter().find(|(id, _)| *id == provider_id).map(|(_, model)| *model);
+                if let Some(model) = models.iter().find(|model| Some(model.id.as_str()) == default_id)
+                    .or_else(|| if provider_id == "radius" { models.first() } else { None }) {
+                    let selected = match host { Some(host) => host.set_model(provider_id.clone(), model.id.clone()).await, None => session.set_model(model.clone()).await.map(|_| ()) };
+                    if let Err(error) = selected { selection_error = Some(format!("Saved credentials for {provider_name}, but selecting its default model failed: {error}. Use /model to select a model.")); }
+                }
+            }
+            let _ = sender.send(AuthUiEvent::LoginFinished { provider_id: event_provider_id, provider_name, method, result, selection_error });
+        });
+    }
+
+    fn show_error(&mut self, message: &str) {
+        let text = self.theme.fg(crate::theme::ThemeColor::Error, &format!("Error: {}", crate::extension_error_format::sanitize_tui_error_message(message)));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+    }
+
+    /// Bridge the running login/logout tasks into the UI: mount prompts, forward answers, report outcomes.
+    fn drain_auth_ui_events(&mut self) {
+        let selected = self.pending_auth_select.as_ref().and_then(|(answer, _)| answer.borrow_mut().take());
+        if let Some(value) = selected && let Some((_, reply)) = self.pending_auth_select.take() {
+            let _ = reply.send(value);
+        }
+        if let Some((receiver, _)) = self.pending_auth_prompt.as_mut() {
+            match receiver.try_recv() {
+                Ok(value) => if let Some((_, reply)) = self.pending_auth_prompt.take() { let _ = reply.send(Ok(value)); },
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => if let Some((_, reply)) = self.pending_auth_prompt.take() { let _ = reply.send(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into())); },
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+            }
+        }
+        while let Ok(event) = self.auth_ui_events.try_recv() {
+            self.handle_auth_ui_event(event);
+        }
+    }
+
+    fn handle_auth_ui_event(&mut self, event: AuthUiEvent) {
+            match event {
+                AuthUiEvent::Prompt(prompt, reply) => self.show_auth_prompt(prompt, reply),
+                AuthUiEvent::Notify(event) => self.notify_auth_dialog(event),
+                AuthUiEvent::LoginFinished { provider_id, provider_name, method, result, selection_error } => {
+                    let outcome = match &result {
+                        Ok(()) => AuthLifecycleOutcome::Success,
+                        Err(crate::login_outcome::LoginFailure::Cancelled | crate::login_outcome::LoginFailure::Abort { .. }) => AuthLifecycleOutcome::Cancelled,
+                        Err(crate::login_outcome::LoginFailure::CredentialSynchronization { message } | crate::login_outcome::LoginFailure::Failed { message }) => {
+                            if message == crate::login_outcome::LOGIN_CANCELLED_NOTICE { AuthLifecycleOutcome::Cancelled } else { AuthLifecycleOutcome::Error(message.clone()) }
+                        }
+                    };
+                    let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LoginCompleted { provider_name: provider_name.clone(), method, outcome: outcome.clone() });
+                    self.auth_abort = None; self.login_dialog = None; self.pending_auth_prompt = None; self.pending_auth_select = None;
+                    match result {
+                        Ok(()) => {
+                             self.complete_provider_authentication(provider_id, provider_name, method, selection_error);
+                        }
+                        Err(failure) => {
+                            let notice = crate::login_outcome::describe_login_failure(Some(&failure), &provider_name, method);
+                            match notice.level { crate::login_outcome::NoticeLevel::Status => self.show_status(notice.message), crate::login_outcome::NoticeLevel::Error => self.show_error(&notice.message) }
+                        }
+                    }
+                }
+                AuthUiEvent::LogoutFinished { provider_name, auth_type, result } => {
+                    let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LogoutCompleted { provider_name: provider_name.clone(), auth_type, outcome: result.clone() });
+                    match result {
+                    Ok(()) => self.show_status(match auth_type {
+                        crate::components::oauth_selector::AuthSelectorAuthType::OAuth => format!("Logged out of {provider_name}"),
+                        crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => format!("Removed stored API key for {provider_name}. Environment variables and models.json config are unchanged."),
+                    }),
+                    Err(error) => self.show_error(&format!("Logout failed: {error}")),
+                    }
+                },
+                AuthUiEvent::LoginCatalogFinished { provider_name, action, result, selection_error } => {
+                    match &result {
+                        Ok(()) => self.show_status(format!("{action}. Credentials saved to {}", maho_core::config::get_auth_path())),
+                        Err(error) if error == "aborted" => self.show_status(format!("{action}, but its model catalog refresh timed out; using cached models.")),
+                        Err(_) => self.show_status(format!("{action}, but its model catalog could not be refreshed; using cached models.")),
+                    }
+                    if let Some(error) = &selection_error { self.show_error(error); }
+                    self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model| &model.provider).collect::<std::collections::BTreeSet<_>>().len());
+                    if let Some(footer) = &mut self.footer { footer.invalidate(); }
+                    let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LoginCatalogCompleted { provider_name, outcome: result, selection_error });
+                }
+            }
+    }
+
+    /// senpi `showAuthPrompt`: select prompts use a selector, manual codes the manual input, the rest the dialog prompt.
+    fn show_auth_prompt(&mut self, prompt: maho_ai::auth::types::AuthPrompt, reply: tokio::sync::oneshot::Sender<Result<String, String>>) {
+        use maho_ai::auth::types::AuthPromptKind;
+        if prompt.signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { let _ = reply.send(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into())); return; }
+        let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::PromptReady);
+        match prompt.kind {
+            AuthPromptKind::Select { message, options } => {
+                let labels = options.iter().map(|option| option.label.clone()).collect::<Vec<_>>();
+                let answer: AuthSelectReply = Rc::new(RefCell::new(None));
+                let selected = answer.clone(); let cancelled = answer.clone();
+                // Keep the selector mounted until it answers, like every other local dialog.
+                let (close, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(close);
+                let select_closed = self.ui_reply.clone(); let cancel_closed = self.ui_reply.clone();
+                self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &message, labels,
+                    Box::new(move |label| { *selected.borrow_mut() = Some(options.iter().find(|option| option.label == label).map(|option| option.id.clone()).ok_or_else(|| crate::login_outcome::LOGIN_CANCELLED_NOTICE.to_owned())); select_closed.borrow_mut().take(); }),
+                    Box::new(move || { *cancelled.borrow_mut() = Some(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into())); cancel_closed.borrow_mut().take(); }), Default::default())));
+                self.pending_auth_select = Some((answer, reply));
+            }
+            kind => {
+                let Some(dialog) = self.login_dialog.as_mut() else { let _ = reply.send(Err(crate::login_outcome::LOGIN_CANCELLED_NOTICE.into())); return; };
+                let receiver = match kind {
+                    AuthPromptKind::ManualCode { message, .. } => dialog.show_manual_input(&message),
+                    AuthPromptKind::Text { message, placeholder } | AuthPromptKind::Secret { message, placeholder } => dialog.show_prompt(&message, placeholder.as_deref()),
+                    AuthPromptKind::Select { .. } => unreachable!("select prompts are handled above"),
+                };
+                self.pending_auth_prompt = Some((receiver, reply));
+            }
+        }
+    }
+
+    /// senpi `notifyAuthDialog`.
+    fn notify_auth_dialog(&mut self, event: maho_ai::auth::types::AuthEvent) {
+        if let Some(dialog) = &mut self.login_dialog {
+            use maho_ai::auth::types::AuthEvent;
+            match event {
+                AuthEvent::AuthUrl { url, instructions } => dialog.show_auth(&url, instructions.as_deref()),
+                AuthEvent::DeviceCode { user_code, verification_uri, .. } => {
+                    dialog.show_device_code(&crate::components::login_dialog::OAuthDeviceCodeInfo { user_code, verification_uri });
+                    dialog.show_waiting("Waiting for authentication...");
+                }
+                AuthEvent::Info { message, links } => dialog.show_info(&message, &links.unwrap_or_default(), false),
+                AuthEvent::Progress { message } => dialog.show_progress(&message),
+            }
         }
     }
 
@@ -2816,7 +3199,7 @@ impl InteractiveMode {
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
-        lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.editor.render(width) });
+        lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(dialog) = &mut self.login_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.editor.render(width) });
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
@@ -2832,6 +3215,16 @@ impl InteractiveMode {
         if let Some(dialog) = &mut self.ui_dialog {
             dialog.handle_input(data);
             if self.ui_reply.borrow().is_none() && self.custom_ui_reply.is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
+            self.drain_auth_ui_events();
+            return;
+        }
+        if let Some(dialog) = &mut self.login_dialog {
+            dialog.handle_input(data);
+            // senpi aborts the dialog signal on cancel; the login task then reports the neutral outcome.
+            if dialog.is_cancelled() && let Some(abort) = self.auth_abort.take() {
+                abort.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError", crate::login_outcome::LOGIN_CANCELLED_NOTICE)));
+            }
+            self.drain_auth_ui_events();
             return;
         }
         if let Some(input) = &mut self.rename_input {
