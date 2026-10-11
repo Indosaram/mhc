@@ -1,4 +1,14 @@
 use crate::{index::LOOP_TICK_ENTRY_TYPE,types::SentinelDeliveryState};
+/// Compaction-aware session entries for anchor presence, matching upstream
+/// `anchorPresent(ctx, ..)` which reads `ctx.sessionManager.buildContextEntries()`
+/// (`loop/index.ts:287`): entries dropped by an accepted compaction no longer anchor a reminder.
+pub fn compaction_aware_entries(context:&maho_ext_api::ExtensionContext)->Vec<maho_ext_api::SessionEntry> {
+    let entries=context.session_manager.get_branch();
+    let values:Vec<serde_json::Value>=entries.iter().map(|entry|entry.data.clone()).collect();
+    let surviving=maho_core::session_manager::build_context_entries(&values,context.session_manager.get_leaf_id().as_deref());
+    let ids:std::collections::BTreeSet<&str>=surviving.iter().filter_map(|value|value.get("id").and_then(serde_json::Value::as_str)).collect();
+    entries.into_iter().filter(|entry|ids.contains(entry.id.as_str())).collect()
+}
 pub fn anchor_present(entries:&[maho_ext_api::SessionEntry],loop_id:&str,delivery_id:Option<&str>)->bool {
     entries.iter().any(|entry| {
         if entry.data.get("customType").and_then(serde_json::Value::as_str)!=Some(LOOP_TICK_ENTRY_TYPE) { return false; }
@@ -37,5 +47,32 @@ pub fn restored_delivery_state(state:&SentinelDeliveryState,entries:&[maho_ext_a
         }
         let mut legacy=entry("custom","data","a","d"); legacy.data["data"].as_object_mut().unwrap().remove("loopId");
         assert!(anchor_present(&[legacy],"a",None));
+    }
+    struct BranchSession(Vec<maho_ext_api::SessionEntry>);
+    impl maho_ext_api::ToolSessionManager for BranchSession { fn session_id(&self)->&str { "s" } fn session_file(&self)->Option<&std::path::Path> { None } }
+    impl maho_ext_api::SessionManager for BranchSession {
+        fn get_entries(&self)->Vec<maho_ext_api::SessionEntry> { self.0.clone() }
+        fn get_branch(&self)->Vec<maho_ext_api::SessionEntry> { self.0.clone() }
+        fn get_leaf_id(&self)->Option<String> { self.0.last().map(|entry|entry.id.clone()) }
+        fn get_session_name(&self)->Option<String> { None }
+    }
+    fn value_entry(id:&str,parent:Option<&str>,kind:&str)->maho_ext_api::SessionEntry {
+        let mut data=serde_json::json!({"id":id,"type":kind});
+        if let Some(parent)=parent { data["parentId"]=parent.into(); }
+        maho_ext_api::SessionEntry { id:id.into(),parent_id:parent.map(str::to_owned),timestamp:String::new(),kind:kind.into(),data }
+    }
+    #[test] fn compaction_drops_entries_before_the_first_kept_id() {
+        let mut compaction=value_entry("compaction",Some("msg1"),"compaction"); compaction.data["firstKeptEntryId"]="msg2".into();
+        let branch=BranchSession(vec![value_entry("msg1",None,"message"),compaction,value_entry("msg2",Some("compaction"),"message"),value_entry("tick",Some("msg2"),"custom")]);
+        let mut context=crate::controller_tests::context(); context.session_manager=std::sync::Arc::new(branch);
+        let entries=compaction_aware_entries(&context);
+        let ids=entries.iter().map(|entry|entry.id.as_str()).collect::<Vec<_>>();
+        assert!(!ids.contains(&"msg1"),"compacted-away entry must not survive: {ids:?}");
+        assert!(ids.contains(&"compaction")&&ids.contains(&"msg2")&&ids.contains(&"tick"));
+    }
+    #[test] fn no_compaction_keeps_the_whole_branch() {
+        let branch=BranchSession(vec![value_entry("a",None,"message"),value_entry("b",Some("a"),"custom")]);
+        let mut context=crate::controller_tests::context(); context.session_manager=std::sync::Arc::new(branch);
+        assert_eq!(compaction_aware_entries(&context).iter().map(|entry|entry.id.clone()).collect::<Vec<_>>(),vec!["a".to_owned(),"b".to_owned()]);
     }
 }
