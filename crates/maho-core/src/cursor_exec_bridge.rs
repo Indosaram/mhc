@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 pub type ToolResolver = Arc<dyn Fn(&str) -> Option<AgentTool> + Send + Sync>;
 pub type EventEmitter = Arc<dyn Fn(AgentEvent, AbortSignal) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
-pub type ResultEmitter = Arc<dyn Fn(String, String, Value, ToolResultMessage, bool) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
+pub type ResultEmitter = Arc<dyn Fn(String, String, Value, maho_agent::types::AgentToolResult, bool) -> maho_ai::types::BoxFuture<'static, ()> + Send + Sync>;
 pub type Preflight = Arc<dyn Fn(String, String, Value) -> maho_ai::types::BoxFuture<'static, Option<String>> + Send + Sync>;
 
 pub struct CursorExecBridgeOptions {
@@ -94,19 +94,24 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
     };
     let args = Value::Object(args_object.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect());
     (options.emit_event)(AgentEvent::ToolExecutionStart { tool_call_id: id.clone(), tool_name: name.to_owned(), args: args.clone() }, signal.clone()).await;
-    let prepared = tool.prepare_arguments.as_ref().map(|prepare| prepare(args.clone())).unwrap_or(args.clone());
-    if !is_record(&prepared) { return error_result(id, name.to_owned(), format!("Tool \"{name}\" prepared non-object arguments")); }
-    let result = if let Some(preflight) = &options.preflight_tool_call {
-        match preflight(id.clone(), name.to_owned(), prepared.clone()).await {
-            Some(reason) => error_result(id.clone(), name.to_owned(), reason),
-            None => text_result(id.clone(), name.to_owned(), (tool.execute)(id.clone(), prepared, Some(signal.clone()), None).await),
+    let result = async {
+        let prepared = tool.prepare_arguments.as_ref().map(|prepare| prepare(args.clone())).unwrap_or(args.clone());
+        if !is_record(&prepared) { return error_result(id.clone(), name.to_owned(), format!("Tool \"{name}\" prepared non-object arguments")); }
+        if let Some(preflight) = &options.preflight_tool_call
+            && let Some(reason) = preflight(id.clone(), name.to_owned(), prepared.clone()).await {
+                return error_result(id.clone(), name.to_owned(), reason);
         }
-    } else {
-        text_result(id.clone(), name.to_owned(), (tool.execute)(id.clone(), prepared, Some(signal.clone()), None).await)
-    };
-    (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error }, signal).await;
+        if signal.aborted() || (options.get_abort_signal)().is_none() {
+            return error_result(id.clone(), name.to_owned(), "Tool execution has no active run");
+        }
+        text_result(id.clone(), name.to_owned(), (tool.execute)(id.clone(), prepared.clone(), Some(signal.clone()), None).await)
+    }.await;
+    (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error }, signal.clone()).await;
     if let Some(emit) = &options.emit_tool_result {
-        emit(id, name.to_owned(), args, result.clone(), result.is_error).await;
+        emit(id, name.to_owned(), args, maho_agent::types::AgentToolResult {
+            content: result.content.clone(), details: result.details.clone().unwrap_or(Value::Null), usage: result.usage,
+            is_error: Some(result.is_error), added_tool_names: result.added_tool_names.clone(), terminate: None,
+        }, result.is_error).await;
     }
     result
 }
@@ -135,7 +140,7 @@ pub fn create_cursor_exec_bridge(options: CursorExecBridgeOptions) -> CursorExec
         shell_stream: None, diagnostics: None,
         mcp: Some(Arc::new({ let shared = shared.clone(); move |a: CursorMcpCall| { let name = if a.tool_name.is_empty() { a.name } else { a.tool_name }; handler!(&shared, McpResult, name, a.tool_call_id, Value::Object(a.args)) } })),
         mcp_approval_preflight: None,
-        pi_read: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiReadExecArgs>| handler!(&shared, PiReadExecResult, "read", a.tool_call_id, object([("path", a.args.path.into()), ("offset", a.args.offset.map(Value::from).unwrap_or(Value::Null)), ("limit", a.args.limit.map(Value::from).unwrap_or(Value::Null))])) })),
+        pi_read: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiReadExecArgs>| { let id = a.tool_call_id; let parsed = maho_ai::api::cursor_agent::pi_args::pi_read_args(&a.args.path, a.args.offset.map(|value| value as f64), a.args.limit.map(|value| value as f64)); if let Some(parsed) = parsed { handler!(&shared, PiReadExecResult, "read", id, serde_json::json!({"path":parsed.path,"offset":parsed.offset,"limit":parsed.limit})) } else { Box::pin(async move { handler_result::<PiReadExecResult>(empty_result(id, "read".into())) }) } } })),
         pi_bash: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiBashExecArgs>| handler!(&shared, PiBashExecResult, "bash", a.tool_call_id, object([("command", a.args.command.into()), ("timeout", a.args.timeout.filter(|v| *v >= 0.0).map(Value::from).unwrap_or(Value::Null))])) })),
         pi_edit: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiEditExecArgs>| handler!(&shared, PiEditExecResult, "edit", a.tool_call_id, object([("path", a.args.path.into()), ("edits", serde_json::Value::Array(a.args.edits.into_iter().map(|e| serde_json::json!({"oldText":e.old_text,"newText":e.new_text})).collect()))])) })),
         pi_write: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiWriteExecArgs>| handler!(&shared, PiWriteExecResult, "write", a.tool_call_id, object([("path", a.args.path.into()), ("content", a.args.content.into())])) })),
@@ -176,6 +181,53 @@ mod tests {
         assert!(!result.is_error);
         assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text.is_empty()));
     }
+
+    #[test]
+    fn zero_limit_pi_read_returns_empty_success_without_dispatch() {
+        assert!(maho_ai::api::cursor_agent::pi_args::pi_read_args("file", None, Some(0.0)).is_none());
+        let result = empty_result("read-zero".into(), "read".into());
+        assert!(!result.is_error);
+        assert_eq!(result.tool_call_id, "read-zero");
+        assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn bridge_dispatches_tool_and_preserves_result_callback_identity() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results = observed.clone();
+        let tool = AgentTool {
+            label: "read".into(), prepare_arguments: None, replay: None, execution_mode: None,
+            tool: maho_ai::types::Tool { name: "read".into(), description: String::new(), parameters: json!({"type":"object"}), freeform: None, constrained_sampling: None },
+            execute: Arc::new(|id, args, signal, _| Box::pin(async move {
+                assert_eq!(id, "call-identity");
+                assert_eq!(args, json!({"path":"sample"}));
+                assert!(!signal.expect("active signal").aborted());
+                maho_agent::types::AgentToolResult::text("file contents")
+            })),
+        };
+        let handlers = create_cursor_exec_bridge(CursorExecBridgeOptions {
+            get_tool: Arc::new(move |name| (name == "read").then(|| tool.clone())),
+            emit_event: Arc::new(|_, _| Box::pin(async {})),
+            emit_tool_result: Some(Arc::new(move |id, name, args, result, error| {
+                let results = results.clone();
+                Box::pin(async move { results.lock().expect("results").push((id, name, args, result, error)); })
+            })),
+            preflight_tool_call: None,
+            get_abort_signal: Arc::new(move || Some(controller.signal())),
+        });
+        let result = handlers.read.expect("read handler")(ReadArgs { tool_call_id: "call-identity".into(), path: "sample".into(), offset: None, limit: None, encoding_hint: None }).await;
+        let CursorExecHandlerResult::ToolResult(result) = result else { panic!("expected tool result") };
+        assert!(!result.is_error);
+        let results = observed.lock().expect("results");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "call-identity");
+        assert_eq!(results[0].1, "read");
+        assert_eq!(results[0].2, json!({"path":"sample"}));
+        assert_eq!(results[0].3.content, result.content);
+        assert!(!results[0].4);
+    }
+
 
     #[test]
     fn bridge_registers_each_supported_handler_kind() {
