@@ -217,8 +217,9 @@ fn acquire_and_run<T>(
     lock_path: &Path,
     task: impl FnOnce() -> Result<T, JournalError>,
     cancel: Option<&dyn Fn() -> bool>,
+    wait_ms: u64,
 ) -> Result<T, JournalError> {
-    let deadline = crate::support::time::now_millis() as u64 + ACQUISITION_WAIT_MS;
+    let deadline = crate::support::time::now_millis() as u64 + wait_ms;
     let file = loop {
         if let Some(c) = cancel
             && c()
@@ -236,11 +237,20 @@ fn acquire_and_run<T>(
             Ok(f) => break f,
             Err(err) => {
                 let is_exist = err.kind() == std::io::ErrorKind::AlreadyExists;
-                let is_past_deadline = (crate::support::time::now_millis() as u64) >= deadline;
-                if !is_exist || is_past_deadline {
-                    return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(
-                        lock_path,
-                    )));
+                let is_past_deadline = wait_ms > 0 && (crate::support::time::now_millis() as u64) >= deadline;
+                if !is_exist {
+                    return Err(JournalError::Io(err));
+                }
+                if wait_ms == 0 {
+                    try_reclaim_stale_lock(lock_path);
+                    match options.open(lock_path) {
+                        Ok(f) => break f,
+                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path))),
+                        Err(err) => return Err(JournalError::Io(err)),
+                    }
+                }
+                if is_past_deadline {
+                    return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path)));
                 }
                 if let Some(c) = cancel
                     && c()
@@ -306,7 +316,24 @@ pub fn with_local_journal_lock<T>(
         return Err(JournalError::Aborted);
     }
 
-    acquire_and_run(lock_path, task, cancel)
+    acquire_and_run(lock_path, task, cancel, ACQUISITION_WAIT_MS)
+}
+
+pub fn try_with_local_journal_lock<T>(
+    lock_path: &Path,
+    task: impl FnOnce() -> Result<T, JournalError>,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> Result<T, JournalError> {
+    let mutex = local_path_mutex(lock_path);
+    let _in_process_guard = match mutex.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(JournalError::LockTimeout(JournalLockTimeoutError::new(lock_path)));
+        }
+    };
+    if cancel.is_some_and(|c| c()) { return Err(JournalError::Aborted); }
+    acquire_and_run(lock_path, task, cancel, 0)
 }
 
 /// Abstract lock contract for journal state operations.

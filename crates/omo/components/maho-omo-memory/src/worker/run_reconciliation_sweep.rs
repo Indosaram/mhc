@@ -52,6 +52,9 @@ pub fn sweep_reflection_run_orphans(
         Err(error) => return Err(error.to_string()),
     };
     let live_run_ids = collect_live_run_ids(context, &state)?;
+    if !context.identity.paths.repo.join(".git").exists() {
+        return Ok(());
+    }
     let repo = match GitMemoryRepo::open(&context.identity.paths.repo, &context.identity.id) {
         Ok(repo) => repo,
         Err(error) => {
@@ -350,11 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_sweep_reports_a_warning_without_failing_the_pass() {
+    fn a_missing_repository_is_skipped_without_warning() {
         let fixture = fixture();
         let logger = Recording::default();
 
-        // A run directory without a repository to sweep: the git listing cannot succeed.
         let missing = MemoryIdentity {
             id: fixture.identity.id.clone(),
             safe_slug: fixture.identity.safe_slug.clone(),
@@ -373,13 +375,76 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         let warnings = logger.warnings.lock().unwrap();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].0, "Reflection orphan sweep failed");
-        assert!(
-            warnings[0]
-                .1
-                .as_ref()
-                .is_some_and(|details| details.detail.is_some())
-        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn missing_and_uninitialized_repositories_are_not_swept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let identity = MemoryIdentity {
+            id: "sweep-agent".to_string(),
+            safe_slug: "sweep-agent".to_string(),
+            paths: build_identity_paths(dir.path(), "sweep-agent"),
+        };
+        std::fs::create_dir_all(&identity.paths.worktrees).expect("worktrees dir");
+        std::fs::create_dir_all(identity.paths.reflection.join("runs")).expect("runs dir");
+        let logger = Recording::default();
+
+        let missing_result = sweep_reflection_run_orphans(&ReflectionOrphanSweepContext {
+            identity: &identity,
+            reservation: &Reservation(ReservationState::default()),
+            now_ms: HOUR_MS,
+            logger: Some(&logger),
+            defer_on_scheduler_contention: false,
+        });
+        assert_eq!(missing_result, Ok(()));
+        assert!(logger.warnings.lock().unwrap().is_empty());
+
+        std::fs::create_dir_all(&identity.paths.repo).expect("repo dir");
+        let uninitialized_result = sweep_reflection_run_orphans(&ReflectionOrphanSweepContext {
+            identity: &identity,
+            reservation: &Reservation(ReservationState::default()),
+            now_ms: HOUR_MS,
+            logger: Some(&logger),
+            defer_on_scheduler_contention: false,
+        });
+        assert_eq!(uninitialized_result, Ok(()));
+        assert!(logger.warnings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_fresh_initialized_repository_is_swept_without_warning() {
+        let fixture = fixture();
+        let logger = Recording::default();
+
+        let result = sweep_reflection_run_orphans(&ReflectionOrphanSweepContext {
+            identity: &fixture.identity,
+            reservation: &Reservation(ReservationState::default()),
+            now_ms: memory_core::support::time::now_millis() as f64,
+            logger: Some(&logger),
+            defer_on_scheduler_contention: false,
+        });
+
+        assert_eq!(result, Ok(()));
+        assert!(logger.warnings.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn initialized_repository_still_reclaims_real_orphans() {
+        let fixture = fixture();
+        let orphan = orphan_worktree(&fixture, "run-gone");
+        let logger = Recording::default();
+
+        let result = sweep_reflection_run_orphans(&ReflectionOrphanSweepContext {
+            identity: &fixture.identity,
+            reservation: &Reservation(ReservationState::default()),
+            now_ms: memory_core::support::time::now_millis() as f64 + HOUR_MS,
+            logger: Some(&logger),
+            defer_on_scheduler_contention: false,
+        });
+
+        assert_eq!(result, Ok(()));
+        assert!(!orphan.dir.exists());
+        assert_eq!(logger.warnings.lock().unwrap().len(), 1);
     }
 }
