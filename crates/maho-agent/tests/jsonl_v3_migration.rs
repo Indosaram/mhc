@@ -53,6 +53,43 @@ async fn parent_case(label:&str, header:Value, expected:&str) { let r=root(label
 
 #[tokio::test] async fn opens_empty_legacy_data_only_branch(){let r=root("empty");let f=fs(&r);fixture(&f,&[],None).await;let repo=repo(f);let m=metadata(&repo).await;let s=repo.open(m,&BACKGROUND_CONTEXT).await.expect("open");assert!(s.find_entries(None,&BACKGROUND_CONTEXT).await.expect("entries").is_empty());assert!(s.get_value(&branch_tip("main"),&BACKGROUND_CONTEXT).await.expect("tip").is_none());assert!(s.get_value(&lane_state("main"),&BACKGROUND_CONTEXT).await.expect("state").is_none());assert!(s.get_value(&lane_config("main"),&BACKGROUND_CONTEXT).await.expect("config").is_none());s.close(&BACKGROUND_CONTEXT).await;std::fs::remove_dir_all(r).expect("cleanup")}
 
+#[tokio::test]
+async fn rejects_corrupt_complete_legacy_record_without_rewriting_source() {
+    let r = root("corrupt-complete");
+    let f = fs(&r);
+    let (path, content) = fixture(&f, &[msg("one", None, "first", NOW + 1000)], None).await;
+    let corrupted = format!("{content}not-json\n");
+    f.write_file(&path, corrupted.as_bytes(), &BACKGROUND_CONTEXT).await.expect("corrupt fixture");
+
+    let result = JsonlStorage::open(
+        JsonlStorageOptions { file_system: f.clone(), path: path.clone(), now: Some(Arc::new(|| NOW)) },
+        &BACKGROUND_CONTEXT,
+    ).await;
+    let error = match result { Ok(_) => panic!("corrupt complete record accepted"), Err(error) => error };
+    assert!(error.message.contains("Invalid legacy v3 JSONL record"), "{}", error.message);
+    assert_eq!(f.read_text_file(&path, &BACKGROUND_CONTEXT).await.expect("source remains readable"), corrupted);
+    std::fs::remove_dir_all(r).expect("cleanup");
+}
+
+#[tokio::test]
+async fn ignores_unterminated_legacy_tail_without_rewriting_source() {
+    let r = root("torn-tail");
+    let f = fs(&r);
+    let (path, content) = fixture(&f, &[msg("one", None, "first", NOW + 1000)], None).await;
+    let torn = format!("{}{}", content, msg("torn", Some("one"), "partial", NOW + 2000));
+    f.write_file(&path, torn.as_bytes(), &BACKGROUND_CONTEXT).await.expect("torn fixture");
+
+    let storage = JsonlStorage::open(
+        JsonlStorageOptions { file_system: f.clone(), path: path.clone(), now: Some(Arc::new(|| NOW)) },
+        &BACKGROUND_CONTEXT,
+    ).await.expect("open complete legacy prefix");
+    let entries = storage.scan_entries(EntryScan { order: Some(ScanOrder::Asc), ..Default::default() }, &BACKGROUND_CONTEXT).await.expect("entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(f.read_text_file(&path, &BACKGROUND_CONTEXT).await.expect("source unchanged"), torn);
+    storage.close(&BACKGROUND_CONTEXT).await;
+    std::fs::remove_dir_all(r).expect("cleanup");
+}
+
 async fn config_session(label:&str, records:Vec<Value>)->Box<dyn Session>{let r=root(label);let f=fs(&r);fixture(&f,&records,None).await;let repo=repo(f);let m=metadata(&repo).await;repo.open(m,&BACKGROUND_CONTEXT).await.expect("open")}
 #[tokio::test] async fn reparents_retained_child_through_config(){let s=config_session("reparent",vec![msg("one",None,"first",NOW+1000),model("model","one","anthropic","claude-sonnet-4-5",NOW+2000),thinking("think","model","high",NOW+3000),json!({"type":"active_tools_change","id":"tools","parentId":"think","timestamp":iso(NOW+4000),"activeToolNames":["read","bash"]}),msg("two",Some("tools"),"second",NOW+5000)]).await;let e=s.find_entries(Some(EntryQuery{order:Some(ScanOrder::Asc),..Default::default()}),&BACKGROUND_CONTEXT).await.expect("entries");assert_eq!(e.len(),2);assert_eq!(e[1].parent_id,e[0].id.clone().into());assert_eq!(s.get_value(&lane_config("main"),&BACKGROUND_CONTEXT).await.expect("config").expect("config").value["activeToolNames"],json!(["read","bash"]));s.close(&BACKGROUND_CONTEXT).await}
 #[tokio::test] async fn selected_physical_branch_configuration_wins(){let s=config_session("selected",vec![msg("root",None,"first",NOW+1000),model("selected-model","root","anthropic","selected",NOW+2000),thinking("selected-thinking","selected-model","high",NOW+3000),model("abandoned-model","root","openai","abandoned",NOW+4000),msg("tip",Some("selected-thinking"),"second",NOW+5000)]).await;let c=s.get_value(&lane_config("main"),&BACKGROUND_CONTEXT).await.expect("config").expect("config");assert_eq!(c.value["model"],json!({"provider":"anthropic","modelId":"selected"}));s.close(&BACKGROUND_CONTEXT).await}

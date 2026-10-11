@@ -203,7 +203,11 @@ fn parse_statement(s: &str, g: &mut Graph) {
     loop {
         i = skip(&a, i);
         if i >= a.len() { break; }
-        let Some((lf, rt, lk, lab, n)) = parse_link(&a, i) else { break };
+        let Some((lf, rt, lk, lab, n)) = parse_link(&a, i) else {
+            let dropped = a[i..].iter().collect::<String>();
+            g.warnings.push(format!("dropped, expected a link: \"{dropped}\""));
+            break;
+        };
         let Some((to, j)) = parse_node_group(&a, n, g) else { break };
         for &f0 in &prev {
             for &t0 in &to {
