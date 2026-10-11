@@ -124,9 +124,12 @@ fn place_td(ranks: &[usize], max_rank: usize, by: &[Vec<usize>], sizes: &NodeSiz
 fn place_lr(ranks:&[usize],max_rank:usize,by:&[Vec<usize>],sizes:&NodeSizes,graph:&Graph,placed:&mut[Placed])->RoutePlan{
     let col_w:Vec<usize>=by.iter().map(|r|r.iter().map(|&i|sizes.box_w[i]).max().unwrap_or(0)).collect(); let max_label=graph.edges.iter().filter(|e|e.from==e.to||ranks[e.to]==ranks[e.from]+1).filter_map(|e|e.label.as_ref()).map(|s|string_width(s).min(MAX_LABEL)).max().unwrap_or(0); let base_gap=(GAP_X+1).max(max_label+3);
     let centers=assign_positions(by,&sizes.lay_h,1,&graph.edges,ranks); let mut edge_bus=vec![0;graph.edges.len()];let mut tracks=vec![0;max_rank+1];for(r,track)in tracks.iter_mut().enumerate().take(max_rank){let s=bus_spans(graph,ranks,&centers,r,true);if !s.is_empty(){let(a,n)=assign_tracks(&s);for(i,x)in a{edge_bus[i]=x}*track=n;}}
-    let mut rank_x=vec![0;max_rank+1];for r in 1..=max_rank{rank_x[r]=rank_x[r-1]+col_w[r-1]+base_gap.max(tracks[r-1]+1)} let band_end=rank_x.iter().enumerate().map(|(r,x)|x+col_w[r]).collect(); let mut h=1;
+    let mut rank_x=vec![0;max_rank+1];for r in 1..=max_rank{rank_x[r]=rank_x[r-1]+col_w[r-1]+base_gap.max(tracks[r-1]+1)} let band_end=rank_x.iter().enumerate().map(|(r,x)|x+col_w[r]).collect();
+    let self_tails: Vec<usize> = by[max_rank].iter().filter(|&&i| sizes.extra_h[i] > 0 && sizes.self_label_w[i] > 0).map(|&i| 2 + sizes.self_label_w[i]).collect();
+    let canvas_w = rank_x[max_rank] + col_w[max_rank] + self_tails.iter().copied().max().unwrap_or(0);
+    let mut h=1;
     for(r,row)in by.iter().enumerate(){for &i in row{let x=rank_x[r];let y=sat(centers[i],half(sizes.box_h[i]+sizes.extra_h[i]));placed[i]=Placed{x,y,w:sizes.box_w[i],h:sizes.box_h[i],cx:x+half(sizes.box_w[i]),cy:y+half(sizes.box_h[i]),rank:r};h=h.max(y+sizes.box_h[i]+sizes.extra_h[i]);}}
-    let lanes=lane_spans(graph,ranks,placed,false);let mut edge_lane=vec![0;graph.edges.len()];let mut canvas_h=h;let mut lane_base=0;if !lanes.is_empty(){let(a,n)=assign_tracks(&lanes);for(i,s)in a{edge_lane[i]=s}canvas_h+=1+n;lane_base=h+1;} RoutePlan{canvas_w:rank_x[max_rank]+col_w[max_rank],canvas_h,band_end,edge_bus,lane_base,edge_lane}
+    let lanes=lane_spans(graph,ranks,placed,false);let mut edge_lane=vec![0;graph.edges.len()];let mut canvas_h=h;let mut lane_base=0;if !lanes.is_empty(){let(a,n)=assign_tracks(&lanes);for(i,s)in a{edge_lane[i]=s}canvas_h+=1+n;lane_base=h+1;} RoutePlan{canvas_w,canvas_h,band_end,edge_bus,lane_base,edge_lane}
 }
 
 pub fn layout_canvas(graph:&Graph,extras:&[NodeExtra])->CanvasResult{
@@ -332,6 +335,29 @@ mod tests {
         let sizes = NodeSizes { box_w: vec![3], box_h: vec![2], lay_w: vec![3], lay_h: vec![2], extra_h: vec![0], self_label_w: vec![0] };
         let mut placed = vec![Placed::default()]; let plan = place_lr(&[0], 0, &[vec![0]], &sizes, &g, &mut placed);
         assert_eq!(plan.canvas_w, 3); assert_eq!(placed[0].h, 2);
+    }
+
+    #[test]
+    fn place_lr_reserves_terminal_self_edge_label_tail() {
+        let mut self_edge = edge(0, 0);
+        self_edge.label = Some("back".into());
+        let g = Graph {
+            nodes: vec![super::super::graph::Node { label: "a".into(), shape: Shape::Rect }],
+            edges: vec![self_edge],
+            ..Graph::default()
+        };
+        let sizes = NodeSizes {
+            box_w: vec![7],
+            box_h: vec![2],
+            lay_w: vec![21],
+            lay_h: vec![4],
+            extra_h: vec![2],
+            self_label_w: vec![4],
+        };
+        let mut placed = vec![Placed::default()];
+        let plan = place_lr(&[0], 0, &[vec![0]], &sizes, &g, &mut placed);
+        assert_eq!(plan.canvas_w, 13);
+        assert_eq!(plan.canvas_h, 4);
     }
 
     #[test]
