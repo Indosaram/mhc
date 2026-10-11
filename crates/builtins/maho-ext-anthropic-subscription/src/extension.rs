@@ -10,14 +10,14 @@ pub struct AnthropicSubscriptionExtension {
 }
 
 impl AnthropicSubscriptionExtension {
-    pub fn native(oauth: Arc<crate::oauth_login::AnthropicSubscriptionOAuth>, executable: std::path::PathBuf, cwd: std::path::PathBuf, agent_dir: std::path::PathBuf, environment: std::collections::BTreeMap<String, String>) -> Self {
+    pub fn native(oauth: Arc<crate::oauth_login::AnthropicSubscriptionOAuth>, executable: std::path::PathBuf, source: Option<crate::executable::ExecutableSource>, cwd: std::path::PathBuf, agent_dir: std::path::PathBuf, environment: std::collections::BTreeMap<String, String>) -> Self {
         let registry = Arc::new(tokio::sync::Mutex::new(crate::session_stream::SessionRegistry::default()));
         let watch = Arc::new(std::sync::Mutex::new(crate::tool_watch::ToolWatch::default()));
         let settings = oauth.settings.clone();
         let stream = {
             let oauth = oauth.clone(); let registry = registry.clone(); let watch = watch.clone();
             Arc::new(move |model: &maho_ai::model::Model, context: &maho_ai::types::Context, options| {
-                crate::stream::stream_anthropic_subscription(model.clone(), context.clone(), options, crate::stream::StreamDeps { executable: executable.clone(), cwd: cwd.clone(), agent_dir: agent_dir.clone(), environment: environment.clone(), settings: (oauth.settings)(), store: oauth.store.clone(), refresh: oauth.flow.clone(), registry: registry.clone(), watch: watch.clone(), now: Arc::new(maho_ai::utils::diagnostics::now_ms) })
+                crate::stream::stream_anthropic_subscription(model.clone(), context.clone(), options, crate::stream::StreamDeps { executable: executable.clone(), source, cwd: cwd.clone(), agent_dir: agent_dir.clone(), environment: environment.clone(), settings: (oauth.settings)(), store: oauth.store.clone(), refresh: oauth.flow.clone(), registry: registry.clone(), watch: watch.clone(), now: Arc::new(maho_ai::utils::diagnostics::now_ms) })
             }) as maho_ext_api::types::ProviderStream
         };
         Self { oauth, stream, settings, registry, watch }

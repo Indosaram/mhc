@@ -86,6 +86,7 @@ pub fn anthropic_subscription_extension(request: OAuthExtensionRequest) -> Resul
     Ok(Box::new(maho_ext_anthropic_subscription::extension::AnthropicSubscriptionExtension::native(
         oauth,
         executable,
+        resolution.source,
         request.cwd,
         request.agent_dir,
         request.environment,
