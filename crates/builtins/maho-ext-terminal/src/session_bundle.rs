@@ -50,6 +50,10 @@ impl TerminalSessionBundle {
         Self {manager,monitors,backgrounds,routing:Arc::new(Mutex::new(Routing::default())),ended_routing:Arc::new(Mutex::new(EndedRouting::default())),parked_exits:Arc::new(Mutex::new(indexmap::IndexSet::new())),state_sink:None,background_state:None,background_exit:None}
     }
     pub fn adopt(&self,source:&TerminalSessionBundle) {
+        // senpi claims the parked bundle as-is (`state.bundle = claimed`). When the parked bundle
+        // shares this generation's arcs, taking from it would swap in empty state and drop the
+        // live manager, killing every running terminal and monitor process group.
+        if Arc::ptr_eq(&self.manager,&source.manager) {return;}
         *self.manager.lock().expect("terminal manager")=std::mem::take(&mut *source.manager.lock().expect("terminal manager"));
         *self.monitors.lock().expect("monitor registry")=std::mem::replace(&mut *source.monitors.lock().expect("monitor registry"),MonitorRegistry::new(|_|{}));
         *self.backgrounds.lock().expect("terminal backgrounds")=std::mem::take(&mut *source.backgrounds.lock().expect("terminal backgrounds"));
@@ -116,6 +120,18 @@ mod tests {
         let mut target=TerminalSessionBundle::new(4);target.adopt(&source);
         assert_eq!(target.manager.lock().unwrap().size(),1);assert_eq!(target.background_snapshot()[0].id,id);assert_eq!(source.manager.lock().unwrap().size(),0);assert!(source.background_snapshot().is_empty());
         target.teardown().unwrap();
+    }
+    #[test]
+    fn adopt_same_bundle_keeps_live_sessions() {
+        let mut live=TerminalSessionBundle::new(2);
+        let id=live.manager.lock().unwrap().create("sleeper",maho_pty::PtySessionOptions::new("/bin/sh").arg("-c").arg("read line")).unwrap();
+        let parked=live.clone();
+        live.adopt(&parked);
+        let mut manager=live.manager.lock().unwrap();
+        assert_eq!(manager.size(),1);
+        assert!(!manager.get(&id).unwrap().exited().unwrap());
+        drop(manager);
+        live.teardown().unwrap();
     }
     #[tokio::test]
     async fn parked_monitor_completion_flushes_into_new_owner() {
