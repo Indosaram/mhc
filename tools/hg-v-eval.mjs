@@ -134,7 +134,7 @@ async function modelProbe(ctx, name, toolName, params, expected) {
 	};
 	const deadline = setTimeout(()=>{error = "bounded scenario deadline exceeded"; finish();},45000);
 	try {
-		const ready = new Promise((resolve,reject)=>{const watcher=watch(dirs.root,()=>{if(existsSync(path)){watcher.close();clearTimeout(timer);resolve();}}); const timer=setTimeout(()=>{watcher.close();reject(new Error("host socket readiness timeout"));},10000);});
+		const ready = new Promise((resolve,reject)=>{const watcher=watch(dirs.root,()=>{if(existsSync(path)&&(statSync(path).mode&0o777)===0o600){watcher.close();clearTimeout(timer);resolve();}}); const timer=setTimeout(()=>{watcher.close();reject(new Error("host socket readiness timeout"));},10000);});
 		proc = Bun.spawn(invocation,{cwd:dirs.cwd,env:{PATH:process.env.PATH,HOME:dirs.home,MAHO_CODING_AGENT_DIR:dirs.agent,MAHO_MEMORY_HOME:join(dirs.home,"memory"),TMPDIR:dirs.root},stdin:"ignore",stdout:"pipe",stderr:"pipe"});
 		stdout = new Response(proc.stdout).text(); stderr = new Response(proc.stderr).text();
 		await ready;
