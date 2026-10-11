@@ -18,3 +18,4 @@ pub fn with_auth_guidance(error: &anyhow::Error) -> String {
     };
     match hint { Some(hint) => format!("{message}\n{hint}"), None => message }
 }
+
