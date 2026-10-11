@@ -11,5 +11,5 @@ pub async fn process_image(bytes: &[u8], mime_type: &str, options: ProcessImageO
         let mut hints = Vec::new(); if let Some(from) = converted.filter(|from| !from.is_empty() && from != &result.mime_type) { hints.push(format!("[Image converted from {from} to {}.]", result.mime_type)); }
         if let Some(note) = super::image_resize::format_dimension_note(&result) { hints.push(note); }
         Ok(ProcessedImage { data: result.data, mime_type: result.mime_type, hints })
-    } else { let hints = converted.filter(|from| !from.is_empty() && from != mime).map(|from| vec![format!("[Image converted from {from} to {mime}].")]).unwrap_or_default(); Ok(ProcessedImage { data: base64::engine::general_purpose::STANDARD.encode(bytes), mime_type: mime.to_owned(), hints }) }
+    } else { let hints = converted.filter(|from| !from.is_empty() && from != mime).map(|from| vec![format!("[Image converted from {from} to {mime}.]")]).unwrap_or_default(); Ok(ProcessedImage { data: base64::engine::general_purpose::STANDARD.encode(bytes), mime_type: mime.to_owned(), hints }) }
 }
