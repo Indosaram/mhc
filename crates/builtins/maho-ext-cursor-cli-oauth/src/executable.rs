@@ -73,6 +73,10 @@ mod tests {
         assert_eq!(resolve(&[("PATH",":/first/bin::/second/bin:")],None,&["/second/bin/cursor-agent"]).unwrap(),"/second/bin/cursor-agent");
     }
     #[test]
+    fn path_search_uses_first_available_nonempty_entry() {
+        assert_eq!(resolve(&[("PATH","/first/bin:/second/bin")],None,&["/first/bin/cursor-agent","/second/bin/cursor-agent"]).unwrap(),"/first/bin/cursor-agent");
+    }
+    #[test]
     fn newest_installed_version() {
         assert_eq!(resolve(&[],None,&["/home/tester/.local/share/cursor-agent/versions/2026.08.10-old/cursor-agent","/home/tester/.local/share/cursor-agent/versions/2026.08.11-new/cursor-agent"]).unwrap(),"/home/tester/.local/share/cursor-agent/versions/2026.08.11-new/cursor-agent");
     }

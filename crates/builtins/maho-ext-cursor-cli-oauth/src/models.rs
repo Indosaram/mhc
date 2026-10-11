@@ -110,4 +110,35 @@ mod tests {
         assert_eq!(models.len(),1);assert_eq!(models[0].id,"model-a");assert_eq!(models[0].max_tokens,64000);assert_eq!(models[0].input,vec![InputModality::Text]);
         assert!(parse_models_listing("model-a - Model A\nERROR - authentication unavailable\n").is_empty());
     }
+    #[test]
+    fn parses_the_committed_listing_fixture() {
+        let listing=include_str!("../tests/fixtures/cursor-agent-models.txt");
+        assert!(listing.len()>8192,"fixture is the full capture");
+        let models=parse_models_listing(listing);
+        assert_eq!(models.len(),93,"the capture collapses into 93 grouped identities");
+        assert_eq!(models.iter().filter(|model|model.reasoning).count(),27);
+        let by_id:std::collections::BTreeMap<_,_>=models.iter().map(|model|(model.id.as_str(),model)).collect();
+        assert_eq!(by_id["gemini-3.7-flash"].context_window,1_048_576);
+        assert_eq!(by_id["gpt-5.6-sol"].context_window,1_000_000);
+        assert_eq!(by_id["composer-2.5"].context_window,200_000);
+        assert!(!by_id["composer-2.5-fast"].reasoning);
+        assert!(models.iter().all(|model|model.max_tokens==64000));
+    }
+    #[test]
+    fn groups_unlisted_level_variants_into_one_identity_with_variant_ids() {
+        let listing=["grok-4.7-low - Grok 4.7 Low","grok-4.7-medium - Grok 4.7 Medium","grok-4.7-high - Grok 4.7 High","grok-4.7-xhigh - Grok 4.7 Extra High","grok-4.7-xhigh-fast - Grok 4.7 Extra High Fast",""].join("\n");
+        let models=parse_models_listing(&listing);
+        let grok=models.iter().find(|model|model.id=="grok-4.7").expect("grok-4.7");
+        assert!(grok.reasoning);
+        assert_eq!(grok.upstream_model_id.as_deref(),Some("grok-4.7-medium"));
+        let reasoning=grok.compat.as_ref().expect("compat").0.get("cursorReasoning").expect("cursorReasoning");
+        let variant_ids=reasoning["variantIds"].as_object().expect("variantIds");
+        assert_eq!(variant_ids["low"],"grok-4.7-low");
+        assert_eq!(variant_ids["medium"],"grok-4.7-medium");
+        assert_eq!(variant_ids["high"],"grok-4.7-high");
+        assert_eq!(variant_ids["xhigh"],"grok-4.7-xhigh");
+        let fast=models.iter().find(|model|model.id=="grok-4.7-xhigh-fast").expect("fast");
+        assert!(!fast.reasoning);
+        assert!(fast.compat.as_ref().is_none_or(|compat|compat.0.get("cursorReasoning").is_none()));
+    }
 }
