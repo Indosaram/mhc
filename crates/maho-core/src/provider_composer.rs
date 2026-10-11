@@ -56,7 +56,7 @@ fn model_from_json(id: &str, definition: &ModelsJsonModel, config: &ModelsJsonPr
         thinking_level_map: definition.thinking_level_map.clone(), input: definition.input.clone().unwrap_or_else(|| vec![maho_ai::types::InputModality::Text]),
         cost: definition.cost.clone().unwrap_or_default(), context_window: definition.context_window.unwrap_or(128000.0) as u64,
         max_tokens: definition.max_tokens.unwrap_or(16384.0) as u64, sampling_params: definition.sampling_params.clone(), headers: None,
-        cache_retention: definition.cache_retention.or(config.cache_retention), upstream_model_id: None, service_tier: None,
+        cache_retention: definition.cache_retention.or(config.cache_retention), upstream_model_id: definition.upstream_model_id.clone(), service_tier: definition.service_tier,
         recover_text_tool_calls: definition.recover_text_tool_calls, compat: merge_compat(config.compat.as_ref(), definition.compat.as_ref()),
     })
 }

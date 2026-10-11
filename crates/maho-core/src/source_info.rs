@@ -61,7 +61,8 @@ impl SourceOrigin {
 }
 
 /// `SourceInfo`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceInfo {
     pub path: String,
     pub source: String,

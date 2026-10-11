@@ -71,6 +71,11 @@ impl AbortSignal {
         self.state().reason.is_some()
     }
 
+    /// Identity comparison (`signalA === signalB`): true only for clones of the same signal.
+    pub fn same_signal(&self, other: &AbortSignal) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn reason(&self) -> Option<AbortReason> {
         self.state().reason.clone()
     }
