@@ -27,6 +27,8 @@ chrono = { version = "=0.4.45", features = ["clock"] }
 icu_collator = "=2.3.1"
 base64 = "=0.22.1"
 semver = "=1.0.27"
+anyhow = "=1.0.104"
+async-trait = "=0.1.92"
 
 [dev-dependencies]
 tempfile = "=3.27.0"

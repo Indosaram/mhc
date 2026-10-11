@@ -5,6 +5,11 @@ pub struct InteractiveUiHost(pub Rc<dyn maho_tui::components::editor::EditorTuiH
 impl ExtensionTuiHost for InteractiveUiHost {
     fn request_render(&self) { self.0.request_render(); }
     fn dimensions(&self) -> (u16,u16) { self.1.get() }
+    fn dimensions_reader(&self) -> Rc<dyn Fn() -> (u16,u16)> {
+        let dimensions = self.1.clone();
+        Rc::new(move || dimensions.get())
+    }
+    fn full_redraws(&self) -> u64 { self.0.full_redraws() }
 }
 
 pub struct InteractiveFooterData {
