@@ -151,11 +151,12 @@ pub fn omo_components(
     components.push(component("ulw-execute-continuation", maho_omo_start_work_continuation::StartWorkContinuationComponent::default()));
     // The loop's registration-time log has no context; bind the shared runtime logger at
     // construction (same pattern as config-watch below) so the production path logs too.
-    let loop_env = options.env.clone();
     components.push(OmoSenpiComponent::from_context_register("ulw-loop", move |api, runtime| {
         use maho_ext_api::Extension;
-        let mut component = maho_omo_ulw_loop::index::UlwLoopComponent::from_env(&loop_env);
-        component.logger = Some(runtime.logger());
+        let component = maho_omo_ulw_loop::index::UlwLoopComponent {
+            logger: Some(runtime.logger()),
+            ..Default::default()
+        };
         component.register(api);
     }));
     components.push(component("todo-fanout-reminder", maho_omo_todo_fanout_reminder::TodoFanoutReminderComponent::default()));

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use crate::runtime::UlwLoopError;
 use crate::surface::UlwLoopToolkitSurface;
 
-pub const ULW_LOOP_CREATE_GOALS_COMMAND: &str = "omo-agent-toolkit ulw-loop create-goals --brief \"<brief>\" --json";
+pub const ULW_LOOP_CREATE_GOALS_COMMAND: &str = "mhc ulw-loop create-goals --brief \"<brief>\" --json";
 
 pub fn create_goals_action(surface: &UlwLoopToolkitSurface) -> String {
     match surface {

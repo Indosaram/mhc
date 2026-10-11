@@ -167,9 +167,9 @@ fn render_resume_directive(plan: &UlwLoopPlan, goal: &UlwLoopItem, session_id: &
     vec![
         format!("The ulw-loop run in this session still has unfinished goals (next: {} — {}).", goal.id, goal.title),
         "The turn ended before the loop completed. Resume it now:".to_string(),
-        format!("1. Run `omo-agent-toolkit ulw-loop status{option} --json` to reload the plan, the active goal, and currentAttemptDir."),
+        format!("1. Run `mhc ulw-loop status{option} --json` to reload the plan, the active goal, and currentAttemptDir."),
         "2. Continue the active goal's remaining success criteria, recording evidence with record-evidence.".to_string(),
-        format!("3. Checkpoint through `omo-agent-toolkit ulw-loop checkpoint{option}` when the goal's criteria are proven; a complete checkpoint prints the next goal instruction."),
+        format!("3. Checkpoint through `mhc ulw-loop checkpoint{option}` when the goal's criteria are proven; a complete checkpoint prints the next goal instruction."),
         "If the loop is genuinely blocked on the user, checkpoint the goal as blocked with the reason instead.".to_string(),
     ].join("\n")
 }

@@ -838,7 +838,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
     fn get_scoped_models(&self) -> Vec<maho_ext_api::ScopedModel> { self.session().map_or_else(|_| Vec::new(), |session| session.scoped_models().into_iter().map(|model|
         maho_ext_api::ScopedModel { model: model.model, thinking_level: model.thinking_level, service_tier: model.service_tier }).collect()) }
     fn get_agent_dir(&self) -> std::path::PathBuf { self.session().map_or_else(|_| Default::default(), |session| session.agent_dir().into()) }
-    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| !session.is_streaming() && !session.settling_with_background_work.load(Ordering::SeqCst)) }
+    fn is_idle(&self) -> bool { self.session().is_ok_and(|session| session.is_idle() && !session.settling_with_background_work.load(Ordering::SeqCst)) }
     fn is_project_trusted(&self) -> bool { self.session().is_ok_and(|session| session.with_settings_manager(|manager| manager.is_project_trusted())) }
     fn get_signal(&self) -> Option<maho_ext_api::AbortSignal> { EXTENSION_EVENT_SIGNAL.try_with(Clone::clone).ok().or_else(|| self.session().ok()?.state().extension_event_signal.clone()) }
     fn get_compaction_preparation(&self) -> Option<maho_ext_api::CompactionPreparationDetails> { EXTENSION_COMPACTION_PREPARATION.try_with(Clone::clone).ok() }
@@ -1126,68 +1126,11 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
 
 impl maho_ext_api::ExtensionActions for SessionExtensionActions {
     fn send_message(&self, message: maho_ext_api::CustomMessage, options: maho_ext_api::SendMessageOptions) -> Result<(), maho_ext_api::ExtensionFailure> {
-        let session = self.session()?;
-        let deferred_session = session.clone();
-        let deferred_message = message.clone();
-        let deferred_options = options.clone();
-        let deferred_generation = session.monitor_generation.load(Ordering::SeqCst);
-        let deferred_abort_generation = session.user_abort_generation.load(Ordering::SeqCst);
-        let deferred = if options.trigger_turn {
-            lock(&session.settled_delivery).defer_trigger_turn(move |claim| {
-                let guard = deferred_session.work_barrier.begin();
-                tokio::spawn(async move {
-                    if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
-                        || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
-                        claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
-                        return;
-                    }
-                    claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::Delegated);
-                    if let Err(error) = maho_ext_api::ExtensionActions::send_message(
-                        &SessionExtensionActions(Arc::downgrade(&deferred_session.inner)), deferred_message, deferred_options,
-                    ) { deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
-                    drop(guard);
-                });
-            })
-        } else {
-            lock(&session.settled_delivery).defer(Box::new(move || {
-                if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
-                    || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation { return; }
-                if let Err(error) = maho_ext_api::ExtensionActions::send_message(
-                    &SessionExtensionActions(Arc::downgrade(&deferred_session.inner)), deferred_message, deferred_options,
-                ) { deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); }
-            }))
-        };
-        if deferred { return Ok(()); }
         let custom: maho_agent::harness::messages::CustomMessage = serde_json::from_value(serde_json::json!({
             "role":"custom","customType":message.custom_type,"content":message.content,"display":message.display,
             "details":message.details,"timestamp":maho_ai::utils::diagnostics::now_ms(),
         })).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-        let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom.clone()));
-        if options.deliver_as == Some(maho_ext_api::DeliverAs::NextTurn) {
-            session.state().pending_next_turn_messages.push(agent_message);
-            return Ok(());
-        }
-        if (session.is_streaming() || session.is_compacting()) && options.trigger_turn {
-            match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => session.agent.follow_up(agent_message), _ => session.agent.steer(agent_message) }
-        } else if session.is_streaming() {
-            session.state().pending_custom_messages.push(custom);
-        } else {
-            session.append_extension_custom_message(custom).map_err(maho_ext_api::ExtensionFailure::new)?;
-            if options.trigger_turn {
-                let guard = session.work_barrier.begin();
-                let generation = session.user_abort_generation.load(Ordering::SeqCst);
-                let runtime_generation = session.monitor_generation.load(Ordering::SeqCst);
-                tokio::spawn(async move {
-                    if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
-                        drop(guard);
-                        return;
-                    }
-                    if let Err(error) = session.continue_session_internal(Some(generation)).await { session.emit(AgentSessionEvent::ContinuationError { error_message: error }); }
-                    drop(guard);
-                });
-            }
-        }
-        Ok(())
+        self.session()?.send_custom_message_content_inner(custom, options)
     }
     fn send_user_message(&self, content: maho_ext_api::UserMessageContent, options: maho_ext_api::SendUserMessageOptions) -> Result<(), maho_ext_api::ExtensionFailure> {
         let session = self.session()?;
@@ -5711,6 +5654,92 @@ impl AgentSession {
             .map_err(|error| error.message)
     }
 
+    fn send_custom_message_content_inner(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        options: maho_ext_api::SendMessageOptions,
+    ) -> Result<(), maho_ext_api::ExtensionFailure> {
+        let deferred_session = self.clone();
+        let deferred_message = message.clone();
+        let deferred_options = options.clone();
+        let deferred_generation = self.monitor_generation.load(Ordering::SeqCst);
+        let deferred_abort_generation = self.user_abort_generation.load(Ordering::SeqCst);
+        let deferred = if options.trigger_turn {
+            lock(&self.settled_delivery).defer_trigger_turn(move |claim| {
+                let guard = deferred_session.work_barrier.begin();
+                tokio::spawn(async move {
+                    if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                        || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation {
+                        claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::FinishedWithoutStart);
+                        return;
+                    }
+                    claim.resolve(crate::agent_settled_delivery::DeferredTurnDisposition::Delegated);
+                    if let Err(error) = deferred_session.send_custom_message_content_inner(deferred_message, deferred_options) {
+                        deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+                    }
+                    drop(guard);
+                });
+            })
+        } else {
+            lock(&self.settled_delivery).defer(Box::new(move || {
+                if deferred_session.state().disposed || deferred_session.monitor_generation.load(Ordering::SeqCst) != deferred_generation
+                    || deferred_session.user_abort_generation.load(Ordering::SeqCst) != deferred_abort_generation { return; }
+                if let Err(error) = deferred_session.send_custom_message_content_inner(deferred_message, deferred_options) {
+                    deferred_session.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
+                }
+            }))
+        };
+        if deferred { return Ok(()); }
+        let agent_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message.clone()));
+        if options.deliver_as == Some(maho_ext_api::DeliverAs::NextTurn) {
+            self.state().pending_next_turn_messages.push(agent_message);
+            return Ok(());
+        }
+        if (self.is_streaming() || self.is_compacting()) && options.trigger_turn {
+            match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(agent_message), _ => self.agent.steer(agent_message) }
+        } else if self.is_streaming() {
+            self.state().pending_custom_messages.push(message);
+        } else {
+            self.append_extension_custom_message(message).map_err(maho_ext_api::ExtensionFailure::new)?;
+            if options.trigger_turn {
+                let guard = self.work_barrier.begin();
+                let generation = self.user_abort_generation.load(Ordering::SeqCst);
+                let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
+                let session = self.clone();
+                tokio::spawn(async move {
+                    if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
+                        drop(guard);
+                        return;
+                    }
+                    if let Err(error) = session.continue_session_internal(Some(generation)).await {
+                        session.emit(AgentSessionEvent::ContinuationError { error_message: error });
+                    }
+                    drop(guard);
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn send_custom_message_content(
+        &self,
+        custom_type: String,
+        content: maho_agent::harness::messages::CustomMessageContent,
+        display: bool,
+        details: Option<Value>,
+        options: maho_ext_api::SendMessageOptions,
+    ) -> Result<(), String> {
+        let message = maho_agent::harness::messages::CustomMessage {
+            role: "custom".to_owned(),
+            custom_type,
+            content,
+            display,
+            details,
+            timestamp: maho_ai::utils::diagnostics::now_ms(),
+        };
+        self.send_custom_message_content_inner(message, options).map_err(|error| error.message)
+    }
+
     fn emit_entry_appended(&self, entry_id: &str) {
         if self.state().extension_mode != ExtensionMode::Rpc {
             return;
@@ -9540,6 +9569,19 @@ mod tests {
             maho_agent::types::AgentEvent::TurnEnd { message, .. }
         ) if message == &replacement));
         assert_eq!(session.state().turn_index, 1);
+    }
+
+    #[tokio::test]
+    async fn extension_idle_tracks_prompt_work_before_streaming() {
+        let session = test_session();
+        let actions = SessionExtensionActions(Arc::downgrade(&session.inner));
+        assert!(maho_ext_api::ExtensionContextActions::is_idle(&actions));
+        let work = session.work_barrier.begin();
+        assert!(!session.is_streaming());
+        assert!(!maho_ext_api::ExtensionContextActions::is_idle(&actions));
+        drop(work);
+        assert!(maho_ext_api::ExtensionContextActions::is_idle(&actions));
+        session.dispose().await;
     }
 
     #[tokio::test]
