@@ -1742,6 +1742,7 @@ impl AgentSession {
             ),
         );
 
+        session.install_after_tool_call_hook();
         Ok(session)
     }
 
@@ -4949,15 +4950,14 @@ impl AgentSession {
                     if let Some(is_error) = rewrite.is_error { result.is_error = Some(is_error); }
                     if let Some(usage) = rewrite.usage { result.usage = Some(usage); }
                 }
-                let normalized = normalize_tool_result_images(
-                    &result.content,
-                    Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
-                ).await;
-                result.content = normalized.into_owned();
                 Ok::<(), String>(())
             }.await;
             hook.map_err(|message| ExecuteToolError { code: "blocked".to_owned(), tool_name: tool_name.to_owned(), message, active_tools })?;
         }
+        result.content = normalize_tool_result_images(
+            &result.content,
+            Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
+        ).await.into_owned();
         Ok(result)
         }).await
     }
@@ -5241,29 +5241,6 @@ impl AgentSession {
             })
         })));
         let weak = Arc::downgrade(&self.inner);
-        self.agent.set_after_tool_call(Some(Arc::new(move |context, _| {
-            let weak = weak.clone();
-            Box::pin(async move {
-                let inner = weak.upgrade()?;
-                let session = AgentSession { inner };
-                let mut guard = session.extension_runner.lock().await.clone();
-                let runner = guard.as_mut()?;
-                let content = serde_json::from_value(serde_json::to_value(context.result.content.clone()).ok()?).ok()?;
-                let rewrite = runner.emit_tool_result(maho_ext_api::ToolResultEvent {
-                    tool_call_id: context.tool_call.id, tool_name: context.tool_call.name, input: context.args,
-                    content, details: Some(context.result.details), is_error: context.is_error, usage: context.result.usage,
-                }).await.ok().flatten()?;
-                let content = normalize_tool_result_images(
-                    &rewrite.content.as_ref().and_then(|content| serde_json::to_value(content).ok()).and_then(|content| serde_json::from_value(content).ok()).unwrap_or(context.result.content.clone()),
-                    Some(session.with_settings_manager(SettingsManager::get_image_auto_resize)),
-                ).await.into_owned();
-                Some(maho_agent::types::AfterToolCallResult {
-                    content: Some(serde_json::from_value(serde_json::to_value(content).ok()?).ok()?),
-                    details: rewrite.details, is_error: rewrite.is_error, usage: rewrite.usage, terminate: None,
-                })
-            })
-        })));
-        let weak = Arc::downgrade(&self.inner);
         self.agent.set_transform_context(Some(Arc::new(move |messages, signal| {
             let weak = weak.clone(); Box::pin(async move {
                 let Some(inner) = weak.upgrade() else { return messages; };
@@ -5472,6 +5449,58 @@ impl AgentSession {
         if let Some(error) = error {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
+    }
+
+    fn install_after_tool_call_hook(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_after_tool_call(Some(Arc::new(move |context, _| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                session.emit_after_tool_call_hooks(context.tool_call, context.args, context.result, context.is_error).await
+            })
+        })));
+    }
+
+    /// Pinned `_emitAfterToolCallHooks`: run the extension `tool_result` hook, then normalize images.
+    async fn emit_after_tool_call_hooks(&self, tool_call: maho_agent::types::AgentToolCall, args: Value, result: AgentToolResult, is_error: bool) -> Option<maho_agent::types::AfterToolCallResult> {
+        let mut guard = self.extension_runner.lock().await.clone();
+        let original_content = result.content.clone();
+        let rewrite = if let Some(runner) = guard.as_mut() {
+            let content = serde_json::from_value(serde_json::to_value(original_content.clone()).ok()?).ok()?;
+            runner.emit_tool_result(maho_ext_api::ToolResultEvent {
+                tool_call_id: tool_call.id, tool_name: tool_call.name, input: args,
+                content, details: Some(result.details), is_error, usage: result.usage,
+            }).await.ok().flatten()
+        } else { None };
+        let content = normalize_tool_result_images(
+            &rewrite.as_ref().and_then(|rewrite| rewrite.content.as_ref())
+                .and_then(|content| serde_json::to_value(content).ok())
+                .and_then(|content| serde_json::from_value(content).ok())
+                .unwrap_or(original_content.clone()),
+            Some(self.with_settings_manager(SettingsManager::get_image_auto_resize)),
+        ).await.into_owned();
+        if rewrite.is_none() && content == original_content { return None; }
+        let (details, is_error, usage) = rewrite.map_or((None, Some(is_error), None), |rewrite|
+            (rewrite.details, Some(rewrite.is_error.unwrap_or(is_error)), rewrite.usage));
+        Some(maho_agent::types::AfterToolCallResult {
+            content: Some(serde_json::from_value(serde_json::to_value(content).ok()?).ok()?),
+            details, is_error, usage, terminate: None,
+        })
+    }
+
+    /// Pinned `emitExecBridgeToolResult`: Cursor exec already ran the tool; still emit
+    /// `tool_result` so plan-touch trackers see `.omo/plans` writes.
+    pub async fn emit_exec_bridge_tool_result(&self, tool_name: String, tool_call_id: String, args: Value, result: AgentToolResult, is_error: bool) {
+        let arguments = args.as_object().cloned().unwrap_or_default();
+        let tool_call = maho_agent::types::AgentToolCall { id: tool_call_id, name: tool_name, arguments, ..Default::default() };
+        self.emit_after_tool_call_hooks(tool_call, args, result, is_error).await;
+    }
+
+    /// Pinned sdk `cursorExecHandlers`: the Agent asks this factory for one bridge per Cursor run.
+    pub fn set_cursor_exec_bridge_factory(&self, factory: Arc<dyn Fn(Option<maho_ai::utils::abort::AbortSignal>) -> Arc<maho_ai::api::cursor_agent::types::CursorExecHandlers> + Send + Sync>) {
+        self.agent.set_cursor_exec_handlers(Some(maho_agent::types::CursorExecHandlersConfig::Factory(factory)));
     }
 
     pub async fn bind_extensions(&self, bindings: ExtensionBindings) {
@@ -7058,6 +7087,160 @@ mod tests {
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
         }).expect("tool result");
         assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "rewritten");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_resolves_registered_search_tool_on_first_call() {
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "lazy-call".to_owned(), name: "mcp_fake_echo".to_owned(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        let mut definition = test_definition("mcp_fake_echo");
+        definition.exposure = Some(ToolExposure::Search);
+        definition.allow_lazy_activation = Some(true);
+        let mut tool = test_tool("mcp_fake_echo");
+        tool.execute = Arc::new(|_, _, _, _| Box::pin(async { AgentToolResult::text("mcp_fake_echo") }));
+        session.register_tool_definition(definition, empty_source_info(), tool);
+        assert!(!session.get_active_tool_names().iter().any(|name| name == "mcp_fake_echo"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded lazy tool turn").expect("prompt");
+        let messages = session.messages();
+        let result = messages.iter().find_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result), _ => None,
+        }).expect("first-call tool result");
+        assert_eq!(maho_ai::utils::text::content_text(&result.content, ""), "mcp_fake_echo");
+        assert!(session.get_active_tool_names().iter().any(|name| name == "mcp_fake_echo"));
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn after_tool_call_without_runner_converts_bmp_and_preserves_result_metadata() {
+        use base64::Engine;
+
+        let bmp = {
+            let mut bytes = vec![0; 58];
+            bytes[0..2].copy_from_slice(b"BM");
+            bytes[2..6].copy_from_slice(&58_u32.to_le_bytes());
+            bytes[10..14].copy_from_slice(&54_u32.to_le_bytes());
+            bytes[14..18].copy_from_slice(&40_u32.to_le_bytes());
+            bytes[18..22].copy_from_slice(&1_i32.to_le_bytes());
+            bytes[22..26].copy_from_slice(&1_i32.to_le_bytes());
+            bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
+            bytes[28..30].copy_from_slice(&24_u16.to_le_bytes());
+            bytes[34..38].copy_from_slice(&4_u32.to_le_bytes());
+            bytes[56] = 0xff;
+            bytes
+        };
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "image-call".to_owned(), name: "image_result".to_owned(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        session.register_tool_definition(test_definition("image_result"), empty_source_info(), test_tool("image_result"));
+        session.set_active_tools_by_name(vec!["image_result".to_owned()]);
+        let mut tool = test_tool("image_result");
+        tool.execute = Arc::new(move |_, _, _, _| {
+            let data = base64::engine::general_purpose::STANDARD.encode(&bmp);
+            Box::pin(async move {
+                let mut result = AgentToolResult::text("tool output");
+                result.content = vec![maho_ai::types::ContentBlock::Image(maho_ai::types::ImageContent { data, mime_type: "image/bmp".to_owned() })];
+                result.details = serde_json::json!({"source":"tool"});
+                result.is_error = Some(true);
+                result.usage = Some(maho_ai::types::Usage { input: 7, output: 3, ..Default::default() });
+                result
+            })
+        });
+        session.register_tool_definition(test_definition("image_result"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["image_result".to_owned()]);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded tool turn").expect("prompt");
+        let result = session.messages().iter().find_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result.clone()), _ => None,
+        }).expect("tool result");
+        session.dispose().await;
+        assert_eq!(result.details, Some(serde_json::json!({"source":"tool"})));
+        assert!(result.is_error);
+        assert_eq!(result.usage, Some(maho_ai::types::Usage { input: 7, output: 3, ..Default::default() }));
+        assert!(matches!(&result.content[0], maho_ai::types::ContentBlock::Image(image) if image.mime_type == "image/png"));
+    }
+
+    #[tokio::test]
+    async fn after_tool_call_without_runner_resizes_oversized_png_only_when_enabled() {
+        use base64::Engine;
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&2001_u32.to_be_bytes());
+        ihdr.extend_from_slice(&1_u32.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 0, 0, 0, 0]);
+        let raw = std::iter::once(0).chain(std::iter::repeat_n(0_u8, 2001)).collect::<Vec<_>>();
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&raw).expect("write image fixture");
+        let compressed = encoder.finish().expect("finish image fixture");
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let png_chunk = |kind: &[u8; 4], body: &[u8]| {
+            let mut chunk = Vec::with_capacity(body.len() + 12);
+            chunk.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            chunk.extend_from_slice(kind);
+            chunk.extend_from_slice(body);
+            let mut crc = !0_u32;
+            for byte in kind.iter().chain(body) {
+                crc ^= u32::from(*byte);
+                for _ in 0..8 { crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1)); }
+            }
+            chunk.extend_from_slice(&(!crc).to_be_bytes());
+            chunk
+        };
+        png.extend(png_chunk(b"IHDR", &ihdr));
+        png.extend(png_chunk(b"IDAT", &compressed));
+        png.extend(png_chunk(b"IEND", &[]));
+        let image_data = base64::engine::general_purpose::STANDARD.encode(png);
+        for auto_resize in [false, true] {
+        let image_data = image_data.clone();
+        let mut assistant = maho_ai::providers::faux::faux_assistant_message("", Default::default());
+        assistant.stop_reason = StopReason::ToolUse;
+        assistant.content = vec![maho_ai::types::ContentBlock::ToolCall(maho_ai::types::ToolCall {
+            id: "text-image-call".to_owned(), name: "text_image_result".to_owned(), arguments: Map::new(), ..Default::default()
+        })];
+        let session = retry_session(vec![assistant, maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &serde_json::from_value(serde_json::json!({"images":{"autoResize":auto_resize}})).expect("settings")))
+            .expect("save settings");
+        let mut tool = test_tool("text_image_result");
+        tool.execute = Arc::new(move |_, _, _, _| {
+            let image_data = image_data.clone();
+            Box::pin(async move {
+                let mut result = AgentToolResult::text("unchanged text");
+                result.content.push(maho_ai::types::ContentBlock::Image(maho_ai::types::ImageContent {
+                    data: image_data, mime_type: "image/png".to_owned(),
+                }));
+                result
+            })
+        });
+        session.register_tool_definition(test_definition("text_image_result"), empty_source_info(), tool);
+        session.set_active_tools_by_name(vec!["text_image_result".to_owned()]);
+        tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
+            .await.expect("bounded tool turn").expect("prompt");
+        let result = session.messages().iter().find_map(|message| match message {
+            AgentMessage::Llm(maho_ai::types::Message::ToolResult(result)) => Some(result.clone()), _ => None,
+        }).expect("tool result");
+        session.dispose().await;
+        assert!(matches!(&result.content[0], maho_ai::types::ContentBlock::Text(text) if text.text == "unchanged text"));
+        assert!(matches!(&result.content[1], maho_ai::types::ContentBlock::Image(image) if image.mime_type == "image/png"));
+        let maho_ai::types::ContentBlock::Image(image) = &result.content[1] else { panic!("image block"); };
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data).expect("PNG base64");
+        let width = u32::from_be_bytes(bytes[16..20].try_into().expect("width"));
+        let height = u32::from_be_bytes(bytes[20..24].try_into().expect("height"));
+        if auto_resize {
+            assert!(width < 2001 && height <= 1, "oversized image must be resized");
+        } else {
+            assert_eq!((width, height), (2001, 1));
+        }
+        }
     }
 
     #[tokio::test]
