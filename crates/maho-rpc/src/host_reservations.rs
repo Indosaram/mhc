@@ -7,7 +7,12 @@ pub const SESSION_PATH_RETRY_AFTER_MS:u64=2000;
 pub struct SessionPathOwner{pub instance_id:String,pub pid:u32,pub process_start_time:Option<String>,pub session_path:String,#[serde(skip_serializing_if="Option::is_none")]pub attached:Option<bool>,#[serde(skip_serializing_if="Option::is_none")]pub current:Option<bool>}
 pub struct SessionPathClaim{pub file:PathBuf,pub owner:SessionPathOwner}
 pub fn reservation_file(dir:&Path,session_path:&str)->PathBuf{dir.join(format!("{}.json",&format!("{:x}",Sha256::digest(session_path.as_bytes()))[..16]))}
-pub fn read_process_start_time(pid:u32)->Option<String>{let output=std::process::Command::new("ps").args(["-o","lstart=","-p",&pid.to_string()]).output().ok()?;if !output.status.success(){return None;}let start_time=String::from_utf8_lossy(&output.stdout).trim().to_owned();(!start_time.is_empty()).then_some(start_time)}
+#[cfg(not(target_os="macos"))]
+pub fn read_process_start_time(pid:u32)->Option<String>{let stat=fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;stat.rsplit_once(") ")?.1.split_whitespace().nth(19).map(str::to_owned)}
+/// darwin start identity from libproc `proc_bsdinfo` (arg 1 = zombies too), read in process: the
+/// pinned source spawns `ps -o lstart=`, which is the probe-child shape #1507 removed elsewhere.
+#[cfg(target_os="macos")]
+pub fn read_process_start_time(pid:u32)->Option<String>{let info=libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(i32::try_from(pid).ok()?,1).ok()?;Some(format!("{}.{:06}",info.pbi_start_tvsec,info.pbi_start_tvusec))}
 pub fn process_is_live(pid:u32)->bool{let Some(pid)=i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw)else{return false;};match rustix::process::test_kill_process(pid){Ok(())=>true,Err(error)=>error==rustix::io::Errno::PERM}}
 pub fn claim_owner_is_live(owner:&SessionPathOwner)->bool{if !process_is_live(owner.pid){return false;}match (&owner.process_start_time,read_process_start_time(owner.pid)){(Some(recorded),Some(current))=>recorded==&current,_=>true}}
 fn read_owner(file:&Path)->Option<SessionPathOwner>{let value:serde_json::Value=serde_json::from_str(&fs::read_to_string(file).ok()?).ok()?;Some(SessionPathOwner{instance_id:value["instanceId"].as_str()?.into(),pid:u32::try_from(value["pid"].as_u64()?).ok()?,session_path:value["sessionPath"].as_str()?.into(),process_start_time:value["processStartTime"].as_str().map(str::to_owned),attached:value["attached"].as_bool(),current:None})}
