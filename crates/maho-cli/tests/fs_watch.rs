@@ -25,6 +25,22 @@ async fn watcher_subscribes_before_write_and_delivers_filename() {
     assert_eq!(event.1.as_deref(), Some("changed"));
     close_watcher(Some(watcher));
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn watcher_symlink_root_delivers_relative_filename() {
+    let directory = tempfile::tempdir().unwrap();
+    let real_directory = directory.path().join("real");
+    std::fs::create_dir(&real_directory).unwrap();
+    let symlink = directory.path().join("link");
+    std::os::unix::fs::symlink(&real_directory, &symlink).unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let watcher = watch_with_error_handler(&symlink, move |kind, name| { let _ = sender.send((kind.to_owned(), name)); }, || panic!("watch error"), false).unwrap();
+    std::fs::write(symlink.join("changed"), b"data").unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.unwrap().unwrap();
+    assert!(matches!(event.0.as_str(), "rename" | "change"));
+    assert_eq!(event.1.as_deref(), Some("changed"));
+    close_watcher(Some(watcher));
+}
 #[test]
 fn missing_watch_path_reports_error_once() {
     let directory = tempfile::tempdir().unwrap();
