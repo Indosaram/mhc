@@ -718,12 +718,13 @@ async fn resolves_at_prefix_and_unicode_spaces() {
 async fn resolves_decomposed_read_filename() {
     let f = Fixture::new();
     f.put("e\u{301}.txt", "x");
-    assert!(
-        resolve_read_tool_path(f.context.env.as_ref(), "é.txt", &background_context())
-            .await
-            .expect("tool test operation must succeed")
-            .ends_with("e\u{301}.txt")
-    );
+    let created = std::fs::metadata(f.dir.join("e\u{301}.txt")).expect("tool test operation must succeed");
+    let resolved = resolve_read_tool_path(f.context.env.as_ref(), "é.txt", &background_context())
+        .await
+        .expect("tool test operation must succeed");
+    let resolved = std::fs::metadata(resolved).expect("tool test operation must succeed");
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!((created.dev(), created.ino()), (resolved.dev(), resolved.ino()));
 }
 #[tokio::test]
 async fn resolves_smart_quote_read_filename() {
