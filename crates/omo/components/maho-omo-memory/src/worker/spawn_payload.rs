@@ -123,8 +123,8 @@ pub fn prepare_reflection_spawn(input: PrepareReflectionSpawnInput<'_>) -> Resul
     std::fs::write(&prompt, task_prompt(input.run, &input.worktree.dir, &transcript))?;
     if let (Some(skills), Some(state), Some(policy)) = (&skills_usage, &dream_state, &dream_policy) {
         for (source, destination) in [(input.skills_usage_source, skills), (input.dream_state_source, state)] {
-            let content = match std::fs::read_to_string(source) {
-                Ok(content) => content, Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}\n".into(), Err(e) => return Err(e),
+            let content = match std::fs::read(source) {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(), Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}\n".into(), Err(e) => return Err(e),
             };
             std::fs::write(destination, content)?;
         }
@@ -244,6 +244,22 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
         assert!(!args.args.iter().any(|arg|arg=="--no-extensions"));
         assert_eq!(args.env["OMO_SENPI_DISABLED"],"1");
         assert_eq!(std::fs::read_to_string(args.paths.payload).unwrap(),serialize_facts_payload(&payload));
+    }
+    #[test]
+    fn dream_source_invalid_utf8_decodes_with_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut run, worktree, policy) = reflection_fixture(root.path());
+        run.request.trigger = ReflectionTrigger::Dream;
+        run.request.origin = Some(memory_core::reflection::DreamOrigin::Idle);
+        let skills = root.path().join("source-skills.json");
+        std::fs::write(&skills, [b'{', 0xff, b'}']).unwrap();
+        let missing = root.path().join("missing.json");
+        let mut input = reflection_input(root.path(), &run, &worktree, &policy);
+        input.skills_usage_source = &skills;
+        input.dream_state_source = &missing;
+        let args = prepare_reflection_spawn(input).unwrap();
+        assert_eq!(std::fs::read(args.paths.skills_usage.unwrap()).unwrap(), [b'{', 0xef, 0xbf, 0xbd, b'}']);
+        assert_eq!(std::fs::read_to_string(args.paths.dream_state.unwrap()).unwrap(), "{}\n");
     }
     #[test]
     fn dream_copies_source_bytes_and_defaults_missing_json() {
