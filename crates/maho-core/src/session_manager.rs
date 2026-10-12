@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 
@@ -516,6 +517,25 @@ fn header_candidate_file(path: &str) -> Option<Option<Value>> {
     read_session_header(path).map(Some)
 }
 
+#[derive(Debug, Clone, Default)]
+struct SessionOwnership {
+    session_file: Option<String>,
+    persisted: bool,
+}
+
+#[derive(Debug)]
+struct SessionWriterToken(Arc<Mutex<SessionOwnership>>);
+
+impl crate::session_write_reservation::SessionWriterOwner for SessionWriterToken {
+    fn get_session_file(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_file.clone()
+    }
+
+    fn is_persisted(&self) -> bool {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).persisted
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionManager {
     session_id: String,
@@ -531,12 +551,14 @@ pub struct SessionManager {
     leaf_id: Option<String>,
     session_name_cache: Option<String>,
     usage_totals: UsageTotals,
+    ownership: Arc<Mutex<SessionOwnership>>,
+    writer_token: Arc<SessionWriterToken>,
 }
 
 impl SessionManager {
-    pub fn dispose(&mut self) {}
-
     fn build(cwd: &str, session_dir: &str, session_file: Option<String>, persist: bool, options: Option<NewSessionOptions>) -> Self {
+        let ownership = Arc::new(Mutex::new(SessionOwnership { session_file: None, persisted: persist }));
+        let writer_token = Arc::new(SessionWriterToken(Arc::clone(&ownership)));
         let mut manager = Self {
             session_id: String::new(),
             session_file: None,
@@ -551,9 +573,14 @@ impl SessionManager {
             leaf_id: None,
             session_name_cache: None,
             usage_totals: UsageTotals::default(),
+            ownership,
+            writer_token,
         };
         if persist && !manager.session_dir.is_empty() {
             let _ = std::fs::create_dir_all(&manager.session_dir);
+        }
+        if persist {
+            crate::session_write_reservation::register_session_writer(&manager.writer_owner());
         }
         match session_file {
             Some(session_file) => manager.set_session_file(&session_file, options),
@@ -564,9 +591,88 @@ impl SessionManager {
         manager
     }
 
+    pub fn dispose(&mut self) {
+        crate::session_write_reservation::unregister_session_writer(&self.writer_owner());
+        self.release_blobs_dir_unless_shared();
+    }
+
+    fn writer_owner(&self) -> Arc<dyn crate::session_write_reservation::SessionWriterOwner> {
+        self.writer_token.clone() as Arc<dyn crate::session_write_reservation::SessionWriterOwner>
+    }
+
+    fn sync_session_file_ownership(&self) {
+        self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_file = self.session_file.clone();
+    }
+
+    fn blobs_dir(&self) -> Option<String> {
+        if !self.persist || self.session_id.is_empty() {
+            return None;
+        }
+        Some(Path::new(&self.session_dir).join("resident-blobs").join(&self.session_id).to_string_lossy().into_owned())
+    }
+
+    fn release_blobs_dir_unless_shared(&self) {
+        let Some(blobs_dir) = self.blobs_dir() else { return };
+        if let Some(session_file) = &self.session_file
+            && crate::session_write_reservation::has_other_live_session_writer(session_file, &self.writer_owner())
+        {
+            return;
+        }
+        let _ = std::fs::remove_dir_all(blobs_dir);
+    }
+
     pub fn create(cwd: &str, session_dir: Option<&str>, options: Option<NewSessionOptions>) -> Self {
         let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(cwd));
         Self::build(cwd, &dir, None, true, options)
+    }
+
+    pub fn fork_from(
+        source_path: &str,
+        target_cwd: &str,
+        session_dir: Option<&str>,
+        options: Option<NewSessionOptions>,
+    ) -> Result<Self, String> {
+        let resolved_source_path = resolve_path(source_path, source_path, &PathInputOptions::default());
+        let resolved_target_cwd = resolve_path(target_cwd, target_cwd, &PathInputOptions::default());
+        let source_entries = load_entries_from_file(&resolved_source_path);
+        if source_entries.is_empty() {
+            return Err(format!("Cannot fork: source session file is empty or invalid: {resolved_source_path}"));
+        }
+        if !source_entries.iter().any(|entry| entry_type(entry) == "session") {
+            return Err(format!("Cannot fork: source session has no header: {resolved_source_path}"));
+        }
+        let dir = session_dir
+            .map(|session_dir| normalize_path(session_dir, &PathInputOptions::default()))
+            .unwrap_or_else(|| get_default_session_dir(&resolved_target_cwd));
+        let _ = std::fs::create_dir_all(&dir);
+        if let Some(id) = options.as_ref().and_then(|options| options.id.as_deref()) {
+            assert_valid_session_id(id);
+        }
+        let new_session_id = options.as_ref().and_then(|options| options.id.clone()).unwrap_or_else(create_session_id);
+        let timestamp = now_iso_millis();
+        let file_timestamp = timestamp.replace([':', '.'], "-");
+        let new_session_file = Path::new(&dir).join(format!("{file_timestamp}_{new_session_id}.jsonl")).to_string_lossy().into_owned();
+        crate::session_write_reservation::reserve_session_write(&new_session_file);
+        let header = json!({
+            "type": "session",
+            "version": CURRENT_SESSION_VERSION,
+            "id": new_session_id,
+            "timestamp": timestamp,
+            "cwd": resolved_target_cwd,
+            "parentSession": resolved_source_path,
+        });
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&new_session_file)
+            .map_err(|error| format!("Cannot fork: {error}"))?;
+        file.write_all(serialize_entry(&header).as_bytes()).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        for entry in &source_entries {
+            if entry_type(entry) != "session" {
+                file.write_all(serialize_entry(entry).as_bytes()).map_err(|error| error.to_string())?;
+                file.write_all(b"\n").map_err(|error| error.to_string())?;
+            }
+        }
+        drop(file);
+        Ok(Self::open(&new_session_file, Some(&dir), Some(&resolved_target_cwd), None))
     }
 
     pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Self {
@@ -633,6 +739,7 @@ impl SessionManager {
 
     pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) {
         self.session_file = Some(resolve_path(session_file, session_file, &PathInputOptions::default()));
+        self.sync_session_file_ownership();
         let Some(current) = self.session_file.clone() else { return };
         if Path::new(&current).exists() {
             let entries = load_entries_from_file(&current);
@@ -677,6 +784,7 @@ impl SessionManager {
             let path = Path::new(&self.session_dir).join(format!("{file_timestamp}_{}.jsonl", self.session_id));
             self.session_file = Some(path.to_string_lossy().into_owned());
         }
+        self.sync_session_file_ownership();
         self.session_file.clone()
     }
 
@@ -1161,6 +1269,55 @@ mod tests {
         let totals = manager.usage_totals();
         assert_eq!((totals.input, totals.output, totals.cache_read, totals.cache_write), (3, 4, 5, 6));
         assert!((totals.cost - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fork_from_copies_source_entries_into_a_new_session_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let source_dir = tmp.path().join("source");
+        let target_dir = tmp.path().join("target");
+        std::fs::create_dir_all(&source_dir).expect("source dir");
+        std::fs::create_dir_all(&target_dir).expect("target dir");
+        let source_file = source_dir.join("source-session.jsonl");
+        std::fs::write(
+            &source_file,
+            format!(
+                "{}\n{}\n",
+                serialize_entry(&header("source", Some(3), dir.as_str())),
+                serialize_entry(&json!({ "type": "message", "id": "entry-1", "message": { "role": "user" } }))
+            ),
+        ).expect("write source");
+        let mut forked = SessionManager::fork_from(
+            source_file.to_str().expect("source path"),
+            target_dir.to_str().expect("target path"),
+            Some(target_dir.to_str().expect("target dir")),
+            Some(NewSessionOptions { id: Some("forked-session".to_owned()), ..Default::default() }),
+        ).expect("fork");
+        let forked_file = forked.session_file().expect("forked session file");
+        let entries = load_entries_from_file(forked_file);
+        assert_eq!(entries.first().and_then(|entry| entry.get("parentSession")).and_then(Value::as_str), Some(source_file.to_str().expect("source path")));
+        assert!(entries.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some("entry-1")));
+        assert_eq!(entries.first().and_then(|entry| entry.get("cwd")).and_then(Value::as_str), Some(target_dir.to_str().expect("target path")));
+        forked.dispose();
+    }
+
+    #[test]
+    fn dispose_keeps_blobs_while_another_writer_is_live_and_last_writer_cleans_them() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let options = Some(NewSessionOptions { id: Some("shared-session".to_owned()), ..Default::default() });
+        let mut first = SessionManager::create(&dir, Some(&dir), options.clone());
+        first.append_message(json!({"role":"assistant","content":[]}));
+        let session_file = first.session_file().expect("session file").to_owned();
+        let mut second = SessionManager::open(&session_file, Some(&dir), Some(&dir), None);
+        let blobs = Path::new(&dir).join("resident-blobs").join("shared-session");
+        std::fs::create_dir_all(&blobs).expect("blob directory");
+        std::fs::write(blobs.join("blob"), b"resident").expect("blob");
+        first.dispose();
+        assert!(blobs.join("blob").exists());
+        second.dispose();
+        assert!(!blobs.exists());
     }
 
     #[test]
