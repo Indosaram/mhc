@@ -61,7 +61,12 @@ pub fn tool_wire_projection(tool: &ActiveToolItem, status: ToolExecutionStatus, 
 }
 pub fn provider_native_item(id: &str, message: &Value, content: &Value) -> Value {
     if content["kind"] == "web_search_call" { return super::projection_web_search::web_search_item(id, content); }
-    json!({"type":"providerNative","id":id,"provider":message["provider"],"api":message["api"],"nativeType":content["kind"],"payload":content["raw"]})
+    let subtype = content["kind"].as_str().unwrap_or_default();
+    let raw = &content["raw"];
+    let summary = maho_rpc::provider_native_rendering::format_provider_native_summary(message["provider"].as_str().unwrap_or_default(), subtype, raw, true);
+    let body = maho_rpc::provider_native_rendering::format_provider_native_body(subtype, raw, true).expect("JSON Value rendering is infallible");
+    let query = if body.is_empty() { summary } else { format!("{summary}\n{body}") };
+    json!({"type":"webSearch","id":id,"query":query,"action":null,"results":null})
 }
 pub fn build_wire_item(mut item: Value) -> Value {
     if item["type"] == "commandExecution" && let Some(output) = item["aggregatedOutput"].as_str() {
