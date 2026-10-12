@@ -52,7 +52,7 @@ async fn under_ceiling_prompt_spawns() {
 async fn abort_after_exact_ready_event_reaps_group() {
     let root=tempfile::tempdir().unwrap();
     let binary=executable(root.path(),r#"printf '%s\n' '{"type":"thinking","subtype":"delta","text":"ready"}'
-exec /usr/bin/sleep 300"#);
+exec /bin/sleep 300"#);
     let mut handle=start(root.path(),&binary,"slow");
     let ready=tokio::time::timeout(Duration::from_secs(10),handle.events.recv()).await.unwrap().unwrap().unwrap();
     assert_eq!(ready["text"],"ready"); handle.abort();
@@ -65,7 +65,7 @@ async fn ignored_sigterm_escalates_to_sigkill() {
     let root=tempfile::tempdir().unwrap();
     let binary=executable(root.path(),r#"trap '' TERM
 printf '%s\n' '{"type":"thinking","subtype":"delta","text":"ready"}'
-exec /usr/bin/sleep 300"#);
+exec /bin/sleep 300"#);
     let mut handle=start(root.path(),&binary,"slow");
     tokio::time::timeout(Duration::from_secs(10),handle.events.recv()).await.unwrap().unwrap().unwrap(); handle.abort();
     assert!(matches!(tokio::time::timeout(Duration::from_secs(10),handle.completed).await.unwrap().unwrap().unwrap(),TransportOutcome::Aborted));
