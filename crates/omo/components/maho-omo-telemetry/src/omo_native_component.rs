@@ -2,6 +2,7 @@ use std::{path::PathBuf,sync::{Arc,Mutex}};
 use maho_ext_api::{BusSubscription,EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,SessionReason};
 use crate::{index::SenpiTelemetryOptions,omo_native_parallel::ParallelTelemetryRegistry,omo_native_parallel_summary::{SummaryCapture,register_omo_native_parallel_summary},product_identity::{get_omo_native_state_dir,hash_session_id}};
 pub type ConfigEnabled=Arc<dyn Fn(&std::path::Path)->bool+Send+Sync>;
+pub fn warn(ctx:&maho_ext_api::ExtensionContext,message:&str) {match &ctx.logger {Some(logger)=>logger.warn(message,None),None=>eprintln!("{message}")}}
 pub struct OmoNativeTelemetryComponent {
     pub options:SenpiTelemetryOptions,
     pub skills_root:PathBuf,
@@ -50,10 +51,10 @@ impl Extension for OmoNativeTelemetryComponent {
         api.on(EventKind::SessionStart,Arc::new(move |event,ctx| {let result=if enabled(&ctx.cwd) && let ExtensionEvent::SessionStart(event)=event {
             let reason=match event.reason {SessionReason::Startup=>"startup",SessionReason::Reload=>"reload",SessionReason::New=>"new",SessionReason::Resume=>"resume",SessionReason::Fork=>"fork",SessionReason::Quit=>"startup"};
             crate::omo_native_session::start_native_session(&options,ctx.session_manager.session_id(),&serde_json::json!({"reason":reason}),&ctx.agent_dir).map(|session|{*client.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=session;})
-        } else {Ok(())};Box::pin(async move {if let Err(error)=result {eprintln!("telemetry_capture_failed: omo-native-session: {error}");}Ok(EventResult::None)})}));
+        } else {Ok(())};Box::pin(async move {if let Err(error)=result {warn(ctx,&format!("telemetry_capture_failed: omo-native-session: {error}"));}Ok(EventResult::None)})}));
         api.on(EventKind::SessionShutdown,Arc::new(move |_,_| {let client=shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();Box::pin(async move {if let Some(client)=client {client.shutdown().await;}Ok(EventResult::None)})}));
-        crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(||eprintln!("telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
-        crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture,Some(Arc::new(|message,details|eprintln!("{message}: {details}"))));
+        crate::omo_native_turns::register_omo_native_turn_telemetry(api,Arc::clone(&hash),Arc::clone(&capture),Arc::new(|ctx|warn(ctx,"telemetry_event_property_rejected: turn_end assistant usage contained missing or invalid values")));
+        crate::omo_native_tools::register_omo_native_tool_telemetry(api,self.skills_root.clone(),hash,capture,Some(Arc::new(|ctx,message,details|warn(ctx,&format!("{message}: {details}")))));
         crate::omo_native_notice::register_omo_native_notice(api,env,notice_state_dir,Arc::clone(&self.is_config_enabled));
     }
 }

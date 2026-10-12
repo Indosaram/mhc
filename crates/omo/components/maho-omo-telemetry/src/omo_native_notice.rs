@@ -16,10 +16,10 @@ pub fn register_omo_native_notice(api:&mut maho_ext_api::ExtensionApi,env:teleme
             match claim_notice(&state_dir) {
                 Ok(true)=>{
                     let notification=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||ctx.ui.notify("omo-senpi sends anonymous usage telemetry (no prompts, no paths). Docs: https://github.com/code-yeongyu/oh-my-openagent/blob/dev/docs/reference/senpi-telemetry.md - opt out: DO_NOT_TRACK=1",maho_ext_api::NotificationType::Info)));
-                    if notification.is_err() && !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: notification UI failed");}
+                    if notification.is_err() && !reported.swap(true,Ordering::SeqCst) {crate::omo_native_component::warn(ctx,"telemetry_capture_failed: omo-native-notice: notification UI failed");}
                 },
                 Ok(false)=>{},
-                Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {eprintln!("telemetry_capture_failed: omo-native-notice: {error}");}}
+                Err(error)=>{if !reported.swap(true,Ordering::SeqCst) {crate::omo_native_component::warn(ctx,&format!("telemetry_capture_failed: omo-native-notice: {error}"));}}
             }
         }
         Box::pin(async {Ok(maho_ext_api::EventResult::None)})

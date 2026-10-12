@@ -34,18 +34,34 @@ impl ToolTelemetry {
         if let Some(feature)=feature && self.feature_usage.entry(session.into()).or_default().insert(feature) {vec![("feature_used",json!({"$session_id":hash,"feature":feature}))]} else {Vec::new()}
     }
 }
-pub type ToolDiagnostics=std::sync::Arc<dyn Fn(&str,Value)+Send+Sync>;
+pub type ToolDiagnostics=std::sync::Arc<dyn Fn(&maho_ext_api::ExtensionContext,&str,Value)+Send+Sync>;
 pub fn register_omo_native_tool_telemetry(api:&mut maho_ext_api::ExtensionApi,skills_root:std::path::PathBuf,hash:std::sync::Arc<dyn Fn(&str)->String+Send+Sync>,capture:crate::omo_native_parallel_summary::SummaryCapture,diagnostics:Option<ToolDiagnostics>) {
     use std::sync::{Arc,Mutex};
     use maho_ext_api::{EventKind,EventResult,ExtensionEvent};
     let state=Arc::new(Mutex::new(ToolTelemetry::for_skills_root(&skills_root)));let results=Arc::clone(&state);
-    api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {if !event.input.is_object() && let Some(diagnostics)=&diagnostics {diagnostics("omo-native tool_result missing input",json!({"toolName":event.tool_name}));}results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
+    api.on(EventKind::ToolResult,Arc::new(move |event,ctx| {let at_session=ctx.session_manager.session_id();let output=if let ExtensionEvent::ToolResult(event)=event {if !event.input.is_object() && let Some(diagnostics)=&diagnostics {diagnostics(ctx,"omo-native tool_result missing input",json!({"toolName":event.tool_name}));}results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(&json!({"type":"tool_result","toolName":event.tool_name,"input":event.input,"isError":event.is_error}),at_session,&hash(at_session),&ctx.cwd,&skills_root)} else {Vec::new()};let capture=Arc::clone(&capture);Box::pin(async move {for (name,properties) in output {capture(name,properties);}Ok(EventResult::None)})}));
     api.on(EventKind::SessionShutdown,Arc::new(move |_,ctx| {state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear(ctx.session_manager.session_id());Box::pin(async {Ok(EventResult::None)})}));
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[tokio::test] async fn native_missing_input_diagnostic_no_capture() {use std::sync::{Arc,Mutex};use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();let observed=Arc::new(Mutex::new(Vec::new()));let sink=Arc::clone(&observed);register_omo_native_tool_telemetry(&mut api,t.path().into(),Arc::new(|_|"hash".into()),Arc::new(|_,_|panic!("malformed tool input must not capture")),Some(Arc::new(move |message,details|sink.lock().unwrap().push((message.to_string(),details)))));dispatch(&api,maho_ext_api::ExtensionEvent::ToolResult(maho_ext_api::ToolResultEvent {tool_call_id:"read".into(),tool_name:"read".into(),input:Value::Null,content:Vec::new(),details:None,is_error:false,usage:None}),&context(t.path(),"s")).await;assert_eq!(*observed.lock().unwrap(),vec![("omo-native tool_result missing input".into(),json!({"toolName":"read"}))]);}
+    #[tokio::test] async fn native_missing_input_diagnostic_no_capture() {use std::sync::{Arc,Mutex};use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();let observed=Arc::new(Mutex::new(Vec::new()));let sink=Arc::clone(&observed);register_omo_native_tool_telemetry(&mut api,t.path().into(),Arc::new(|_|"hash".into()),Arc::new(|_,_|panic!("malformed tool input must not capture")),Some(Arc::new(move |_ctx,message,details|sink.lock().unwrap().push((message.to_string(),details)))));dispatch(&api,maho_ext_api::ExtensionEvent::ToolResult(maho_ext_api::ToolResultEvent {tool_call_id:"read".into(),tool_name:"read".into(),input:Value::Null,content:Vec::new(),details:None,is_error:false,usage:None}),&context(t.path(),"s")).await;assert_eq!(*observed.lock().unwrap(),vec![("omo-native tool_result missing input".into(),json!({"toolName":"read"}))]);}
+    #[tokio::test] async fn registered_invalid_input_hook_logs_warning() {
+        use crate::telemetry_test_support::*;
+        use maho_ext_api::{ComponentLogger,JsonValue};
+        use std::sync::{Arc,Mutex};
+        struct Logger(Arc<Mutex<Vec<String>>>);
+        impl ComponentLogger for Logger {
+            fn info(&self,_:&str,_:Option<&JsonValue>) {}
+            fn warn(&self,message:&str,_:Option<&JsonValue>) {self.0.lock().unwrap().push(message.into());}
+            fn error(&self,_:&str,_:Option<&JsonValue>) {}
+        }
+        let t=tempfile::tempdir().unwrap();let mut api=api();
+        register_omo_native_tool_telemetry(&mut api,t.path().into(),Arc::new(|_|"hash".into()),Arc::new(|_,_|panic!("malformed tool input must not capture")),Some(Arc::new(|ctx,_,_|crate::omo_native_component::warn(ctx,"invalid input diagnostic"))));
+        let mut ctx=context(t.path(),"s");let warnings=Arc::new(Mutex::new(Vec::new()));ctx.logger=Some(Arc::new(Logger(Arc::clone(&warnings))));
+        dispatch(&api,maho_ext_api::ExtensionEvent::ToolResult(maho_ext_api::ToolResultEvent {tool_call_id:"read".into(),tool_name:"read".into(),input:Value::Null,content:Vec::new(),details:None,is_error:false,usage:None}),&ctx).await;
+        assert_eq!(warnings.lock().unwrap().len(),1);
+    }
     #[test] fn windows_case_and_namespaces() {let root=r"C:\Users\runneradmin\plugin\skills";assert_eq!(builtin_skill_name_from_windows_canonical_paths(root,r"c:\users\RUNNERADMIN\plugin\SKILLS\DEBUGGING\skill.md"),Some("debugging".into()));assert_eq!(builtin_skill_name_from_windows_canonical_paths(root,r"\\?\C:\Users\runneradmin\plugin\skills\ulw-plan\SKILL.md"),Some("ulw-plan".into()));assert_eq!(builtin_skill_name_from_windows_canonical_paths(r"\\server\share\plugin\skills",r"\\?\UNC\server\share\plugin\skills\debugging\SKILL.md"),Some("debugging".into()));}
     #[test] fn windows_escape_rejected() {let root=r"C:\Users\runneradmin\plugin\skills";for path in [r"C:\Users\runneradmin\plugin\notes\debugging\SKILL.md",r"C:\Users\runneradmin\plugin\skills-escape\debugging\SKILL.md",r"D:\plugin\skills\debugging\SKILL.md",r"\\?\UNC\server\share\plugin\notes\debugging\SKILL.md"] {assert!(builtin_skill_name_from_windows_canonical_paths(root,path).is_none());}}
     #[test] fn aliases() {for name in ["read","functions.read","tool_read"," TOOL-READ ","tool:read","tool/read"] {assert_eq!(matches_tool_name(name,"read"),name!="functions.read");}}
