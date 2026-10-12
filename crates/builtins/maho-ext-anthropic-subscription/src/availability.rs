@@ -61,4 +61,23 @@ mod tests {
         let controller=maho_ai::utils::abort::AbortController::new();let signal=controller.signal();let task={let reader=reader.clone();tokio::spawn(async move {reader.read(Some(&signal)).await})};start.await.expect("start");controller.abort(None);assert!(task.await.expect("join").is_err());
         let mut pending=Box::pin(reader.read(None));assert!(std::future::poll_fn(|cx|std::task::Poll::Ready(pending.as_mut().poll(cx).is_pending())).await);release.send(()).expect("release");assert!(pending.await.is_err());assert!(reader.read(None).await.expect("retry"));
     }
+    #[tokio::test]
+    async fn concurrent_readers_keep_sharing_an_in_flight_probe_after_the_ttl_elapses() {
+        let calls=Arc::new(AtomicUsize::new(0));let now=Arc::new(AtomicU64::new(1_000));
+        let (started,start)=tokio::sync::oneshot::channel();let (release,gate)=tokio::sync::oneshot::channel();let gate=Arc::new(Mutex::new(Some((started,gate))));
+        let probe:AmbientProbe={let calls=calls.clone();Arc::new(move || {calls.fetch_add(1,Ordering::SeqCst);let gate=gate.lock().expect("gate").take();Box::pin(async move {if let Some((started,gate))=gate {started.send(()).expect("start");gate.await.expect("release");}Ok(true)})})};
+        let reader=AmbientAuthStatusReader::new(probe,{let now=now.clone();Arc::new(move ||now.load(Ordering::SeqCst))},30_000);
+        let first={let reader=reader.clone();tokio::spawn(async move {reader.read(None).await})};start.await.expect("started");
+        now.store(31_000,Ordering::SeqCst);
+        let mut second=Box::pin(reader.read(None));assert!(std::future::poll_fn(|cx|std::task::Poll::Ready(second.as_mut().poll(cx).is_pending())).await);
+        assert_eq!(calls.load(Ordering::SeqCst),1);
+        release.send(()).expect("release");assert!(first.await.expect("join").expect("first"));assert!(second.await.expect("second"));
+    }
+    #[tokio::test]
+    async fn an_already_aborted_caller_never_starts_a_cold_probe() {
+        let calls=Arc::new(AtomicUsize::new(0));let probe:AmbientProbe={let calls=calls.clone();Arc::new(move || {calls.fetch_add(1,Ordering::SeqCst);Box::pin(async {Ok(true)})})};
+        let reader=AmbientAuthStatusReader::new(probe,Arc::new(||0),30_000);
+        let controller=maho_ai::utils::abort::AbortController::new();controller.abort(Some(maho_ai::utils::abort::AbortReason::new("already-gone","already gone")));
+        assert!(reader.read(Some(&controller.signal())).await.is_err());assert_eq!(calls.load(Ordering::SeqCst),0);
+    }
 }
