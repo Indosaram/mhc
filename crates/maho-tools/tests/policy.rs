@@ -29,7 +29,8 @@ async fn first_denial_short_circuits_later_policies() {
 #[tokio::test]
 async fn canonicalizes_missing_descendants_through_symlink() {
     let temp = tempfile::tempdir().unwrap();
-    std::fs::create_dir(temp.path().join("real")).unwrap();
-    std::os::unix::fs::symlink(temp.path().join("real"),temp.path().join("alias")).unwrap();
-    assert_eq!(canonicalize_filesystem_path(&temp.path().join("alias/new/file")).await.unwrap(),temp.path().join("real/new/file"));
+    let root = temp.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("real")).unwrap();
+    std::os::unix::fs::symlink(root.join("real"),root.join("alias")).unwrap();
+    assert_eq!(canonicalize_filesystem_path(&root.join("alias/new/file")).await.unwrap(),root.join("real/new/file"));
 }
