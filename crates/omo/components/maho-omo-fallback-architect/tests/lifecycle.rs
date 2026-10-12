@@ -11,8 +11,9 @@ impl ExtensionActions for Actions {
 }
 fn register(gate:bool)->(ExtensionApi,Arc<Actions>) {let a=Arc::new(Actions::default());let runtime=ExtensionRuntime::default();runtime.bind(a.clone());let mut api=ExtensionApi::new(LoadedExtension::new("fallback","/tmp".into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);FallbackArchitectComponent{has_architect_category:Some(Arc::new(move |_,_|gate))}.register(&mut api);(api,a)}
 fn model(id:&str)->Model {serde_json::from_value(serde_json::json!({"id":id,"name":id,"api":"anthropic-messages","provider":"anthropic","baseUrl":"http://localhost","reasoning":true,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":1000,"maxTokens":100})).expect("model")}
-fn selection(source:ModelSelectSource)->ExtensionEvent {ExtensionEvent::ModelSelect(ModelSelectEvent{model:model("fallback"),previous_model:Some(model("claude-fable-5")),source,system_prompt:String::new(),system_prompt_options:BuildSystemPromptOptions::default()})}
-fn refusal()->ExtensionEvent {ExtensionEvent::MessageEnd{message:serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"anthropic-messages","provider":"anthropic","model":"claude-fable-5","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"This request triggered restrictions on output content and was blocked under Anthropic's Usage Policy","timestamp":0})).expect("assistant")}}
+fn selection(source:ModelSelectSource)->ExtensionEvent {ExtensionEvent::ModelSelect(ModelSelectEvent{model:model("fallback"),previous_model:Some(model(maho_omo_fallback_architect::detection::FABLE_FIVE_MODEL_ID)),source,system_prompt:String::new(),system_prompt_options:BuildSystemPromptOptions::default()})}
+fn refusal()->ExtensionEvent {ExtensionEvent::MessageEnd{message:serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"anthropic-messages","provider":"anthropic","model":maho_omo_fallback_architect::detection::FABLE_FIVE_MODEL_ID,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"This request triggered restrictions on output content and was blocked under Anthropic's Usage Policy","timestamp":0})).expect("assistant")}}
+fn transient_overload()->ExtensionEvent {ExtensionEvent::MessageEnd{message:serde_json::from_value(serde_json::json!({"role":"assistant","content":[],"api":"anthropic-messages","provider":"anthropic","model":maho_omo_fallback_architect::detection::FABLE_FIVE_MODEL_ID,"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"Request overloaded; retry later.","timestamp":0})).expect("assistant")}}
 async fn dispatch(api:&ExtensionApi,mut event:ExtensionEvent)->EventResult {api.registered.handlers[&event.kind()][0](&mut event,&support::context()).await.expect("dispatch")}
 fn user_input(source:InputSource)->ExtensionEvent {ExtensionEvent::Input(InputEvent{input_id:"id".into(),text:"next question".into(),images:None,source,streaming_behavior:Some(StreamingBehavior::Steer)})}
 #[tokio::test] async fn active_fallback_reminds_user_but_not_extension() {let(api,a)=register(true);dispatch(&api,refusal()).await;dispatch(&api,selection(ModelSelectSource::Fallback)).await;assert!(matches!(dispatch(&api,user_input(InputSource::Interactive)).await,EventResult::Input(InputEventResult::Continue)));assert_eq!(a.0.lock().expect("messages").len(),3);dispatch(&api,user_input(InputSource::Extension)).await;assert_eq!(a.0.lock().expect("messages").len(),3);}
@@ -180,4 +181,29 @@ async fn missing_previous_model_does_not_arm() {
     selected.previous_model = None;
     dispatch(&api, event).await;
     assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn transient_overloaded_response_does_not_arm_fallback() {
+    let (api, actions) = register(true);
+    dispatch(&api, transient_overload()).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    assert!(actions.0.lock().expect("messages").is_empty());
+}
+
+#[tokio::test]
+async fn typed_classifier_refusal_arms_fallback() {
+    let (api, actions) = register(true);
+    let mut event = refusal();
+    let ExtensionEvent::MessageEnd { message } = &mut event else { panic!("message") };
+    let mut value = serde_json::to_value(&*message).expect("serialized message");
+    value.as_object_mut().expect("message object").remove("errorMessage");
+    value["stopDetails"] = serde_json::json!({"type":"refusal"});
+    *message = serde_json::from_value(value).expect("typed refusal message");
+    dispatch(&api, event).await;
+    dispatch(&api, selection(ModelSelectSource::Fallback)).await;
+    let messages = actions.0.lock().expect("messages");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].custom_type, "omo-fallback-architect:directive");
+    assert_eq!(messages[1].custom_type, "omo-fallback-architect:notice");
 }
