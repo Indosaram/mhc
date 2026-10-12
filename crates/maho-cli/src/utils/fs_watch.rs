@@ -21,6 +21,7 @@ pub fn watch_with_error_handler(
     let error_handler = on_error.clone();
     let root = canonical_watch_path(path);
     let callback_root = root.clone();
+    let callback_canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let mut watcher = match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         match event {
             Err(_) => error_handler(),
@@ -32,7 +33,7 @@ pub fn watch_with_error_handler(
                 };
                 if event.paths.is_empty() { listener(kind, None); }
                 for path in event.paths {
-                    let name = if callback_root.is_dir() { path.strip_prefix(&callback_root).unwrap_or(&path) } else { path.file_name().map(Path::new).unwrap_or(&path) };
+                    let name = if callback_root.is_dir() { path.strip_prefix(&callback_root).or_else(|_| path.strip_prefix(&callback_canonical_root)).unwrap_or(&path) } else { path.file_name().map(Path::new).unwrap_or(&path) };
                     listener(kind, Some(name.to_string_lossy().into_owned()));
                 }
             }

@@ -124,3 +124,23 @@ fn native_watch_delivers_creation_and_joins_teardown() {
     subscription.close().unwrap();
     subscription.close().unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_watch_delivers_creation_through_symlinked_directory() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real");
+    let linked = root.path().join("linked");
+    std::fs::create_dir(&real).unwrap();
+    symlink(&real, &linked).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let error_sender = sender.clone();
+    let mut subscription = subscribe(linked, false, Arc::new(move |_, filename| {
+        if filename == Some(PathBuf::from("settings.json")) { sender.send(Ok(())).unwrap(); }
+    }), Arc::new(move |error, _| { error_sender.send(Err(error)).unwrap(); })).unwrap();
+    subscription.ready().unwrap();
+    std::fs::write(real.join("settings.json"), "{}").unwrap();
+    receiver.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    subscription.close().unwrap();
+}

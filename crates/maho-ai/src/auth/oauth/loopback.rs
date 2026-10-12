@@ -83,9 +83,12 @@ pub fn callback_host() -> String {
 }
 
 pub fn bind_failure_code(error: &std::io::Error) -> Option<&'static str> {
+    if error.kind() == std::io::ErrorKind::AddrInUse {
+        return Some("EADDRINUSE");
+    }
+
     match error.raw_os_error()? {
         13 => Some("EACCES"),
-        98 => Some("EADDRINUSE"),
         1 => Some("EPERM"),
         _ => None,
     }

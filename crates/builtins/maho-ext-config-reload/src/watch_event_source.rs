@@ -7,7 +7,7 @@ pub type WatchErrorListener = Arc<dyn Fn(String, PathBuf) + Send + Sync>;
 pub type NativeEventCallback = Box<dyn FnMut(notify::Result<Event>) + Send>;
 pub type WatcherFactory = Arc<dyn Fn(&std::path::Path, bool, NativeEventCallback) -> notify::Result<Box<dyn Send>> + Send + Sync>;
 #[derive(Clone)]
-struct Subscription { path: PathBuf, recursive: bool, active: Arc<AtomicBool>, listener: WatchEventListener, on_error: WatchErrorListener }
+struct Subscription { path: PathBuf, canonical_path: PathBuf, recursive: bool, active: Arc<AtomicBool>, listener: WatchEventListener, on_error: WatchErrorListener }
 enum Command { Watch(u64, Subscription), Unwatch(u64), Event(u64, notify::Result<Event>), Barrier(mpsc::Sender<()>), Shutdown }
 struct Worker { sender: mpsc::Sender<Command>, join: thread::JoinHandle<()> }
 struct Registry { worker: Option<Worker>, count: usize, next_id: u64, factory: WatcherFactory, offloaded: bool }
@@ -82,7 +82,7 @@ fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, lis
         let factory = Arc::clone(&registry.factory);
         drop(registry);
         let active = Arc::new(AtomicBool::new(true));
-        let subscription = Subscription { path: path.clone(), recursive, active: Arc::clone(&active), listener, on_error };
+        let subscription = Subscription { canonical_path: std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()), path: path.clone(), recursive, active: Arc::clone(&active), listener, on_error };
         let watcher = factory(&path, recursive, Box::new(move |event| {
             if !subscription.active.load(Ordering::SeqCst) { return; }
             match event {
@@ -91,7 +91,7 @@ fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, lis
                     let event_type = if matches!(event.kind, notify::EventKind::Create(_) | notify::EventKind::Remove(_) | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))) { "rename" } else { "change" };
                     if event.paths.is_empty() { (subscription.listener)(event_type, None); }
                     for path in event.paths {
-                        if let Ok(relative) = path.strip_prefix(&subscription.path)
+                        if let Some(relative) = path.strip_prefix(&subscription.path).or_else(|_| path.strip_prefix(&subscription.canonical_path)).ok()
                             && (subscription.recursive || relative.components().count() <= 1) { (subscription.listener)(event_type, Some(relative.into())); }
                     }
                 },
@@ -109,7 +109,8 @@ fn subscribe_in(owner: Arc<Mutex<Registry>>, path: PathBuf, recursive: bool, lis
     registry.next_id += 1;
     let id = registry.next_id;
     let active = Arc::new(AtomicBool::new(true));
-    let subscription = Subscription { path, recursive, active: Arc::clone(&active), listener, on_error };
+    let canonical_path = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    let subscription = Subscription { path, canonical_path, recursive, active: Arc::clone(&active), listener, on_error };
     if let Some(worker) = &registry.worker { worker.sender.send(Command::Watch(id, subscription)).map_err(|error| error.to_string())?; }
     registry.count += 1;
     drop(registry);
@@ -146,7 +147,7 @@ fn run_worker_with_factory(receiver: mpsc::Receiver<Command>, sender: mpsc::Send
                             let event_type = if matches!(event.kind, notify::EventKind::Create(_) | notify::EventKind::Remove(_) | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))) { "rename" } else { "change" };
                             if event.paths.is_empty() { (subscription.listener)(event_type, None); }
                             for path in &event.paths {
-                                if let Ok(relative) = path.strip_prefix(&subscription.path)
+                                if let Some(relative) = path.strip_prefix(&subscription.path).or_else(|_| path.strip_prefix(&subscription.canonical_path)).ok()
                                     && (subscription.recursive || relative.components().count() <= 1) { (subscription.listener)(event_type, Some(relative.into())); }
                             }
                         },
@@ -181,7 +182,7 @@ mod tests {
         let event_sender = sender.clone();
         let worker = thread::spawn(move || run_worker(receiver, event_sender));
         let (events, received) = mpsc::channel();
-        sender.send(Command::Watch(1, Subscription { path: root.path().into(), recursive: false, active: Arc::new(AtomicBool::new(true)), listener: Arc::new(move |kind, path| { events.send((kind.to_owned(), path)).unwrap(); }), on_error: Arc::new(|error, _| panic!("{error}")) })).unwrap();
+        sender.send(Command::Watch(1, Subscription { path: root.path().into(), canonical_path: root.path().into(), recursive: false, active: Arc::new(AtomicBool::new(true)), listener: Arc::new(move |kind, path| { events.send((kind.to_owned(), path)).unwrap(); }), on_error: Arc::new(|error, _| panic!("{error}")) })).unwrap();
         let (ready, barrier) = mpsc::channel();
         sender.send(Command::Barrier(ready)).unwrap();
         barrier.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
