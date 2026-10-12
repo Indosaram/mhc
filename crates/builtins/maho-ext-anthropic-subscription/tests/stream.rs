@@ -41,6 +41,22 @@ async fn native_turn_handshakes_projects_prompt_and_bills_result() {
 }
 
 #[tokio::test]
+async fn structured_model_refusal_terminates_before_content() {
+    let output = turn(serde_json::json!({"type":"system","subtype":"model_refusal_no_fallback","api_refusal_category":"cyber","api_refusal_explanation":"blocked","content":"Claude refused this request."}), false).await;
+    assert_eq!(output.stop_reason, StopReason::Error);
+    assert_eq!(output.error_message.as_deref(), Some("Claude refused this request (cyber): blocked"));
+    assert!(output.content.is_empty());
+}
+
+#[tokio::test]
+async fn legacy_assistant_refusal_is_surfaced() {
+    let output = turn(serde_json::json!({"type":"assistant","message":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":"blocked"}}}), false).await;
+    assert_eq!(output.stop_reason, StopReason::Error);
+    assert_eq!(output.error_message.as_deref(), Some("Claude refused this request (cyber): blocked"));
+    assert!(output.content.is_empty());
+}
+
+#[tokio::test]
 async fn native_failure_bills_tokens_and_returns_error_event() {
     let output = turn(serde_json::json!({"type":"result","subtype":"error_during_execution","errors":["failed"],"is_error":true,"usage":{"input_tokens":5,"output_tokens":2}}), false).await;
     assert_eq!(output.stop_reason, StopReason::Error);
