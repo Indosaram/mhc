@@ -235,9 +235,9 @@ async fn forced_worker_retirement_settles_nested_host_wait_as_stale() {
 async fn forced_retirement_retires_tracked_child_outside_worker_group() {
     use maho_codemode::kernels::js::process_tree_host::*;
     let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-owned-child",4,None).await.unwrap();
-    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"child-owner".into(),code:"const child = Bun.spawn(['setsid','sh','-c','printf READY; exec sleep 3600'], {stdout:'pipe',stderr:'ignore'}); await child.stdout.getReader().read(); await tool.started({pid:child.pid}); while(true) {}".into(),timeout_ms:None},None,None);
+    let parent=kernel.run_with_callbacks(KernelRunInput {cell_id:"child-owner".into(),code:"const child = Bun.spawn(['perl','-e','use POSIX; setsid() or die $!; exec @ARGV','sh','-c','printf READY; exec sleep 3600'], {stdout:'pipe',stderr:'ignore'}); await child.stdout.getReader().read(); await tool.started({pid:child.pid}); while(true) {}".into(),timeout_ms:None},None,None);
     let stop=async {
-        let call=kernel.next_tool_call().await.unwrap();
+        let call=tokio::time::timeout(std::time::Duration::from_secs(30),kernel.next_tool_call()).await.expect("timed out waiting for tracked-child tool call").unwrap();
         let pid=call["args"]["pid"].as_u64().unwrap() as u32;
         kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":null})).unwrap();
         let retained=kernel.interrupt("child-stop",Some("child-owner")).await;
