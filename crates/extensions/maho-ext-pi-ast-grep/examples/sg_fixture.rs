@@ -8,6 +8,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&file, "console.log(value);\n")?;
     let mut options = RunSgOptions { pattern: "console.log($MSG)".into(), lang: "typescript".into(), paths: vec![file.to_string_lossy().into_owned()], rewrite: Some("logger.info($MSG)".into()), ..Default::default() };
     let binary = std::path::Path::new(&binary);
+    let function_file = fixture.path().join("function.ts");
+    std::fs::write(&function_file, "function hello(value) { return value; }\n")?;
+    let function = run_sg(&RunSgOptions { pattern: "function $NAME($$$) { $$$ }".into(), lang: "typescript".into(), paths: vec![function_file.to_string_lossy().into_owned()], ..Default::default() }, binary).await;
+    if function.matches.is_empty() || function.error.is_some() { return Err("function structural search failed".into()); }
+    let glob = run_sg(&RunSgOptions { pattern: "console.log($MSG)".into(), lang: "typescript".into(), paths: vec![fixture.path().to_string_lossy().into_owned()], globs: vec!["*.ts".into()], ..Default::default() }, binary).await;
+    if glob.matches.is_empty() || glob.error.is_some() || glob.matches.iter().any(|found| !found.file.ends_with(".ts")) { return Err("glob search failed".into()); }
+    let absent = run_sg(&RunSgOptions { pattern: "thisIdentifierDoesNotExistAnywhere($$$)".into(), lang: "typescript".into(), paths: vec![file.to_string_lossy().into_owned()], ..Default::default() }, binary).await;
+    if !absent.matches.is_empty() || absent.error.is_some() || absent.total_matches != 0 { return Err("no-match search failed".into()); }
     let preview = run_sg(&options, binary).await;
     if preview.matches.len() != 1 || preview.error.is_some() { return Err(format!("preview failed: {preview:?}").into()); }
     if std::fs::read_to_string(&file)? != "console.log(value);\n" { return Err("preview modified fixture".into()); }
@@ -23,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if result.details.as_ref().and_then(|details| details.get("totalMatches")).and_then(serde_json::Value::as_u64) != Some(1) { return Err("native tool executor did not expose match details".into()); }
     println!("preview_matches=1 preview_unchanged=true applied_matches=1 rewrite_verified=true");
     println!("native_tool_executor_matches=1");
+    println!("function_search=true glob_filter=true no_match_without_error=true");
     let agent_result = serde_json::from_value(serde_json::json!({"content":[{"type":"text","text":"native result"}],"details":result.details}))?;
     let output = maho_ext_pi_ast_grep::render::result_text(&agent_result,true,false,false);
     if !output.contains("1 match") || !output.contains("logger.info(value)") { return Err("native renderer omitted real match".into()); }

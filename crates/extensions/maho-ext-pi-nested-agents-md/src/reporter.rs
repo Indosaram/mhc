@@ -9,14 +9,23 @@ pub struct InjectedFileMeta { pub absolute_path: PathBuf, pub truncated: bool }
 pub fn update_status(ctx: &maho_ext_api::ExtensionContext, cache: &InjectionCache, session: &str, has_errors: bool) {
     if !ctx.has_ui { return; }
     let count = cache.cache_size(session);
-    let text = (count > 0).then(||format!("🤖 {count}{}",if has_errors { " ⚠️" } else { "" }));
+    let text = (count > 0).then(||{
+        let theme = ctx.ui.theme();
+        let mut text = theme.fg("dim", &format!("🤖 {count}"));
+        if has_errors { text.push_str(&theme.fg("warning", " ⚠️")); }
+        text
+    });
     ctx.ui.set_status(STATUS_KEY,text.as_deref());
 }
 pub fn update_widget(ctx: &maho_ext_api::ExtensionContext, visible: bool, files: &[InjectedFileMeta]) {
     if !ctx.has_ui { return; }
     let lines = if visible && !files.is_empty() {
-        let mut lines = vec!["Nested Context:".into()];
-        lines.extend(files.iter().map(|file|format!("  {}{}",display_path(&ctx.cwd,&file.absolute_path),if file.truncated { " (truncated)" } else { "" })));
+        let theme = ctx.ui.theme();
+        let mut lines = vec![theme.fg("accent", "Nested Context:")];
+        lines.extend(files.iter().map(|file|{
+            let text = format!("  {}{}",display_path(&ctx.cwd,&file.absolute_path),if file.truncated { " (truncated)" } else { "" });
+            theme.fg(if file.truncated { "warning" } else { "dim" },&text)
+        }));
         Some(maho_ext_api::WidgetContent::Lines(lines))
     } else { None };
     ctx.ui.set_widget(WIDGET_KEY,lines,Default::default());
