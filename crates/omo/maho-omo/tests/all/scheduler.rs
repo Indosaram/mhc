@@ -5,6 +5,31 @@ use std::time::Duration;
 use maho_ext_api::IdleInjectionSource;
 use maho_omo::{DeferredScheduler, IdleInjectionQueue, TurnBarrier, runtime_macrotask, runtime_microtask};
 
+#[test]
+fn custom_spawn_seam_captures_one_pending_drain() {
+    let captured=Arc::new(AtomicUsize::new(0));let count=captured.clone();
+    let scheduler=DeferredScheduler::with_spawn(TurnBarrier::new(),Arc::new(move |future| {count.fetch_add(1,Ordering::SeqCst);drop(future);}));
+    scheduler.schedule(Box::new(||{}));
+    assert_eq!(captured.load(Ordering::SeqCst),1);assert_eq!(scheduler.pending_count(),1);
+}
+
+#[tokio::test]
+async fn runtime_drain_serializes_passes() {
+    let active=Arc::new(AtomicUsize::new(0));let maximum=Arc::new(AtomicUsize::new(0));
+    let scheduler=DeferredScheduler::runtime(TurnBarrier::new(),None);
+    let (sender,receipt)=tokio::sync::oneshot::channel();let sender=Arc::new(std::sync::Mutex::new(Some(sender)));
+    for index in 0..3 {
+        let active=active.clone();let maximum=maximum.clone();let sender=sender.clone();
+        scheduler.schedule(Box::new(move || {
+            let current=active.fetch_add(1,Ordering::SeqCst)+1;maximum.fetch_max(current,Ordering::SeqCst);
+            active.fetch_sub(1,Ordering::SeqCst);
+            if index==2 {sender.lock().expect("sender").take().expect("last receipt").send(()).expect("receipt");}
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(5),receipt).await.expect("bounded drain").expect("receipt");
+    assert_eq!(maximum.load(Ordering::SeqCst),1);
+}
+
 #[tokio::test]
 async fn runtime_deferred_helpers_signal_after_the_current_task_yields() {
     let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
