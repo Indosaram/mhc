@@ -37,7 +37,7 @@ impl ModelRegistry for Registry {
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
 }
 #[derive(Default)]
-struct Ui { status: std::sync::Mutex<Option<String>>, widget: std::sync::Mutex<Option<Vec<String>>> }
+struct Ui { status: std::sync::Mutex<Option<String>>, widget: std::sync::Mutex<Option<Vec<String>>>, theme: Theme }
 impl ExtensionUi for Ui {
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
@@ -52,7 +52,7 @@ impl ExtensionUi for Ui {
     fn set_editor_text(&self, _: &str) {}
     fn get_editor_text(&self) -> String { String::new() }
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("headless fixture".into()) }) }
-    fn theme(&self) -> Theme { Theme::default() }
+    fn theme(&self) -> Theme { self.theme.clone() }
 }
 fn fixture() -> (tempfile::TempDir, ExtensionRunner) {
     fixture_with(Vec::new())
@@ -192,4 +192,41 @@ async fn truncation_metadata_reaches_native_widget() {
     content(&mut runner,read_event(tree.path())).await.unwrap();
     (runner.get_command("nested-agents").unwrap().command.handler)("",&context).await.unwrap();
     assert!(ui.widget.lock().unwrap().as_ref().unwrap().iter().any(|line|line.contains("(truncated)")));
+}
+
+/// The three `integration.tui.test.ts` themed cases: upstream applies `theme.fg(color, text)`
+/// (`dim` for the status count, `accent` for the widget heading, `warning`/`dim` per file line).
+/// The native equivalent uses the canonical `maho_ext_api::Theme::fg`, whose prefix is the ANSI
+/// SGR the TUI theme fills and whose reset is `\x1b[39m` (the upstream test's `[dim]` tag form is
+/// its fake `ThemeFn` harness, not the TUI theme's wire shape).
+fn themed_ui() -> Arc<Ui> {
+    let theme = Theme { colors: [("dim".to_owned(), "\u{1b}[2m".to_owned()), ("accent".to_owned(), "\u{1b}[36m".to_owned()), ("warning".to_owned(), "\u{1b}[33m".to_owned())].into_iter().collect(), ..Default::default() };
+    Arc::new(Ui { theme, ..Default::default() })
+}
+#[tokio::test]
+async fn themed_dim_status_count_after_injection() {
+    let (tree,mut runner) = fixture(); let ui = themed_ui();
+    let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); context.has_ui = true; runner.bind_core(Arc::new(Actions),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    assert_eq!(ui.status.lock().unwrap().as_deref(), Some("\u{1b}[2m🤖 1\u{1b}[39m"));
+}
+#[tokio::test]
+async fn themed_widget_lines_use_accent_heading_and_dim_files() {
+    let (tree,mut runner) = fixture(); let ui = themed_ui();
+    let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); context.has_ui = true; runner.bind_core(Arc::new(Actions),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    (runner.get_command("nested-agents").unwrap().command.handler)("",&context).await.unwrap();
+    let widget = ui.widget.lock().unwrap().clone().unwrap();
+    assert_eq!(widget[0], "\u{1b}[36mNested Context:\u{1b}[39m");
+    assert!(widget.iter().skip(1).any(|line| line.starts_with("\u{1b}[2m  src/AGENTS.md") && line.ends_with("\u{1b}[39m")));
+}
+#[tokio::test]
+async fn themed_truncated_widget_line_uses_warning_color() {
+    let (tree,mut runner) = fixture(); std::fs::write(tree.path().join("src/AGENTS.md"),"a".repeat(200_000)).unwrap();
+    let ui = themed_ui();
+    let mut context = runner.create_context().unwrap(); context.ui = ui.clone(); context.has_ui = true; runner.bind_core(Arc::new(Actions),context.clone());
+    content(&mut runner,read_event(tree.path())).await.unwrap();
+    (runner.get_command("nested-agents").unwrap().command.handler)("",&context).await.unwrap();
+    let widget = ui.widget.lock().unwrap().clone().unwrap();
+    assert!(widget.iter().any(|line| line.starts_with("\u{1b}[33m") && line.contains("(truncated)")));
 }
