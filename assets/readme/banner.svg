@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1117"/>
+      <stop offset="1" stop-color="#1a1530"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff7a45"/>
+      <stop offset="1" stop-color="#d4398a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <g font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="96" y="196" font-size="128" font-weight="700" fill="url(#accent)">mhc</text>
+    <rect x="340" y="104" width="22" height="104" fill="#ff7a45" opacity="0.9">
+      <animate attributeName="opacity" values="0.9;0;0.9" dur="1.2s" repeatCount="indefinite"/>
+    </rect>
+    <text x="100" y="262" font-size="28" fill="#e6edf3">Terminal AI coding agent · native Rust</text>
+    <text x="100" y="312" font-size="21" fill="#8b949e">OmO + senpi, one binary, no Node/Bun runtime</text>
+  </g>
+  <g font-family="JetBrains Mono, SFMono-Regular, Menlo, Consolas, monospace" font-size="22">
+    <rect x="800" y="96" width="400" height="220" rx="14" fill="#161b22" stroke="#30363d"/>
+    <circle cx="828" cy="122" r="7" fill="#ff5f56"/>
+    <circle cx="850" cy="122" r="7" fill="#ffbd2e"/>
+    <circle cx="872" cy="122" r="7" fill="#27c93f"/>
+    <text x="824" y="176" fill="#7ee787">$</text>
+    <text x="854" y="176" fill="#e6edf3">mhc "fix the bug"</text>
+    <text x="824" y="216" fill="#8b949e">● read  src/main.rs</text>
+    <text x="824" y="250" fill="#8b949e">● edit  src/main.rs</text>
+    <text x="824" y="284" fill="#7ee787">✓ done</text>
+  </g>
+</svg>
