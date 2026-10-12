@@ -85,6 +85,7 @@ impl Driver {
             }
             Err(error) => panic!("accept failed: {error}"),
         };
+        server.set_nonblocking(false).expect("blocking server stream");
         server.set_read_timeout(Some(IO_TIMEOUT)).expect("read timeout");
         server.set_write_timeout(Some(IO_TIMEOUT)).expect("write timeout");
 

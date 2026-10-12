@@ -83,8 +83,7 @@ fn removes_old_empty_journal_and_keeps_state_reflection_and_other_content() {
         std::fs::write(dir.join(STATE), state).unwrap();
         if let Some(extra) = extra { std::fs::write(dir.join("notes.txt"), extra).unwrap(); }
         for path in [&dir, &dir.join(TRANSCRIPT), &dir.join(STATE)] {
-            let timestamp = format!("@{}", old_ms / 1000);
-            let _ = std::process::Command::new("touch").args(["-d", &timestamp, path.to_str().unwrap()]).status();
+            filetime::set_file_mtime(path, filetime::FileTime::from_unix_time((old_ms / 1000) as i64, 0)).unwrap();
         }
     }
     let result = sweep_empty_transcript_journals(root.path(), old_ms + 60 * 60 * 1000, DEFAULT_MIN_IDLE_MS, &|_| false).unwrap();
