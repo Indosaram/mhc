@@ -34,6 +34,9 @@ pub fn date_parse_ms(raw: &str) -> Option<i64> {
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
         return Some(parsed.timestamp_millis());
     }
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc2822(value) {
+        return Some(parsed.timestamp_millis());
+    }
     for format in ["%Y-%m-%dT%H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%.f%:z", "%Y-%m-%d %H:%M:%S%.f%z"] {
         if let Ok(parsed) = chrono::DateTime::parse_from_str(value, format) {
             return Some(parsed.timestamp_millis());
@@ -46,13 +49,37 @@ pub fn date_parse_ms(raw: &str) -> Option<i64> {
         "%Y-%m-%d %H:%M",
     ] {
         if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(value, format) {
-            return Some(parsed.and_utc().timestamp_millis());
+            return local_date_millis(parsed);
         }
     }
     if let Ok(parsed) = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return Some(parsed.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis());
     }
+    if value.len() == 4 && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return chrono::NaiveDate::from_ymd_opt(value.parse().ok()?, 1, 1)
+            .and_then(|date| date.and_hms_opt(0, 0, 0)).map(|date| date.and_utc().timestamp_millis());
+    }
+    if value.len() == 7 && value.as_bytes()[4] == b'-' {
+        return chrono::NaiveDate::parse_from_str(&format!("{value}-01"), "%Y-%m-%d").ok()
+            .and_then(|date| date.and_hms_opt(0, 0, 0)).map(|date| date.and_utc().timestamp_millis());
+    }
+    for format in ["%m/%d/%Y %H:%M:%S%.f", "%m/%d/%Y %H:%M", "%Y/%m/%d %H:%M:%S%.f", "%Y/%m/%d %H:%M", "%b %e, %Y %H:%M:%S%.f", "%b %e, %Y %H:%M", "%b %e %Y %H:%M:%S%.f", "%b %e %Y %H:%M"] {
+        if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(value, format) { return local_date_millis(parsed); }
+    }
+    for format in ["%m/%d/%Y", "%Y/%m/%d", "%b %e, %Y", "%b %e %Y"] {
+        if let Ok(parsed) = chrono::NaiveDate::parse_from_str(value, format) { return parsed.and_hms_opt(0, 0, 0).and_then(local_date_millis); }
+    }
     None
+}
+
+fn local_date_millis(value: chrono::NaiveDateTime) -> Option<i64> {
+    use chrono::TimeZone;
+    match chrono::Local.from_local_datetime(&value) {
+        chrono::LocalResult::Single(date) => Some(date.timestamp_millis()),
+        chrono::LocalResult::Ambiguous(date, _) => Some(date.timestamp_millis()),
+        chrono::LocalResult::None => chrono::Local.from_local_datetime(&(value - chrono::Duration::hours(1)))
+            .earliest().map(|date| date.timestamp_millis() + 3_600_000),
+    }
 }
 
 fn parse_int_prefix(text: &str) -> f64 {
