@@ -598,7 +598,7 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_to_manual_redirect_url_entry_when_the_callback_port_fails_with_eaddrinuse() {
-        manual_fallback_with_failing_bind(98, "EADDRINUSE").await;
+        manual_fallback_with_failing_bind(if cfg!(target_os = "macos") { 48 } else { 98 }, "EADDRINUSE").await;
     }
 
     #[tokio::test]

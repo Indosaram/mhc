@@ -10,6 +10,8 @@ pub fn parse_openai_remote_compaction_identity(provider:&str,api:&str)->Option<O
 }
 fn codex(model:&Model)->bool {model.api=="openai-codex-responses"}
 fn base_url(model:&Model)->&str {if model.base_url.is_empty() {if codex(model) {"https://chatgpt.com/backend-api"} else {"https://api.openai.com/v1"}} else {&model.base_url}}
+fn platform()->&'static str {if cfg!(target_os="macos") {"darwin"} else if cfg!(target_os="windows") {"win32"} else {std::env::consts::OS}}
+fn arch()->&'static str {match std::env::consts::ARCH {"x86_64"=>"x64","aarch64"=>"arm64","x86"=>"ia32",arch=>arch}}
 pub fn is_openai_remote_compaction_model(model:Option<&Model>)->bool {
     let Some(model)=model else {return false;};
     if parse_openai_remote_compaction_identity(&model.provider,&model.api).is_none() {return false;}
@@ -50,12 +52,35 @@ pub fn create_openai_remote_compaction_headers(model:&Model,api_key:Option<&str>
     } else if !headers.contains_key("authorization") && let Some(key)=api_key.filter(|k|!k.is_empty()) {headers.insert("authorization".into(),format!("Bearer {key}"));}
     if !headers.contains_key("authorization") {return None;}
     if codex(model) {
-        headers.insert("originator".into(),"senpi".into());headers.insert("user-agent".into(),format!("senpi (linux {os_release}; x64)"));headers.insert("openai-beta".into(),"responses=experimental".into());headers.insert("accept".into(),"text/event-stream".into());
+        headers.insert("originator".into(),"senpi".into());headers.insert("user-agent".into(),format!("senpi ({} {os_release}; {})",platform(),arch()));headers.insert("openai-beta".into(),"responses=experimental".into());headers.insert("accept".into(),"text/event-stream".into());
         if let Some(id)=session_id.filter(|id|!id.is_empty()) {headers.insert("session-id".into(),id.into());headers.insert("x-client-request-id".into(),id.into());}
     }
     Some(headers)
 }
+#[cfg(target_os = "linux")]
+fn kernel_release() -> std::io::Result<String> {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
+}
+#[cfg(all(unix, not(target_os = "linux")))]
+fn kernel_release() -> std::io::Result<String> {
+    let output = std::process::Command::new("uname").arg("-r").output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other("uname -r failed"));
+    }
+    let release = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if release.is_empty() {
+        return Err(std::io::Error::other("uname -r returned an empty release"));
+    }
+    Ok(release)
+}
+#[cfg(not(unix))]
+fn kernel_release() -> std::io::Result<String> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "kernel release lookup is unsupported on this platform",
+    ))
+}
 pub fn create_live_openai_remote_compaction_headers(model: &Model, api_key: Option<&str>, additional: &BTreeMap<String, Option<String>>, session_id: Option<&str>) -> std::io::Result<Option<BTreeMap<String, String>>> {
-    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")?;
+    let release = kernel_release()?;
     Ok(create_openai_remote_compaction_headers(model, api_key, additional, session_id, release.trim_end()))
 }
