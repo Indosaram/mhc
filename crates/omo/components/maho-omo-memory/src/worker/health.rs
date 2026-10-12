@@ -53,7 +53,8 @@ pub fn read_reflection_health(completions_dir: &Path, limit: usize, now: i64) ->
         health.recent_failure_fingerprints = failures.iter().take(3).map(|record| reflection_failure_fingerprint(record.reason.as_deref(), record.detail.as_deref())).collect();
         let mut counts = BTreeMap::new();
         for fingerprint in &health.recent_failure_fingerprints { *counts.entry(fingerprint.clone()).or_insert(0usize) += 1; }
-        health.fingerprint = counts.into_iter().max_by(|(left, a), (right, b)| a.cmp(b).then_with(|| right.cmp(left))).map(|(fingerprint, _)| fingerprint).unwrap_or_default();
+        let collator = icu_collator::CollatorBorrowed::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+        health.fingerprint = counts.into_iter().max_by(|(left, a), (right, b)| a.cmp(b).then_with(|| collator.compare(right, left))).map(|(fingerprint, _)| fingerprint).unwrap_or_default();
     }
     health.last_failure = records.iter().find(|record| record.outcome == ReflectionOutcome::Failed).map(|record| LastFailure { reason: record.reason.clone().unwrap_or_else(|| "failed".into()), detail: record.detail.clone(), finished_at: record.finished_at.clone() });
     health.last_success_at = records.iter().find(|record| matches!(record.outcome, ReflectionOutcome::Merged | ReflectionOutcome::NoChanges)).map(|record| record.finished_at.clone());
@@ -64,6 +65,14 @@ pub fn read_reflection_health(completions_dir: &Path, limit: usize, now: i64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn equal_failure_counts_break_ties_by_locale_collation() {
+        let root = tempfile::tempdir().unwrap();
+        for (id, detail) in [("upper", "A"), ("lower", "a")] { write(root.path(), id, "2026-08-12T00:00:00.000Z", "failed", detail, false); }
+        let health = read_reflection_health(root.path(), 100, timestamp("2026-08-12T01:00:00.000Z").unwrap());
+        assert_eq!(health.streak, 2);
+        assert_eq!(health.fingerprint, "child_exit:a");
+    }
     #[test]fn malformed_optional_fields_preserve_valid_health_record(){
         let root=tempfile::tempdir().unwrap();std::fs::write(root.path().join("record.json"),serde_json::to_vec(&serde_json::json!({"runId":12,"outcome":"failed","reason":false,"detail":[],"finishedAt":"2026-08-12T00:00:00Z","delivery":{"status":"pending"}})).unwrap()).unwrap();
         let health=read_reflection_health(root.path(),100,0);assert_eq!(health.streak,1);assert_eq!(health.counts.failed,1);assert_eq!(health.pending_count,1);assert_eq!(health.fingerprint,"failed:");assert_eq!(health.last_outcome.unwrap().run_id,"");assert_eq!(health.last_failure.unwrap().detail,None);
