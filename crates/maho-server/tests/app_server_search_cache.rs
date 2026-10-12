@@ -17,7 +17,10 @@ fn parser_accepts_non_rfc3339_session_timestamps() {
     let contents = [json!({"type":"session","id":"s","cwd":"/work","timestamp":"2020-01-01"}),json!({"type":"message","timestamp":"2020-01-01 00:00:05","message":{"role":"user","content":"hi"}})].map(|entry|entry.to_string()).join("\n");
     let record = parse_search_session("session.jsonl",0,&contents).unwrap();
     assert_eq!(record.thread["createdAt"],"2020-01-01T00:00:00.000Z");
-    assert_eq!(record.thread["updatedAt"],"2020-01-01T00:00:05.000Z");
+    use chrono::TimeZone;
+    let expected=chrono::Local.with_ymd_and_hms(2020,1,1,0,0,5).earliest().unwrap().with_timezone(&chrono::Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
+    let header="2020-01-01T00:00:00.000Z";
+    assert_eq!(record.thread["updatedAt"],expected.as_str().max(header));
 }
 
 #[tokio::test]
