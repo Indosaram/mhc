@@ -45,4 +45,69 @@ async fn server_start_rolls_back_already_started_listeners_on_failure() {
     let error=test.server.start().await.unwrap_err();
     assert_eq!(error.message,"listener start failed");
     assert_eq!(closes.load(Ordering::SeqCst),1,"only the already-started listener is rolled back");
+    tokio::time::timeout(std::time::Duration::from_secs(2), test.server.closed()).await.unwrap().unwrap();
+    assert!(test.server.start().await.is_err());
+    test.server.close().await.unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn server_start_is_single_shot_and_close_settles_once() {
+    let closes = Arc::new(AtomicUsize::new(0));
+    let test = create_test_server(TestServerOptions {
+        listeners: vec![Arc::new(Listener { closes: closes.clone(), fail_close: false })],
+        ..Default::default()
+    }).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        test.server.start().await.unwrap();
+        assert_eq!(test.server.start().await.unwrap_err().message, "Server is already started");
+        test.server.close().await.unwrap();
+        test.server.closed().await.unwrap();
+        test.server.close().await.unwrap();
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn server_close_failure_rejects_closed_after_attempting_all_listeners() {
+    let closes = Arc::new(AtomicUsize::new(0));
+    let test = create_test_server(TestServerOptions {
+        listeners: vec![
+            Arc::new(Listener { closes: closes.clone(), fail_close: true }),
+            Arc::new(Listener { closes: closes.clone(), fail_close: true }),
+        ],
+        ..Default::default()
+    }).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        test.server.start().await.unwrap();
+        assert!(test.server.close().await.unwrap_err().message.contains("close failure"));
+        assert!(test.server.closed().await.is_err());
+        assert_eq!(closes.load(Ordering::SeqCst), 2);
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_start_aggregates_rollback_failure_and_rejects_closed() {
+    struct FailingStart;
+    impl ServerListener for FailingStart {
+        fn start(&self, _: ByteConnectionAcceptor) -> ServerFuture<'_, ()> {
+            Box::pin(async { Err(ServerError::new("internal_error", "listener start failed")) })
+        }
+        fn close(&self) -> ServerFuture<'_, ()> { Box::pin(async { Ok(()) }) }
+    }
+    let closes = Arc::new(AtomicUsize::new(0));
+    let test = create_test_server(TestServerOptions {
+        listeners: vec![
+            Arc::new(Listener { closes: closes.clone(), fail_close: true }),
+            Arc::new(FailingStart),
+        ],
+        ..Default::default()
+    }).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let error = test.server.start().await.unwrap_err();
+        assert!(error.message.contains("listener start failed"));
+        assert!(error.message.contains("close failure"));
+        assert!(test.server.closed().await.is_err());
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }).await.unwrap();
 }

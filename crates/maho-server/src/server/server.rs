@@ -41,6 +41,8 @@ pub struct Server {
     on_error: Option<ServerErrorObserver>,
     started: AtomicBool,
     listener_shutdown: Mutex<Option<watch::Sender<bool>>>,
+    closed: watch::Sender<Option<Result<(), ServerError>>>,
+    close_lock: Mutex<()>,
 }
 impl Server {
     pub fn new(
@@ -83,6 +85,7 @@ impl Server {
         }
         let router = Arc::new(SessionRouter::new(host.clone(), server_id.clone()));
         router.bind_self();
+        let (closed, _) = watch::channel(None);
         Ok(Arc::new(Self {
             router,
             server_id,
@@ -94,19 +97,29 @@ impl Server {
             on_error,
             started: AtomicBool::new(false),
             listener_shutdown: Mutex::new(None),
+            closed,
+            close_lock: Mutex::new(()),
         }))
     }
     /// Report one internal server error to the pinned `onError` observer, falling back to stderr
-    /// when no observer is configured.
+    /// when no observer is configured. Pinned `reportError` swallows observer exceptions: error
+    /// observers cannot affect server state.
     pub(crate) fn report_error(&self, error: &ServerError) {
         match &self.on_error {
-            Some(observer) => observer(error.clone()),
+            Some(observer) => {
+                let observer = Arc::clone(observer);
+                let error = error.clone();
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
+            }
             None => eprintln!("{}", error.message),
         }
     }
     /// Pinned `Server.start()`: start the owned listeners, rolling back every already-started
     /// listener and the server state when any listener fails to start.
     pub async fn start(self: &Arc<Self>) -> Result<(), ServerError> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(ServerError::new("internal_error", "Server is already closed"));
+        }
         if self.started.swap(true, Ordering::SeqCst) {
             return Err(ServerError::new("internal_error", "Server is already started"));
         }
@@ -114,20 +127,36 @@ impl Server {
         *self.listener_shutdown.lock().await = Some(shutdown);
         match ServerListeners::new(self.listeners.clone()).start(self.clone(), signal).await {
             Ok(()) => Ok(()),
-            Err(error) => {
+            Err(failure) => {
                 // Pinned `startInternal` catch: mark closing, then close the server state; the
                 // started listeners were already rolled back by `ServerListeners::start`.
                 self.closing.store(true, Ordering::SeqCst);
-                self.started.store(false, Ordering::SeqCst);
                 *self.listener_shutdown.lock().await = None;
-                match self.router.close().await {
-                    Ok(()) => Err(error),
-                    Err(close) => Err(ServerError::new("internal_error", &format!("{}; {}", error.message, close.message))),
+                let mut cleanup_errors = failure.cleanup_errors;
+                if let Err(error) = self.router.close().await {
+                    cleanup_errors.push(error);
+                }
+                let start_error = failure.error;
+                if cleanup_errors.is_empty() {
+                    self.closed.send_replace(Some(Ok(())));
+                    Err(start_error)
+                } else {
+                    let message = std::iter::once(start_error.message.as_str())
+                        .chain(cleanup_errors.iter().map(|error| error.message.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    let failure = ServerError::new("internal_error", &message);
+                    self.closed.send_replace(Some(Err(failure.clone())));
+                    Err(failure)
                 }
             }
         }
     }
     pub async fn close(&self) -> Result<(), ServerError> {
+        let _close = self.close_lock.lock().await;
+        if let Some(result) = self.closed.borrow().clone() {
+            return result;
+        }
         self.closing.store(true, Ordering::SeqCst);
         if let Some(shutdown) = self.listener_shutdown.lock().await.take() {
             shutdown.send_replace(true);
@@ -136,7 +165,27 @@ impl Server {
         // Close the owned listeners, attempting every one and aggregating failures (pinned
         // `closeInternal`); an empty listener set is a no-op for the `Server::new` callers.
         let listeners = ServerListeners::new(self.listeners.clone()).close().await;
-        router.and(listeners)
+        let result = match (router, listeners) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(router_error), Err(listener_error)) => Err(ServerError::new(
+                "internal_error",
+                &format!("{}; {}", router_error.message, listener_error.message),
+            )),
+        };
+        self.closed.send_replace(Some(result.clone()));
+        result
+    }
+    pub async fn closed(&self) -> Result<(), ServerError> {
+        let mut closed = self.closed.subscribe();
+        loop {
+            if let Some(result) = closed.borrow_and_update().clone() {
+                return result;
+            }
+            if closed.changed().await.is_err() {
+                return Err(ServerError::new("internal_error", "Server closed signal was dropped"));
+            }
+        }
     }
     pub fn max_frame_length(&self) -> u32 {
         self.max_frame_length
@@ -411,5 +460,24 @@ impl RoutedServerPresentation for Presentation {
             self.detach_session().await?;
             self.router.remove(session_id).await
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observers_receive_reports_and_a_panicking_observer_cannot_escape() {
+        let errors: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = Arc::clone(&errors);
+        let host: Arc<dyn ServerHost> = Arc::new(crate::server::testing::TestServerHost::default());
+        let server = Server::with_options(Arc::clone(&host), "00000000-0000-4000-8000-000000000001".into(), None, None, Vec::new(),
+            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message)))).expect("server");
+        server.report_error(&ServerError::new("internal_error", "boom"));
+        assert_eq!(errors.lock().expect("errors").as_slice(), ["boom".to_string()]);
+        let panicking = Server::with_options(host, "00000000-0000-4000-8000-000000000002".into(), None, None, Vec::new(),
+            Some(Arc::new(|_: ServerError| panic!("observer failure")))).expect("server");
+        panicking.report_error(&ServerError::new("internal_error", "ignored"));
     }
 }
