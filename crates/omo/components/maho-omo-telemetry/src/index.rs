@@ -33,7 +33,7 @@ pub struct SenpiTelemetryComponent {pub options:SenpiTelemetryOptions}
 impl Extension for SenpiTelemetryComponent {
     fn register(&self,api:&mut ExtensionApi) {
         let options=self.options.clone();
-        api.on(EventKind::SessionStart,Arc::new(move |_,_| {let options=options.clone();Box::pin(async move {tokio::spawn(async move {if let Err(error)=record_senpi_daily_active(&options).await {eprintln!("omo-senpi telemetry failed: {error}");}});Ok(EventResult::None)})}));
+        api.on(EventKind::SessionStart,Arc::new(move |_,ctx| {let options=options.clone();let logger=ctx.logger.clone();Box::pin(async move {tokio::spawn(async move {if let Err(error)=record_senpi_daily_active(&options).await {let message=format!("omo-senpi telemetry failed: {error}");match &logger {Some(logger)=>logger.warn(&message,None),None=>eprintln!("{message}")};}});Ok(EventResult::None)})}));
     }
 }
 #[cfg(test)]
