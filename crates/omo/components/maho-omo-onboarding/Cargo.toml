@@ -12,6 +12,8 @@ uuid = { version = "=1.20.0", features = ["v4"] }
 jiff = "=0.2.23"
 
 [dev-dependencies]
+maho-core = { path = "../../../maho-core" }
+maho-ai = { path = "../../../maho-ai" }
 maho-test-support = { path = "../../../maho-test-support", features = ["sdk"] }
 maho-ext-host = { path = "../../../maho-ext-host" }
 tempfile = "=3.27.0"
