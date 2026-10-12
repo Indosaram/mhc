@@ -10,8 +10,8 @@ pub struct DreamScoreInput<'a> {
     pub newest_message_covered: bool, pub now_ms: f64,
 }
 pub fn score_dream_candidate(input: &DreamScoreInput<'_>) -> (DreamScoreOperands, f64) {
-    let recency = chrono::DateTime::parse_from_rfc3339(input.last_activity).ok().map(|time| {
-        let age_hours = (input.now_ms - time.timestamp_millis().to_string().parse::<f64>().unwrap_or(f64::NAN)).max(0.0) / 3_600_000.0;
+    let recency = memory_core::support::time::parse_rfc3339(input.last_activity).map(|millis| {
+        let age_hours = (input.now_ms - millis as f64).max(0.0) / 3_600_000.0;
         if age_hours.is_finite() { (-age_hours / 168.0).exp().min(1.0) } else { 0.0 }
     }).unwrap_or(0.0);
     let operands = DreamScoreOperands {

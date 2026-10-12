@@ -44,7 +44,7 @@ pub fn settle_reservation_run(context: &RunFinalizationContext<'_>, run_dir: &Pa
     } else { None };
     let health = read_reflection_health(&completions, 100, now_ms);
     let started = value["startedAt"].as_str().ok_or("Missing startedAt")?.to_owned();
-    let duration = chrono::DateTime::parse_from_rfc3339(&finalized).ok().zip(chrono::DateTime::parse_from_rfc3339(&started).ok()).map(|(end, start)| (end.timestamp_millis() - start.timestamp_millis()).max(0) as f64);
+    let duration = Some(memory_core::support::time::parse_rfc3339(&finalized).zip(memory_core::support::time::parse_rfc3339(&started)).map_or(f64::NAN, |(end, start)| (end - start).max(0) as f64));
     let completion = ensure_reflection_completion(&completions, &ReflectionCompletionRecord {
         schema_version:1, run_id:current.run_id().into(), identity:identity.id.clone(), category, model:value["model"].as_str().map(str::to_owned), thinking:value["thinking"].as_str().map(str::to_owned), conversation_ids,
         trigger:serde_json::from_value(value["trigger"].clone()).map_err(|error| error.to_string())?, origin:value.get("origin").map(|value| serde_json::from_value(value.clone())).transpose().map_err(|error| error.to_string())?,

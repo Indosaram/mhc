@@ -9,7 +9,7 @@ impl std::fmt::Display for DreamSelectorError { fn fmt(&self,f:&mut std::fmt::Fo
 impl std::error::Error for DreamSelectorError {}
 impl From<std::io::Error> for DreamSelectorError { fn from(error:std::io::Error)->Self {Self::Io(error)} }
 impl From<JournalError> for DreamSelectorError { fn from(error:JournalError)->Self {Self::Journal(error)} }
-fn activity(value:&str)->f64 { chrono::DateTime::parse_from_rfc3339(value).ok().map(|time| time.timestamp_millis().to_string().parse().unwrap_or(f64::NAN)).unwrap_or(f64::NAN) }
+fn activity(value:&str)->f64 { memory_core::support::time::parse_rfc3339(value).map_or(f64::NAN,|millis|millis as f64) }
 fn conversation_byte_length(entries:&[TranscriptEntry])->usize {
     entries.iter().map(|entry| match entry { TranscriptEntry::Text(entry)=>entry.text.clone(), TranscriptEntry::ToolCall(entry)=>[entry.args_text.as_deref(),entry.result_text.as_deref()].into_iter().flatten().collect::<Vec<_>>().join("\n") }).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n").len()
 }
