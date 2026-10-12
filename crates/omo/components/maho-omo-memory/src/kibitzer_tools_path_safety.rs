@@ -46,11 +46,33 @@ pub fn resolve_workspace_path(root: &Path, input: &str) -> PathCheck {
         }
     };
     let lexical = lexical_resolve(&real_root, input);
-    let target = std::fs::canonicalize(&lexical).unwrap_or(lexical);
+    let target = canonicalize_existing_ancestor(&lexical);
     if target.starts_with(&real_root) {
         return PathCheck::Ok { path: target.to_string_lossy().into_owned() };
     }
     PathCheck::Rejected { code: KibitzerRejectionCode::PathEscape, message: format!("\"{input}\" resolves outside the workspace.") }
+}
+
+fn canonicalize_existing_ancestor(path: &Path) -> PathBuf {
+    let mut ancestor = path;
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            return path.to_path_buf();
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return path.to_path_buf();
+        };
+        ancestor = parent;
+    }
+    let Ok(mut resolved) = std::fs::canonicalize(ancestor) else {
+        return path.to_path_buf();
+    };
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    resolved
 }
 
 /// `path.resolve(root, input)`'s lexical half: `.` and `..` fold BEFORE any realpath, so a
