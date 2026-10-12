@@ -1,7 +1,7 @@
 use std::sync::{Arc,Mutex};
 use maho_ext_api::{EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,ExtensionFailure,ExtensionWidgetOptions,FlagType,FlagValue,ToolContent,ToolError,ToolResult,ToolResultEventResult,WidgetPlacement};
 use lsp_core::post_edit::{DiagnosticsRunnerError};
-use crate::{adapter::descriptors::descriptors,daemon_tool_client::{call_packaged_daemon_tool,current_senpi_request_context},post_edit_diagnostics::{LspPostEditSessionState,POST_EDIT_DIAGNOSTICS_WIDGET_KEY,should_run_post_edit_diagnostics}};
+use crate::{adapter::{descriptors::descriptors,renderers::tool_renderers},daemon_tool_client::{call_packaged_daemon_tool,current_senpi_request_context},post_edit_diagnostics::{LspPostEditSessionState,POST_EDIT_DIAGNOSTICS_WIDGET_KEY,should_run_post_edit_diagnostics}};
 const TOOLS_FLAG:&str="omo-senpi-lsp-tools-enabled";
 const POST_EDIT_FLAG:&str="omo-senpi-lsp-post-edit-diagnostics-enabled";
 #[derive(Default)]
@@ -38,14 +38,15 @@ impl LspComponent {
                 Ok(ToolResult {content,details:result.details})
             })});
             let name=tool.name.clone();let home=extension_home;
-            if let Err(error)=api.register_tool_with_extension_context(tool,Arc::new(move |_,params,_,_,ctx| {
+            let renderers=tool_renderers(&name).expect("every LSP descriptor has call and result renderers");
+            if let Err(error)=api.register_tool_with_extension_context_and_renderers(tool,Arc::new(move |_,params,_,_,ctx| {
                 let name=name.clone();let home=home.clone();Box::pin(async move {
                     let context=current_senpi_request_context(&ctx.cwd,&home).map_err(|error|ExtensionFailure::new(error.to_string()))?;
                     let args=params.as_object().cloned().unwrap_or_default();
                     let result=call_packaged_daemon_tool(&name,args,context,ctx.signal.clone().unwrap_or_default()).await.map_err(|error|ExtensionFailure::new(error.to_string()))?;
                     daemon_agent_result(result)
                 })
-            })) {std::panic::panic_any(error);}
+            }),renderers) {std::panic::panic_any(error);}
         }
         let state=Arc::new(Mutex::new(LspPostEditSessionState::default()));
         let diagnostics_enabled=api.get_flag(POST_EDIT_FLAG)!=Some(FlagValue::Boolean(false));
@@ -142,6 +143,14 @@ mod tests {
     }
     #[test] fn descriptor_fields_preserved() {let mut a=api();LspComponent.register(&mut a);let expected=descriptors();for (tool,legacy) in a.registered.tools.iter().zip(expected) {assert_eq!(tool.definition.parameters,legacy.parameters);assert_eq!(tool.definition.label,legacy.label);assert_eq!(tool.definition.execution_mode,legacy.execution_mode);assert!(!Arc::ptr_eq(&tool.definition.execute,&legacy.execute));}}
     #[test] fn exact_six_tools() {let mut a=api();LspComponent.register(&mut a);assert_eq!(a.registered.tools.len(),6);}
+    #[test] fn registers_every_tool_with_executor_and_renderers() {
+        let mut a=api();LspComponent.register(&mut a);
+        assert_eq!(a.registered.erased_tool_renderers.len(),6);
+        for name in crate::adapter::descriptors::TOOL_NAMES {
+            assert!(a.registered.erased_tool_renderers.contains_key(*name));
+            assert!(a.runtime.extension_tool_executor("lsp",name).is_some());
+        }
+    }
     #[test] fn disabled_tools_register_flags_only() {let mut a=api();a.runtime.set_flag(TOOLS_FLAG,FlagValue::Boolean(false));LspComponent.register(&mut a);assert!(a.registered.tools.is_empty());assert_eq!(a.registered.flags.len(),2);}
     #[test] fn missing_server_still_registers() {let mut a=api();LspComponent.register(&mut a);assert_eq!(a.registered.tools.len(),6);for kind in [EventKind::SessionStart,EventKind::SessionShutdown,EventKind::SessionCompact,EventKind::ToolResult] {assert!(a.registered.handlers.contains_key(&kind));}}
 }
