@@ -50,7 +50,8 @@ pub fn consume_pending_reflection_completions(dir: &Path, identity: &str, live: 
             let detail = String::from_utf16_lossy(&record.detail.as_deref().unwrap_or("").encode_utf16().take(60).collect::<Vec<_>>());
             *fingerprints.entry(format!("{}:{detail}", record.reason.as_deref().unwrap_or(&record.outcome))).or_insert(0usize) += 1;
         }
-        let summary = ReflectionCompletionSummary { schema_version: 1, count: collapsed.len(), failed_count: collapsed.iter().filter(|record| unsuccessful(record)).count(), oldest_iso: collapsed.last().map(|record| record.finished_at.clone()).unwrap_or_default(), newest_iso: collapsed.first().map(|record| record.finished_at.clone()).unwrap_or_default(), dominant_fingerprint: fingerprints.into_iter().max_by(|(left,a),(right,b)| a.cmp(b).then_with(|| right.cmp(left))).map(|(key,_)| key).unwrap_or_default() };
+        let collator = icu_collator::CollatorBorrowed::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+        let summary = ReflectionCompletionSummary { schema_version: 1, count: collapsed.len(), failed_count: collapsed.iter().filter(|record| unsuccessful(record)).count(), oldest_iso: collapsed.last().map(|record| record.finished_at.clone()).unwrap_or_default(), newest_iso: collapsed.first().map(|record| record.finished_at.clone()).unwrap_or_default(), dominant_fingerprint: fingerprints.into_iter().max_by(|(left,a),(right,b)| a.cmp(b).then_with(|| collator.compare(right, left))).map(|(key,_)| key).unwrap_or_default() };
         live.append_entry(REFLECTION_SUMMARY_ENTRY_TYPE, serde_json::to_value(summary).map_err(ArtifactError::Json)?);
         for record in collapsed { consumed.push(mark_delivered(dir, record, live.session_id(), now_ms)?); }
     }
@@ -65,6 +66,22 @@ pub fn consume_pending_reflection_completions(dir: &Path, identity: &str, live: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn summary_ties_follow_locale_collation() {
+        let root = tempfile::tempdir().unwrap();
+        for (id, detail) in [("cap", "A"), ("low", "a")] {
+            let mut completion = record(id, "agent-test", "2026-08-16T11:59:00.000Z");
+            completion.outcome = "failed".into(); completion.reason = Some("child_exit".into()); completion.detail = Some(detail.into());
+            write_completion_record(root.path(), &completion).unwrap();
+        }
+        for index in 0..5 { write_completion_record(root.path(), &record(&format!("fill-{index}"), "agent-test", "2026-08-16T12:00:00.000Z")).unwrap(); }
+        let mut live = Live::default();
+        consume_pending_reflection_completions(root.path(), "agent-test", &mut live, parsed_time("2026-08-16T13:00:00.000Z").unwrap()).unwrap();
+        let summary = live.entries.last().unwrap();
+        assert_eq!(summary.0, REFLECTION_SUMMARY_ENTRY_TYPE);
+        assert_eq!(summary.1["count"], 2);
+        assert_eq!(summary.1["dominantFingerprint"], "child_exit:a");
+    }
     #[derive(Default)]
     struct Live { entries: Vec<(String, serde_json::Value)>, notifications: usize, warnings: usize, fail_notify: bool }
     impl ReflectionLiveSession for Live {
