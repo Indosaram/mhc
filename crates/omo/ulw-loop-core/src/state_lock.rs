@@ -57,7 +57,28 @@ fn is_pid_alive(pid: u32) -> bool {
     {
         Path::new(&format!("/proc/{pid}")).exists()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        if pid == 0 {
+            return true;
+        }
+
+        match std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+        {
+            Ok(output) => {
+                output.status.success()
+                    || String::from_utf8_lossy(&output.stderr).contains("Operation not permitted")
+            }
+            Err(_) => true,
+        }
+    }
+    #[cfg(not(unix))]
     {
         true
     }
