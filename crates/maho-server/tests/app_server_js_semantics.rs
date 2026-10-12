@@ -34,15 +34,28 @@ fn date_parse_accepts_pinned_iso_forms_and_rejects_invalid_input() {
         "2020-01-01T00:00:00Z",
         "2020-01-01T01:00:00+01:00",
         "2020-01-01T01:00:00+0100",
-        "2020-01-01T00:00:00",
-        "2020-01-01 00:00:00",
         "2020-01-01",
+        "2020-01",
+        "2020",
+        "Wed, 01 Jan 2020 00:00:00 GMT",
     ] {
         assert_eq!(date_parse_ms(value), Some(expected), "{value}");
     }
     assert_eq!(date_parse_ms("not a date"), None);
     assert_eq!(date_parse_ms("2020-13-01"), None);
     assert_eq!(date_parse_ms(""), None);
+}
+
+#[test]
+fn offsetless_and_legacy_dates_use_the_local_zone() {
+    use chrono::TimeZone;
+    let first=chrono::Local.with_ymd_and_hms(2020,1,1,0,0,0).earliest().unwrap().timestamp_millis();
+    for value in ["2020-01-01T00:00:00","2020-01-01 00:00:00","2020-01-01T00:00"] {
+        assert_eq!(date_parse_ms(value),Some(first));
+    }
+    assert_eq!(date_parse_ms("2020-01-01T00:00:00.250"),Some(first+250));
+    let second=chrono::Local.with_ymd_and_hms(2020,1,2,0,0,0).earliest().unwrap().timestamp_millis();
+    for value in ["1/2/2020","Jan 2, 2020","Jan 2 2020"] { assert_eq!(date_parse_ms(value),Some(second)); }
 }
 
 #[test]
