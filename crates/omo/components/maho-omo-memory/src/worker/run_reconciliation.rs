@@ -114,7 +114,7 @@ pub fn reconcile_prelaunch(context:&RunFinalizationContext<'_>,recovery:&dyn Ref
     let dir=context.identity.paths.reflection.join("runs").join(&active.run_id);
     if dir.join("ledger.json").exists(){return Ok(None);}
     let prelaunch=dir.join("prelaunch.json");if dir.exists()&&!prelaunch.exists(){return Ok(None);}
-    let within_grace=chrono::DateTime::parse_from_rfc3339(reserved).is_ok_and(|reserved|(context.now_ms)()-reserved.timestamp_millis()<=60000);
+    let within_grace=memory_core::support::time::parse_rfc3339(reserved).is_some_and(|reserved|(context.now_ms)()-reserved<=60000);
     if within_grace||host!=&recovery.hostname(){return Ok(None);}
     let liveness=recovery.pid_liveness(pid);
     let dead=liveness==memory_core::locks::ProcessLiveness::Dead||(liveness==memory_core::locks::ProcessLiveness::Alive&&active.launcher_process_start.as_ref().is_some_and(|recorded|recovery.process_start(pid).is_some_and(|actual|recorded!=&actual)));
