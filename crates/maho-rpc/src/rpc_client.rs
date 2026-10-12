@@ -321,10 +321,10 @@ impl RpcClient{
     pub async fn prompt_and_wait(&mut self,message:&str,images:Option<Value>,timeout:std::time::Duration)->RpcClientResult<Vec<Value>>{
         let listeners=self.listeners.clone();
         tokio::time::timeout(timeout,async{
-            let mut events=Vec::new();
+            let mut events=Vec::new();let mut settled=false;
             let response=self.transport()?.request(serde_json::json!({"type":"prompt","message":message,"images":images}),true,|event|{
                 dispatch_listeners(&listeners,event.clone());
-                if classify_rpc_client_event(&event).is_some()&&!is_provider_account_event(&event){events.push(event);}
+                if !settled&&classify_rpc_client_event(&event).is_some()&&!is_provider_account_event(&event){settled=event["type"]=="agent_settled";events.push(event);}
             },|_|{}).await?;
             get_data(&response)?;
             if events.iter().any(|event|event["type"]=="agent_settled"){return Ok(events);}
@@ -425,5 +425,91 @@ impl RpcClientFrames{
         client.stop().await;
         assert_eq!(*seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner),0);
         assert!(client.get_state().await.unwrap_err().is_transport_gone());
+    }
+    #[tokio::test]async fn prompt_and_wait_propagates_a_refused_prompt_as_a_command_error(){
+        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
+        let mut client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
+        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
+        let serve=tokio::spawn(async move{
+            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
+            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["type"],"prompt");
+            let id=request["id"].as_str().unwrap().to_owned();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":false,"error":"prompt refused","errorCode":"busy"})).as_bytes()).await.unwrap();
+            let _=release_rx.await;
+        });
+        let error=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap_err();
+        let _=release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
+        assert!(matches!(&error,RpcClientError::Command(command) if command.message=="prompt refused"&&command.error_code.as_deref()==Some("busy")),"unexpected error: {error:?}");
+    }
+    #[tokio::test]async fn prompt_and_wait_returns_the_events_up_to_settle_after_a_successful_response(){
+        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
+        let mut client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
+        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
+        let serve=tokio::spawn(async move{
+            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
+            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id=request["id"].as_str().unwrap().to_owned();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_settled"})).as_bytes()).await.unwrap();
+            let _=release_rx.await;
+        });
+        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
+        let _=release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
+        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
+        assert_eq!(kinds,vec!["agent_start","agent_settled"]);
+    }
+    #[tokio::test]async fn prompt_and_wait_retains_events_that_arrive_before_a_settling_response(){
+        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
+        let mut client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
+        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
+        let serve=tokio::spawn(async move{
+            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
+            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id=request["id"].as_str().unwrap().to_owned();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_start"})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_settled"})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})).as_bytes()).await.unwrap();
+            write.write_all(format!("{}\n",serde_json::json!({"type":"agent_idle"})).as_bytes()).await.unwrap();
+            let _=release_rx.await;
+        });
+        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
+        let _=release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
+        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
+        assert_eq!(kinds,vec!["agent_start","agent_settled"],"pre-response events are retained and post-settle events are excluded");
+    }
+    #[tokio::test]async fn prompt_and_wait_delivers_classified_events_after_settlement_without_collecting_them(){
+        use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
+        let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
+        let mut client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
+        let seen=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured=seen.clone();
+        let _subscription=client.on_event(std::sync::Arc::new(move|event|captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event.clone())));
+        let (release_tx,release_rx)=tokio::sync::oneshot::channel::<()>();
+        let serve=tokio::spawn(async move{
+            let (read,mut write)=host.into_split();let mut lines=BufReader::new(read).lines();
+            let request:Value=serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let id=request["id"].as_str().unwrap().to_owned();
+            for record in [serde_json::json!({"type":"agent_settled"}),serde_json::json!({"type":"message_end"}),serde_json::json!({"type":"response","id":id,"success":true,"data":{"disposition":"started"}})]{
+                write.write_all(format!("{}\n",record).as_bytes()).await.unwrap();
+            }
+            let _=release_rx.await;
+        });
+        let events=client.prompt_and_wait("hi",None,std::time::Duration::from_secs(5)).await.unwrap();
+        let _=release_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
+        let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
+        assert_eq!(kinds,vec!["agent_settled"]);
+        let seen=seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let listened:Vec<&str>=seen.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
+        assert_eq!(listened,vec!["agent_settled","message_end"]);
     }
 }

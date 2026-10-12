@@ -238,3 +238,40 @@ fn keeps_one_active_registration_when_ready_is_emitted_repeatedly() {
     assert_eq!(registrations.len(), 1);
     assert_eq!(registrations[0].1.id, "omo");
 }
+
+#[test]
+fn ignores_reloaded_and_rejected_for_other_registrations() {
+    let mut api = api();
+    let logs = logs();
+    let events = api.events.clone();
+    make(watched(vec![target("/project/.omo", &["/omo.jsonc"])], &logs)).register(&mut api);
+    events.emit(CONFIG_WATCH_RELOADED, &serde_json::json!({ "registrationId": "builtin", "paths": ["/project/agent/settings.json"] }));
+    events.emit(CONFIG_WATCH_REJECTED, &serde_json::json!({ "registrationId": "builtin", "paths": [], "errors": ["x"] }));
+    events.emit(CONFIG_WATCH_RELOADED, &serde_json::json!({ "registrationId": "omo", "paths": "not-an-array" }));
+    assert!(entries(&logs).is_empty());
+}
+
+#[derive(Default)]
+struct RecordingLogger { records: Mutex<Vec<(String, Option<JsonValue>)>> }
+impl ComponentLogger for RecordingLogger {
+    fn info(&self, _: &str, details: Option<&JsonValue>) { self.records.lock().unwrap_or_else(PoisonError::into_inner).push(("info".into(), details.cloned())); }
+    fn warn(&self, _: &str, details: Option<&JsonValue>) { self.records.lock().unwrap_or_else(PoisonError::into_inner).push(("warn".into(), details.cloned())); }
+    fn error(&self, _: &str, details: Option<&JsonValue>) { self.records.lock().unwrap_or_else(PoisonError::into_inner).push(("error".into(), details.cloned())); }
+}
+
+#[test]
+fn routes_logs_through_the_shared_component_logger() {
+    let mut api = api();
+    let logger = Arc::new(RecordingLogger::default());
+    make(ConfigWatchComponentOptions {
+        resolve_cwd: Some(Arc::new(|| "/project".into())),
+        resolve_target_resolution: Some(Arc::new(|_| OmoConfigWatchTargetResolution { targets: Vec::new(), user_config_creation_watched: false, user_config_creation_discovery: "reload_required" })),
+        create_validator: Some(Arc::new(validator)),
+        logger: Some(Arc::clone(&logger) as Arc<dyn ComponentLogger>),
+        ..Default::default()
+    }).register(&mut api);
+    let records = logger.records.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, "warn");
+    assert_eq!(records[0].1, Some(serde_json::json!({ "userConfigCreationDiscovery": "reload_required" })));
+}
