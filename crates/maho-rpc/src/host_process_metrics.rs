@@ -1,7 +1,6 @@
 use std::fs;
 use serde::Serialize;
-use crate::host_process_table::{ProcessTableRow,linux_reader};
-#[cfg(unix)] use crate::host_process_table::darwin_reader;
+use crate::host_process_table::{ProcessTableRow,load_process_table_reader};
 #[derive(Debug,Serialize,PartialEq,Eq,Default)]
 pub struct HostProcessMetrics { pub rss_mb:Option<i64>,pub open_fds:Option<usize>,pub zombies:Option<usize> }
 pub fn descendants(rows:&[ProcessTableRow],root:u32) -> Vec<&ProcessTableRow> {
@@ -14,22 +13,17 @@ pub fn metrics_from_rows(rows:&[ProcessTableRow],pid:u32,mut descriptors:Option<
     if let Some(read)=descriptors.as_mut(){for row in &tree {if let Some(count)=read(row.pid){*open_fds.get_or_insert(0)+=count;}}}
     HostProcessMetrics{rss_mb:Some((tree.iter().map(|row|row.rss_kb).sum::<f64>()/1024.+0.5).floor() as i64),open_fds,zombies:Some(tree.iter().filter(|row|row.state.starts_with('Z')).count())}
 }
+/// Open descriptors are `/proc`-only, so they stay `None` off Linux (senpi `readHostProcessMetrics`).
 pub fn read_host_process_metrics(pid:u32,platform:&str) -> HostProcessMetrics {
-    if platform=="linux" {
-        let Some(rows)=linux_reader() else{return HostProcessMetrics::default();};
-        return metrics_from_rows(&rows,pid,Some(&mut |pid|fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|entries|entries.count())));
-    }
-    #[cfg(unix)] if platform=="darwin" {
-        let Some(rows)=darwin_reader() else{return HostProcessMetrics::default();};
-        return metrics_from_rows(&rows,pid,Some(&mut |process_pid|if process_pid==std::process::id(){fs::read_dir("/dev/fd").ok().map(|entries|entries.count())}else{None}));
-    }
-    HostProcessMetrics::default()
+    let Some(read)=load_process_table_reader(platform) else{return HostProcessMetrics::default();};
+    let Some(rows)=read() else{return HostProcessMetrics::default();};
+    if platform!="linux"{return metrics_from_rows(&rows,pid,None);}
+    metrics_from_rows(&rows,pid,Some(&mut |pid|fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|entries|entries.count())))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn host_platform()->&'static str{if cfg!(target_os="linux"){"linux"}else if cfg!(target_os="macos"){"darwin"}else{panic!("unsupported host platform")}}
     #[test] fn includes_descendants_and_counts_partial_fd_reads(){let rows=vec![ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:1024.},ProcessTableRow{pid:3,ppid:2,state:"Z".into(),rss_kb:0.},ProcessTableRow{pid:2,ppid:1,state:"U".into(),rss_kb:2048.},ProcessTableRow{pid:9,ppid:0,state:"U".into(),rss_kb:9999.}];let metrics=metrics_from_rows(&rows,1,Some(&mut |pid|if pid==2{None}else{Some(4)}));assert_eq!(metrics,HostProcessMetrics{rss_mb:Some(3),open_fds:Some(8),zombies:Some(1)});assert_eq!(metrics_from_rows(&rows,8,None),HostProcessMetrics::default());}
     #[test] fn unavailable_descriptor_reader_is_not_zero(){let row=ProcessTableRow{pid:1,ppid:0,state:"U".into(),rss_kb:0.};assert_eq!(metrics_from_rows(&[row],1,Some(&mut |_|None)).open_fds,None);assert_eq!(read_host_process_metrics(1,"win32"),HostProcessMetrics::default());}
-    #[test] fn real_process_surface_has_memory_and_fds(){let metrics=read_host_process_metrics(std::process::id(),host_platform());assert!(metrics.rss_mb.is_some());assert!(metrics.open_fds.is_some());assert_eq!(metrics.zombies,Some(0));}
+    #[test] fn real_process_surface_has_memory_and_fds(){let platform=if cfg!(target_os="macos"){"darwin"}else{"linux"};let metrics=read_host_process_metrics(std::process::id(),platform);assert!(metrics.rss_mb.is_some());assert_eq!(metrics.open_fds.is_some(),platform=="linux");assert_eq!(metrics.zombies,Some(0));}
 }
