@@ -122,3 +122,48 @@ async fn dynamic_hook_injects_extglob_rule_for_matching_target() {
  assert_eq!(entries.len(), 1);
  assert_eq!(entries[0].0, maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE);
 }
+
+#[tokio::test]
+async fn registered_hook_tracks_dynamic_injection_across_session_transitions() {
+ let root = tempfile::tempdir().expect("project");
+ std::fs::write(root.path().join("Cargo.toml"), "").expect("marker");
+ std::fs::create_dir_all(root.path().join(".omo/rules")).expect("rules");
+ std::fs::write(root.path().join(".omo/rules/native.md"), "---\nglobs: \"*.rs\"\n---\ndynamic fixture").expect("rule");
+ std::fs::write(root.path().join("file.rs"), "target").expect("target");
+ let mut ctx = context(); ctx.cwd = root.path().into();
+ let mut api = ExtensionApi::new(LoadedExtension::new("rules", root.path().into(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ let actions = Arc::new(RecordingActions::default());
+ api.runtime.bind(actions.clone());
+ let home = tempfile::tempdir().expect("home");
+ let mut config = maho_ext_rules::config::config_from_environment(|_| None);
+ config.mode = maho_ext_rules::rules::types::RulesMode::Dynamic;
+ maho_ext_rules::Rules::register_with_config(&mut api, config, home.path().into());
+
+ let mut results = Vec::new();
+ for step in 0..5 {
+  if step >= 3 {
+   let compact = if step == 3 {
+    SessionCompactEvent::Rejected { reason: CompactionReason::Extension, request_id: "compact".into(), rejection_cause: CompactionRejectionCause::CancelledByExtension }
+   } else {
+    SessionCompactEvent::Accepted { reason: CompactionReason::Extension, request_id: "compact".into(), compaction_entry: SessionEntry { id: "compact".into(), parent_id: None, timestamp: "0".into(), kind: "compaction".into(), data: serde_json::Value::Null }, from_extension: true, will_retry: false }
+   };
+   let mut event = ExtensionEvent::SessionCompact(compact);
+   api.registered.handlers[&EventKind::SessionCompact][0](&mut event, &ctx).await.expect("compact dispatch");
+  }
+  let failed = step == 2;
+  let mut event = ExtensionEvent::ToolResult(ToolResultEvent { tool_name: "read".into(), tool_call_id: "read-1".into(), input: serde_json::json!({"path":root.path().join("file.rs")}), content: vec![ToolContent::text("target")], details: None, is_error: failed, usage: None });
+  let result = api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx).await.expect("tool dispatch");
+  results.push(matches!(result, EventResult::ToolResult(ToolResultEventResult { content: Some(content), .. }) if content.len() > 1));
+ }
+
+ assert_eq!(results, vec![true, false, false, false, true]);
+ let entries = actions.0.lock().expect("activation entries");
+ let activations = entries.iter().filter(|(kind, _)| kind == maho_ext_rule_activation::types::RULE_ACTIVATION_ENTRY_TYPE).collect::<Vec<_>>();
+ assert_eq!(activations.len(), 2);
+ assert_eq!(entries.iter().filter(|(kind, _)| kind == "pi-rules.scan").count(), 1);
+ for (_, data) in activations {
+  let value = data.as_ref().expect("activation data");
+  assert_eq!(value["kind"], "project-rules");
+  assert_eq!(value["rules"].as_array().expect("activation rules").len(), 1);
+ }
+}
