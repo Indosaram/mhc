@@ -151,6 +151,7 @@ mod tests {
         use std::io::Write;
         let fixture = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
+        let outside = outside.path().canonicalize().unwrap();
         let path = fixture.path().join("archive.zip");
         let output = fixture.path().join("output");
         std::fs::create_dir(&output).unwrap();
@@ -159,7 +160,7 @@ mod tests {
         writer.start_file("link/escaped", zip::write::SimpleFileOptions::default()).unwrap();
         writer.write_all(b"data").unwrap();
         writer.finish().unwrap();
-        assert_eq!(extract_zip_archive(&path, &output).unwrap_err().to_string(), format!("Out of bound path \"{}\" found while processing file link/escaped", outside.path().display()));
-        assert!(!outside.path().join("escaped").exists());
+        assert_eq!(extract_zip_archive(&path, &output).unwrap_err().to_string(), format!("Out of bound path \"{}\" found while processing file link/escaped", outside.display()));
+        assert!(!outside.join("escaped").exists());
     }
 }
