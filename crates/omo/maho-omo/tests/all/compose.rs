@@ -4,6 +4,36 @@ use maho_omo::{LogLevel, OmoExtension, OmoSenpiComponent, OMO_DISABLED_FLAG, Rec
 use crate::support::{FakeComponent, command_names, manual_runtime_options, new_api};
 
 #[test]
+fn enabled_components_preserve_tools_commands_and_lifecycle_handlers() {
+    let logger=Arc::new(RecordingLogger::new());
+    let extension=OmoExtension::with_options(vec![
+        OmoSenpiComponent::new("alpha",Box::new(FakeComponent::new(|api| {
+            api.register_tool(crate::support::fake_tool("alpha_tool"));
+            api.on(maho_ext_api::EventKind::SessionStart,Arc::new(|_,_|Box::pin(async {Ok(maho_ext_api::EventResult::None)})));
+        }))),
+        OmoSenpiComponent::new("beta",Box::new(FakeComponent::new(|api| {
+            api.register_command("beta",None,None,Arc::new(|_,_|Box::pin(async {Ok(())})));
+        }))),
+    ],manual_runtime_options(logger),Default::default());
+    let mut api=new_api();extension.register(&mut api);
+    assert_eq!(crate::support::tool_names(&api),["alpha_tool"]);
+    assert_eq!(command_names(&api),["beta"]);
+    assert_eq!(api.registered.handlers[&maho_ext_api::EventKind::SessionStart].len(),1);
+    let runtime=extension.runtime().expect("runtime");
+    assert_eq!(runtime.captured_tools()[0].name,"alpha_tool");
+    assert_eq!(runtime.context().get_flag(OMO_DISABLED_FLAG),Some(FlagValue::Boolean(false)));
+}
+
+#[test]
+fn top_level_disable_skips_components_and_logs_once() {
+    let logger=Arc::new(RecordingLogger::new());
+    let extension=OmoExtension::with_options(vec![OmoSenpiComponent::new("alpha",Box::new(FakeComponent::new(|_|panic!("disabled component"))))],manual_runtime_options(logger.clone()),Default::default());
+    let mut api=new_api();api.set_flag(OMO_DISABLED_FLAG,FlagValue::Boolean(true));extension.register(&mut api);
+    assert!(extension.runtime().is_none());assert!(api.registered.tools.is_empty());
+    let entries=logger.entries();assert_eq!(entries.len(),1);assert_eq!(entries[0].level,LogLevel::Info);
+}
+
+#[test]
 fn components_receive_one_runtime_and_see_earlier_captured_tools() {
     let shared = Arc::new(Mutex::new(Vec::new()));
     let first = shared.clone();
