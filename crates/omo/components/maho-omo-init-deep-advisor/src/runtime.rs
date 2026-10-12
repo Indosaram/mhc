@@ -6,7 +6,14 @@ pub struct AdvisorPreflight { pub root:PathBuf,pub state_dir:PathBuf }
 pub async fn run_advisor_after_preflight(api:&ExtensionApi,context:&ExtensionContext,preflight:&AdvisorPreflight,skills_root:&Path,now:f64) -> Result<(),ExtensionFailure> {
     let result=prepare_proposal(preflight,now).map_err(|e|ExtensionFailure::new(e.to_string()))?;
     let Some((repo,eligibility))=result else { return Ok(()); };
-    tokio::task::yield_now().await;
+    match &context.defer_macrotask {
+        Some(defer)=>{
+            let (ready,wait)=tokio::sync::oneshot::channel();
+            defer(Box::new(move || {let _=ready.send(());}));
+            let _=wait.await;
+        }
+        None=>tokio::task::yield_now().await,
+    }
     let choices=CHOICES.iter().map(|s|(*s).to_owned()).collect::<Vec<_>>();
     let choice=context.ui.select("Init-deep",&choices,ExtensionUiDialogOptions {timeout_ms:Some(60_000),signal:None}).await;
     handle_choice(choice.as_deref(),api,preflight,&repo,&eligibility,skills_root,now)
