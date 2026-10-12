@@ -5,6 +5,7 @@ mod compose_reload;
 mod coordinator;
 mod entry;
 mod provisioning;
+mod reconciliation_9471;
 mod scheduler;
 mod support;
 mod task_coordinator;

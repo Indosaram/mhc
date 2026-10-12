@@ -38,6 +38,13 @@ fn delta_reports_additions_as_inactive() {
     assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec!["a".into()],removed:vec!["b".into()],unchanged:vec![]}),"1 added (inactive), 1 removed");assert_eq!(format_mcp_list_changed_delta(&McpCatalogDiff {added:vec![],removed:vec![],unchanged:vec![]}),"no change");
 }
 #[test]
+fn delta_line_omits_empty_clauses_and_reports_no_change() {
+    assert_eq!(format_mcp_list_changed_delta(&diff_mcp_tool_names(&["a".into()], &["a".into()])), "no change");
+    assert_eq!(format_mcp_list_changed_delta(&diff_mcp_tool_names(&[], &["a".into(), "b".into()])), "2 added (inactive)");
+    assert_eq!(format_mcp_list_changed_delta(&diff_mcp_tool_names(&["a".into()], &[])), "1 removed");
+    assert_eq!(format_mcp_list_changed_delta(&diff_mcp_tool_names(&["a".into()], &["b".into(), "c".into()])), "2 added (inactive), 1 removed");
+}
+#[test]
 fn notification_envelope_strips_unknown_keys_and_preserves_meta() {
     let parsed=parse_notification(&json!({"method":"notifications/tools/list_changed","unknown":true,"params":{"unknown":true,"_meta":{"x":1}}})).unwrap();
     assert_eq!(parsed,McpNotification::ListChanged {method:"notifications/tools/list_changed".into(),params:Some(json!({"_meta":{"x":1}}))});
