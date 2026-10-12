@@ -42,6 +42,7 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn decode_mount_path(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::new();
