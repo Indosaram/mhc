@@ -66,7 +66,7 @@ const COMPAT_GRAMMAR_TOOLS_KEY: &str = "supportsOpenAIGrammarTools";
 
 const CODEX_RESPONSE_STATUSES: [&str; 6] = ["completed", "incomplete", "failed", "cancelled", "queued", "in_progress"];
 
-/// `[OI]CodexResponsesOptions`, read off the provider-neutral options bag.
+/// `OpenAICodexResponsesOptions`, read off the provider-neutral options bag.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodexResponsesOptions {
     pub reasoning_effort: Option<String>,

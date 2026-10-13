@@ -477,7 +477,9 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
             let thinking = profile.runtime.initial_thinking_level.clone().or_else(|| config.thinking.clone())
                 .and_then(|level| maho_ai::types::ThinkingLevel::parse(&level));
             let creation_model = profile.runtime.creation_model.clone().or_else(|| config.provider.clone().zip(config.model.clone()));
-            let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &model_runtime.get_models(None));
+            // senpi `resolveModelScope`: scope patterns resolve against authenticated models.
+            let scope_models = if config.models.is_empty() { Vec::new() } else { model_runtime.get_available(None).await };
+            let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &scope_models);
             let trusted = resolve_runtime_project_trust(&config, &profile.runtime.cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
             let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted);
             let is_continuing = !session_manager.build_context(session_manager.leaf_id()).messages.is_empty();
