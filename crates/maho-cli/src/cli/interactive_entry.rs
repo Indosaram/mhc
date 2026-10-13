@@ -54,7 +54,7 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
 }
 
 pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>) -> Result<(), String> {
-    use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
+    use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::TuiMode};
     let shared_host = mount_shared_host(&session, parsed).await;
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
@@ -98,53 +98,12 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         mode.set_fd_path(fd_path);
     }
     mode.show_startup_warnings();
-    let mut screen = create_interactive_tui(InteractiveTuiOptions {
-        tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
-        show_hardware_cursor: true, bottom_shortcut: String::new(),
-    }, theme);
-    // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
-    // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
-    if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
-        alt.set_open_url(Some(Rc::new(|url: &str| crate::utils::open_browser::open_browser(url))));
-        alt.set_copy_selection(Some(Rc::new(|text: String| {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let copied = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .is_ok_and(|runtime| runtime.block_on(crate::utils::clipboard::copy_to_clipboard(&text)).is_ok());
-                drop(sender.send(copied));
-            });
-            receiver
-        })));
-        alt.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
-    }
-    // senpi mounts the fullscreen render root as the chat viewport (interactive-mode.ts
-    // `mountInteractiveTui` -> `setLayoutRoot(this.fullscreenLayoutRoot)`), whose transcript scroll
-    // view follows the end (chat-viewport.ts `follow: "end"`). Mounting the flat `mode.render()`
-    // line list instead discards that scroll view, so the alternate screen lays the document out
-    // top-anchored and the input dock falls below the fold once the document exceeds the terminal
-    // height. The two `LinesBuffer`s reproduce the split: the loop fills the document and dock
-    // buffers separately, the transcript follows the end, and the dock stays pinned.
     let fullscreen = parsed.tui_mode.as_deref() == Some("fullscreen");
     let document_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let dock_lines = Rc::new(RefCell::new(Vec::<String>::new()));
     let rendered = Rc::new(RefCell::new(RenderedMode(Vec::new())));
-    let component: Rc<RefCell<dyn Component>> = if fullscreen {
-        let empty = || Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("", 0, 0))) as Rc<RefCell<dyn Component>>;
-        let viewport = maho_interactive::chat_viewport::create_chat_viewport(maho_interactive::chat_viewport::ChatViewportOptions {
-            document: Rc::new(RefCell::new(LinesBuffer(document_lines.clone()))),
-            editor: Rc::new(RefCell::new(LinesBuffer(dock_lines.clone()))),
-            pending_messages: empty(), status: empty(), footer: empty(),
-            hook_status: None, widgets_above: None, widgets_below: None,
-            scrollbar: None, scrollbar_track_style: None, scrollbar_thumb_style: None,
-        });
-        viewport.root
-    } else {
-        rendered.clone()
-    };
-    screen.set_render_root(component.clone());
-    screen.base_mut().set_focus(Some(component.clone()));
+    let MountedScreen { mut screen, mut component, mut transcript } = mount_screen(&session, if fullscreen { TuiMode::Fullscreen } else { TuiMode::Regular }, theme, &document_lines, &dock_lines, &rendered);
+    let mut fullscreen = fullscreen;
     // senpi focuses the editor (`ui.setFocus(this.editor)`); a focused editor emits the cursor
     // marker the renderer turns into the per-frame hardware cursor restore (row move + absolute
     // column). The mounted root here is a line buffer, so focus is handed to the mode directly.
@@ -175,7 +134,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     });
     // senpi `TuiAltScreen` `mouse: terminalMouseMode !== "off"`; multiplexers get button-motion
     // tracking. The `TuiBase.start()` sequence brackets `terminal.start`.
-    let mouse_enabled = session.with_settings_manager(|settings| settings.get_string("terminalMouse")).as_deref() != Some("off");
+    let mut mouse_enabled = session.with_settings_manager(|settings| settings.get_string("terminalMouse")).as_deref() != Some("off");
     screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
@@ -259,6 +218,40 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                 screen.base_mut().request_render(true, now);
             }
             mode.sync_question_mouse_capture(&mut screen, &mut terminal);
+            // senpi `switchTuiMode` for `/settings` `tuiMode` / `terminalMouse`: refused while an
+            // overlay is open; otherwise the setting is saved and the renderer is recreated in
+            // place (the old one keeps the screen), keeping the mode mounted and focused.
+            let current_mode = if screen.is_regular() { TuiMode::Regular } else { TuiMode::Fullscreen };
+            if let Some((next_mode, next_mouse)) = mode.pending_terminal_setting(current_mode) {
+                let next_mouse_enabled = next_mouse != "off";
+                if next_mode == current_mode && next_mouse_enabled == mouse_enabled {
+                    // senpi `switchTuiMode` returns early for the mounted mode; lease changes
+                    // (`whilePending` <-> `always`) follow in `sync_question_mouse_capture`.
+                    mode.commit_terminal_setting();
+                } else if screen.base().has_overlay() {
+                    mode.reject_terminal_setting(current_mode);
+                } else if mode.commit_terminal_setting() {
+                    mode.pause_question_mouse_capture(&mut screen, &mut terminal);
+                    screen.base_mut().begin_stop(&mut terminal);
+                    screen.before_terminal_stop(&mut terminal, mouse_enabled);
+                    screen.base_mut().finish_stop_output(&mut terminal, true);
+                    screen.after_terminal_stop(&mut terminal, true);
+                    screen.base_mut().reset_for_stop();
+                    mouse_enabled = next_mouse_enabled;
+                    let mounted = mount_screen(&session, next_mode, mode.active_theme().clone(), &document_lines, &dock_lines, &rendered);
+                    (screen, component, transcript) = (mounted.screen, mounted.component, mounted.transcript);
+                    fullscreen = next_mode == TuiMode::Fullscreen;
+                    screen.base_mut().prepare_start();
+                    screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
+                    screen.base_mut().after_terminal_start(&mut terminal);
+                    mode.resume_question_mouse_capture(&mut screen, &mut terminal);
+                    mode.rebind_terminal_theme(&mut screen, &mut terminal);
+                    screen.base_mut().invalidate();
+                    screen.base_mut().request_render(true, now);
+                }
+            }
+            // senpi `applyFullscreenScrollbarSetting`.
+            if let Some(transcript) = &transcript { transcript.borrow_mut().set_scrollbar(fullscreen_scrollbar(&session)); }
             mode.poll_terminal_theme(&mut screen, &mut terminal);
             mode.pump_turn().await;
             if fullscreen {
@@ -305,6 +298,71 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
 enum StartupNotice {
     NewVersion(String),
     Warning(String),
+}
+
+/// The renderer the interactive loop draws into, with its mounted root and, in fullscreen, the
+/// transcript scroll view.
+struct MountedScreen {
+    screen: maho_interactive::tui_renderer::InteractiveTui,
+    component: Rc<RefCell<dyn Component>>,
+    transcript: Option<Rc<RefCell<maho_tui::components::scroll_view::ScrollView>>>,
+}
+
+/// senpi `settingsManager.getFullscreenScrollbar()`.
+fn fullscreen_scrollbar(session: &maho_core::agent_session::AgentSession) -> maho_tui::components::scroll_view::ScrollViewScrollbar {
+    use maho_tui::components::scroll_view::ScrollViewScrollbar;
+    match session.with_settings_manager(|settings| settings.get_string("fullscreenScrollbar")).as_deref() {
+        Some("always") => ScrollViewScrollbar::Always,
+        Some("hidden") => ScrollViewScrollbar::Hidden,
+        _ => ScrollViewScrollbar::Auto,
+    }
+}
+
+/// senpi `createInteractiveTui` + `mountInteractiveTui` for this entry: build the renderer for
+/// `tui_mode` and mount the line buffers the loop fills each frame.
+fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho_interactive::tui_renderer::TuiMode, theme: maho_interactive::theme::Theme, document_lines: &Rc<RefCell<Vec<String>>>, dock_lines: &Rc<RefCell<Vec<String>>>, rendered: &Rc<RefCell<RenderedMode>>) -> MountedScreen {
+    use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
+    let mut screen = create_interactive_tui(InteractiveTuiOptions { tui_mode, show_hardware_cursor: true, bottom_shortcut: String::new() }, theme);
+    // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
+    // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
+    if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
+        alt.set_open_url(Some(Rc::new(|url: &str| crate::utils::open_browser::open_browser(url))));
+        alt.set_copy_selection(Some(Rc::new(|text: String| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let copied = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .is_ok_and(|runtime| runtime.block_on(crate::utils::clipboard::copy_to_clipboard(&text)).is_ok());
+                drop(sender.send(copied));
+            });
+            receiver
+        })));
+        alt.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
+    }
+    // senpi mounts the fullscreen render root as the chat viewport (interactive-mode.ts
+    // `mountInteractiveTui` -> `setLayoutRoot(this.fullscreenLayoutRoot)`), whose transcript scroll
+    // view follows the end (chat-viewport.ts `follow: "end"`). Mounting the flat `mode.render()`
+    // line list instead discards that scroll view, so the alternate screen lays the document out
+    // top-anchored and the input dock falls below the fold once the document exceeds the terminal
+    // height. The two `LinesBuffer`s reproduce the split: the loop fills the document and dock
+    // buffers separately, the transcript follows the end, and the dock stays pinned.
+    let (component, transcript): (Rc<RefCell<dyn Component>>, _) = if tui_mode == TuiMode::Fullscreen {
+        let empty = || Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding("", 0, 0))) as Rc<RefCell<dyn Component>>;
+        let viewport = maho_interactive::chat_viewport::create_chat_viewport(maho_interactive::chat_viewport::ChatViewportOptions {
+            document: Rc::new(RefCell::new(LinesBuffer(document_lines.clone()))),
+            editor: Rc::new(RefCell::new(LinesBuffer(dock_lines.clone()))),
+            pending_messages: empty(), status: empty(), footer: empty(),
+            hook_status: None, widgets_above: None, widgets_below: None,
+            scrollbar: Some(fullscreen_scrollbar(session)), scrollbar_track_style: None, scrollbar_thumb_style: None,
+        });
+        (viewport.root as Rc<RefCell<dyn Component>>, Some(viewport.transcript))
+    } else {
+        (rendered.clone() as Rc<RefCell<dyn Component>>, None)
+    };
+    screen.set_render_root(component.clone());
+    screen.base_mut().set_focus(Some(component.clone()));
+    MountedScreen { screen, component, transcript }
 }
 
 /// senpi `TuiBase.handleTerminalInput` for the mounted interactive renderer: terminal protocol

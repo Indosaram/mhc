@@ -58,6 +58,11 @@ pub enum UiRequest {
     HiddenThinkingLabel(Option<String>),
     ToolsExpanded(bool),
     SettingChanged(String, serde_json::Value),
+    /// senpi `onThemePreview`: show a theme while `/settings` browses, without persisting it.
+    ThemePreview(String),
+    /// senpi `onTuiModeChange` / `onTerminalMouseChange`: a change that swaps the renderer, so it
+    /// is persisted only once the host accepts it (no overlay is open).
+    TerminalSetting(String, serde_json::Value),
     Editor { title: String, prefill: Option<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Question { request: QuestionRequest, options: QuestionOptions, reply: tokio::sync::oneshot::Sender<QuestionResponse> },
 }
