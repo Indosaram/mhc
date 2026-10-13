@@ -86,9 +86,11 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("todowrite", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
                 provider_native_bypass: Arc::new(|model| {
-                    maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model)
-                        || maho_ext_openai_web_search::supports_native_openai_web_search(model)
-                            && maho_ext_openai_web_search::parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref())
+                    if maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model) {
+                        return maho_ext_anthropic_web_search::parse_enabled(std::env::var("PI_ANTHROPIC_WEB_SEARCH").ok().as_deref());
+                    }
+                    maho_ext_openai_web_search::supports_native_openai_web_search(model)
+                        && maho_ext_openai_web_search::parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref())
                 }),
             }),
             factory("look-at", maho_ext_look_at::index::LookAtExtension {
