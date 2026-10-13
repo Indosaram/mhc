@@ -1,6 +1,8 @@
+#![cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use std::{
     collections::BTreeMap,
-    os::unix::fs::PermissionsExt,
     sync::Arc,
 };
 
