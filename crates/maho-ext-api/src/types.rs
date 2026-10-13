@@ -1004,6 +1004,7 @@ impl ToolContext for ExtensionContext {
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
     fn get_steering_signal(&self) -> Option<AbortSignal> { self.current_steering_signal().ok().flatten() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { ExtensionContext::get_prompt_cache_safe_wait_seconds(self).ok().flatten() }
     fn take_approved_monitor_parent(
         &self, tool_call_id: &str, input: &JsonValue,
     ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {
@@ -1874,6 +1875,8 @@ impl ExtensionRuntime {
         existing.or_else(|| self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|pending| pending.flags.get(name).cloned()))
     }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
+    /// Snapshot of `runtime.flagValues`: every committed flag value (registered defaults and CLI overrides).
+    pub fn flag_values(&self) -> BTreeMap<String, FlagValue> { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.clone() }
 }
 pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,

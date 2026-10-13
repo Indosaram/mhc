@@ -121,6 +121,22 @@ pub struct ModelRuntime {
     models_path: Option<PathBuf>,
     pub credentials: Arc<crate::auth_storage::AuthStorage>,
     availability: Arc<RwLock<AvailabilityState>>,
+    settings_manager: SharedSettingsSlot,
+    provider_semaphores: Arc<crate::provider_concurrency::ProviderSemaphores>,
+}
+
+type SharedSettingsSlot = Arc<RwLock<Option<Arc<std::sync::Mutex<crate::settings_manager::SettingsManager>>>>>;
+
+/// `settingsManager.getProviderConcurrencyLimit`: `providers.<id>.maxConcurrency`, canonical key first and
+/// then the legacy spellings; zero (unlimited) when unset, non-integer or not positive.
+fn provider_concurrency_limit(settings: &SharedSettingsSlot, provider_id: &str) -> i64 {
+    let Some(manager) = settings.read().unwrap_or_else(|p| p.into_inner()).clone() else { return 0; };
+    let manager = manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(providers) = manager.get_value("providers") else { return 0; };
+    let entry = providers.get(provider_id).or_else(|| maho_ai::legacy_provider_ids::legacy_provider_ids_for(provider_id)
+        .into_iter().find_map(|id| providers.get(id)));
+    entry.and_then(|entry| entry.get("maxConcurrency")).and_then(serde_json::Value::as_f64)
+        .filter(|value| value.fract() == 0.0 && *value > 0.0).map_or(0, |value| value as i64)
 }
 
 impl ModelRuntime {
@@ -129,15 +145,27 @@ impl ModelRuntime {
         let config = Arc::new(RwLock::new(ModelConfig::load_sync_with_migration(options.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
         let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),auth_path:options.auth_path};
+        let settings_manager: SharedSettingsSlot = Arc::default();
+        let limit_source = Arc::clone(&settings_manager);
+        let provider_semaphores = Arc::new(crate::provider_concurrency::ProviderSemaphores::new(move |provider_id| provider_concurrency_limit(&limit_source, provider_id)));
         let mut runtime = Self {
             models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
             config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),
             native:IndexMap::new(), extensions, errors:IndexMap::new(),models_path:options.models_path,credentials,
             availability:Arc::new(RwLock::new(AvailabilityState::default())),
+            settings_manager, provider_semaphores,
         };
         runtime.rebuild_providers(); runtime
     }
     pub async fn create(options: CreateModelRuntimeOptions) -> Self { Self::create_sync(options) }
+    /// `setSettingsManager`: provider request concurrency follows the session's live settings.
+    pub fn set_settings_manager(&self, settings_manager: Arc<std::sync::Mutex<crate::settings_manager::SettingsManager>>) {
+        *self.settings_manager.write().unwrap_or_else(|p| p.into_inner()) = Some(settings_manager);
+    }
+    /// `reloadConfig`: re-read models.json and rebuild providers without network catalog fetches.
+    pub async fn reload_config(&mut self) -> ModelsRefreshResult {
+        self.refresh(ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }).await
+    }
     /// The provider/auth registry this runtime resolves against (pinned `models`). Exposed so a
     /// caller (e.g. the harness constructor) can hand the same registry to a `Models` consumer
     /// without rebuilding it through `create_models`.
@@ -477,8 +505,8 @@ impl ModelRuntime {
     }
     pub fn stream(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();
-        let inner=Self::lazy_request(model,async move {
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default()let signal=options.request.signal.clone();
+        let inner=self.lazy_request(model,signal,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options).await?;
             Ok(models.stream(&request_model,&context,Some(options),Default::default()))
         });
@@ -491,8 +519,8 @@ impl ModelRuntime {
     /// (`transformHeaders` runs on the assembled request headers after auth resolution).
     pub fn stream_simple_with_transforms(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>,transforms:ModelsRequestTransforms) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();
-        let inner=Self::lazy_request(model,async move {
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default()let signal=options.stream.request.signal.clone();
+        let inner=self.lazy_request(model,signal,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
             Ok(models.stream_simple(&request_model,&context,Some(options),transforms))
         });
@@ -507,10 +535,17 @@ impl ModelRuntime {
         if let Some(mut headers)=headers{headers.extend(options.request.headers.take().unwrap_or_default());options.request.headers=Some(headers);}
         Ok(())
     }
-    fn lazy_request(model:&Model,setup:impl std::future::Future<Output=Result<AssistantMessageEventStream,String>>+Send+'static)->AssistantMessageEventStream {
+    fn lazy_request(&self,model:&Model,signal:Option<maho_ai::utils::abort::AbortSignal>,setup:impl std::future::Future<Output=Result<AssistantMessageEventStream,String>>+Send+'static)->AssistantMessageEventStream {
         let stream=AssistantMessageEventStream::assistant();let target=stream.clone();let model=model.clone();
+        let semaphores=Arc::clone(&self.provider_semaphores);
         tokio::spawn(async move {
-            let source=match setup.await {Ok(stream)=>stream,Err(error)=>maho_ai::utils::lazy::error_stream(&model,&error)};
+            // `providerSemaphores.bracket`: hold the provider slot until the request stream settles;
+            // an abort while queued rejects without ever starting the request.
+            let signal=maho_ai::utils::abort::operation_signal(signal);
+            let (_slot,setup)=match maho_ai::utils::abort::race_with_abort_signal(semaphores.acquire(&model.provider),&signal).await {
+                Ok(slot)=>(slot,setup.await),Err(reason)=>(None,Err(reason.message)),
+            };
+            let source=match setup {Ok(stream)=>stream,Err(error)=>maho_ai::utils::lazy::error_stream(&model,&error)};
             loop {match source.next().await {Ok(Some(event))=>target.push(event),Ok(None)=>{target.end(None);break;},Err(error)=>{target.fail(error);break;}}}
         });stream
     }

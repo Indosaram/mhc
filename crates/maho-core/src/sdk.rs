@@ -236,15 +236,20 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         }
         None => options.session_start_event.take(),
     };
+    // senpi reads `resourceLoader.getExtensions().runtime.flagValues` in the AgentSession constructor,
+    // so CLI-applied extension flags (`--no-model-fallback`, `--no-ask-user`) reach the settings overrides.
+    let flag_values = options.loaded_extensions.as_ref().map(|loaded| loaded.runtime.flag_values()).unwrap_or_default();
     let session = crate::agent_session::AgentSession::new(crate::agent_session::AgentSessionConfig {
         agent, session_manager: manager, settings_manager: settings, cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()),
         fallback_now: None, retry_random: None, scoped_models: options.scoped_models, favorite_models: options.favorite_models,
-        flag_values: BTreeMap::new(), custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
+        flag_values, custom_tools: options.custom_tools, model_runtime: Some(runtime), model_registry: Some(registry),
         uses_default_stream_function: Some(true), initial_active_tool_names: Some(selected),
         default_tool_names, eval_only_tool_names: None, allowed_tool_names, excluded_tool_names: options.exclude_tools,
         base_tools_override: Some(base_tools.clone()), session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    // `modelRuntime.setSettingsManager(settings)`: provider concurrency limits follow live settings.
+    session.model_runtime().set_settings_manager(session.shared_settings_manager());
     if options.minimal_resources {
         session.set_context_files_enabled(false);
     }
@@ -548,6 +553,26 @@ mod tests {
             assert_eq!(level, expected);
             assert_eq!(has_selection, provenance);
         }
+    }
+
+    #[tokio::test]
+    async fn sdk_applies_loaded_extension_flag_values_to_session_settings() {
+        let dir = tempfile::tempdir().expect("directory");
+        let loaded = maho_ext_host::loader::load_extensions_async(Vec::new(), dir.path(), Default::default()).await;
+        loaded.runtime.set_flag("no-model-fallback", maho_ext_api::FlagValue::Boolean(true));
+        loaded.runtime.set_flag("no-ask-user", maho_ext_api::FlagValue::Boolean(true));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
+            tools: Some(Vec::new()), loaded_extensions: Some(loaded), defer_extension_start: true, ..Default::default()
+        }).await.expect("SDK session");
+        let (fallback, ask_user) = created.session.with_settings_manager(|manager| (
+            manager.get_value("retry").and_then(|retry| retry.get("modelFallback")).cloned(),
+            manager.get_value("askUser").and_then(|ask| ask.get("enabled")).cloned(),
+        ));
+        created.session.dispose().await;
+        assert_eq!(fallback, Some(serde_json::Value::Bool(false)));
+        assert_eq!(ask_user, Some(serde_json::Value::Bool(false)));
     }
 
     #[tokio::test]

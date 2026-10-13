@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 
 /// Limit provider requests, not agent turns: tool execution must not retain a slot.
 pub struct ProviderSemaphores {
-    providers: Arc<Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>>,
+    providers: Arc<Mutex<HashMap<String, (usize, Arc<tokio::sync::Semaphore>)>>>,
     get_limit: Arc<dyn Fn(&str) -> i64 + Send + Sync>,
 }
 
@@ -18,13 +18,23 @@ impl ProviderSemaphores {
 
     fn semaphore_for(&self, provider_id: &str, limit: usize) -> Arc<tokio::sync::Semaphore> {
         let mut providers = self.providers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(providers.entry(provider_id.to_owned()).or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(limit))))
+        let entry = providers.entry(provider_id.to_owned()).or_insert_with(|| (limit, Arc::new(tokio::sync::Semaphore::new(limit))));
+        // `resize`: a changed settings limit applies to requests admitted from now on.
+        if entry.0 != limit { *entry = (limit, Arc::new(tokio::sync::Semaphore::new(limit))); }
+        Arc::clone(&entry.1)
     }
 
     /// Whether a configured limit applies at all; a limit of zero means unlimited.
     pub fn limit_for(&self, provider_id: &str) -> Option<usize> {
         let configured = (self.get_limit)(provider_id);
         if configured > 0 { Some(configured as usize) } else { None }
+    }
+
+    /// Acquires one request slot for the provider; None when no limit applies. The slot is held
+    /// for as long as the returned permit lives (upstream releases it when the stream settles).
+    pub async fn acquire(&self, provider_id: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let limit = self.limit_for(provider_id)?;
+        self.semaphore_for(provider_id, limit).acquire_owned().await.ok()
     }
 
     /// Runs one provider request under the provider's semaphore. A limit of zero runs unbracketed.
@@ -71,6 +81,19 @@ mod tests {
         assert!(semaphores.limit_for("p").is_none());
         let semaphores = ProviderSemaphores::new(|_| 3);
         assert_eq!(semaphores.limit_for("p"), Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_changed_limit_applies_to_new_acquisitions() {
+        let limit = Arc::new(AtomicI64::new(1));
+        let source = Arc::clone(&limit);
+        let semaphores = ProviderSemaphores::new(move |_| source.load(Ordering::SeqCst));
+        let _held = semaphores.acquire("p").await.expect("first slot");
+        limit.store(2, Ordering::SeqCst);
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), semaphores.acquire("p")).await.expect("resized slot");
+        assert!(second.is_some());
+        limit.store(0, Ordering::SeqCst);
+        assert!(semaphores.acquire("p").await.is_none());
     }
 
     #[tokio::test]
