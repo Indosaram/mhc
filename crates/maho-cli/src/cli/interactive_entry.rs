@@ -66,6 +66,18 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     mode.use_registered_markdown_transformers(&extensions);
     mode.initialize_startup_header();
     mode.show_startup_model_warnings();
+    // senpi: ensure fd and rg (download when missing, honouring offline mode) after the header is up;
+    // fd feeds the `@` file-mention search.
+    {
+        use crate::utils::tools_manager::{ensure_tool, Tool, ToolStatus};
+        let statuses = RefCell::new(Vec::<ToolStatus>::new());
+        let (fd_path, _rg_path) = tokio::join!(
+            ensure_tool(Tool::Fd, |status| statuses.borrow_mut().push(status)),
+            ensure_tool(Tool::Rg, |status| statuses.borrow_mut().push(status)),
+        );
+        for status in statuses.into_inner() { mode.show_managed_tool_status(status.kind, &status.message); }
+        mode.set_fd_path(fd_path);
+    }
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
         show_hardware_cursor: true, bottom_shortcut: String::new(),

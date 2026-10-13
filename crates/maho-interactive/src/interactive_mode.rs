@@ -364,6 +364,11 @@ pub struct InteractiveMode {
     submission_images: Rc<RefCell<ImageSubmissions>>,
     working_indicator: Option<maho_ext_api::WorkingIndicatorOptions>,
     custom_editor: Option<Box<dyn maho_tui::editor_component::EditorComponent>>,
+    /// senpi `fdPath`: the managed `fd` binary for the `@` file search.
+    fd_path: Option<String>,
+    /// senpi `autocompleteProviderWrappers`: extension factories applied over the base provider.
+    autocomplete_wrappers: Vec<maho_ext_api::AutocompleteProviderFactory>,
+    managed_tool_status_started: bool,
     custom_ui_builds: Vec<CustomUiBuild>,
     custom_ui_result: Rc<RefCell<Option<serde_json::Value>>>,
     custom_ui_reply: Option<tokio::sync::oneshot::Sender<Result<serde_json::Value, maho_ext_api::ExtensionFailure>>>,
@@ -700,7 +705,7 @@ impl InteractiveMode {
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
         let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
-        Self::setup_autocomplete(&session, &mut editor);
+        editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(Self::create_base_autocomplete_provider(&session, &session.cwd(), None))));
         let pending_images = Rc::new(RefCell::new(BTreeMap::<u64, maho_ai::types::ImageContent>::new()));
         let submission_images = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let images = pending_images.clone();
@@ -753,7 +758,7 @@ impl InteractiveMode {
             request_render: Rc::new(move || chat_host.request_render()),
         }, theme.clone());
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1256,12 +1261,53 @@ impl InteractiveMode {
         }).collect();
     }
 
-    fn setup_autocomplete(session: &AgentSession, editor: &mut CustomEditor) {
-        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
-        commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
-        commands.extend(session.prompt_templates().into_iter().map(|template| maho_tui::autocomplete::CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
-        editor.editor.cancel_autocomplete();
-        editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &session.cwd(), None))));
+    fn create_base_autocomplete_provider(session: &AgentSession, cwd: &str, fd_path: Option<String>) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
+        use maho_tui::autocomplete::CommandSpec;
+        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
+        commands.push(CommandSpec::command("answer"));
+        let builtin_command_names: std::collections::BTreeSet<String> = commands.iter().map(|command| command.name().to_owned()).collect();
+        commands.extend(session.prompt_templates().into_iter().map(|template| CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
+        // senpi: registered extension commands (by invocation name) that do not shadow a built-in,
+        // then `skill:<name>` entries when `enableSkillCommands` is on.
+        let (extension_commands, _, skills) = session.command_groups();
+        commands.extend(extension_commands.into_iter().filter(|command| !builtin_command_names.contains(&command.name)).map(|command| CommandSpec::Command { name:command.name, description:command.description, argument_hint:None, get_argument_completions:None }));
+        if session.with_settings_manager(|settings| settings.get_bool("enableSkillCommands").unwrap_or(true)) {
+            commands.extend(skills.into_iter().map(|skill| CommandSpec::Command { name:format!("skill:{}", skill.name), description:skill.description, argument_hint:None, get_argument_completions:None }));
+        }
+        maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, cwd, fd_path)
+    }
+
+    /// senpi `setupAutocompleteProvider`: the base provider wrapped by every registered extension
+    /// factory, installed on the default editor and on an active custom editor.
+    fn setup_autocomplete(&mut self) {
+        let build = |mode: &Self| -> Box<dyn maho_tui::autocomplete::AutocompleteProvider> {
+            let mut provider: Box<dyn maho_tui::autocomplete::AutocompleteProvider> = Box::new(Self::create_base_autocomplete_provider(&mode.session, &mode.host_cwd(), mode.fd_path.clone()));
+            for wrap_provider in &mode.autocomplete_wrappers { provider = (**wrap_provider)(provider); }
+            provider
+        };
+        let provider = build(self);
+        maho_tui::editor_component::EditorComponent::set_autocomplete_provider(&mut self.editor, provider);
+        if self.custom_editor.is_some() {
+            let provider = build(self);
+            if let Some(editor) = self.custom_editor.as_mut() { editor.set_autocomplete_provider(provider); }
+        }
+    }
+
+    /// senpi: the `fd` path resolved by `ensureTool("fd")` after the TUI mounts feeds the `@` file search.
+    pub fn set_fd_path(&mut self, fd_path: Option<String>) {
+        self.fd_path = fd_path;
+        self.setup_autocomplete();
+    }
+
+    /// senpi `showManagedToolStatus`: managed-tool download progress lines in the chat.
+    pub fn show_managed_tool_status(&mut self, kind: &str, message: &str) {
+        if !self.managed_tool_status_started {
+            self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.managed_tool_status_started = true;
+        }
+        let (message, color) = if kind == "warning" { (format!("Warning: {message}"), crate::theme::ThemeColor::Warning) } else { (message.to_owned(), crate::theme::ThemeColor::Dim) };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(color, &message), 1, 0))));
+        self.last_status = None;
     }
 
     pub fn rebuild_history(&mut self) {
@@ -1332,6 +1378,9 @@ impl InteractiveMode {
         tokio::pin!(binding);
         loop { tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) } }
         self.drain_ui_requests();
+        // senpi `rebindCurrentSession` -> `setupAutocompleteProvider`: extension commands and skills
+        // are known only once the session is bound.
+        self.setup_autocomplete();
         self.refresh_tool_renderer_snapshots().await;
     }
 
@@ -1735,10 +1784,6 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload" {
-            if self.host_reload().await? {
-                let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
-                self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true); self.show_status("Reloaded session resources".into());
             // senpi `handleReloadCommand`: never reload under a live response or compaction.
             if self.host_is_streaming() { self.show_warning("Wait for the current response to finish before reloading."); return Ok(PromptDisposition::Handled); }
             if self.host_is_compacting() { self.show_warning("Wait for compaction to finish before reloading."); return Ok(PromptDisposition::Handled); }
@@ -1753,13 +1798,16 @@ impl InteractiveMode {
             }
             match self.host_reload().await {
                 Ok(true) => {
+                    // senpi `resetExtensionUI` once the reload proceeds: the reloaded extensions
+                    // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
+                    self.autocomplete_wrappers.clear();
                     let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                     self.rebuild_history();
                     // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
                     self.editor.set_keybindings(Arc::new(self.keybindings()));
                     if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
-                    Self::setup_autocomplete(&self.session, &mut self.editor); self.refresh_tool_renderer_snapshots().await;
+                    self.setup_autocomplete(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true);
                     if let Some(error) = self.session.model_registry().get_error() { self.show_error(&format!("models.json error: {error}")); }
                     self.show_status("Reloaded keybindings, extensions, skills, prompts, themes, and context files".into());
                 }
@@ -2734,6 +2782,9 @@ impl InteractiveMode {
 
     pub fn drain_events(&mut self) {
         self.drain_ui_requests();
+        // senpi resolves debounced/asynchronous autocomplete requests on its event loop.
+        self.editor.editor.poll_autocomplete();
+        if let Some(editor) = self.custom_editor.as_mut() { editor.poll_autocomplete(); }
         self.drain_remote_history();
         self.drain_remote_models();
         self.drain_remote_stats();
@@ -3409,10 +3460,8 @@ impl InteractiveMode {
             }
             UiRequest::WorkingIndicator(options) => self.working_indicator = options,
             UiRequest::Autocomplete(factory) => {
-                let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::command(command.name)).collect();
-                commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
-                let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.host_cwd(), None)));
-                maho_tui::editor_component::EditorComponent::set_autocomplete_provider(&mut self.editor, provider);
+                self.autocomplete_wrappers.push(factory);
+                self.setup_autocomplete();
             }
             UiRequest::EditorFactory(factory) => {
                 let mut replacement = factory.map(|factory| factory(self.editor_host.clone(), editor_theme(&self.theme), &self.keybindings()));
@@ -3449,7 +3498,7 @@ impl InteractiveMode {
                 match key.as_str() {
                     "editorPaddingX" => self.editor.set_padding_x(value.as_u64().expect("editor padding") as usize),
                     "autocompleteMaxVisible" => self.editor.editor.set_autocomplete_max_visible(value.as_u64().expect("autocomplete limit") as usize),
-                    "enableSkillCommands" => Self::setup_autocomplete(&self.session, &mut self.editor),
+                    "enableSkillCommands" => self.setup_autocomplete(),
                     "showImages" => { for component in &self.tool_cards { component.borrow_mut().set_show_images(value.as_bool().expect("show images")); } },
                     "imageWidthCells" => { for component in &self.tool_cards { component.borrow_mut().set_image_width_cells(u32::try_from(value.as_u64().expect("image width")).expect("selector image width")); } },
                     "hideThinkingBlock" => { self.reveal.hide_thinking = value.as_bool().expect("thinking visibility"); for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); } if let Some(component) = &self.streaming { let content = self.reveal.resync_visibility(self.clock.elapsed().as_secs_f64() * 1000.0); component.borrow_mut().update_content(&content, Some(true)); } },
