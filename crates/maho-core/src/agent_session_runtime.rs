@@ -342,6 +342,7 @@ impl AgentSessionRuntime {
             Err(error) => { created.session.dispose().await; return Err(error); }
         };
         if let Some(runner) = replacement {
+            self.session.report_removed_extensions(&runner, reason).await;
             created.session.set_extension_runner(runner).await;
             created.session.bind_extensions(Default::default()).await;
         }
@@ -667,6 +668,21 @@ mod tests {
         runtime.emit_attachment_event(AttachmentEvent::SessionParked).await;
         runtime.emit_attachment_event(AttachmentEvent::SessionResumed).await;
         assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionParked, maho_ext_api::EventKind::SessionResumed]);
+    }
+
+    #[tokio::test]
+    async fn replacement_reports_extensions_the_new_runner_no_longer_loads() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let extension = recording_extension(runtime.session(), "<inline:removed>", &[maho_ext_api::EventKind::SessionExtensionsRemoved], seen.clone());
+        let context = crate::sdk::extension_context::create(runtime.session());
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context);
+        runner.set_runtime_factory(std::sync::Arc::new(|context| {
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context)) })
+        }));
+        runtime.session().set_extension_runner(runner).await;
+        assert!(runtime.new_session(None, None).await.expect("replacement"));
+        assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionExtensionsRemoved]);
     }
 
     #[test]
