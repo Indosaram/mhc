@@ -54,6 +54,8 @@ pub trait InteractiveSession: Send + Sync {
     /// override them either).
     fn prompt(&self, _message: String, _options: maho_core::agent_session::PromptOptions) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("prompt is not implemented for this session host".to_owned()) }) }
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort is not implemented for this session host".to_owned()) }) }
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort_bash is not implemented for this session host".to_owned()) }) }
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("abort_compaction is not implemented for this session host".to_owned()) }) }
     fn steer(&self, _text: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("steer is not implemented for this session host".to_owned()) }) }
     fn follow_up(&self, _text: String) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("follow_up is not implemented for this session host".to_owned()) }) }
     fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Err("compact is not implemented for this session host".to_owned()) }) }
@@ -191,6 +193,14 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move { self.session.abort().await; Ok(()) })
     }
 
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.session.abort_bash(); Ok(()) })
+    }
+
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.session.abort_compaction(); Ok(()) })
+    }
+
     fn steer(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
         Box::pin(async move { self.session.steer(&text, None, Default::default()).await })
     }
@@ -306,6 +316,14 @@ impl InteractiveSession for RemoteInteractiveRuntime {
 
     fn abort(&self) -> SessionFuture<'_, Result<(), String>> {
         Box::pin(async move { self.proxy().abort().await.map_err(|error| error.to_string()) })
+    }
+
+    fn abort_bash(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.proxy().abort_bash().await.map_err(|error| error.to_string()) })
+    }
+
+    fn abort_compaction(&self) -> SessionFuture<'_, Result<(), String>> {
+        Box::pin(async move { self.proxy().abort_compaction().await.map_err(|error| error.to_string()) })
     }
 
     fn steer(&self, text: String) -> SessionFuture<'_, Result<(), String>> {
