@@ -49,7 +49,25 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if facts_bootstrap && !parsed.no_session { return Err("facts read-only bootstrap requires --no-session".into()); }
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
-    let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
+    // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
+    // `trust.json`, `defaultProjectTrust`, then the interactive startup prompt) before project
+    // settings and resources load.
+    let trust_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
+    let trust_mode = trust_config.trust_prompt_mode();
+    let startup_ui = {
+        let bootstrap = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
+        (bootstrap.get_string("theme"), bootstrap.get_bool("showHardwareCursor").unwrap_or(false), bootstrap.get_bool("clearOnShrink").unwrap_or(false))
+    };
+    let selector: Box<super::project_trust::Selector> = Box::new(move |title: &str, options: &[String]| {
+        match super::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
+            Ok(selected) => selected,
+            Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+        }
+    });
+    let project_trusted = indicator.during_prompt(super::host_runtime::resolve_runtime_project_trust(
+        &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
+    )).await;
+    let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
