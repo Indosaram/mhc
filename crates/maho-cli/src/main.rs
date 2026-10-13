@@ -12,6 +12,15 @@ fn output(text: &str) -> Result<(), String> {
         Err(error) => Err(error.to_string()),
     }
 }
+/// senpi utils/tools-manager.ts `ensureTool`, installed as the resolver the find and grep tools use for fd/rg.
+fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: Option<maho_tools::managed_tools::ManagedToolStatusCallback>)
+    -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>> {
+    use maho_cli::utils::tools_manager::{ensure_tool, Tool, ToolStatus};
+    let tool = match tool { maho_tools::managed_tools::ManagedTool::Fd => Tool::Fd, maho_tools::managed_tools::ManagedTool::Rg => Tool::Rg };
+    Box::pin(ensure_tool(tool, move |status: ToolStatus| {
+        if let Some(on_status) = &on_status { on_status(maho_tools::managed_tools::ManagedToolStatus { warning: status.kind == "warning", message: status.message }); }
+    }))
+}
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
@@ -20,6 +29,7 @@ fn run() -> Result<(), String> {
     maho_ai::bun_oauth::register_bun_oauth_flows();
     // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
     maho_tui::native_platform::register_builtin_native_platform_helper();
+    maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
     // binary answers it when invoked through an argv0 ending in `-rpc` (a symlink or copy).

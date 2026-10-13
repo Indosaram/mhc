@@ -157,8 +157,12 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             }
         })
     });
+    // senpi agent-session.ts `_buildRuntime`: the built-in tools honour `images.autoResize`,
+    // `shellCommandPrefix` and `shellPath` from settings.
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), maho_tools::index::ToolsOptions {
-        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
+        bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
+            shell_path: settings.get_string("shellPath"), ..Default::default() },
         write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
@@ -613,6 +617,21 @@ mod tests {
         assert_eq!(tools, vec!["bash"]);
         let result = result.expect("tool");
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("sdk"));
+    }
+
+    #[tokio::test]
+    async fn sdk_bash_tool_honours_shell_command_prefix_setting() {
+        let dir = tempfile::tempdir().expect("directory");
+        let settings = crate::settings_manager::SettingsManager::in_memory(
+            serde_json::Map::from_iter([("shellCommandPrefix".to_owned(), serde_json::json!("SDK_PREFIX=prefixed"))]), false);
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
+            settings_manager: Some(settings), tools: Some(vec!["bash".to_owned()]), ..Default::default()
+        }).await.expect("SDK session");
+        let result = created.session.execute_tool("bash", serde_json::json!({"command":"printf \"$SDK_PREFIX\""}), Default::default()).await;
+        created.session.dispose().await;
+        assert!(maho_ai::utils::text::content_text(&result.expect("tool").content, "").contains("prefixed"));
     }
 
     #[tokio::test]

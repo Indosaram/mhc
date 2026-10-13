@@ -1462,6 +1462,7 @@ impl InteractiveMode {
 
     /// senpi: the `fd` path resolved by `ensureTool("fd")` after the TUI mounts feeds the `@` file search.
     pub fn set_fd_path(&mut self, fd_path: Option<String>) {
+        crate::startup_tools::record_startup_fd_path(fd_path.clone());
         self.fd_path = fd_path;
         self.setup_autocomplete();
     }
