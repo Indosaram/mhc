@@ -63,7 +63,7 @@ async fn cooperative_interrupt_preserves_live_worker_globals() {
     let run=kernel.run_with_callbacks(KernelRunInput {cell_id:"parked".into(),code:"var retained=41; await tool.park({})".into(),timeout_ms:None},None,None);
     let stop=async {
         tokio::time::timeout(std::time::Duration::from_secs(3),kernel.next_tool_call()).await.unwrap().unwrap();
-        kernel.interrupt("test stop",Some("parked")).await.unwrap()
+        kernel.interrupt("test stop",Some("parked")).await.unwrap().0
     };
     let (result,retained)=tokio::join!(run,stop);
     let after=kernel.run(KernelRunInput {cell_id:"retained".into(),code:"retained+1".into(),timeout_ms:Some(5000)},|_|{}).await;
@@ -190,7 +190,7 @@ async fn cooperative_interrupt_settles_nested_host_wait_as_stale() {
         let stop=async {
             let call=kernel.next_tool_call().await.unwrap();
             assert_eq!(call["toolName"],"read");
-            kernel.interrupt("nested-test",Some("nested-parent")).await
+            kernel.interrupt("nested-test",Some("nested-parent")).await.map(|(retained,_)|retained)
         };
         let (invoke,stop)=tokio::join!(async {tokio::time::timeout(std::time::Duration::from_secs(3),invoke).await},stop);
         (invoke,stop)
@@ -216,7 +216,7 @@ async fn forced_worker_retirement_settles_nested_host_wait_as_stale() {
         let stop=async {
             kernel.next_tool_call().await.unwrap();
             kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":parent_call["callId"],"ok":true,"value":null})).unwrap();
-            kernel.interrupt("forced-stop",Some("blocked-parent")).await
+            kernel.interrupt("forced-stop",Some("blocked-parent")).await.map(|(retained,_)|retained)
         };
         tokio::join!(async {tokio::time::timeout(std::time::Duration::from_secs(4),invoke).await},stop)
     };
@@ -240,7 +240,7 @@ async fn forced_retirement_retires_tracked_child_outside_worker_group() {
         let call=tokio::time::timeout(std::time::Duration::from_secs(30),kernel.next_tool_call()).await.expect("timed out waiting for tracked-child tool call").unwrap();
         let pid=call["args"]["pid"].as_u64().unwrap() as u32;
         kernel.deliver_tool_reply(serde_json::json!({"type":"tool-reply","callId":call["callId"],"ok":true,"value":null})).unwrap();
-        let retained=kernel.interrupt("child-stop",Some("child-owner")).await;
+        let retained=kernel.interrupt("child-stop",Some("child-owner")).await.map(|(retained,_)|retained);
         let status=tokio::process::Command::new("ps").args(["-o","stat=","-p",&pid.to_string()]).output().await.unwrap();
         let state=String::from_utf8_lossy(&status.stdout);
         let retired=state.trim().is_empty() || state.trim().starts_with('Z');
@@ -280,4 +280,12 @@ async fn queued_cancel_never_executes_or_starts_and_preserves_parent() {
     assert!(!started.load(Ordering::SeqCst));
     assert_eq!(parent.unwrap()["valueRepr"],"42");
     assert!(same_pid);
+}
+
+#[tokio::test]
+async fn interrupting_an_unknown_cell_reports_cell_not_found() {
+    let kernel=JavaScriptKernel::start(Path::new(env!("CARGO_MANIFEST_DIR")),"bun-unknown-interrupt",4,None).await.unwrap();
+    let outcome=kernel.interrupt("stop",Some("missing")).await;
+    kernel.close().await.unwrap();
+    assert_eq!(outcome.unwrap(),(true,Some("cell not found".to_owned())));
 }
