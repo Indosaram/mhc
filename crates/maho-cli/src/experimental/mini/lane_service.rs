@@ -55,7 +55,7 @@ impl LaneService {
 
     pub async fn watch(&self, presentation_id: &str) -> Result<LaneSubscription, String> {
         let lane: Arc<dyn RuntimeLane> = self.options.lane.clone();
-        let watcher = watch_lane(lane, self.options.lane.events.clone(), &self.options.context, false)
+        let watcher = watch_lane(lane, self.options.lane.events.clone(), &self.options.context)
             .await
             .map_err(|error| error.message)?;
         let snapshot = match watcher.snapshot() {

@@ -66,13 +66,13 @@ pub struct Harness<TContext = ()> {
     pub events: HarnessEventBus,
     pub models: maho_ai::models::Models,
     pub hooks: Arc<HookRegistry>,
-    pub lanes_by_name: Mutex<BTreeMap<String, Arc<Lane>>>,
+    pub lanes_by_name: Arc<Mutex<BTreeMap<String, Arc<Lane>>>>,
     /// The typed built-in tools handed to every lane (pinned `Config.tools`).
     tools: Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>,
     /// The pinned `toolContext` handed to every tool invocation.
     tool_context: Option<TContext>,
     seed: LaneConfiguration,
-    closed_error: Mutex<Option<SessionError>>,
+    closed_error: Arc<Mutex<Option<SessionError>>>,
     close_lock: tokio::sync::Mutex<()>,
     config: Arc<Mutex<Config<()>>>,
     session_closed: Mutex<bool>,
@@ -120,7 +120,11 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
                 format!("Invalid lane {}: {reason}", serde_json::json!(name)),
             ));
         }
-        let mutation = self.session.begin_mutation(context).await?;
+        let mutation = self
+            .session
+            .begin_mutation(context)
+            .await
+            .map_err(|error| self.fault_unless_expected(error, context))?;
         let result = async {
             self.assert_open()?;
             if let Some(lane) = self
@@ -210,9 +214,8 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
                 )));
                 mutation.commit(writes, context).await?;
             }
-            let mut lane = Lane::new(
-                name.into(),
-                self.session.clone(),
+            let lane = self.build_lane(
+                name,
                 LaneState {
                     tip_id: tip_id.clone(),
                     configuration,
@@ -220,14 +223,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
                     last_operation_id: stored.last_operation_id,
                     operation,
                 },
-                self.events.clone(),
             );
-            lane.drive_config = self.config.clone();
-            lane.models = self.models.clone();
-            lane.hooks = self.hooks.clone();
-            lane.tool_runner = Arc::new(super::tools::ToolRunner::new(self.tools.clone(), self.tool_context.clone()));
-            let lane = Arc::new(lane);
-            lane.install_self();
             self.lanes_by_name
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -245,7 +241,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         }
         .await;
         mutation.end(context).await;
-        let (lane, delivery) = result?;
+        let (lane, delivery) = result.map_err(|error| self.fault_unless_expected(error, context))?;
         if let Some(delivery) = delivery {
             delivery.await;
         }
@@ -303,7 +299,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         context: &Context,
     ) -> Result<(), SessionError> {
         self.assert_open()?;
-        let mutation = self.session.begin_mutation(context).await?;
+        let mutation = self.session.begin_mutation(context).await.map_err(|error| self.fault(error, context))?;
         let result = async {
             self.assert_open()?;
             let write = match &name {
@@ -326,7 +322,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         }
         .await;
         mutation.end(context).await;
-        result?.await;
+        result.map_err(|error| self.fault(error, context))?.await;
         Ok(())
     }
 
@@ -337,7 +333,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         context: &Context,
     ) -> Result<(), SessionError> {
         self.assert_open()?;
-        let mutation = self.session.begin_mutation(context).await?;
+        let mutation = self.session.begin_mutation(context).await.map_err(|error| self.fault(error, context))?;
         let result = async {
             self.assert_open()?;
             let write = match &label {
@@ -360,7 +356,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         }
         .await;
         mutation.end(context).await;
-        result?.await;
+        result.map_err(|error| self.fault(error, context))?.await;
         Ok(())
     }
 
@@ -370,7 +366,8 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
             return;
         }
         let error = SessionError::new(SessionErrorKind::Closed, "AgentHarness is closed");
-        *self.closed_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error.clone());
+        // Pinned `assertOpen`: a fault recorded before close stays the reported error.
+        self.closed_error.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| error.clone());
         for lane in self
             .lanes_by_name
             .lock()
@@ -388,19 +385,15 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
     }
 
     pub fn fault(&self, cause: SessionError, context: &Context) -> SessionError {
-        let error = {
-            let mut closed = self.closed_error.lock().unwrap_or_else(|error| error.into_inner());
-            if let Some(error) = &*closed { return error.clone(); }
-            let error = session_invariant_error(format!("AgentHarness storage or invariant fault: {cause}"));
-            *closed = Some(error.clone());
-            error
-        };
-        for lane in self.lanes_by_name.lock().unwrap_or_else(|error| error.into_inner()).values() { lane.seal(error.clone()); }
-        let delivery = self.events.begin_emit_batch(vec![HarnessEvent::new(HarnessEventPayload::Fault { code: "harness_fault".into(), message: "AgentHarness storage or invariant fault".into() }, None)], context.clone());
-        drop(delivery);
-        self.hooks.close(error.to_string());
-        self.events.close(error.to_string());
-        error
+        fault_harness(&self.closed_error, &self.lanes_by_name, &self.events, &self.hooks, cause, context)
+    }
+
+    /// Pinned `lane()`/`setName()`/`setLabel()` catch: a close error wins, otherwise fault.
+    fn fault_unless_expected(&self, error: SessionError, context: &Context) -> SessionError {
+        if error.kind == SessionErrorKind::UnknownTarget && self.assert_open().is_ok() {
+            return error;
+        }
+        self.fault(error, context)
     }
 
     pub fn get_resources(&self) -> Result<crate::harness::types::AgentHarnessResources, SessionError> { self.assert_open()?; Ok(self.config.lock().unwrap_or_else(|error| error.into_inner()).resources.clone()) }
@@ -454,6 +447,16 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
     /// config to a lane.
     fn build_lane(&self, name: &str, state: LaneState) -> Arc<Lane> {
         let mut lane = Lane::new(name.to_owned(), self.session.clone(), state, self.events.clone());
+        let closed_error = self.closed_error.clone();
+        let lanes = Arc::downgrade(&self.lanes_by_name);
+        let events = self.events.clone();
+        let hooks = self.hooks.clone();
+        lane.on_fault = Some(Arc::new(move |cause: SessionError, context: &Context| {
+            match lanes.upgrade() {
+                Some(lanes) => fault_harness(&closed_error, &lanes, &events, &hooks, cause, context),
+                None => harness_fault_error(&cause),
+            }
+        }));
         lane.drive_config = self.config.clone();
         lane.models = self.models.clone();
         lane.hooks = self.hooks.clone();
@@ -475,11 +478,11 @@ pub async fn create_agent_harness(
         events: events.clone(),
         models: maho_ai::models::create_models(None),
         hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
-        lanes_by_name: Mutex::new(BTreeMap::new()),
+        lanes_by_name: Arc::new(Mutex::new(BTreeMap::new())),
         tools: Vec::new(),
         tool_context: None,
         seed,
-        closed_error: Mutex::new(None),
+        closed_error: Arc::new(Mutex::new(None)),
         close_lock: tokio::sync::Mutex::new(()),
         config: Arc::new(Mutex::new(default_drive_config())),
         session_closed: Mutex::new(false),
@@ -500,6 +503,37 @@ pub async fn create_agent_harness(
             .await?;
     }
     Ok(harness)
+}
+
+/// Pinned `new HarnessFault("AgentHarness storage or invariant fault", cause)`.
+fn harness_fault_error(cause: &SessionError) -> SessionError {
+    session_invariant_error(format!("AgentHarness storage or invariant fault: {cause}"))
+}
+
+/// Pinned `Harness.fault`: record the first fault, seal every lane with it, close hooks, emit one
+/// `fault` event and close the bus. A harness already closed or faulted returns that error.
+fn fault_harness(
+    closed_error: &Mutex<Option<SessionError>>,
+    lanes: &Mutex<BTreeMap<String, Arc<Lane>>>,
+    events: &HarnessEventBus,
+    hooks: &HookRegistry,
+    cause: SessionError,
+    context: &Context,
+) -> SessionError {
+    let error = {
+        let mut closed = closed_error.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(error) = &*closed { return error.clone(); }
+        let error = harness_fault_error(&cause);
+        *closed = Some(error.clone());
+        error
+    };
+    let sealed: Vec<_> = lanes.lock().unwrap_or_else(|error| error.into_inner()).values().cloned().collect();
+    for lane in sealed { lane.seal_faulted(error.clone()); }
+    hooks.close(error.to_string());
+    let delivery = events.begin_emit_batch(vec![HarnessEvent::new(HarnessEventPayload::Fault { code: "harness_fault".into(), message: "AgentHarness storage or invariant fault".into() }, None)], context.clone());
+    drop(delivery);
+    events.close(error.to_string());
+    error
 }
 
 fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json::Value {
@@ -554,16 +588,18 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         events: events.clone(),
         models: options.models.clone(),
         hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
-        lanes_by_name: Mutex::new(BTreeMap::new()),
+        lanes_by_name: Arc::new(Mutex::new(BTreeMap::new())),
         tools: options.tools.clone(),
         tool_context: options.tool_context.clone(),
         seed,
-        closed_error: Mutex::new(None),
+        closed_error: Arc::new(Mutex::new(None)),
         close_lock: tokio::sync::Mutex::new(()),
         config: Arc::new(Mutex::new(config)),
         session_closed: Mutex::new(false),
     };
-    let restored = crate::harness::runtime::restore::restore_session(options.session.as_ref(), context).await?;
+    let restored = crate::harness::runtime::restore::restore_session(options.session.as_ref(), context)
+        .await
+        .map_err(|error| harness_fault_error(&error))?;
     let open: Vec<OpenOperation> = restored
         .iter()
         .filter_map(|(lane, state)| {
