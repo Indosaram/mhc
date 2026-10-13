@@ -160,12 +160,14 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             }
         })
     });
+    let shell_env: maho_tools::bash::ShellEnvProvider = Arc::new(crate::utils::shell::get_shell_env);
     // senpi agent-session.ts `_buildRuntime`: the built-in tools honour `images.autoResize`,
     // `shellCommandPrefix` and `shellPath` from settings.
     let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), maho_tools::index::ToolsOptions {
         read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
         bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
-            shell_path: settings.get_string("shellPath"), ..Default::default() },
+            shell_path: settings.get_string("shellPath"), shell_env: Some(shell_env.clone()), ..Default::default() },
+        powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },
         write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },

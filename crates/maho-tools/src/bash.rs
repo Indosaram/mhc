@@ -64,17 +64,19 @@ pub fn create_local_bash_operations(shell: Option<&str>) -> Arc<dyn BashOperatio
 #[derive(Clone)]
 pub struct BashSpawnContext { pub command: String, pub cwd: PathBuf, pub env: BTreeMap<String,String> }
 pub type BashSpawnHook = Arc<dyn Fn(BashSpawnContext) -> Result<BashSpawnContext, ToolError> + Send + Sync>;
+/// `getShellEnv()` supplier; maho-core injects the agent-bin-on-PATH env (it owns `getBinDir`).
+pub type ShellEnvProvider = Arc<dyn Fn() -> BTreeMap<String,String> + Send + Sync>;
 #[derive(Default, Clone)]
 pub struct BashToolOptions {
     pub operations: Option<Arc<dyn BashOperations>>, pub command_prefix: Option<String>, pub shell_path: Option<String>,
-    pub expose_session_environment: Option<bool>, pub spawn_hook: Option<BashSpawnHook>,
+    pub expose_session_environment: Option<bool>, pub spawn_hook: Option<BashSpawnHook>, pub shell_env: Option<ShellEnvProvider>,
 }
 #[derive(Deserialize)]
 pub struct BashToolInput { pub command: String, pub timeout: Option<f64> }
 #[derive(Clone)]
 pub struct ShellToolConfig { pub name: String, pub shell_name: String, pub prompt_snippet: String, pub temp_file_prefix: String }
-pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>) -> Result<BashSpawnContext, ToolError> {
-    let mut env: BTreeMap<_,_> = std::env::vars().collect();
+pub fn resolve_spawn_context(command: String, cwd: PathBuf, hook: Option<&BashSpawnHook>, expose: bool, context: Option<&dyn ToolContext>, shell_env: Option<&ShellEnvProvider>) -> Result<BashSpawnContext, ToolError> {
+    let mut env: BTreeMap<_,_> = shell_env.map_or_else(|| std::env::vars().collect(), |shell_env| shell_env());
     for key in ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_CWD", "PI_GOAL_STORE_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"] { env.remove(key); }
     if expose && let Some(context) = context {
             env.insert("PI_SESSION_ID".into(), context.session_manager().session_id().into());
@@ -113,7 +115,7 @@ pub fn create_shell_tool_definition(cwd: PathBuf, config: ShellToolConfig, optio
         Box::pin(async move {
             let input: BashToolInput = serde_json::from_value(call.params)?;
             let command = match options.command_prefix.as_deref().filter(|p| !p.is_empty()) { Some(prefix) => format!("{prefix}\n{}", input.command), None => input.command };
-            let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context)?;
+            let context = resolve_spawn_context(command, call.context.map_or(cwd.as_path(), ToolContext::cwd).to_path_buf(), options.spawn_hook.as_ref(), options.expose_session_environment.unwrap_or(true), call.context, options.shell_env.as_ref())?;
             let output = Arc::new(Mutex::new(OutputAccumulator::new(OutputAccumulatorOptions { temp_file_prefix: config.temp_file_prefix, ..Default::default() })));
             if let Some(update) = &call.on_update { update(ToolResult { content: Vec::new(), details: None })?; }
             let captured = Arc::clone(&output);
