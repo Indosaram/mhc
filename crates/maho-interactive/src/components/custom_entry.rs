@@ -22,7 +22,7 @@ pub fn from_extension_entry_renderer(renderer: maho_ext_api::EntryRenderer) -> E
     Rc::new(move |entry: &Value, expanded: bool, theme: &Theme| {
         let options = maho_ext_api::EntryRenderOptions { expanded };
         let theme = crate::interactive_extension_ui::extension_theme(theme);
-        Ok(renderer(&extension_session_entry(entry), &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
+        Ok::<_, String>(renderer(&extension_session_entry(entry), &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
     })
 }
 
