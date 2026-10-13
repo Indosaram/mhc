@@ -13,4 +13,5 @@ pub fn register_builtin_apis() {
     register("openai-completions", api::openai_completions_lazy::open_ai_completions_api());
     register("openai-responses", api::openai_responses_lazy::openai_responses_api());
     register("pi-messages", api::pi_messages_lazy::pi_messages_api());
+    maho_ai::providers::images::register_builtins::register_built_in_images_api_providers();
 }
