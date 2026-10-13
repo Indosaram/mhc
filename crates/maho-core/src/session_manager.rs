@@ -981,6 +981,15 @@ impl SessionManager {
         entry
     }
 
+    /// senpi `appendConfigurationUpdate`: a durable Responses configuration update.
+    pub fn append_configuration_update(&mut self, effort: &str) -> Value {
+        let mut entry = self.base_entry("configuration_update");
+        entry.insert("reasoning".to_owned(), json!({ "effort": effort }));
+        let entry = Value::Object(entry);
+        self.append_entry(entry.clone());
+        entry
+    }
+
     /// senpi `appendModelChangeRejected` (#1526): record a refused model switch, which otherwise
     /// leaves no trace because no `model_change` is written. Budget numbers are present only for
     /// the context-budget reason.
@@ -1582,6 +1591,16 @@ mod tests {
         let at_root = manager.branch_with_summary(None, "t", None, None, None).expect("root summary");
         assert_eq!(at_root["fromId"], "root");
         assert_eq!(at_root["parentId"], Value::Null);
+    }
+
+    #[test]
+    fn configuration_updates_carry_the_reasoning_effort_into_context() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let entry = manager.append_configuration_update("high");
+        assert_eq!(entry["reasoning"], json!({ "effort": "high" }));
+        let context = manager.build_context(manager.leaf_id());
+        assert_eq!(context.configuration_update, Some(json!({ "effort": "high" })));
+        assert_eq!(context.messages[0]["role"], "configurationUpdate");
     }
 
     #[test]

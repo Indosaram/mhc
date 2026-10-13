@@ -392,6 +392,11 @@ impl Agent {
         lock(&self.inner.state).thinking_level = level;
     }
 
+    /// `state.reasoningBaseline ??= level`: keep the first pre-update reasoning level.
+    pub fn init_reasoning_baseline(&self, level: &str) {
+        lock(&self.inner.state).reasoning_baseline.get_or_insert_with(|| level.to_owned());
+    }
+
     pub fn steering_mode(&self) -> QueueMode {
         lock(&self.inner.steering_queue).mode
     }
