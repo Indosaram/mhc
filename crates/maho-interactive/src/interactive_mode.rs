@@ -1114,7 +1114,7 @@ impl InteractiveMode {
     }
 
     async fn host_reload(&self) -> Result<bool, String> {
-        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
+        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await.map(|decision| !decision.cancelled) }
     }
 
     /// senpi `clearAllQueues`: the native queue plus the compaction queue, in enqueue order.
