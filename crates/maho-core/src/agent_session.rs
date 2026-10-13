@@ -4113,17 +4113,32 @@ impl AgentSession {
         let mut removed = Vec::new();
         let mut metadata = Vec::new();
         let mut seen = BTreeSet::new();
+        let emit_error = |extension_path: &str, error: String| {
+            let error = ExtensionError { extension_path: extension_path.to_owned(), event: "skill_expansion".to_owned(), error, stack: None };
+            if let Ok(mut runner) = self.extension_runner.try_lock() { if let Some(runner) = runner.as_mut() { runner.emit_error(error.clone()); } }
+            let listener = self.state().extension_error_listener.clone();
+            if let Some(listener) = listener { listener(&error); }
+        };
         for token in tokens {
             if let Some(skill) = skills.iter().find(|skill| skill.name == token.name) {
-                if blocks.len() >= 5 { break; }
+                if blocks.len() >= crate::skill_invocation::MAX_SKILL_EXPANSIONS_PER_PROMPT {
+                    emit_error("skill:expansion", format!("Expanded at most {} skills; remaining skill commands were left as literal text.",
+                        crate::skill_invocation::MAX_SKILL_EXPANSIONS_PER_PROMPT));
+                    break;
+                }
                 removed.push(token.clone());
-                if !seen.insert(skill.name.clone()) { continue; }
-                let source = match std::fs::read_to_string(&skill.file_path) { Ok(source) => source, Err(error) => {
-                    self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }); return Ok(text.to_owned());
-                }};
-                let parsed = crate::frontmatter::parse_frontmatter(&source).map_err(|error| error.to_string())?;
+                if seen.contains(&skill.name) {
+                    emit_error(&skill.file_path, format!("Skipped duplicate skill invocation: {}", skill.name));
+                    continue;
+                }
+                let body = match std::fs::read_to_string(&skill.file_path).map_err(|error| error.to_string())
+                    .and_then(|source| crate::frontmatter::strip_frontmatter(&source).map_err(|error| error.to_string())) {
+                    Ok(body) => body,
+                    Err(error) => { emit_error(&skill.file_path, error); return Ok(text.to_owned()); },
+                };
+                seen.insert(skill.name.clone());
                 blocks.push(crate::skill_invocation::SkillInvocationPromptSkill {
-                    name: skill.name.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), body: parsed.body.trim().to_owned(),
+                    name: skill.name.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), body: body.trim().to_owned(),
                 });
                 metadata.push(maho_ext_api::SkillInvocation { name: skill.name.clone(), path: skill.file_path.clone(), syntax: match token.syntax {
                     crate::skill_invocation::SkillInvocationSyntax::Slash => "slash", crate::skill_invocation::SkillInvocationSyntax::Dollar => "dollar",
@@ -12423,9 +12438,19 @@ mod tests {
                 source_info: crate::source_info::create_synthetic_source_info(&path.to_string_lossy(), Default::default()) }
         }).collect();
         session.set_prompt_resources(Vec::new(), skills);
+        let observed = Arc::new(Mutex::new(Vec::<ExtensionError>::new()));
+        let sink = Arc::clone(&observed);
+        session.state().extension_error_listener = Some(Arc::new(move |error| lock(&sink).push(error.clone())));
         let expanded = session.expand_input("$skill0 $skill1 $skill2 $skill3 $skill4 $skill5 task", true).expect("expand");
         assert_eq!(expanded.matches("<skill-instruction name=").count(), 5);
         assert!(expanded.contains("$skill5"));
+        assert_eq!(lock(&observed).last().map(|error| error.extension_path.clone()), Some("skill:expansion".to_owned()));
+        let duplicate = session.expand_input("$skill0 $skill0 task", true).expect("duplicate");
+        assert_eq!(duplicate.matches("<skill-instruction name=").count(), 1);
+        assert_eq!(lock(&observed).last().map(|error| error.error.clone()), Some("Skipped duplicate skill invocation: skill0".to_owned()));
+        std::fs::write(dir.path().join("skill1.md"), "---\nname: [unterminated\n---\nbody").expect("bad skill");
+        assert_eq!(session.expand_input("$skill1 task", true).expect("lenient"), "$skill1 task");
+        assert_eq!(lock(&observed).last().map(|error| error.event.clone()), Some("skill_expansion".to_owned()));
         let unknown = session.expand_input("/skill:missing /skill:skill0 task", true).expect("unknown");
         assert!(!unknown.contains("<skill-instruction name="));
         assert!(unknown.contains("/skill:skill0"));
