@@ -275,8 +275,8 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
             else if recheck_sender.send((armed_at, deadline)).is_err() { break; }
         }
     });
-    let compacting = Arc::new(std::sync::atomic::AtomicBool::new(compact_once));
-    ctx.is_compacting_fn = { let compacting = Arc::clone(&compacting); Arc::new(move || compacting.load(std::sync::atomic::Ordering::SeqCst)) };
+    let actions = session.extension_context_actions();
+    let compaction_signal = if compact_once { Some(actions.begin_compaction(BeginCompactionOptions { reason: CompactionReason::Manual }).expect("compaction admission succeeds")) } else { None };
     struct Veto { reject: Arc<std::sync::atomic::AtomicBool>, sender: tokio::sync::mpsc::UnboundedSender<()> }
     impl Extension for Veto {
         fn register(&self, api: &mut ExtensionApi) {
@@ -329,7 +329,9 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
     if compact_once || veto_once {
         let (armed_at, deadline) = tokio::time::timeout(std::time::Duration::from_secs(5), rechecks.recv()).await.expect("scheduled recheck clock armed").expect("clock waiter remains active");
         assert_eq!(deadline - armed_at, if compact_once { std::time::Duration::from_millis(250) } else { std::time::Duration::from_millis(1000) });
-        compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(signal) = &compaction_signal {
+            actions.end_compaction(EndCompactionOptions { reason: CompactionReason::Manual, signal: Some(signal.clone()), aborted: None, error_message: None });
+        }
         retry_clock.advance_to(deadline);
     }
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.expect("reload fixture operation must succeed").expect("reload fixture operation must succeed");
