@@ -21,6 +21,7 @@ hex = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
 tokio = { workspace = true, features = ["fs", "sync", "time", "macros", "rt", "io-util", "process"] }
 regex = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 futures = { workspace = true }
 indexmap = { workspace = true }
 serde_yaml = "=0.9.34"

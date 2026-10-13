@@ -50,10 +50,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
-    let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+    // senpi `ModelRuntime.create`: restores the stored dynamic catalogs (offline) before use.
+    let models = maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
-    });
+        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
+        agent_dir: Some(std::path::PathBuf::from(&agent_dir)), ..Default::default()
+    }).await;
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
     let manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
         else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, parsed.session_dir.as_deref(), parsed.session_id.as_deref())? }
