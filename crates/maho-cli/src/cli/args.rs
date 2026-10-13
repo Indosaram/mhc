@@ -110,3 +110,14 @@ pub fn parse_args(args: &[String], grok_neo_enabled: bool) -> Result<Args, Strin
 pub fn help_text(grok_neo_enabled: bool, extension_flags: &str) -> String {
     include_str!("help.txt").replace("{grok_neo}", if grok_neo_enabled { "  --grok-neo                     Launch the experimental grok interactive chrome\n" } else { "" }).replace("{extension_flags}", extension_flags)
 }
+/// senpi `printHelp`'s "Extension CLI Flags:" section; empty when no extension registered a flag.
+pub fn extension_flags_text(flags: &[serde_json::Value]) -> String {
+    if flags.is_empty() { return String::new(); }
+    let lines = flags.iter().map(|flag| {
+        let name = flag["name"].as_str().unwrap_or_default();
+        let value = if flag["type"] == "string" { " <value>" } else { "" };
+        let description = flag["description"].as_str().map_or_else(|| format!("Registered by {}", flag["extensionPath"].as_str().unwrap_or_default()), str::to_owned);
+        format!("{:<30}{description}", format!("  --{name}{value}"))
+    }).collect::<Vec<_>>().join("\n");
+    format!("\nExtension CLI Flags:\n{lines}\n")
+}
