@@ -828,7 +828,7 @@ async fn transform_summary_source(
     messages.extend(current_messages.iter().cloned());
     let transformed = transform_context(messages, signal.cloned()).await?;
     let is_summary = |message: &Value| message.get("timestamp").and_then(Value::as_i64) == Some(summary_timestamp);
-    let transformed_summary = transformed.iter().filter(|message| is_summary(*message)).cloned().collect::<Vec<_>>();
+    let transformed_summary = transformed.iter().filter(|message| is_summary(message)).cloned().collect::<Vec<_>>();
     let messages = transformed.into_iter().filter(|message| !is_summary(message)).collect();
     let previous_summary = (!transformed_summary.is_empty())
         .then(|| super::utils::serialize_conversation(&crate::messages::convert_to_llm(&transformed_summary)));

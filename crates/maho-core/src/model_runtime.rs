@@ -929,7 +929,7 @@ struct RotationContext {
 
 impl RotationContext {
     /// senpi `(name) => options?.env?.[name] ?? process.env[name]`.
-    fn env_lookup(&self) -> Arc<dyn Fn(&str) -> Option<String> + Send + Sync> {
+    fn env_lookup(&self) -> crate::credential_pool::rotation_stream::EnvLookup {
         let env = self.env.clone();
         Arc::new(move |name| env.as_ref().and_then(|env| env.get(name).cloned()).or_else(|| std::env::var(name).ok()))
     }

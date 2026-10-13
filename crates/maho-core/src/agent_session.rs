@@ -4502,7 +4502,7 @@ impl AgentSession {
         let mut seen = BTreeSet::new();
         let emit_error = |extension_path: &str, error: String| {
             let error = ExtensionError { extension_path: extension_path.to_owned(), event: "skill_expansion".to_owned(), error, stack: None };
-            if let Ok(mut runner) = self.extension_runner.try_lock() { if let Some(runner) = runner.as_mut() { runner.emit_error(error.clone()); } }
+            if let Ok(mut runner) = self.extension_runner.try_lock() && let Some(runner) = runner.as_mut() { runner.emit_error(error.clone()); }
             let listener = self.state().extension_error_listener.clone();
             if let Some(listener) = listener { listener(&error); }
         };

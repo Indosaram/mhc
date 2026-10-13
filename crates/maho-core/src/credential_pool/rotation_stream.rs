@@ -272,11 +272,14 @@ pub type RotationAttemptFuture =
 /// One provider attempt for a rotation slot; resolved lazily so a slot's auth runs only when chosen.
 pub type RunRotationAttempt = std::sync::Arc<dyn Fn(RotationSlot) -> RotationAttemptFuture + Send + Sync>;
 
+/// Shared env lookup (`options.env[name] ?? process.env[name]`).
+pub type EnvLookup = std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Owned rotation inputs (`RotationSources` borrows; the rotation stream runs on its own task).
 pub struct OwnedRotationSources {
     pub provider_id: String,
     pub credential: Option<PooledCredential>,
-    pub env: std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub env: EnvLookup,
     pub repository: std::sync::Arc<CredentialSlotRepository>,
     pub policy: RotationPolicy,
 }

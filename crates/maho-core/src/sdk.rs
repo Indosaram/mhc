@@ -179,7 +179,6 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
         find: maho_tools::find::FindToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
         ls: maho_tools::ls::LsToolOptions { filesystem_policy: Some(filesystem_policy), ..Default::default() },
-        ..Default::default()
     });
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
