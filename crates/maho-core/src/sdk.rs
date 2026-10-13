@@ -191,6 +191,10 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
             runtime.get_auth(&provider).await.ok().flatten().and_then(|auth| auth.auth.api_key)
         }) })),
+        // senpi sdk.ts hands the Agent the coding-agent convertToLlm: custom, bash-execution and
+        // summary messages become user turns. The agent-core default drops them, so a hidden
+        // extension wake after an assistant reply left the provider request ending on that reply.
+        convert_to_llm: Some(Arc::new(|messages| Box::pin(async move { maho_agent::harness::messages::convert_to_llm(messages) }))),
         ..Default::default()
     });
     let session_start_event = match options.initial_model_provenance.take() {
@@ -528,6 +532,34 @@ mod tests {
         assert_eq!(tools, vec!["bash"]);
         let result = result.expect("tool");
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("sdk"));
+    }
+
+    #[tokio::test]
+    async fn sdk_agent_projects_custom_messages_into_provider_user_turns() {
+        use maho_agent::harness::messages::{CustomMessage, CustomMessageContent};
+        use maho_agent::types::{AgentContext, AgentMessage, CustomAgentMessage};
+        use maho_ai::types::{Message, UserContent, UserMessage};
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let messages = vec![
+            AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("hi".into()), timestamp: 1 })),
+            AgentMessage::Custom(CustomAgentMessage::Custom(CustomMessage {
+                role: "custom".into(), custom_type: "omo-senpi:wake".into(),
+                content: CustomMessageContent::Text("Continue".into()), display: false, details: None, timestamp: 2,
+            })),
+        ];
+        let context = created.session.agent()
+            .build_provider_context(&AgentContext { system_prompt: String::new(), messages, tools: None }, None).await;
+        created.session.dispose().await;
+        assert_eq!(context.messages.len(), 2, "the hidden custom message must not be dropped");
+        let Some(Message::User(last)) = context.messages.last() else { panic!("custom message must reach the provider as a user turn") };
+        let UserContent::Blocks(blocks) = &last.content else { panic!("custom text projects to content blocks") };
+        assert_eq!(maho_ai::utils::text::content_text(blocks, ""), "Continue");
     }
 
     fn test_model() -> Model {
