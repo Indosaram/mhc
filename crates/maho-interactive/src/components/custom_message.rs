@@ -5,6 +5,27 @@ use maho_tui::{components::{box_::Box as TuiBox, spacer::Spacer, text::Text, mar
 use super::markdown_transform::MarkdownComponent;
 
 pub type MessageRenderer = Rc<dyn Fn(&Value, bool, usize, &Theme) -> Result<Option<Rc<RefCell<dyn Component>>>, String>>;
+
+/// Adapt an extension-registered `maho_ext_api::MessageRenderer` to this component's callback: the
+/// JSON custom message becomes the typed `CustomMessage` and the theme the extension-facing export.
+pub fn from_extension_message_renderer(renderer: maho_ext_api::MessageRenderer) -> MessageRenderer {
+    Rc::new(move |message: &Value, expanded: bool, output_pad: usize, theme: &Theme| {
+        let content = match &message["content"] {
+            Value::String(text) => vec![maho_ext_api::ToolContent::text(text.clone())],
+            // Only text and image blocks reach a renderer, like the TS `content` union.
+            content => content.as_array().into_iter().flatten().filter_map(|block| serde_json::from_value(block.clone()).ok()).collect(),
+        };
+        let message = maho_ext_api::CustomMessage {
+            custom_type: message["customType"].as_str().unwrap_or_default().to_owned(),
+            content,
+            display: message["display"].as_bool().unwrap_or(true),
+            details: message.get("details").filter(|details| !details.is_null()).cloned(),
+        };
+        let options = maho_ext_api::MessageRenderOptions { expanded, output_pad };
+        let theme = crate::interactive_extension_ui::extension_theme(theme);
+        Ok(renderer(&message, &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
+    })
+}
 pub struct CustomMessageComponent {
     message: Value,
     renderer: Option<MessageRenderer>,
