@@ -3,9 +3,10 @@
 use std::collections::HashMap;
 
 #[allow(clippy::type_complexity)]
-type HandlerMap = HashMap<String, Vec<(u64, EventHandler)>>;
+type HandlerMap = HashMap<String, Vec<(u64, EventHandler, Option<ProviderScope>)>>;
 use std::sync::{Arc, Mutex};
 
+use maho_ai::node::provider_scope::{active_provider_scope, run_with_provider_scope, ProviderScope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -35,9 +36,20 @@ impl EventBus {
             let guard = self.handlers.lock().expect("event bus lock");
             guard.get(channel).cloned().unwrap_or_default()
         };
-        for (_, handler) in handlers {
-            if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))) {
-                crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n"));
+        for (_, handler, scope) in handlers {
+            // `bindHandler`: a handler registered inside a provider scope runs in that scope; a
+            // closed scope fails the call, which the safe wrapper logs like a handler error.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &scope {
+                Some(scope) => run_with_provider_scope(scope, || handler(data)).map_err(|error| error.to_string()),
+                None => {
+                    handler(data);
+                    Ok(())
+                }
+            }));
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error}\n")),
+                Err(error) => crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n")),
             }
         }
     }
@@ -50,7 +62,7 @@ impl EventBus {
         };
         {
             let mut guard = self.handlers.lock().expect("event bus lock");
-            guard.entry(channel.to_owned()).or_default().push((id, handler));
+            guard.entry(channel.to_owned()).or_default().push((id, handler, active_provider_scope()));
         }
         EventSubscription { bus: self.clone(), channel: channel.to_owned(), id }
     }
@@ -62,7 +74,7 @@ impl EventBus {
     fn unsubscribe(&self, channel: &str, id: u64) {
         let mut guard = self.handlers.lock().expect("event bus lock");
         if let Some(handlers) = guard.get_mut(channel) {
-            handlers.retain(|(handler_id, _)| *handler_id != id);
+            handlers.retain(|(handler_id, _, _)| *handler_id != id);
             if handlers.is_empty() {
                 guard.remove(channel);
             }
@@ -143,6 +155,41 @@ mod tests {
             )
         };
         bus.clear();
+        bus.emit("c", &Value::Null);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_handler_runs_in_the_provider_scope_it_was_registered_in() {
+        let bus = EventBus::new();
+        let scope = ProviderScope::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let _subscription = run_with_provider_scope(&scope, || {
+            let seen = Arc::clone(&seen);
+            bus.on("c", Arc::new(move |_| {
+                seen.lock().expect("lock").push(active_provider_scope());
+            }))
+        })
+        .expect("scope");
+        bus.emit("c", &Value::Null);
+        let seen = seen.lock().expect("lock");
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].as_ref().is_some_and(|active| active.ptr_eq(&scope)));
+    }
+
+    #[test]
+    fn a_handler_bound_to_a_closed_scope_is_not_called() {
+        let bus = EventBus::new();
+        let scope = ProviderScope::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        let _subscription = run_with_provider_scope(&scope, || {
+            let count = Arc::clone(&count);
+            bus.on("c", Arc::new(move |_| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }))
+        })
+        .expect("scope");
+        scope.close();
         bus.emit("c", &Value::Null);
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
