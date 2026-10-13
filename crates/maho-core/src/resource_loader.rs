@@ -7,9 +7,17 @@
 //! prompt_templates.rs and package_manager.rs. find_git_paths mirrors footer-data-provider.ts,
 //! whose git metadata lookup this module needs.
 
+use std::collections::HashMap;
 use std::path::Path;
 
-use crate::paths::{canonicalize_path, lexical_resolve, resolve_path, PathInputOptions};
+use crate::diagnostics::{ResourceCollision, ResourceCollisionType, ResourceDiagnostic, ResourceDiagnosticType};
+use crate::package_identity::dedupe_paths_by_package_identity;
+use crate::package_manager::{DefaultPackageManager, PackageManagerOptions, PathMetadata, ResolveSourcesOptions, ResolvedPaths, ResolvedResource};
+use crate::paths::{canonicalize_path, is_local_path, lexical_resolve, resolve_path, PathInputOptions};
+use crate::prompt_templates::{load_prompt_templates, LoadPromptTemplatesOptions, PromptTemplate};
+use crate::settings_manager::{InMemorySettingsStorage, SettingsManager, SettingsScope, SettingsStorage};
+use crate::skills::{load_skills, LoadSkillsOptions, LoadSkillsResult};
+use crate::source_info::{create_source_info, SourceInfo, SourceOrigin, SourceScope};
 use crate::system_prompt::ContextFile;
 use crate::text::strip_bom;
 
@@ -166,6 +174,217 @@ pub fn load_project_context_files(cwd: &str, agent_dir: &str) -> Vec<ContextFile
     context_files
 }
 
+/// The CLI inputs senpi `DefaultResourceLoader` keeps across reloads: `-e` sources
+/// (`additionalExtensionPaths`), `--skill`, `--prompt-template` and hook paths, and the
+/// `--no-skills` / `--no-prompt-templates` switches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceLoaderInputs {
+    pub additional_extension_paths: Vec<String>,
+    pub additional_skill_paths: Vec<String>,
+    pub additional_prompt_template_paths: Vec<String>,
+    pub additional_hook_paths: Vec<String>,
+    /// Hook resources an SDK caller passes directly (`CreateAgentSessionOptions::hook_resources`).
+    pub hook_resources: Vec<ResolvedResource>,
+    pub no_skills: bool,
+    pub no_prompt_templates: bool,
+}
+
+/// The skill, prompt and hook half of one senpi `DefaultResourceLoader.reload()`.
+#[derive(Debug, Clone, Default)]
+pub struct LoadedResources {
+    pub skills: LoadSkillsResult,
+    pub prompts: Vec<PromptTemplate>,
+    pub prompt_diagnostics: Vec<ResourceDiagnostic>,
+    /// Enabled user- and project-scope hook resources (senpi `globalHookSourcePaths` /
+    /// `projectHookSourcePaths`).
+    pub hook_resources: Vec<ResolvedResource>,
+    /// senpi `preSessionHookSourcePaths`: `-e` package hooks, then the additional hook paths.
+    pub pre_session_hook_paths: Vec<String>,
+}
+
+/// A detached copy of the settings the package manager resolves against, so resolution never
+/// holds the session's settings lock across an await.
+pub fn snapshot_settings(settings: &SettingsManager) -> SettingsManager {
+    let storage = InMemorySettingsStorage::default();
+    for (scope, values) in [(SettingsScope::Global, settings.get_global()), (SettingsScope::Project, settings.get_project())] {
+        let content = serde_json::to_string(values).ok();
+        if let Err(error) = storage.with_lock(scope, &mut |_| content.clone()) {
+            crate::output_guard::maho_write_stderr(&format!("Warning: Could not snapshot settings: {error}\n"));
+        }
+    }
+    SettingsManager::from_storage(Box::new(storage), settings.is_project_trusted())
+}
+
+fn error_diagnostic(message: String, path: Option<String>) -> ResourceDiagnostic {
+    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Error, message, path, collision: None }
+}
+
+/// senpi `mergePaths`: resolve against cwd, keep the first canonical occurrence.
+fn merge_paths(cwd: &str, primary: Vec<String>, additional: &[String]) -> Vec<String> {
+    let mut merged = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in primary.iter().chain(additional) {
+        let resolved = resolve_path(path, cwd, &PathInputOptions { trim: true, ..Default::default() });
+        if seen.insert(canonicalize_path(&resolved)) {
+            merged.push(resolved);
+        }
+    }
+    merged
+}
+
+/// senpi `getEnabledResources` + `getEnabledPaths`: record first-seen metadata, keep enabled paths.
+fn enabled_paths(resources: &[ResolvedResource], metadata_by_path: &mut HashMap<String, PathMetadata>) -> Vec<String> {
+    for resource in resources {
+        metadata_by_path.entry(resource.path.clone()).or_insert_with(|| resource.metadata.clone());
+    }
+    resources.iter().filter(|resource| resource.enabled).map(|resource| resource.path.clone()).collect()
+}
+
+/// senpi `mapSkillPath`: an auto/package skill directory with a `SKILL.md` loads that file.
+fn map_skill_path(resource: &ResolvedResource, metadata_by_path: &mut HashMap<String, PathMetadata>) -> String {
+    if resource.metadata.source != "auto" && resource.metadata.origin != SourceOrigin::Package {
+        return resource.path.clone();
+    }
+    if !Path::new(&resource.path).is_dir() {
+        return resource.path.clone();
+    }
+    let skill_file = Path::new(&resource.path).join("SKILL.md");
+    if skill_file.exists() {
+        let skill_file = skill_file.to_string_lossy().into_owned();
+        metadata_by_path.entry(skill_file.clone()).or_insert_with(|| resource.metadata.clone());
+        return skill_file;
+    }
+    resource.path.clone()
+}
+
+/// senpi `findSourceInfoForPath` (metadata half): exact path, then the containing resource root.
+fn find_source_info(resource_path: &str, metadata_by_path: &HashMap<String, PathMetadata>) -> Option<SourceInfo> {
+    if resource_path.is_empty() || resource_path.starts_with('<') {
+        return None;
+    }
+    let normalized = lexical_resolve(resource_path);
+    if let Some(exact) = metadata_by_path.get(&normalized).or_else(|| metadata_by_path.get(resource_path)) {
+        return Some(create_source_info(resource_path, exact));
+    }
+    metadata_by_path.iter().find(|(source_path, _)| {
+        let root = lexical_resolve(source_path);
+        normalized == root || normalized.starts_with(&format!("{root}{}", std::path::MAIN_SEPARATOR))
+    }).map(|(_, metadata)| create_source_info(resource_path, metadata))
+}
+
+/// senpi `dedupePrompts`: the first template per name wins; later ones are collisions.
+pub fn dedupe_prompts(prompts: Vec<PromptTemplate>) -> (Vec<PromptTemplate>, Vec<ResourceDiagnostic>) {
+    let mut kept: Vec<PromptTemplate> = Vec::new();
+    let mut diagnostics = Vec::new();
+    for prompt in prompts {
+        if let Some(existing) = kept.iter().find(|existing| existing.name == prompt.name) {
+            diagnostics.push(ResourceDiagnostic {
+                diagnostic_type: ResourceDiagnosticType::Collision,
+                message: format!("name \"/{}\" collision", prompt.name),
+                path: Some(prompt.file_path.clone()),
+                collision: Some(ResourceCollision {
+                    resource_type: ResourceCollisionType::Prompt,
+                    name: prompt.name.clone(),
+                    winner_path: existing.file_path.clone(),
+                    loser_path: prompt.file_path.clone(),
+                    winner_source: None,
+                    loser_source: None,
+                }),
+            });
+        } else {
+            kept.push(prompt);
+        }
+    }
+    (kept, diagnostics)
+}
+
+/// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hooks: resolve packages
+/// and auto-discovered resources (`packageManager.resolve()`), resolve the `-e` sources as temporary
+/// packages, then load the enabled paths CLI-first and in package-manager precedence order.
+pub async fn load_resources(cwd: &str, agent_dir: &str, mut settings: SettingsManager, inputs: &ResourceLoaderInputs) -> LoadedResources {
+    let mut diagnostics = Vec::new();
+    let (resolved, cli) = {
+        let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager: &mut settings });
+        let resolved = match manager.resolve(None).await {
+            Ok(paths) => paths,
+            Err(error) => {
+                diagnostics.push(error_diagnostic(format!("Failed to resolve packages: {error}"), None));
+                ResolvedPaths::default()
+            }
+        };
+        let cli = if inputs.additional_extension_paths.is_empty() { ResolvedPaths::default() } else {
+            match manager.resolve_extension_sources(&inputs.additional_extension_paths, Some(ResolveSourcesOptions { local: false, temporary: true })).await {
+                Ok(paths) => paths,
+                Err(error) => {
+                    diagnostics.push(error_diagnostic(format!("Failed to resolve extension sources: {error}"), None));
+                    ResolvedPaths::default()
+                }
+            }
+        };
+        (resolved, cli)
+    };
+
+    let mut metadata_by_path: HashMap<String, PathMetadata> = HashMap::new();
+    let enabled_prompts = enabled_paths(&resolved.prompts, &mut metadata_by_path);
+    for resource in &resolved.skills {
+        metadata_by_path.entry(resource.path.clone()).or_insert_with(|| resource.metadata.clone());
+    }
+    let enabled_skills: Vec<String> = resolved.skills.iter().filter(|resource| resource.enabled)
+        .map(|resource| map_skill_path(resource, &mut metadata_by_path)).collect();
+    // Explicit -e resources keep CLI precedence even when they resolve through a package manifest.
+    for resource in cli.skills.iter().chain(&cli.prompts).chain(&cli.hooks) {
+        let metadata = if resource.metadata.scope == SourceScope::System {
+            PathMetadata { source: "cli".into(), scope: SourceScope::System, origin: SourceOrigin::TopLevel, base_dir: resource.metadata.base_dir.clone() }
+        } else {
+            PathMetadata { source: "cli".into(), scope: SourceScope::Temporary, origin: SourceOrigin::TopLevel, base_dir: None }
+        };
+        metadata_by_path.insert(resource.path.clone(), metadata);
+    }
+    let cli_skills = enabled_paths(&cli.skills, &mut metadata_by_path);
+    let cli_prompts = enabled_paths(&cli.prompts, &mut metadata_by_path);
+    let cli_hooks = enabled_paths(&cli.hooks, &mut metadata_by_path);
+
+    let hook_resources = inputs.hook_resources.iter().filter(|resource| resource.enabled).cloned()
+        .chain(resolved.hooks.into_iter().filter(|resource| resource.enabled && matches!(resource.metadata.scope, SourceScope::User | SourceScope::Project)))
+        .collect();
+    let pre_session_hook_paths = merge_paths(cwd, cli_hooks, &inputs.additional_hook_paths);
+
+    let skill_candidates = if inputs.no_skills { cli_skills } else { [cli_skills, enabled_skills].concat() };
+    let skill_paths = dedupe_paths_by_package_identity(&merge_paths(cwd, skill_candidates, &inputs.additional_skill_paths));
+    let mut skills = if inputs.no_skills && skill_paths.is_empty() { LoadSkillsResult::default() } else {
+        load_skills(&LoadSkillsOptions { cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), skill_paths, include_defaults: false })
+    };
+    for skill in &mut skills.skills {
+        if let Some(info) = find_source_info(&skill.file_path, &metadata_by_path) { skill.source_info = info; }
+    }
+    for path in inputs.additional_skill_paths.iter().filter(|path| is_local_path(path)) {
+        let resolved_path = resolve_path(path, cwd, &PathInputOptions { trim: true, ..Default::default() });
+        if !Path::new(&resolved_path).exists() && !skills.diagnostics.iter().any(|diagnostic| diagnostic.path.as_deref() == Some(resolved_path.as_str())) {
+            skills.diagnostics.push(error_diagnostic("Skill path does not exist".into(), Some(resolved_path)));
+        }
+    }
+    skills.diagnostics.extend(diagnostics);
+
+    let prompt_candidates = if inputs.no_prompt_templates { cli_prompts } else { [cli_prompts, enabled_prompts].concat() };
+    let prompt_paths = merge_paths(cwd, prompt_candidates, &inputs.additional_prompt_template_paths);
+    let (mut prompts, mut prompt_diagnostics) = if inputs.no_prompt_templates && prompt_paths.is_empty() { (Vec::new(), Vec::new()) } else {
+        dedupe_prompts(load_prompt_templates(&LoadPromptTemplatesOptions {
+            cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), prompt_paths, include_defaults: false,
+        }))
+    };
+    for prompt in &mut prompts {
+        if let Some(info) = find_source_info(&prompt.file_path, &metadata_by_path) { prompt.source_info = info; }
+    }
+    for path in inputs.additional_prompt_template_paths.iter().filter(|path| is_local_path(path)) {
+        let resolved_path = resolve_path(path, cwd, &PathInputOptions { trim: true, ..Default::default() });
+        if !Path::new(&resolved_path).exists() && !prompt_diagnostics.iter().any(|diagnostic| diagnostic.path.as_deref() == Some(resolved_path.as_str())) {
+            prompt_diagnostics.push(error_diagnostic("Prompt template path does not exist".into(), Some(resolved_path)));
+        }
+    }
+
+    LoadedResources { skills, prompts, prompt_diagnostics, hook_resources, pre_session_hook_paths }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +476,85 @@ mod tests {
         let files = load_project_context_files(&nested.to_string_lossy(), &agent_dir.to_string_lossy());
         let contents: Vec<&str> = files.iter().map(|file| file.content.as_str()).collect();
         assert_eq!(contents, vec!["agent rules", "project rules", "nested rules"]);
+    }
+
+    fn trusted_settings(global: serde_json::Value) -> SettingsManager {
+        let mut settings = SettingsManager::from_storage(Box::<InMemorySettingsStorage>::default(), true);
+        if let serde_json::Value::Object(values) = global { settings.set(SettingsScope::Global, &values).expect("global settings"); }
+        settings
+    }
+
+    fn skill(dir: &Path, name: &str) {
+        write(&dir.join(name).join("SKILL.md"), &format!("---\nname: {name}\ndescription: fixture\n---\nbody"));
+    }
+
+    #[tokio::test]
+    async fn package_skills_prompts_and_hooks_are_loaded() {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        skill(&dir.path().join("pkg").join("skills"), "pkg-skill");
+        write(&dir.path().join("pkg").join("prompts").join("pkg-prompt.md"), "package prompt");
+        write(&dir.path().join("pkg").join("hooks").join("hooks.json"), "{}");
+        write(&agent.join("hooks").join("user.json"), "{}");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let settings = trusted_settings(serde_json::json!({"packages": ["../pkg"]}));
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), settings, &ResourceLoaderInputs::default()).await;
+        let package_skill = loaded.skills.skills.iter().find(|skill| skill.name == "pkg-skill").expect("package skill");
+        assert_eq!(package_skill.source_info.origin, SourceOrigin::Package);
+        assert!(loaded.prompts.iter().any(|prompt| prompt.name == "pkg-prompt"));
+        let hooks: Vec<&str> = loaded.hook_resources.iter().map(|resource| resource.path.as_str()).collect();
+        assert!(hooks.iter().any(|path| path.ends_with("pkg/hooks/hooks.json")), "{hooks:?}");
+        assert!(hooks.iter().any(|path| path.ends_with("agent/hooks/user.json")), "{hooks:?}");
+    }
+
+    #[tokio::test]
+    async fn a_project_skill_and_prompt_win_a_name_collision_with_the_user_ones() {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        let project = cwd.join(crate::config::config_dir_name());
+        skill(&agent.join("skills"), "dup-skill");
+        skill(&project.join("skills"), "dup-skill");
+        write(&agent.join("prompts").join("dup.md"), "user prompt");
+        write(&project.join("prompts").join("dup.md"), "project prompt");
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &ResourceLoaderInputs::default()).await;
+        let winner = loaded.skills.skills.iter().find(|skill| skill.name == "dup-skill").expect("skill");
+        assert!(winner.file_path.starts_with(&*project.to_string_lossy()), "{}", winner.file_path);
+        let prompt = loaded.prompts.iter().find(|prompt| prompt.name == "dup").expect("prompt");
+        assert_eq!(prompt.content.trim(), "project prompt");
+        assert_eq!(loaded.prompt_diagnostics.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cli_skill_paths_load_first_and_no_skills_drops_discovered_ones() {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().join("project");
+        let agent = dir.path().join("agent");
+        skill(&agent.join("skills"), "user-skill");
+        skill(&dir.path().join("cli"), "cli-skill");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let inputs = ResourceLoaderInputs {
+            additional_skill_paths: vec![dir.path().join("cli").to_string_lossy().into_owned()], no_skills: true, ..Default::default()
+        };
+        let loaded = load_resources(&cwd.to_string_lossy(), &agent.to_string_lossy(), trusted_settings(serde_json::json!({})), &inputs).await;
+        let names: Vec<&str> = loaded.skills.skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["cli-skill"]);
+    }
+
+    #[test]
+    fn duplicate_prompt_names_keep_the_first_and_report_a_collision() {
+        let prompt = |path: &str| PromptTemplate {
+            name: "review".into(), description: String::new(), argument_hint: None, content: String::new(),
+            source_info: SourceInfo::default(), file_path: path.into(),
+        };
+        let (kept, diagnostics) = dedupe_prompts(vec![prompt("/a/review.md"), prompt("/b/review.md")]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].file_path, "/a/review.md");
+        assert_eq!(diagnostics[0].message, "name \"/review\" collision");
+        let collision = diagnostics[0].collision.as_ref().expect("collision");
+        assert_eq!(collision.resource_type, ResourceCollisionType::Prompt);
+        assert_eq!((collision.winner_path.as_str(), collision.loser_path.as_str()), ("/a/review.md", "/b/review.md"));
     }
 
     #[test]

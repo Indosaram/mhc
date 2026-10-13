@@ -47,6 +47,9 @@ pub struct CreateAgentSessionOptions {
     pub loaded_extensions: Option<maho_ext_host::loader::LoadExtensionsResult>,
     pub hook_resources: Vec<crate::package_manager::ResolvedResource>,
     pub additional_hook_paths: Vec<String>,
+    /// senpi `DefaultResourceLoader` CLI inputs (`-e`, `--skill`, `--prompt-template`, `--no-skills`,
+    /// `--no-prompt-templates`); merged with `hook_resources` / `additional_hook_paths`.
+    pub resource_inputs: crate::resource_loader::ResourceLoaderInputs,
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
@@ -228,18 +231,12 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         }
     }
     if !options.minimal_resources {
-    let (prompt_paths, skill_paths) = session.with_settings_manager(|manager| {
-        let paths = |key| manager.get_value(key).and_then(serde_json::Value::as_array).map(|values|
-            values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
-        (paths("prompts"), paths("skills"))
-    });
-    let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-        cwd: cwd.clone(), agent_dir: agent_dir.clone(), prompt_paths, include_defaults: true,
-    });
-    let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions { cwd, agent_dir, skill_paths, include_defaults: true });
-    session.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
+        let mut inputs = options.resource_inputs;
+        inputs.additional_hook_paths.extend(options.additional_hook_paths);
+        inputs.hook_resources.extend(options.hook_resources);
+        session.set_resource_loader_inputs(inputs);
+        session.load_resources().await;
     }
-    session.set_hook_source_paths(options.hook_resources, options.additional_hook_paths);
     session.set_system_prompt_sources(options.system_prompt, options.append_system_prompt);
     if let Err(error) = session.admit_sdk_model(resumed) {
         session.dispose().await;
