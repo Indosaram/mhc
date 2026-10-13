@@ -43,8 +43,8 @@ impl ComponentLogger for StderrLogger {
 
 fn write(level: LogLevel, message: &str, details: Option<&JsonValue>) {
     match details {
-        Some(details) => eprintln!("maho-omo {}: {message} {details}", level.as_str()),
-        None => eprintln!("maho-omo {}: {message}", level.as_str()),
+        Some(details) => maho_ext_api::diagnostic(&format!("maho-omo {}: {message} {details}", level.as_str())),
+        None => maho_ext_api::diagnostic(&format!("maho-omo {}: {message}", level.as_str())),
     }
 }
 
