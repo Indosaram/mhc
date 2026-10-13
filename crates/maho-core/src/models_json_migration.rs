@@ -177,7 +177,7 @@ pub fn migrate_models_json_provider_ids(path: &Path, content: &str) -> ModelsJso
     match result {
         Ok(()) => ModelsJsonMigration::Migrated { renamed, backup_path: backup },
         Err(reason) => {
-            for target in created { if let Err(error) = fs::remove_file(&target) && error.kind() != std::io::ErrorKind::NotFound { eprintln!("Unable to remove migration temporary file: {error}"); } }
+            for target in created { if let Err(error) = fs::remove_file(&target) && error.kind() != std::io::ErrorKind::NotFound { crate::output_guard::maho_write_stderr(&format!("Unable to remove migration temporary file: {error}\n")); } }
             ModelsJsonMigration::Failed { renamed, reason }
         }
     }

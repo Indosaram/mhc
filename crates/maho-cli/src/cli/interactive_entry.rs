@@ -52,7 +52,7 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
 pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>) -> Result<(), String> {
     use maho_interactive::{interactive_mode::InteractiveMode, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
     let shared_host = mount_shared_host(&session, parsed).await;
-    if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { eprintln!("{message}"); }
+    if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = ProcessTerminal::default();
@@ -183,7 +183,7 @@ async fn resolve_interactive_startup_theme(
         setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered,
     )?;
     diagnostics.extend(resolution.diagnostics);
-    for diagnostic in &diagnostics { eprintln!("theme: {diagnostic}"); }
+    for diagnostic in &diagnostics { maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n")); }
     Ok(resolution.theme)
 }
 

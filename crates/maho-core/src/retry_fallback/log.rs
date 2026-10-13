@@ -29,7 +29,7 @@ pub struct FallbackLogger {path:PathBuf,max_bytes:u64,reported_write_failure:boo
 impl FallbackLogger {
     pub fn new(agent_dir:&Path,max_bytes:Option<u64>)->Self {Self{path:agent_dir.join("logs/fallback.log"),max_bytes:max_bytes.filter(|v|*v>0).unwrap_or(5*1024*1024),reported_write_failure:false}}
     pub fn log(&mut self,timestamp:&str,level:&str,event:&str,data:Option<&Map<String,Value>>) {
-        if let Err(error)=self.write(timestamp,level,event,data)&&!self.reported_write_failure{self.reported_write_failure=true;eprintln!("Unable to write retry fallback debug log {error}");}
+        if let Err(error)=self.write(timestamp,level,event,data)&&!self.reported_write_failure{self.reported_write_failure=true;crate::output_guard::maho_write_stderr(&format!("Unable to write retry fallback debug log {error}\n"));}
     }
     pub fn warn(&mut self,event:&str,data:Option<&Map<String,Value>>) {
         let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

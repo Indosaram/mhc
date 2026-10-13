@@ -179,12 +179,12 @@ impl SessionLogger {
             let mut reported = inner.reported_write_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if !*reported {
                 *reported = true;
-                eprintln!("Unable to write session log {error}");
+                crate::output_guard::maho_write_stderr(&format!("Unable to write session log {error}\n"));
             }
             return;
         }
         if inner.mirror_to_stderr {
-            eprintln!("[{}] {line}", app_name());
+            crate::output_guard::maho_write_stderr(&format!("[{}] {line}\n", app_name()));
         }
     }
 }
