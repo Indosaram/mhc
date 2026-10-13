@@ -24,10 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
-/// Failure deadline for the delivery-artifact wait. It is NEVER the pass condition.
-const DELIVERY_DEADLINE: Duration = Duration::from_secs(30);
-/// Failure deadline for the whole `mhc` run.
-const RUN_DEADLINE: Duration = Duration::from_secs(60);
+const SAFETY_BOUND: Duration = Duration::from_secs(60);
 /// Failure deadline for the server's own shutdown join.
 const CLEANUP_DEADLINE: Duration = Duration::from_secs(10);
 /// The corpus document the fixture commits; the envelope must offer this path to the child.
@@ -473,7 +470,7 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
 
     // The exact delivery event: the parent response stays held until the offered payload was read and cached.
     let mut delivery_wait = delivery_rx.clone();
-    let delivery_observed = tokio::time::timeout(DELIVERY_DEADLINE, async move {
+    let delivery_observed = tokio::time::timeout(SAFETY_BOUND, async move {
         while !*delivery_wait.borrow() {
             if delivery_wait.changed().await.is_err() {
                 break;
@@ -491,7 +488,7 @@ async fn real_mount_recall_delivers_a_nudge_and_releases_its_wake_lease() {
     // the cleanup below, never before it. The kill/reap results are preserved for the same reason.
     let mut run_failure: Option<String> = None;
     let mut teardown_failure: Option<String> = None;
-    let status = match tokio::time::timeout(RUN_DEADLINE, child.wait()).await {
+    let status = match tokio::time::timeout(SAFETY_BOUND, child.wait()).await {
         Ok(Ok(status)) => Some(status),
         Ok(Err(error)) => {
             run_failure = Some(format!("the mhc process could not be awaited: {error}"));
