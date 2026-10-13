@@ -7,7 +7,8 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
     macro_rules! optional{($record:ident,$key:literal,$value:expr)=>{if let Some(value)=$value{$record[$key]=serde_json::to_value(value)?;}};}
     Ok(match event{
         E::Agent(event)=>serde_json::to_value(event)?,
-        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"willRetry":will_retry});if *aborted{record["aborted"]=true.into();}if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
+        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"willRetry":will_retry});if *aborted{record["aborted"]=true.into();}
+            if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
         E::MessageUpdate{message,assistant_message_event}=>json!({"type":"message_update","message":message,"assistantMessageEvent":assistant_message_event}),
         E::AgentSettled=>json!({"type":"agent_settled"}),E::AgentIdle=>json!({"type":"agent_idle"}),E::SessionAbort=>json!({"type":"session_abort"}),
         E::ResumeCompactionRequired{projection,notice}=>json!({"type":"resume_compaction_required","projection":projection,"notice":notice}),

@@ -168,6 +168,7 @@ impl FauxSession {
                 ("faux".to_owned(), serde_json::json!({"type": "api_key", "key": "faux-test"})),
             ].into_iter().collect()))),
             providers: Some(vec![provider.provider.clone()]),
+            ..Default::default()
         });
         Ok(AgentSession::new(AgentSessionConfig {
             agent: maho_agent::Agent::new(maho_agent::AgentOptions {

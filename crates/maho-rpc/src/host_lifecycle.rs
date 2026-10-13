@@ -322,7 +322,6 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
 }
 #[cfg(not(unix))]
 pub async fn run_host_supervisor(_launch:SupervisorLaunch)->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
-#[derive(Debug,PartialEq)]
 /// Node's name for a terminating signal, as the crash record stores it (`SIGBUS`, `SIGSEGV`, ...).
 #[cfg(unix)]
 fn signal_name(signal:i32)->String{
@@ -330,6 +329,7 @@ fn signal_name(signal:i32)->String{
     [(Signal::HUP,"SIGHUP"),(Signal::INT,"SIGINT"),(Signal::QUIT,"SIGQUIT"),(Signal::ILL,"SIGILL"),(Signal::TRAP,"SIGTRAP"),(Signal::ABORT,"SIGABRT"),(Signal::BUS,"SIGBUS"),(Signal::FPE,"SIGFPE"),(Signal::KILL,"SIGKILL"),(Signal::USR1,"SIGUSR1"),(Signal::SEGV,"SIGSEGV"),(Signal::USR2,"SIGUSR2"),(Signal::PIPE,"SIGPIPE"),(Signal::ALARM,"SIGALRM"),(Signal::TERM,"SIGTERM")]
         .into_iter().find(|(known,_)|known.as_raw()==signal).map_or_else(||format!("SIG{signal}"),|(_,name)|name.to_owned())
 }
+#[derive(Debug,PartialEq)]
 pub struct HostLifecyclePolicy{pub cold_start:String,pub idle_exit_ms:f64}
 /// The private directory a supervisor's internal hop lives in (senpi `createInternalSocketPath`).
 #[derive(Debug,Clone,PartialEq)]

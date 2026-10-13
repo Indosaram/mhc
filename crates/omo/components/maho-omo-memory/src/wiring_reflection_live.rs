@@ -52,7 +52,7 @@ impl MemoryReflectionLiveWiring{
             }
         }
         self.contexts.insert(session.into(),context);let context=self.contexts.get(session);let active=context.is_some_and(|context|lock(&self.active_runs).is_active(&context.identity));
-        self.footer.sync_active(context,Some(session),active,now,ui.as_deref_mut());
+        self.footer.sync_active(context,Some(session),active,now,match ui.as_mut(){Some(ui)=>Some(&mut **ui),None=>None});
         if drained{self.footer.refresh(context,Some(session),active,now,ui);}
         self.sync_rpc(api,now)
     }
