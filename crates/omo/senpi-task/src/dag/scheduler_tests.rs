@@ -223,7 +223,7 @@ fn given_a_linear_three_wave_dag_when_run_then_nodes_and_wave_events_are_admitte
     );
     let auto = auto_complete_nodes(&fixture, &["a", "b", "c"]);
 
-    let result = fixture.scheduler.run().expect("run");
+    let result = run_in_background(&fixture.scheduler).recv_timeout(Duration::from_secs(30)).expect("the scheduler run settled within 30s").expect("run");
     join_all(auto);
 
     assert_eq!(result.status, DagRunStatus::Completed);
@@ -261,7 +261,7 @@ fn given_a_diamond_dag_when_run_then_the_fan_out_shares_one_wave_and_the_join_wa
     );
     let auto = auto_complete_nodes(&fixture, &["a", "b", "c", "d"]);
 
-    fixture.scheduler.run().expect("run");
+    run_in_background(&fixture.scheduler).recv_timeout(Duration::from_secs(30)).expect("the scheduler run settled within 30s").expect("run");
     join_all(auto);
 
     let started_waves: Vec<Vec<String>> = events_of(&fixture.store)
@@ -321,7 +321,7 @@ fn given_a_failed_root_with_a_dependent_chain_when_the_failure_is_journaled_then
     }
     let auto = auto_complete_nodes(&fixture, &["independent"]);
 
-    let result = fixture.scheduler.run().expect("run");
+    let result = run_in_background(&fixture.scheduler).recv_timeout(Duration::from_secs(30)).expect("the scheduler run settled within 30s").expect("run");
     join_all(auto);
 
     assert_eq!(
