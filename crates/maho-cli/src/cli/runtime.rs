@@ -225,24 +225,10 @@ pub fn fork_session(source_path: &str, cwd: &str, session_dir: Option<&str>, ses
         resolved = matched.map(|session| session.path.clone()).ok_or_else(|| format!("No session found matching '{source_path}'"))?;
         resolved.as_str()
     };
-    let source_entries = maho_core::session_manager::load_entries_from_file(source_path);
-    if source_entries.is_empty() {
-        return Err(format!("Cannot fork: source session file is empty or invalid: {source_path}"));
-    }
-    if !source_entries.iter().any(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("session")) {
-        return Err(format!("Cannot fork: source session has no header: {source_path}"));
-    }
-    let options = Some(maho_core::session_manager::NewSessionOptions {
+    SessionManager::fork_from(source_path, cwd, session_dir, Some(maho_core::session_manager::NewSessionOptions {
         id: session_id.map(str::to_owned),
-        parent_session: Some(source_path.to_owned()),
-    });
-    let mut manager = SessionManager::create(cwd, session_dir, options);
-    for entry in source_entries {
-        if entry.get("type").and_then(serde_json::Value::as_str) != Some("session") {
-            manager.append_entry_raw(entry);
-        }
-    }
-    Ok(manager)
+        parent_session: None,
+    }))
 }
 
 async fn run_print(session: &maho_core::agent_session::AgentSession, mode: AppMode, initial: super::initial_message::InitialMessageResult, messages: &[String]) -> Result<(), String> {
