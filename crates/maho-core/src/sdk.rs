@@ -286,7 +286,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
     // `modelRuntime.setSettingsManager(settings)`: provider concurrency limits follow live settings.
-    session.model_runtime().set_settings_manager(session.shared_settings_manager());
+    session.with_settings_manager(|settings| session.model_runtime().set_settings_manager(settings));
     if options.minimal_resources {
         session.set_context_files_enabled(false);
     }
