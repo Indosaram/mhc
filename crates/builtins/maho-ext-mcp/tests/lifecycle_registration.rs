@@ -6,6 +6,7 @@ use maho_ext_mcp::config::{hash_config, normalize_server};
 use maho_ext_mcp::config_schema::ServerConfigWire;
 use maho_ext_mcp::host_registry::HostMcpRegistry;
 use serde_json::json;
+mod support;
 
 struct TestSession;
 impl ToolSessionManager for TestSession {
@@ -62,7 +63,7 @@ impl Extension for McpExtension {
 }
 
 fn seed_direct_server(agent_dir: &Path) {
-    let declaration = json!({"type":"stdio","command":"/usr/bin/node","args":["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts","--tools","2"],"exposure":"direct"});
+    let declaration = json!({"type":"stdio","command":support::node(),"args":[support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools","2"],"exposure":"direct"});
     std::fs::write(agent_dir.join("mcp.json"), json!({"mcpServers":{"fx":declaration.clone()}}).to_string()).expect("write mcp.json");
     let config: ServerConfigWire = serde_json::from_value(declaration).expect("parse the mcp server declaration");
     let hash = hash_config(&normalize_server(config)).expect("hash the seeded server config");

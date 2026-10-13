@@ -9,6 +9,7 @@ use maho_ext_mcp::config_schema::{McpServerConfig, Transport};
 use maho_ext_mcp::env_cleaner::{create_clean_mcp_environment, create_clean_mcp_environment_from, is_excluded_env_key, EXCLUDED_ENV_PATTERNS};
 use maho_ext_mcp::log::McpLogger;
 use maho_ext_mcp::transport::{connect_mcp_transport, create_mcp_transport, shutdown_mcp_transport};
+mod support;
 
 fn map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
     entries.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
@@ -50,7 +51,7 @@ async fn stdio_children_inherit_the_cleaned_environment() {
     let logger = Arc::new(Mutex::new(McpLogger::new("env-report", root.path(), None).unwrap()));
     let config = McpServerConfig {
         transport: Some(Transport::Stdio),
-        command: Some("/usr/bin/node".into()),
+        command: Some(support::node()),
         args: Some(vec![format!("{}/tests/fixtures/env-report.mjs", env!("CARGO_MANIFEST_DIR"))]),
         env: Some(map(&[("MCP_ENV_DECLARED", "declared"), ("MCP_ENV_DECLARED_TOKEN", "declared-secret")])),
         connect_timeout_ms: Some(5000.0),

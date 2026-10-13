@@ -1,6 +1,7 @@
 use std::{sync::{Arc,Mutex},time::Duration};
+mod support;
 use maho_ext_mcp::{connection::*,config_schema::*,log::McpLogger};
-fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"2".into()]),connect_timeout_ms:Some(5000.0),..Default::default()}}
+fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"2".into()]),connect_timeout_ms:Some(5000.0),..Default::default()}}
 #[tokio::test]
 async fn concurrent_connects_share_one_client_and_transitions() {
     let root=tempfile::tempdir().unwrap();let connection=ServerConnection::new("fixture",config(),None,Arc::new(Mutex::new(McpLogger::new("fixture",root.path(),None).unwrap())));let mut states=connection.on_state_change();let mut tools=connection.on_tools_changed();

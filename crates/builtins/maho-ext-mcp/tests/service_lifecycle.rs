@@ -12,8 +12,9 @@ use maho_ext_mcp::host_registry::HostMcpRegistry;
 use maho_ext_mcp::service::McpService;
 use maho_ext_mcp::startup_race::McpStartupRaceResult;
 use maho_ext_mcp::tool_registrar::McpToolRegistrar;
+mod support;
 
-const FIXTURE: &str = "/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts";
+const FIXTURE: &str = "packages/coding-agent/test/mcp/fixtures/stdio-server.ts";
 
 #[derive(Default)]
 struct RecordingRegistrar {
@@ -35,13 +36,13 @@ impl McpToolRegistrar for RecordingRegistrar {
 }
 
 fn declaration(name: &str, cwd: &std::path::Path, extra_args: &[&str]) -> maho_ext_api::RegisteredMcpServerDeclaration {
-    let mut args = vec![FIXTURE.to_owned()];
+    let mut args = vec![support::senpi(FIXTURE)];
     args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
     maho_ext_api::RegisteredMcpServerDeclaration {
         name: name.into(),
         config: maho_ext_api::McpServerDeclaration {
             transport: Some(maho_ext_api::McpTransport::Stdio),
-            command: Some("/usr/bin/node".into()),
+            command: Some(support::node()),
             args: Some(args),
             exposure: Some(maho_ext_api::McpExposure::Direct),
             ..Default::default()

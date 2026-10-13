@@ -1,8 +1,9 @@
 use maho_ext_mcp::{config_schema::{McpServerConfig,Transport},host_registry::HostMcpRegistry,service_connection::*,startup_race::connect_and_refresh_mcp_catalog};
+mod support;
 #[tokio::test]
 async fn session_connection_refreshes_catalog_and_disposes_registry_owner() {
     let root=tempfile::tempdir().unwrap();let registry=HostMcpRegistry::default();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()};
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts")]),..Default::default()};
     let session=create_mcp_session_connection(SessionConnectionOptions {registry:&registry,owner:1,key:"key",name:"fixture",config_hash:"hash",config:config.clone(),agent_dir:root.path(),env:None}).unwrap();
     {let mut entry=session.entry.lock().await;connect_and_refresh_mcp_catalog(&mut entry,&config).await.unwrap();
         assert_eq!(entry.connection.state(),maho_ext_mcp::connection::ServerConnectionState::Connected);assert!(entry.cache_refreshed_after_connect);
