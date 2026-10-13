@@ -225,7 +225,10 @@ pub type TaskParent = Arc<std::sync::OnceLock<Arc<dyn Fn() -> Option<maho_core::
 struct Task {
     parent: TaskParent,
     runtime: Arc<maho_omo::OmoRuntime>,
-    engine: Arc<std::sync::Mutex<Option<maho_omo_task::engine::TaskEngine>>>,
+    /// Retained engine keyed by the (cwd, resolved omo config) it was composed from. Upstream
+    /// rebuilds the engine on every `register` (index.ts `loadConfig({ cwd })`); natively the engine
+    /// is retained across re-registration and rebuilt only when that fingerprint changes.
+    engine: Arc<std::sync::Mutex<Option<(std::path::PathBuf, serde_json::Value, maho_omo_task::engine::TaskEngine)>>>,
     coordinator: Arc<maho_omo::task_coordinator::TaskCoordinator>,
     environment: std::collections::BTreeMap<String, String>,
 }
@@ -290,11 +293,16 @@ impl Extension for Task {
                 let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let engine = slot.get_or_insert_with(|| maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
-                        cwd: ctx.cwd.clone(), config, runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
-                        resolve_registry: Arc::new(move || Some(registry.clone())),
-                        host_transport: Some(super::host_transport::create_cli_host_transport(executor.clone())),
-                    }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process))));
+                    let stale = slot.as_ref().is_none_or(|(cwd, retained, _)| *cwd != ctx.cwd || *retained != config);
+                    if stale {
+                        let engine = maho_omo_task::engine::compose_task_engine_with_rpc_respawn(maho_omo_task::engine::ComposeTaskEngineDeps {
+                            cwd: ctx.cwd.clone(), config: config.clone(), runners, actions: actions.clone(), coordinator: Some(coordinator.clone()),
+                            resolve_registry: Arc::new(move || Some(registry.clone())),
+                            host_transport: Some(super::host_transport::create_cli_host_transport(executor.clone())),
+                        }, Some(maho_omo_task::engine_runners::build_rpc_respawn_runner(process)));
+                        *slot = Some((ctx.cwd.clone(), config, engine));
+                    }
+                    let Some((_, _, engine)) = slot.as_ref() else { return Err(ExtensionFailure::new("task engine slot empty after composition")); };
                     super::omo_mount::retained_engine(engine)
                 };
                 let handlers = {
