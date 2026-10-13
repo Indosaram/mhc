@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use maho_ext_mcp::{config_schema::*,transport::*,transport_sdk::*,errors::McpErrorKind};
+mod support;
 #[test]
 fn invalid_endpoints_fail_with_create_phase() {
     for config in [McpServerConfig {transport:Some(Transport::Stdio),command:Some(" ".into()),..Default::default()},McpServerConfig {transport:Some(Transport::Http),url:Some("nota url".into()),..Default::default()}] {
@@ -11,7 +12,7 @@ async fn cancellation_notifies_the_server_with_the_inflight_request_id() {
     use std::{sync::{Arc,Mutex},time::Duration};
     use serde_json::json;
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("cancel",root.path(),None).unwrap()));
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec![format!("{}/tests/fixtures/cancellation.mjs",env!("CARGO_MANIFEST_DIR"))]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![format!("{}/tests/fixtures/cancellation.mjs",env!("CARGO_MANIFEST_DIR"))]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=create_mcp_transport("cancel",&config,None,logger).unwrap();let client=connect_mcp_transport(&connection).await.unwrap();let mut events=client.notifications.subscribe();
     let signal=maho_ext_api::AbortSignal::default();
     let request=client.request_with_signal("tools/call",json!({"name":"pending","_meta":{"progressToken":"cancel"}}),Duration::from_secs(5),&signal);
@@ -44,7 +45,7 @@ async fn stdio_oauth_materialization_passes_current_token_to_child() {
     let store=maho_ext_mcp::auth::token_store::McpTokenStore::new(root.path(),"oauth-env","https://fixture.test");
     store.write(maho_ext_mcp::auth::token_store::McpStoredAuth {access_token:Some("fixture-current".into()),..Default::default()}).unwrap();
     let provider=Arc::new(maho_ext_mcp::auth::oauth_provider::McpOAuthProvider::new(store));
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec![format!("{}/tests/fixtures/oauth-env.mjs",env!("CARGO_MANIFEST_DIR"))]),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![format!("{}/tests/fixtures/oauth-env.mjs",env!("CARGO_MANIFEST_DIR"))]),..Default::default()};
     let mut transport=create_mcp_transport("oauth-env",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("oauth-env",root.path(),None).unwrap()))).unwrap();
     transport.auth=Some(Arc::new(maho_ext_mcp::auth::oauth_refresh::McpRefreshManager::new(provider,reqwest::Client::new())));
     let client=connect_mcp_transport(&transport).await.unwrap();
@@ -55,7 +56,7 @@ async fn stdio_oauth_materialization_passes_current_token_to_child() {
 async fn native_stdio_connects_to_pinned_senpi_fixture() {
     use std::{sync::{Arc,Mutex},time::Duration};
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("fixture",root.path(),None).unwrap()));
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"2".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"2".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=create_mcp_transport("fixture",&config,None,logger).unwrap();
     let client=connect_mcp_transport(&connection).await.unwrap();
     let tools=client.request("tools/list",serde_json::json!({}),Duration::from_secs(3)).await.unwrap();
@@ -74,7 +75,7 @@ async fn native_stdio_connects_to_pinned_senpi_fixture() {
 async fn native_http_connects_lists_and_calls_pinned_fixture() {
     use std::{sync::{Arc,Mutex},time::Duration,process::Stdio};
     use tokio::io::{AsyncBufReadExt,BufReader};
-    let mut fixture=tokio::process::Command::new("/usr/bin/node").args(["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/http-server.ts","--tools","3"]).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().unwrap();
+    let mut fixture=tokio::process::Command::new(support::node()).args([support::senpi("packages/coding-agent/test/mcp/fixtures/http-server.ts"),"--tools".into(),"3".into()]).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().unwrap();
     let output=fixture.stdout.take().unwrap();let mut lines=BufReader::new(output).lines();
     let ready=tokio::time::timeout(Duration::from_secs(5),lines.next_line()).await.unwrap().unwrap().unwrap();let ready:serde_json::Value=serde_json::from_str(&ready).unwrap();
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("http",root.path(),None).unwrap()));
@@ -88,7 +89,7 @@ async fn native_http_connects_lists_and_calls_pinned_fixture() {
 async fn shutdown_reaps_fixture_process_tree() {
     use std::sync::{Arc,Mutex};
     let root=tempfile::tempdir().unwrap();let logger=Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("tree",root.path(),None).unwrap()));
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--spawn-grandchild".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--spawn-grandchild".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=create_mcp_transport("tree",&config,None,logger).unwrap();connect_mcp_transport(&connection).await.unwrap();
     let pids=maho_ext_mcp::process_tree::collect_process_tree(connection.get_root_pid().unwrap()).await;assert!(pids.len()>1);
     shutdown_mcp_transport(&connection).await.unwrap();
@@ -127,7 +128,7 @@ async fn http_get_stream_delivers_unsolicited_notifications() {
 async fn concurrent_shutdowns_coalesce_and_wait_for_the_child() {
     use std::sync::{Arc,Mutex};
     let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts")]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=create_mcp_transport("shutdown",&config,None,Arc::new(Mutex::new(maho_ext_mcp::log::McpLogger::new("shutdown",root.path(),None).unwrap()))).unwrap();
     connect_mcp_transport(&connection).await.unwrap();let pid=connection.get_root_pid().unwrap();
     let (first,second)=tokio::join!(shutdown_mcp_transport(&connection),shutdown_mcp_transport(&connection));first.unwrap();second.unwrap();

@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 use maho_ext_mcp::{host_registry::HostMcpRegistry, service::McpService, service_register::prepare_mcp_service_registration_entries};
+mod support;
 
 /// Seed a valid on-disk catalog for `name` so the lazy server is cached and does
 /// not race at attach (upstream: `shouldRaceMcpStartup(lifecycle) || cachedCatalog === undefined`).
@@ -14,7 +15,7 @@ fn seed_cache(agent_dir: &std::path::Path, name: &str, declaration: &maho_ext_ap
 async fn service_registration_snapshot_refreshes_the_original_entry_catalog() {
     let root = tempfile::tempdir().unwrap(); let cwd = tempfile::tempdir().unwrap();
     let registry = Arc::new(HostMcpRegistry::default()); let mut service = McpService::new(registry.clone(), 1);
-    let declaration = maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(), config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio), command:Some("/usr/bin/node".into()), args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]), ..Default::default()}, extension_path:"fixture".into(), registration_cwd:cwd.path().into()};
+    let declaration = maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(), config:maho_ext_api::McpServerDeclaration {transport:Some(maho_ext_api::McpTransport::Stdio), command:Some(support::node()), args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts")]), ..Default::default()}, extension_path:"fixture".into(), registration_cwd:cwd.path().into()};
     seed_cache(root.path(), "fx", &declaration);
     service.attach_session(cwd.path(), root.path(), &BTreeMap::new(), true, &[declaration]).await.unwrap();
     let original = service.connections["fx"].entry.clone();
@@ -38,7 +39,7 @@ async fn service_registration_preserves_artifact_owner_and_optional_auth_refresh
         name: "fx".into(),
         config: maho_ext_api::McpServerDeclaration {
             transport: Some(maho_ext_api::McpTransport::Stdio),
-            command: Some("/usr/bin/node".into()),
+            command: Some(support::node()),
             ..Default::default()
         },
         extension_path: "fixture".into(),

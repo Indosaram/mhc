@@ -1,6 +1,7 @@
 use std::{sync::{Arc,Mutex},time::Duration,collections::BTreeMap};
+mod support;
 use maho_ext_mcp::{config_schema::*,connection::*,log::McpLogger,health::with_mcp_session_expiry_retry,errors::{McpError,McpErrorKind}};
-fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into()]),..Default::default()}}
+fn config()->McpServerConfig {McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts")]),..Default::default()}}
 #[tokio::test]
 async fn diagnostic_overflow_kills_the_child_even_when_the_other_stream_stays_open() {
     for stream in ["stdout","stderr"] {
