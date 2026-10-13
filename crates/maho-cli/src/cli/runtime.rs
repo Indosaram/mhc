@@ -24,7 +24,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
-    if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
+    if mode != AppMode::Interactive {
+        super::stdout_guard::take_over_stdout();
+        // senpi main.ts:1008-1012: route process-wide stdout writes (`maho_write_stdout`) to stderr
+        // so stray output cannot corrupt the JSON/RPC stream.
+        maho_core::output_guard::take_over_stdout();
+    }
     struct InteractiveStderr;
     impl Drop for InteractiveStderr {
         fn drop(&mut self) { maho_interactive::interactive_stderr_guard::restore_interactive_stderr(); }
@@ -203,6 +208,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                     for error in session.model_runtime().credentials.drain_errors() {
                         maho_core::output_guard::maho_write_stderr(&format!("Warning: (print mode, auth storage) {error}\n"));
                     }
+                    // senpi main.ts:1387.
+                    maho_core::output_guard::restore_stdout();
                 })
         }
         AppMode::Interactive => {
