@@ -79,7 +79,7 @@ impl MemoryWiring{
         if !registered{return Ok(false);}
         // Pull side of the RPC bridge (pin `wiring.ts:111` registerRpc in registerStatic).
         let rpc_component=component.clone();let rpc_now=options.now.clone();
-        wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||{
+        wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||->std::collections::BTreeMap<String,crate::context::MemoryIdentityContext>{
             rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
         }),std::sync::Arc::new(move||rpc_now() as i64)).map_err(|error|error.to_string())?;
         let now=options.now;let warn=options.warn;
