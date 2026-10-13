@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::manager::{AbortSignal, TaskManager, WaitError};
 use crate::state::TaskRecord;
 
-pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS";
+pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "MAHO_PROMPT_CACHE_SAFE_WAIT_SECONDS";
 
 pub type PromptCacheSafeWaitSeconds = Arc<dyn Fn() -> Option<i64> + Send + Sync>;
 
