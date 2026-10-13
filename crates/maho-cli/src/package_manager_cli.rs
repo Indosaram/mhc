@@ -126,9 +126,21 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
     let trusted = if saved_only {
         trust_override.unwrap_or(store.get(&cwd)? == Some(true))
     } else {
+        // senpi `getCommandAppMode`: the trust prompt is offered only when stdin and stdout are TTYs.
+        use std::io::IsTerminal;
+        let mode = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            maho_core::project_trust::AppMode::Interactive
+        } else { maho_core::project_trust::AppMode::Print };
+        let startup_ui = (global.get_string("theme"), global.get_bool("showHardwareCursor").unwrap_or(false), global.get_bool("clearOnShrink").unwrap_or(false));
         let context = crate::cli::project_trust::CliProjectTrustContext {
-            cwd: cwd.clone(), mode: maho_core::project_trust::AppMode::Print,
-            ui_available: false, selector: Box::new(|_, _| None),
+            cwd: cwd.clone(), mode,
+            ui_available: mode == maho_core::project_trust::AppMode::Interactive,
+            selector: Box::new(move |title: &str, options: &[String]| {
+                match crate::cli::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
+                    Ok(selected) => selected,
+                    Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                }
+            }),
         };
         maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
             cwd: &cwd, trust_store: &store, trust_override,
@@ -163,6 +175,10 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
         return Ok(());
     }
     let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update, "package command").await?;
+    let writes_project_package_config = matches!(options.command, PackageCommand::Install | PackageCommand::Remove) && options.local;
+    if writes_project_package_config && !settings.is_project_trusted() {
+        return Err("Project is not trusted. Use --approve to modify local package config.".into());
+    }
     let mut manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
         cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
     });
