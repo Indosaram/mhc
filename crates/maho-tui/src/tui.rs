@@ -20,6 +20,10 @@ use crate::image_stub::{
     is_image_line,
 };
 use crate::terminal::Terminal;
+use crate::terminal_colors::{
+    is_osc11_background_color_response, parse_osc11_background_color,
+    parse_terminal_color_scheme_report, RgbColor, TerminalColorScheme,
+};
 use crate::utils::{
     extract_segments, normalize_terminal_output, slice_by_column, slice_with_width, visible_width,
 };
@@ -35,6 +39,59 @@ pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 const FAKE_CURSOR_START: &str = "\x1b[7m";
 const FAKE_CURSOR_END: &str = "\x1b[27m";
 const FAKE_CURSOR_RESET: &str = "\x1b[0m";
+const ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031h";
+const DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031l";
+const QUERY_CELL_SIZE: &str = "\x1b[16t";
+const QUERY_OSC11_BACKGROUND_COLOR: &str = "\x1b]11;?\x07";
+const QUERY_TERMINAL_COLOR_SCHEME: &str = "\x1b[?996n";
+
+/// senpi checks `process.env.TMUX` (any non-empty value) before toggling tmux focus reporting.
+fn in_tmux() -> bool {
+    crate::process_env::var("TMUX").is_some_and(|value| !value.is_empty())
+}
+
+/// senpi's `CSI 6 ; height ; width t` cell-size reply (`/^\x1b\[6;(\d+);(\d+)t$/`), as
+/// `(height_px, width_px)`.
+fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
+    let body = data.strip_prefix("\x1b[6;")?.strip_suffix('t')?;
+    let (height, width) = body.split_once(';')?;
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(height) || !digits(width) {
+        return None;
+    }
+    Some((height.parse().unwrap_or(u32::MAX), width.parse().unwrap_or(u32::MAX)))
+}
+
+/// Resolution of a terminal protocol query (senpi's `queryTerminalBackgroundColor` /
+/// `queryTerminalColorScheme` promises). `result()` is `None` while pending and `Some(value)`
+/// once the reply arrives or the query times out (then `value` is `None`); the driver loop
+/// advances timeouts through [`TuiBase::poll_terminal_queries`].
+#[derive(Clone)]
+pub struct TerminalQueryTicket<T>(Rc<RefCell<Option<T>>>);
+
+impl<T: Copy> TerminalQueryTicket<T> {
+    fn pending() -> Self {
+        Self(Rc::new(RefCell::new(None)))
+    }
+
+    pub fn result(&self) -> Option<T> {
+        *self.0.borrow()
+    }
+
+    fn settle(&self, value: T) {
+        let mut slot = self.0.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(value);
+        }
+    }
+}
+
+struct PendingTerminalQuery<T> {
+    ticket: TerminalQueryTicket<T>,
+    deadline_ms: u64,
+}
+
+pub type TerminalColorSchemeListener = Box<dyn FnMut(TerminalColorScheme)>;
 
 fn write_bounded(terminal: &mut dyn Terminal, data: &str) {
     let bytes = data.as_bytes();
@@ -1058,6 +1115,15 @@ pub struct TuiBase {
     /// sets this to its single layout root once one is assigned - there is no virtual dispatch
     /// from `TuiBase` back onto a subclass override in this port.
     mounted_roots_override: Option<Vec<Rc<RefCell<dyn Component>>>>,
+    /// senpi's `mode !== "fullscreen"` guard: main-screen renderers consume tmux focus events to
+    /// refresh capabilities; the alt screen owns focus reports itself and clears this.
+    pub(crate) consume_tmux_focus_events: bool,
+    terminal_color_scheme_notifications_enabled: bool,
+    terminal_color_scheme_listeners: Vec<(u64, TerminalColorSchemeListener)>,
+    next_terminal_color_scheme_listener_id: u64,
+    pending_osc11_background_replies: usize,
+    pending_osc11_background_queries: std::collections::VecDeque<PendingTerminalQuery<Option<RgbColor>>>,
+    pending_terminal_color_scheme_queries: Vec<PendingTerminalQuery<Option<TerminalColorScheme>>>,
 }
 
 impl TuiBase {
@@ -1069,7 +1135,217 @@ impl TuiBase {
             input_listeners: Vec::new(),
             next_input_listener_id: 0,
             mounted_roots_override: None,
+            consume_tmux_focus_events: true,
+            terminal_color_scheme_notifications_enabled: false,
+            terminal_color_scheme_listeners: Vec::new(),
+            next_terminal_color_scheme_listener_id: 0,
+            pending_osc11_background_replies: 0,
+            pending_osc11_background_queries: std::collections::VecDeque::new(),
+            pending_terminal_color_scheme_queries: Vec::new(),
         }
+    }
+
+    /// The renderer-state half of senpi's `start()` that precedes `beforeTerminalStart`.
+    pub fn prepare_start(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.stopped = false;
+        state.render_requested = false;
+        state.input_render_pending = false;
+        state.last_cursor_visibility = None;
+    }
+
+    /// The output half of senpi's `start()` that follows `terminal.start(...)`: tmux focus
+    /// reporting, hidden cursor, color-scheme notifications, the cell-size query, and a render.
+    pub fn after_terminal_start(&mut self, terminal: &mut dyn Terminal) {
+        if in_tmux() {
+            terminal.write(crate::tmux_focus::ENABLE_FOCUS_REPORTING);
+        }
+        self.set_cursor_visibility(false, terminal);
+        if self.terminal_color_scheme_notifications_enabled {
+            terminal.write(ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
+        }
+        self.query_cell_size(terminal);
+        self.request_render(false, 0);
+    }
+
+    /// senpi's `#setCursorVisibility`.
+    fn set_cursor_visibility(&mut self, visible: bool, terminal: &mut dyn Terminal) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.last_cursor_visibility == Some(visible) {
+                return;
+            }
+            state.last_cursor_visibility = Some(visible);
+        }
+        if visible {
+            terminal.show_cursor();
+        } else {
+            terminal.hide_cursor();
+        }
+    }
+
+    /// senpi's `queryCellSize`: only terminals with an image protocol need the pixel cell size.
+    fn query_cell_size(&mut self, terminal: &mut dyn Terminal) {
+        if crate::terminal_image::get_capabilities().images.is_none() {
+            return;
+        }
+        terminal.write(QUERY_CELL_SIZE);
+    }
+
+    /// The part of senpi's `stop()` that precedes `beforeTerminalStop`.
+    pub fn begin_stop(&mut self, terminal: &mut dyn Terminal) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.stopped = true;
+            state.render_requested = false;
+            state.input_render_pending = false;
+            state.render_due_at_ms = None;
+        }
+        if self.terminal_color_scheme_notifications_enabled {
+            terminal.write(DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
+        }
+    }
+
+    /// The part of senpi's `stop()` between `beforeTerminalStop` and `terminal.stop()`: drop
+    /// mouse leases, move the cursor below the last frame (unless another renderer keeps the
+    /// screen), show the cursor, and disable tmux focus reporting.
+    pub fn finish_stop_output(&mut self, terminal: &mut dyn Terminal, preserve_screen: bool) {
+        self.reset_mouse_capture_state();
+        let (line_count, hardware_cursor_row, cursor_hidden) = {
+            let state = self.state.borrow();
+            (state.previous_lines.len(), state.hardware_cursor_row, state.last_cursor_visibility == Some(false))
+        };
+        if !preserve_screen && line_count > 0 {
+            if cursor_hidden {
+                terminal.write(" ");
+            }
+            let line_diff = line_count as i64 - hardware_cursor_row as i64;
+            if line_diff > 0 {
+                terminal.write(&format!("\x1b[{line_diff}B"));
+            } else if line_diff < 0 {
+                terminal.write(&format!("\x1b[{}A", -line_diff));
+            }
+            terminal.write("\r\n");
+        }
+        self.state.borrow_mut().last_cursor_visibility = None;
+        self.set_cursor_visibility(true, terminal);
+        if in_tmux() {
+            terminal.write(crate::tmux_focus::DISABLE_FOCUS_REPORTING);
+        }
+    }
+
+    /// senpi's `resetMouseCaptureState`.
+    fn reset_mouse_capture_state(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.mouse_leases.clear();
+        state.mouse_blockers.clear();
+        state.placement_epoch += 1;
+    }
+
+    /// senpi's `onTerminalColorSchemeChange`; returns the id for
+    /// [`TuiBase::remove_terminal_color_scheme_listener`].
+    pub fn on_terminal_color_scheme_change(&mut self, listener: TerminalColorSchemeListener) -> u64 {
+        let id = self.next_terminal_color_scheme_listener_id;
+        self.next_terminal_color_scheme_listener_id += 1;
+        self.terminal_color_scheme_listeners.push((id, listener));
+        id
+    }
+
+    pub fn remove_terminal_color_scheme_listener(&mut self, id: u64) {
+        self.terminal_color_scheme_listeners.retain(|(listener_id, _)| *listener_id != id);
+    }
+
+    /// senpi's `setTerminalColorSchemeNotifications` (`CSI ? 2031 h/l`).
+    pub fn set_terminal_color_scheme_notifications(&mut self, enabled: bool, terminal: &mut dyn Terminal) {
+        if self.terminal_color_scheme_notifications_enabled == enabled {
+            return;
+        }
+        self.terminal_color_scheme_notifications_enabled = enabled;
+        if !self.state.borrow().stopped {
+            terminal.write(if enabled {
+                ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS
+            } else {
+                DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS
+            });
+        }
+    }
+
+    /// senpi's `queryTerminalBackgroundColor` (OSC 11). The ticket settles with the parsed color,
+    /// or `None` once `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`].
+    pub fn query_terminal_background_color(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<RgbColor>> {
+        let ticket = TerminalQueryTicket::pending();
+        self.pending_osc11_background_queries.push_back(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
+        self.pending_osc11_background_replies += 1;
+        terminal.write(QUERY_OSC11_BACKGROUND_COLOR);
+        ticket
+    }
+
+    /// senpi's `queryTerminalColorScheme` (DSR 996): settles with the next color-scheme report,
+    /// or `None` on timeout.
+    pub fn query_terminal_color_scheme(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<TerminalColorScheme>> {
+        let ticket = TerminalQueryTicket::pending();
+        self.pending_terminal_color_scheme_queries.push(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
+        terminal.write(QUERY_TERMINAL_COLOR_SCHEME);
+        ticket
+    }
+
+    /// Settles every terminal query whose timeout has passed (senpi's per-query `setTimeout`);
+    /// call once per driver loop iteration.
+    pub fn poll_terminal_queries(&mut self, now_ms: u64) {
+        for query in &self.pending_osc11_background_queries {
+            if query.deadline_ms <= now_ms {
+                query.ticket.settle(None);
+            }
+        }
+        self.pending_terminal_color_scheme_queries.retain(|query| {
+            if query.deadline_ms <= now_ms {
+                query.ticket.settle(None);
+                return false;
+            }
+            true
+        });
+    }
+
+    /// senpi's `consumeOsc11BackgroundResponse`: a reply is consumed while any OSC 11 query is
+    /// outstanding, even after that query timed out.
+    fn consume_osc11_background_response(&mut self, data: &str) -> bool {
+        if self.pending_osc11_background_replies == 0 || !is_osc11_background_color_response(data) {
+            return false;
+        }
+        let rgb = parse_osc11_background_color(data);
+        self.pending_osc11_background_replies -= 1;
+        if let Some(query) = self.pending_osc11_background_queries.pop_front() {
+            query.ticket.settle(rgb);
+        }
+        true
+    }
+
+    /// senpi's `consumeTerminalColorSchemeReport`.
+    fn consume_terminal_color_scheme_report(&mut self, data: &str) -> bool {
+        let Some(scheme) = parse_terminal_color_scheme_report(data) else {
+            return false;
+        };
+        for query in self.pending_terminal_color_scheme_queries.drain(..) {
+            query.ticket.settle(Some(scheme));
+        }
+        for (_, listener) in &mut self.terminal_color_scheme_listeners {
+            listener(scheme);
+        }
+        true
+    }
+
+    /// senpi's `consumeCellSizeResponse`.
+    fn consume_cell_size_response(&mut self, data: &str) -> bool {
+        let Some((height_px, width_px)) = parse_cell_size_response(data) else {
+            return false;
+        };
+        if height_px == 0 || width_px == 0 {
+            return true;
+        }
+        crate::terminal_image::set_cell_dimensions(crate::terminal_capabilities::CellDimensions { width_px, height_px });
+        self.invalidate();
+        self.request_render(false, 0);
+        true
     }
 
     /// Renders the mounted roots (senpi's `TuiBase.render`); the alt screen needs it for its
@@ -1765,19 +2041,38 @@ impl TuiBase {
         state.previous_viewport_top = 0;
     }
 
-    /// Route input to the focused component, applying the same global handling order as
-    /// senpi's `handleTerminalInput` (debug key, overlay-visibility redirect, focus-restore,
-    /// then the focused component). Terminal-protocol response consumption (tmux focus, OSC 11,
-    /// color-scheme reports, cell-size replies) is the caller's responsibility before this is
-    /// reached, matching `terminal.rs`'s poll-driven protocol handling from todo 6.
-    pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
-        if crate::keys::matches_key(data, "shift+ctrl+d")
-            && let Some(on_debug) = &mut self.on_debug
-        {
-            on_debug();
-            return;
+    /// The terminal-protocol head of senpi's `handleTerminalInput`: tmux focus events (main
+    /// screen only) refresh capabilities and repaint, and OSC 11 background replies,
+    /// color-scheme reports and cell-size replies are consumed. Returns the input left for the
+    /// renderer and focused component, or `None` when the chunk was fully consumed.
+    pub fn consume_terminal_protocol_input(&mut self, data: &str) -> Option<String> {
+        let mut data = data.to_string();
+        if self.consume_tmux_focus_events {
+            let focus = crate::tmux_focus::consume_tmux_focus_event(&data);
+            if focus.event.is_some() {
+                crate::terminal_image::reset_capabilities_cache();
+                self.invalidate();
+                self.request_render(true, 0);
+                if focus.data.is_empty() {
+                    return None;
+                }
+                data = focus.data;
+            }
         }
+        if self.consume_osc11_background_response(&data)
+            || self.consume_terminal_color_scheme_report(&data)
+            || self.consume_cell_size_response(&data)
+        {
+            return None;
+        }
+        Some(data)
+    }
 
+    /// The focus half of senpi's `handleTerminalInput` that runs before input is delivered:
+    /// redirect focus away from a hidden overlay, and restore focus to an eligible overlay.
+    /// Hosts that deliver input to their own root (instead of through
+    /// [`TuiBase::handle_terminal_input`]) call this first, then check the focused component.
+    pub fn apply_input_focus_rules(&mut self) {
         {
             let state = self.state.borrow_mut();
             let focused_overlay_visible = state
@@ -1861,6 +2156,24 @@ impl TuiBase {
                 }
             }
         }
+    }
+
+    /// Route input to the focused component, applying the same global handling order as
+    /// senpi's `handleTerminalInput` (terminal-protocol replies, debug key, overlay-visibility
+    /// redirect, focus-restore, then the focused component).
+    pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
+        let Some(data) = self.consume_terminal_protocol_input(data) else {
+            return;
+        };
+        let data = data.as_str();
+        if crate::keys::matches_key(data, "shift+ctrl+d")
+            && let Some(on_debug) = &mut self.on_debug
+        {
+            on_debug();
+            return;
+        }
+
+        self.apply_input_focus_rules();
 
         let mut owned_data = data.to_string();
         if !self.input_listeners.is_empty() {

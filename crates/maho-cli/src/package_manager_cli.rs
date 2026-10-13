@@ -231,7 +231,7 @@ pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), Str
 fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: String, agent_dir: String, local: bool, global: maho_core::package_manager::ResolvedPaths, project: maho_core::package_manager::ResolvedPaths) -> Result<(), String> {
     use std::{cell::{Cell, RefCell}, rc::Rc};
     use maho_interactive::{components::config_selector::{ConfigSelectorComponent, ConfigWriteScope}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions}};
-    use maho_tui::{terminal::{ProcessTerminal, Terminal}, tui::Component};
+    use maho_tui::{terminal::Terminal, tui::Component};
     let theme = crate::cli::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let show_hardware_cursor = settings.get_bool("showHardwareCursor").unwrap_or(false);
     let clear_on_shrink = settings.get_bool("clearOnShrink").unwrap_or(false);
@@ -239,7 +239,7 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
     let closed = Rc::new(Cell::new(false)); let close = closed.clone(); let exit = closed.clone();
     let switch = Rc::new(Cell::new(false)); let toggle = switch.clone();
     let host = ConfigSettings { settings, error: Rc::new(RefCell::new(None)) }; let write_error = host.error.clone();
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let selector = Rc::new(RefCell::new(ConfigSelectorComponent::new(&theme,
         std::collections::BTreeMap::from([(ConfigWriteScope::Global, global), (ConfigWriteScope::Project, project)]),
         Box::new(host), &cwd, &agent_dir, &maho_core::config::config_dir_name(),
@@ -254,12 +254,16 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
     screen.base_mut().add_child(component.clone()); screen.base_mut().set_focus(Some(component));
     let input = Rc::new(RefCell::new(Vec::<String>::new())); let captured = input.clone();
+    screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         while !closed.get() {
-            for chunk in std::mem::take(&mut *input.borrow_mut()) { selector.borrow_mut().handle_input(&chunk); }
+            // senpi `TuiBase.handleTerminalInput`: protocol replies (e.g. the cell-size answer to
+            // the start-up query) are consumed before the focused selector sees input.
+            for chunk in std::mem::take(&mut *input.borrow_mut()) { screen.base_mut().handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk)); }
             if switch.replace(false) && available { selector.borrow_mut().switch_write_scope(); }
             if let Some(error) = write_error.borrow_mut().take() { return Err(error); }
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
@@ -268,9 +272,12 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
         }
         Ok(())
     })();
+    screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, false);
+    screen.base_mut().finish_stop_output(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     result.and(stopped)
 }
 
