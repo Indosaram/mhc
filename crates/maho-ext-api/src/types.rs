@@ -1864,6 +1864,8 @@ impl ExtensionRuntime {
         existing.or_else(|| self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|pending| pending.flags.get(name).cloned()))
     }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
+    /// Snapshot of `runtime.flagValues`: every committed flag value (registered defaults and CLI overrides).
+    pub fn flag_values(&self) -> BTreeMap<String, FlagValue> { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.clone() }
 }
 pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,
