@@ -104,6 +104,14 @@ fn user_message(content: Vec<Value>, timestamp: Option<i64>) -> Value {
     Value::Object(message)
 }
 
+/// copyContextProvenance: carry the request-local provenance across the role projection.
+fn with_context_provenance(source: &Value, target: Value) -> Value {
+    match target {
+        Value::Object(target) => Value::Object(maho_ai::context_provenance::copy_context_provenance(source, target)),
+        other => other,
+    }
+}
+
 pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
     let mut converted: Vec<Value> = Vec::with_capacity(messages.len());
     for message in messages {
@@ -114,7 +122,7 @@ pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
                 if message.get("excludeFromContext").and_then(Value::as_bool) == Some(true) {
                     continue;
                 }
-                converted.push(user_message(vec![text_block(bash_execution_to_text(message))], timestamp));
+                converted.push(with_context_provenance(message, user_message(vec![text_block(bash_execution_to_text(message))], timestamp)));
             }
             "custom" => {
                 let custom_type = message.get("customType").and_then(Value::as_str).unwrap_or_default();
@@ -126,21 +134,21 @@ pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
                     Some(Value::Array(blocks)) => blocks.clone(),
                     _ => Vec::new(),
                 };
-                converted.push(user_message(content, timestamp));
+                converted.push(with_context_provenance(message, user_message(content, timestamp)));
             }
             "branchSummary" => {
                 let summary = message.get("summary").and_then(Value::as_str).unwrap_or_default();
-                converted.push(user_message(
+                converted.push(with_context_provenance(message, user_message(
                     vec![text_block(format!("{BRANCH_SUMMARY_PREFIX}{summary}{BRANCH_SUMMARY_SUFFIX}"))],
                     timestamp,
-                ));
+                )));
             }
             "compactionSummary" => {
                 let summary = message.get("summary").and_then(Value::as_str).unwrap_or_default();
-                converted.push(user_message(
+                converted.push(with_context_provenance(message, user_message(
                     vec![text_block(format!("{COMPACTION_SUMMARY_PREFIX}{summary}{COMPACTION_SUMMARY_SUFFIX}"))],
                     timestamp,
-                ));
+                )));
             }
             _ => converted.push(message.clone()),
         }
@@ -406,6 +414,23 @@ mod tests {
         assert_eq!(converted[2]["content"][0]["text"], "c");
         assert_eq!(converted[3]["content"][0]["text"], format!("{BRANCH_SUMMARY_PREFIX}s{BRANCH_SUMMARY_SUFFIX}"));
         assert_eq!(converted[4]["content"][0]["text"], format!("{COMPACTION_SUMMARY_PREFIX}c{COMPACTION_SUMMARY_SUFFIX}"));
+    }
+
+    #[test]
+    fn convert_to_llm_copies_context_provenance_onto_projected_messages() {
+        let provenance = json!({ "origin": "extension" });
+        let messages = vec![
+            json!({ "role": "bashExecution", "command": "ls", "output": "", "timestamp": 1, "__piContextProvenance": provenance }),
+            json!({ "role": "custom", "customType": "t", "content": "c", "display": false, "timestamp": 2, "__piContextProvenance": provenance }),
+            json!({ "role": "branchSummary", "summary": "s", "fromId": "a", "timestamp": 3, "__piContextProvenance": provenance }),
+            json!({ "role": "compactionSummary", "summary": "c", "tokensBefore": 5, "timestamp": 4, "__piContextProvenance": provenance }),
+            json!({ "role": "custom", "customType": "t", "content": "plain", "display": false, "timestamp": 5 }),
+        ];
+        let converted = convert_to_llm(&messages);
+        for message in &converted[..4] {
+            assert_eq!(message[maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD], provenance);
+        }
+        assert!(converted[4].get(maho_ai::context_provenance::CONTEXT_PROVENANCE_FIELD).is_none());
     }
 
     #[test]
