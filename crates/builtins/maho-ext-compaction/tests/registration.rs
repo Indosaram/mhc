@@ -861,3 +861,33 @@ fn disabled_restoration_and_rejected_compaction_never_read_unbound_context() {
     assert!(state.pending_payload.is_none());
 }
 
+
+fn lane_context(global_settings: Option<&str>) -> (tempfile::TempDir, ExtensionContext) {
+    let temp = tempfile::tempdir().expect("lane temp dir");
+    let agent = temp.path().join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    if let Some(settings) = global_settings { std::fs::write(agent.join("settings.json"), settings).expect("global settings"); }
+    let mut ctx = context();
+    ctx.cwd = temp.path().join("project");
+    ctx.agent_dir = agent;
+    ctx.model = Some(serde_json::from_value(serde_json::json!({"id":"m","name":"m","api":"anthropic-messages","provider":"anthropic-subscription","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).expect("lane model"));
+    (temp, ctx)
+}
+
+#[test]
+fn live_lane_policy_stands_down_for_resident_sdk_lane() {
+    let (_temp, ctx) = lane_context(None);
+    assert!(maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}
+
+#[test]
+fn live_lane_policy_keeps_senpi_active_when_resume_mode_off() {
+    let (_temp, ctx) = lane_context(Some(r#"{"claudeSdkOauthProvider":{"resumeMode":"off"}}"#));
+    assert!(!maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}
+
+#[test]
+fn live_lane_policy_keeps_senpi_active_with_compaction_model_override() {
+    let (_temp, ctx) = lane_context(Some(r#"{"compaction":{"model":"deepseek/chat"}}"#));
+    assert!(!maho_ext_compaction::lane_policy::live_disables_senpi_compaction(&std::sync::Mutex::default(), &ctx));
+}

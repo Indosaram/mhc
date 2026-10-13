@@ -3426,6 +3426,7 @@ dependencies = [
  "maho-agent",
  "maho-ai",
  "maho-core",
+ "maho-ext-anthropic-subscription",
  "maho-ext-api",
  "maho-ext-host",
  "maho-test-support",
