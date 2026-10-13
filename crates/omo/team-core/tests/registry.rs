@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -138,6 +139,7 @@ fn base_directories(base: &Path) -> [PathBuf; 4] {
 }
 
 #[test]
+#[cfg(unix)]
 fn ensure_base_dirs_creates_all_dirs_with_mode_0700() {
     let root = TempDir::new().expect("tempdir");
     let base = root
@@ -158,6 +160,7 @@ fn ensure_base_dirs_creates_all_dirs_with_mode_0700() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ensure_base_dirs_swallows_eperm_from_chmod_and_logs_warning() {
     let root = TempDir::new().expect("tempdir");
     let base = root
