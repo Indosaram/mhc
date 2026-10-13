@@ -69,7 +69,7 @@ impl SubprocessProcess {
                     Ok(length) => {
                         if error_sender.send(serde_json::json!({"type":"text","stream":"stderr","data":String::from_utf8_lossy(&chunk[..length])})).await.is_err() { return; }
                     }
-                    Err(error) => { eprintln!("kernel stderr read failed: {error}"); return; }
+                    Err(error) => { maho_ext_api::diagnostic(&format!("kernel stderr read failed: {error}")); return; }
                 }
             }
         });

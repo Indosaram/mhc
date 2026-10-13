@@ -1,4 +1,5 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, Mutex}};
+use maho_ext_api::diagnostic;
 use maho_ai::utils::abort::{AbortController, AbortReason};
 
 pub type SessionDisposeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -35,7 +36,7 @@ pub struct SessionManagerProxy {
 }
 
 impl Default for SessionManagerProxy {
-    fn default() -> Self { Self::new(Arc::new(|error| eprintln!("[senpi-codemode] session teardown failed: {error}"))) }
+    fn default() -> Self { Self::new(Arc::new(|error| diagnostic(&format!("[senpi-codemode] session teardown failed: {error}")))) }
 }
 
 struct ExecutionGuard {

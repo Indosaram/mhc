@@ -127,7 +127,7 @@ fn create_extension_cells(host:&Arc<Mutex<ExtensionApi>>,state:&Arc<Mutex<Extens
     let wake_host=Arc::downgrade(host);let notify_host=Arc::downgrade(host);let notify_state=Arc::downgrade(state);let notifier=notifier.clone();let ticker=ticker.clone();
     Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {artifacts_dir,hard_limit_seconds:settings.hard_limit_seconds,run_budget_seconds:settings.run_budget_seconds,max_detached_cells:settings.max_detached_cells.ceil() as usize,
         on_status_change:Some(Arc::new(move |entries|ticker.lock().expect("ticker").sync(entries))),
-        on_wake_source_state:Some(Arc::new(move |wake| {if let Some(host)=wake_host.upgrade() && let Err(error)=extension::wake_source_state::emit_wake_source_state(&host.lock().expect("extension api"),&wake) {eprintln!("codemode wake publication failed: {error}");}})),
+        on_wake_source_state:Some(Arc::new(move |wake| {if let Some(host)=wake_host.upgrade() && let Err(error)=extension::wake_source_state::emit_wake_source_state(&host.lock().expect("extension api"),&wake) {maho_ext_api::diagnostic(&format!("codemode wake publication failed: {error}"));}})),
         notifier:Some(Arc::new(move |cells| {let Some(host)=notify_host.upgrade() else {return Ok(());};let context=notify_state.upgrade().and_then(|state|state.lock().expect("extension state").context.clone());notifier.lock().expect("notifier").notify(&host.lock().expect("extension api"),context.as_ref(),extension::eval_notifier::EvalNotifyMode::Wake,&cells).map_err(|error|error.to_string())})),..Default::default()})))
 }
 
