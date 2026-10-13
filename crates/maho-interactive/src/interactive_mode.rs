@@ -775,7 +775,7 @@ impl InteractiveMode {
                 runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await
             };
             let timer = tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; controller.abort(None); });
-            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(0, &signal, start).await;
+            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(Arc::as_ptr(&self.session) as usize as u64, &signal, start).await;
             timer.abort();
             let timed_out = signal.aborted();
             match outcome {
@@ -1918,19 +1918,29 @@ impl InteractiveMode {
             let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
                 else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
                 else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
-            let session = self.session.clone(); let available = models.clone();
-            let on_change = Box::new(move |ids: Option<Vec<String>>| {
+            let session = self.session.clone(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
+            // senpi `updateSessionModels`: applies the scope over the (refreshable) available snapshot
+            // and recomputes the footer's provider count.
+            let update_session_models: Rc<dyn Fn(Option<Vec<String>>)> = { let available = available.clone(); Rc::new(move |ids: Option<Vec<String>>| {
+                let available = available.borrow();
                 let all_ids: Vec<_> = available.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(ids.as_deref().unwrap_or(&all_ids), &available);
                 let entries = resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.map(|level| serde_json::from_value(serde_json::json!(level.as_str())).expect("resolved thinking level")), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect();
-                if favorites { session.set_favorite_models(entries); }
+                if favorites { session.set_favorite_models(entries); return; }
                 else if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { session.set_scoped_models(Vec::new()); }
                 else { session.set_scoped_models(entries); }
-            });
-            let session = self.session.clone(); let ui = self.extension_ui.clone();
+                // senpi `updateAvailableProviderCount`: the scoped models when narrowed, else the snapshot.
+                let scoped = session.scoped_models();
+                let providers: std::collections::BTreeSet<_> = if scoped.is_empty() { available.iter().map(|model| model.provider.clone()).collect() } else { scoped.into_iter().map(|entry| entry.model.provider).collect() };
+                footer_data.set_available_provider_count(providers.len());
+            }) };
+            let selection_changed = Rc::new(std::cell::Cell::new(false)); let current_enabled = Rc::new(RefCell::new(enabled.clone()));
+            let on_change = { let update = update_session_models.clone(); let changed = selection_changed.clone(); let current = current_enabled.clone(); Box::new(move |ids: Option<Vec<String>>| { changed.set(true); *current.borrow_mut() = ids.clone(); update(ids); }) };
+            let refresh_stored = stored.clone(); let refresh_configured = configured.is_some(); let scoped_at_open = !entries.is_empty();
+            let session = self.session.clone(); let ui = self.extension_ui.clone(); let persist_available = available.clone();
             let on_persist = Box::new(move |ids: Option<Vec<String>>| {
                 let patterns = if favorites { crate::components::model_favorites::merge_favorite_patterns_for_persist(crate::components::model_favorites::FavoritePatternsForPersist { stored_patterns:&stored, pattern_resolutions:&resolution.pattern_resolutions, selected_ids:&ids, candidate_ids:&candidate_ids }) }
-                    else { ids.filter(|ids| !candidate_ids.iter().all(|id| ids.contains(id))) };
+                    else { let candidate_ids: Vec<_> = persist_available.borrow().iter().map(|model| format!("{}/{}", model.provider, model.id)).collect(); ids.filter(|ids| !candidate_ids.iter().all(|id| ids.contains(id))) };
                 let values = [(key.into(), serde_json::json!(patterns))].into_iter().collect();
                 match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
                     Ok(()) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), if favorites { "Favorite models saved to settings" } else { "Model selection saved to settings" }, maho_ext_api::NotificationType::Info),
@@ -1948,9 +1958,49 @@ impl InteractiveMode {
                     FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
             } else {
                 use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
-                self.ui_dialog = Some(Box::new(ScopedModelsSelectorComponent::new(&self.theme, keys,
-                    ModelsConfig { all_models:models, enabled_model_ids:enabled, refresh_status:None },
-                    ModelsCallbacks { on_change, on_persist, on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                use crate::theme::ThemeColor;
+                // senpi `showScopedModelsSelector`: refresh the catalogs under a 15s abort while the
+                // selector is open. A mounted host owns its catalog, so only the local runtime refreshes.
+                let local = self.session_host.is_none();
+                let selector = ScopedModelsSelectorComponent::new(&self.theme, keys,
+                    ModelsConfig { all_models:models, enabled_model_ids:enabled, refresh_status:local.then(|| "Refreshing model catalogs…".to_owned()) },
+                    ModelsCallbacks { on_change, on_persist, on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) });
+                let controller = maho_ai::utils::abort::AbortController::new();
+                let refresh = local.then(|| {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    let runtime = self.session.model_registry().model_runtime.clone(); let session = self.session.clone(); let task_controller = controller.clone(); let runtime_key = Arc::as_ptr(&self.session) as usize as u64;
+                    tokio::spawn(async move {
+                        let signal = task_controller.signal();
+                        let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let timer = { let timed_out = timed_out.clone(); tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; timed_out.store(true, std::sync::atomic::Ordering::SeqCst); task_controller.abort(None); }) };
+                        let start = move |signal: maho_ai::utils::abort::AbortSignal| async move { let mut runtime = runtime; runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await };
+                        let outcome = crate::model_catalog_refresh::refresh_model_catalogs(runtime_key, &signal, start).await;
+                        timer.abort();
+                        let _ = sender.send((outcome, timed_out.load(std::sync::atomic::Ordering::SeqCst), session.model_registry().get_available()));
+                    });
+                    receiver
+                });
+                let on_refreshed = Box::new(move |selector: &mut ScopedModelsSelectorComponent, (outcome, timed_out, models): ScopedModelsRefreshOutcome| {
+                    if outcome.is_ok() {
+                        *available.borrow_mut() = models.clone();
+                        if !selection_changed.get() && !scoped_at_open {
+                            let ids: Option<Vec<String>> = if refresh_stored.is_empty() { refresh_configured.then(Vec::new) } else { Some(maho_core::model_resolver::resolve_model_scope_from_models(&refresh_stored, &models).pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
+                            *current_enabled.borrow_mut() = ids.clone();
+                            selector.update_models(&models, Some(ids));
+                        } else { selector.update_models(&models, None); }
+                        let ids = current_enabled.borrow().clone();
+                        if ids.is_some() { update_session_models(ids); }
+                    }
+                    let (message, color) = match outcome {
+                        Ok(result) if result.aborted && timed_out => ("Model refresh timed out; showing cached models.".to_owned(), ThemeColor::Warning),
+                        Ok(result) if !result.errors.is_empty() => (format!("Could not refresh {}; showing cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", ")), ThemeColor::Warning),
+                        Ok(_) => ("Model catalogs refreshed.".to_owned(), ThemeColor::Success),
+                        Err(_) if timed_out => ("Model refresh timed out; showing cached models.".to_owned(), ThemeColor::Warning),
+                        Err(error) => (format!("Could not refresh model catalogs: {error}"), ThemeColor::Warning),
+                    };
+                    selector.set_refresh_status(&message, color);
+                });
+                self.ui_dialog = Some(Box::new(ScopedModelsRefreshDialog { selector, refresh, controller, on_refreshed }));
             }
             return Ok(true);
         }
@@ -3381,6 +3431,40 @@ impl InteractiveMode {
         let text = self.custom_editor.as_ref().map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = text;
     }
+}
+
+/// senpi `showScopedModelsSelector`'s refresh outcome: the shared refresh result, whether the 15s
+/// timeout fired, and the available snapshot read after the refresh.
+type ScopedModelsRefreshOutcome = (Result<maho_ai::models::ModelsRefreshResult, maho_ai::utils::abort::AbortReason>, bool, Vec<maho_ai::model::Model>);
+
+/// The scoped-models selector plus its in-flight catalog refresh. The refresh result is applied on
+/// the next frame; closing the dialog drops the receiver and aborts the refresh (senpi `dispose`).
+struct ScopedModelsRefreshDialog {
+    selector: crate::components::scoped_models_selector::ScopedModelsSelectorComponent,
+    refresh: Option<tokio::sync::oneshot::Receiver<ScopedModelsRefreshOutcome>>,
+    controller: maho_ai::utils::abort::AbortController,
+    on_refreshed: Box<dyn FnMut(&mut crate::components::scoped_models_selector::ScopedModelsSelectorComponent, ScopedModelsRefreshOutcome)>,
+}
+
+impl ScopedModelsRefreshDialog {
+    fn apply_refresh(&mut self) {
+        let outcome = self.refresh.as_mut().and_then(|receiver| receiver.try_recv().ok());
+        if let Some(outcome) = outcome { self.refresh = None; (self.on_refreshed)(&mut self.selector, outcome); }
+    }
+}
+
+impl Component for ScopedModelsRefreshDialog {
+    fn render(&mut self, width: usize) -> Vec<String> { self.apply_refresh(); self.selector.render(width) }
+    fn handle_input(&mut self, data: &str) { self.apply_refresh(); self.selector.handle_input(data); }
+    fn has_input_handler(&self) -> bool { true }
+    fn invalidate(&mut self) { self.selector.invalidate(); }
+    fn dispose(&mut self) { self.refresh = None; self.controller.abort(None); self.selector.dispose(); }
+    fn focusable_get(&self) -> Option<bool> { self.selector.focusable_get() }
+    fn focusable_set(&mut self, focused: bool) { self.selector.focusable_set(focused); }
+}
+
+impl Drop for ScopedModelsRefreshDialog {
+    fn drop(&mut self) { self.controller.abort(None); }
 }
 
 /// senpi `handleDebugCommand`'s report body: the terminal size, every rendered
