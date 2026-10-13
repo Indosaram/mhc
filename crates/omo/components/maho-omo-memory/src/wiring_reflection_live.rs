@@ -3,7 +3,14 @@ use crate::{context::MemoryIdentityContext,memory_rpc_bridge::{MemoryRpcBridge,M
 #[derive(Default)]
 pub struct MemoryReflectionLiveWiring{
     pub active_runs:Arc<Mutex<ActiveReflectionRuns>>,pub rpc:Arc<Mutex<MemoryRpcBridge>>,pub footer:MemoryFooterStatusLive,
-    session:Option<String>,contexts:BTreeMap<String,MemoryIdentityContext>,
+    session:Option<String>,contexts:BTreeMap<String,MemoryIdentityContext>,health_once:std::collections::BTreeSet<String>,
+}
+/// Host live session for bind-time delivery (pin `wiring-reflection-live.ts` bind: liveSession +
+/// refreshInitialStatus). One host object serves both the completion and the health seams.
+pub trait ReflectionBindLive{
+    fn refresh_initial_status(&mut self,identity:&MemoryIdentityContext);
+    fn completions(&mut self)->&mut dyn crate::worker::completion_delivery::ReflectionLiveSession;
+    fn health(&mut self)->&mut dyn crate::worker::health_alert::ReflectionHealthLiveSession;
 }
 struct Deps<'a>{contexts:&'a BTreeMap<String,MemoryIdentityContext>,runs:&'a ActiveReflectionRuns}
 impl MemoryRpcBridgeDeps for Deps<'_>{
@@ -29,9 +36,25 @@ impl MemoryReflectionLiveWiring{
         }),now)
     }
     pub fn attach(&mut self,session:&str){self.session=Some(session.into());lock(&self.rpc).attach(session);}
-    pub fn bind(&mut self,session:&str,context:MemoryIdentityContext,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>)->Result<(),String>{
+    pub fn bind(&mut self,session:&str,context:MemoryIdentityContext,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>,live:Option<&mut dyn ReflectionBindLive>)->Result<(),String>{
+        let mut ui=ui;let mut drained=false;
+        if let Some(live)=live{
+            live.refresh_initial_status(&context);
+            let dir=context.identity_paths.reflection.join("completions");
+            match crate::worker::completion_delivery::consume_pending_reflection_completions(&dir,&context.identity,live.completions(),now){
+                Ok(consumed)=>{
+                    {let mut runs=lock(&self.active_runs);for record in &consumed{runs.settle(&context.identity,&record.run_id);}}
+                    let once=&mut self.health_once;
+                    crate::worker::health_alert::emit_reflection_health_alert(&dir,&context.identity,Some(live.health()),&mut |key:&str|once.insert(key.to_owned()),now);
+                    drained=true;
+                }
+                Err(error)=>live.completions().warn("memory reflection completion drain failed",&error.to_string()),
+            }
+        }
         self.contexts.insert(session.into(),context);let context=self.contexts.get(session);let active=context.is_some_and(|context|lock(&self.active_runs).is_active(&context.identity));
-        self.footer.sync_active(context,Some(session),active,now,ui);self.sync_rpc(api,now)
+        self.footer.sync_active(context,Some(session),active,now,ui.as_deref_mut());
+        if drained{self.footer.refresh(context,Some(session),active,now,ui);}
+        self.sync_rpc(api,now)
     }
     pub fn on_reflection_launched(&mut self,identity:&str,run:&str,details:ActiveReflectionRunDetails,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>)->Result<(),String>{
         lock(&self.active_runs).start(identity,run,details);self.sync_footer(now,ui);self.sync_rpc(api,now)
@@ -47,6 +70,21 @@ impl MemoryReflectionLiveWiring{
 }
 #[cfg(test)]mod tests{
     use super::*;
+    #[derive(Default)]struct Live{initial:usize,entries:Vec<String>,completions:Vec<String>}
+    impl crate::worker::completion_delivery::ReflectionLiveSession for Live{fn session_id(&self)->&str{"session"}fn append_entry(&mut self,kind:&str,_:serde_json::Value){self.entries.push(kind.into());}fn notify(&mut self,_:&str,_:bool)->Result<(),String>{Ok(())}fn warn(&mut self,message:&str,error:&str){panic!("{message}: {error}")}fn on_completion(&mut self,run:&str){self.completions.push(run.into());}}
+    impl crate::worker::health_alert::ReflectionHealthLiveSession for Live{fn session_id(&self)->&str{"session"}fn has_ui(&self)->bool{true}fn append_entry(&mut self,name:&str,_:&crate::worker::health_alert::ReflectionHealthEntry){self.entries.push(name.into());}fn notify(&mut self,_:&str,_:&str){}}
+    impl ReflectionBindLive for Live{fn refresh_initial_status(&mut self,_:&MemoryIdentityContext){self.initial+=1;}fn completions(&mut self)->&mut dyn crate::worker::completion_delivery::ReflectionLiveSession{self}fn health(&mut self)->&mut dyn crate::worker::health_alert::ReflectionHealthLiveSession{self}}
+    #[test]fn bind_refreshes_initial_status_and_drains_pending_completions(){
+        use crate::worker::completion_contracts::{CompletionDelivery,DeliveryStatus,ReflectionCompletionRecord,REFLECTION_COMPLETION_ENTRY_TYPE};
+        let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");
+        let context=MemoryIdentityContext::new("agent".into(),paths.clone(),crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});
+        let finished="2026-08-16T12:00:00.000Z";let now=chrono::DateTime::parse_from_rfc3339(finished).unwrap().timestamp_millis();
+        crate::worker::completion_records::write_completion_record(&paths.reflection.join("completions"),&ReflectionCompletionRecord{schema_version:1,run_id:"run-1".into(),identity:"agent".into(),category:"quick".into(),model:None,thinking:None,conversation_ids:vec![],trigger:memory_core::reflection::machine::ReflectionTrigger::Manual,origin:None,outcome:"merged".into(),reason:None,detail:None,started_at:finished.into(),finished_at:finished.into(),duration_ms:None,merged_commit_sha:None,files_changed:None,consecutive_failures:None,delivery:CompletionDelivery{status:DeliveryStatus::Pending,session_id:None,consumed_at:None}}).unwrap();
+        let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
+        let mut wiring=MemoryReflectionLiveWiring::default();wiring.active_runs.lock().unwrap().start("agent","run-1",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:None,started_at:finished.into()});
+        let mut live=Live::default();wiring.attach("session");wiring.bind("session",context,&api,now,None,Some(&mut live)).unwrap();
+        assert_eq!(live.initial,1);assert_eq!(live.entries,[REFLECTION_COMPLETION_ENTRY_TYPE]);assert!(!wiring.active_runs.lock().unwrap().is_active("agent"));
+    }
     #[tokio::test]async fn registered_status_pull_reports_bound_session_and_active_run(){
         let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();
         let context=MemoryIdentityContext::new("agent".into(),paths,crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});
@@ -64,7 +102,7 @@ impl MemoryReflectionLiveWiring{
         let root=tempfile::tempdir().unwrap();let paths=memory_core::identity::layout::build_identity_paths(root.path(),"agent");let engine=crate::engine_session::prepare_memory_engine_session("agent",&paths,Default::default()).unwrap();let now=engine.repo.head_commit_timestamp().unwrap().unwrap()*1000;
         let context=MemoryIdentityContext::new("agent".into(),paths,crate::binding::MemorySessionBinding{identity:"agent".into(),repo_path_hash:"hash".into(),bound_at:0.0});let api=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory",Default::default(),Default::default()),Default::default(),Default::default(),Default::default());
         let events=std::sync::Arc::new(std::sync::Mutex::new(vec![]));let captured=events.clone();let _subscription=api.events.on("senpi:extension-rpc-event",std::sync::Arc::new(move |value|{match captured.lock(){Ok(mut events)=>events.push(value.clone()),Err(error)=>panic!("capture lock poisoned: {error}")}}));
-        let mut wiring=MemoryReflectionLiveWiring::default();let mut ui=Ui::default();wiring.attach("session");wiring.bind("session",context,&api,now,Some(&mut ui)).unwrap();
+        let mut wiring=MemoryReflectionLiveWiring::default();let mut ui=Ui::default();wiring.attach("session");wiring.bind("session",context,&api,now,Some(&mut ui),None).unwrap();
         wiring.on_reflection_launched("agent","run",ActiveReflectionRunDetails{trigger:"manual".into(),category:"quick".into(),model:Some("p/m".into()),started_at:"now".into()},&api,now,Some(&mut ui)).unwrap();assert!(ui.0.last().unwrap().ends_with("reflecting"));
         wiring.on_live_reflection_completed("agent","run",&api,now,Some(&mut ui)).unwrap();assert_eq!(ui.0.last().unwrap(),"mem:agent just now");let events=events.lock().unwrap();assert_eq!(events.len(),3);assert_eq!(events[1]["data"]["reflection"]["activeRun"]["runId"],"run");assert!(events[2]["data"]["reflection"].get("activeRun").is_none());drop(events);
         wiring.shutdown(Some("agent"));assert!(!wiring.active_runs.lock().unwrap().is_active("agent"));let before=ui.0.len();wiring.footer.tick(&mut ui);assert_eq!(before,ui.0.len());
