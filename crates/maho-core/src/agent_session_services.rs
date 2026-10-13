@@ -59,6 +59,7 @@ pub struct CreateAgentSessionFromServicesOptions {
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
     /// CLI extension flags, applied against the flags the loaded extensions registered.
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
+    pub resource_inputs: crate::resource_loader::ResourceLoaderInputs,
 }
 
 pub struct MountedAgentSessionServices {
@@ -112,7 +113,7 @@ pub async fn create_agent_session_from_services(services: AgentSessionServices, 
         exclude_tools: options.exclude_tools, no_tools: options.no_tools, custom_tools: options.custom_tools,
         auto_title_sessions: options.auto_title_sessions, extension_factories: options.extension_factories,
         loaded_extensions: options.loaded_extensions, defer_extension_start: options.defer_extension_start,
-        session_profile: options.session_profile, ..Default::default()
+        session_profile: options.session_profile, resource_inputs: options.resource_inputs, ..Default::default()
     }).await?;
     let settings_manager = created.session.shared_settings_manager();
     Ok(CreateAgentSessionFromServicesResult { services: MountedAgentSessionServices {

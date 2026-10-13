@@ -52,6 +52,10 @@ pub struct InteractiveExtensionUi {
     /// Session event-bus publisher used to bracket host dialogs with `herdr:blocked`
     /// (senpi `withBlockedHostDialog`); unset when no session bus is bound.
     pub blocked_emitter: Mutex<Option<BlockedEmitter>>,
+    /// Startup themes from packages and `--theme` (senpi `setRegisteredThemes`).
+    pub registered_themes: Mutex<Vec<crate::theme::Theme>>,
+    /// Themes contributed by extension `resources_discover` (senpi `extendResources` theme paths).
+    pub discovered_themes: Mutex<Vec<crate::theme::Theme>>,
 }
 
 pub type BlockedEmitter = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
@@ -82,9 +86,35 @@ impl InteractiveExtensionUi {
         if let Some(signal) = options.signal { tokio::select! { biased; () = signal.cancelled() => T::default(), value = bounded => value } }
         else { bounded.await }
     }
+    /// A theme registry over the custom themes directory with the registered themes installed,
+    /// then initialised to `name` (falling back to `dark` like [`ThemeRegistry::new`]).
+    pub fn theme_registry(&self, directory: std::path::PathBuf, name: &str, mode: crate::theme::ColorMode) -> Result<crate::theme::registry::ThemeRegistry, crate::theme::theme_json::ThemeError> {
+        let mut registry = crate::theme::registry::ThemeRegistry::new(directory, "dark", mode)?;
+        let mut themes = self.registered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for theme in self.discovered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+            if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme.clone()); }
+        }
+        registry.set_registered_themes(themes)?;
+        registry.init_theme(name, false)?;
+        Ok(registry)
+    }
+    /// Replace the extension-discovered themes with the ones loaded from `paths`; returns one
+    /// diagnostic per path that fails to load.
+    pub fn set_discovered_theme_paths(&self, paths: &[String], mode: crate::theme::ColorMode) -> Vec<String> {
+        let mut themes: Vec<crate::theme::Theme> = Vec::new();
+        let mut diagnostics = Vec::new();
+        for path in paths {
+            match crate::theme::Theme::load_from_path(std::path::Path::new(path), mode) {
+                Ok(theme) => if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme); },
+                Err(error) => diagnostics.push(format!("{path}: {error}")),
+            }
+        }
+        *self.discovered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = themes;
+        diagnostics
+    }
     pub fn channel(theme: Theme) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), blocked_emitter:Mutex::new(None), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
+        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), blocked_emitter:Mutex::new(None), registered_themes:Mutex::new(Vec::new()), discovered_themes:Mutex::new(Vec::new()), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
     }
 }
 
@@ -195,12 +225,12 @@ impl ExtensionUiActions for InteractiveExtensionUi {
     fn get_editor_component(&self) -> Option<EditorFactory> { self.editor_factory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() }
     fn get_all_themes(&self) -> Vec<ThemeInfo> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        crate::theme::registry::ThemeRegistry::new(directory, "dark", crate::theme::ColorMode::Truecolor)
+        self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor)
             .map(|registry| registry.get_available_themes_with_paths().into_iter().map(|theme| ThemeInfo { name:theme.name, path:theme.path }).collect()).unwrap_or_default()
     }
     fn get_theme(&self, name: &str) -> Option<Theme> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        crate::theme::registry::ThemeRegistry::new(directory, name, crate::theme::ColorMode::Truecolor).ok()
+        self.theme_registry(directory, name, crate::theme::ColorMode::Truecolor).ok()
             .map(|registry| extension_theme(&registry.current))
     }
     fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult {
@@ -249,6 +279,21 @@ mod tests {
         assert_eq!(events[0].1["active"], true);
         assert_eq!(events[0].1["label"], "Pick");
         assert_eq!(events[1].1, serde_json::json!({"active": false, "id": events[0].1["id"]}));
+    }
+
+    #[test]
+    fn extension_discovered_themes_are_available_by_name() {
+        let dir = tempfile::tempdir().expect("theme directory");
+        let source = include_str!("theme/dark.json").replacen("\"name\": \"dark\"", "\"name\": \"discovered\"", 1);
+        let path = dir.path().join("discovered.json");
+        std::fs::write(&path, source).expect("theme file");
+        let (ui, _requests) = InteractiveExtensionUi::channel(maho_ext_api::Theme::default());
+        *ui.theme_directory.lock().expect("directory") = dir.path().join("custom");
+        assert!(ExtensionUiActions::get_all_themes(ui.as_ref()).iter().all(|theme| theme.name != "discovered"));
+        let diagnostics = ui.set_discovered_theme_paths(&[path.to_string_lossy().into_owned()], crate::theme::ColorMode::Truecolor);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(ExtensionUiActions::get_all_themes(ui.as_ref()).iter().any(|theme| theme.name == "discovered"));
+        assert_eq!(ExtensionUiActions::get_theme(ui.as_ref(), "discovered").and_then(|theme| theme.name).as_deref(), Some("discovered"));
     }
 
     #[test]

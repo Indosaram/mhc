@@ -243,6 +243,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             &maho_rpc::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES", &maho_core::config::current_env()).as_deref()),
             None,
         )),
+        resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
+            additional_extension_paths: parsed.extensions.clone(), additional_skill_paths: parsed.skills.clone(),
+            additional_prompt_template_paths: parsed.prompt_templates.clone(), no_skills: parsed.no_skills,
+            no_prompt_templates: parsed.no_prompt_templates, ..Default::default()
+        },
         ..Default::default()
     }).await.map_err(|error| if mode != AppMode::Interactive && error == "No model available" { maho_core::auth_guidance::format_no_models_available_message() } else { error })?;
     // senpi main.ts:1292-1295: print/json/rpc without a usable model exits 1 with the login help.
@@ -275,16 +280,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let hook_sources = session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&runtime_config, settings));
     session.set_hook_sources(Some(hook_sources));
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
-        let templates = maho_core::prompt_templates::load_prompt_templates(&maho_core::prompt_templates::LoadPromptTemplatesOptions {
-            cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), prompt_paths: parsed.prompt_templates.clone(),
-            include_defaults: !parsed.no_prompt_templates,
-        });
-        let skills = maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
-            cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), skill_paths: parsed.skills.clone(), include_defaults: !parsed.no_skills,
-        });
-        indicator.during_surface_write(|| { for diagnostic in &skills.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}\n", diagnostic.message)); } });
-        session.set_prompt_resources(templates, skills.skills);
-        session.rebuild_system_prompt();
+        let skill_diagnostics = session.loaded_skills().unwrap_or_default().diagnostics;
+        let prompt_diagnostics = session.prompt_diagnostics();
+        indicator.during_surface_write(|| { for diagnostic in skill_diagnostics.iter().chain(&prompt_diagnostics) { maho_core::output_guard::maho_write_stderr(&format!("{}\n", diagnostic.message)); } });
     }
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
     if let Some(name) = &session_name { session.set_session_name(name); }
