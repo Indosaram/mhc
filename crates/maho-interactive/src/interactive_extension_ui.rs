@@ -49,10 +49,30 @@ pub struct InteractiveExtensionUi {
     pub tools_expanded: std::sync::atomic::AtomicBool,
     pub editor_factory: Mutex<Option<EditorFactory>>,
     pub theme_directory: Mutex<std::path::PathBuf>,
+    /// Session event-bus publisher used to bracket host dialogs with `herdr:blocked`
+    /// (senpi `withBlockedHostDialog`); unset when no session bus is bound.
+    pub blocked_emitter: Mutex<Option<BlockedEmitter>>,
+}
+
+pub type BlockedEmitter = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
+
+static NEXT_BLOCKED_DIALOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Emits `herdr:blocked {active:false,id}` when the dialog settles or is dropped (the TS `finally`).
+pub struct BlockedHostDialog { emit: BlockedEmitter, id: String }
+impl Drop for BlockedHostDialog {
+    fn drop(&mut self) { (self.emit)("herdr:blocked", &serde_json::json!({"active": false, "id": self.id})); }
 }
 
 impl InteractiveExtensionUi {
     fn send(&self, request: UiRequest) { drop(self.sender.send(request)); }
+    /// senpi `withBlockedHostDialog`: announce the open host dialog before it is shown.
+    fn block_host_dialog(&self, label: &str) -> Option<BlockedHostDialog> {
+        let emit = self.blocked_emitter.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()?;
+        let id = format!("host-dialog-{}-{}", std::process::id(), NEXT_BLOCKED_DIALOG.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        emit("herdr:blocked", &serde_json::json!({"active": true, "label": label, "id": id}));
+        Some(BlockedHostDialog { emit, id })
+    }
     async fn wait<T: Default>(reply: tokio::sync::oneshot::Receiver<T>, options: ExtensionUiDialogOptions) -> T {
         let operation = async { reply.await.unwrap_or_default() };
         let bounded = async {
@@ -64,7 +84,7 @@ impl InteractiveExtensionUi {
     }
     pub fn channel(theme: Theme) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
+        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), blocked_emitter:Mutex::new(None), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
     }
 }
 
@@ -94,27 +114,31 @@ impl ExtensionUi for InteractiveExtensionUi {
     }
     fn set_hidden_thinking_label(&self, label: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::HiddenThinkingLabel(label.map(str::to_owned))); Ok(()) }
     fn editor<'a>(&'a self, title: &'a str, prefill: Option<&'a str>) -> ExtensionFuture<'a, Option<String>> {
+        let blocked = self.block_host_dialog(title);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Editor { title:title.into(), prefill:prefill.map(str::to_owned), reply });
-        Box::pin(async move { Ok(receiver.await.unwrap_or_default()) })
+        Box::pin(async move { let _blocked = blocked; Ok(receiver.await.unwrap_or_default()) })
     }
     fn set_working_message(&self, message: Option<&str>) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingMessage(message.map(str::to_owned))); Ok(()) }
     fn set_working_visible(&self, visible: bool) -> Result<(), ExtensionFailure> { self.send(UiRequest::WorkingVisible(visible)); Ok(()) }
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+        let blocked = self.block_host_dialog(title);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select { title: title.into(), options: options.to_vec(), reply });
-        Box::pin(Self::wait(receiver, opts))
+        Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await })
     }
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, opts: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
+        let blocked = self.block_host_dialog(title);
         let title = format!("{title}\n{message}");
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Select { title, options: vec!["Yes".into(), "No".into()], reply });
-        Box::pin(async move { Self::wait(receiver, opts).await.as_deref() == Some("Yes") })
+        Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await.as_deref() == Some("Yes") })
     }
     fn input<'a>(&'a self, title: &'a str, _placeholder: Option<&'a str>, opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
+        let blocked = self.block_host_dialog(title);
         let (reply, receiver) = tokio::sync::oneshot::channel();
         self.send(UiRequest::Input { title: title.into(), reply });
-        Box::pin(Self::wait(receiver, opts))
+        Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await })
     }
     fn request_render(&self) -> Result<(), ExtensionFailure> {
         self.sender.send(UiRequest::WidgetFrame).map_err(|_| ExtensionFailure::new("Interactive UI request channel is closed"))
@@ -207,6 +231,24 @@ mod tests {
         assert!(background.starts_with('\u{1b}'), "background must be an ANSI prefix: {background:?}");
         assert_eq!(exported.colors.len(), crate::theme::ThemeColor::ALL.len());
         assert_eq!(exported.backgrounds.len(), crate::theme::ThemeBg::ALL.len());
+    }
+
+    #[tokio::test]
+    async fn host_select_is_bracketed_by_herdr_blocked() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(Theme::default());
+        let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let sink = events.clone();
+        *ui.blocked_emitter.lock().expect("emitter slot") = Some(Arc::new(move |channel: &str, data: &serde_json::Value| sink.lock().expect("events").push((channel.to_owned(), data.clone()))));
+        let options = vec!["a".to_owned()];
+        let selected = ui.select("Pick", &options, Default::default());
+        drop(requests.try_recv().expect("select request"));
+        assert_eq!(selected.await, None);
+        let events = events.lock().expect("events").clone();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, "herdr:blocked");
+        assert_eq!(events[0].1["active"], true);
+        assert_eq!(events[0].1["label"], "Pick");
+        assert_eq!(events[1].1, serde_json::json!({"active": false, "id": events[0].1["id"]}));
     }
 
     #[test]
