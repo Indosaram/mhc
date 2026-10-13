@@ -39,7 +39,13 @@ pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyn
 }
 
 pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
-    let mut assembled = factories(widget_sender, parent.clone());
+    assembled_factories_with_mcp_registry(widget_sender, parent, None)
+}
+
+/// senpi `resource-loader` `mcpRegistry`: a multi-session host passes its one shared
+/// `HostMcpRegistry` so every session leases the same MCP connections.
+pub fn assembled_factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent, mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>) -> Vec<NativeAsyncExtensionFactory> {
+    let mut assembled = factories_with_mcp_registry(widget_sender, parent.clone(), mcp_registry);
     let env = std::env::vars().collect();
     let cwd = std::env::current_dir().unwrap_or_default();
     match super::omo_mount::OmoMount::for_parent(parent, &cwd, std::path::Path::new(&maho_core::config::get_agent_dir()), env) {
@@ -67,8 +73,13 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
 }
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
+    factories_with_mcp_registry(widget_sender, parent, None)
+}
+
+pub fn factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent, mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
     let help_widget_sender = widget_sender.clone();
+    let history_widget_sender = widget_sender.clone();
     let file_widget_sender = widget_sender.clone();
     let file_render: maho_ext_builtin_loose::files::RenderBinding = Arc::new(move |_| {
         let sender = file_widget_sender.clone();
@@ -86,9 +97,11 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("todowrite", Todo(widget_sender)),
             factory("websearch", maho_ext_websearch::index::WebsearchExtension { home: maho_core::config::home_dir().into(),
                 provider_native_bypass: Arc::new(|model| {
-                    maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model)
-                        || maho_ext_openai_web_search::supports_native_openai_web_search(model)
-                            && maho_ext_openai_web_search::parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref())
+                    if maho_ext_anthropic_web_search::supports_native_anthropic_web_search(model) {
+                        return maho_ext_anthropic_web_search::parse_enabled(std::env::var("PI_ANTHROPIC_WEB_SEARCH").ok().as_deref());
+                    }
+                    maho_ext_openai_web_search::supports_native_openai_web_search(model)
+                        && maho_ext_openai_web_search::parse_enabled(std::env::var("PI_OPENAI_WEB_SEARCH").ok().as_deref())
                 }),
             }),
             factory("look-at", maho_ext_look_at::index::LookAtExtension {
@@ -162,11 +175,18 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("history-search", maho_ext_history_search::HistorySearch {
                 session_dir: Arc::new(|ctx| ctx.session_manager.get_session_dir().ok_or_else(|| ExtensionFailure::new("History search requires a session directory"))),
                 default_sessions_root: Arc::new(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()).join("sessions")),
-                select: Arc::new(|ctx, entries| Box::pin(async move {
-                    let choices = entries.iter().enumerate().map(|(index, entry)| format!("{}: {}", index + 1, entry.text)).collect::<Vec<_>>();
-                    let selected = ctx.ui.select("Prompt history", &choices, Default::default()).await;
-                    Ok(selected.and_then(|selected| choices.iter().position(|choice| *choice == selected)).map(|index| entries[index].clone()))
-                })),
+                select: maho_ext_history_search::native_selection(maho_ext_history_search::HistoryUiBindings {
+                    render: Arc::new(move |_| {
+                        let widget_sender = history_widget_sender.clone();
+                        Rc::new(move || drop(widget_sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
+                    }),
+                    theme: Arc::new(|theme| {
+                        maho_interactive::theme::Theme::builtin(
+                            theme.name.as_deref().unwrap_or("dark"),
+                            maho_interactive::theme::ColorMode::Truecolor,
+                        ).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))
+                    }),
+                }),
             }),
             factory("model-fallback", maho_ext_model_fallback::ModelFallback { is_using_oauth: Arc::new(move |model| {
                 fallback_parent.get().and_then(|parent| parent()).is_some_and(|parent| parent.model_registry().is_using_oauth(model))
@@ -179,7 +199,7 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             // RESERVED (assembly, sequential): the builtin-mcps owner's native MCP declaration is
             // added here once its source receipt lands; this is the MCP declaration seam the plan
             // marks integrator-owned. Do not integrate from a summary.
-            factory("mcp", Mcp { gate: mcp_gate.clone(), tool_search: tool_search_service.clone() }),
+            factory("mcp", Mcp { gate: mcp_gate.clone(), tool_search: tool_search_service.clone(), shared_registry: mcp_registry }),
         ].into_iter().map(|factory| {
             let extension: Arc<dyn Extension> = Arc::from(factory.extension);
             NativeAsyncExtensionFactory { path: factory.path, source_info: factory.source_info,
@@ -484,22 +504,33 @@ impl Extension for ToolSearch {
         *self.service.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service);
     }
 }
-struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>>, tool_search: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>> }
+struct Mcp { gate: Arc<std::sync::Mutex<Option<maho_ext_mcp::service::McpNativeToolSearchGate>>>, tool_search: Arc<std::sync::Mutex<Option<super::tool_search::SharedToolSearchService>>>, shared_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>> }
+/// Distinct lease owner per session service on a host-shared registry (senpi passes the
+/// `McpService` instance itself as the owner).
+static NEXT_MCP_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 impl Extension for Mcp {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
         let tool_search = self.tool_search.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        let registry = Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default());
+        let owner = NEXT_MCP_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (registry, session_owned) = match &self.shared_registry {
+            Some(registry) => (registry.clone(), false),
+            None => (Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()), true),
+        };
         let extension = maho_ext_mcp::index::McpExtension {
-            registry: registry.clone(), owner: 1, tool_search,
+            registry: registry.clone(), owner, tool_search,
         };
         let service = extension.register_with_service(api);
-        api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
-            let registry = registry.clone();
-            Box::pin(async move {
-                registry.dispose().await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                Ok(maho_ext_api::EventResult::None)
-            })
-        }));
+        // A host-shared registry outlives every session: the service's own shutdown detaches this
+        // owner's leases, and only a session-private registry is torn down with the session.
+        if session_owned {
+            api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, _| {
+                let registry = registry.clone();
+                Box::pin(async move {
+                    registry.dispose().await.map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    Ok(maho_ext_api::EventResult::None)
+                })
+            }));
+        }
         if let Ok(service) = service.try_lock() {
             *self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(service.native_tool_search_gate());
         }
