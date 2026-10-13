@@ -450,6 +450,8 @@ pub trait ModelRegistry: Send + Sync {
             maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
         })
     }
+    /// senpi `model.promptPreset`: the per-model preset from models.json `modelOverrides` or a model definition.
+    fn prompt_preset(&self, _model: &Model) -> Option<String> { None }
     fn has_configured_auth(&self, model: &Model) -> bool;
     /// senpi `registry.getProviderAuthStatus(provider)`: the configured/source status. The default
     /// body reports an absent accessor; the production registry overrides it with the runtime source.
@@ -1014,7 +1016,7 @@ impl ToolContext for ExtensionContext {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile> }
+pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub tool_snippets: BTreeMap<String, String>, pub prompt_guidelines: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile { pub path: String, pub content: String }
 #[derive(Clone, Debug, PartialEq)]

@@ -36,6 +36,7 @@ impl ModelRegistry {
     pub fn register_provider(&mut self,id:&str,config:ProviderConfigInput) -> Result<(),String> {self.model_runtime.register_provider(id,config)}
     pub fn unregister_provider(&mut self,id:&str) {self.model_runtime.unregister_provider(id)}
     pub fn get_upstream_model_id(&self,model:&Model)->Option<String>{self.model_runtime.get_compatibility_request_config(model).upstream_model_id}
+    pub fn get_prompt_preset(&self,model:&Model)->Option<String>{self.model_runtime.get_compatibility_request_config(model).prompt_preset}
     pub fn get_service_tier(&self,model:&Model)->Option<maho_ai::types::ServiceTierPreference>{self.model_runtime.get_compatibility_request_config(model).service_tier}
     /// senpi `runtime.getAuth(provider, { slotName })`: resolve the named credential-pool slot, or
     /// the flat/default credential when `slot_name` is `None`.
