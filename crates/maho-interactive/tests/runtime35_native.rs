@@ -712,6 +712,17 @@ fn native_autocomplete_offers_skill_commands_only_while_enable_skill_commands_is
     assert!(!mode.editor.editor.get_text().starts_with("/skill:guide"), "{}", mode.editor.editor.get_text());
 }
 
+#[test]
+fn extension_select_counts_down_its_timeout_in_the_title_from_the_mode_tick() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, _session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::Select { title: "Pick".into(), options: vec!["a".into(), "b".into()], timeout_ms: Some(2_000), reply });
+    assert!(mode.render(80).join("\n").contains("Pick (2s)"));
+    mode.tick(1_000_000.0);
+    assert_eq!(answer.try_recv().expect("expired selector answers"), None, "expiry cancels the selector");
+}
+
 #[tokio::test]
 async fn runtime_input_listener_consumes_model_shortcut_before_dispatch() {
     use maho_ext_api::{ExtensionUi, TerminalInputResult}; use maho_tui::tui::Component;

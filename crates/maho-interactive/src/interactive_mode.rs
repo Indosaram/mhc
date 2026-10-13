@@ -195,6 +195,8 @@ pub struct InteractiveMode {
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
+    /// senpi `CountdownTimer` of the mounted extension dialog: the next 1 s deadline and its tick.
+    dialog_countdown: Option<(f64, Box<dyn FnMut() -> bool>)>,
     login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
     /// senpi `headerContainer`: the document header slot holding the built-in header (with its tip
@@ -615,7 +617,7 @@ impl InteractiveMode {
             request_render: Rc::new(move || chat_host.request_render()),
         }, theme.clone());
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1817,7 +1819,7 @@ impl InteractiveMode {
                 if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(format!("/tree-summary-custom {custom_entry}")); }
                 else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back("/tree-navigate".into()); }
             }),
-            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), Default::default());
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), self.extension_selector_options(None));
         self.ui_dialog = Some(Box::new(component));
     }
 
@@ -2342,7 +2344,7 @@ impl InteractiveMode {
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
                 Box::new(move |choice| { if choice == "Yes" { submissions.borrow_mut().push_back(format!("/import-confirm \"{confirm_path}\"")); } selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+                Box::new(move || { cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
         }
@@ -2612,6 +2614,27 @@ impl InteractiveMode {
         }
     }
 
+    /// senpi's `{ tui, timeout, onToggleToolsExpanded }` for `showExtensionSelector`: half the
+    /// terminal rows for the option window, the countdown, and `ctrl+o` toggling tool expansion.
+    fn extension_selector_options(&self, timeout_ms: Option<u64>) -> crate::components::extension_selector::ExtensionSelectorOptions {
+        let ui = self.extension_ui.clone();
+        crate::components::extension_selector::ExtensionSelectorOptions {
+            terminal_rows: Some(usize::from(self.terminal_dimensions.get().1)),
+            timeout_ms,
+            on_toggle_tools_expanded: Some(Box::new(move || {
+                let expanded = !ui.tools_expanded.load(std::sync::atomic::Ordering::Relaxed);
+                // Queued as `UiRequest::ToolsExpanded`, applied by the next `drain_ui_requests`.
+                drop(maho_ext_api::ExtensionUi::set_tools_expanded(ui.as_ref(), expanded));
+            })),
+        }
+    }
+
+    /// Mount an extension dialog whose countdown `tick` the mode drives once per second.
+    fn mount_counting_dialog(&mut self, dialog: Box<dyn Component>, tick: Box<dyn FnMut() -> bool>) {
+        self.ui_dialog = Some(dialog);
+        self.dialog_countdown = Some((self.clock.elapsed().as_secs_f64() * 1000.0 + 1000.0, tick));
+    }
+
     pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
         use maho_ext_api::AgentSessionEvent;
         match event {
@@ -2838,20 +2861,25 @@ impl InteractiveMode {
                     else { self.widgets.push((key, component, options.placement)); }
                 } else if let Some(index) = index { let (_, mut component, _) = self.widgets.remove(index); component.dispose(); }
             }
-            UiRequest::Select { title, options, reply } => {
+            UiRequest::Select { title, options, timeout_ms, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
                 let keys = Arc::new(self.keybindings());
-                self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
+                let component = Rc::new(RefCell::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
-                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), self.extension_selector_options(timeout_ms))));
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(Box::new(SharedDialog(component)), Box::new(move || countdown.upgrade().map(|component| component.borrow_mut().tick()).is_some()));
             }
-            UiRequest::Input { title, reply } => {
+            UiRequest::Input { title, timeout_ms, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
-                self.ui_dialog = Some(Box::new(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, &title,
+                let component = Rc::new(RefCell::new(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, &title,
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
-                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }),
+                    crate::components::extension_input::ExtensionInputOptions { has_tui: true, timeout_ms, ..Default::default() })));
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(Box::new(SharedDialog(component)), Box::new(move || countdown.upgrade().map(|component| component.borrow_mut().tick()).is_some()));
             }
         }
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.editor.editor.get_text();
@@ -3179,6 +3207,13 @@ impl InteractiveMode {
         self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
         self.footer_data.refresh_branch();
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
+        // senpi's dialog `CountdownTimer`: one tick per elapsed second; expiry cancels the dialog.
+        // The tick reports whether its dialog is still alive; a replaced dialog drops the countdown.
+        while let Some((deadline, tick)) = &mut self.dialog_countdown && now_ms >= *deadline {
+            *deadline += 1000.0;
+            if !tick() { self.dialog_countdown = None; break; }
+            if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.dialog_countdown = None; }
+        }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
         self.settle_questions();
@@ -3342,6 +3377,19 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
         cost: value.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
         context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
     }
+}
+
+/// A dialog the mode both mounts (as `ui_dialog`) and ticks (through a weak handle).
+struct SharedDialog<T: Component>(Rc<RefCell<T>>);
+impl<T: Component> Component for SharedDialog<T> {
+    fn render(&mut self, width: usize) -> Vec<String> { self.0.borrow_mut().render(width) }
+    fn handle_input(&mut self, data: &str) { self.0.borrow_mut().handle_input(data); }
+    fn has_input_handler(&self) -> bool { self.0.borrow().has_input_handler() }
+    fn invalidate(&mut self) { self.0.borrow_mut().invalidate(); }
+    fn dispose(&mut self) { self.0.borrow_mut().dispose(); }
+    fn focusable_get(&self) -> Option<bool> { self.0.borrow().focusable_get() }
+    fn focusable_set(&mut self, focused: bool) { self.0.borrow_mut().focusable_set(focused); }
+    fn handle_mouse(&mut self, event: &maho_tui::tui::TuiMouseEvent) -> Option<maho_tui::tui::TuiMouseEventResult> { self.0.borrow_mut().handle_mouse(event) }
 }
 
 /// senpi `LoginProviderCompletionOption`: one row per provider with every auth type it supports.
