@@ -1,4 +1,6 @@
-use std::{fs, io::Write, os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt}, path::{Path, PathBuf}};
+use std::{fs, io::Write, path::{Path, PathBuf}};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use serde_json::{Map, Value, json};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +90,13 @@ impl ConfigReloadLogger {
         }
     }
     fn write_line(&self, text: &str) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() { fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?; }
+        if let Some(parent) = self.path.parent() {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            builder.mode(0o700);
+            builder.create(parent)?;
+        }
         let incoming = u64::try_from(text.len()).map_err(std::io::Error::other)?;
         let rotate = match fs::metadata(&self.path) {
             Ok(metadata) => metadata.len().saturating_add(incoming) > self.max_bytes,
@@ -99,11 +107,18 @@ impl ConfigReloadLogger {
             let previous = self.path.with_file_name("config-reload.log.1");
             match fs::remove_file(&previous) { Ok(()) => {}, Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}, Err(error) => return Err(error) }
             fs::rename(&self.path, &previous)?;
+            #[cfg(unix)]
             fs::set_permissions(previous, fs::Permissions::from_mode(0o600))?;
         }
-        let mut file = fs::OpenOptions::new().append(true).create(true).mode(0o600).open(&self.path)?;
+        let mut options = fs::OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&self.path)?;
         file.write_all(text.as_bytes())?;
-        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
+        #[cfg(unix)]
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
     }
 }
 fn finite_number(number: f64) -> Value {
