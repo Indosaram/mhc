@@ -3,7 +3,7 @@ use std::process::Command;
 
 use crate::backend::{platform_name, IsolationError, Result};
 use crate::git::command::exists;
-use crate::util::{device_of, dirname};
+use crate::util::{device_of, dirname, is_denied};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {

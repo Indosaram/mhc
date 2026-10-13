@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -86,6 +87,7 @@ impl ReflinkBackend {
         }
     }
 
+    #[cfg(unix)]
     fn clone_file(
         &self,
         ffi: &Arc<dyn ReflinkIoctl>,
@@ -248,6 +250,7 @@ impl IsolationBackend for ReflinkBackend {
         }
         let result = (|| -> Result<()> {
             match &ffi {
+                #[cfg(unix)]
                 Some(ffi) => {
                     let mut budget = copy_budget(&ctx.base_dir, ctx.max_copy_bytes, None)?;
                     copy_tree(
@@ -259,7 +262,7 @@ impl IsolationBackend for ReflinkBackend {
                         &mut |size| budget.consume(size),
                     )?;
                 }
-                None => self.cp(lower, merged)?,
+                _ => self.cp(lower, merged)?,
             }
             Ok(())
         })();
