@@ -310,12 +310,9 @@ fn orca_prefill() -> Box<dyn Extension> {
     }
     Box::new(maho_ext_orca_prefill::OrcaPrefill { environment: Arc::new(Environment) })
 }
-fn quiet_model_profile() -> Box<dyn Extension> {
-    Box::new(maho_ext_quiet_model_profile::QuietModelProfile::new(Default::default()))
-}
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 10] = [
+static USER_FACTORIES: [NativeExtension; 9] = [
     NativeExtension { id: "pi-ast-grep", crate_name: "maho-ext-pi-ast-grep", factory: pi_ast_grep },
     NativeExtension { id: "pi-nested-agents-md", crate_name: "maho-ext-pi-nested-agents-md", factory: pi_nested_agents_md },
     NativeExtension { id: "ferryx-agent-state", crate_name: "maho-ext-ferryx-agent-state", factory: ferryx_agent_state },
@@ -325,7 +322,6 @@ static USER_FACTORIES: [NativeExtension; 10] = [
     NativeExtension { id: "omo-zcode-oauth", crate_name: "maho-ext-omo-zcode-oauth", factory: omo_zcode_oauth },
     NativeExtension { id: "pi-comment-checker", crate_name: "maho-ext-pi-comment-checker", factory: pi_comment_checker },
     NativeExtension { id: "orca-prefill", crate_name: "maho-ext-orca-prefill", factory: orca_prefill },
-    NativeExtension { id: "quiet-model-profile", crate_name: "maho-ext-quiet-model-profile", factory: quiet_model_profile },
 ];
 
 pub fn user_extensions() -> &'static [NativeExtension] {
