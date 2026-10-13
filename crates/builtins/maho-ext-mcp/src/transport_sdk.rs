@@ -314,7 +314,7 @@ impl McpClient {
         match tokio::time::timeout(Duration::from_secs(2),child.wait()).await {
             Ok(result)=>{result.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
             Err(_)=>{
-                if let Some(pid)=child.id(){let _=Command::new("/usr/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
+                if let Some(pid)=child.id(){let _=Command::new("/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
                 if tokio::time::timeout(Duration::from_secs(2),child.wait()).await.is_err(){let _=child.start_kill();}
                 child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;
             }
