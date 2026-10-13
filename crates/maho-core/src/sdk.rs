@@ -143,7 +143,9 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
     }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
-    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
+    let shell_options = maho_tools::bash::BashToolOptions { shell_env: Some(Arc::new(crate::utils::shell::get_shell_env)), ..Default::default() };
+    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd),
+        maho_tools::index::ToolsOptions { bash: shell_options.clone(), powershell: shell_options, ..Default::default() });
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
     let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());

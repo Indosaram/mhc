@@ -117,3 +117,11 @@ async fn executor_awaits_async_observer_signal() {
     sender.send(()).unwrap();
     assert_eq!(execution.await.unwrap().unwrap().output, "output");
 }
+
+#[test]
+fn spawn_context_starts_from_the_injected_shell_env() {
+    let shell_env: ShellEnvProvider = Arc::new(|| [("PATH".to_owned(), "/agent/bin:/usr/bin".to_owned()), ("PI_SESSION_ID".to_owned(), "stale".to_owned())].into_iter().collect());
+    let context = resolve_spawn_context("true".into(), ".".into(), None, true, None, Some(&shell_env)).unwrap();
+    assert_eq!(context.env.get("PATH").map(String::as_str), Some("/agent/bin:/usr/bin"));
+    assert!(!context.env.contains_key("PI_SESSION_ID"));
+}
