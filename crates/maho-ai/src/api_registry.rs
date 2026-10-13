@@ -124,23 +124,38 @@ pub fn register_api_provider(api: &str, streams: Arc<dyn ProviderStreams>, sourc
     Ok(())
 }
 
-/// Registers a shipped API; an existing builtin registration for the API wins.
-pub fn register_builtin_api_provider(api: &str, streams: Arc<dyn ProviderStreams>) {
+/// Registers a shipped API; an existing builtin registration for the API wins. Returns the
+/// provider the unscoped registry holds for `api` afterwards (`getApiProvider(api)` at import).
+pub fn register_builtin_api_provider(api: &str, streams: Arc<dyn ProviderStreams>) -> ApiProviderInternal {
     let registered = lock(&BUILTIN_API_PROVIDER_REGISTRY)
         .entry(api.to_owned())
         .or_insert_with(|| RegisteredApiProvider { provider: ApiProviderInternal::new(api, streams), source_id: None })
         .clone();
-    lock(&API_PROVIDER_REGISTRY).entry(api.to_owned()).or_insert(registered);
+    lock(&API_PROVIDER_REGISTRY).entry(api.to_owned()).or_insert(registered).provider.clone()
+}
+
+/// TS registers the builtin APIs as an import side effect of compat.ts/stream.ts; the native
+/// equivalent runs `compat::register_builtin_api_providers` once, on the first registry read.
+static BUILTIN_APIS_REGISTERED: std::sync::Once = std::sync::Once::new();
+
+fn ensure_builtin_api_providers() {
+    BUILTIN_APIS_REGISTERED.call_once(crate::compat::register_builtin_api_providers);
 }
 
 pub fn get_builtin_api_provider(api: &str) -> Option<ApiProviderInternal> {
+    ensure_builtin_api_providers();
+    lookup_builtin_api_provider(api)
+}
+
+fn lookup_builtin_api_provider(api: &str) -> Option<ApiProviderInternal> {
     lock(&BUILTIN_API_PROVIDER_REGISTRY).get(api).map(|entry| entry.provider.clone())
 }
 
 pub fn get_api_provider(api: &str) -> Result<Option<ApiProviderInternal>, ApiRegistryError> {
+    ensure_builtin_api_providers();
     if let Some(scope) = checked_active_scope()? {
         let scoped = scope.with_overlay(|overlay| overlay.get(api).map(|entry| entry.provider.clone()));
-        return Ok(scoped.or_else(|| get_builtin_api_provider(api)));
+        return Ok(scoped.or_else(|| lookup_builtin_api_provider(api)));
     }
     let faux = *FAUX_LOOKUP.read().unwrap_or_else(|p| p.into_inner());
     if let Some(provider) = faux.and_then(|lookup| lookup(api)) {
@@ -150,6 +165,7 @@ pub fn get_api_provider(api: &str) -> Result<Option<ApiProviderInternal>, ApiReg
 }
 
 pub fn get_api_providers() -> Result<Vec<ApiProviderInternal>, ApiRegistryError> {
+    ensure_builtin_api_providers();
     if let Some(scope) = checked_active_scope()? {
         let mut providers = lock(&BUILTIN_API_PROVIDER_REGISTRY).clone();
         scope.with_overlay(|overlay| {
