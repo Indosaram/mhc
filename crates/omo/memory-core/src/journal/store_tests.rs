@@ -532,3 +532,25 @@ fn zero_wait_journal_lock_skips_live_foreign_owner_without_running_task() {
     assert_eq!(task_runs, 0);
     assert!(lock_path.exists());
 }
+
+#[test]
+fn test_sync_skips_only_the_upstream_skippable_error_kinds() {
+    for kind in [
+        std::io::ErrorKind::NotFound,
+        std::io::ErrorKind::IsADirectory,
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidInput,
+    ] {
+        assert!(is_skippable_sync_error(kind), "{kind:?} must be skipped");
+    }
+    for kind in [std::io::ErrorKind::Other, std::io::ErrorKind::StorageFull, std::io::ErrorKind::Interrupted] {
+        assert!(!is_skippable_sync_error(kind), "{kind:?} must surface");
+    }
+}
+
+#[test]
+fn test_sync_of_a_missing_file_and_an_existing_directory_succeeds() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    assert!(sync_journal_file(&temp_dir.path().join("absent.jsonl")).is_ok());
+    assert!(sync_journal_directory(temp_dir.path()).is_ok());
+}
