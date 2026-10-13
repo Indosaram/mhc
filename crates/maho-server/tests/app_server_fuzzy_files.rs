@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_server::app_server::fuzzy_files::*;
 #[test]
 fn filename_bonus_and_unicode_source_indices_preserve_ranked_match_contract() {

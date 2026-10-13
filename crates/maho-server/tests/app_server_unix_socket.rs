@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_server::app_server::{server_core::ServerCore, unix_socket::start_unix_socket_listener, websocket_auth::ResolvedWebSocketListenerAuth};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;

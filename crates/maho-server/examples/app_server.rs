@@ -1,14 +1,24 @@
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
+#[cfg(unix)]
 use maho_server::app_server::{cli_args::{CliArgs, parse_cli_args}, index::run_app_server_mode, runtime::AppServerRuntime};
+#[cfg(unix)]
 use futures_util::{SinkExt,StreamExt};
+#[cfg(unix)]
 use serde_json::{Value,json};
+#[cfg(unix)]
 use tokio_tungstenite::{client_async,tungstenite::{Message,client::IntoClientRequest}};
 
+#[cfg(unix)]
 type QaClient = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
+#[cfg(unix)]
 async fn qa_read(client: &mut QaClient) -> Result<Value,Box<dyn std::error::Error>> {
     let message = tokio::time::timeout(std::time::Duration::from_secs(15),client.next()).await?.ok_or("daemon client closed")??;
     Ok(serde_json::from_str(message.to_text()?)?)
 }
+#[cfg(unix)]
 async fn qa_send(client: &mut QaClient,message: Value) -> Result<(),Box<dyn std::error::Error>> {client.send(Message::Text(message.to_string().into())).await?;Ok(())}
+#[cfg(unix)]
 async fn qa_attach(path: &std::path::Path,token: &str) -> Result<QaClient,Box<dyn std::error::Error>> {
     let mut request = "ws://localhost/".into_client_request()?;
     request.headers_mut().insert("authorization",format!("Bearer {token}").parse()?);
@@ -16,6 +26,7 @@ async fn qa_attach(path: &std::path::Path,token: &str) -> Result<QaClient,Box<dy
     qa_send(&mut client,json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"},"capabilities":{"experimentalApi":true}}})).await?;
     if qa_read(&mut client).await?["id"] != 1 {return Err("initialize response mismatch".into());}Ok(client)
 }
+#[cfg(unix)]
 async fn qa_native_session(socket: &std::path::Path,token_path: &std::path::Path) -> Result<Value,Box<dyn std::error::Error>> {
     let token = tokio::fs::read_to_string(token_path).await?;
     let token = maho_ai::utils::js::trim(&token);
@@ -36,6 +47,7 @@ async fn qa_native_session(socket: &std::path::Path,token_path: &std::path::Path
     if !qa_read(&mut client).await?["result"]["data"].as_array().is_some_and(|data|data.contains(&json!(id))) {return Err("reattached thread not loaded".into());}
     client.close(None).await?;Ok(json!({"threadId":id,"turnEvents":events.len(),"reattached":true,"retainedTurns":resumed["result"]["thread"]["turns"].as_array().map(Vec::len)}))
 }
+#[cfg(unix)]
 fn qa_factory() -> maho_server::app_server::thread_registry::SessionFactory {
     std::sync::Arc::new(|options|Box::pin(async move {
         use maho_ai::providers::faux::*;
@@ -57,6 +69,7 @@ fn qa_factory() -> maho_server::app_server::thread_registry::SessionFactory {
 }
 
 #[tokio::main(flavor = "current_thread")]
+#[cfg(unix)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg|arg == "qa-daemon") {
@@ -103,3 +116,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     run_app_server_mode(&runtime,listen,ws_auth,async move { let _ = shutdown.await; }).await.map_err(Into::into)
 }
+
+#[cfg(not(unix))]
+fn main() {}
