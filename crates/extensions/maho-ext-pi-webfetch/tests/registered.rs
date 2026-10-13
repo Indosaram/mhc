@@ -281,12 +281,19 @@ async fn registered_timeout_disconnects() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture contract");
     let address = listener.local_addr().expect("fixture contract");
     let (request_received, request_seen) = tokio::sync::oneshot::channel();
+    let (disconnect_observed, disconnect_seen) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("fixture contract");
         let mut bytes = [0; 4096];
-        assert!(socket.read(&mut bytes).await.expect("fixture contract") > 0);
-        request_received.send(()).expect("request signal");
-        assert_disconnected(socket.read(&mut bytes).await);
+        let mut total = 0;
+        loop {
+            let count = socket.read(&mut bytes).await.expect("fixture contract");
+            if count == 0 { break; }
+            total += count;
+            if total == count { let _ = request_received.send(()); }
+        }
+        assert!(total > 0, "client sent no request before disconnecting");
+        disconnect_observed.send(()).expect("disconnect signal");
     });
     let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
     let request = tokio::spawn(async move {
@@ -298,6 +305,7 @@ async fn registered_timeout_disconnects() {
     request.await.expect("request task");
     assert_eq!(text(&result), "Request timed out after 1s");
     assert_eq!(result.is_error, Some(true));
+    tokio::time::timeout(std::time::Duration::from_secs(5), disconnect_seen).await.expect("disconnect deadline").expect("disconnect signal");
     tokio::time::timeout(std::time::Duration::from_secs(5), server).await.expect("fixture contract").expect("fixture contract");
 }
 
