@@ -123,6 +123,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             host.rows.set(usize::from(terminal.rows()));
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             let chunks = std::mem::take(&mut *input.borrow_mut());
+            let had_input = !chunks.is_empty();
             for chunk in chunks { mode.handle_runtime_input(&chunk, now).await?; }
             mode.pump_turn().await;
             if fullscreen {
@@ -132,10 +133,15 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             } else {
                 rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
             }
-            screen.base_mut().request_render(false, now);
-            screen.do_render(&mut terminal);
-            host.full_redraws.set(screen.base_mut().full_redraws());
-            terminal.pump(16).map_err(|error| error.to_string())?;
+            // senpi `applySmoothStreamingRenderFps` + `requestRender(false, "input")`: the frame
+            // cap follows the smooth-streaming FPS, and keystroke frames skip the throttle.
+            screen.base_mut().set_max_render_fps(mode.smooth_streaming_render_fps());
+            if had_input { screen.base_mut().request_render_from(false, "input", now); } else { screen.base_mut().request_render(false, now); }
+            if screen.base_mut().take_due_render(now) {
+                screen.do_render(&mut terminal);
+                host.full_redraws.set(screen.base_mut().full_redraws());
+            }
+            terminal.pump(screen.base().min_render_interval_ms()).map_err(|error| error.to_string())?;
             tokio::task::yield_now().await;
         }
         Ok(())
