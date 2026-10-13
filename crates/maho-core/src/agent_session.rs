@@ -5460,6 +5460,11 @@ impl AgentSession {
     }
 
     async fn emit_agent_settled(&self) {
+        if self.is_streaming() { self.agent.wait_for_idle().await; }
+        if !self.agent_run_active.load(Ordering::SeqCst) {
+            self.state().abort_provenance.close_agent_end_boundary();
+            return;
+        }
         self.agent_run_active.store(false, Ordering::SeqCst);
         let generation = self.user_abort_generation.load(Ordering::SeqCst);
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
@@ -5471,16 +5476,15 @@ impl AgentSession {
         self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
         let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
-        // Atomically take a late User join AND close the boundary BEFORE the final settled emission, so
-        // a join arriving after this point is not swallowed (source cleared -> normal abort path) and
-        // the captured join is delivered once, before AgentSettled. `AgentSessionEvent::AgentSettled`
-        // is thus the cycle's last terminal for the captured join.
+        self.emit(AgentSessionEvent::AgentSettled);
+        // senpi emits agent_settled first, then delivers a late User join as session_abort. The take
+        // and the boundary close happen atomically so a join arriving after this point is not
+        // swallowed (source cleared -> normal abort path) and the captured join is delivered once.
         let late_user_abort = self.state().abort_provenance.take_late_join_and_close();
         if late_user_abort {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
             self.emit(AgentSessionEvent::SessionAbort);
         }
-        self.emit(AgentSessionEvent::AgentSettled);
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
         drop(settling);
         for action in batch.actions { action(); }
@@ -12220,6 +12224,26 @@ mod tests {
         assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
         session.state().abort_provenance.close_agent_end_boundary();
         assert!(!session.state().abort_provenance.has_open_agent_end_boundary());
+    }
+
+    #[tokio::test]
+    async fn settled_precedes_late_user_join_abort_and_inactive_settle_is_noop() {
+        let session = test_session_with_stream_function(false);
+        let boundary = session.state().abort_provenance.begin_agent_end(Vec::new(), false, false);
+        session.state().abort_provenance.end_agent_end(&boundary);
+        assert!(session.state().abort_provenance.join(maho_ext_api::AbortSource::User, false).user_owned);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort) { lock(&captured).push(event.clone()); }
+        }));
+        session.agent_run_active.store(true, Ordering::SeqCst);
+        session.emit_agent_settled().await;
+        session.emit_agent_settled().await;
+        let events = lock(&events);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AgentSessionEvent::AgentSettled));
+        assert!(matches!(events[1], AgentSessionEvent::SessionAbort));
     }
 
     #[tokio::test]
