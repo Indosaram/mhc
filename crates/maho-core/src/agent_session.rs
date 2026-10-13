@@ -1468,7 +1468,7 @@ impl crate::retry_fallback::controller::RetryFallbackDeps for SessionFallbackDep
             let session = AgentSession { inner };
             session.switch_model_with_thinking(model, false, if revert {
                 maho_ext_api::ModelSelectSource::FallbackRevert
-            } else { maho_ext_api::ModelSelectSource::Fallback }, false, Some(thinking)).await?;
+            } else { maho_ext_api::ModelSelectSource::Fallback }, false, Some(thinking), None).await?;
             Ok(())
         })
     }
@@ -1782,6 +1782,7 @@ impl AgentSession {
         );
 
         session.install_after_tool_call_hook();
+        session.install_agent_next_turn_refresh();
         Ok(session)
     }
 
@@ -3332,11 +3333,14 @@ impl AgentSession {
     async fn set_model_internal(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
         allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
     {
-        self.switch_model_with_thinking(model, persist_default, source, allow_deferral, None).await
+        self.switch_model_with_thinking(model, persist_default, source, allow_deferral, None, None).await
     }
 
+    /// `thinking` is the ephemeral (fallback) level; `favorite_thinking` is a favorite entry's own
+    /// level and selection, applied through `_getThinkingForModelSwitch` like upstream's cycle.
     async fn switch_model_with_thinking(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
-        allow_deferral: bool, thinking: Option<ModelThinkingLevel>) -> Result<Option<SystemPromptChangeEvent>, String>
+        allow_deferral: bool, thinking: Option<ModelThinkingLevel>,
+        favorite_thinking: Option<(Option<ModelThinkingLevel>, Option<ThinkingSelection>)>) -> Result<Option<SystemPromptChangeEvent>, String>
     {
         let previous = self.model();
         let context_changed = !models_are_equal(Some(&previous), Some(&model))
@@ -3381,9 +3385,30 @@ impl AgentSession {
         }
         let old_prompt = self.system_prompt();
         let old_thinking = self.thinking_level();
+        let old_selection = self.thinking_selection();
+        let old_baseline = self.agent.reasoning_baseline();
         let old_tier = self.service_tier();
+        let (explicit_level, explicit_selection) = favorite_thinking.unwrap_or((thinking, None));
+        let (next_level, next_selection) = self.get_thinking_for_model_switch(&model, explicit_level, explicit_selection);
         self.agent.set_model(model.clone());
-        self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, thinking));
+        if !(model.id == "gpt-6-astra" && matches!(model.provider.as_str(), "openai" | "chatgpt-subscription")) {
+            self.agent.set_reasoning_baseline(None);
+        }
+        if thinking.is_some() {
+            // `_applyEphemeralThinkingLevel`.
+            self.agent.set_thinking_level(next_level);
+            self.agent.set_thinking_selection(None);
+            if next_level != old_thinking && let Some(level) = thinking_level_from_model_level(next_level) {
+                self.emit(AgentSessionEvent::ThinkingLevelChanged { level, thinking_selection: None });
+            }
+        } else {
+            self.apply_thinking_level(next_level, false, next_selection);
+        }
+        let restore = |session: &Self, previous: Model, old_prompt: String| {
+            session.agent.set_model(previous); session.agent.set_system_prompt(old_prompt);
+            session.agent.set_thinking_level(old_thinking); session.agent.set_thinking_selection(old_selection.clone());
+            session.agent.set_reasoning_baseline(old_baseline.clone());
+        };
         let result = {
             let runner = self.extension_runner.lock().await.clone();
             match runner {
@@ -3412,9 +3437,7 @@ impl AgentSession {
                 }
                 let (post_hook_budget, post_hook_repairable) = self.model_budget(&model, live, self.messages().is_empty())?;
                 if allow_deferral && post_hook_budget.shortfall_tokens > 0 && post_hook_repairable {
-                    self.agent.set_model(previous);
-                    self.agent.set_system_prompt(old_prompt);
-                    self.agent.set_thinking_level(old_thinking);
+                    restore(self, previous, old_prompt);
                     let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, post_hook_budget.shortfall_tokens);
                     self.state().pending_model_switch = Some(PendingModelSwitch {
                         model: model.clone(), budget: post_hook_budget.clone(), persist_default, notice: notice.clone(),
@@ -3427,7 +3450,7 @@ impl AgentSession {
                 } else { live };
                 let admission = self.assert_model_usable(&model, admitted_live);
                 if let Err(error) = admission {
-                    self.agent.set_model(previous); self.agent.set_system_prompt(old_prompt); self.agent.set_thinking_level(old_thinking);
+                    restore(self, previous, old_prompt);
                     return Err(error);
                 }
                 (prompt != old_prompt).then(|| SystemPromptChangeEvent {
@@ -3436,7 +3459,7 @@ impl AgentSession {
                 })
             }
             Err(error) => {
-                self.agent.set_model(previous); self.agent.set_thinking_level(old_thinking); self.agent.set_system_prompt(old_prompt);
+                restore(self, previous, old_prompt);
                 return Err(error);
             }
         };
@@ -3465,6 +3488,23 @@ impl AgentSession {
         if models.len() <= 1 { return Ok(None); }
         let current = self.model();
         let index = models.iter().position(|entry| models_are_equal(Some(&entry.model), Some(&current)));
+        let direction = if forward { "forward" } else { "backward" };
+        // `_getDownswitchLiveContextTokens`: only a target with less usable room is charged the live transcript.
+        let downswitch_live = |model: &Model| -> Result<u64, String> {
+            let (current_budget, _) = self.model_budget(&current, 0, false)?;
+            let (target_budget, _) = self.model_budget(model, 0, false)?;
+            if model.context_window.saturating_sub(target_budget.required_tokens)
+                >= current.context_window.saturating_sub(current_budget.required_tokens) { return Ok(0); }
+            let prefix = maho_ai::utils::estimate::estimate_context_tokens(&maho_ai::types::Context {
+                system_prompt: Some(self.system_prompt()), messages: Vec::new(),
+                tools: Some(self.agent.state().tools().iter().map(|tool| tool.tool.clone()).collect()),
+            }).tokens;
+            Ok(self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0).saturating_sub(prefix))
+        };
+        let stay = |skipped_models: Vec<Model>| ModelCycleResult {
+            model: current.clone(), thinking_level: thinking_level_from_model_level(self.thinking_level()).unwrap_or(ThinkingLevel::Minimal),
+            is_scoped: true, skipped_models, system_prompt_change: None,
+        };
         let mut skipped_models = Vec::new();
         for offset in 1..=models.len() {
             let next = match (index, forward) {
@@ -3472,19 +3512,41 @@ impl AgentSession {
                 (Some(index), false) => (index + models.len() - offset % models.len()) % models.len(),
                 (None, true) => offset - 1, (None, false) => models.len() - offset,
             };
-            let model = &models[next].model;
+            let entry = &models[next];
+            let model = &entry.model;
             if models_are_equal(Some(model), Some(&current)) { continue; }
-            let live = self.get_context_usage().and_then(|usage| usage.tokens).unwrap_or(0);
+            let live = downswitch_live(model)?;
             let (budget, repairable) = self.model_budget(model, live, false)?;
-            if budget.shortfall_tokens > 0 && !repairable {
-                self.emit(AgentSessionEvent::ModelChangeSkipped { model: model.clone(), budget, direction: if forward { "forward" } else { "backward" }.to_owned() });
+            if model.context_window > 0 && budget.shortfall_tokens > 0 && !repairable {
+                self.emit(AgentSessionEvent::ModelChangeSkipped { model: model.clone(), budget, direction: direction.to_owned() });
                 skipped_models.push(model.clone()); continue;
             }
-            let system_prompt_change = self.set_model_internal(model.clone(), true, maho_ext_api::ModelSelectSource::Cycle, true).await?;
+            // The favorite projection's own level and selection win over remembered preferences.
+            let favorite_thinking = (entry.thinking_level.map(extension_thinking_level), entry.thinking_selection.clone());
+            let system_prompt_change = self.switch_model_with_thinking(model.clone(), true, maho_ext_api::ModelSelectSource::Cycle, true,
+                None, Some(favorite_thinking)).await?;
             return Ok(Some(ModelCycleResult { model: self.model(), thinking_level: thinking_level_from_model_level(self.thinking_level()).unwrap_or(ThinkingLevel::Minimal),
                 is_scoped: true, skipped_models, system_prompt_change }));
         }
-        Ok(None)
+        // Every candidate was inadmissible. With a single alternative the user asked for THAT model,
+        // so the usability error still surfaces (or the switch is held for compaction) instead of a
+        // silent no-op; with more alternatives the cycle reports the skipped list and stays put.
+        let alternatives: Vec<_> = models.iter().filter(|entry| !models_are_equal(Some(&entry.model), Some(&current))).collect();
+        if let [only] = alternatives.as_slice() {
+            let model = only.model.clone();
+            let live = downswitch_live(&model)?;
+            let (budget, repairable) = self.model_budget(&model, live, false)?;
+            let has_context = self.with_session_manager(|manager| !manager.build_context(manager.leaf_id()).messages.is_empty());
+            if model.context_window > 0 && has_context && budget.shortfall_tokens > 0 && repairable {
+                let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, budget.shortfall_tokens);
+                self.state().pending_model_switch = Some(PendingModelSwitch { model: model.clone(), budget: budget.clone(), persist_default: true, notice: notice.clone() });
+                self.emit(AgentSessionEvent::ModelChangePending { model, budget, notice });
+            } else if let Err(detail) = self.assert_model_usable(&model, live) {
+                self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: "context-budget".to_owned(), detail: detail.clone(), budget: Some(budget) });
+                return Err(detail);
+            }
+        }
+        Ok(Some(stay(skipped_models)))
     }
 
     async fn session_before(&self, event: maho_ext_api::ExtensionEvent) -> Result<maho_ext_api::SessionBeforeEventResult, String> {
@@ -3523,7 +3585,10 @@ impl AgentSession {
             && let Some(model) = self.model_registry.find(&provider, &id)
         { self.agent.set_model(model); }
         if let Some(level) = ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == context.thinking_level) {
-            self.set_session_thinking_level(level);
+            // Restore the persisted selection with the level so a restore never reads as a new choice.
+            let selection: Option<ThinkingSelection> = context.thinking_selection.and_then(|selection| serde_json::from_value(selection).ok());
+            if level == self.thinking_level() { self.agent.set_thinking_selection(selection.clone()); }
+            self.apply_thinking_level(level, false, selection);
         }
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -5581,6 +5646,103 @@ impl AgentSession {
         }
     }
 
+    /// `_installAgentNextTurnRefresh`: before every follow-on provider request of a run, enforce
+    /// threshold compaction when a continuation is about to be admitted, then refresh the system
+    /// prompt, tools, model and thinking level/selection the next turn is sent with.
+    ///
+    /// Adaptations: the resident-store rehydration and Cursor admission belong to other parity rows;
+    /// the refreshed prompt is the agent's live prompt, which `rebuild_system_prompt` keeps equal to
+    /// `override ?? base`; a required compaction that fails aborts the run, the native equivalent of
+    /// the upstream callback throwing `RequiredCompactionError`.
+    fn install_agent_next_turn_refresh(&self) {
+        let previous: Option<maho_agent::PrepareNextTurnWithContext> = self.agent.prepare_next_turn_with_context().or_else(|| {
+            self.agent.prepare_next_turn().map(|without| -> maho_agent::PrepareNextTurnWithContext {
+                Arc::new(move |_turn, signal| without(signal))
+            })
+        });
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_prepare_next_turn_with_context(Some(Arc::new(move |turn, signal| {
+            let weak = weak.clone();
+            let previous = previous.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                let compacted_before_callback = session.compact_before_next_admission(&turn).await;
+                let messages = if compacted_before_callback { session.messages() } else { turn.context.messages.clone() };
+                let post_compaction_turn = maho_agent::types::PrepareNextTurnContext {
+                    context: maho_agent::types::AgentContext { messages, ..turn.context.clone() }, ..turn.clone()
+                };
+                let mut previous_snapshot = match &previous {
+                    Some(previous) => previous(post_compaction_turn.clone(), signal.clone()).await,
+                    None => None,
+                };
+                let mut previous_context = previous_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
+                    .unwrap_or_else(|| post_compaction_turn.context.clone());
+                // The previous callback may await while continuation work is enqueued; re-sample once.
+                let compacted_after_callback = !compacted_before_callback && session.compact_before_next_admission(&turn).await;
+                if compacted_after_callback {
+                    let post_late_compaction_turn = maho_agent::types::PrepareNextTurnContext {
+                        context: maho_agent::types::AgentContext { messages: session.messages(), ..turn.context.clone() }, ..turn.clone()
+                    };
+                    let late_snapshot = match &previous {
+                        Some(previous) => previous(post_late_compaction_turn.clone(), signal.clone()).await,
+                        None => None,
+                    };
+                    let base = previous_snapshot.unwrap_or_default();
+                    let context = late_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
+                        .unwrap_or_else(|| post_late_compaction_turn.context.clone());
+                    previous_snapshot = Some(match late_snapshot {
+                        Some(late) => maho_agent::types::AgentLoopTurnUpdate {
+                            context: Some(context.clone()),
+                            model: late.model.or(base.model),
+                            thinking_level: late.thinking_level.or(base.thinking_level),
+                            thinking_selection: late.thinking_selection.or(base.thinking_selection),
+                            abort_server_side_fallback: late.abort_server_side_fallback.or(base.abort_server_side_fallback),
+                        },
+                        None => maho_agent::types::AgentLoopTurnUpdate { context: Some(context.clone()), ..base },
+                    });
+                    previous_context = context;
+                }
+                let state = session.agent.state();
+                Some(maho_agent::types::AgentLoopTurnUpdate {
+                    context: Some(maho_agent::types::AgentContext {
+                        system_prompt: state.system_prompt.clone(),
+                        messages: previous_context.messages,
+                        tools: Some(state.tools().to_vec()),
+                    }),
+                    model: Some(state.model.clone()),
+                    thinking_level: Some(state.thinking_level),
+                    thinking_selection: Some(state.thinking_selection.clone()),
+                    abort_server_side_fallback: previous_snapshot.and_then(|snapshot| snapshot.abort_server_side_fallback),
+                })
+            })
+        })));
+    }
+
+    /// `compactBeforeNextAdmission` inside `_installAgentNextTurnRefresh`: threshold compaction runs
+    /// only when this prepare precedes an actual provider admission (a tool continuation or queued
+    /// messages). Returns whether a compaction landed.
+    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> bool {
+        let model = self.model();
+        // Cursor rebuilds the full conversation each hop; compacting mid-run poisons its conversation id.
+        if model.provider == "cursor" || model.provider == "cursor-cli-oauth" || model.context_window == 0 {
+            return false;
+        }
+        if turn.tool_results.is_empty() && !self.agent.has_queued_messages() {
+            return false;
+        }
+        let latest_compaction = || self.with_session_manager(|manager|
+            crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id()))
+                .and_then(|entry| entry.get("id").cloned()));
+        let before = latest_compaction();
+        if let Err(error) = self.revalidate_continuation_admission(false).await {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.clone() });
+            self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("RequiredCompactionError", error)));
+            return false;
+        }
+        latest_compaction() != before
+    }
+
     fn install_after_tool_call_hook(&self) {
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_after_tool_call(Some(Arc::new(move |context, _| {
@@ -6861,50 +7023,87 @@ impl AgentSession {
     }
 
     /// Set the thinking level, clamping to the model's available levels.
-    ///
-    /// Adaptations: the Rust agent exposes no thinkingSelection setter, so the selection is not
-    /// propagated into agent state; and the settings manager has no thinking-level accessors, so
-    /// `updateGlobalDefault` does not persist (both live in other todos' modules).
+    /// Persistent calls refresh per-model memory; session entries and events are emitted only on change.
     pub fn set_thinking_level(&self, level: ModelThinkingLevel) {
-        self.apply_thinking_level(level, true);
+        self.apply_thinking_level(level, true, Some(explicit_thinking_selection(level)));
     }
 
     /// Set the thinking level for this session without changing the global default.
     pub fn set_session_thinking_level(&self, level: ModelThinkingLevel) {
-        self.apply_thinking_level(level, false);
+        self.apply_thinking_level(level, false, Some(explicit_thinking_selection(level)));
     }
 
-    fn apply_thinking_level(&self, level: ModelThinkingLevel, update_global_default: bool) {
+    fn apply_thinking_level(&self, level: ModelThinkingLevel, update_global_default: bool, selection: Option<ThinkingSelection>) {
         let available = self.get_available_thinking_levels();
         let effective = if available.contains(&level) { level } else { clamp_thinking_level(level, &available) };
         let previous = self.agent.thinking_level();
+        let previous_selection = self.agent.thinking_selection();
+        let effective_selection = selection.map(|selection| ThinkingSelection { level: effective, ..selection });
+        let selection_changed = previous_selection != effective_selection;
         let changing = effective != previous;
-        if changing && let Ok(mut controller) = self.retry_fallback.try_lock()
+        if (changing || selection_changed) && let Ok(mut controller) = self.retry_fallback.try_lock()
             && let Some(controller) = controller.as_mut() {
             controller.note_manual_thinking_level();
         }
 
         self.agent.set_thinking_level(effective);
+        self.agent.set_thinking_selection(effective_selection.clone());
 
-        if changing {
-            self.with_session_manager_mut(|manager| {
-                manager.append_thinking_level_change(effective.as_str(), None);
-            });
-            if let Some(level) = thinking_level_from_model_level(effective) {
-                self.emit(AgentSessionEvent::ThinkingLevelChanged { level });
-            }
-            self.emit_high_reasoning_warning_if_needed();
-        }
+        let model = self.model();
         if update_global_default {
-            let model = self.model();
+            // `setModelThinkingLevel`: `off` must not erase the level `/reasoning on` restores.
             let key = format!("{}/{}", model.provider, model.id);
-            let mut levels = self.with_settings_manager(|manager| manager.get_value("modelThinkingLevels")
-                .and_then(Value::as_object).cloned()).unwrap_or_default();
-            levels.insert(key, Value::String(effective.as_str().to_owned()));
-            if let Err(error) = self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
-                &Map::from_iter([("modelThinkingLevels".to_owned(), Value::Object(levels))]))) {
+            let global = self.with_settings_manager(|manager| manager.get_global().clone());
+            let mut levels = global.get("modelThinkingLevels").and_then(Value::as_object).cloned().unwrap_or_default();
+            levels.insert(key.clone(), Value::String(effective.as_str().to_owned()));
+            let mut values = Map::from_iter([("modelThinkingLevels".to_owned(), Value::Object(levels))]);
+            if effective != ModelThinkingLevel::Off {
+                let mut last_on = global.get("modelLastOnThinkingLevels").and_then(Value::as_object).cloned().unwrap_or_default();
+                last_on.insert(key, Value::String(effective.as_str().to_owned()));
+                values.insert("modelLastOnThinkingLevels".to_owned(), Value::Object(last_on));
+            }
+            if (changing || selection_changed) && (self.supports_thinking() || effective != ModelThinkingLevel::Off) {
+                values.insert("defaultThinkingLevel".to_owned(), Value::String(effective.as_str().to_owned()));
+            }
+            if let Err(error) = self.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global, &values)) {
                 self.emit(AgentSessionEvent::ContinuationError { error_message: error });
             }
+        }
+
+        if changing || selection_changed {
+            let selection_value = effective_selection.as_ref().and_then(|selection| serde_json::to_value(selection).ok());
+            self.with_session_manager_mut(|manager| {
+                manager.append_thinking_level_change(effective.as_str(), selection_value);
+            });
+            if changing && model.id == "gpt-6-astra" && matches!(model.provider.as_str(), "openai" | "chatgpt-subscription") {
+                if self.agent.reasoning_baseline().is_none() {
+                    self.agent.set_reasoning_baseline(Some(previous.as_str().to_owned()));
+                }
+                self.with_session_manager_mut(|manager| {
+                    manager.append_configuration_update(effective.as_str());
+                });
+                let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+                match context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>() {
+                    Ok(messages) => {
+                        self.agent.set_messages(messages);
+                        self.state().message_revision += 1;
+                    }
+                    Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+                }
+            }
+            if let Some(level) = thinking_level_from_model_level(effective) {
+                self.emit(AgentSessionEvent::ThinkingLevelChanged { level, thinking_selection: effective_selection });
+            }
+            // `void this._extensionRunner.emit(...)`: handlers run without blocking the setter.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let session = self.clone();
+                runtime.spawn(async move {
+                    session.dispatch_extension_event(maho_ext_api::ExtensionEvent::ThinkingLevelSelect {
+                        level: effective, previous_level: previous,
+                    }).await;
+                });
+            }
+            self.emit_high_reasoning_warning_if_needed();
         }
     }
 
@@ -6958,23 +7157,38 @@ impl AgentSession {
         self.model().reasoning
     }
 
-    /// The thinking level a model switch would land on, from an explicit level, the model's
-    /// remembered level, the configured default, or `DEFAULT_THINKING_LEVEL`.
-    ///
+    /// The thinking level and selection a model switch would land on, from an explicit level or
+    /// selection, the model's remembered level, the configured default, or `DEFAULT_THINKING_LEVEL`.
     pub fn get_thinking_for_model_switch(
         &self,
         model: &Model,
         explicit_level: Option<ModelThinkingLevel>,
-    ) -> ModelThinkingLevel {
-        let remembered = self.with_settings_manager(|manager| manager.get_value("modelThinkingLevels")
-            .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(Value::as_str)
-            .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level)));
-        let default = self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
-            .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level));
-        let requested = explicit_level.or(remembered).or(default).unwrap_or(ModelThinkingLevel::Medium);
+        explicit_selection: Option<ThinkingSelection>,
+    ) -> (ModelThinkingLevel, Option<ThinkingSelection>) {
+        let mut requested = explicit_level;
+        let mut selection = explicit_selection;
+        if let Some(level) = requested && selection.is_none() { selection = Some(explicit_thinking_selection(level)); }
+        if requested.is_none() {
+            let remembered = self.with_settings_manager(|manager| manager.get_value("modelThinkingLevels")
+                .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(Value::as_str)
+                .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level)));
+            if let Some(level) = remembered { requested = Some(level); selection = Some(explicit_thinking_selection(level)); }
+        }
+        if requested.is_none() {
+            let default = self.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel"))
+                .and_then(|level| ModelThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level));
+            if let Some(level) = default { requested = Some(level); selection = Some(explicit_thinking_selection(level)); }
+        }
+        let requested = requested.unwrap_or(ModelThinkingLevel::Medium);
         let available = crate::thinking_levels::get_supported_thinking_levels(model);
-        if available.contains(&requested) { requested } else { clamp_thinking_level(requested, &available) }
+        let level = if available.contains(&requested) { requested } else { clamp_thinking_level(requested, &available) };
+        (level, selection.map(|selection| ThinkingSelection { level, ..selection }))
     }
+}
+
+/// `{ level, source: "explicit" }`.
+fn explicit_thinking_selection(level: ModelThinkingLevel) -> ThinkingSelection {
+    ThinkingSelection { level, source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None }
 }
 
 /// Thinking levels including the native max tier.
@@ -8863,11 +9077,114 @@ mod tests {
     #[test]
     fn a_model_switch_clamps_the_default_to_the_supported_levels() {
         let session = test_session();
-        assert_eq!(session.get_thinking_for_model_switch(&test_model(), None), ModelThinkingLevel::Off);
+        assert_eq!(session.get_thinking_for_model_switch(&test_model(), None, None).0, ModelThinkingLevel::Off);
         assert_eq!(
-            session.get_thinking_for_model_switch(&test_model(), Some(ModelThinkingLevel::Xhigh)),
-            ModelThinkingLevel::Off
+            session.get_thinking_for_model_switch(&test_model(), Some(ModelThinkingLevel::Xhigh), None),
+            (ModelThinkingLevel::Off, Some(explicit_thinking_selection(ModelThinkingLevel::Off)))
         );
+    }
+
+    fn reasoning_faux_session(models: Vec<(&str, u64)>) -> (AgentSession, Vec<Model>) {
+        use maho_ai::providers::faux::{faux_provider, FauxModelDefinition, RegisterFauxProviderOptions};
+        let provider = faux_provider(RegisterFauxProviderOptions {
+            models: Some(models.into_iter().map(|(id, window)| FauxModelDefinition {
+                id: id.to_owned(), reasoning: Some(true), context_window: Some(window), max_tokens: Some(1_024), ..Default::default()
+            }).collect()),
+            ..Default::default()
+        });
+        let session = test_session();
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
+        let models = provider.models.clone();
+        session.agent.set_model(models[0].clone());
+        (session, models)
+    }
+
+    #[tokio::test]
+    async fn a_thinking_change_dispatches_thinking_level_select_to_extensions() {
+        let (session, _) = reasoning_faux_session(vec![("think-1", 128_000)]);
+        session.agent.set_thinking_level(ModelThinkingLevel::Low);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:thinking>", session.cwd().into(), Default::default());
+        extension.handlers.insert(maho_ext_api::EventKind::ThinkingLevelSelect, vec![Arc::new(move |event, _| {
+            if let maho_ext_api::ExtensionEvent::ThinkingLevelSelect { level, previous_level } = event {
+                let _ = sender.send((*level, *previous_level));
+            }
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        session.set_session_thinking_level(ModelThinkingLevel::High);
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.expect("bounded dispatch");
+        session.dispose().await;
+        assert_eq!(received, Some((ModelThinkingLevel::High, ModelThinkingLevel::Low)));
+    }
+
+    #[tokio::test]
+    async fn a_persistent_thinking_change_records_selection_and_global_defaults() {
+        let (session, models) = reasoning_faux_session(vec![("think-1", 128_000)]);
+        session.set_thinking_level(ModelThinkingLevel::High);
+        assert_eq!(session.thinking_selection(), Some(explicit_thinking_selection(ModelThinkingLevel::High)));
+        let key = format!("{}/{}", models[0].provider, models[0].id);
+        let (default, last_on) = session.with_settings_manager(|manager| (
+            manager.get_string("defaultThinkingLevel"),
+            manager.get_value("modelLastOnThinkingLevels").and_then(|levels| levels.get(&key)).cloned(),
+        ));
+        assert_eq!(default.as_deref(), Some("high"));
+        assert_eq!(last_on, Some(Value::from("high")));
+        let entry = session.with_session_manager(|manager| manager.entries()).into_iter().rev()
+            .find(|entry| entry["type"] == "thinking_level_change").expect("thinking entry");
+        assert_eq!(entry["thinkingSelection"], serde_json::json!({"level": "high", "source": "explicit"}));
+    }
+
+    #[tokio::test]
+    async fn an_astra_thinking_change_sets_the_reasoning_baseline_and_configuration_update() {
+        let (session, mut models) = reasoning_faux_session(vec![("think-1", 128_000)]);
+        let mut astra = models.remove(0);
+        astra.id = "gpt-6-astra".to_owned();
+        astra.provider = "openai".to_owned();
+        session.agent.set_model(astra);
+        session.agent.set_thinking_level(ModelThinkingLevel::Medium);
+        session.set_session_thinking_level(ModelThinkingLevel::High);
+        assert_eq!(session.agent.reasoning_baseline().as_deref(), Some("medium"));
+        let entries = session.with_session_manager(|manager| manager.entries());
+        assert!(entries.iter().any(|entry| entry["type"] == "configuration_update" && entry["reasoning"]["effort"] == "high"));
+        assert!(session.messages().iter().any(|message| message.role() == "configurationUpdate"));
+    }
+
+    #[test]
+    fn a_remembered_level_becomes_an_explicit_selection_on_model_switch() {
+        let (session, models) = reasoning_faux_session(vec![("think-1", 128_000)]);
+        session.with_settings_manager_mut(|manager| manager.set(crate::settings_manager::SettingsScope::Global,
+            &Map::from_iter([("modelThinkingLevels".to_owned(), serde_json::json!({ format!("{}/{}", models[0].provider, models[0].id): "low" }))])))
+            .expect("settings");
+        assert_eq!(session.get_thinking_for_model_switch(&models[0], None, None),
+            (ModelThinkingLevel::Low, Some(explicit_thinking_selection(ModelThinkingLevel::Low))));
+    }
+
+    #[tokio::test]
+    async fn cycling_applies_the_favorite_entry_thinking_level() {
+        let (session, models) = reasoning_faux_session(vec![("think-1", 128_000), ("think-2", 128_000)]);
+        session.state().uses_default_stream_function = false;
+        session.set_favorite_models(models.iter().map(|model| SessionModelEntry {
+            model: model.clone(), thinking_level: (model.id == "think-2").then_some(ThinkingLevel::High),
+            thinking_selection: None, service_tier: None,
+        }).collect());
+        let result = session.cycle_model(true).await.expect("cycle").expect("result");
+        assert_eq!(result.model.id, "think-2");
+        assert_eq!(session.thinking_level(), ModelThinkingLevel::High);
+        assert_eq!(session.thinking_selection(), Some(explicit_thinking_selection(ModelThinkingLevel::High)));
+    }
+
+    #[tokio::test]
+    async fn cycling_to_a_single_inadmissible_alternative_surfaces_the_budget_error() {
+        let (session, models) = reasoning_faux_session(vec![("think-1", 128_000), ("think-tiny", 1_000)]);
+        session.state().uses_default_stream_function = false;
+        session.set_favorite_models(models.iter().map(|model| SessionModelEntry {
+            model: model.clone(), thinking_level: None, thinking_selection: None, service_tier: None,
+        }).collect());
+        let result = session.cycle_model(true).await;
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(session.model().id, "think-1");
     }
 
     #[test]
