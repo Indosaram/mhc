@@ -4158,9 +4158,13 @@ impl InteractiveMode {
         let stats = self.host_session_stats();
         let model = self.host_model();
         let usage = self.host_context_usage();
+        let latest_cache_hit_rate = match self.remote_state_snapshot() {
+            Some(state) => state.usage_totals.as_ref().and_then(|totals| totals.get("latestCacheHitRate")).and_then(serde_json::Value::as_f64),
+            None => self.session.with_session_manager(|manager| manager.usage_totals().latest_cache_hit_rate),
+        };
         crate::components::footer::FooterSnapshot {
             cwd: self.host_cwd(), home: std::env::var("HOME").ok(), session_name: self.host_session_name(),
-            cache_read: stats.tokens.cache_read as f64, cache_write: stats.tokens.cache_write as f64, cost: stats.cost,
+            cache_read: stats.tokens.cache_read as f64, cache_write: stats.tokens.cache_write as f64, cost: stats.cost, latest_cache_hit_rate,
             context_window: model.context_window as f64, context_percent: usage.and_then(|usage| usage.percent),
             context_tokens: usage.and_then(|usage| usage.tokens).map(|tokens| tokens as f64),
             model_id: Some(model.id), provider: Some(model.provider), reasoning: model.reasoning,

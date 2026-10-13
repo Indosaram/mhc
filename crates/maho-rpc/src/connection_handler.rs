@@ -170,6 +170,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
         "favoriteModels":session.favorite_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
         "scopedModels":session.scoped_models().iter().map(session_model_entry_json).collect::<Vec<_>>(),
     });
+    if let Some(rate)=usage_totals.latest_cache_hit_rate{state["usageTotals"]["latestCacheHitRate"]=rate.into();}
     if let Some(thinking_selection)=session.thinking_selection()&&let Ok(value)=serde_json::to_value(thinking_selection){state["thinkingSelection"]=value;}
     if let Some(abort_source)=last_abort_source{state["lastAbortSource"]=abort_source.into();}
     if let Some(context_usage)=session.get_context_usage(){state["contextUsage"]=serde_json::json!({"tokens":context_usage.tokens,"contextWindow":context_usage.context_window,"percent":context_usage.percent});}
