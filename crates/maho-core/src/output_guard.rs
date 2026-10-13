@@ -4,6 +4,7 @@
 //! the process-wide sink maho's own writers use (maho_write_stdout / maho_write_stderr) and applies
 //! the same takeover rules to it.
 
+use std::cell::Cell;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,6 +16,11 @@ type WriteSink = Arc<dyn Fn(&str) + Send + Sync>;
 type Observer = Arc<dyn Fn() + Send + Sync>;
 type ObserverList = Arc<Mutex<Vec<Observer>>>;
 type DiagnosticFallback = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
+thread_local! {
+    static IN_GUARDED_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
+    static HANDLER_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
 
 struct StdoutTakeover {
     raw_stdout_write: WriteSink,
@@ -196,11 +202,45 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
     let previous = maho_tui::process_stdio::set_stderr_writer(guarded_process_stderr());
     *process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous);
     // The default panic hook writes to fd 2 directly; route its report through the same guard.
-    std::panic::set_hook(Box::new(|info| { maho_write_stderr(&format!("{info}\n")); }));
+    let previous_hook = std::panic::take_hook();
+    *process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous_hook);
+    std::panic::set_hook(Box::new(|info| {
+        let text = format!("{info}\n");
+        let reentrant = IN_GUARDED_PANIC_HOOK.with(|active| active.replace(true));
+        if reentrant {
+            default_stderr_write()(&text);
+            return;
+        }
+        struct PanicHookReset;
+        impl Drop for PanicHookReset {
+            fn drop(&mut self) {
+                IN_GUARDED_PANIC_HOOK.with(|active| active.set(false));
+            }
+        }
+        let _reset = PanicHookReset;
+        let handler_active = HANDLER_ACTIVE.with(Cell::get);
+        if handler_active {
+            let fallback = {
+                let guard = state().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.stderr_takeover.as_ref().and_then(|takeover| takeover.format_hidden_diagnostic_fallback.clone())
+            };
+            let text = fallback.map(|fallback| fallback(&text)).unwrap_or(text);
+            if !text.is_empty() {
+                default_stderr_write()(&text);
+            }
+        } else {
+            maho_write_stderr(&text);
+        }
+    }));
 }
 
 fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_stdio::StreamWrite>> {
     static PREVIOUS: Mutex<Option<maho_tui::process_stdio::StreamWrite>> = Mutex::new(None);
+    &PREVIOUS
+}
+
+fn process_panic_hook_before_takeover() -> &'static Mutex<Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>>> {
+    static PREVIOUS: Mutex<Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>>> = Mutex::new(None);
     &PREVIOUS
 }
 
@@ -210,7 +250,10 @@ pub fn restore_stderr() {
     drop(guard);
     if let Some(previous) = process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
         maho_tui::process_stdio::set_stderr_writer(previous);
-        drop(std::panic::take_hook());
+        if let Some(previous_hook) = process_panic_hook_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            drop(std::panic::take_hook());
+            std::panic::set_hook(previous_hook);
+        }
     }
 }
 
@@ -228,7 +271,18 @@ pub fn maho_write_stderr(text: &str) -> bool {
     let Some(handler) = handler else {
         return true;
     };
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(text))).is_err() {
+    struct HandlerReset;
+    impl Drop for HandlerReset {
+        fn drop(&mut self) {
+            HANDLER_ACTIVE.with(|active| active.set(false));
+        }
+    }
+    let handler_panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        HANDLER_ACTIVE.with(|active| active.set(true));
+        let _reset = HandlerReset;
+        handler(text);
+    })).is_err();
+    if handler_panicked {
         let fallback_text = fallback.map(|fallback| fallback(text)).unwrap_or_else(|| text.to_owned());
         if !fallback_text.is_empty() {
             default_stderr_write()(&fallback_text);
