@@ -620,6 +620,24 @@ fn question_answer_history_uses_existing_collapsed_answer_chip() {
 }
 
 #[tokio::test]
+async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/arminsayshi", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("ARMIN SAYS HI"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[tokio::test]
+async fn demented_delves_command_renders_the_earendil_announcement() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/dementedelves", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("pi has joined Earendil"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[tokio::test]
 async fn new_command_replaces_native_session_and_clears_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();

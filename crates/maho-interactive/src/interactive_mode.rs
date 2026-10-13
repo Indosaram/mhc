@@ -261,6 +261,8 @@ pub struct InteractiveMode {
     startup_notices_shown: bool,
     /// senpi `updateEditorBorderColor` inputs (thinking level, bash mode) last applied to the editor.
     editor_border_key: Option<(maho_ai::types::ModelThinkingLevel, bool)>,
+    /// senpi `ArminComponent`'s `setInterval`: live animations with the time of their last frame.
+    armin_animations: Vec<(Rc<RefCell<crate::components::armin::ArminComponent>>, f64)>,
 }
 type AuthPromptReply = (tokio::sync::oneshot::Receiver<String>, tokio::sync::oneshot::Sender<Result<String, String>>);
 
@@ -553,7 +555,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -945,7 +947,7 @@ impl InteractiveMode {
         self.chat.clear(); self.pending_tools.clear(); self.streaming = None; self.assistant_segments.clear();
         self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
-        self.history_expansion.clear();
+        self.history_expansion.clear(); self.armin_animations.clear();
         // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
         // the unrelated local session. Without a host, the local session is the source.
         if self.session_host.is_some() {
@@ -2130,6 +2132,8 @@ impl InteractiveMode {
             return Ok(true);
         }
         if text == "/debug" { self.handle_debug_command(); return Ok(true); }
+        if text == "/arminsayshi" { self.handle_armin_says_hi(); return Ok(true); }
+        if text == "/dementedelves" { self.handle_demented_delves(); return Ok(true); }
         if text == "/answer" || text.starts_with("/answer ") {
             let argument = text.strip_prefix("/answer").map(str::trim).unwrap_or_default();
             self.answer_command(argument);
@@ -2170,6 +2174,23 @@ impl InteractiveMode {
             Ok(()) => self.show_status(format!("✓ Debug log written: {path}")),
             Err(error) => self.show_status(format!("Failed to write debug log: {error}")),
         }
+    }
+
+    /// senpi `handleArminSaysHi`.
+    fn handle_armin_says_hi(&mut self) {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |elapsed| u64::from(elapsed.subsec_nanos()) ^ elapsed.as_secs());
+        let component = Rc::new(RefCell::new(crate::components::armin::ArminComponent::new(crate::components::armin::effect_for_index(seed as usize), seed, self.theme.clone())));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(component.clone());
+        self.armin_animations.push((component, self.clock.elapsed().as_secs_f64() * 1000.0));
+        self.editor_host.request_render();
+    }
+
+    /// senpi `handleDementedDelves`.
+    fn handle_demented_delves(&mut self) {
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(crate::components::earendil_announcement::EarendilAnnouncementComponent::new(&self.theme))));
+        self.editor_host.request_render();
     }
 
     pub fn drain_events(&mut self) {
@@ -2980,6 +3001,16 @@ impl InteractiveMode {
         for component in &self.tool_cards { let mut component = component.borrow_mut(); component.set_now_ms(now_ms); component.tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }
         for (id, value) in self.tool_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_result(Self::tool_result(&value, false), true); } }
+        // senpi `ArminComponent.startAnimation`: 30 fps (60 for glitch) until the effect completes.
+        self.armin_animations.retain_mut(|(component, last_ms)| {
+            let mut component = component.borrow_mut();
+            let interval = if component.effect() == crate::components::armin::Effect::Glitch { 1000.0 / 60.0 } else { 1000.0 / 30.0 };
+            while now_ms - *last_ms >= interval {
+                *last_ms += interval;
+                if component.tick() { return false; }
+            }
+            true
+        });
     }
 
     pub fn working_frame(&self, now_ms: f64) -> Option<String> {
