@@ -14,7 +14,7 @@ pub fn register_loop_command(api:&mut ExtensionApi,controller:Arc<dyn LoopContro
 }
 pub async fn run_loop_command(args:&str,ctx:&ExtensionContext,controller:&dyn LoopController)->Result<(),ExtensionFailure> {
     if matches!(ctx.mode,ExtensionMode::Print|ExtensionMode::Json) {
-        ctx.ui.notify(LOOP_HEADLESS_REJECTION,NotificationType::Warning); maho_ext_api::diagnostic(&format!("{LOOP_HEADLESS_REJECTION}")); return Ok(());
+        ctx.ui.notify(LOOP_HEADLESS_REJECTION,NotificationType::Warning); maho_ext_api::diagnostic(LOOP_HEADLESS_REJECTION); return Ok(());
     }
     let parsed=parse_loop_args(args);
     let (outcome,requested,bare)=match parsed {
