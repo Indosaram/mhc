@@ -32,6 +32,26 @@ impl CompactionLanePolicy {
         reason == "manual" || !self.disables_senpi_compaction(cwd, provider, compaction_model, load)
     }
 }
+/// Live `lanePolicy.disablesSenpiCompaction(ctx)`: reads the configured `compaction.model`
+/// override and the resolved `claudeSdkOauthProvider.resumeMode` from senpi's settings files.
+/// Settings are only touched when the active model belongs to the lane.
+pub fn live_disables_senpi_compaction(policy: &std::sync::Mutex<CompactionLanePolicy>, context: &maho_ext_api::ExtensionContext) -> bool {
+    let provider = context.model.as_ref().map(|model| model.provider.as_str());
+    if provider != Some(maho_ext_anthropic_subscription::account_management::ANTHROPIC_SUBSCRIPTION_PROVIDER_ID) { return false; }
+    let cwd = context.cwd.to_string_lossy();
+    let manager = maho_core::settings_manager::SettingsManager::create(&cwd, &context.agent_dir.to_string_lossy(), &maho_core::config::home_dir(), (context.is_project_trusted_fn)());
+    let compaction_model = manager.get_value("compaction").and_then(|compaction| compaction.get("model")).and_then(Value::as_str).map(str::to_owned);
+    policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disables_senpi_compaction(&cwd, provider, compaction_model.as_deref(), |_| {
+        if let Some(error) = manager.global_settings_load_error().or(manager.project_settings_load_error()) { return Err(error.to_owned()); }
+        let environment: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+        let settings = maho_ext_anthropic_subscription::settings::load(&Value::Object(manager.get_global().clone()), &Value::Object(manager.get_project().clone()), &environment);
+        Ok(settings.values.get("resumeMode").and_then(Value::as_str).map(str::to_owned))
+    })
+}
+/// Live `lanePolicy.ownsCompaction(ctx, reason)`: manual requests stay senpi-owned on every lane.
+pub fn live_owns_compaction(policy: &std::sync::Mutex<CompactionLanePolicy>, context: &maho_ext_api::ExtensionContext, reason: maho_ext_api::CompactionReason) -> bool {
+    reason == maho_ext_api::CompactionReason::Manual || !live_disables_senpi_compaction(policy, context)
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompactBoundaryEntry {
     pub schema: &'static str,
