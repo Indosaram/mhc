@@ -12,7 +12,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if mode == AppMode::AppServer {
         let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::AppServer);
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let code = super::app_server::run_app_server_with_signals(argv, config, env!("CARGO_PKG_VERSION"), parsed.session_dir.clone(), &executable, &[]).await?;
+        let code = super::app_server::run_app_server_with_signals(argv, config, env!("CARGO_PKG_VERSION"), resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None), &executable, &[]).await?;
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
@@ -52,7 +52,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
         // returns until its watchdog or empty-exit policy ends it.
-        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        let mut config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        config.session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None);
         let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
@@ -82,11 +83,75 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
     });
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
-    let manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
-        else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, parsed.session_dir.as_deref(), parsed.session_id.as_deref())? }
-        else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
-        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
-        else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
+    let session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), settings.get_string("sessionDir").as_deref());
+    let mut manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
+        else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, session_dir.as_deref(), parsed.session_id.as_deref())? }
+        else if let Some(argument) = &parsed.session {
+            // senpi main.ts:477-513: a path opens as-is, an id/prefix resolves locally then globally.
+            match resolve_session_path(argument, &cwd_text, session_dir.as_deref()) {
+                ResolvedSession::Path(path) | ResolvedSession::Local(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                ResolvedSession::Global { path, cwd: session_cwd } => {
+                    if mode != AppMode::Interactive {
+                        return Err(format!("Session found in different project: {session_cwd}\nCannot confirm forking without an interactive session. Use --fork '{argument}' to fork it into the current directory, or re-run interactively from {session_cwd}."));
+                    }
+                    let fork = indicator.during_surface_write(|| {
+                        println!("\x1b[33mSession found in different project: {session_cwd}\x1b[39m");
+                        prompt_confirm("Fork this session into current directory?")
+                    });
+                    if !fork {
+                        indicator.stop();
+                        println!("\x1b[2mAborted.\x1b[22m");
+                        std::process::exit(0);
+                    }
+                    fork_session(&path, &cwd_text, session_dir.as_deref(), None)?
+                }
+                ResolvedSession::NotFound(argument) => return Err(format!("No session found matching '{argument}'")),
+            }
+        }
+        else if parsed.resume {
+            // senpi main.ts:515-531: the startup session picker; cancelling exits 0.
+            match indicator.during_surface_write(|| super::session_picker::select_session(&cwd_text, session_dir.as_deref(), &settings))? {
+                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                None => {
+                    indicator.stop();
+                    println!("\x1b[2mNo session selected\x1b[22m");
+                    std::process::exit(0);
+                }
+            }
+        }
+        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, session_dir.as_deref()) }
+        else if let Some(id) = parsed.session_id.as_deref() {
+            // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
+            match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
+                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                None => {
+                    indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
+                    SessionManager::create(&cwd_text, session_dir.as_deref(), identity)
+                }
+            }
+        }
+        else { SessionManager::create(&cwd_text, session_dir.as_deref(), identity) };
+    // senpi main.ts:1168-1180: a resumed session whose stored cwd is gone continues in the launch
+    // cwd after an interactive confirmation, and is an error in every other mode.
+    if let Some(issue) = maho_core::session_cwd::get_missing_session_cwd_issue(&manager, &cwd_text) {
+        if mode != AppMode::Interactive { return Err(maho_core::session_cwd::format_missing_session_cwd_error(&issue)); }
+        let options = vec!["Continue".to_owned(), "Cancel".to_owned()];
+        let (theme, hardware_cursor, clear_on_shrink) = (settings.get_string("theme"), settings.get_bool("showHardwareCursor").unwrap_or(false), settings.get_bool("clearOnShrink").unwrap_or(false));
+        let prompt = maho_core::session_cwd::format_missing_session_cwd_prompt(&issue);
+        let choice = indicator.during_surface_write(|| super::startup_ui::show_startup_selector(theme.as_deref(), hardware_cursor, clear_on_shrink, &prompt, &options))?;
+        let session_file = issue.session_file.clone().filter(|_| choice.as_deref() == Some("Continue"));
+        let Some(session_file) = session_file else {
+            indicator.stop();
+            std::process::exit(0);
+        };
+        manager = SessionManager::open(&session_file, session_dir.as_deref(), Some(issue.fallback_cwd.as_str()), None);
+    }
+    let has_context_messages = manager.has_context_messages();
+    // senpi main.ts:1181-1188: a blank `--name` is rejected before the runtime is built.
+    let session_name = match parsed.name.as_deref() {
+        Some(raw) => Some(super::args::normalize_session_name(raw).ok_or("Error: --name requires a non-empty value")?.to_owned()),
+        None => None,
+    };
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
@@ -149,7 +214,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let model_patterns = parsed.models.as_deref().unwrap_or_default();
     let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
-    let has_context_messages = manager.has_context_messages();
     let options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) {
@@ -214,7 +278,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         session.rebuild_system_prompt();
     }
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
-    if let Some(name) = &parsed.name { session.set_session_name(name); }
+    if let Some(name) = &session_name { session.set_session_name(name); }
     indicator.stop();
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
     let result = async { match mode {
@@ -243,6 +307,57 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
     result
+}
+
+/// senpi `ResolvedSession`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolvedSession {
+    Path(String),
+    Local(String),
+    Global { path: String, cwd: String },
+    NotFound(String),
+}
+
+/// senpi `findLocalSessionByExactId`.
+pub fn find_local_session_by_exact_id(session_id: &str, cwd: &str, session_dir: Option<&str>) -> Option<String> {
+    let sessions = if session_dir.is_some() { SessionManager::list_all(session_dir) } else { SessionManager::list(cwd, None) };
+    sessions.into_iter().find(|session| session.id == session_id).map(|session| session.path)
+}
+
+/// senpi `resolveSessionPath`: a path is resolved against `cwd`; otherwise the argument is an id or
+/// id prefix matched in this project first, then across every project.
+pub fn resolve_session_path(session_arg: &str, cwd: &str, session_dir: Option<&str>) -> ResolvedSession {
+    if session_arg.contains('/') || session_arg.contains('\\') || session_arg.ends_with(".jsonl") {
+        return ResolvedSession::Path(maho_core::paths::resolve_path(session_arg, cwd, &maho_core::paths::PathInputOptions::expanding_tilde(maho_core::config::home_dir())));
+    }
+    let matching = |sessions: &[maho_core::session_discovery::SessionInfo]| {
+        sessions.iter().find(|session| session.id == session_arg)
+            .or_else(|| sessions.iter().find(|session| session.id.starts_with(session_arg)))
+            .map(|session| (session.path.clone(), session.cwd.clone()))
+    };
+    if let Some((path, _)) = matching(SessionManager::list(cwd, session_dir).as_slice()) { return ResolvedSession::Local(path); }
+    if let Some((path, cwd)) = matching(SessionManager::list_all(session_dir).as_slice()) { return ResolvedSession::Global { path, cwd }; }
+    ResolvedSession::NotFound(session_arg.to_owned())
+}
+
+/// senpi `promptConfirm`: `[y/N]` on stdin; EOF or a read error answers no.
+fn prompt_confirm(message: &str) -> bool {
+    use std::io::Write;
+    print!("{message} [y/N] ");
+    if std::io::stdout().flush().is_err() { return false; }
+    let mut answer = String::new();
+    match std::io::stdin().read_line(&mut answer) {
+        Ok(0) | Err(_) => false,
+        Ok(_) => matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"),
+    }
+}
+
+/// senpi main.ts:1162-1166: `--session-dir` (path-normalized), then `<PREFIX>_CODING_AGENT_SESSION_DIR`
+/// (tilde-expanded), then the `sessionDir` setting (path-normalized). Empty values count as unset.
+pub fn resolve_session_dir(flag: Option<&str>, env: Option<&str>, setting: Option<&str>) -> Option<String> {
+    let options = maho_core::paths::PathInputOptions::expanding_tilde(maho_core::config::home_dir());
+    [flag, env, setting].into_iter().flatten().find(|value| !value.is_empty())
+        .map(|value| maho_core::paths::normalize_path(value, &options))
 }
 
 pub fn fork_session(source_path: &str, cwd: &str, session_dir: Option<&str>, session_id: Option<&str>) -> Result<SessionManager, String> {

@@ -1590,6 +1590,41 @@ impl SessionManager {
     }
 }
 
+impl SessionManager {
+    /// senpi `SessionManager.list(cwd, sessionDir)`: one project's sessions, newest first. A custom
+    /// session dir that is not this cwd's default dir is filtered to sessions started in `cwd`.
+    pub fn list(cwd: &str, session_dir: Option<&str>) -> Vec<crate::session_discovery::SessionInfo> {
+        let options = PathInputOptions::default();
+        let dir = session_dir.map(|dir| normalize_path(dir, &options)).unwrap_or_else(|| get_default_session_dir(cwd));
+        let filter_cwd = session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
+        let resolved_cwd = resolve_path(cwd, cwd, &options);
+        let mut sessions: Vec<_> = crate::session_discovery::list_sessions_from_dir(&dir, None, 0, None)
+            .into_iter()
+            .filter(|session| !filter_cwd || (!session.cwd.is_empty() && resolve_path(&session.cwd, &session.cwd, &options) == resolved_cwd))
+            .collect();
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
+        sessions
+    }
+
+    /// senpi `SessionManager.listAll(sessionDir)`: every session in a custom dir, or across every
+    /// project directory under the agent sessions dir, newest first.
+    pub fn list_all(session_dir: Option<&str>) -> Vec<crate::session_discovery::SessionInfo> {
+        let mut sessions = Vec::new();
+        match session_dir {
+            Some(dir) => sessions = crate::session_discovery::list_sessions_from_dir(&normalize_path(dir, &PathInputOptions::default()), None, 0, None),
+            None => {
+                if let Ok(entries) = std::fs::read_dir(get_sessions_dir()) {
+                    for entry in entries.filter_map(Result::ok).filter(|entry| entry.path().is_dir()) {
+                        sessions.extend(crate::session_discovery::list_sessions_from_dir(&entry.path().to_string_lossy(), None, 0, None));
+                    }
+                }
+            }
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.modified));
+        sessions
+    }
+}
+
 pub fn now_iso_millis() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
