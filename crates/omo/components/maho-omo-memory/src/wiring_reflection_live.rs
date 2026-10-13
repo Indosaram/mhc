@@ -64,14 +64,14 @@ impl MemoryReflectionLiveWiring{
     }
     fn sync_footer(&mut self,now:i64,ui:Option<&mut dyn MemoryFooterUi>){let session=self.session.as_deref();let context=session.and_then(|session|self.contexts.get(session));let active=context.is_some_and(|context|lock(&self.active_runs).is_active(&context.identity));self.footer.sync_active(context,session,active,now,ui);}
     pub fn on_settled(&mut self,session:&str,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>)->Result<(),String>{let context=self.contexts.get(session);let active=context.is_some_and(|context|lock(&self.active_runs).is_active(&context.identity));self.footer.refresh(context,Some(session),active,now,ui);self.sync_rpc(api,now)}
-    pub fn sync_rpc(&mut self,api:&maho_ext_api::ExtensionApi,now:i64)->Result<(),String>{let runs=lock(&self.active_runs);let mut rpc=lock(&self.rpc);let result=rpc.sync_native(&Deps{contexts:&self.contexts,runs:&runs},api,now);result}
+    pub fn sync_rpc(&mut self,api:&maho_ext_api::ExtensionApi,now:i64)->Result<(),String>{let runs=lock(&self.active_runs);let mut rpc=lock(&self.rpc);rpc.sync_native(&Deps{contexts:&self.contexts,runs:&runs},api,now)}
     pub fn shutdown(&mut self,identity:Option<&str>){if let Some(identity)=identity{lock(&self.active_runs).clear(identity);}self.footer.dispose();lock(&self.rpc).detach();}
     pub fn clear_status(&mut self){self.footer.stop();}
 }
 #[cfg(test)]mod tests{
     use super::*;
-    #[derive(Default)]struct Live{initial:usize,entries:Vec<String>,completions:Vec<String>}
-    impl crate::worker::completion_delivery::ReflectionLiveSession for Live{fn session_id(&self)->&str{"session"}fn append_entry(&mut self,kind:&str,_:serde_json::Value){self.entries.push(kind.into());}fn notify(&mut self,_:&str,_:bool)->Result<(),String>{Ok(())}fn warn(&mut self,message:&str,error:&str){panic!("{message}: {error}")}fn on_completion(&mut self,run:&str){self.completions.push(run.into());}}
+    #[derive(Default)]struct Live{initial:usize,entries:Vec<String>}
+    impl crate::worker::completion_delivery::ReflectionLiveSession for Live{fn session_id(&self)->&str{"session"}fn append_entry(&mut self,kind:&str,_:serde_json::Value){self.entries.push(kind.into());}fn notify(&mut self,_:&str,_:bool)->Result<(),String>{Ok(())}fn warn(&mut self,message:&str,error:&str){panic!("{message}: {error}")}fn on_completion(&mut self,_:&str){}}
     impl crate::worker::health_alert::ReflectionHealthLiveSession for Live{fn session_id(&self)->&str{"session"}fn has_ui(&self)->bool{true}fn append_entry(&mut self,name:&str,_:&crate::worker::health_alert::ReflectionHealthEntry){self.entries.push(name.into());}fn notify(&mut self,_:&str,_:&str){}}
     impl ReflectionBindLive for Live{fn refresh_initial_status(&mut self,_:&MemoryIdentityContext){self.initial+=1;}fn completions(&mut self)->&mut dyn crate::worker::completion_delivery::ReflectionLiveSession{self}fn health(&mut self)->&mut dyn crate::worker::health_alert::ReflectionHealthLiveSession{self}}
     #[test]fn bind_refreshes_initial_status_and_drains_pending_completions(){
