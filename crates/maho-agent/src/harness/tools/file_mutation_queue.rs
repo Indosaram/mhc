@@ -51,14 +51,37 @@ pub async fn with_file_mutation_queue<T, F: Future<Output = Result<T, String>>>(
         .map_err(|e| e.to_string())?;
     let key = match env.canonical_path(&absolute, context).await {
         Ok(path) => path,
-        Err(error)
-            if matches!(
-                error.code,
-                FileErrorCode::NotFound | FileErrorCode::NotSupported
-            ) =>
-        {
-            absolute
+        Err(error) if error.code == FileErrorCode::NotFound => {
+            let mut ancestor = std::path::PathBuf::from(&absolute);
+            let mut missing = Vec::new();
+            let canonical_ancestor = loop {
+                let Some(name) = ancestor.file_name() else {
+                    return Err(error.to_string());
+                };
+                missing.push(name.to_os_string());
+                if !ancestor.pop() {
+                    return Err(error.to_string());
+                }
+                let ancestor_path = ancestor.to_string_lossy().into_owned();
+                match env.canonical_path(&ancestor_path, context).await {
+                    Ok(path) => break path,
+                    Err(ancestor_error) if ancestor_error.code == FileErrorCode::NotFound => {}
+                    Err(ancestor_error) if ancestor_error.code == FileErrorCode::NotSupported => {
+                        missing.clear();
+                        break absolute.clone();
+                    }
+                    Err(ancestor_error) => return Err(ancestor_error.to_string()),
+                }
+            };
+            missing.reverse();
+            missing.iter().fold(canonical_ancestor, |path, component| {
+                std::path::Path::new(&path)
+                    .join(component)
+                    .to_string_lossy()
+                    .into_owned()
+            })
         }
+        Err(error) if error.code == FileErrorCode::NotSupported => absolute,
         Err(error) => return Err(error.to_string()),
     };
     queues.retain(|_, queue| queue.strong_count() > 0);

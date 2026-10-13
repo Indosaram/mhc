@@ -2,11 +2,12 @@ use std::{sync::{Arc, Mutex}, time::Duration};
 use maho_ext_api::{AbortSignal, ToolCall, ToolContent};
 use maho_ext_mcp::{catalog::collect_tool_catalog, config_schema::*, expose::{proxy::*, register::build_mcp_tool_definitions}, guard::output_guard::McpOutputArtifacts, log::McpLogger, transport::*};
 use serde_json::json;
+mod support;
 
 #[tokio::test]
 async fn proxy_describe_and_call_use_real_catalog_and_guide_invalid_arguments() {
     let root = tempfile::tempdir().unwrap();
-    let config = McpServerConfig {transport: Some(Transport::Stdio), command: Some("/usr/bin/node".into()), args: Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(), "--tools".into(), "1".into()]), ..Default::default()};
+    let config = McpServerConfig {transport: Some(Transport::Stdio), command: Some(support::node()), args: Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"), "--tools".into(), "1".into()]), ..Default::default()};
     let transport = create_mcp_transport("fx", &config, None, Arc::new(Mutex::new(McpLogger::new("fx", root.path(), None).unwrap()))).unwrap();
     let client = connect_mcp_transport(&transport).await.unwrap();
     let catalog = collect_tool_catalog("fx", client, Duration::from_secs(3)).await.unwrap();

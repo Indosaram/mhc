@@ -1136,8 +1136,16 @@ async fn wait_status(status_rx: &mut tokio::sync::oneshot::Receiver<std::io::Res
 }
 
 fn exit_status_fallback() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(1 << 8)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1 << 8)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(1)
+    }
 }
 
 /// Spill state: buffers chunks until the capture truncates, then streams them to a temp file.

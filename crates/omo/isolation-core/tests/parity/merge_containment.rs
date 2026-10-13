@@ -22,6 +22,7 @@ fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 #[test]
+#[cfg(unix)]
 fn nested_path_rejects_paths_that_escape_the_root_through_symlinked_components() {
     let f = fixture();
     let root = f.root.join("root");
@@ -35,6 +36,7 @@ fn nested_path_rejects_paths_that_escape_the_root_through_symlinked_components()
 }
 
 #[test]
+#[cfg(unix)]
 fn write_artifacts_refuses_artifact_destinations_redirected_by_a_pre_existing_symlink() {
     let f = fixture();
     let artifacts_dir = f.root.join("artifacts");
@@ -56,6 +58,7 @@ fn write_artifacts_refuses_artifact_destinations_redirected_by_a_pre_existing_sy
 }
 
 #[test]
+#[cfg(unix)]
 fn nested_merge_refuses_a_nested_repository_path_replaced_by_an_external_symlink() {
     let f = repo();
     let inner = repo();

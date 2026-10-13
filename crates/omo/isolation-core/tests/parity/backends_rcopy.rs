@@ -84,6 +84,7 @@ fn rcopy_seeds_staged_unstaged_and_nul_delimited_untracked_files_without_ignored
 }
 
 #[test]
+#[cfg(unix)]
 fn rcopy_plain_copy_preserves_symlinks_refuses_existing_destinations_and_enforces_byte_ceiling() {
     let f = fixture();
     let lower = f.repo_root.clone();

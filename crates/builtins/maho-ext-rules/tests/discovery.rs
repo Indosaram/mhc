@@ -5,14 +5,23 @@ use maho_ext_rules::rules::{finder::{FinderOptions, RuleDiscoveryCache, find_rul
 fn scanner_orders_case_accents_and_punctuation_like_locale_compare() {
     // Given
     let root = tempfile::tempdir().unwrap();
-    for name in ["A.md", "a.md", "_x.md", "\u{e9}.md", "e.md", "z.md"] {
+    let expected = ["_x.md", "a.md", "A.md", "e.md", "\u{e9}.md", "z.md"];
+    for name in expected {
         fs::write(root.path().join(name), "").unwrap();
     }
+    let existing = fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::HashSet<_>>();
+    let expected = expected
+        .into_iter()
+        .filter(|name| existing.contains(*name))
+        .collect::<Vec<_>>();
     // When
     let files = scan_rule_files(root.path(), None, None);
     // Then
     assert_eq!(files.iter().map(|file| file.path.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(),
-        ["_x.md", "a.md", "A.md", "e.md", "\u{e9}.md", "z.md"]);
+        expected);
 }
 
 #[test]
@@ -29,6 +38,7 @@ fn scanner_excludes_build_directories_and_limits_depth() {
 }
 
 #[test]
+#[cfg(unix)]
 fn scanner_breaks_symlink_cycles_and_preserves_aliases() {
     // Given
     let root = tempfile::tempdir().unwrap();

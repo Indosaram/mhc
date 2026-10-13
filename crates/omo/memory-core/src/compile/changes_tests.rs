@@ -33,7 +33,7 @@ fn fixture() -> (tempfile::TempDir, GitMemoryRepo) {
 fn projected_paths_use_locale_order_for_case() {
     let (_dir, repo) = fixture();
     let base = repo.head().expect("head").expect("base");
-    let paths = ["notes/Z.md", "notes/a.md", "notes/A.md", "notes/z.md"];
+    let paths = ["notes/a.md", "notes/A.md", "notes/z.md", "notes/Z.md"];
     for path in paths {
         std::fs::write(repo.dir.join(path), "---\ndescription: note\n---\nbody\n")
             .expect("add note");
@@ -42,7 +42,15 @@ fn projected_paths_use_locale_order_for_case() {
     let head = repo.head().expect("head").expect("revision");
     let changes = projected_changes_between(&repo, Some(&base), Some(&head), &Default::default())
         .expect("changes");
-    assert_eq!(changes.added, ["notes/a.md", "notes/A.md", "notes/z.md", "notes/Z.md"]);
+    let existing = std::fs::read_dir(repo.dir.join("notes"))
+        .expect("notes directory")
+        .map(|entry| entry.expect("note entry").file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::HashSet<_>>();
+    let expected = paths
+        .into_iter()
+        .filter(|path| existing.contains(path.rsplit('/').next().expect("filename")))
+        .collect::<Vec<_>>();
+    assert_eq!(changes.added, expected);
 }
 
 #[test]

@@ -37,7 +37,8 @@ pub async fn arm_host_watchdog(config:Option<HostWatchdogConfig>,capture_before_
     let _=cleanup_watchdog_paths(&config,capture_before_cleanup).await;
     on_supervisor_gone(reason);
 }
-fn parent_pid()->u32{std::os::unix::process::parent_id()}
+#[cfg(unix)] fn parent_pid()->u32{std::os::unix::process::parent_id()}
+#[cfg(not(unix))] fn parent_pid()->u32{0}
 /// EOF on the inherited pipe is the primary signal; readable data is ignored, only close matters.
 ///
 /// The blocking read lives on its OWN detached OS thread, never on the runtime's blocking pool: a
@@ -48,6 +49,7 @@ fn parent_pid()->u32{std::os::unix::process::parent_id()}
 /// exit and is never joined. A descriptor that cannot be reopened leaves the binding inert rather
 /// than killing a healthy host.
 fn watch_fd_for_eof(fd:u64)->Option<tokio::sync::oneshot::Receiver<String>>{
+    #[cfg(unix)] {
     use std::io::Read;
     let mut file=std::fs::File::open(format!("/dev/fd/{fd}")).ok()?;
     let(sender,receiver)=tokio::sync::oneshot::channel();
@@ -56,6 +58,8 @@ fn watch_fd_for_eof(fd:u64)->Option<tokio::sync::oneshot::Receiver<String>>{
         loop{match file.read(&mut buffer){Ok(0)|Err(_)=>{let _=sender.send(format!("supervisor pipe fd {fd} closed"));return;}Ok(_)=>{}}}
     }).ok()?;
     Some(receiver)
+    }
+    #[cfg(not(unix))] { let _=fd;None }
 }
 pub fn supervisor_gone_reason(supervisor_pid:u32,self_pid:u32,ppid:u32,alive:bool)->Option<String>{if supervisor_pid==self_pid{return None;}(!alive||ppid!=supervisor_pid).then(||format!("supervisor pid {supervisor_pid} is gone (ppid={ppid})"))}
 pub async fn watch_supervisor_pipe(mut input:impl tokio::io::AsyncRead+Unpin)->std::io::Result<()>{

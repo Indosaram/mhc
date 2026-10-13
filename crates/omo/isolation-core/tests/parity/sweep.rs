@@ -37,6 +37,7 @@ fn write_marker(base: &std::path::Path, kind: &str, pid: u32, host: &str) {
 }
 
 #[test]
+#[cfg(unix)]
 fn sweep_stops_dead_backends_and_retains_live_foreign_unknown_retained_and_skips_symlinks() {
     let f = fixture();
     let sweep_root = f.root.join("wt");

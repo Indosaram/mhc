@@ -90,6 +90,8 @@ fn injected_git_emits_ready_before_cancellation_and_is_reaped() {
     let pid = child_pid.load(std::sync::atomic::Ordering::Acquire) as u32;
     #[cfg(target_os = "linux")]
     assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    #[cfg(all(unix, not(target_os = "linux")))]
+    assert!(!std::process::Command::new("kill").args(["-0", &pid.to_string()]).stderr(std::process::Stdio::null()).status().unwrap().success());
 }
 
 #[test]

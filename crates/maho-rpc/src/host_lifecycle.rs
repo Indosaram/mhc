@@ -72,12 +72,18 @@ pub async fn wait_for_idle_exit(idle_exit_ms:f64,mut activity:tokio::sync::watch
         }
     }
 }
+#[cfg(unix)]
 pub async fn proxy_connection(mut client:tokio::net::UnixStream,internal_socket:&std::path::Path,internal_secret:Option<&[u8]>)->std::io::Result<()> {
     let mut internal=tokio::net::UnixStream::connect(internal_socket).await?;
     if let Some(secret)=internal_secret{crate::socket_transport::send_socket_handshake(&mut internal,secret).await?;}
     tokio::io::copy_bidirectional(&mut client,&mut internal).await?;
     Ok(())
 }
+#[cfg(not(unix))]
+pub async fn proxy_connection(_client:(),_internal_socket:&std::path::Path,_internal_secret:Option<&[u8]>)->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+#[cfg(not(unix))]
+pub async fn run_socket_proxy(_listener:(),_internal_socket:std::path::PathBuf,_public_secret:Option<Vec<u8>>,_internal_secret:Option<Vec<u8>>,_draining:tokio::sync::watch::Receiver<bool>,_connections:tokio::sync::watch::Sender<usize>)->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+#[cfg(unix)]
 pub async fn run_socket_proxy(listener:tokio::net::UnixListener,internal_socket:std::path::PathBuf,public_secret:Option<Vec<u8>>,internal_secret:Option<Vec<u8>>,mut draining:tokio::sync::watch::Receiver<bool>,connections:tokio::sync::watch::Sender<usize>)->std::io::Result<()> {
     let mut clients=tokio::task::JoinSet::new();
     loop{
@@ -142,6 +148,7 @@ pub fn parse_supervisor_args(argv:&[String])->Option<SupervisorLaunch>{
  * only sees the internal socket. It re-enters the committed CLI entry so the host it serves is
  * built from this same executable.
  */
+#[cfg(unix)]
 pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     let platform=if cfg!(windows){"win32"}else{std::env::consts::OS};
     let agent_dir=launch.agent_dir.clone().unwrap_or_else(maho_core::config::get_agent_dir);
@@ -172,11 +179,13 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     child_env.insert(crate::host_watchdog::HOST_CLEANUP_PATHS_ENV.into(),cleanup_paths.join("\n"));
     #[cfg(unix)]
     let _watch_guard=bind_child_watch_pipe(&mut child_env)?;
+    #[cfg(unix)]
     let stderr={
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&paths.stderr_log)?
     };
     let spawnable=spawnable_child_launch(&child_launch,platform);
+    #[cfg(unix)]
     let mut child=tokio::process::Command::new(&spawnable.command).args(&spawnable.args).env_clear().envs(child_env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr).process_group(0).spawn()?;
     let child_pid=child.id().ok_or_else(||std::io::Error::other("supervised host has no process identity"))?;
     // Readiness: the internal hop must answer before the public name is published, or a client
@@ -301,6 +310,8 @@ pub async fn run_host_supervisor(launch:SupervisorLaunch)->std::io::Result<()>{
     if let Some(code)=signal_code{std::process::exit(code);}
     Ok(())
 }
+#[cfg(not(unix))]
+pub async fn run_host_supervisor(_launch:SupervisorLaunch)->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
 #[derive(Debug,PartialEq)]
 pub struct HostLifecyclePolicy{pub cold_start:String,pub idle_exit_ms:f64}
 /// The private directory a supervisor's internal hop lives in (senpi `createInternalSocketPath`).

@@ -13,7 +13,12 @@ fn keybindings() -> std::sync::Arc<maho_tui::keybindings::KeybindingsManager> {
 
 #[test]
 fn helper_renders_equal_pinned_senpi_at_three_widths() {
-    let cases: serde_json::Value = serde_json::from_str(include_str!("golden/task35-helpers.json")).expect("golden");
+    let fixture = if cfg!(target_os = "macos") {
+        include_str!("golden/task35-helpers-darwin.json")
+    } else {
+        include_str!("golden/task35-helpers.json")
+    };
+    let cases: serde_json::Value = serde_json::from_str(fixture).expect("golden");
     let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("theme");
     for case in cases.as_array().expect("cases") {
         let width = usize::try_from(case["width"].as_u64().expect("width")).expect("width fits");
@@ -23,7 +28,7 @@ fn helper_renders_equal_pinned_senpi_at_three_widths() {
             "thinking" => ThinkingSelectorComponent::new(&theme, keybindings(), ThinkingSelectorOptions {
                 current: maho_ai::types::ModelThinkingLevel::Medium, available: maho_ai::types::ModelThinkingLevel::ALL.to_vec(), default: Some(maho_ai::types::ModelThinkingLevel::High), on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}), on_select_as_default: Some(Box::new(|_| {})),
             }).render(width),
-            "trust" => TrustSelectorComponent::new(&theme, keybindings(), TrustSelectorOptions { cwd: "/tmp".into(), saved_decision: None, project_trusted: false, on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}) }).render(width),
+            "trust" => TrustSelectorComponent::new(&theme, keybindings(), TrustSelectorOptions { cwd: "/usr/bin".into(), saved_decision: None, project_trusted: false, on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}) }).render(width),
             "editor" => {
                 let mut editor = CustomEditor::new(std::rc::Rc::new(EditorHost), editor_theme(&theme), keybindings(), CustomEditorOptions::default());
                 editor.editor.set_text("hello 한국어");

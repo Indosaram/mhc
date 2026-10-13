@@ -1,18 +1,28 @@
+#[cfg(not(unix))]
+fn main() {}
+
+#[cfg(unix)]
 use maho_ext_api::*;
+#[cfg(unix)]
 use std::{io::{BufRead, Write}, path::Path, sync::{Arc, mpsc}, time::Duration};
 
+#[cfg(unix)]
 struct Session;
+#[cfg(unix)]
 impl ToolSessionManager for Session {
     fn session_id(&self) -> &str { "faux-session" }
     fn session_file(&self) -> Option<&Path> { None }
 }
+#[cfg(unix)]
 impl SessionManager for Session {
     fn get_entries(&self) -> Vec<SessionEntry> { Vec::new() }
     fn get_branch(&self) -> Vec<SessionEntry> { Vec::new() }
     fn get_leaf_id(&self) -> Option<String> { None }
     fn get_session_name(&self) -> Option<String> { None }
 }
+#[cfg(unix)]
 struct Registry;
+#[cfg(unix)]
 impl ModelRegistry for Registry {
     fn get_all(&self) -> Vec<Model> { Vec::new() }
     fn get_available(&self) -> Vec<Model> { Vec::new() }
@@ -20,7 +30,9 @@ impl ModelRegistry for Registry {
     fn has_configured_auth(&self, _: &Model) -> bool { false }
     fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
 }
+#[cfg(unix)]
 struct Ui;
+#[cfg(unix)]
 impl ExtensionUi for Ui {
     fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
     fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
@@ -37,6 +49,7 @@ impl ExtensionUi for Ui {
     fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("fixture has no UI".into()) }) }
     fn theme(&self) -> Theme { Theme::default() }
 }
+#[cfg(unix)]
 fn context() -> ExtensionContext {
     ExtensionContext { ui: Arc::new(Ui), mode: ExtensionMode::Tui, has_ui: false, cwd: "/tmp".into(), agent_dir: "/tmp/agent".into(),
         session_manager: Arc::new(Session), model_registry: Arc::new(Registry), model: None, thinking_level: None,
@@ -47,6 +60,7 @@ fn context() -> ExtensionContext {
         get_system_prompt_options_fn: Arc::new(BuildSystemPromptOptions::default), registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default() }
 }
 
+#[cfg(unix)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket = std::env::var("HERDR_SOCKET_PATH")?;

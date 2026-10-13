@@ -301,9 +301,11 @@ mod tests {
         assert_eq!(warnings[0].0, "Discarded an orphaned reflection leftover");
         let details = warnings[0].1.as_ref().expect("receipt details");
         assert_eq!(details.kind, Some(OrphanKind::Worktree));
+        let canonical_worktrees = std::fs::canonicalize(&fixture.worktrees).expect("canonical worktrees");
+        let orphan_name = orphan.dir.file_name().expect("orphan dir name");
         assert_eq!(
             details.target.as_deref(),
-            Some(orphan.dir.to_string_lossy().as_ref())
+            Some(canonical_worktrees.join(orphan_name).to_string_lossy().as_ref())
         );
         drop(warnings);
 

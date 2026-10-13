@@ -255,8 +255,27 @@ pub async fn run_multi_session_host(core:std::sync::Arc<HostCore>,listen:Option<
 }
 /// Serve the shared host with explicit shutdown triggers: the seam the CLI entry and its tests use.
 pub async fn run_multi_session_host_with_signals(core:std::sync::Arc<HostCore>,listen:Option<String>,signals:HostShutdownSignals)->std::io::Result<()>{
+    #[cfg(not(unix))]
+    { let _=signals; return match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(_)=>Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}; }
+    #[cfg(unix)]
+    {
     match listen.as_deref(){None|Some("stdio://")=>run_stdio_host(core).await,Some(path)=>run_socket_host(core,path.to_owned(),signals).await}
+    }
 }
+#[cfg(not(unix))]
+async fn run_stdio_host(core:std::sync::Arc<HostCore>)->std::io::Result<()>{
+    use tokio::io::AsyncReadExt;
+    let mut input=tokio::io::stdin();
+    let mut reader=crate::jsonl::JsonlLineReader::new(crate::jsonl::MAX_RPC_LINE_CHARACTERS).map_err(std::io::Error::other)?;
+    let mut chunk=[0u8;8192];
+    loop{
+        let count=input.read(&mut chunk).await?;
+        let records=if count==0{reader.finish()}else{reader.push(&chunk[..count])};
+        for record in records{let crate::jsonl::LineRecord::Line(line)=record else{continue};core.handle(None,&line).await.map_err(std::io::Error::other)?;}
+        if count==0{core.default_writer.flush().await.map_err(std::io::Error::other)?;return Ok(());}
+    }
+}
+#[cfg(unix)]
 async fn run_stdio_host(core:std::sync::Arc<HostCore>)->std::io::Result<()>{
     use tokio::io::AsyncReadExt;
     let mut input=tokio::io::stdin();
@@ -281,6 +300,7 @@ async fn poll_host_commands(commands:&mut Vec<HostCommand>)->Result<(),String>{
     }).await;
     drop(commands.remove(index));result
 }
+#[cfg(unix)]
 async fn run_socket_host(core:std::sync::Arc<HostCore>,listen:String,signals:HostShutdownSignals)->std::io::Result<()>{
     let path=crate::host_ensure::normalize_socket_path(&listen).to_owned();
     if let Some(parent)=std::path::Path::new(&path).parent(){crate::host_daemon_paths::create_private_directory(parent)?;}
@@ -394,6 +414,7 @@ fn endpoint_superseded(own_path:&str,own:&Option<crate::socket_ownership::Socket
     }
 }
 /// One accepted connection's lifetime: register its writer, pump its commands, release it.
+#[cfg(unix)]
 async fn serve_socket_connection(core:std::sync::Arc<HostCore>,connection:String,socket:tokio::net::UnixStream){
     let(read,write)=socket.into_split();
     let writer=std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(write));

@@ -1,7 +1,12 @@
-use std::{io::Write,os::unix::fs::OpenOptionsExt,path::Path};
+use std::{io::Write,path::Path};
+#[cfg(unix)]
+fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600) }
+#[cfg(not(unix))]
+fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { options }
 pub fn claim_notice(state_dir:&Path)->std::io::Result<bool> {
     std::fs::create_dir_all(state_dir)?;
-    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(state_dir.join("notice-shown")) {
+    let mut options=std::fs::OpenOptions::new(); options.write(true).create_new(true);
+    match private_file(&mut options).open(state_dir.join("notice-shown")) {
         Ok(mut file)=>{file.write_all(b"shown\n")?;Ok(true)},
         Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>Ok(false),
         Err(error)=>Err(error),
@@ -34,6 +39,7 @@ mod tests {
     #[tokio::test] async fn disabled_config_no_notice_or_marker() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|false));let (ctx,messages)=context_with_notifications(t.path(),"s");dispatch(&api,start(),&ctx).await;assert!(messages.lock().unwrap().is_empty());assert!(!t.path().join("notice").exists());}
     #[test] fn no_audit_commands() {use crate::telemetry_test_support::*;let t=tempfile::tempdir().unwrap();let mut api=api();register_omo_native_notice(&mut api,env(t.path()),t.path().join("notice"),std::sync::Arc::new(|_|true));assert!(api.registered.commands.is_empty());}
     #[test] fn once_per_machine() {let t=tempfile::tempdir().unwrap();assert!(claim_notice(t.path()).unwrap());assert!(!claim_notice(t.path()).unwrap());}
+    #[cfg(unix)]
     #[test] fn private_marker() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();claim_notice(t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("notice-shown")).unwrap().permissions().mode()&0o777,0o600);}
     #[test] fn blocked_directory_reports_error() {let t=tempfile::tempdir().unwrap();let file=t.path().join("blocked");std::fs::write(&file,"").unwrap();assert!(claim_notice(&file).is_err());}
     #[test] fn stale_marker_suppresses() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("notice-shown"),"shown\n").unwrap();assert!(!claim_notice(t.path()).unwrap());}

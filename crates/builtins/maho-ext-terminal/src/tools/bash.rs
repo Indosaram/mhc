@@ -145,7 +145,13 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5),async {
             assert!(updates.recv().await.unwrap().content.is_empty());
             manager.lock().unwrap().get("bash_1").unwrap().write(b"begin\n").unwrap();
-            let update=updates.recv().await.unwrap();assert!(matches!(&update.content[0],maho_tools::definition::ToolContent::Text {text,..} if text.contains("progress-ready")));assert!(update.details.unwrap()["progress"]["startedAt"].is_number());
+            let mut observed=false;
+            while let Some(update)=updates.recv().await {
+                assert!(matches!(update.content.first(),Some(maho_tools::definition::ToolContent::Text {..})));
+                assert!(update.details.as_ref().unwrap()["progress"]["startedAt"].is_number());
+                if update.content.iter().any(|part|matches!(part,maho_tools::definition::ToolContent::Text {text,..} if text.contains("progress-ready"))) {observed=true;break;}
+            }
+            assert!(observed,"the progress-ready output must be observed before releasing the child");
             manager.lock().unwrap().get("bash_1").unwrap().write(b"released\n").unwrap();let result=task.await.unwrap().unwrap();assert!(result.content[0].text.contains("released"));
         }).await.unwrap();manager.lock().unwrap().teardown().unwrap();
     }

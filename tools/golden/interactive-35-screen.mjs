@@ -5,6 +5,7 @@ const root = process.env.SENPI_SRC;
 if (!root) throw new Error("SENPI_SRC is required");
 const pin = Bun.spawn(["git", "--no-pager", "-C", root, "rev-parse", "HEAD"], { stdout: "pipe" });
 if ((await new Response(pin.stdout).text()).trim() !== "fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407" || await pin.exited !== 0) throw new Error("senpi pin mismatch");
+if (process.env.GOLDEN_PLATFORM === "darwin") Object.defineProperty(process, "platform", { value: "darwin" });
 const home = mkdtempSync("/tmp/lane35-screen-");
 const agentDir = join(home,"agent"); mkdirSync(agentDir);
 for (const key of ["HOME","SENPI_CODING_AGENT_DIR","PI_CODING_AGENT_DIR","OMO_CODING_AGENT_DIR"]) process.env[key] = key === "HOME" ? home : agentDir;
@@ -64,9 +65,12 @@ const cells=Array.from({length:36},(_,y)=>Array.from({length:columns},(_,x)=>{
 }));
 const out=new URL(command?"../../.omo/evidence/task-35-slash/":"../../.omo/evidence/task-35-faux/",import.meta.url);mkdirSync(out,{recursive:true});
 const name=command?`senpi-${command}-${columns}`:columns===120?"senpi-hi":`senpi-hi-${columns}`;
-writeFileSync(new URL(`${name}.cells.json`,out),JSON.stringify({cols:columns,rows:36,cursor:terminal.getCursorPosition(),viewport:terminal.getViewport(),cells}));
-writeFileSync(new URL(`${name}.ansi`,out),writes.join(""));
-writeFileSync(new URL(`${name}.txt`,out),terminal.getViewport().join("\n"));
+const suffix=process.env.GOLDEN_SUFFIX??"";
+writeFileSync(new URL(`${name}${suffix}.cells.json`,out),JSON.stringify({cols:columns,rows:36,cursor:terminal.getCursorPosition(),viewport:terminal.getViewport(),cells}));
+if (!suffix) {
+ writeFileSync(new URL(`${name}.ansi`,out),writes.join(""));
+ writeFileSync(new URL(`${name}.txt`,out),terminal.getViewport().join("\n"));
+}
 unsubscribe();mode.ui.stop();await runtime.dispose();
 console.log(`Captured pinned InteractiveMode hi at ${columns}x36; private HOME retained at ${home}`);
 process.exit(0);

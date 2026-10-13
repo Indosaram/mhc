@@ -36,7 +36,7 @@ pub struct McpClient {
     pub resource_subscriptions:tokio::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 enum ClientTransport {
-    Stdio {input:tokio::sync::Mutex<ChildStdin>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
+    Stdio {input:tokio::sync::Mutex<Option<ChildStdin>>,child:tokio::sync::Mutex<Child>,reader:JoinHandle<()>,stderr:JoinHandle<()>},
     Http {client:reqwest::Client,url:url::Url,headers:BTreeMap<String,String>,session:tokio::sync::RwLock<Option<String>>},
 }
 fn take_sse_line(buffer:&mut Vec<u8>,skip_lf:&mut bool,first_line:&mut bool)->Option<String> {
@@ -89,7 +89,7 @@ impl McpClient {
         let stderr=tokio::spawn(async move {
             let mut lines=BufReader::new(errors).lines();while let Ok(Some(line))=lines.next_line().await {if !line.is_empty(){let _=logger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).log("info",&line,None,Some("stderr"));}}
         });
-        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(input),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
+        Ok(Arc::new(Self {server:server.into(),io:ClientTransport::Stdio {input:tokio::sync::Mutex::new(Some(input)),child:tokio::sync::Mutex::new(child),reader,stderr},pending,next_id:AtomicU64::new(1),notifications,closed,root_pid,server_capabilities:tokio::sync::RwLock::new(Value::Null),server_info:tokio::sync::RwLock::new(Value::Null),instructions:tokio::sync::RwLock::new(None),auth:tokio::sync::RwLock::new(None),step_up:tokio::sync::RwLock::new(None),http_stream:Mutex::new(None),resource_subscriptions:tokio::sync::Mutex::new(Default::default())}))
     }
     pub async fn materialize(server:&str,spec:&McpTransportSpec,logger:Arc<Mutex<McpLogger>>)->Result<Arc<Self>,McpError> {
         match spec {
@@ -134,7 +134,7 @@ impl McpClient {
     pub async fn set_step_up(&self,step_up:Arc<dyn McpAuthStepUp>) {*self.step_up.write().await=Some(step_up);}
     async fn send(&self,value:&Value)->Result<(),McpError> {
         let ClientTransport::Stdio {input,..}=&self.io else{self.http_send(value).await?;return Ok(());};
-        let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;
+        let mut text=value.to_string();text.push('\n');let mut input=input.lock().await;let Some(input)=input.as_mut() else{return Err(failure(&self.server,McpErrorKind::Connect,"stdio input closed","request"));};
         input.write_all(text.as_bytes()).await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))?;
         input.flush().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"request"))
     }
@@ -309,12 +309,13 @@ impl McpClient {
             }
             return Ok(());
         };
-        let _=input.lock().await.shutdown().await;
+        // Dropping the pipe is what delivers EOF; shutdown() on a ChildStdin only flushes.
+        if let Some(mut stdin)=input.lock().await.take(){let _=stdin.shutdown().await;drop(stdin);}
         let mut child=child.lock().await;
         match tokio::time::timeout(Duration::from_secs(2),child.wait()).await {
             Ok(result)=>{result.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;}
             Err(_)=>{
-                if let Some(pid)=child.id(){let _=Command::new("/usr/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
+                if let Some(pid)=child.id(){let _=Command::new("/bin/kill").args(["-TERM","--",&pid.to_string()]).output().await;}
                 if tokio::time::timeout(Duration::from_secs(2),child.wait()).await.is_err(){let _=child.start_kill();}
                 child.wait().await.map_err(|e|failure(&self.server,McpErrorKind::Connect,e.to_string(),"close"))?;
             }

@@ -1,4 +1,6 @@
-use std::{fs::{self, OpenOptions}, io::Write, os::unix::fs::{DirBuilderExt, OpenOptionsExt}, path::{Path, PathBuf}};
+use std::{fs::{self, OpenOptions}, io::Write, path::{Path, PathBuf}};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use serde_json::{Map, Value, json};
 
 const ALLOWED_KEYS: &[&str] = &["origin", "reason", "route", "variant", "generation", "requestId", "tokens", "tokensBefore", "savedTokens", "savingsRatio", "contextWindow", "threshold", "remainingSec", "count", "durationMs"];
@@ -86,12 +88,22 @@ impl CompactionLogger {
         let line = format_line(&chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true), level, event, data);
         if let Some(sink) = sink { sink(&line); }
         let result = (|| -> std::io::Result<()> {
-            if let Some(parent) = path.parent() { fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?; }
+            if let Some(parent) = path.parent() {
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true);
+                #[cfg(unix)]
+                builder.mode(0o700);
+                builder.create(parent)?;
+            }
             let incoming = u64::try_from(line.len()).unwrap_or(u64::MAX).saturating_add(1);
             if fs::metadata(path).is_ok_and(|metadata| metadata.len().saturating_add(incoming) > self.max_bytes) {
                 fs::rename(path, path.with_extension("log.1"))?;
             }
-            let mut file = OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+            let mut options = OpenOptions::new();
+            options.append(true).create(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(path)?;
             writeln!(file, "{line}")
         })();
         match result {

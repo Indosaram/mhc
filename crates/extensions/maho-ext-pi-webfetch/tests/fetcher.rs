@@ -1,5 +1,14 @@
 use maho_ext_pi_webfetch::webfetch::fetcher::*;
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
+
+fn assert_disconnected(result: std::io::Result<usize>) {
+    match result {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("expected client disconnect, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn malformed_transport_errors_preserve_pinned_undici_taxonomy() {
     for (response, name, message) in [
@@ -60,19 +69,19 @@ async fn redirect_limit_returns_twentieth_redirect_response_and_releases_port() 
 #[test]fn timeout_bounds(){assert_eq!(clamp_timeout(None),30);assert_eq!(clamp_timeout(Some(f64::NAN)),30);assert_eq!(clamp_timeout(Some(-1.0)),30);assert_eq!(clamp_timeout(Some(1.5)),2);assert_eq!(clamp_timeout(Some(200.0)),120);}
 #[tokio::test]async fn redirect_declared_body_above_discard_limit_does_not_wait(){
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");let address=listener.local_addr().expect("address");
-    let server=tokio::spawn(async move{let(mut first,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=first.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}first.write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 1025\r\nConnection: close\r\n\r\n").await.expect("headers");let mut byte=[0;1];assert_eq!(first.read(&mut byte).await.expect("disconnect"),0);
+    let server=tokio::spawn(async move{let(mut first,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=first.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}first.write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 1025\r\nConnection: close\r\n\r\n").await.expect("headers");let mut byte=[0;1];assert_disconnected(first.read(&mut byte).await);
         let(mut second,_)=listener.accept().await.expect("next accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=second.read(&mut buffer).await.expect("next request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");});
     let result=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(1.0)).await;if result.is_err(){server.abort();let _=server.await;}else{tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("server timeout").expect("server");}assert_eq!(result.expect("follow without waiting").status,200);
 }
 #[tokio::test]async fn oversized_header_disposal_disconnects_without_body(){
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");let address=listener.local_addr().expect("address");
-    let server=tokio::spawn(async move{let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5242881\r\nConnection: close\r\n\r\n").await.expect("headers");let mut byte=[0;1];assert_eq!(socket.read(&mut byte).await.expect("disconnect"),0);});
+    let server=tokio::spawn(async move{let(mut socket,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5242881\r\nConnection: close\r\n\r\n").await.expect("headers");let mut byte=[0;1];assert_disconnected(socket.read(&mut byte).await);});
     let result=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(1.0)).await;tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("timeout").expect("server");assert!(matches!(result,Err(maho_ext_pi_webfetch::webfetch::errors::WebfetchError::ResponseTooLarge)));
 }
 #[tokio::test]async fn redirect_waits_for_small_body_discard(){
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");let address=listener.local_addr().expect("address");
     let server=tokio::spawn(async move{let(mut first,_)=listener.accept().await.expect("accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=first.read(&mut buffer).await.expect("request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}first.write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 5\r\nConnection: close\r\n\r\n").await.expect("headers");
-        let mut byte=[0;1];tokio::select!{read=first.read(&mut byte)=>{assert_eq!(read.expect("disconnect"),0);},next=listener.accept()=>{let(mut second,_)=next.expect("redirect accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=second.read(&mut buffer).await.expect("next request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");}}});
+        let mut byte=[0;1];tokio::select!{read=first.read(&mut byte)=>{assert_disconnected(read);},next=listener.accept()=>{let(mut second,_)=next.expect("redirect accept");let mut request=Vec::new();loop{let mut buffer=[0;4096];let count=second.read(&mut buffer).await.expect("next request");assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.expect("response");}}});
     let result=fetch_url(&format!("http://{address}"),WebfetchFormat::Text,Some(1.0)).await;tokio::time::timeout(std::time::Duration::from_secs(5),server).await.expect("timeout").expect("server");assert!(matches!(result,Err(maho_ext_pi_webfetch::webfetch::errors::WebfetchError::Timeout(1))));
 }
 #[tokio::test]async fn custom_status_reason_preserved(){
@@ -110,7 +119,7 @@ async fn abort_after_headers_cancels_body_read(){
     let (headers_sent,headers_received)=tokio::sync::oneshot::channel();
     let server=tokio::spawn(async move{let (mut socket,_)=listener.accept().await.unwrap_or_else(|error|panic!("accept: {error}"));let mut request=Vec::new();
         loop{let mut buffer=[0;4096];let count=socket.read(&mut buffer).await.unwrap_or_else(|error|panic!("read: {error}"));assert_ne!(count,0);request.extend_from_slice(&buffer[..count]);if request.windows(4).any(|window|window==b"\r\n\r\n"){break;}}
-        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").await.unwrap_or_else(|error|panic!("headers: {error}"));headers_sent.send(()).unwrap_or_else(|_|panic!("header signal receiver dropped"));let mut buffer=[0;1];assert_eq!(socket.read(&mut buffer).await.unwrap_or_else(|error|panic!("disconnect: {error}")),0);});
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").await.unwrap_or_else(|error|panic!("headers: {error}"));headers_sent.send(()).unwrap_or_else(|_|panic!("header signal receiver dropped"));let mut buffer=[0;1];assert_disconnected(socket.read(&mut buffer).await);});
     let signal=tokio_util::sync::CancellationToken::new();let request_signal=signal.clone();let fetch=tokio::spawn(async move{fetch_url_with_signal(&format!("http://{address}"),WebfetchFormat::Text,Some(5.0),Some(&request_signal)).await});
     tokio::time::timeout(std::time::Duration::from_secs(5),headers_received).await.unwrap_or_else(|error|panic!("header timeout: {error}")).unwrap_or_else(|error|panic!("header signal: {error}"));signal.cancel();
     let result=fetch.await.unwrap_or_else(|error|panic!("fetch task: {error}"));assert!(matches!(result,Err(maho_ext_pi_webfetch::webfetch::errors::WebfetchError::Aborted)));tokio::time::timeout(std::time::Duration::from_secs(5),server).await.unwrap_or_else(|error|panic!("server timeout: {error}")).unwrap_or_else(|error|panic!("server task: {error}"));

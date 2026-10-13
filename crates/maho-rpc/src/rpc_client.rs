@@ -2,7 +2,15 @@ use std::collections::{BTreeSet,VecDeque};
 use serde_json::Value;
 pub const MAX_PENDING_SESSION_EVENTS:usize=512;
 pub const MAX_PENDING_SESSION_EVENT_BYTES:usize=1024*1024;
+#[cfg(unix)]
 pub struct RpcSocketClient{stream:tokio::net::UnixStream,pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
+#[cfg(not(unix))]
+pub struct RpcSocketClient{pub frames:RpcClientFrames,reader:crate::jsonl::JsonlLineReader,lines:VecDeque<crate::jsonl::LineRecord>}
+#[cfg(unix)]
+pub type RpcStream=tokio::net::UnixStream;
+#[cfg(not(unix))]
+pub type RpcStream=();
+#[cfg(unix)]
 impl RpcSocketClient{
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self::from_stream(tokio::net::UnixStream::connect(path).await?))}
     pub async fn connect_authenticated(path:&std::path::Path,secret_path:&std::path::Path)->std::io::Result<Self>{
@@ -94,6 +102,11 @@ impl RpcSocketClient{
         Ok(())
     }
 }
+#[cfg(not(unix))]
+impl RpcSocketClient{
+    pub async fn connect(_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn connect_authenticated(_path:&std::path::Path,_secret_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+}
 #[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
 
 /// A command the host refused; `error_code` carries the typed code when the command defines one.
@@ -177,8 +190,14 @@ pub struct RpcClient{ inner:Option<RpcSocketClient>, listeners:std::sync::Arc<st
 impl RpcClient{
     pub fn new(options:RpcClientOptions)->Self{Self{inner:None,listeners:Default::default(),next_listener:0,options}}
     /// Connect to an endpoint directly.
+    #[cfg(unix)]
     pub async fn connect(path:&std::path::Path)->std::io::Result<Self>{Ok(Self{inner:Some(RpcSocketClient::connect(path).await?),listeners:Default::default(),next_listener:0,options:RpcClientOptions::default()})}
+    #[cfg(not(unix))]
+    pub async fn connect(_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    #[cfg(unix)]
     pub fn from_stream(stream:tokio::net::UnixStream,options:RpcClientOptions)->Self{Self{inner:Some(RpcSocketClient::from_stream(stream)),listeners:Default::default(),next_listener:0,options}}
+    #[cfg(not(unix))]
+    pub fn from_stream(_stream:RpcStream,options:RpcClientOptions)->Self{Self{inner:None,listeners:Default::default(),next_listener:0,options}}
     /// Bring the transport up: connect to `options.socket_path`, or ensure a host serves the
     /// default endpoint for the agent directory.
     pub async fn start(&mut self)->RpcClientResult<()>{

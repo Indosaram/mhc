@@ -217,9 +217,9 @@ pub fn duplicate_extents(
 pub fn default_load_windows() -> std::result::Result<Arc<dyn WindowsCloneApi>, NativeLoadError> {
     #[cfg(windows)]
     {
-        return Ok(Arc::new(create_windows_clone_api(Arc::new(
+        return Ok(create_windows_clone_api(Arc::new(
             crate::backends::block_clone::kernel32::Kernel32,
-        ))));
+        )));
     }
     #[cfg(not(windows))]
     {
@@ -235,7 +235,7 @@ mod kernel32 {
     use super::WindowsSymbols;
 
     #[link(name = "kernel32")]
-    extern "system" {
+    unsafe extern "system" {
         fn CreateFileW(
             path: *const u16,
             access: u32,

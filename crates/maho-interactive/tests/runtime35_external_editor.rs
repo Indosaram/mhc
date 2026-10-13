@@ -15,7 +15,7 @@ async fn external_editor_edits_private_prompt_and_cleans_directory() {
 
 #[tokio::test]
 async fn external_editor_nonzero_exit_is_distinct_from_launch_failure() {
-    assert_eq!(edit_in_external_editor("/bin/false", "original").await.expect("edit"), ExternalEditorResult::Failed);
+    assert_eq!(edit_in_external_editor("/usr/bin/false", "original").await.expect("edit"), ExternalEditorResult::Failed);
 }
 
 #[tokio::test]

@@ -1,4 +1,5 @@
 //! CLI contract (cli.ts): `lsp-daemon [mcp | daemon]`, default `mcp`, env overrides.
+#![cfg(unix)]
 
 mod common;
 

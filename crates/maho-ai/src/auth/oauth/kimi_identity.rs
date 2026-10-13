@@ -108,6 +108,7 @@ fn read_or_mint_device_id() -> String {
         && let Ok(mut file) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&path) {
             use std::io::Write as _;
             let _ = file.write_all(format!("{minted}\n").as_bytes());
+            #[cfg(unix)]
             let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
         }
     minted

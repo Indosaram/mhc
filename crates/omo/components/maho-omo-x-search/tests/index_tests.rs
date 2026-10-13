@@ -520,11 +520,12 @@ name: x-search
 #[test]
 fn test_packaged_plugin_layout_skill_path_resolution() {
     let plugin_root = tempfile::tempdir().expect("tempdir");
-    let cond_dir = plugin_root.path().join("skills-conditional/x-search");
+    let root = plugin_root.path().canonicalize().expect("canonical tempdir");
+    let cond_dir = root.join("skills-conditional/x-search");
     fs::create_dir_all(&cond_dir).expect("create dir");
     fs::write(cond_dir.join("SKILL.md"), "---\nname: x-search\n---\n").expect("write");
 
-    let fake_ext_dir = plugin_root.path().join("extensions");
+    let fake_ext_dir = root.join("extensions");
     fs::create_dir_all(&fake_ext_dir).expect("create dir");
 
     let resolved = resolve_x_search_skill_path(Some(&fake_ext_dir));

@@ -1,13 +1,18 @@
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 
 use isolation_core::test_support::fixture;
-use isolation_core::{
-    run_git, str_args, GitOptions, IsolationError, SpawnObserver,
-};
+use isolation_core::{run_git, str_args, GitOptions};
+#[cfg(unix)]
+use isolation_core::{IsolationError, SpawnObserver};
 
+#[cfg(unix)]
 fn kill_on_spawn(signal: i32) -> SpawnObserver {
     Arc::new(move |pid| {
         unsafe {
@@ -16,6 +21,7 @@ fn kill_on_spawn(signal: i32) -> SpawnObserver {
     })
 }
 
+#[cfg(unix)]
 fn process_group_is_gone(pgid: u32) -> bool {
     for _ in 0..50 {
         let result = unsafe { libc::kill(-(pgid as libc::pid_t), 0) };
@@ -40,24 +46,21 @@ fn a_missing_git_binary_is_typed_unavailable_not_a_generic_spawn_failure() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_git_terminated_by_a_signal_is_a_failure_never_a_zero_exit() {
     let f = fixture();
     let mut options = GitOptions::new(f.repo_root.clone());
     options.allowed_exit_codes = Some((0..256).collect());
     options.on_spawn = Some(kill_on_spawn(libc::SIGKILL));
     let result = run_git(&str_args(&["-c", "alias.wait=!sleep 5", "wait"]), &options);
-    if cfg!(windows) {
-        let resolved = result.expect("win32 reports a non-zero exit code");
-        assert_ne!(resolved.code, 0);
-    } else {
-        match result.expect_err("must fail") {
-            IsolationError::Git { message, .. } => assert!(message.contains("signal")),
-            other => panic!("unexpected error: {other:?}"),
-        }
+    match result.expect_err("must fail") {
+        IsolationError::Git { message, .. } => assert!(message.contains("signal")),
+        other => panic!("unexpected error: {other:?}"),
     }
 }
 
 #[test]
+#[cfg(unix)]
 fn input_written_to_a_child_that_dies_before_reading_rejects_instead_of_crashing() {
     let f = fixture();
     let mut options = GitOptions::new(f.repo_root.clone());
@@ -69,6 +72,7 @@ fn input_written_to_a_child_that_dies_before_reading_rejects_instead_of_crashing
 }
 
 #[test]
+#[cfg(unix)]
 fn input_written_to_a_child_whose_survivors_hold_its_pipes_settles_before_the_survivor_exits() {
     let f = fixture();
     let release = f.root.join("survivor-release");
@@ -92,6 +96,7 @@ fn input_written_to_a_child_whose_survivors_hold_its_pipes_settles_before_the_su
 }
 
 #[test]
+#[cfg(unix)]
 fn a_git_process_that_never_exits_is_terminated_at_its_command_deadline() {
     let f = fixture();
     let pgid = Arc::new(AtomicU32::new(0));
@@ -111,6 +116,7 @@ fn a_git_process_that_never_exits_is_terminated_at_its_command_deadline() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_budget_breach_on_a_still_streaming_child_preserves_the_typed_limit_error() {
     let f = fixture();
     let pgid = Arc::new(AtomicU32::new(0));
@@ -131,6 +137,7 @@ fn a_budget_breach_on_a_still_streaming_child_preserves_the_typed_limit_error() 
 }
 
 #[test]
+#[cfg(unix)]
 fn a_budget_breach_tears_down_the_writer_even_when_the_alias_shell_survives_its_child() {
     let f = fixture();
     let pgid = Arc::new(AtomicU32::new(0));

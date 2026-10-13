@@ -9,6 +9,14 @@ fn text(result: &AgentToolResult) -> &str {
     match &result.content[0] { ContentBlock::Text(text) => &text.text, _ => panic!("expected text") }
 }
 
+fn assert_disconnected(result: std::io::Result<usize>) {
+    match result {
+        Ok(0) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("expected client disconnect, got {other:?}"),
+    }
+}
+
 struct BodyPhaseSubscriber(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
 impl tracing::Subscriber for BodyPhaseSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool { metadata.target() == "pi_webfetch" }
@@ -272,13 +280,22 @@ async fn registered_cancellation_before_headers() {
 async fn registered_timeout_disconnects() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture contract");
     let address = listener.local_addr().expect("fixture contract");
+    let (request_received, request_seen) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("fixture contract");
         let mut bytes = [0; 4096];
         assert!(socket.read(&mut bytes).await.expect("fixture contract") > 0);
-        assert_eq!(socket.read(&mut bytes).await.expect("fixture contract"), 0);
+        request_received.send(()).expect("request signal");
+        assert_disconnected(socket.read(&mut bytes).await);
     });
-    let result = (support::registered_tool().execute)("qa".into(), json!({"url":format!("http://{address}"),"timeout":1}), None, None).await;
+    let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+    let request = tokio::spawn(async move {
+        let result = (support::registered_tool().execute)("qa".into(), json!({"url":format!("http://{address}"),"timeout":1}), None, None).await;
+        result_sender.send(result).expect("result receiver");
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), request_seen).await.expect("request phase deadline").expect("request phase signal");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), result_receiver).await.expect("timeout result deadline").expect("timeout result");
+    request.await.expect("request task");
     assert_eq!(text(&result), "Request timed out after 1s");
     assert_eq!(result.is_error, Some(true));
     tokio::time::timeout(std::time::Duration::from_secs(5), server).await.expect("fixture contract").expect("fixture contract");
@@ -293,7 +310,7 @@ async fn registered_body_timeout_normalizes_abort() {
         let mut bytes = [0; 4096];
         assert!(socket.read(&mut bytes).await.expect("request") > 0);
         socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial").await.expect("headers");
-        assert_eq!(socket.read(&mut bytes).await.expect("disconnect"), 0);
+        assert_disconnected(socket.read(&mut bytes).await);
     });
     let result = (support::registered_tool().execute)("qa".into(), json!({"url":format!("http://{address}"),"timeout":1}), None, None).await;
     assert_eq!(text(&result), "Request aborted");

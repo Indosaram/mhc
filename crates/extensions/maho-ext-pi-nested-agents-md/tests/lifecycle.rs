@@ -62,7 +62,8 @@ fn fixture_with(mut extensions: Vec<Box<dyn Extension>>) -> (tempfile::TempDir, 
     std::fs::create_dir(tree.path().join("src")).expect("create source directory");
     std::fs::write(tree.path().join("src/AGENTS.md"), "fixture rules").expect("write rules");
     std::fs::write(tree.path().join("src/file.ts"), "x").expect("write source");
-    let context = ExtensionContext { ui: Arc::new(Ui::default()), mode: ExtensionMode::Print, has_ui: false, cwd: tree.path().into(), agent_dir: tree.path().join("agent"),
+    let canonical_root = tree.path().canonicalize().expect("canonical lifecycle fixture directory");
+    let context = ExtensionContext { ui: Arc::new(Ui::default()), mode: ExtensionMode::Print, has_ui: false, cwd: canonical_root.clone(), agent_dir: canonical_root.join("agent"),
         session_manager: Arc::new(Session(tree.path().join("a.jsonl"))), model_registry: Arc::new(Registry), model: None, thinking_level: None,
         service_tier: None, effective_service_tier: None, scoped_models: Vec::new(), goal_store_file: None,
         loaded_extension_paths: Vec::new(), signal: None, steering_signal: None,

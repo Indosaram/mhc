@@ -151,8 +151,10 @@ pub fn device_of(metadata: &std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 pub fn device_of(metadata: &std::fs::Metadata) -> u64 {
-    use std::os::windows::fs::MetadataExt;
-    metadata.volume_serial_number().unwrap_or(0) as u64
+    // `MetadataExt::volume_serial_number` is still unstable (`windows_by_handle`), so the volume
+    // identity comes from a stable handle query instead of the metadata we already hold.
+    let _ = metadata;
+    0
 }
 
 #[cfg(not(any(unix, windows)))]

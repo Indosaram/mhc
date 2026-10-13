@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use comment_checker_core::{HookInput,HookToolInput,RunCommentCheckerInput};
 #[tokio::test]
 async fn real_binary_receives_hook_and_reports_exit_two()->Result<(),Box<dyn std::error::Error>> {

@@ -1,24 +1,35 @@
+#[cfg(unix)]
 #[path = "../tests/support/mod.rs"]
 mod support;
+#[cfg(unix)]
 use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex}, time::Duration};
+#[cfg(unix)]
 use maho_ext_api::*;
+#[cfg(unix)]
 use maho_omo_task::{component::TaskComponent, engine::{compose_task_engine_with_rpc_respawn, ComposeTaskEngineDeps}, engine_runners::{build_process_runner, build_rpc_respawn_runner}};
+#[cfg(unix)]
 use senpi_task::{manager::types::{ManagedRunners, ListScope}, runners::{rpc::{process::{RpcSpawnDescriptor, RpcChildProcess}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
+#[cfg(unix)]
 struct Actions;
+#[cfg(unix)]
 struct ReceiptReader { socket:std::os::unix::net::UnixStream, thread:Option<std::thread::JoinHandle<()>> }
+#[cfg(unix)]
 impl Drop for ReceiptReader {
     fn drop(&mut self) {
         if let Err(error)=self.socket.shutdown(std::net::Shutdown::Both) { eprintln!("provider receipt shutdown failed: {error}"); }
         if let Some(thread)=self.thread.take() && thread.join().is_err() { eprintln!("provider receipt reader panicked"); }
     }
 }
+#[cfg(unix)]
 impl ExtensionActions for Actions {
     fn send_message(&self,message:CustomMessage,_:SendMessageOptions)->Result<(),ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&serde_json::json!({"customType":message.custom_type,"content":message.content,"display":message.display,"details":message.details})).map_err(|error| ExtensionFailure::new(error.to_string()))?); Ok(()) }
     fn send_user_message(&self,_:UserMessageContent,_:SendUserMessageOptions)->Result<(),ExtensionFailure> { Err(ExtensionFailure::new("unexpected user message")) }
     fn append_entry(&self,_:&str,_:Option<JsonValue>)->Result<(),ExtensionFailure> { Err(ExtensionFailure::new("unexpected entry")) }
     fn get_all_tools(&self)->Result<Vec<ToolInfo>,ExtensionFailure> { Ok(vec![]) }
 }
+#[cfg(unix)]
 struct Cleanup { component:Arc<TaskComponent>,processes:Arc<Mutex<Vec<Arc<RpcChildProcess>>>> }
+#[cfg(unix)]
 impl Drop for Cleanup {
     fn drop(&mut self) {
         for entry in self.component.engine.manager.list(&ListScope::All) {
@@ -29,7 +40,9 @@ impl Drop for Cleanup {
         for entry in self.component.engine.manager.list(&ListScope::All) { self.component.engine.manager.forget(&entry.record.task_id); }
     }
 }
+#[cfg(unix)]
 #[tokio::main(flavor="current_thread")]
+#[cfg(unix)]
 async fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut args=std::env::args().skip(1);
     let executable=args.next().ok_or("native mhc required")?; let home=args.next().ok_or("isolated HOME required")?;
@@ -108,3 +121,6 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     println!("RECEIPT explicit lifecycle teardown terminated and reaped native child after Drop observation");
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}

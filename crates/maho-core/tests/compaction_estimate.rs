@@ -2,7 +2,7 @@
 fn public_estimator_matches_pinned_source_for_supplementary_text() {
     let output = std::process::Command::new("bun")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/golden/compaction-estimate.mjs"))
-        .env("SENPI_SRC", std::env::var("SENPI_SRC").unwrap_or_else(|_| "/home/indo/code/senpi".into()))
+        .env("SENPI_SRC", std::env::var("SENPI_SRC").unwrap_or_else(|_| format!("{}/code/senpi", std::env::var("HOME").expect("HOME"))))
         .output().expect("pinned source estimator");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("source results");
@@ -15,7 +15,7 @@ fn public_estimator_matches_pinned_source_for_supplementary_text() {
 
 #[test]
 fn pinned_large_session_migrates_projects_context_and_keeps_a_valid_cut_boundary() {
-    let source = std::env::var("SENPI_SRC").unwrap_or_else(|_| "/home/indo/code/senpi".into());
+    let source = std::env::var("SENPI_SRC").unwrap_or_else(|_| format!("{}/code/senpi", std::env::var("HOME").expect("HOME")));
     let fixture = std::path::Path::new(&source).join("packages/coding-agent/test/fixtures/large-session.jsonl");
     let content = std::fs::read_to_string(fixture).expect("pinned large-session fixture");
     let mut entries = maho_core::session_manager::parse_session_entries(&content);

@@ -860,8 +860,28 @@ fn keybinding_hints_format_like_senpi() {
     let golden = golden();
     for case in golden["helpers"]["formatKeyText"].as_array().expect("formatKeyText") {
         let key = case[0].as_str().unwrap_or_default();
-        assert_eq!(format_key_text(key, false), case[1].as_str().unwrap_or_default(), "{key}");
-        assert_eq!(format_key_text(key, true), case[2].as_str().unwrap_or_default(), "{key}");
+        let expected = |output: &str| {
+            if !cfg!(target_os = "macos") {
+                return output.to_owned();
+            }
+            output
+                .split('/')
+                .map(|combination| {
+                    combination
+                        .split('+')
+                        .map(|part| match part {
+                            "alt" => "option",
+                            "Alt" => "Option",
+                            _ => part,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("+")
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        assert_eq!(format_key_text(key, false), expected(case[1].as_str().unwrap_or_default()), "{key}");
+        assert_eq!(format_key_text(key, true), expected(case[2].as_str().unwrap_or_default()), "{key}");
     }
     let theme = theme();
     assert_eq!(

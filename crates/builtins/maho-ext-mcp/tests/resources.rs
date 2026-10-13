@@ -1,5 +1,6 @@
 use maho_ext_mcp::resources::*;
 use serde_json::json;
+mod support;
 #[test]
 fn binary_resource_preserves_placeholder_size() {
     assert_eq!(flatten_resource_contents(&[json!({"blob":"QUFBQQ==","mimeType":"image/png","uri":"fake://bin"})]),"[binary resource fake://bin (image/png), ~6 bytes]");
@@ -19,7 +20,7 @@ async fn utility_tools_list_and_read_the_real_server() {
     use maho_ext_mcp::{config_schema::*,transport::*,catalog::collect_client_pages,log::McpLogger,guard::output_guard::McpOutputArtifacts};
     // Given a connected fixture exposing a resource.
     let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let transport=create_mcp_transport("fx",&config,None,Arc::new(Mutex::new(McpLogger::new("fx",root.path(),None).unwrap()))).unwrap();
     let client=connect_mcp_transport(&transport).await.unwrap();
     let resources=collect_client_pages(&client,"resources/list","resources",Duration::from_secs(3)).await.unwrap().items;

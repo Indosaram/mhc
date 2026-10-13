@@ -612,6 +612,7 @@ fn load_merges_partial_team_layers() {
 }
 
 #[test]
+#[cfg(unix)]
 fn load_ignores_a_project_omo_directory_that_is_a_symlink() {
     let root = tempfile::tempdir().expect("tempdir");
     let root_path = root.path().to_string_lossy().to_string();
@@ -645,6 +646,7 @@ fn load_ignores_a_project_omo_directory_that_is_a_symlink() {
 }
 
 #[test]
+#[cfg(unix)]
 fn load_ignores_a_symlinked_project_config_file() {
     for extension in ["jsonc", "json"] {
         let root = tempfile::tempdir().expect("tempdir");

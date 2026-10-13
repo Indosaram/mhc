@@ -16,6 +16,7 @@ pub enum EndpointLoss{Replaced,Absent}
 #[derive(Default)]
 pub struct SupersessionWatcher{absent_polls:u32,lost:bool}
 pub async fn wait_for_supersession(path:&str,identity:Option<crate::socket_ownership::SocketFileIdentity>,settled:impl Fn()->bool)->Option<EndpointLoss>{
+    #[cfg(unix)] {
     use std::os::unix::fs::MetadataExt;
     let identity=identity?;
     let period=std::time::Duration::from_millis(SUPERSESSION_POLL_MS);
@@ -33,6 +34,8 @@ pub async fn wait_for_supersession(path:&str,identity:Option<crate::socket_owner
         };
         if let Some(loss)=watcher.observe(ownership,settled()){return Some(loss);}
     }
+    }
+    #[cfg(not(unix))] { let _=(path,identity,settled);None }
 }
 impl SupersessionWatcher{
     pub fn observe(&mut self,ownership:EndpointOwnership,settled:bool)->Option<EndpointLoss>{
@@ -48,7 +51,7 @@ impl SupersessionWatcher{
 #[cfg(test)]
 mod tests{
     use super::*;
-    #[tokio::test]async fn watch_reports_a_replaced_endpoint_once(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("socket");let original=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=crate::socket_ownership::stat_socket_identity(&path).unwrap();let replacement=temp.path().join("new");let newer=std::os::unix::net::UnixListener::bind(&replacement).unwrap();std::fs::rename(replacement,&path).unwrap();let(lost_tx,lost_rx)=tokio::sync::oneshot::channel();let watch=watch_for_supersession(path.to_string_lossy().into_owned(),identity,||false,move|loss|{let _=lost_tx.send(loss);});let loss=tokio::time::timeout(std::time::Duration::from_secs(2),lost_rx).await.unwrap().unwrap();assert_eq!(loss,EndpointLoss::Replaced);watch.stop();drop((original,newer));}
+    #[cfg(unix)] #[tokio::test]async fn watch_reports_a_replaced_endpoint_once(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("socket");let original=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=crate::socket_ownership::stat_socket_identity(&path).unwrap();let replacement=temp.path().join("new");let newer=std::os::unix::net::UnixListener::bind(&replacement).unwrap();std::fs::rename(replacement,&path).unwrap();let(lost_tx,lost_rx)=tokio::sync::oneshot::channel();let watch=watch_for_supersession(path.to_string_lossy().into_owned(),identity,||false,move|loss|{let _=lost_tx.send(loss);});let loss=tokio::time::timeout(std::time::Duration::from_secs(2),lost_rx).await.unwrap().unwrap();assert_eq!(loss,EndpointLoss::Replaced);watch.stop();drop((original,newer));}
     #[test] fn unknown_resets_consecutive_absence_and_loss_latches(){let mut watcher=SupersessionWatcher::default();assert_eq!(watcher.observe(EndpointOwnership::Absent,false),None);watcher.observe(EndpointOwnership::Unknown,false);for _ in 0..2{assert_eq!(watcher.observe(EndpointOwnership::Absent,false),None);}assert_eq!(watcher.observe(EndpointOwnership::Absent,false),Some(EndpointLoss::Absent));assert_eq!(watcher.observe(EndpointOwnership::Replaced,false),None);}
     #[test] fn settled_observation_is_ignored(){let mut watcher=SupersessionWatcher::default();assert_eq!(watcher.observe(EndpointOwnership::Replaced,true),None);assert_eq!(watcher.observe(EndpointOwnership::Replaced,false),Some(EndpointLoss::Replaced));}
 }

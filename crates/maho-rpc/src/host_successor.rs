@@ -3,16 +3,20 @@ pub const DEFAULT_HANDOFF_READINESS_MS:u64=30_000;
 pub struct SuccessorLaunchOptions{pub launch:crate::host_launch::HostLaunch,pub env:std::collections::HashMap<String,String>,pub instance_id:String,pub generation:u64,pub launch_profile_id:String,pub readiness_ms:u64}
 pub struct RunningSuccessor{pub child:tokio::process::Child,pub protocol:HostProtocolInfo}
 pub async fn start_successor(context:&crate::host_handoff::HandoffContext,socket:&str,replaced:SocketFileIdentity,options:SuccessorLaunchOptions)->std::io::Result<Result<RunningSuccessor,crate::host_handoff::HandoffRefusal>>{
-    use std::os::unix::fs::OpenOptionsExt;
-    let stderr=std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&context.paths.stderr_log)?;
-    let mut child=tokio::process::Command::new(&options.launch.command).args(&options.launch.args).env_clear().envs(options.env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr).process_group(0).spawn()?;
+    let mut stderr_options=std::fs::OpenOptions::new();stderr_options.create(true).append(true);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;stderr_options.mode(0o600);}
+    let stderr=stderr_options.open(&context.paths.stderr_log)?;
+    let mut command=tokio::process::Command::new(&options.launch.command);command.args(&options.launch.args).env_clear().envs(options.env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);
+    #[cfg(unix)] command.process_group(0);
+    let mut child=command.spawn()?;
     let pid=child.id().ok_or_else(||std::io::Error::other("successor has no process identity"))?;
     let result:std::io::Result<Option<HostProtocolInfo>>=async{
         let deadline=tokio::time::Instant::now()+std::time::Duration::from_millis(options.readiness_ms);
         loop{
             if let Some(answer)=crate::host_probe::probe_protocol_info(socket,2000).await&&successor_answered(&context.host,&answer){
                 crate::host_daemon_registration::write_host_registration(&context.paths,&crate::host_daemon_registration::HostRegistration{pid,process_start_time:crate::host_reservations::read_process_start_time(pid),socket:socket.into(),instance_id:options.instance_id,generation:options.generation as f64,launch_profile_id:options.launch_profile_id}).map_err(|error|error.source)?;
-                crate::host_stop::signal_generation(context.owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
+                #[cfg(unix)] crate::host_stop::signal_generation(context.owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
+                #[cfg(not(unix))] return Ok(None);
                 return Ok(Some(answer));
             }
             if child.try_wait()?.is_some()||tokio::time::Instant::now()>=deadline{return Ok(None);}
@@ -58,4 +62,4 @@ pub fn successor_env(mut env:std::collections::HashMap<String,String>,generation
 #[cfg(test)]mod env_tests{use super::*;use std::collections::HashMap;#[test]fn successor_identity_replaces_parent_and_nullable_overrides_apply_last(){let parent=HashMap::from([(crate::protocol_identity::HOST_INSTANCE_ID_ENV.into(),"old".into()),("DROP".into(),"old".into())]);let env=successor_env(parent,2,"new","/daemon",None,&HashMap::from([("DROP".into(),None),("X".into(),Some("y".into()))]));assert_eq!(env[crate::protocol_identity::HOST_INSTANCE_ID_ENV],"new");assert_eq!(env[crate::protocol_identity::HOST_GENERATION_ENV],"2");assert_eq!(env[crate::custom_capability::RPC_CLIENT_CAPABILITIES_ENV],"extension_events,custom_unsupported");assert!(!env.contains_key("DROP"));assert_eq!(env["X"],"y");}}
 pub fn successor_answered(previous:&HostProtocolInfo,answer:&HostProtocolInfo)->bool{answer.instance_id.as_ref().is_some_and(|id|Some(id)!=previous.instance_id.as_ref())}
 pub fn abort_reason(socket:&std::path::Path,replaced:SocketFileIdentity)->&'static str{if stat_socket_identity(socket).ok().flatten()==Some(replaced){"successor_unavailable"}else{"socket_replaced"}}
-#[cfg(test)]mod tests{use super::*;#[test]fn public_answer_must_name_different_instance(){let previous=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"old"})).unwrap();let mut answer=previous.clone();assert!(!successor_answered(&previous,&answer));answer.instance_id=None;assert!(!successor_answered(&previous,&answer));answer.instance_id=Some("new".into());assert!(successor_answered(&previous,&answer));}#[test]fn abort_reason_observes_real_socket_entry(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("s");let socket=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=stat_socket_identity(&path).unwrap().unwrap();assert_eq!(abort_reason(&path,identity),"successor_unavailable");drop(socket);std::fs::remove_file(&path).unwrap();assert_eq!(abort_reason(&path,identity),"socket_replaced");}}
+#[cfg(test)]mod tests{use super::*;#[test]fn public_answer_must_name_different_instance(){let previous=crate::host_protocol_info::parse_host_protocol_info(&serde_json::json!({"protocolVersion":1,"serverVersion":"1","capabilities":[],"instanceId":"old"})).unwrap();let mut answer=previous.clone();assert!(!successor_answered(&previous,&answer));answer.instance_id=None;assert!(!successor_answered(&previous,&answer));answer.instance_id=Some("new".into());assert!(successor_answered(&previous,&answer));}#[cfg(unix)] #[test]fn abort_reason_observes_real_socket_entry(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("s");let socket=std::os::unix::net::UnixListener::bind(&path).unwrap();let identity=stat_socket_identity(&path).unwrap().unwrap();assert_eq!(abort_reason(&path,identity),"successor_unavailable");drop(socket);std::fs::remove_file(&path).unwrap();assert_eq!(abort_reason(&path,identity),"socket_replaced");}}

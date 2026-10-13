@@ -282,9 +282,10 @@ impl GitExec for RefusingBranchDelete<'_> {
 #[test]
 fn a_failing_item_reports_removed_false_with_detail_and_the_rest_still_sweep() {
     let dir = tempdir().expect("tempdir");
-    let repo = GitMemoryRepo::open(dir.path().join("repo"), "orphan-agent").expect("repo");
+    let dir_path = dir.path().canonicalize().expect("canonical tempdir");
+    let repo = GitMemoryRepo::open(dir_path.join("repo"), "orphan-agent").expect("repo");
     repo.init(InitializeGitRepoOptions::default()).expect("init");
-    let worktrees = dir.path().join("worktrees");
+    let worktrees = dir_path.join("worktrees");
     std::fs::create_dir_all(&worktrees).expect("mkdir");
     let exec = repo.exec();
     let head = repo.head().expect("head").expect("seeded head");

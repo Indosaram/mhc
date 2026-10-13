@@ -13,10 +13,10 @@ pub async fn collect_process_tree(root:u32)->Vec<u32> {
 }
 pub async fn is_process_alive(pid:u32)->bool {
     if pid==0{return false;}
-    Command::new("/usr/bin/kill").args(["-0","--",&pid.to_string()]).output().await.is_ok_and(|output|output.status.success())
+    Command::new("/bin/kill").args(["-0","--",&pid.to_string()]).output().await.is_ok_and(|output|output.status.success())
 }
 async fn kill_pids(pids:&[u32],signal:&str) {
-    for pid in pids.iter().rev().filter(|pid|**pid>1) {let _=Command::new("/usr/bin/kill").args([signal,"--",&pid.to_string()]).output().await;}
+    for pid in pids.iter().rev().filter(|pid|**pid>1) {let _=Command::new("/bin/kill").args([signal,"--",&pid.to_string()]).output().await;}
 }
 async fn wait_for_dead(pids:&[u32],timeout:Duration) {
     let deadline=tokio::time::Instant::now()+timeout;
