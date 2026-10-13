@@ -82,6 +82,23 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
         show_hardware_cursor: true, bottom_shortcut: String::new(),
     }, theme);
+    // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
+    // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
+    if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
+        alt.set_open_url(Some(Rc::new(|url: &str| crate::utils::open_browser::open_browser(url))));
+        alt.set_copy_selection(Some(Rc::new(|text: String| {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let copied = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .is_ok_and(|runtime| runtime.block_on(crate::utils::clipboard::copy_to_clipboard(&text)).is_ok());
+                drop(sender.send(copied));
+            });
+            receiver
+        })));
+        alt.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
+    }
     // senpi mounts the fullscreen render root as the chat viewport (interactive-mode.ts
     // `mountInteractiveTui` -> `setLayoutRoot(this.fullscreenLayoutRoot)`), whose transcript scroll
     // view follows the end (chat-viewport.ts `follow: "end"`). Mounting the flat `mode.render()`
@@ -234,6 +251,9 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             // senpi `applySmoothStreamingRenderFps` + `requestRender(false, "input")`: the frame
             // cap follows the smooth-streaming FPS, and keystroke frames skip the throttle.
             screen.poll_timers(now);
+            screen.tick(now);
+            // `/settings` persists fullscreenCopyOnSelect; senpi pushes it with setCopyOnSelect.
+            screen.set_copy_on_select(session.with_settings_manager(|settings| settings.get_bool("fullscreenCopyOnSelect")).unwrap_or(true));
             screen.base_mut().set_max_render_fps(mode.smooth_streaming_render_fps());
             if had_input { screen.base_mut().request_render_from(false, "input", now); } else { screen.base_mut().request_render(false, now); }
             if screen.base_mut().take_due_render(now) {

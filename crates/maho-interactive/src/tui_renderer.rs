@@ -106,6 +106,16 @@ impl InteractiveTui {
         matches!(self, Self::Regular(_))
     }
 
+    /// Drives the fullscreen renderer's timer work (copy results, flashes, selection auto-scroll).
+    pub fn tick(&mut self, now_ms: u64) {
+        if let Self::Fullscreen(tui) = self { tui.tick(now_ms); }
+    }
+
+    /// senpi `TuiAltScreen.setCopyOnSelect`; the regular renderer has no app-owned selection.
+    pub fn set_copy_on_select(&mut self, enabled: bool) {
+        if let Self::Fullscreen(tui) = self { tui.set_copy_on_select(enabled); }
+    }
+
     pub fn base(&self) -> &TuiBase {
         match self {
             Self::Regular(t) => &t.base,
@@ -164,6 +174,24 @@ pub fn create_interactive_tui(options: InteractiveTuiOptions, theme: Theme) -> I
         TuiMode::Regular => InteractiveTui::Regular(Box::default()),
         TuiMode::Fullscreen => {
             let mut t = TuiAltScreen::new();
+            // senpi tui-renderer.ts: search matches use the theme's searchMatchBg/searchMatchText.
+            let match_theme = theme.clone();
+            let current_theme = theme.clone();
+            let button_theme = theme.clone();
+            t.set_search_styles(
+                Some(Rc::new(move |text: &str| {
+                    match_theme.underline(&match_theme.bg(ThemeBg::SearchMatchBg, &match_theme.fg(ThemeColor::SearchMatchText, text)))
+                })),
+                Some(Rc::new(move |text: &str| {
+                    current_theme.bold(&current_theme.inverse(&current_theme.bg(
+                        ThemeBg::SearchMatchBg,
+                        &current_theme.fg(ThemeColor::SearchMatchText, text),
+                    )))
+                })),
+                Some(Rc::new(move |text: &str, hovered: bool| {
+                    if hovered { button_theme.underline(text) } else { text.to_string() }
+                })),
+            );
             t.set_scroll_to_end_indicator(Some(Rc::new(move || {
                 let shortcut = if options.bottom_shortcut.is_empty() {
                     String::new()
