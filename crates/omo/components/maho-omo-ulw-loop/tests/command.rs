@@ -57,7 +57,7 @@ fn incomplete_criteria_keep_in_progress_goal_active() {
 #[tokio::test]
 async fn in_process_status_returns_error_when_no_plan() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let result = run_omo_status(root.path()).await;
+    let result = run_omo_status(root.path(), Some("session")).await;
     assert_eq!(result.code, 1);
     let val: serde_json::Value = serde_json::from_str(&result.stdout)?;
     assert_eq!(val["ok"], false);
@@ -112,11 +112,11 @@ async fn in_process_status_returns_plan_when_present() -> Result<(), Box<dyn std
         aggregate_completion: None,
         validation_batches: None,
     };
-    let dir = root.path().join(".omo/ulw-loop");
+    let dir = root.path().join(".omo/ulw-loop/session");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("goals.json"), serde_json::to_string(&plan)?)?;
 
-    let result = run_omo_status(root.path()).await;
+    let result = run_omo_status(root.path(), Some("session")).await;
     assert_eq!(result.code, 0);
     let val: serde_json::Value = serde_json::from_str(&result.stdout)?;
     assert_eq!(val["ok"], true);
@@ -172,11 +172,11 @@ async fn in_process_status_reflects_active_run() -> Result<(), Box<dyn std::erro
         aggregate_completion: None,
         validation_batches: None,
     };
-    let dir = root.path().join(".omo/ulw-loop");
+    let dir = root.path().join(".omo/ulw-loop/session");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("goals.json"), serde_json::to_string(&plan)?)?;
 
-    let result = run_omo_status(root.path()).await;
+    let result = run_omo_status(root.path(), Some("session")).await;
     let val: serde_json::Value = serde_json::from_str(&result.stdout)?;
     assert!(status_has_active_incomplete_run(&val));
     Ok(())

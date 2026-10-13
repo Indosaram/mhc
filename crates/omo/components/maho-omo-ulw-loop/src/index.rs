@@ -37,13 +37,14 @@ fn log_warn(logger: &Option<Arc<dyn ComponentLogger>>, message: &str, details: O
 
 async fn status(
     cwd: &std::path::Path,
+    session_id: &str,
     reader: Option<&StatusReader>,
     logger: &Option<Arc<dyn ComponentLogger>>,
 ) -> Option<(String, bool)> {
     let result = if let Some(read) = reader {
         read(cwd.into()).await
     } else {
-        run_omo_status(cwd).await
+        run_omo_status(cwd, Some(session_id)).await
     };
     if result.code != 0 {
         log_warn(logger, "omo-senpi ulw-loop status ignored", Some(serde_json::json!({"reason":"non-zero-exit","code":result.code})));
@@ -75,7 +76,7 @@ impl Extension for UlwLoopComponent {
                     if let ExtensionEvent::ToolResult(e) = event && !matches!(e.tool_name.as_str(), "create_goal" | "update_goal" | "bash" | "interactive_bash") {
                         return Ok(EventResult::None);
                     }
-                    let active = status(&ctx.cwd, reader.as_ref(), &ctx.logger.clone().or(logger)).await.is_some_and(|(_, active)| active);
+                    let active = status(&ctx.cwd, ctx.session_manager.session_id(), reader.as_ref(), &ctx.logger.clone().or(logger)).await.is_some_and(|(_, active)| active);
                     crate::footer_status::sync_shared(&footer, ctx, active);
                     Ok(EventResult::None)
                 })
@@ -110,7 +111,7 @@ impl Extension for UlwLoopComponent {
                 }
                 *state.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = State::default();
                 if input.streaming_behavior.is_some() {
-                    let active = status(&ctx.cwd, reader.as_ref(), &ctx.logger.clone().or(logger)).await.is_some_and(|(_, active)| active);
+                    let active = status(&ctx.cwd, ctx.session_manager.session_id(), reader.as_ref(), &ctx.logger.clone().or(logger)).await.is_some_and(|(_, active)| active);
                     crate::footer_status::sync_shared(&footer, ctx, active);
                     if active {
                         return Ok(EventResult::Input(InputEventResult::Transform {
@@ -149,7 +150,7 @@ impl Extension for UlwLoopComponent {
                     log_info(&ctx.logger, "omo-senpi ulw-loop continuation skipped", Some(serde_json::json!({"reason":"boulder-continuation-active"})));
                     return Ok(EventResult::None);
                 }
-                let result = status(&ctx.cwd, reader.as_ref(), &logger).await;
+                let result = status(&ctx.cwd, ctx.session_manager.session_id(), reader.as_ref(), &logger).await;
                 let Some((raw, active)) = result else {
                     crate::footer_status::sync_shared(&footer, ctx, false);
                     return Ok(EventResult::None);

@@ -26,7 +26,7 @@ impl ExtensionActions for Actions {
 }
 #[tokio::test] async fn active_run_continues_once_per_status()->Result<(),Box<dyn std::error::Error>> {
  let root=tempfile::tempdir()?;
- let plan_dir = root.path().join(".omo/ulw-loop");
+ let plan_dir = root.path().join(".omo/ulw-loop/session");
  std::fs::create_dir_all(&plan_dir)?;
  std::fs::write(plan_dir.join("goals.json"), r#"{"version":1,"revision":1,"goals":[{"id":"G001","title":"G1","objective":"O1","status":"pending","attempt":0,"createdAt":"","updatedAt":"","successCriteria":[]}],"goalsPath":".omo/ulw-loop/goals.json","ledgerPath":".omo/ulw-loop/ledger.jsonl","briefPath":".omo/ulw-loop/brief.md","createdAt":"","updatedAt":""}"#)?;
  let actions=Arc::new(Actions::default());let runtime=ExtensionRuntime::default();runtime.bind(actions.clone());let mut api=ExtensionApi::new(LoadedExtension::new("loop",root.path().into(),SourceInfo::default()),ExtensionSessionProfile::default(),EventBus::default(),runtime);
