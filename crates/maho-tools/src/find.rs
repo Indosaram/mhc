@@ -34,7 +34,10 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
                 let results = ops.glob(&input.pattern, &root, &["**/node_modules/**", "**/.git/**"], limit).await?;
                 call.signal.check()?; results
             } else {
-                let mut command = tokio::process::Command::new("fd");
+                let fd_path = crate::managed_tools::ensure_tool(crate::managed_tools::ManagedTool::Fd).await;
+                call.signal.check()?;
+                let fd_path = fd_path.ok_or_else(|| ToolError::Message("fd is not available and could not be downloaded".into()))?;
+                let mut command = tokio::process::Command::new(fd_path);
                 command.kill_on_drop(true).args(["--glob", "--color=never", "--hidden"]);
                 let mut inside_git = false;
                 for parent in root.ancestors() { if crate::path_utils::path_exists(&parent.join(".git")).await { inside_git = true; break; } }
