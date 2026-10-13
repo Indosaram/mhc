@@ -3465,7 +3465,7 @@ impl InteractiveMode {
         let mut options = credentials.into_iter().map(|credential| {
             let auth_type = match credential.credential_type { maho_ai::auth::types::CredentialType::OAuth => AuthSelectorAuthType::OAuth, maho_ai::auth::types::CredentialType::ApiKey => AuthSelectorAuthType::ApiKey };
             AuthSelectorProvider {
-                name: registry.get_provider_display_name(&credential.provider_id), id: credential.provider_id, auth_type, method_name: None,
+                name: registry.get_provider_display_name(&credential.provider_id), id: credential.provider_id, auth_type, method_name: None, login_label: None, method_has_login: true,
                 status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
             }
         }).collect::<Vec<_>>();
@@ -5189,7 +5189,7 @@ mod tests {
     #[test]
     fn login_completion_options_merge_auth_types_per_provider_sorted_by_name() {
         use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
-        let row = |id: &str, name: &str, auth_type| AuthSelectorProvider { id: id.into(), name: name.into(), auth_type, method_name: None, status: None };
+        let row = |id: &str, name: &str, auth_type| AuthSelectorProvider { id: id.into(), name: name.into(), auth_type, method_name: None, login_label: None, method_has_login: true, status: None };
         let options = get_login_provider_completion_options(&[row("zed", "Zed", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::OAuth)]);
         assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["anthropic", "zed"]);
         assert_eq!(format_login_provider_completion_description(&options[0]), "Anthropic \u{b7} subscription/API key");
