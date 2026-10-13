@@ -83,6 +83,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
     // senpi main.ts `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
     let mut runtime_diagnostics = maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation");
+    // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
+    // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
+    {
+        let current = maho_core::config::current_env();
+        let mut next = current.clone();
+        let proxy = settings.get_global().get("httpProxy").and_then(serde_json::Value::as_str).map(str::to_owned);
+        maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), parsed.multi_session, &mut next)?;
+        maho_process_env::apply(&current, &next);
+    }
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
@@ -200,8 +209,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
     }
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
-    // senpi `main.ts` `resolveModelScope`: scope patterns resolve against authenticated models.
-    let model_patterns = parsed.models.as_deref().unwrap_or_default();
+    // senpi `main.ts` `resolveModelScope` with `getModelNarrowingPatterns({ cliPatterns, legacyEnabledPatterns:
+    // settings.getEnabledModels() })` (main.ts:825-828): scope patterns resolve against authenticated models.
+    let enabled_models: Option<Vec<String>> = settings.get_value("enabledModels").and_then(|value| serde_json::from_value(value.clone()).ok());
+    let model_patterns = maho_core::model_resolver::get_model_narrowing_patterns(parsed.models.as_deref(), enabled_models.as_deref());
     let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
     let options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
@@ -233,8 +244,16 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             None,
         )),
         ..Default::default()
-    }).await?;
+    }).await.map_err(|error| if mode != AppMode::Interactive && error == "No model available" { maho_core::auth_guidance::format_no_models_available_message() } else { error })?;
+    // senpi main.ts:1292-1295: print/json/rpc without a usable model exits 1 with the login help.
+    let created_model = created.session.model();
+    if mode != AppMode::Interactive && created_model.provider == "unknown" && created_model.id == "unknown" {
+        return Err(maho_core::auth_guidance::format_no_models_available_message());
+    }
     let session = Arc::new(created.session);
+    // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
+    maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
+    let model_fallback_message = created.model_fallback_message;
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     session.set_context_files_enabled(!parsed.no_context_files);
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
@@ -316,7 +335,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
-            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests).await.map(|()| 0)
+            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests, migrations.migrated_auth_providers.clone(), model_fallback_message.clone()).await.map(|()| 0)
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } };
