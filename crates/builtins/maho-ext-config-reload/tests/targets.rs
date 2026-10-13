@@ -33,6 +33,7 @@ fn trusted_project_presence_watches_config_name() {
     assert_eq!(presence.target.allow_list.as_ref().unwrap().len(), 1);
 }
 #[test]
+#[cfg(unix)]
 fn symlink_resource_uses_presence_target_instead_of_following_directory() {
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();

@@ -53,9 +53,15 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
     git(&lower, &["add", "staged"]).expect("add");
     std::fs::write(lower.join("untracked"), "untracked").expect("untracked");
     std::fs::write(lower.join("ignored"), "ignored").expect("ignored");
-    std::os::unix::fs::symlink("tracked", lower.join("link")).expect("link");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("tracked", lower.join("link")).expect("link");
+    }
     std::fs::create_dir_all(lower.join("node_modules/.bin")).expect("node_modules");
-    std::os::unix::fs::symlink("../../tracked", lower.join("node_modules/.bin/x")).expect("bin link");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("../../tracked", lower.join("node_modules/.bin/x")).expect("bin link");
+    }
     std::fs::create_dir_all(lower.join("many")).expect("many");
     for index in 0..5000 {
         std::fs::write(lower.join(format!("many/{index}")), format!("file {index}")).expect("file");
@@ -88,11 +94,14 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
             std::fs::read_to_string(lower.join(name)).expect("file")
         );
     }
-    for name in ["link", "node_modules/.bin/x"] {
-        assert!(std::fs::symlink_metadata(merged.join(name))
-            .expect("lstat")
-            .file_type()
-            .is_symlink());
+    #[cfg(unix)]
+    {
+        for name in ["link", "node_modules/.bin/x"] {
+            assert!(std::fs::symlink_metadata(merged.join(name))
+                .expect("lstat")
+                .file_type()
+                .is_symlink());
+        }
     }
     assert!(!merged.join("fifo").exists());
     std::fs::write(merged.join("tracked"), "changed").expect("write");
