@@ -219,6 +219,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         base_tools_override: Some(base_tools.clone()), session_start_event,
         auto_title_sessions: options.auto_title_sessions,
     }).map_err(|error| error.to_string())?;
+    // `modelRuntime.setSettingsManager(settings)`: provider concurrency limits follow live settings.
+    session.model_runtime().set_settings_manager(session.shared_settings_manager());
     if options.minimal_resources {
         session.set_context_files_enabled(false);
     }
