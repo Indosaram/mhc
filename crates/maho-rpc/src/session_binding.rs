@@ -7,7 +7,7 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
     macro_rules! optional{($record:ident,$key:literal,$value:expr)=>{if let Some(value)=$value{$record[$key]=serde_json::to_value(value)?;}};}
     Ok(match event{
         E::Agent(event)=>serde_json::to_value(event)?,
-        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"aborted":aborted,"willRetry":will_retry});if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
+        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"willRetry":will_retry});if *aborted{record["aborted"]=true.into();}if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
         E::MessageUpdate{message,assistant_message_event}=>json!({"type":"message_update","message":message,"assistantMessageEvent":assistant_message_event}),
         E::AgentSettled=>json!({"type":"agent_settled"}),E::AgentIdle=>json!({"type":"agent_idle"}),E::SessionAbort=>json!({"type":"session_abort"}),
         E::ResumeCompactionRequired{projection,notice}=>json!({"type":"resume_compaction_required","projection":projection,"notice":notice}),
@@ -90,8 +90,14 @@ pub async fn create_rpc_session_binding(session_id:String,session:maho_core::age
     let tag=session_id.clone();let sink_writer=writer.clone();
     let sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>=std::sync::Arc::new(move|value:serde_json::Value|{let _=sink_writer.enqueue(&tag,value);});
     let event_sink=sink.clone();
-    let subscription=session.subscribe(std::sync::Arc::new(move|event|{match session_event_record(event){Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}}));
-    let handler=crate::connection_handler::RpcConnectionHandler::create(session,sink,capabilities).await;
+    let last_abort_source:crate::connection_handler::LastAbortSource=Default::default();
+    let (event_session,event_abort_source)=(session.weak_accessor(),last_abort_source.clone());
+    let subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        let record=match event_session(){Some(session)=>crate::connection_handler::rpc_session_event_record(&session,event,&event_abort_source),None=>session_event_record(event)};
+        match record{Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
+    }));
+    let mut handler=crate::connection_handler::RpcConnectionHandler::create(session,sink,capabilities).await;
+    handler.last_abort_source=last_abort_source;
     RpcSessionBinding{session_id,handler,writer,subscription:std::sync::Mutex::new(Some(subscription))}
 }
 impl RpcSessionBinding{

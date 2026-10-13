@@ -102,27 +102,58 @@ pub fn json_parse_error_response(input:&str)->String{
     response.push_str("\"}\n");response
 }
 pub type RpcRecordSink=std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+/// The abort owner the connection last observed on `agent_end`, keyed by the session id it was
+/// seen on: `get_state` reports it as `lastAbortSource` until the session is replaced (senpi keeps
+/// `lastAbortSource` per handler and clears it in `rebindSession`; native replacement keeps the
+/// session object and changes its id).
+pub type LastAbortSource=std::sync::Arc<std::sync::Mutex<Option<(String,&'static str)>>>;
+/// senpi's subscribe-path enrichment inside `rebindSession`: `thinking_level_changed` and
+/// `model_changed` carry the session's `thinkingSelection`, and `agent_end` records its abort owner.
+pub fn rpc_session_event_record(session:&AgentSession,event:&maho_ext_api::AgentSessionEvent,last_abort_source:&LastAbortSource)->Result<serde_json::Value,serde_json::Error>{
+    let mut record=crate::session_binding::session_event_record(event)?;
+    match event{
+        maho_ext_api::AgentSessionEvent::ThinkingLevelChanged{..}|maho_ext_api::AgentSessionEvent::ModelChanged{..}=>{
+            if let Some(selection)=session.thinking_selection(){record["thinkingSelection"]=serde_json::to_value(selection)?;}
+        },
+        maho_ext_api::AgentSessionEvent::AgentEnd{abort_source:Some(source),..}=>{
+            let source=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"};
+            *last_abort_source.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some((session.session_id(),source));
+        },
+        _=>{},
+    }
+    Ok(record)
+}
+fn current_abort_source(session:&AgentSession,last_abort_source:Option<&LastAbortSource>)->Option<&'static str>{
+    let stored=last_abort_source?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()?;
+    (stored.0==session.session_id()).then_some(stored.1)
+}
 type ActiveLogins=std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String,maho_ai::utils::abort::AbortController>>>;
 pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
     handle_input_line_with_sink(session,line,None).await
 }
 pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>)->Result<Option<String>,serde_json::Error>{
-    handle_input_line_with_login_state(session,line,sink,None,None).await
+    handle_input_line_with_login_state(session,line,sink,None,None,None).await
 }
-async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Result<Option<String>,serde_json::Error>{
+/// `handle_input_line_with_sink` for a connection that tracks `lastAbortSource` for `get_state`.
+pub async fn handle_input_line_with_abort_source(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,last_abort_source:&LastAbortSource)->Result<Option<String>,serde_json::Error>{
+    handle_input_line_with_login_state(session,line,sink,None,None,Some(last_abort_source)).await
+}
+async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Result<Option<String>,serde_json::Error>{
     let parsed=serde_json::from_str::<serde_json::Value>(line);
     if parsed.is_err(){return Ok(Some(json_parse_error_response(line)));}
     let error=match &parsed{Err(_)=>None,Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
     if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:None,record_type:ResponseRecordType::Response,command:"parse".into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
     let value=parsed?;
     let error=crate::rpc_input_validation::rpc_command_payload_error(&value).map(str::to_owned).or_else(||crate::rpc_input_validation::rpc_message_length_error(&value));
-    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
+    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,value["type"].as_str().unwrap_or_default())}}).map(Some);}
     let command:RpcCommand=match serde_json::from_value(value.clone()){
         Ok(command)=>command,
         Err(error) if error.to_string().starts_with(&format!("unknown variant `{}`,",value["type"].as_str().unwrap_or_default()))=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}}).map(Some);},
-        Err(error)=>return Err(error),
+        // Upstream answers any command failure with an error response (connection-handler.ts
+        // `handleInputLine` catch); a malformed field must not end the command loop.
+        Err(error)=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:error.to_string(),error_code:None,error_data:None}}).map(Some);},
     };
-    handle_session_command_with_sink(session,&command,sink,active_logins,ui).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
+    handle_session_command_with_sink(session,&command,sink,active_logins,ui,last_abort_source).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
@@ -184,7 +215,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
     state
 }
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
-    handle_session_command_with_sink(session,command,None,None,None).await
+    handle_session_command_with_sink(session,command,None,None,None,None).await
 }
 /// senpi connection-handler.ts: a `MissingSessionCwdError` is answered with
 /// `errorCode: "missing_session_cwd"` and the issue as `errorData`, so the client can offer to
@@ -195,7 +226,7 @@ fn session_switch_failure(command:&RpcCommand,kind:&str,error:maho_core::agent_s
         if let Some(file)=missing.issue.session_file{data["sessionFile"]=file.into();}
         data
     });
-    RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error_data.is_some().then(||"missing_session_cwd".to_owned()),error_data}}
+    RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error_data.is_some().then(||crate::rpc_types::RPC_ERROR_MISSING_SESSION_CWD.to_owned()),error_data}}
 }
 fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
     let result=result?;
@@ -208,7 +239,17 @@ fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::A
     if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
     Ok(Some(value))
 }
-async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Option<RpcResponse>{
+/// senpi's `error()` default: `edit_user_message`/`navigate_tree` failures carry `errorData: { leafId }`.
+fn default_error_data(session:&AgentSession,command:&str)->Option<serde_json::Value>{
+    matches!(command,"edit_user_message"|"navigate_tree").then(||serde_json::json!({"leafId":session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned))}))
+}
+/// The `{ cancelled, reason? }` wire shape of `reload` and `check_reload_veto` (rpc-types.ts).
+fn reload_veto_json(decision:&maho_ext_api::ReloadVetoDecision)->serde_json::Value{
+    let mut value=serde_json::json!({"cancelled":decision.cancelled});
+    if let Some(reason)=&decision.reason{value["reason"]=reason.clone().into();}
+    value
+}
+async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
             let options=(||{
@@ -263,7 +304,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if !completed{abort.await;}
             ("abort",Ok(None))
         },
-        RpcCommandBody::Reload=>("reload",session.reload().await.map(|result|Some(serde_json::json!({"cancelled":!result})))),
+        RpcCommandBody::Reload=>("reload",session.reload().await.map(|decision|Some(reload_veto_json(&decision)))),
         RpcCommandBody::SetFavoriteModels{models}|RpcCommandBody::SetScopedModels{models}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireModel{model:maho_ai::types::Model,thinking_level:Option<maho_ai::types::ThinkingLevel>,thinking_selection:Option<maho_ai::types::ThinkingSelection>,service_tier:Option<String>}
             let parsed=models.iter().cloned().map(|value|{
@@ -325,7 +366,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::SetAutoRetry{enabled}=>("set_auto_retry",session.set_auto_retry_enabled(*enabled).map(|()|None)),
         RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
         RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
-        RpcCommandBody::CheckReloadVeto=>("check_reload_veto",session.check_reload_veto().await.map(|value|Some(value.into()))),
+        RpcCommandBody::CheckReloadVeto=>("check_reload_veto",session.check_reload_veto().await.map(|decision|Some(reload_veto_json(&decision)))),
         RpcCommandBody::AbortBranchSummary=>{session.abort_branch_summary();("abort_branch_summary",Ok(None))},
         RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
         RpcCommandBody::SetSteeringMode{mode}|RpcCommandBody::SetFollowUpMode{mode}=>{let mode=match mode{crate::rpc_types::QueueMode::All=>maho_agent::types::QueueMode::All,crate::rpc_types::QueueMode::OneAtATime=>maho_agent::types::QueueMode::OneAtATime};let kind=if matches!(&command.body,RpcCommandBody::SetSteeringMode{..}){session.set_steering_mode(mode);"set_steering_mode"}else{session.set_follow_up_mode(mode);"set_follow_up_mode"};(kind,Ok(None))},
@@ -367,10 +408,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::GetEntries{since}=>{let since=since.clone();("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since.as_deref(){let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))}))},
         RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
-            if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None,error_data:None}});}
-            if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires entryId or targetId".into(),error_code:None,error_data:None}});}
+            if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None}});}
+            if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires entryId or targetId".into(),error_code:None}});}
             let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
-            if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None,error_data:None}});}
+            if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None}});}
             let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
             let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}
                 if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}
@@ -379,8 +420,13 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
         },
         RpcCommandBody::SetLabel{entry_id,label}=>{let result=session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref())).map(|_|None);("set_label",result)},
-        RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
-            let result=session.execute_user_bash(command,None,exclude_from_context.unwrap_or(false),execution_id.clone()).await;
+        RpcCommandBody::Bash{command:bash_command,exclude_from_context,execution_id,..}=>{
+            // senpi brackets a routed (multi-session) bash with `bash_start`/`bash_end`; the routing
+            // id reaches this handler as the command's `sessionId`.
+            let routed=sink.as_ref().filter(|_|command.session_id.is_some());
+            if let Some(sink)=routed{sink(serde_json::json!({"type":"bash_start"}));}
+            let result=session.execute_user_bash(bash_command,None,exclude_from_context.unwrap_or(false),execution_id.clone()).await;
+            if let Some(sink)=routed{sink(serde_json::json!({"type":"bash_end"}));}
             ("bash",result.map(|result|Some(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))))
         },
         RpcCommandBody::RecordBashResult{command,result,exclude_from_context}=>{
@@ -462,7 +508,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
             ("account_remove",result)
         },
-        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
+        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,current_abort_source(session,last_abort_source))))),
         RpcCommandBody::GetTree => {
             fn tree_node(node: maho_core::session_manager::SessionTreeNode) -> serde_json::Value {
                 let mut value = serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>()});
@@ -487,19 +533,25 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("edit_assistant_message",edit_response(session,result,"Edited assistant entry was not persisted"))
         },
         RpcCommandBody::EditUserMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
-            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
+            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:default_error_data(session,"edit_user_message")}});}
             let result=session.edit_user_message_coded(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
-            let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:None}})};
+            let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:default_error_data(session,"edit_user_message")}})};
             ("edit_user_message",edit_response(session,result,"Edited user entry was not persisted"))
         },
         RpcCommandBody::GetMedia{tool_call_id,content_index}=>{
             let index=if content_index.is_finite()&&content_index.fract()==0.0&&*content_index>=0.0{*content_index as usize}else{usize::MAX};
-            let content=session.messages().into_iter().find_map(|message|{
+            // Durable session entries first (they survive compaction of the live window), then live messages.
+            let durable=session.with_session_manager(|manager|manager.entries()).into_iter().find_map(|entry|{
+                let message=(entry["type"]=="message").then_some(&entry["message"])?;
+                (message["role"]=="toolResult"&&message["toolCallId"].as_str()==Some(tool_call_id.as_str())).then_some(())?;
+                message["content"].get(index).filter(|block|block["type"]=="image").cloned()
+            });
+            let content=durable.or_else(||session.messages().into_iter().find_map(|message|{
                 let result=message.as_tool_result()?;
                 (result.tool_call_id==*tool_call_id).then_some(result.content.get(index)).flatten().and_then(|block|{
                     matches!(block,maho_ai::types::ContentBlock::Image(_)).then_some(serde_json::to_value(block).ok()).flatten()
                 })
-            });
+            }));
             let result=content.map(|content|Some(serde_json::json!({"toolCallId":tool_call_id,"contentIndex":content_index,"content":content}))).ok_or_else(||crate::rpc_types::RPC_ERROR_MEDIA_NOT_FOUND.to_owned());
             ("get_media",result)
         },
@@ -525,12 +577,25 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
         },
         RpcCommandBody::SetClientInfo{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_client_info".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}}),
-        RpcCommandBody::GetProtocolInfo=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Error{error:"get_protocol_info requires the RPC host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:"open_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"close_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:None,result:RpcResponseResult::Error{error:"list_sessions requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::GetProtocolInfo=>{
+            // Classic connection-handler `get_protocol_info`: the same identity as the multi host, `mode:"classic"`.
+            let env=maho_core::config::current_env();
+            let argv=std::env::args().skip(1).collect::<Vec<_>>();
+            let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
+            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned()];
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
+            data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
+            data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
+            data["capabilities"]=serde_json::json!(capabilities);
+            data["mode"]="classic".into();
+            return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Success{data:Some(data)}});
+        },
+        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
+        RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
-    Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
+    Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,kind)}}})
 }
 /// The RPC-side extension UI: dialogs become `extension_ui_request` frames answered by a
 /// client's `extension_ui_response`; fire-and-forget methods only emit (senpi's
@@ -639,6 +704,7 @@ pub struct RpcConnectionHandler{
     active_logins:ActiveLogins,
     loaded_surfaces_subscription: std::sync::Mutex<Option<maho_ext_api::BusSubscription>>,
     loaded_surfaces_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) last_abort_source:LastAbortSource,
 }
 impl RpcConnectionHandler{
     /// Build a handler over `session` and install the RPC extension UI on it.
@@ -675,7 +741,7 @@ impl RpcConnectionHandler{
                 if changed { inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"})); }
             }
         });
-        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task))}
+        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task)),last_abort_source:Default::default()}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
@@ -687,7 +753,7 @@ impl RpcConnectionHandler{
                 crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value);}}
             return Ok(None);
         }
-        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone())).await
+        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone()),Some(&self.last_abort_source)).await
     }
     fn out_record(&self,record:serde_json::Value){(self.ui.out)(record);}
     pub fn is_shutdown_requested(&self)->bool{self.shutdown_requested.load(std::sync::atomic::Ordering::SeqCst)}
@@ -769,6 +835,24 @@ mod new_session_tests{
     }
 
     #[tokio::test]
+    async fn malformed_command_fields_return_error_response(){
+        let response=handle_input_line(&session(),r#"{"id":"m","type":"set_model"}"#).await.expect("dispatch").expect("response");
+        let response:serde_json::Value=serde_json::from_str(&response).expect("wire");
+        assert_eq!(response["id"],"m"); assert_eq!(response["command"],"set_model"); assert_eq!(response["success"],false); assert!(response["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn classic_protocol_info_and_multi_session_commands(){
+        let session=session();
+        let info=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"id":"p","type":"get_protocol_info"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(info["success"],true); assert_eq!(info["data"]["mode"],"classic"); assert_eq!(info["data"]["protocolVersion"],1); assert!(info["data"]["capabilities"].as_array().unwrap().iter().any(|capability|capability=="multi_session"));
+        let open=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"open_session"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(open["success"],false); assert_eq!(open["error"],"multi_session_disabled");
+        let close=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"close_session"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(close["error"],"Unknown command: close_session");
+    }
+
+    #[tokio::test]
     async fn navigate_tree_requires_one_target(){
         let session=session();
         let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"navigate_tree"})).expect("command");
@@ -804,6 +888,34 @@ mod new_session_tests{
     async fn get_media_reports_missing_media(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"missing","contentIndex":0})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"get_media"); assert_eq!(response["success"],false); assert_eq!(response["error"],"media_not_found");
+    }
+    #[tokio::test]
+    async fn get_media_reads_durable_session_entries(){
+        let session=session();
+        session.with_session_manager_mut(|manager|{manager.append_message(serde_json::json!({"role":"toolResult","toolCallId":"durable","toolName":"read","content":[{"type":"text","text":"x"},{"type":"image","data":"AAAA","mimeType":"image/png"}],"isError":false,"timestamp":0}));});
+        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"durable","contentIndex":1})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],true); assert_eq!(response["data"]["content"]["data"],"AAAA");
+    }
+    #[tokio::test]
+    async fn routed_bash_brackets_with_start_and_end_events(){
+        let records=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=records.clone();
+        let sink:RpcRecordSink=std::sync::Arc::new(move|record|observed.lock().unwrap().push(record));
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc","sessionId":"route"})).unwrap();
+        let response=serde_json::to_value(handle_session_command_with_sink(&session(),&command,Some(sink),None,None,None).await.unwrap()).unwrap();
+        assert_eq!(response["success"],true);
+        let kinds=records.lock().unwrap().iter().filter_map(|record|record["type"].as_str().map(str::to_owned)).filter(|kind|kind.starts_with("bash_")&&kind!="bash_execution_update").collect::<Vec<_>>();
+        assert_eq!(kinds,["bash_start","bash_end"]);
+    }
+    #[tokio::test]
+    async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false(){
+        let session=session();let last:LastAbortSource=Default::default();
+        let clean=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:false,will_retry:false,abort_source:None},&last).unwrap();
+        assert!(clean.get("aborted").is_none());
+        let aborted=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:true,will_retry:false,abort_source:Some(maho_ext_api::AbortSource::User)},&last).unwrap();
+        assert_eq!(aborted["aborted"],true); assert_eq!(aborted["abortSource"],"user");
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"get_state"})).unwrap();
+        let state=serde_json::to_value(handle_session_command_with_sink(&session,&command,None,None,None,Some(&last)).await.unwrap()).unwrap();
+        assert_eq!(state["data"]["lastAbortSource"],"user");
     }
     #[tokio::test]
     async fn get_loaded_surfaces_dispatches_inventory(){
@@ -845,7 +957,7 @@ mod new_session_tests{
     #[tokio::test]
     async fn check_reload_veto_dispatches(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"check_reload_veto"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],false);
+        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
     }
     #[tokio::test]
     async fn set_fast_mode_without_extension_returns_command_error(){
@@ -860,7 +972,16 @@ mod new_session_tests{
     #[tokio::test]
     async fn edit_user_message_reports_exact_missing_entry_error(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_user_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
+        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found"); assert_eq!(response["errorData"],serde_json::json!({"leafId":null}));
+    }
+    #[tokio::test]
+    async fn switch_session_to_missing_cwd_reports_missing_session_cwd(){
+        let directory=tempfile::tempdir().expect("tempdir");
+        let path=directory.path().join("stale.jsonl");
+        let missing=directory.path().join("gone").to_string_lossy().into_owned();
+        std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"session","version":3,"id":"stale","timestamp":"2026-10-13T00:00:00.000Z","cwd":missing}))).expect("session file");
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"switch_session","sessionPath":path})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],false); assert_eq!(response["errorCode"],"missing_session_cwd"); assert_eq!(response["errorData"]["sessionCwd"],missing.as_str()); assert_eq!(response["errorData"]["fallbackCwd"],"/tmp");
     }
     #[tokio::test]
     async fn edit_assistant_message_reports_exact_missing_entry_error(){

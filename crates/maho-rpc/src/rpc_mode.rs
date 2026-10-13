@@ -25,7 +25,7 @@ async fn finish_command(output:&mut(impl tokio::io::AsyncWrite+Unpin),events:&mu
     if let Some(response)=response?{output.write_all(response.as_bytes()).await?;}
     Ok(())
 }
-async fn pump(session:&maho_core::agent_session::AgentSession,mut input:impl tokio::io::AsyncRead+Unpin,output:&mut(impl tokio::io::AsyncWrite+Unpin),events_tx:&tokio::sync::mpsc::UnboundedSender<Result<serde_json::Value,serde_json::Error>>,events:&mut tokio::sync::mpsc::UnboundedReceiver<Result<serde_json::Value,serde_json::Error>>)->std::io::Result<()>{
+async fn pump(session:&maho_core::agent_session::AgentSession,last_abort_source:&crate::connection_handler::LastAbortSource,mut input:impl tokio::io::AsyncRead+Unpin,output:&mut(impl tokio::io::AsyncWrite+Unpin),events_tx:&tokio::sync::mpsc::UnboundedSender<Result<serde_json::Value,serde_json::Error>>,events:&mut tokio::sync::mpsc::UnboundedReceiver<Result<serde_json::Value,serde_json::Error>>)->std::io::Result<()>{
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
     use std::{future::Future,pin::Pin,task::Poll};
     type CommandFuture<'a>=Pin<Box<dyn Future<Output=Result<Option<String>,serde_json::Error>>+'a>>;
@@ -57,7 +57,7 @@ async fn pump(session:&maho_core::agent_session::AgentSession,mut input:impl tok
                     let sender=events_tx.clone();
                     commands.push(Box::pin(async move{
                         let sink:crate::connection_handler::RpcRecordSink=std::sync::Arc::new(move|record|{let _=sender.send(Ok(record));});
-                        crate::connection_handler::handle_input_line_with_sink(session,&line,Some(sink)).await
+                        crate::connection_handler::handle_input_line_with_abort_source(session,&line,Some(sink),last_abort_source).await
                     }));
                 },
                 crate::jsonl::LineRecord::Oversized=>{
@@ -73,14 +73,19 @@ pub async fn run_command_stream(session:&maho_core::agent_session::AgentSession,
     use tokio::io::AsyncWriteExt;
     let(events_tx,mut events)=tokio::sync::mpsc::unbounded_channel();
     let sender=events_tx.clone();
-    let subscription=session.subscribe(std::sync::Arc::new(move|event|{let _=sender.send(crate::session_binding::session_event_record(event));}));
+    let last_abort_source:crate::connection_handler::LastAbortSource=Default::default();
+    let (event_session,event_abort_source)=(session.weak_accessor(),last_abort_source.clone());
+    let subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        let record=match event_session(){Some(session)=>crate::connection_handler::rpc_session_event_record(&session,event,&event_abort_source),None=>crate::session_binding::session_event_record(event)};
+        let _=sender.send(record);
+    }));
     // senpi connection-handler.ts:937-945: extension errors after startup reach the client as
     // `extension_error` records on the same ordered stream as events and responses.
     if session.has_started_extension_lifecycle(){
         let sender=events_tx.clone();
         session.rebind_extension_context(maho_core::agent_session::ExtensionBindings{on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{let _=sender.send(Ok(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error})));})),..Default::default()}).await;
     }
-    let result=pump(session,input,&mut output,&events_tx,&mut events).await;
+    let result=pump(session,&last_abort_source,input,&mut output,&events_tx,&mut events).await;
     drop(subscription);
     match result{Ok(())=>output.flush().await,Err(error)=>Err(error)}
 }

@@ -3837,7 +3837,7 @@ impl AgentSession {
         if !source.exists() { return Err(format!("File not found: {resolved}").into()); }
         let directory = self.with_session_manager(|manager| manager.session_dir().to_owned());
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-        let filename = source.file_name().ok_or("Invalid import filename")?;
+        let filename = source.file_name().ok_or_else(|| "Invalid import filename".to_owned())?;
         let mut destination = std::path::Path::new(&directory).join(filename);
         let stored = crate::paths::resolve_path(&destination.to_string_lossy(), &base.to_string_lossy(),
             &crate::paths::PathInputOptions::default()) == resolved;
@@ -4341,9 +4341,10 @@ impl AgentSession {
         }
     }
 
-    pub async fn reload(&self) -> Result<bool, String> {
+    pub async fn reload(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
         let _reload = self.reload_admission.lock().await;
-        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
+        let veto = self.check_reload_veto().await?;
+        if veto.cancelled { return Ok(veto); }
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous_flag_values = self.extension_runner.lock().await.as_ref().map(|runner| runner.runtime.flag_values()).unwrap_or_default();
@@ -4406,11 +4407,14 @@ impl AgentSession {
             })).await;
             self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
         }
-        Ok(true)
+        Ok(maho_ext_api::ReloadVetoDecision::default())
     }
 
-    pub async fn check_reload_veto(&self) -> Result<bool, String> {
-        Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true))
+    /// senpi `checkReloadVeto`: `{ cancelled, reason? }`, the reason only when cancelled.
+    pub async fn check_reload_veto(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
+        let result = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?;
+        let cancelled = result.cancel == Some(true);
+        Ok(maho_ext_api::ReloadVetoDecision { cancelled, reason: if cancelled { result.reason } else { None } })
     }
 
     fn expand_input(&self, text: &str, templates: bool) -> Result<String, String> {
@@ -9102,7 +9106,7 @@ mod tests {
         let current = session.extension_runner.lock().await.as_ref().unwrap().create_context().unwrap();
         assert_eq!(current.session_manager.session_id(), session.session_id());
         current.ui.notify("new runtime", maho_ext_api::NotificationType::Info);
-        assert!(session.reload().await.unwrap());
+        assert!(!session.reload().await.unwrap().cancelled);
         assert!(current.actions().is_err());
         assert_eq!(lock(&runtimes).len(), 3);
         assert_eq!(session.get_commands().iter().find(|command| command.name == "generation").unwrap().description.as_deref(), Some("3"));
@@ -10043,8 +10047,8 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            assert!(first.await.expect("first task").expect("first reload"));
-            assert!(second.await.expect("second reload"));
+            assert!(!first.await.expect("first task").expect("first reload").cancelled);
+            assert!(!second.await.expect("second reload").cancelled);
         }).await.expect("bounded reloads");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         session.dispose().await;
@@ -10069,7 +10073,7 @@ mod tests {
             Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)) })
         }));
         session.set_extension_runner(runner).await;
-        assert!(session.reload().await.expect("reload"));
+        assert!(!session.reload().await.expect("reload").cancelled);
         let flag = session.extension_runner.lock().await.as_ref().and_then(|runner| runner.runtime.get_flag("no-ask-user"));
         assert_eq!(flag, Some(FlagValue::Boolean(true)));
         assert_eq!(*lock(&starts), 0);
