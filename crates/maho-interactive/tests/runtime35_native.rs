@@ -657,6 +657,14 @@ async fn session_info_does_not_replace_the_previous_status_line() {
 }
 
 #[tokio::test]
+async fn reload_reports_the_upstream_resource_message() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/reload", Default::default()).await.expect("reload"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Reloaded keybindings, extensions, skills, prompts, themes, and context files"));
+}
+
+#[tokio::test]
 async fn empty_compact_shows_the_pinned_no_messages_warning() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
