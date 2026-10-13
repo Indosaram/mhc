@@ -268,6 +268,8 @@ pub struct ModelRuntime {
 
 impl ModelRuntime {
     pub fn create_sync(options: CreateModelRuntimeOptions) -> Self {
+        // senpi `model-runtime.ts:73`: the product's identity rides outgoing requests.
+        maho_ai::wire_identity::set_wire_identity(Some(&crate::config::brand().user_agent));
         let credentials = options.credentials.unwrap_or_else(|| Arc::new(options.auth_path.as_ref().map_or_else(||crate::auth_storage::AuthStorage::in_memory(Default::default()),|path|crate::auth_storage::AuthStorage::create(&path.to_string_lossy()))));
         let config = Arc::new(RwLock::new(ModelConfig::load_sync_with_migration(options.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
