@@ -71,7 +71,7 @@ fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -
             }
         }
         for (name, value) in object {
-            let checked = optional_keys.is_none_or(|keys| keys.iter().any(|known| *known == name.as_str()) || required.iter().any(|known| *known == name.as_str()));
+            let checked = optional_keys.is_none_or(|keys| keys.contains(&name.as_str()) || required.contains(&name.as_str()));
             if checked && !is_color_value(value) {
                 errors.push((format!("/{key}/{name}"), "must match a schema in anyOf".to_owned()));
             }
@@ -91,7 +91,7 @@ fn collect_schema_errors(value: &serde_json::Value, missing: &mut Vec<String>) -
             None => errors.push(("/export".to_owned(), "must be object".to_owned())),
             Some(object) => {
                 for (name, value) in object {
-                    if export_keys.iter().any(|known| *known == name.as_str()) && !is_color_value(value) {
+                    if export_keys.contains(&name.as_str()) && !is_color_value(value) {
                         errors.push((format!("/export/{name}"), "must match a schema in anyOf".to_owned()));
                     }
                 }
