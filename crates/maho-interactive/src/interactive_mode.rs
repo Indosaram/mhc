@@ -42,7 +42,8 @@ enum AuthUiEvent {
     Prompt(maho_ai::auth::types::AuthPrompt, tokio::sync::oneshot::Sender<Result<String, String>>),
     Notify(maho_ai::auth::types::AuthEvent),
     LoginFinished { provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, result: Result<(), crate::login_outcome::LoginFailure>, selection_error: Option<String> },
-    LoginCatalogFinished { provider_name: String, action: String, result: Result<(), String>, selection_error: Option<String> },
+    LoginCatalogFinished { provider_name: String, action: String, result: Result<(), String>, selection_error: Option<String>, selected_model: Option<maho_ai::model::Model> },
+    AnthropicSubscriptionAuth,
     LogoutFinished { provider_name: String, auth_type: crate::components::oauth_selector::AuthSelectorAuthType, result: Result<(), String> },
 }
 
@@ -263,7 +264,17 @@ pub struct InteractiveMode {
     editor_border_key: Option<(maho_ai::types::ModelThinkingLevel, bool)>,
     /// senpi `ArminComponent`'s `setInterval`: live animations with the time of their last frame.
     armin_animations: Vec<(Rc<RefCell<crate::components::armin::ArminComponent>>, f64)>,
+    /// senpi `anthropicSubscriptionWarningShown`.
+    anthropic_subscription_warning_shown: bool,
+    /// senpi `continuityNotices`.
+    continuity_notices: crate::components::continuity_notice::ContinuityNoticeTracker,
 }
+const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
+
+fn is_anthropic_subscription_auth_key(api_key: Option<&str>) -> bool {
+    api_key.is_some_and(|key| key.starts_with("sk-ant-oat"))
+}
+
 type AuthPromptReply = (tokio::sync::oneshot::Receiver<String>, tokio::sync::oneshot::Sender<Result<String, String>>);
 
 impl InteractiveMode {
@@ -555,7 +566,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new() }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -801,7 +812,7 @@ impl InteractiveMode {
                                 None => session.set_model(model.clone()).await.map(|_| ()).map_err(|error| error.to_string()),
                             };
                             match result {
-                                Ok(()) => { let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name: provider_name.clone(), action: format!("{action}. Selected {}.", model.id), result: Ok(()), selection_error: None }); return; }
+                                Ok(()) => { let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name: provider_name.clone(), action: format!("{action}. Selected {}.", model.id), result: Ok(()), selection_error: None, selected_model: Some(model.clone()) }); return; }
                                 Err(error) => selection_error = Some(format!("{action}, but selecting its default model failed: {error}. Use /model to select a model.")),
                             }
                         }
@@ -809,7 +820,7 @@ impl InteractiveMode {
                 }
             }
             let error = refresh.errors.values().next().map(|error| error.to_string());
-            let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name, action, result: if refresh.aborted { Err("aborted".into()) } else if let Some(error) = error { Err(error) } else { Ok(()) }, selection_error });
+            let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name, action, result: if refresh.aborted { Err("aborted".into()) } else if let Some(error) = error { Err(error) } else { Ok(()) }, selection_error, selected_model: None });
         });
     }
 
@@ -948,6 +959,8 @@ impl InteractiveMode {
         self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.reveal.stop();
         self.assistant_cards.clear(); self.tool_cards.clear(); self.last_status = None;
         self.history_expansion.clear(); self.armin_animations.clear();
+        // senpi: the rebuilt transcript re-derives continuity notices, so suppression state resets.
+        self.continuity_notices.reset();
         // A mounted shared host is authoritative: rebuild from the fetched remote snapshot, never
         // the unrelated local session. Without a host, the local session is the source.
         if self.session_host.is_some() {
@@ -962,7 +975,7 @@ impl InteractiveMode {
     pub fn add_history_message(&mut self, message: &maho_agent::types::AgentMessage) {
         use maho_agent::types::{AgentMessage, CustomAgentMessage};
         match message {
-            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => crate::replay_assistant_tools::replay_assistant_tools(message, self),
+            AgentMessage::Llm(maho_ai::types::Message::Assistant(message)) => { crate::replay_assistant_tools::replay_assistant_tools(message, self); self.add_continuity_notice(message); }
             AgentMessage::Llm(maho_ai::types::Message::ToolResult(message)) => {
                 if let Some(component) = self.pending_tools.remove(&message.tool_call_id) {
                     let value = serde_json::to_value(message).expect("tool result");
@@ -1183,7 +1196,12 @@ impl InteractiveMode {
         if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
-            if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {name}")); }
+            if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? {
+                self.show_status(format!("Switched to {name}"));
+                let model = self.host_model();
+                self.show_risky_main_model_warning(&model);
+                self.maybe_warn_about_anthropic_subscription_auth(model);
+            }
             else { self.show_status("No other models available for cycling".into()); }
             return Ok(());
         }
@@ -1414,7 +1432,11 @@ impl InteractiveMode {
             let model = self.host_find_model(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
             let requested = model.clone();
             self.host_set_model(provider, id).await?;
-            if maho_ai::models::models_are_equal(Some(&self.host_model()), Some(&requested)) { self.show_status(format!("Switched to {}", self.host_model().name)); }
+            if maho_ai::models::models_are_equal(Some(&self.host_model()), Some(&requested)) {
+                self.show_status(format!("Switched to {}", self.host_model().name));
+                self.show_risky_main_model_warning(&requested);
+                self.maybe_warn_about_anthropic_subscription_auth(requested);
+            }
             else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
@@ -2309,6 +2331,68 @@ impl InteractiveMode {
         });
     }
 
+    /// senpi `addContinuityNotice`: a muted single-line notice for degraded session continuity.
+    fn add_continuity_notice(&mut self, message: &maho_ai::types::AssistantMessage) {
+        let Ok(value) = serde_json::to_value(message) else { return; };
+        let Some(notice) = self.continuity_notices.notice_for(&value, &self.theme) else { return; };
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(notice, 1, 0))));
+    }
+
+    /// senpi `showNoticeBox`.
+    fn show_notice_box(&mut self, mut spec: crate::components::earendil_announcement::NoticeSpec) {
+        use crate::extension_error_format::sanitize_tui_error_message;
+        spec.title = sanitize_tui_error_message(&spec.title);
+        spec.why = sanitize_tui_error_message(&spec.why);
+        for line in &mut spec.extra { line.text = sanitize_tui_error_message(&line.text); }
+        spec.expanded_line = spec.expanded_line.as_deref().map(sanitize_tui_error_message);
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
+        self.editor_host.request_render();
+    }
+
+    /// senpi `showWarning`.
+    fn show_warning(&mut self, warning_message: &str) {
+        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {warning_message}"));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+        self.editor_host.request_render();
+    }
+
+    /// senpi `showRiskyMainModelWarning`.
+    fn show_risky_main_model_warning(&mut self, model: &maho_ai::model::Model) {
+        if !crate::risky_main_model_warning::is_risky_main_model(model) { return; }
+        self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+            title: "Risky model warning".into(), tone: Some(crate::theme::ThemeColor::Error),
+            why: crate::risky_main_model_warning::RISKY_MAIN_MODEL_WARNING.into(), extra: Vec::new(), expanded_line: None,
+        });
+    }
+
+    /// senpi `maybeWarnAboutAnthropicSubscriptionAuth`: the auth lookup runs off the UI loop (senpi's
+    /// `void` promise) and reports back through the auth UI channel; lookup failures are ignored.
+    fn maybe_warn_about_anthropic_subscription_auth(&mut self, model: maho_ai::model::Model) {
+        let disabled = self.session.with_settings_manager(|settings| settings.get_value("warnings").and_then(|value| value.get("anthropicExtraUsage")).and_then(serde_json::Value::as_bool)) == Some(false);
+        if disabled || self.anthropic_subscription_warning_shown || model.provider != "anthropic" { return; }
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let sender = self.auth_ui_sender.clone();
+        tokio::spawn(async move {
+            let subscription = match runtime.check_auth("anthropic", None).await {
+                Ok(Some(check)) if check.auth_type == maho_ai::auth::types::AuthType::OAuth => true,
+                Ok(_) => matches!(runtime.get_auth(&model.provider).await, Ok(Some(resolution)) if is_anthropic_subscription_auth_key(resolution.auth.api_key.as_deref())),
+                Err(_) => false,
+            };
+            if subscription { let _ = sender.send(AuthUiEvent::AnthropicSubscriptionAuth); }
+        });
+    }
+
+    /// senpi `init`'s post-startup model warnings (`showRiskyMainModelWarning` +
+    /// `maybeWarnAboutAnthropicSubscriptionAuth` for the session model).
+    pub fn show_startup_model_warnings(&mut self) {
+        let model = self.host_model();
+        self.show_risky_main_model_warning(&model);
+        self.maybe_warn_about_anthropic_subscription_auth(model);
+    }
+
     fn show_error(&mut self, message: &str) {
         let text = self.theme.fg(crate::theme::ThemeColor::Error, &format!("Error: {}", crate::extension_error_format::sanitize_tui_error_message(message)));
         self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
@@ -2367,13 +2451,24 @@ impl InteractiveMode {
                     Err(error) => self.show_error(&format!("Logout failed: {error}")),
                     }
                 },
-                AuthUiEvent::LoginCatalogFinished { provider_name, action, result, selection_error } => {
+                AuthUiEvent::AnthropicSubscriptionAuth => {
+                    if !self.anthropic_subscription_warning_shown {
+                        self.anthropic_subscription_warning_shown = true;
+                        self.show_warning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
+                    }
+                }
+                AuthUiEvent::LoginCatalogFinished { provider_name, action, result, selection_error, selected_model } => {
                     match &result {
                         Ok(()) => self.show_status(format!("{action}. Credentials saved to {}", maho_core::config::get_auth_path())),
                         Err(error) if error == "aborted" => self.show_status(format!("{action}, but its model catalog refresh timed out; using cached models.")),
                         Err(_) => self.show_status(format!("{action}, but its model catalog could not be refreshed; using cached models.")),
                     }
                     if let Some(error) = &selection_error { self.show_error(error); }
+                    match &selected_model {
+                        Some(model) => { self.show_risky_main_model_warning(model); self.maybe_warn_about_anthropic_subscription_auth(model.clone()); }
+                        None if selection_error.is_none() => { let model = self.host_model(); self.maybe_warn_about_anthropic_subscription_auth(model); }
+                        None => {}
+                    }
                     self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model| &model.provider).collect::<std::collections::BTreeSet<_>>().len());
                     if let Some(footer) = &mut self.footer { footer.invalidate(); }
                     let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LoginCatalogCompleted { provider_name, outcome: result, selection_error });
@@ -2943,7 +3038,10 @@ impl InteractiveMode {
                         self.pending_tools.clear();
                     }
                 }
-                if matches!(event, AgentEvent::MessageEnd { .. }) { self.reveal.stop(); self.streaming = None; self.assistant_segments.clear(); }
+                if matches!(event, AgentEvent::MessageEnd { .. }) {
+                    self.reveal.stop(); self.streaming = None; self.assistant_segments.clear();
+                    if let Some(assistant) = message.as_assistant() { self.add_continuity_notice(assistant); }
+                }
             }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
                 self.tool_args_reveal.finish(tool_call_id); self.tool_partial_json.remove(tool_call_id);
