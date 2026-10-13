@@ -25,3 +25,15 @@ async fn unix_websocket_initializes_and_removes_socket_after_shutdown() {
     assert!(core.read().await.get_connection("unix-1").is_none());
     assert!(core.read().await.get_connection("unix-2").is_none());
 }
+
+#[tokio::test]
+async fn unix_probe_without_a_path_uses_the_token_directory_default_socket() {
+    // Pinned daemon/probe.ts: `listen.path ?? join(dirname(paths.tokenFile), "app-server.sock")`.
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("app-server.sock");
+    let core = Arc::new(RwLock::new(ServerCore::new("/tmp/home".into(), "1".into(), "Linux".into(), "test".into(), "x64".into(), "linux".into())));
+    let listener = start_unix_socket_listener(socket.clone(), true, ResolvedWebSocketListenerAuth::Off, core, None).await.unwrap();
+    let probe = maho_server::app_server::daemon_probe::probe_listen(&directory.path().join("ws-token"), &json!({"kind":"unix","url":"unix://"}), 2000, "1").await.unwrap();
+    assert!(probe.is_some(), "a pathless unix listen probes the default socket beside the token file");
+    tokio::time::timeout(std::time::Duration::from_secs(3), listener.close()).await.unwrap().unwrap();
+}

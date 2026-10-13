@@ -163,4 +163,75 @@ mod tests {
         let plan=router.plan_turn("s","a",&raw,Some("n"),&exchanges(),&policy).expect("drop recap");assert_eq!(plan.prompt,raw);assert!(plan.recap_dropped_for_ceiling);
         assert!(router.plan_turn("s","a",&"q".repeat(130001),Some("n"),&[],&policy).is_err());
     }
+    #[test]
+    fn resume_off_and_recap_disabled_change_composition() {
+        let mut router=SessionRouter::default();router.observe_init("s","a","chat","m",1);
+        let off=SessionPolicy {resume:false,..Default::default()};
+        assert!(router.plan_turn("s","a","next",Some("n"),&exchanges(),&off).expect("resume off").resume_chat_id.is_none());
+        let no_recap=SessionPolicy {recap_on_model_switch:false,..Default::default()};
+        let plan=router.plan_turn("s","a","switch",Some("n"),&exchanges(),&no_recap).expect("recap disabled");
+        assert!(plan.model_switch);assert!(plan.context_recap.is_none());assert_eq!(plan.prompt,"switch");assert_eq!(plan.resume_chat_id.as_deref(),Some("chat"));
+    }
+    #[tokio::test]
+    async fn context_overflow_restarts_with_the_overflow_reason() {
+        use serde_json::json;
+        let mut router=SessionRouter::default();router.observe_init("s","a","chat-3","m",1);let policy=SessionPolicy::default();let mut attempts=Vec::new();let mut output=Vec::new();
+        router.run_turn(TurnInput {session:"s",account:"a",prompt:"overflow turn",model:Some("m"),recent:&exchanges(),policy:&policy},|attempt| {
+            attempts.push(attempt);let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+            if attempts.len()==1 {sender.send(Err(json!({"stderr":"token limit exceeded"}))).expect("overflow");}
+            else {sender.send(Ok(json!({"type":"system","subtype":"init","session_id":"chat-10","model":"m"}))).expect("init");sender.send(Ok(json!({"type":"text_delta","delta":"fresh"}))).expect("text");}
+            async move {Ok(receiver)}
+        },||2,|_|crate::errors::CursorCliErrorKind::ContextOverflow,|event|output.push(event)).await.expect("restart");
+        assert_eq!(attempts.len(),2);assert!(attempts[1].resume_chat_id.is_none());
+        assert_eq!(output[0]["type"],"cursor_chat_restarted");assert_eq!(output[0]["reason"],"context_overflow");
+        assert_eq!(router.get_record("s").expect("binding").chat_id,"chat-10");
+    }
+    #[tokio::test]
+    async fn fresh_spawn_records_init_and_same_model_turns_resume_without_recap() {
+        use serde_json::json;
+        let mut router=SessionRouter::default();let policy=SessionPolicy::default();let mut first=Vec::new();
+        router.run_turn(TurnInput {session:"s",account:"a",prompt:"first turn",model:Some("m"),recent:&[],policy:&policy},|attempt| {
+            first.push((attempt.prompt.clone(),attempt.resume_chat_id.clone()));let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+            sender.send(Ok(json!({"type":"system","subtype":"init","session_id":"chat-1","model":"m"}))).expect("init");
+            sender.send(Ok(json!({"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}))).expect("assistant");async move {Ok(receiver)}
+        },||7,|_|crate::errors::CursorCliErrorKind::Other,|_|{}).await.expect("fresh");
+        assert!(first[0].1.is_none());let record=router.get_record("s").expect("record");assert_eq!(record.chat_id,"chat-1");assert_eq!(record.account_name,"a");assert_eq!(record.last_model,"m");assert_eq!(record.last_used_at,7);
+        let mut second=Vec::new();
+        router.run_turn(TurnInput {session:"s",account:"a",prompt:"second turn",model:Some("m"),recent:&exchanges(),policy:&policy},|attempt| {
+            second.push((attempt.prompt.clone(),attempt.resume_chat_id.clone()));let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+            sender.send(Ok(json!({"type":"system","subtype":"init","session_id":"chat-1","model":"m"}))).expect("init");
+            sender.send(Ok(json!({"type":"assistant","message":{"content":[{"type":"text","text":"again"}]}}))).expect("assistant");async move {Ok(receiver)}
+        },||8,|_|crate::errors::CursorCliErrorKind::Other,|_|{}).await.expect("resume");
+        assert_eq!(second[0].1.as_deref(),Some("chat-1"));assert_eq!(second[0].0,"second turn");
+    }
+    #[tokio::test]
+    async fn prepends_one_recap_on_first_post_switch_turn_only() {
+        use serde_json::json;
+        let mut router=SessionRouter::default();let policy=SessionPolicy::default();router.observe_init("s","a","chat-1","model-a",1);let mut switch=Vec::new();
+        router.run_turn(TurnInput {session:"s",account:"a",prompt:"switch turn",model:Some("model-b"),recent:&exchanges(),policy:&policy},|attempt| {
+            switch.push(attempt.prompt.clone());let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();
+            sender.send(Ok(json!({"type":"system","subtype":"init","session_id":"chat-1","model":"model-b"}))).expect("init");sender.send(Ok(json!({"type":"assistant","message":{"content":[{"type":"text","text":"switched"}]}}))).expect("assistant");async move {Ok(receiver)}
+        },||2,|_|crate::errors::CursorCliErrorKind::Other,|_|{}).await.expect("switch");
+        let prompt=&switch[0];assert!(prompt.starts_with(CONTEXT_RECAP_BEGIN));assert_eq!(prompt.matches(CONTEXT_RECAP_BEGIN).count(),1);assert_eq!(prompt.matches(CONTEXT_RECAP_END).count(),1);assert!(prompt.ends_with("switch turn"));
+        let mut next=Vec::new();
+        router.run_turn(TurnInput {session:"s",account:"a",prompt:"next turn",model:Some("model-b"),recent:&exchanges(),policy:&policy},|attempt| {
+            next.push(attempt.prompt.clone());let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();sender.send(Ok(json!({"type":"system","subtype":"init","session_id":"chat-1","model":"model-b"}))).expect("init");sender.send(Ok(json!({"type":"assistant","message":{"content":[{"type":"text","text":"settled"}]}}))).expect("assistant");async move {Ok(receiver)}
+        },||3,|_|crate::errors::CursorCliErrorKind::Other,|_|{}).await.expect("next");assert_eq!(next[0],"next turn");
+    }
+    #[tokio::test]
+    async fn fresh_chat_fallback_is_bounded_to_one_retry() {
+        use serde_json::json;
+        let mut router=SessionRouter::default();router.observe_init("s","a","chat-2","m",1);let policy=SessionPolicy::default();let mut count=0;
+        let result=router.run_turn(TurnInput {session:"s",account:"a",prompt:"doomed",model:Some("m"),recent:&[],policy:&policy},|_| {
+            count+=1;let (sender,receiver)=tokio::sync::mpsc::unbounded_channel();sender.send(Err(json!({"stderr":"session chat-2 not found"}))).expect("failure");async move {Ok(receiver)}
+        },||2,|_|crate::errors::CursorCliErrorKind::Other,|_|{}).await;
+        assert_eq!(count,2);assert_eq!(result,Err(json!({"stderr":"session chat-2 not found"})));
+    }
+    #[test]
+    fn plan_turn_is_idempotent_and_resumed_init_updates_record() {
+        let mut router=SessionRouter::default();let policy=SessionPolicy::default();router.observe_init("s","a","chat-1","model-a",1);let recent=exchanges();
+        let first=router.plan_turn("s","a","planned",Some("model-b"),&recent,&policy).expect("first");let second=router.plan_turn("s","a","planned",Some("model-b"),&recent,&policy).expect("second");
+        assert_eq!(first.prompt,second.prompt);assert_eq!(first.resume_chat_id,second.resume_chat_id);assert!(first.model_switch);assert_eq!(first.resume_chat_id.as_deref(),Some("chat-1"));
+        assert_eq!(router.get_record("s").expect("record").last_model,"model-a");router.observe_init("s","a","chat-77","model-a",2);assert_eq!(router.get_record("s").expect("record").chat_id,"chat-77");
+    }
 }

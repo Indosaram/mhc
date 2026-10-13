@@ -418,6 +418,12 @@ impl Default for InMemorySettingsStorage {
 }
 
 impl InMemorySettingsStorage {
+    /// Seed the global settings document at construction, so a caller can install a real settings
+    /// document (e.g. a retry/fallback chain) before building a `SettingsManager` over it.
+    pub fn with_global_content(content: impl Into<String>) -> Self {
+        Self { global: Mutex::new(Some(content.into())), project: Mutex::new(None) }
+    }
+
     pub fn content(&self, scope: SettingsScope) -> Option<String> {
         match scope {
             SettingsScope::Global => self.global.lock().expect("in-memory settings lock").clone(),

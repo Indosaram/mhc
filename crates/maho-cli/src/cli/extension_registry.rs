@@ -193,7 +193,7 @@ fn account() -> Box<dyn Extension> {
     Box::new(maho_ext_account::Account)
 }
 fn config_reload() -> Box<dyn Extension> {
-    Box::new(maho_ext_config_reload::ConfigReload)
+    Box::new(maho_ext_config_reload::ConfigReload::default())
 }
 
 /// Linked builtin factories, in the pinned `builtinExtensions` relative order.

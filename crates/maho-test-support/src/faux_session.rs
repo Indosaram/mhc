@@ -21,6 +21,9 @@ pub struct FauxSession {
     pub script: FauxScript,
     native_extensions: Vec<std::sync::Arc<maho_ext_host::loader::NativeExtensionFactory>>,
     native_responses: Option<Vec<maho_ai::types::AssistantMessage>>,
+    settings: Option<Value>,
+    faux_models: Vec<maho_ai::providers::faux::FauxModelDefinition>,
+    native_response_factory: Option<maho_ai::providers::faux::FauxResponseFactory>,
 }
 
 impl FauxSession {
@@ -31,6 +34,9 @@ impl FauxSession {
             script,
             native_extensions: Vec::new(),
             native_responses: None,
+            settings: None,
+            faux_models: Vec::new(),
+            native_response_factory: None,
         }
     }
 
@@ -42,6 +48,24 @@ impl FauxSession {
     /// Register a native extension for each in-process run, before session startup.
     pub fn with_native_extension(mut self, factory: maho_ext_host::loader::NativeExtensionFactory) -> Self {
         self.native_extensions.push(std::sync::Arc::new(factory));
+        self
+    }
+
+    /// Seed the global settings document (e.g. retry/fallback chains) for native runs.
+    pub fn with_settings(mut self, settings: Value) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    /// Register these faux models instead of the provider defaults; `faux-1` stays the primary.
+    pub fn with_faux_models(mut self, models: Vec<maho_ai::providers::faux::FauxModelDefinition>) -> Self {
+        self.faux_models = models;
+        self
+    }
+
+    /// Serve every provider call from this model-aware factory instead of the scripted queue.
+    pub fn with_native_response_factory(mut self, factory: maho_ai::providers::faux::FauxResponseFactory) -> Self {
+        self.native_response_factory = Some(factory);
         self
     }
 
@@ -126,7 +150,14 @@ impl FauxSession {
         use maho_core::agent_session::{AgentSession, AgentSessionConfig};
 
         let streams = maho_ai::providers::faux::faux_streams(provider.core.clone());
+        let core = provider.core.clone();
+        let factory = self.native_response_factory.clone();
         let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| {
+            // One factory step per provider call, so a model-aware factory can answer each
+            // primary/fallback request independently.
+            if let Some(factory) = &factory {
+                core.append_responses(vec![maho_ai::providers::faux::FauxResponseStep::Factory(factory.clone())]);
+            }
             streams.stream_simple(model, context, options.map(|options| options.simple))
         });
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
@@ -143,8 +174,10 @@ impl FauxSession {
                 stream_fn: Some(stream_fn), ..Default::default()
             }),
             session_manager: maho_core::session_manager::SessionManager::in_memory(cwd, None, None),
-            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(
-                Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false),
+            settings_manager: maho_core::settings_manager::SettingsManager::from_storage(Box::new(match &self.settings {
+                Some(settings) => maho_core::settings_manager::InMemorySettingsStorage::with_global_content(serde_json::to_string(settings)?),
+                None => maho_core::settings_manager::InMemorySettingsStorage::default(),
+            }), false),
             cwd: cwd.to_owned(), agent_dir: Some(cwd.to_owned()), fallback_now: Some(Arc::new(|| 0.0)), retry_random: Some(Arc::new(|| 0.5)),
             scoped_models: Vec::new(), favorite_models: Vec::new(), flag_values: Default::default(), custom_tools: Vec::new(),
             model_runtime: Some(runtime), model_registry: None, uses_default_stream_function: Some(false),
@@ -163,12 +196,16 @@ impl FauxSession {
         let temp = tempfile::tempdir()?;
         let cwd = temp.path().to_string_lossy().into_owned();
         let provider = faux_provider(RegisterFauxProviderOptions {
-            api: Some("faux".to_owned()), tokens_per_second: Some(0.0), ..Default::default()
+            api: Some("faux".to_owned()), tokens_per_second: Some(0.0),
+            models: (!self.faux_models.is_empty()).then(|| self.faux_models.clone()),
+            ..Default::default()
         });
         let model = provider.get_model(Some("faux-1")).ok_or("Missing faux-1 model")?;
         let script = self.scripted_messages()?;
         let calls = Arc::new(Mutex::new(Vec::new()));
-        provider.set_responses(script.iter().map(|message| recording_step(message.clone(), calls.clone(), None)).collect());
+        if self.native_response_factory.is_none() {
+            provider.set_responses(script.iter().map(|message| recording_step(message.clone(), calls.clone(), None)).collect());
+        }
         let session = self.new_agent_session(&provider, model, &cwd, temp.path())?;
         let extensions = self.load_native_extensions(temp.path());
         let runner = if extensions.extensions.is_empty() {

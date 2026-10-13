@@ -59,4 +59,16 @@ mod tests {
         assert!(supports_tool("ask_user_question"));
         assert!(!supports_tool("other"));
     }
+
+    #[test]
+    fn call_headers_and_result_summary_match_pinned_render() {
+        // Pinned ask-user/render.ts: bracketed headers ("[Question]" for a header-less entry,
+        // "Question" with no questions array) and a status; N answered; N unanswered summary.
+        assert_eq!(call_headers(&json!({"questions":[{"header":"Pick one"},{"header":"Then this"}]})), "[Pick one] [Then this]");
+        assert_eq!(call_headers(&json!({"questions":[{}]})), "[Question]");
+        assert_eq!(call_headers(&json!({})), "Question");
+        let result = json!({"details":{"status":"answered","answers":{"a":"x"},"unanswered":["b"]},
+            "content":[{"type":"text","text":"The user responded"}]});
+        assert_eq!(result_text(&result), "answered; 1 answered; 1 unanswered\nThe user responded");
+    }
 }
