@@ -77,10 +77,12 @@ pub async fn run_generation(lane: &dyn RuntimeDriveLane, drive: &Drive, generati
     };
     options.stream.request.signal = Some(drive.gate.signal());
     options.stream.session_id = Some(format!("{}:{}", lane.session().metadata().id, lane.name()));
+    let metadata = super::response::ResponseMetadataSlot::default();
+    options.stream.request.on_response = Some(super::response::capture_response_metadata(&metadata));
     options.stream.request.async_on_payload = Some(before_payload_hook(lane.hooks(), drive.gate.clone(), drive.context.clone(), lane.name().to_owned(), drive.operation_id.clone()));
     let provider_messages = (config.to_provider_messages)(messages, &drive.context).await;
     let context = maho_ai::types::Context { messages: provider_messages, system_prompt: Some(system_prompt), tools: Some(tools) };
     let stream = drive.gate.admit(|| lane.models().stream_simple(&model, &context, Some(options), maho_ai::models::ModelsRequestTransforms::default())).map_err(|e| session_invariant_error(e.to_string()))?;
-    let response = super::response::consume_response(lane, drive, &intent, &stream, false).await?;
+    let response = super::response::consume_response(lane, drive, &intent, &stream, &metadata, false).await?;
     publish_response(lane, drive, &intent, response, false).await
 }
