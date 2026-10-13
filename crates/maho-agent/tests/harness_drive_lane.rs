@@ -172,6 +172,29 @@ async fn global_configuration_events_include_previous_and_current_values() {
 }
 
 #[tokio::test]
+async fn throwing_hook_handler_emits_hook_handler_error_event() {
+    use maho_agent::harness::events::HarnessEventPayload;
+    use maho_agent::harness::hooks::{HookInvocation, HookName};
+    let harness = fixture().await;
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let _subscription = harness.events.on("handler_error", Arc::new(move |event, _| {
+        let sink = sink.clone();
+        Box::pin(async move { sink.lock().unwrap().push(event); })
+    }));
+    let _hook = harness.hooks.on(HookName::BeforeRun, Arc::new(|_, _| Box::pin(async { Err("hook broke".to_owned()) })), None);
+    let gate = maho_agent::harness::execution::effect_gate::create_gate().0;
+    harness.hooks.run_with_gate(HookName::BeforeRun, HookInvocation::new("main", "run"), &gate, &BACKGROUND_CONTEXT).await.unwrap();
+    let events = seen.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].lane.as_deref(), Some("main"));
+    let HarnessEventPayload::HandlerError(payload) = &events[0].payload else { panic!("handler error"); };
+    assert_eq!(payload.kind, "hook");
+    assert_eq!(payload.hook.as_deref(), Some("before_run"));
+    assert_eq!(payload.error, "hook broke");
+}
+
+#[tokio::test]
 async fn drive_completion_preserves_first_settlement_and_wakes_all_observers() {
     use maho_agent::harness::runtime::lane::Drive;
     use maho_agent::harness::agent_harness::{DriveOptions, DriveOutcome};

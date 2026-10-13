@@ -204,6 +204,20 @@ impl HarnessEvent {
         )
     }
 
+    /// Pinned `HookRegistry` error reporter payload: `{ type: "handler_error", kind: "hook", hook, error, lane }`.
+    pub fn hook_handler_error(error: impl Into<String>, hook: &str, lane: Option<String>) -> Self {
+        Self::new(
+            HarnessEventPayload::HandlerError(HandlerErrorPayload {
+                error: error.into(),
+                stack: None,
+                kind: "hook".to_owned(),
+                hook: Some(hook.to_owned()),
+                event: None,
+            }),
+            lane,
+        )
+    }
+
     pub fn handler_error_message(&self) -> Option<&str> {
         match &self.payload {
             HarnessEventPayload::HandlerError(payload) => Some(&payload.error),
@@ -1067,6 +1081,15 @@ async fn deliver_watcher<T: Clone + Send + Sync + 'static>(
 mod wire_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hook_handler_error_carries_hook_kind_and_name() {
+        let event = HarnessEvent::hook_handler_error("boom", "before_request", Some("main".into()));
+        assert_eq!(
+            event_to_value(&event),
+            json!({"type": "handler_error", "lane": "main", "error": "boom", "kind": "hook", "hook": "before_request"})
+        );
+    }
 
     #[test]
     fn run_start_carries_type_lane_and_camelcase_fields() {
