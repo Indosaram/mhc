@@ -54,7 +54,7 @@ fn expect_unavailable(result: CategoryResolutionResult) -> ModelUnavailable {
 }
 
 fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
-    DelegateFallbackEntry::new(providers, model, variant)
+    crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
 
 fn chain(name: &str) -> Vec<DelegateFallbackEntry> {

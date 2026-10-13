@@ -24,7 +24,7 @@ const OPENAI: &[&str] = &[
 ];
 
 fn rung(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
-    DelegateFallbackEntry::new(providers, model, variant)
+    crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
 
 /// Mirrors model-core `category-model-requirements.ts`; senpi's kimi rungs carry both the

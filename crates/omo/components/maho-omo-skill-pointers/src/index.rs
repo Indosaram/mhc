@@ -181,7 +181,7 @@ pub fn normalize_ulw_loop_session_id(session_id: Option<&str>) -> Option<String>
 }
 
 pub fn ulw_loop_tool_sentence(session_scope: Option<&str>) -> String {
-    let base = " Drive every ulw-loop operation from a JS eval cell through the SDK: const { agentToolkit } = await import(`${env(\"OMO_AGENT_TOOLKIT_SDK_ROOT\")}/sdk.js`); never call a tool named omo_agent_toolkit and never spawn a CLI.";
+    let base = " Drive every ulw-loop operation through the native CLI from bash: `mhc ulw-loop <subcommand> --json` (create-goals, status, complete-goals, checkpoint, steer, add-goal, criteria, record-evidence, record-review-blockers); the session's bash binds PI_SESSION_ID, so the CLI targets this session's plan. There is no JS SDK to import and no tool named omo_agent_toolkit.";
     match session_scope {
         Some(scope) => format!("{base} This session's state lives under .omo/ulw-loop/{scope}/."),
         None => base.to_string(),

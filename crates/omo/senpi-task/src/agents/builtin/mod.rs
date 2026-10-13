@@ -86,7 +86,7 @@ pub fn curated_readonly_agent_names() -> BTreeSet<&'static str> {
 }
 
 fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
-    DelegateFallbackEntry::new(providers, model, variant)
+    crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
 
 fn fast_search_chain() -> Vec<DelegateFallbackEntry> {

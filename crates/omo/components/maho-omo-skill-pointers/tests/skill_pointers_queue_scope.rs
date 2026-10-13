@@ -39,7 +39,7 @@ async fn given_ulw_loop_session_scope_when_the_input_session_id_is_known_then_th
         ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
     ]);
     let content = injected_content(&harness, ULW_LOOP_CUSTOM_TYPE);
-    assert!(content.contains("await import(`${env(\"OMO_AGENT_TOOLKIT_SDK_ROOT\")}/sdk.js`)"));
+    assert!(content.contains("`mhc ulw-loop <subcommand> --json`"));
     assert!(content.contains(".omo/ulw-loop/session-a-weird/"));
 }
 

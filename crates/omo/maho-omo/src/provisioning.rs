@@ -40,7 +40,7 @@ pub struct ProvisioningOptions {
 }
 
 impl ProvisioningOptions {
-    fn read(&self, name: &str) -> Option<String> {
+    pub(crate) fn read(&self, name: &str) -> Option<String> {
         match &self.env {
             Some(reader) => reader(name),
             None => std::env::var(name).ok(),
