@@ -752,8 +752,57 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_set_model(&self, provider: &str, id: &str) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await, None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|_| ()) } }
+    async fn host_set_model(&self, provider: &str, id: &str) -> Result<Option<String>, String> {
+        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await.map(|()| None), None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|change| change.and_then(|change| change.system_prompt_name)) } }
+    }
+
+    /// senpi `findExactModelMatch`: the scoped (else available) snapshot first; with no scope and
+    /// no cached hit, refresh the catalogs under a 15s timeout and search the refreshed snapshot.
+    async fn find_exact_model_match(&mut self, search_term: &str) -> Option<maho_ai::model::Model> {
+        let scoped = self.host_scoped_models();
+        let narrowed = !scoped.is_empty();
+        let cached: Vec<_> = if narrowed { scoped.into_iter().map(|entry| entry.model).collect() } else { self.host_available_models() };
+        let cached_match = maho_core::model_resolver::find_exact_model_reference_match(search_term, &cached).cloned();
+        if cached_match.is_some() || narrowed { return cached_match; }
+        // A mounted host owns its catalog; only the local runtime is refreshed here.
+        if self.session_host.is_none() {
+            self.show_status("Refreshing model catalogs…".into());
+            let runtime = self.session.model_registry().model_runtime.clone();
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let signal = controller.signal();
+            let start = move |signal: maho_ai::utils::abort::AbortSignal| async move {
+                let mut runtime = runtime;
+                runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await
+            };
+            let timer = tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; controller.abort(None); });
+            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(0, &signal, start).await;
+            timer.abort();
+            let timed_out = signal.aborted();
+            match outcome {
+                Ok(result) if result.aborted && timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+                Ok(result) if !result.errors.is_empty() => self.show_warning(&format!("Could not refresh {}; searching cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", "))),
+                Ok(_) => {}
+                Err(_) if timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+                Err(error) => self.show_warning(&format!("Could not refresh model catalogs: {error}")),
+            }
+        }
+        maho_core::model_resolver::find_exact_model_reference_match(search_term, &self.host_available_models()).cloned()
+    }
+
+    /// senpi `selectModelFromUi`: switch, then report `Model: <id>` with the optimized-prompt suffix.
+    async fn select_model_from_ui(&mut self, model: maho_ai::model::Model) {
+        match self.host_set_model(&model.provider, &model.id).await {
+            Ok(system_prompt_name) => {
+                if let Some(footer) = &mut self.footer { footer.invalidate(); }
+                self.update_editor_border_color();
+                let suffix = system_prompt_name.map(|name| format!(" (optimized system prompt applied: {name})")).unwrap_or_default();
+                self.show_status(format!("Model: {}{suffix}", model.id));
+                if crate::risky_main_model_warning::is_risky_main_model(&model) {
+                    self.show_notice_box(crate::components::earendil_announcement::NoticeSpec { title: "Risky model warning".into(), tone: Some(crate::theme::ThemeColor::Error), why: crate::risky_main_model_warning::RISKY_MAIN_MODEL_WARNING.into(), extra: Vec::new(), expanded_line: None });
+                }
+            }
+            Err(error) => self.show_error(&error),
+        }
     }
 
     fn complete_provider_authentication(&mut self, provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, immediate_selection_error: Option<String>) {
@@ -1412,13 +1461,22 @@ impl InteractiveMode {
             self.apply_tree_navigation().await?;
             return Ok(PromptDisposition::Handled);
         }
-        if let Some(reference) = text.trim().strip_prefix("/model ") {
-            let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
-            let model = self.host_find_model(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
-            let requested = model.clone();
-            self.host_set_model(provider, id).await?;
-            if maho_ai::models::models_are_equal(Some(&self.host_model()), Some(&requested)) { self.show_status(format!("Switched to {}", self.host_model().name)); }
-            else { self.show_status(format!("Model switch pending: {reference}")); }
+        if let Some(reference) = text.trim().strip_prefix("/model-select ") {
+            // The selectors' `onSelect`: senpi calls `selectModelFromUi` with the chosen model directly.
+            let Some((provider, id)) = reference.trim().split_once('/') else { return Ok(PromptDisposition::Handled); };
+            match self.host_find_model(provider, id) {
+                Some(model) => self.select_model_from_ui(model).await,
+                None => self.show_error(&format!("Model not found: {provider}/{id}")),
+            }
+            return Ok(PromptDisposition::Handled);
+        }
+        if let Some(search_term) = text.trim().strip_prefix("/model ") {
+            // senpi `handleModelCommand`: an exact match switches, a miss opens the pre-filtered selector.
+            let search_term = search_term.trim().to_owned();
+            match self.find_exact_model_match(&search_term).await {
+                Some(model) => self.select_model_from_ui(model).await,
+                None => { self.dispatch_command(&format!("/model-search {search_term}"))?; }
+            }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/export" || text.trim().starts_with("/export ") {
@@ -1887,7 +1945,7 @@ impl InteractiveMode {
                 let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.host_model();
                 self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
                     FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
-                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
             } else {
                 use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
                 self.ui_dialog = Some(Box::new(ScopedModelsSelectorComponent::new(&self.theme, keys,
@@ -1938,7 +1996,8 @@ impl InteractiveMode {
             if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             return Ok(true);
         }
-        if text == "/model" {
+        let model_search = if text == "/model" { Some(None) } else { text.strip_prefix("/model-search ").map(|term| Some(term.trim().to_owned())) };
+        if let Some(initial_search) = model_search {
             use crate::components::model_selector::{ModelSelectorComponent, ModelEntry, ModelSelectorFavoriteOptions};
             let current = self.host_model();
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
@@ -1964,8 +2023,8 @@ impl InteractiveMode {
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
-                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None,
+                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), initial_search.as_deref(),
                 ModelSelectorFavoriteOptions { favorite_model_ids:favorite_ids, on_favorite_change:Some(favorite_callback) }, None);
             let session = self.session.clone(); let ui = self.extension_ui.clone();
             selector.set_default_model_change_handler(Box::new(move |model| {
