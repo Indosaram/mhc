@@ -125,6 +125,7 @@ struct ComposedProvider { id: String, name: String, models: Vec<Model>, base: Op
 impl Provider for ComposedProvider {
     fn id(&self) -> &str { &self.id }
     fn name(&self) -> &str { &self.name }
+    fn auth(&self) -> Option<&maho_ai::auth::types::ProviderAuth> { self.base.as_ref().and_then(|base| base.auth()) }
     fn retry_policy(&self) -> Option<&maho_ai::utils::retry_profile::types::RetryPolicyProfile> {
         self.extension.as_ref().and_then(|extension| extension.retry_policy.as_ref())
             .or_else(|| self.base.as_ref().and_then(|base| base.retry_policy()))
@@ -160,6 +161,56 @@ impl Provider for ComposedProvider {
     fn supports_cancel_deferred(&self)->bool {self.base.as_ref().is_some_and(|p|p.supports_cancel_deferred())}
     fn cancel_deferred<'a>(&'a self,model:&'a Model,handle:&'a maho_ai::types::DeferredHandle,options:Option<maho_ai::types::DeferredCancelOptions>)->maho_ai::types::BoxFuture<'a,Result<(),String>> {
         match &self.base { Some(base)=>base.cancel_deferred(model,handle,options), None=>Box::pin(async {Err("API cannot cancel deferred responses".to_owned())}) }
+    }
+}
+
+/// `composeOAuthAuth`: the extension's (or base provider's) OAuth with models.json / extension
+/// headers and `authHeader` applied to every derived request auth.
+pub struct ComposedOAuthAuth {
+    provider_id: String,
+    oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
+    raw_headers: Option<std::collections::HashMap<String, String>>,
+    auth_header: bool,
+}
+
+pub fn compose_oauth_auth(
+    provider_id: &str,
+    oauth: Option<Arc<dyn maho_ai::auth::types::OAuthAuth>>,
+    config: Option<&ModelsJsonProvider>,
+    extension: Option<&ModelsJsonProvider>,
+) -> Option<ComposedOAuthAuth> {
+    Some(ComposedOAuthAuth {
+        provider_id: provider_id.to_owned(),
+        oauth: oauth?,
+        raw_headers: crate::provider_api_key_auth::configured_headers(config, extension),
+        auth_header: extension.and_then(|c| c.auth_header).or(config.and_then(|c| c.auth_header)).unwrap_or(false),
+    })
+}
+
+#[async_trait::async_trait]
+impl maho_ai::auth::types::OAuthAuth for ComposedOAuthAuth {
+    fn name(&self) -> &str { self.oauth.name() }
+    fn is_subscription(&self) -> bool { self.oauth.is_subscription() }
+    fn login_label(&self) -> Option<&str> { self.oauth.login_label() }
+    async fn login(&self, interaction: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        self.oauth.login(interaction).await
+    }
+    async fn refresh(&self, credential: &maho_ai::auth::types::OAuthCredential, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+        self.oauth.refresh(credential, signal).await
+    }
+    async fn check(&self, ctx: &dyn maho_ai::auth::types::AuthContext, credential: Option<&maho_ai::auth::types::OAuthCredential>, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthCheck>> {
+        self.oauth.check(ctx, credential, signal).await
+    }
+    async fn to_auth(&self, credential: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+        let auth = self.oauth.to_auth(credential).await?;
+        let env: Option<std::collections::HashMap<String, String>> = credential.get_extra("env").and_then(Value::as_object)
+            .map(|env| env.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect());
+        let headers = crate::resolve_config_value::resolve_headers_or_throw(self.raw_headers.as_ref(), &format!("provider \"{}\"", self.provider_id), env.as_ref())
+            .await.map_err(|error| anyhow::anyhow!(error))?
+            .map(|values| values.into_iter().map(|(k, v)| (k, Some(v))).collect::<maho_ai::types::ProviderHeaders>());
+        let auth = crate::provider_api_key_auth::with_configured_auth(crate::provider_api_key_auth::model_auth_to_result(auth), headers, self.auth_header)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        Ok(crate::provider_api_key_auth::result_to_model_auth(auth))
     }
 }
 

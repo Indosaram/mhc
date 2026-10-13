@@ -4,7 +4,9 @@ use crate::provider_composer::{AuthStatus, ProviderConfigInput, compose_model_pr
 use maho_ai::legacy_provider_ids::normalize_provider_id;
 use maho_ai::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, Models, ModelsAuth, ModelsError, ModelsErrorCode, ModelsRefreshOptions, ModelsRefreshResult, ModelsRequestTransforms, Provider, create_models};
 use maho_ai::types::{AssistantMessage, AssistantMessageEventStream, BoxFuture, Context, Model, SimpleStreamOptions, StreamOptions};
-use maho_ai::auth::types::{AuthCheck, AuthOperationOptions, AuthType};
+use maho_ai::auth::context::DefaultAuthContext;
+use maho_ai::auth::pool::slots::{PooledCredential, project_slot};
+use maho_ai::auth::types::{ApiKeyCredential, AuthCheck, AuthOperationOptions, AuthType, Credential, CredentialInfo, CredentialStore, ProviderAuth};
 use maho_ai::utils::abort::{AbortSignal, operation_signal};
 use indexmap::IndexMap;
 use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, RwLock}};
@@ -22,44 +24,167 @@ struct RuntimeAuth {
     config: Arc<RwLock<ModelConfig>>,
     extensions: Arc<RwLock<IndexMap<String, ProviderConfigInput>>>,
     credentials: Arc<crate::auth_storage::AuthStorage>,
-    auth_path:Option<PathBuf>,
+    /// The `CredentialStore` view of `credentials` that `resolve_provider_auth` and the shared OAuth
+    /// refresh run against. One stable `Arc` so concurrent refreshes of a slot join one exchange.
+    store: Arc<dyn CredentialStore>,
+}
+
+/// senpi `AuthStorage implements CredentialStore`: reads prefer the on-disk `auth.json` (so a token
+/// rotated by another process is seen), a runtime API key wins, and an api-key value is resolved
+/// through `resolveConfigValue`. `modify` is a short serialized read-modify-write; it never holds
+/// the lock across an OAuth exchange (the refresh runs the exchange before calling it).
+struct AuthStorageCredentialStore {
+    credentials: Arc<crate::auth_storage::AuthStorage>,
+    auth_path: Option<PathBuf>,
+}
+
+impl AuthStorageCredentialStore {
+    fn raw(&self, provider_id: &str) -> Option<serde_json::Value> {
+        self.auth_path
+            .as_ref()
+            .and_then(|path| crate::auth_storage::read_stored_credential(provider_id, &path.to_string_lossy()))
+            .or_else(|| self.credentials.get(provider_id))
+    }
+
+    fn decode(value: serde_json::Value) -> anyhow::Result<Credential> {
+        serde_json::from_value(value).map_err(|error| anyhow::anyhow!("Invalid auth.json credential: {error}"))
+    }
+}
+
+fn check_abort(options: &Option<AuthOperationOptions>) -> anyhow::Result<()> {
+    if let Some(signal) = options.as_ref().and_then(|options| options.signal.as_ref()) {
+        signal.throw_if_aborted().map_err(|reason| anyhow::anyhow!("{reason}"))?;
+    }
+    Ok(())
+}
+
+type ModifyFn = Box<dyn FnOnce(Option<Credential>) -> BoxFuture<'static, anyhow::Result<Option<Credential>>> + Send>;
+
+#[async_trait::async_trait]
+impl CredentialStore for AuthStorageCredentialStore {
+    async fn read(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
+        check_abort(&options)?;
+        if let Some(key) = self.credentials.runtime_api_key(provider_id) {
+            return Ok(Some(Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None })));
+        }
+        let Some(raw) = self.raw(provider_id) else { return Ok(None) };
+        let credential = Self::decode(raw)?;
+        check_abort(&options)?;
+        Ok(Some(match credential {
+            Credential::ApiKey(ApiKeyCredential { key: Some(key), env }) => {
+                let lookup: Option<std::collections::HashMap<String, String>> = env.as_ref().map(|env| env.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+                let key = crate::resolve_config_value::resolve_config_value(&key, lookup.as_ref()).await;
+                Credential::ApiKey(ApiKeyCredential { key, env })
+            }
+            other => other,
+        }))
+    }
+
+    async fn list(&self, options: Option<AuthOperationOptions>) -> anyhow::Result<Vec<CredentialInfo>> {
+        check_abort(&options)?;
+        Ok(self.credentials.list().into_iter().map(|(provider_id, kind)| CredentialInfo {
+            provider_id,
+            credential_type: match kind {
+                crate::auth_storage::CredentialKind::ApiKey => maho_ai::auth::types::CredentialType::ApiKey,
+                crate::auth_storage::CredentialKind::Oauth => maho_ai::auth::types::CredentialType::OAuth,
+            },
+        }).collect())
+    }
+
+    async fn modify(&self, provider_id: &str, f: ModifyFn, options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
+        check_abort(&options)?;
+        let _mutation = self.credentials.account_mutation.lock().await;
+        let current = self.raw(provider_id).map(Self::decode).transpose()?;
+        let Some(next) = f(current.clone()).await? else { return Ok(current) };
+        let value = serde_json::to_value(&next)?;
+        self.credentials.set(provider_id, Some(value)).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(Some(next))
+    }
+
+    async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
+        check_abort(&options)?;
+        let _mutation = self.credentials.account_mutation.lock().await;
+        self.credentials.delete(provider_id).map_err(|error| anyhow::anyhow!(error))
+    }
+}
+
+fn models_error(error: maho_ai::auth::resolve::ModelsError) -> ModelsError {
+    let code = match error.code {
+        "oauth" => ModelsErrorCode::OAuth,
+        _ => ModelsErrorCode::Auth,
+    };
+    ModelsError::new(code, error.message)
+}
+
+impl RuntimeAuth {
+    /// senpi composes provider auth once in `composeProvider` (`composeApiKeyAuth` /
+    /// `composeOAuthAuth`); the models.json / extension overlays live in this runtime, so the
+    /// composition happens at resolution time against the provider's own `auth()`.
+    fn provider_auth(&self, provider: &dyn Provider) -> ProviderAuth {
+        let id = provider.id();
+        let config = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(id).cloned();
+        let extension = self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(id).cloned();
+        let base = provider.auth();
+        let oauth = extension.as_ref().and_then(|e| e.oauth.clone())
+            .or_else(|| base.and_then(|auth| auth.oauth.clone()))
+            .or_else(|| builtin_oauth(id));
+        // Providers registered without declared auth keep the env-var lookup senpi's builtin
+        // factories declare through `envApiKeyAuth`.
+        let inherited = base.and_then(|auth| auth.api_key.clone()).or_else(|| {
+            maho_ai::env_api_keys::get_api_key_env_vars(id)
+                .map(|vars| Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars)) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>)
+        });
+        let api_key = crate::provider_api_key_auth::compose_api_key_auth(id, inherited, oauth.is_some(), config.as_ref(), extension.as_ref().map(|e| &e.config))
+            .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>);
+        let oauth = crate::provider_composer::compose_oauth_auth(id, oauth, config.as_ref(), extension.as_ref().map(|e| &e.config))
+            .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::OAuthAuth>);
+        ProviderAuth { api_key, oauth }
+    }
+
+    /// An api-key pool's `accounts` live outside the typed `ApiKeyCredential`, so a slot of a stored
+    /// api-key pool is projected here and resolved as that slot's explicit key. `Some(None)` = the
+    /// slot is missing; `None` = not an api-key pool request.
+    fn api_key_slot(&self, provider_id: &str, overrides: &AuthResolutionOverrides) -> Option<Option<AuthResolutionOverrides>> {
+        let slot_name = overrides.slot_name.as_deref()?;
+        let raw = self.credentials.get(provider_id)?;
+        if crate::auth_storage::credential_kind(&raw) != Some(crate::auth_storage::CredentialKind::ApiKey) {
+            return None;
+        }
+        let pooled: Option<PooledCredential> = serde_json::from_value(raw).ok();
+        let Some(Credential::ApiKey(slot)) = project_slot(pooled.as_ref(), slot_name) else { return Some(None) };
+        let Some(key) = slot.key else { return Some(None) };
+        let mut env = slot.env.unwrap_or_default();
+        env.extend(overrides.env.clone().unwrap_or_default());
+        Some(Some(AuthResolutionOverrides {
+            api_key: Some(key),
+            env: (!env.is_empty()).then_some(env),
+            min_oauth_validity_ms: overrides.min_oauth_validity_ms,
+            slot_name: None,
+            signal: overrides.signal.clone(),
+        }))
+    }
 }
 
 impl ModelsAuth for RuntimeAuth {
     fn resolve<'a>(&'a self, provider: &'a dyn Provider, overrides: &'a AuthResolutionOverrides) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
         Box::pin(async move {
-            let config = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(provider.id()).cloned();
-            let extension = self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(provider.id()).cloned();
-            let mutation=self.credentials.account_mutation.lock().await;
-            let stored = self.auth_path.as_ref().and_then(|path|crate::auth_storage::read_stored_credential(provider.id(),&path.to_string_lossy())).or_else(||self.credentials.get(provider.id()));
-            if overrides.api_key.is_none()&&let Some(stored)=&stored&&crate::auth_storage::credential_kind(stored)==Some(crate::auth_storage::CredentialKind::Oauth) {
-                let Some(oauth)=extension.as_ref().and_then(|e|e.oauth.clone()).or_else(||builtin_oauth(provider.id())) else{return Ok(None);};
-                let mut credential:maho_ai::auth::types::OAuthCredential=serde_json::from_value(stored.clone()).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
-                let now=maho_ai::utils::diagnostics::now_ms() as f64;
-                if credential.expires-now < overrides.min_oauth_validity_ms.unwrap_or(60_000) as f64 {
-                    let signal=maho_ai::utils::abort::operation_signal(overrides.signal.clone());
-                    credential=oauth.refresh(&credential,&signal).await.map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
-                    let value=serde_json::to_value(maho_ai::auth::types::Credential::OAuth(credential.clone())).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
-                    self.credentials.set(provider.id(),Some(value)).map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e))?;
-                }
-                let auth=oauth.to_auth(&credential).await.map_err(|e|ModelsError::new(ModelsErrorCode::OAuth,e.to_string()))?;
-                let raw_headers=crate::provider_api_key_auth::configured_headers(config.as_ref(),extension.as_ref().map(|e|&e.config));
-                let headers=crate::resolve_config_value::resolve_headers_or_throw(raw_headers.as_ref(),&format!("provider \"{}\"",provider.id()),None).await.map_err(|e|ModelsError::new(ModelsErrorCode::Auth,e))?.map(|v|v.into_iter().map(|(k,v)|(k,Some(v))).collect());
-                let auth_header=extension.as_ref().and_then(|c|c.auth_header).or(config.as_ref().and_then(|c|c.auth_header)).unwrap_or(false);
-                let auth=crate::provider_api_key_auth::with_configured_auth(maho_ai::models::ProviderAuthResult{api_key:auth.api_key,headers:auth.headers,base_url:auth.base_url},headers,auth_header).map_err(|e|ModelsError::new(ModelsErrorCode::Auth,e))?;
-                return Ok(Some(AuthResolution{auth,env:overrides.env.clone()}));
-            }
-            drop(mutation);
-            let stored_key = if overrides.api_key.is_none() && let Some(raw) = stored.as_ref().and_then(crate::auth_storage::credential_key) {
-                let credential_env = stored.as_ref().and_then(crate::auth_storage::credential_env);
-                let Some(key) = crate::resolve_config_value::resolve_config_value(raw, credential_env.as_ref()).await else { return Ok(None); };
-                Some(key)
-            } else { None };
-            let key = overrides.api_key.as_deref().or(stored_key.as_deref());
-            let env = overrides.env.as_ref().map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
-            let auth = crate::provider_api_key_auth::resolve_configured_auth(provider.id(),config.as_ref(),extension.as_ref().map(|e|&e.config),key,env.as_ref()).await
-                .map_err(|e| ModelsError::new(ModelsErrorCode::Auth,e))?;
-            Ok(auth.map(|auth| AuthResolution {auth,env:overrides.env.clone()}))
+            let signal = maho_ai::utils::abort::operation_signal(overrides.signal.clone());
+            let provider_auth = self.provider_auth(provider);
+            let slot_overrides = match self.api_key_slot(provider.id(), overrides) {
+                Some(None) => return Ok(None),
+                // A slot-scoped request never falls back to another identity.
+                Some(Some(_)) if provider_auth.api_key.is_none() => return Ok(None),
+                Some(Some(slot_overrides)) => Some(slot_overrides),
+                None => None,
+            };
+            let overrides = slot_overrides.as_ref().unwrap_or(overrides);
+            let result = maho_ai::auth::resolve::resolve_provider_auth(
+                provider.id(), &provider_auth, &self.store, &DefaultAuthContext, Some(overrides), &signal,
+            ).await.map_err(models_error)?;
+            Ok(result.map(|result| AuthResolution {
+                auth: crate::provider_api_key_auth::model_auth_to_result(result.auth),
+                env: result.env,
+            }))
         })
     }
     fn read_credential<'a>(&'a self,id: &'a str,_signal: &'a maho_ai::utils::abort::AbortSignal) -> BoxFuture<'a,Result<Option<serde_json::Value>,ModelsError>> {
@@ -67,8 +192,44 @@ impl ModelsAuth for RuntimeAuth {
     }
     fn refresh_credential<'a>(&'a self,provider: &'a dyn Provider,stored: Option<&'a serde_json::Value>,signal: &'a maho_ai::utils::abort::AbortSignal) -> BoxFuture<'a,Result<Option<serde_json::Value>,ModelsError>> {
         Box::pin(async move {
-            if let Some(stored) = stored { return Ok(Some(stored.clone())); }
-            self.read_credential(provider.id(),signal).await
+            let id = provider.id();
+            // The collection hands over the raw stored value; senpi's `readCredential` yields the
+            // store's resolved view (api-key config values resolved), so re-read through the store.
+            let stored = match stored {
+                Some(_) => self.store.read(id, Some(AuthOperationOptions { signal: Some(signal.clone()) })).await
+                    .map_err(|error| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store read failed for {id}"), &error.to_string()))?,
+                None => None,
+            };
+            let provider_auth = self.provider_auth(provider);
+            let credential = maho_ai::auth::refresh_credential::resolve_refresh_credential(
+                id, &provider_auth, &self.store, &DefaultAuthContext, stored.as_ref(), signal,
+            ).await.map_err(models_error)?;
+            credential.map(|credential| serde_json::to_value(credential).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))).transpose()
+        })
+    }
+    /// senpi `checkProviderAuth`: side-effect-free; never refreshes OAuth or runs `!command` keys.
+    fn check<'a>(&'a self, provider: &'a dyn Provider, signal: &'a maho_ai::utils::abort::AbortSignal) -> BoxFuture<'a, Result<Option<AuthCheck>, ModelsError>> {
+        Box::pin(async move {
+            let provider_auth = self.provider_auth(provider);
+            let id = provider.id();
+            // senpi `readCredential`: the store's view, with api-key config values resolved.
+            let credential = self.store.read(id, Some(AuthOperationOptions { signal: Some(signal.clone()) })).await
+                .map_err(|error| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store read failed for {id}"), &error.to_string()))?;
+            let check_error = |kind: &str, error: anyhow::Error| ModelsError::new(ModelsErrorCode::Auth, format!("{kind} auth check failed for provider {id}: {error}"));
+            if let Some(Credential::OAuth(credential)) = &credential {
+                let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
+                return oauth.check(&DefaultAuthContext, Some(credential), signal).await.map_err(|error| check_error("OAuth", error));
+            }
+            if let Some(api_key) = &provider_auth.api_key {
+                let stored = credential.as_ref().and_then(Credential::as_api_key);
+                if let Some(check) = api_key.check(&DefaultAuthContext, stored, signal).await.map_err(|error| check_error("API key", error))? {
+                    return Ok(Some(check));
+                }
+            }
+            match &provider_auth.oauth {
+                Some(oauth) => oauth.check(&DefaultAuthContext, None, signal).await.map_err(|error| check_error("OAuth", error)),
+                None => Ok(None),
+            }
         })
     }
 }
@@ -144,7 +305,8 @@ impl ModelRuntime {
         let credentials = options.credentials.unwrap_or_else(|| Arc::new(options.auth_path.as_ref().map_or_else(||crate::auth_storage::AuthStorage::in_memory(Default::default()),|path|crate::auth_storage::AuthStorage::create(&path.to_string_lossy()))));
         let config = Arc::new(RwLock::new(ModelConfig::load_sync_with_migration(options.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
-        let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),auth_path:options.auth_path};
+        let store: Arc<dyn CredentialStore> = Arc::new(AuthStorageCredentialStore {credentials:credentials.clone(),auth_path:options.auth_path});
+        let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),store};
         let settings_manager: SharedSettingsSlot = Arc::default();
         let limit_source = Arc::clone(&settings_manager);
         let provider_semaphores = Arc::new(crate::provider_concurrency::ProviderSemaphores::new(move |provider_id| provider_concurrency_limit(&limit_source, provider_id)));
@@ -325,7 +487,10 @@ impl ModelRuntime {
         let config = self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(id).cloned();
         let extension = self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned();
         if let Some(status)=crate::provider_api_key_auth::configured_request_auth_status(config.as_ref(),extension.as_ref().map(|e|&e.config)){return status;}
-        AuthStatus {configured:maho_ai::env_api_keys::get_env_api_key(id,None).is_some()||maho_ai::env_api_keys::find_env_keys(id,None).is_some(),source:Some("environment".into()),label:None}
+        // `ANTHROPIC_AUTH_TOKEN` alone configures Anthropic (as a bearer header) even though it is
+        // never returned as an API key.
+        let configured=maho_ai::env_api_keys::get_env_api_key(id,None).is_some()||maho_ai::env_api_keys::find_env_keys(id,None).is_some();
+        AuthStatus {configured,source:Some("environment".into()),label:None}
     }
     pub async fn get_auth(&self,id:&str) -> Result<Option<AuthResolution>,ModelsError> {self.models.get_auth(id,&AuthResolutionOverrides::default()).await}
     pub async fn get_auth_with_overrides(&self, id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
@@ -342,35 +507,11 @@ impl ModelRuntime {
             }
         }).collect())
     }
+    /// senpi `ModelRuntime.checkAuth` -> `Models.checkAuth`: side-effect-free provider availability.
     pub async fn check_auth(&self, id: &str, options: Option<maho_ai::auth::types::AuthOperationOptions>) -> Result<Option<maho_ai::auth::types::AuthCheck>, ModelsError> {
         let signal = maho_ai::utils::abort::operation_signal(options.and_then(|options| options.signal));
-        let check = async {
-            use maho_ai::auth::types::{AuthCheck, AuthType};
-            signal.throw_if_aborted().map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?;
-            if self.get_provider(id).is_none() { return Ok(None); }
-            let stored = self.credentials.get(id);
-            let extension = self.extensions.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(id).cloned();
-            let oauth = extension.as_ref().and_then(|extension| extension.oauth.clone()).or_else(|| builtin_oauth(id));
-            if stored.as_ref().and_then(crate::auth_storage::credential_kind) == Some(crate::auth_storage::CredentialKind::Oauth) {
-                let Some(oauth) = oauth else { return Ok(None); };
-                let credential = serde_json::from_value(stored.expect("stored OAuth credential"))
-                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-                let checked = oauth.check(&maho_ai::auth::context::DefaultAuthContext, Some(&credential), &signal).await
-                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-                return Ok(checked);
-            }
-            let resolution = self.get_auth_with_overrides(id, &AuthResolutionOverrides { signal: Some(signal.clone()), ..Default::default() }).await?;
-            if resolution.is_some() {
-                return Ok(Some(AuthCheck { source: self.get_provider_auth_status(id).label.or_else(|| self.get_provider_auth_status(id).source), auth_type: AuthType::ApiKey }));
-            }
-            if let Some(oauth) = oauth {
-                return oauth.check(&maho_ai::auth::context::DefaultAuthContext, None, &signal).await
-                    .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()));
-            }
-            Ok(None)
-        };
-        maho_ai::utils::abort::race_with_abort_signal(check, &signal).await
-            .map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?
+        signal.throw_if_aborted().map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?;
+        self.models.check_auth(&normalize_provider_id(id), &signal).await
     }
     /// Pinned `ModelRuntime.login` (`model-runtime.ts:996-1000`): run the provider's OAuth or
     /// api-key login flow and persist the returned credential through the shared store.
@@ -383,12 +524,20 @@ impl ModelRuntime {
         let provider_interaction = ProviderAuthInteraction::new(signal.clone(), interaction.clone());
         let credential = match auth_type {
             maho_ai::auth::types::AuthType::OAuth => {
-                let oauth = self.extensions.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).and_then(|extension| extension.oauth.clone()).or_else(|| builtin_oauth(&id))
+                let oauth = self.extensions.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).and_then(|extension| extension.oauth.clone())
+                    .or_else(|| self.get_provider(&id).and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone())))
+                    .or_else(|| builtin_oauth(&id))
                     .ok_or_else(|| ModelsError::new(ModelsErrorCode::Auth, format!("{id} does not support oauth login")))?;
                 let credential = oauth.login(&provider_interaction).await.map_err(|error| ModelsError::new(ModelsErrorCode::OAuth, error.to_string()))?;
                 Credential::OAuth(credential)
             }
             maho_ai::auth::types::AuthType::ApiKey => {
+                if let Some(api_key) = self.get_provider(&id).and_then(|provider| provider.auth().and_then(|auth| auth.api_key.clone())).filter(|api_key| api_key.has_login()) {
+                    let credential = api_key.login(&provider_interaction).await.map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
+                    let value = serde_json::to_value(Credential::ApiKey(credential.clone())).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
+                    self.credentials.set(&id, Some(value)).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+                    return Ok(Credential::ApiKey(credential));
+                }
                 let key = provider_interaction.prompt(AuthPrompt { kind: AuthPromptKind::Secret { message: format!("Enter API key for {id}"), placeholder: None }, signal: Some(signal.clone()) })
                     .await.map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
                 Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None })
@@ -628,6 +777,82 @@ mod tests {
         let result = ModelRuntime::apply_configured_headers(&model, None, None, &mut options).await;
         assert_eq!(result, Err(maho_ai::utils::abort::AbortReason::dom_default().message));
         assert_eq!(options.request.headers, Some(headers));
+    }
+
+    fn builtin_runtime(id: &str) -> ModelRuntime {
+        let provider = maho_ai::providers::all::builtin_providers().into_iter().find(|p| p.id() == id).expect("builtin provider");
+        ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider]), ..Default::default() })
+    }
+
+    #[tokio::test]
+    async fn stored_cloudflare_credential_env_reaches_the_resolution() {
+        let runtime = builtin_runtime("cloudflare-ai-gateway");
+        runtime.credentials.set("cloudflare-ai-gateway", Some(serde_json::json!({"type":"api_key","key":"cf-key",
+            "env":{"CLOUDFLARE_ACCOUNT_ID":"acct","CLOUDFLARE_GATEWAY_ID":"gw"}}))).expect("seed");
+        let auth = runtime.get_auth("cloudflare-ai-gateway").await.expect("resolve").expect("auth");
+        let env = auth.env.expect("credential env");
+        assert_eq!(env.get("CLOUDFLARE_ACCOUNT_ID").map(String::as_str), Some("acct"));
+        assert_eq!(env.get("CLOUDFLARE_GATEWAY_ID").map(String::as_str), Some("gw"));
+        assert_eq!(auth.auth.headers.expect("gateway headers")["cf-aig-authorization"].as_deref(), Some("Bearer cf-key"));
+    }
+
+    #[tokio::test]
+    async fn stored_kimi_region_routes_the_base_url() {
+        let runtime = builtin_runtime("kimi-coding");
+        runtime.credentials.set("kimi-coding", Some(serde_json::json!({"type":"api_key","key":"kimi-key",
+            "env":{"KIMI_CODE_REGION":"global"}}))).expect("seed");
+        let auth = runtime.get_auth("kimi-coding").await.expect("resolve").expect("auth");
+        assert_eq!(auth.auth.base_url.as_deref(), Some("https://api.kimi.ai/coding"));
+    }
+
+    #[tokio::test]
+    async fn missing_slot_does_not_fall_back_to_the_flat_credential() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"api_key","key":"flat","accounts":[{"name":"default","key":"flat"}]}))).expect("seed");
+        let overrides = AuthResolutionOverrides { slot_name: Some("work".into()), ..Default::default() };
+        assert!(runtime.get_auth_with_overrides("p", &overrides).await.expect("resolve").is_none());
+        let overrides = AuthResolutionOverrides { slot_name: Some("default".into()), ..Default::default() };
+        let auth = runtime.get_auth_with_overrides("p", &overrides).await.expect("resolve").expect("slot auth");
+        assert_eq!(auth.auth.api_key.as_deref(), Some("flat"));
+    }
+
+    struct CountingOAuth(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::OAuthAuth for CountingOAuth {
+        fn name(&self) -> &str { "counting-oauth" }
+        async fn login(&self, _: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { anyhow::bail!("login is not exercised") }
+        async fn refresh(&self, _: &maho_ai::auth::types::OAuthCredential, _: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(maho_ai::auth::types::OAuthCredential::new("fresh", "next", f64::MAX))
+        }
+        async fn to_auth(&self, credential: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
+            Ok(maho_ai::auth::types::ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
+        }
+    }
+
+    fn counting_oauth_runtime(expires_in_ms: f64) -> (tempfile::TempDir, ModelRuntime, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let (dir, mut runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(CountingOAuth(calls.clone()))), ..Default::default() }).expect("register oauth");
+        let expires = maho_ai::utils::diagnostics::now_ms() as f64 + expires_in_ms;
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"oauth","access":"old","refresh":"r1","expires":expires}))).expect("seed");
+        (dir, runtime, calls)
+    }
+
+    #[tokio::test]
+    async fn oauth_refreshes_inside_the_five_minute_window() {
+        let (_dir, runtime, calls) = counting_oauth_runtime(120_000.0);
+        let auth = runtime.get_auth("p").await.expect("resolve").expect("auth");
+        assert_eq!(auth.auth.api_key.as_deref(), Some("fresh"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(runtime.credentials.get("p").expect("stored")["access"], "fresh");
+    }
+
+    #[tokio::test]
+    async fn available_models_check_never_refreshes_oauth() {
+        let (_dir, runtime, calls) = counting_oauth_runtime(-1.0);
+        assert!(runtime.get_available(Some("p")).await.iter().any(|model| model.id == "sol"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     struct TestAuthInteraction;

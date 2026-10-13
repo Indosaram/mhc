@@ -293,6 +293,11 @@ pub trait ApiKeyAuth: Send + Sync {
         false
     }
 
+    /// Whether `check` is implemented (TS `apiKey.check !== undefined`).
+    fn has_check(&self) -> bool {
+        false
+    }
+
     async fn check(
         &self,
         _ctx: &dyn AuthContext,
@@ -344,7 +349,7 @@ pub trait OAuthAuth: Send + Sync {
 }
 
 /// Provider auth. At least one of `api_key`/`oauth` must be present.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProviderAuth {
     pub api_key: Option<Arc<dyn ApiKeyAuth>>,
     pub oauth: Option<Arc<dyn OAuthAuth>>,

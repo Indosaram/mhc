@@ -298,19 +298,19 @@ async fn expired_refresh_token_yields_senpis_relogin_guidance() {
 
     let oauth: Arc<dyn OAuthAuth> = Arc::new(ChatGptSubscriptionOAuth::new(Arc::new(MockServerTransport { base })));
     let signal = AbortController::new().signal();
-    let stored = Credential::OAuth(OAuthCredential::new("qa-expired-access", "qa-expired-refresh", 0.0));
+    let stored = OAuthCredential::new("qa-expired-access", "qa-expired-refresh", 0.0);
 
     let error: ModelsError = resolve_stored_oauth(
         &store,
         PROVIDER_ID,
         &oauth,
-        &stored,
+        stored,
+        &maho_ai::auth::context::DefaultAuthContext,
         None,
-        1_700_000_000_000.0,
-        300_000.0,
         &signal,
-    )
-    .await
+        Some(300_000.0),
+        None,
+    ).await
     .expect_err("an expired refresh token must fail resolution");
 
     assert_eq!(error.code, "oauth");

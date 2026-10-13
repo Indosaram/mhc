@@ -10,6 +10,8 @@ use crate::models::{
     CreateProviderOptions, Credential, FetchModels, ModelsError, ModelsErrorCode, Provider, ProviderApi,
     RefreshModelsContext, RestoreModels, create_provider,
 };
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::lazy_oauth;
 use crate::providers::builtin_api_streams;
 use crate::types::{InputModality, Model, ModelCost};
 use crate::utils::abort::AbortSignal;
@@ -118,6 +120,7 @@ pub fn cursor_provider() -> Arc<dyn Provider> {
         name: Some("Cursor".into()),
         base_url: Some(CURSOR_BASE_URL.to_owned()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: None, oauth: Some(Arc::new(lazy_oauth("Cursor (Pro/Ultra/Teams)", true, Some("Sign in with Cursor".into()), || Box::pin(crate::auth::oauth::load::load_cursor_oauth())))) }),
         models: Vec::new(),
         fetch_models: Some(fetch),
         restore_models: Some(restore),

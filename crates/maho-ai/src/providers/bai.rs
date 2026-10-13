@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/bai.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::models::{
     CreateProviderOptions, FetchModels, ModelsError, ModelsErrorCode, Provider, ProviderApi, RestoreModels,
     create_provider,
@@ -141,6 +143,7 @@ pub fn bai_provider(options: Option<BaiProviderOptions>) -> Arc<dyn Provider> {
         name: Some("B.AI".into()),
         base_url: Some(base_url),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("B.AI API key", &["BAI_API_KEY"]))), oauth: None }),
         models: Vec::new(),
         fetch_models: Some(fetch_models),
         restore_models: Some(restore),

@@ -11081,7 +11081,7 @@ mod tests {
         model.provider = "stalled-summary".to_owned();
         session.agent.set_model(model.clone());
         let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
-            id: model.provider.clone(), name: None, base_url: None, headers: None,
+            id: model.provider.clone(), name: None, base_url: None, headers: None, auth: None,
             models: vec![model], fetch_models: None, restore_models: None, filter_models: None,
             api: maho_ai::models::ProviderApi::Single(streams.clone()),
         });
