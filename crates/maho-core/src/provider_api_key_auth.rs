@@ -44,19 +44,24 @@ pub fn with_configured_auth(mut auth: ProviderAuthResult, headers: Option<Provid
 }
 
 pub async fn resolve_configured_auth(id: &str, config: Option<&ModelsJsonProvider>, extension: Option<&ModelsJsonProvider>, stored_key: Option<&str>, env: Option<&HashMap<String, String>>) -> Result<Option<ProviderAuthResult>, String> {
+    // senpi providers/anthropic.ts: `ANTHROPIC_AUTH_TOKEN` resolves to an `Authorization: Bearer`
+    // header (never an API key) ahead of `ANTHROPIC_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`.
+    let mut env_auth_token = None;
     let key = if let Some(key) = stored_key { Some(key.to_owned()) }
         else if let Some(raw) = configured_api_key(config, extension) { Some(resolve_config_value_or_throw(raw, &format!("API key for provider \"{id}\""), env).await?) }
         else {
             let provider_env = env.map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
-            maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref())
+            if id == "anthropic" { env_auth_token = maho_ai::utils::provider_env::get_provider_env_value(maho_ai::env_api_keys::ANTHROPIC_AUTH_TOKEN_ENV, provider_env.as_ref()); }
+            if env_auth_token.is_some() { None } else { maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref()) }
         };
     let raw_headers = configured_headers(config, extension);
     let headers = resolve_headers_or_throw(raw_headers.as_ref(), &format!("provider \"{id}\""), env).await?
         .map(|v| v.into_iter().map(|(k,v)| (k,Some(v))).collect::<ProviderHeaders>());
     let credential_headers = headers.as_ref().is_some_and(|h| h.keys().any(|k| matches!(k.to_ascii_lowercase().as_str(), "authorization" | "x-api-key" | "api-key" | "cookie")));
-    if key.is_none() && !credential_headers { return Ok(None); }
+    if key.is_none() && env_auth_token.is_none() && !credential_headers { return Ok(None); }
     let auth_header = extension.and_then(|c| c.auth_header).or(config.and_then(|c| c.auth_header)).unwrap_or(false);
-    with_configured_auth(ProviderAuthResult { api_key:key, ..Default::default() }, headers, auth_header).map(Some)
+    let token_headers = env_auth_token.map(|token| [("Authorization".to_owned(), Some(format!("Bearer {token}")))].into_iter().collect::<ProviderHeaders>());
+    with_configured_auth(ProviderAuthResult { api_key:key, headers:token_headers, ..Default::default() }, headers, auth_header).map(Some)
 }
 
 #[cfg(test)]
@@ -68,6 +73,13 @@ mod tests {
         let auth = resolve_configured_auth("custom",Some(&config),None,Some("stored"),Some(&HashMap::new())).await.expect("resolve").expect("auth");
         assert_eq!(auth.api_key.as_deref(),Some("stored"));
         assert_eq!(auth.headers.expect("headers")["Authorization"].as_deref(),Some("Bearer stored"));
+    }
+    #[tokio::test]
+    async fn anthropic_auth_token_resolves_to_a_bearer_header() {
+        let env = HashMap::from([("ANTHROPIC_AUTH_TOKEN".to_owned(),"token".to_owned()),("ANTHROPIC_API_KEY".to_owned(),"key".to_owned())]);
+        let auth = resolve_configured_auth("anthropic",None,None,None,Some(&env)).await.expect("resolve").expect("auth");
+        assert_eq!(auth.api_key,None);
+        assert_eq!(auth.headers.expect("headers")["Authorization"].as_deref(),Some("Bearer token"));
     }
     #[test]
     fn bearer_auth_requires_a_key() { assert!(with_configured_auth(Default::default(),None,true).is_err()); }

@@ -156,7 +156,7 @@ impl ModelRuntime {
         let config = self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(id).cloned();
         let extension = self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned();
         if let Some(status)=crate::provider_api_key_auth::configured_request_auth_status(config.as_ref(),extension.as_ref().map(|e|&e.config)){return status;}
-        AuthStatus {configured:maho_ai::env_api_keys::get_env_api_key(id,None).is_some(),source:Some("environment".into()),label:None}
+        AuthStatus {configured:maho_ai::env_api_keys::get_env_api_key(id,None).is_some()||maho_ai::env_api_keys::find_env_keys(id,None).is_some(),source:Some("environment".into()),label:None}
     }
     pub async fn get_auth(&self,id:&str) -> Result<Option<AuthResolution>,ModelsError> {self.models.get_auth(id,&AuthResolutionOverrides::default()).await}
     pub async fn get_auth_with_overrides(&self, id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
