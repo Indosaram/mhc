@@ -550,6 +550,8 @@ pub struct AgentSessionInner {
     settlement_epoch: AtomicU64,
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// senpi `_userAbortPromise`: the in-flight user abort every concurrent abort joins.
+    user_abort_wait: Mutex<Option<futures::future::Shared<futures::future::BoxFuture<'static, ()>>>>,
     /// Serializes MCP wire-status publish against bind so a subscriber never misses or
     /// double-receives an update (pinned subscribe-before-read ordering).
     mcp_wire_status_order: tokio::sync::Mutex<()>,
@@ -1711,6 +1713,7 @@ impl AgentSession {
             settlement_epoch: AtomicU64::new(0),
             probe_scheduler: Mutex::new(crate::retry_fallback::probe_scheduler::ProbeBackScheduler::default()),
             probe_task: Mutex::new(None),
+            user_abort_wait: Mutex::new(None),
             mcp_wire_status_order: tokio::sync::Mutex::new(()),
             mcp_wire_status_retention: Mutex::new(None),
             tool_context_disposers: Mutex::new(Vec::new()),
@@ -2301,27 +2304,50 @@ impl AgentSession {
     }
 
     fn begin_user_abort(&self) -> Option<bool> {
+        // senpi abort(): streaming aborts are carried by agent_end provenance; only gaps need session_abort.
+        let streaming = self.is_streaming();
+        let had_retry_backoff = self.state().retry_abort_controller.is_some();
+        let was_mid_run = streaming && !had_retry_backoff;
+        let had_compaction_or_pending = !streaming && (self.is_compacting() || self.pending_message_count() > 0);
+        let had_cleared_queues = std::mem::take(&mut self.state().had_cleared_queued_messages);
+        let joined_agent_end_boundary = self.state().abort_provenance.has_open_agent_end_boundary();
+        let should_emit_abort = !joined_agent_end_boundary && !was_mid_run
+            && (had_retry_backoff || had_compaction_or_pending || had_cleared_queues);
         self.user_abort_generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.settled_delivery).cancel();
         self.state().user_aborted = true;
         self.state().abort_source = Some(maho_ext_api::AbortSource::User);
         if let Some(signal) = self.state().extension_event_signal.as_ref() { signal.abort(); }
-        self.abort_retry();
         self.abort_compaction();
+        // senpi _abortActiveAgentAndRetry("user").
+        self.abort_retry();
         self.abort_branch_summary();
-        let streaming = self.is_streaming();
-        let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
-        if !joined.abort_current_agent && joined.user_owned { return None; }
-        let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
-        self.state().had_cleared_queued_messages = false;
+        let mut in_flight = lock(&self.user_abort_wait);
+        if in_flight.is_none() && self.state().abort_provenance.join_open_boundary(maho_ext_api::AbortSource::User).is_some() {
+            return None;
+        }
+        if in_flight.is_some() {
+            let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
+            if joined.abort_current_agent { self.agent.abort(None); }
+            return Some(should_emit_abort);
+        }
+        if streaming { self.state().abort_provenance.begin(maho_ext_api::AbortSource::User); }
         self.agent.suppress_queued_message_drain();
         self.agent.abort(None);
-        Some(pending)
+        let agent = self.agent.clone();
+        let wait: futures::future::BoxFuture<'static, ()> = Box::pin(async move { agent.wait_for_idle().await; });
+        *in_flight = Some(futures::FutureExt::shared(wait));
+        Some(should_emit_abort)
     }
 
-    async fn finish_user_abort(&self, pending: bool) {
-        self.agent.wait_for_idle().await;
-        if pending {
+    async fn finish_user_abort(&self, should_emit_abort: bool) {
+        let wait = lock(&self.user_abort_wait).clone();
+        if let Some(wait) = wait {
+            wait.clone().await;
+            let mut in_flight = lock(&self.user_abort_wait);
+            if in_flight.as_ref().is_some_and(|current| current.ptr_eq(&wait)) { *in_flight = None; }
+        }
+        if should_emit_abort {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
             self.emit(AgentSessionEvent::SessionAbort);
         }
@@ -8794,6 +8820,30 @@ mod tests {
         session.follow_up("later", None, QueuedInputOptions::default()).await.expect("follow up");
         session.clear_queue(true);
         session.abort().await;
+        session.abort().await;
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborting_retry_backoff_emits_session_abort() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| { lock(&sink).push(event.clone()); }));
+        let backoff = maho_ai::utils::abort::AbortController::new();
+        session.state().retry_abort_controller = Some(backoff.clone());
+        session.abort().await;
+        assert!(backoff.signal().aborted());
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborting_idle_compaction_emits_session_abort() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| { lock(&sink).push(event.clone()); }));
+        session.state().compaction_abort_controller = Some(crate::compaction::lifecycle::CompactionAbortController::new());
         session.abort().await;
         assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
     }
