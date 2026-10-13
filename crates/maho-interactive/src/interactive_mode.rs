@@ -701,11 +701,6 @@ impl InteractiveMode {
         if name != self.theme.name { self.apply_theme_name(&name, false); }
     }
 
-    /// senpi `applyThemeName`: load and apply `name`, reporting a load failure.
-    fn apply_theme_name(&mut self, name: &str) -> bool {
-        match self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
-            Ok(theme) => { self.set_active_theme(theme); true },
-            Err(error) => { self.show_status(error.to_string()); false },
     fn load_theme(&self, name: &str) -> Result<Theme, crate::theme::theme_json::ThemeError> {
         self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name))
     }
@@ -725,9 +720,6 @@ impl InteractiveMode {
                 false
             },
         }
-    }
-    fn set_active_theme(&mut self, theme: crate::theme::Theme) {
-        self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history();
     }
     /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
     pub fn set_debug_log_path(&mut self, path: Option<String>) { self.debug_log_path = path; }
@@ -4316,7 +4308,7 @@ impl InteractiveMode {
             // senpi `themeController.setThemeInstance`: auto-sync stops and the instance is applied.
             UiRequest::ThemeInstance(theme) => {
                 match crate::interactive_extension_ui::theme_from_extension(&theme, self.theme.get_color_mode()) {
-                    Ok(theme) => { self.theme_auto_sync = None; self.set_active_theme(theme); }
+                    Ok(theme) => { self.theme_auto_sync = None; self.install_theme(theme); }
                     Err(error) => self.show_status(error.to_string()),
                 }
             }
