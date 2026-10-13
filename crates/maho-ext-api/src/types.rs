@@ -993,6 +993,7 @@ impl ToolContext for ExtensionContext {
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
     fn get_steering_signal(&self) -> Option<AbortSignal> { self.current_steering_signal().ok().flatten() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { ExtensionContext::get_prompt_cache_safe_wait_seconds(self).ok().flatten() }
     fn take_approved_monitor_parent(
         &self, tool_call_id: &str, input: &JsonValue,
     ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {

@@ -49,7 +49,10 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
         Box::pin(async move {
             let params = SpawnParamsInput::from(serde_json::from_value::<SpawnInput>(call.params)?);
             let context = call.context.ok_or_else(|| ToolError::Message("task requires a session context".into()))?;
-            let ctx = TaskToolContext { cwd: context.cwd().to_string_lossy().into_owned(), session_id: context.session_manager().session_id().into(), get_prompt_cache_safe_wait_seconds: None };
+            let ctx = TaskToolContext { cwd: context.cwd().to_string_lossy().into_owned(), session_id: context.session_manager().session_id().into(), get_prompt_cache_safe_wait_seconds: {
+                let budget = context.get_prompt_cache_safe_wait_seconds().filter(|budget| budget.is_finite()).map(|budget| budget as i64);
+                Some(Arc::new(move || budget))
+            } };
             let mut spawn = deps.spawn.clone();
             if let Some(start) = spawn.start.take() {
                 let capability = maho_ext_api::current_kernel_tools();

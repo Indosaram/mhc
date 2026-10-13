@@ -33,6 +33,9 @@ pub trait ToolContext: Send + Sync {
     /// The session's steering abort signal, when the host exposes one (codemode detaches a
     /// running eval cell on steering). Defaults to `None` for hosts without a steering surface.
     fn get_steering_signal(&self) -> Option<AbortSignal> { None }
+    /// The session's live prompt-cache-safe foreground wait budget in seconds
+    /// (`getPromptCacheSafeWaitSeconds`). Defaults to `None` for hosts without a session.
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { None }
     fn take_approved_monitor_parent(
         &self, _tool_call_id: &str, _input: &Value,
     ) -> Result<Option<std::path::PathBuf>, ToolError> {
