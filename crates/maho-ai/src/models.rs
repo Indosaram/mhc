@@ -140,6 +140,9 @@ pub trait ModelsAuth: Send + Sync {
     }
 }
 
+/// `get_env_api_key`'s value for ambient (non-key) credentials such as AWS profiles or Vertex ADC.
+pub const AMBIENT_AUTH_MARKER: &str = "<authenticated>";
+
 /// Env-var-only auth: an explicit API key override wins, then the provider's known env vars.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EnvModelsAuth;
@@ -152,8 +155,13 @@ impl ModelsAuth for EnvModelsAuth {
     ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
         Box::pin(async move {
             let api_key = overrides.api_key.clone().or_else(|| get_env_api_key(provider.id(), overrides.env.as_ref()));
+            // senpi's ambient providers (Bedrock SigV4/bearer env, Vertex ADC) resolve to `auth: {}`;
+            // the `<authenticated>` marker means "configured" and is never a request key.
             Ok(api_key.map(|api_key| AuthResolution {
-                auth: ProviderAuthResult { api_key: Some(api_key), ..ProviderAuthResult::default() },
+                auth: ProviderAuthResult {
+                    api_key: (api_key != AMBIENT_AUTH_MARKER).then_some(api_key),
+                    ..ProviderAuthResult::default()
+                },
                 env: overrides.env.clone(),
             }))
         })
@@ -166,7 +174,9 @@ impl ModelsAuth for EnvModelsAuth {
         _signal: &'a AbortSignal,
     ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
         Box::pin(async move {
-            Ok(get_env_api_key(provider.id(), None).map(|key| serde_json::json!({ "type": "api_key", "key": key })))
+            Ok(get_env_api_key(provider.id(), None)
+                .filter(|key| key != AMBIENT_AUTH_MARKER)
+                .map(|key| serde_json::json!({ "type": "api_key", "key": key })))
         })
     }
 }
