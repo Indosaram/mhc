@@ -911,7 +911,7 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
     session.attach();
     let env: Arc<dyn ExecutionEnv> = Arc::new(NodeExecutionEnv::new(dir.path().to_string_lossy().to_string()));
     let tools: Vec<Arc<AgentHarnessTool<ExecutionToolContext>>> = vec![Arc::new(
-        create_read_tool::<ExecutionToolContext>(ReadToolOptions { auto_resize_images: None, image_processor: None }),
+        create_read_tool::<ExecutionToolContext>(ReadToolOptions { auto_resize_images: None, image_processor: None, folder: None }),
     )];
     let (harness, _open) = create_agent_harness_with_options(
         AgentHarnessOptions::<ExecutionToolContext> {
