@@ -565,12 +565,19 @@ fn contiguous_block_in_range(base_port: u16, count: u16, held: u16) -> (u16, Vec
         let step = COUNTERS[idx].fetch_add(count + 5, std::sync::atomic::Ordering::Relaxed);
         let start = base_port + (step % 800);
         if held == 0 {
-            return (start, Vec::new());
+            // A "free" port must actually be bindable right now: other processes on the host
+            // (parallel test binaries, unrelated services) can occupy any fixed range.
+            if (0..count).all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok()) {
+                return (start, Vec::new());
+            }
+            continue;
         }
         let listeners: Vec<TcpListener> = (0..held)
             .map_while(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).ok())
             .collect();
-        if listeners.len() == usize::from(held) {
+        if listeners.len() == usize::from(held)
+            && (held..count).all(|offset| TcpListener::bind((DEFAULT_PORT_HOSTNAME, start + offset)).is_ok())
+        {
             return (start, listeners);
         }
     }
