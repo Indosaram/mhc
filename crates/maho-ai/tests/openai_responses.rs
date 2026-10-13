@@ -2902,7 +2902,7 @@ async fn xai_lets_explicit_headers_override_the_default_responses_user_agent() {
 }
 
 // =============================================================================
-// test/pre-generation-error.test.ts - the two [OI] Responses adapters
+// test/pre-generation-error.test.ts - the two OpenAI Responses adapters
 // =============================================================================
 
 #[tokio::test]

@@ -14,7 +14,7 @@ pub const CLOUDFLARE_WORKERS_AI_BASE_URL: &str =
 pub const CLOUDFLARE_AI_GATEWAY_COMPAT_BASE_URL: &str =
     "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/compat";
 
-/// AI Gateway -> [OI] passthrough. Used until /compat supports /v1/responses.
+/// AI Gateway -> OpenAI passthrough. Used until /compat supports /v1/responses.
 pub const CLOUDFLARE_AI_GATEWAY_OPENAI_BASE_URL: &str =
     "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai";
 
