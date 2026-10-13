@@ -437,19 +437,18 @@ struct Images;
 impl maho_codemode::tool::image_resize::EvalImageSdk for Images {
     fn resize_image<'a>(&'a self, bytes: Vec<u8>, mime: &'a str, max_bytes: Option<usize>) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::ResizedImage>> {
         Box::pin(async move {
-            let mut resize = super::super::utils::image_resize_core::ImageResizeOptions::default();
+            // senpi `resizeEvalImage`: `resizeImage()` returning null keeps the original image with
+            // no note, and the only note is `formatDimensionNote(resized)`.
+            let mut resize = super::super::utils::image_resize::ImageResizeOptions::default();
             if let Some(max_bytes) = max_bytes { resize.max_bytes = max_bytes as f64; }
-            let resized = super::super::utils::image_process::process_image(&bytes, mime,
-                super::super::utils::image_process::ProcessImageOptions { auto_resize_images: Some(true), resize_options: Some(resize) }).await?;
-            Ok(Some(maho_codemode::tool::image_resize::ResizedImage { data: resized.data, mime_type: resized.mime_type, dimension_note: resized.hints.join("\n") }))
+            let Some(resized) = super::super::utils::image_resize::resize_image(&bytes, mime, resize).await else { return Ok(None) };
+            let dimension_note = super::super::utils::image_resize::format_dimension_note(&resized).unwrap_or_default();
+            Ok(Some(maho_codemode::tool::image_resize::ResizedImage { data: resized.data, mime_type: resized.mime_type, dimension_note }))
         })
     }
-    fn convert_to_png<'a>(&'a self, data: &'a str, _mime_type: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::EvalImageContent>> {
-        Box::pin(async move {
-            use base64::Engine;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|error| error.to_string())?;
-            Ok(super::super::utils::image_convert::convert_image_bytes_to_png(&bytes).map(|png| maho_codemode::tool::image_resize::EvalImageContent { data: base64::engine::general_purpose::STANDARD.encode(png), mime_type: "image/png".into() }))
-        })
+    fn convert_to_png<'a>(&'a self, data: &'a str, mime_type: &'a str) -> maho_codemode::tool::image_resize::ImageFuture<'a, Option<maho_codemode::tool::image_resize::EvalImageContent>> {
+        Box::pin(async move { Ok(super::super::utils::image_convert::convert_to_png(data, mime_type).map(|image|
+            maho_codemode::tool::image_resize::EvalImageContent { data: image.data, mime_type: image.mime_type })) })
     }
 }
 impl Extension for Codemode {
