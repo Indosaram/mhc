@@ -24,7 +24,7 @@ pub fn resolve_prompt_input(input: Option<&str>, description: &str) -> Option<St
         match std::fs::read_to_string(input) {
             Ok(content) => return Some(strip_bom(&content).to_string()),
             Err(error) => {
-                eprintln!("Warning: Could not read {description} file {input}: {error}");
+                crate::output_guard::maho_write_stderr(&format!("Warning: Could not read {description} file {input}: {error}\n"));
                 return Some(input.to_string());
             }
         }
@@ -41,7 +41,7 @@ pub fn load_context_file_from_dir(dir: &str) -> Option<ContextFile> {
             continue;
         }
         let Ok(metadata) = std::fs::metadata(&file_path) else {
-            eprintln!("Warning: Could not read {file_path}");
+            crate::output_guard::maho_write_stderr(&format!("Warning: Could not read {file_path}\n"));
             continue;
         };
         if !metadata.is_file() {
@@ -49,7 +49,7 @@ pub fn load_context_file_from_dir(dir: &str) -> Option<ContextFile> {
         }
         match std::fs::read_to_string(&file_path) {
             Ok(content) => return Some(ContextFile { path: file_path, content: strip_bom(&content).to_string() }),
-            Err(error) => eprintln!("Warning: Could not read {file_path}: {error}"),
+            Err(error) => crate::output_guard::maho_write_stderr(&format!("Warning: Could not read {file_path}: {error}\n")),
         }
     }
     None

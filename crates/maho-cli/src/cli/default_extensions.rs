@@ -6,7 +6,7 @@ use maho_ext_host::loader::{NativeExtensionFactory, NativeAsyncExtensionFactory}
 pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::AgentSession, theme_paths: Vec<std::path::PathBuf>) {
     let agent_dir = std::path::PathBuf::from(session.agent_dir());
     let (registered, diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::ColorMode::Truecolor);
-    for diagnostic in diagnostics { eprintln!("{diagnostic}"); }
+    for diagnostic in diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{diagnostic}\n")); }
     let themes_dir = agent_dir.join("themes");
     let config_theme = session.with_settings_manager(|manager| manager.get_string("theme")).unwrap_or_else(|| "dark".into());
     let colorfgbg = std::env::var("COLORFGBG").ok();
@@ -274,7 +274,7 @@ impl Extension for Task {
                     let Some(engine) = event_ref.get().and_then(std::sync::Weak::upgrade) else { return; };
                     event_executor.spawn(async move {
                         if let Err(error) = engine.lock().await.flush_aggregate(&event.pool_id) {
-                            eprintln!("Workpool aggregate failed: {error}");
+                            maho_core::output_guard::maho_write_stderr(&format!("Workpool aggregate failed: {error}\n"));
                         }
                     });
                 });
