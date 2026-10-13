@@ -444,6 +444,27 @@ pub struct InteractiveMode {
     pending_theme_setting: Option<Option<String>>,
     /// senpi `autoSyncEnabled` with its parsed `light/dark` pair from `currentThemeSetting`.
     theme_auto_sync: Option<(String, String)>,
+    /// senpi `InteractiveThemeController.currentThemeSetting`: the user's selection (an auto
+    /// `light/dark` pair or a name), not the resolved theme name.
+    current_theme_setting: Option<String>,
+    /// A `tuiMode`/`terminalMouse` change from `/settings` waiting for the host's renderer swap.
+    pending_terminal_setting: Option<(String, serde_json::Value)>,
+    /// senpi keeps `selector` to call `getSettingsList().updateValue` when a change is refused.
+    settings_selector: Option<std::rc::Weak<RefCell<crate::components::settings_selector::SettingsSelectorComponent>>>,
+}
+
+/// A dialog the mode keeps a handle to while it is mounted in `ui_dialog`.
+struct SharedDialog<T: Component>(Rc<RefCell<T>>);
+impl<T: Component> Component for SharedDialog<T> {
+    fn render(&mut self, width: usize) -> Vec<String> { self.0.borrow_mut().render(width) }
+    fn handle_input(&mut self, data: &str) { self.0.borrow_mut().handle_input(data); }
+    fn has_input_handler(&self) -> bool { self.0.borrow().has_input_handler() }
+    fn handle_mouse(&mut self, event: &maho_tui::tui::TuiMouseEvent) -> Option<maho_tui::tui::TuiMouseEventResult> { self.0.borrow_mut().handle_mouse(event) }
+    fn wants_key_release(&self) -> bool { self.0.borrow().wants_key_release() }
+    fn invalidate(&mut self) { self.0.borrow_mut().invalidate(); }
+    fn dispose(&mut self) { self.0.borrow_mut().dispose(); }
+    fn focusable_get(&self) -> Option<bool> { self.0.borrow().focusable_get() }
+    fn focusable_set(&mut self, focused: bool) { self.0.borrow_mut().focusable_set(focused); }
 }
 
 /// senpi `resolveAutoTheme` / `resolveBackgroundTheme` in flight: the auto light/dark pair (when
@@ -549,7 +570,70 @@ impl InteractiveMode {
         if let Some(id) = self.terminal_color_scheme_listener.take() { ui.base_mut().remove_terminal_color_scheme_listener(id); }
         let reports = self.terminal_color_scheme_reports.clone();
         self.terminal_color_scheme_listener = Some(ui.base_mut().on_terminal_color_scheme_change(Box::new(move |scheme| reports.borrow_mut().push(scheme))));
+        self.current_theme_setting = setting.clone();
         self.request_terminal_theme_detection(setting);
+    }
+
+    /// senpi `InteractiveThemeController.rebindTui` after a renderer swap: listen to the new
+    /// renderer and carry the auto-sync notification state over. A detection whose queries were
+    /// issued on the old renderer is started again on the new one.
+    pub fn rebind_terminal_theme(&mut self, ui: &mut crate::tui_renderer::InteractiveTui, terminal: &mut dyn maho_tui::terminal::Terminal) {
+        let reports = self.terminal_color_scheme_reports.clone();
+        self.terminal_color_scheme_listener = Some(ui.base_mut().on_terminal_color_scheme_change(Box::new(move |scheme| reports.borrow_mut().push(scheme))));
+        ui.base_mut().set_terminal_color_scheme_notifications(self.theme_auto_sync.is_some(), terminal);
+        if self.theme_detection.take().is_some() { self.pending_theme_setting = Some(self.current_theme_setting.clone()); }
+    }
+
+    /// The theme currently applied, for a renderer the host recreates.
+    pub fn active_theme(&self) -> &Theme { &self.theme }
+
+    /// senpi `getThemeSelection`.
+    fn theme_selection(&self) -> String {
+        self.current_theme_setting.clone()
+            .or_else(|| self.session.with_settings_manager(|settings| settings.get_string("theme")))
+            .unwrap_or_else(|| self.theme.name.clone())
+    }
+
+    /// senpi `setThemeSetting` -> `applyFromSettings`: an auto `light/dark` setting applies the
+    /// variant for the known terminal theme and re-detects; any other setting is applied by name,
+    /// reporting a load failure, and turns auto-sync off.
+    fn set_theme_setting(&mut self, setting: String) {
+        let name = crate::theme::parse_auto_theme_setting(Some(setting.as_str()))
+            .map(|(light, dark)| (if self.terminal_theme == crate::theme::TerminalTheme::Light { light } else { dark }).to_owned())
+            .unwrap_or_else(|| setting.clone());
+        self.apply_theme_name(&name, true);
+        self.current_theme_setting = Some(setting.clone());
+        self.request_terminal_theme_detection(Some(setting));
+    }
+
+    /// senpi `InteractiveThemeController.preview`: show a theme while `/settings` browses,
+    /// without persisting it or changing the selection.
+    fn preview_theme(&mut self, setting: &str) {
+        let Some(name) = crate::theme::resolve_theme_setting(Some(setting), self.terminal_theme).map(str::to_owned) else { return; };
+        if let Ok(theme) = self.load_theme(&name) { self.install_theme(theme); }
+    }
+
+    /// senpi `onTuiModeChange` / `onTerminalMouseChange` overlay guard: the renderer cannot be
+    /// swapped under an overlay, so the selector shows the live value again.
+    pub fn reject_terminal_setting(&mut self, current: crate::tui_renderer::TuiMode) {
+        let Some((key, _)) = self.pending_terminal_setting.take() else { return; };
+        let (id, value, message) = if key == "tuiMode" {
+            ("tui-mode", (if current == crate::tui_renderer::TuiMode::Fullscreen { "fullscreen" } else { "regular" }).to_owned(), "Close active overlays before changing TUI mode")
+        } else {
+            ("terminal-mouse", self.terminal_mouse_mode(), "Close active overlays before changing mouse capture")
+        };
+        if let Some(selector) = self.settings_selector.as_ref().and_then(std::rc::Weak::upgrade) { selector.borrow_mut().settings_list_mut().update_value(id, &value); }
+        self.show_status(message.to_owned());
+    }
+
+    /// Persist the pending `tuiMode`/`terminalMouse` change before the host swaps renderers.
+    /// Returns `false` when there is nothing to apply or the setting could not be saved.
+    pub fn commit_terminal_setting(&mut self) -> bool {
+        let Some((key, value)) = self.pending_terminal_setting.take() else { return false; };
+        let values: maho_core::settings_manager::Settings = [(key.clone(), value.clone())].into_iter().collect();
+        if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_error(&error); return false; }
+        if key == "tuiMode" && let Some(mode) = value.as_str() { self.show_status(format!("TUI mode: {mode}")); }
+        true
     }
 
     /// senpi `applyFromSettings` scheduling; the queries are issued on the next host frame.
@@ -598,9 +682,9 @@ impl InteractiveMode {
         // A cache that cannot be written must never break a launch.
         let _ = crate::theme::terminal_theme_cache::write_terminal_theme_hint(detected, std::path::Path::new(&self.session.agent_dir()));
         match &detection.auto {
-            Some((light, dark)) => { let name = if detected == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }; self.apply_theme_name(&name); }
+            Some((light, dark)) => { let name = if detected == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }; self.apply_theme_name(&name, true); }
             None => {
-                if !self.apply_theme_name(detected.name()) { return; }
+                if !self.apply_theme_name(detected.name(), false) { return; }
                 if background_detection.confidence == "high" {
                     let values: maho_core::settings_manager::Settings = [("theme".to_owned(), serde_json::json!(detected.name()))].into_iter().collect();
                     if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_status(error); }
@@ -614,14 +698,27 @@ impl InteractiveMode {
         let Some((light, dark)) = &self.theme_auto_sync else { return; };
         let name = if terminal_theme == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() };
         self.terminal_theme = terminal_theme;
-        if name != self.theme.name { self.apply_theme_name(&name); }
+        if name != self.theme.name { self.apply_theme_name(&name, false); }
     }
 
-    /// senpi `applyThemeName`: load and apply `name`, reporting a load failure.
-    fn apply_theme_name(&mut self, name: &str) -> bool {
-        match self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
-            Ok(theme) => { self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history(); true },
-            Err(error) => { self.show_status(error.to_string()); false },
+    fn load_theme(&self, name: &str) -> Result<Theme, crate::theme::theme_json::ThemeError> {
+        self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name))
+    }
+
+    fn install_theme(&mut self, theme: Theme) {
+        self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history();
+    }
+
+    /// senpi `applyThemeName` over `setTheme`: load and apply `name`; an unloadable theme falls
+    /// back to dark and, when `show_error`, is reported through `showError`.
+    fn apply_theme_name(&mut self, name: &str, show_error: bool) -> bool {
+        match self.load_theme(name) {
+            Ok(theme) => { self.install_theme(theme); true },
+            Err(error) => {
+                if let Ok(theme) = self.load_theme("dark") { self.install_theme(theme); }
+                if show_error { self.show_error(&format!("Failed to load theme \"{name}\": {error}\nFell back to dark theme.")); }
+                false
+            },
         }
     }
     /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
@@ -960,7 +1057,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:if theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark }, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1980,6 +2077,19 @@ impl InteractiveMode {
 
     /// The pending terminal hand-off, consumed by the loop that owns the terminal.
     pub fn take_terminal_request(&mut self) -> Option<TerminalRequest> { self.terminal_request.take() }
+    /// A `/settings` `tuiMode`/`terminalMouse` change for the host loop (senpi `switchTuiMode`):
+    /// the requested renderer mode and terminal mouse mode. The host either recreates the renderer
+    /// and calls [`InteractiveMode::commit_terminal_setting`], or refuses it under an overlay with
+    /// [`InteractiveMode::reject_terminal_setting`].
+    pub fn pending_terminal_setting(&self, current: crate::tui_renderer::TuiMode) -> Option<(crate::tui_renderer::TuiMode, String)> {
+        let (key, value) = self.pending_terminal_setting.as_ref()?;
+        let value = value.as_str().unwrap_or_default();
+        Some(if key == "tuiMode" {
+            (if value == "fullscreen" { crate::tui_renderer::TuiMode::Fullscreen } else { crate::tui_renderer::TuiMode::Regular }, self.terminal_mouse_mode())
+        } else {
+            (current, value.to_owned())
+        })
+    }
 
     /// senpi `getExpandedEditorText` for the active editor.
     fn expanded_editor_text(&self) -> String {
@@ -2849,7 +2959,7 @@ impl InteractiveMode {
                 thinking_level:ThinkingLevel::from_name(self.host_thinking_level().as_str()).expect("session thinking level"),
                 available_thinking_levels:self.host_available_thinking_levels().into_iter().filter_map(|level| ThinkingLevel::from_name(level.as_str())).collect(), ..Default::default() };
             let theme_registry = self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode()).map_err(|error| error.to_string())?;
-            config.current_theme = self.theme.name.clone(); config.available_themes = theme_registry.get_available_themes_with_paths().into_iter().map(|theme| theme.name).collect();
+            config.current_theme = self.theme_selection(); config.terminal_theme = self.terminal_theme; config.available_themes = theme_registry.get_available_themes_with_paths().into_iter().map(|theme| theme.name).collect();
             self.session.with_settings_manager(|settings| {
                 macro_rules! boolean { ($field:ident, $key:literal) => { config.$field = settings.get_bool($key).unwrap_or(config.$field); }; }
                 macro_rules! number { ($field:ident, $key:literal) => { if let Some(value) = settings.get_number($key) { config.$field = value as _; } }; }
@@ -2878,10 +2988,36 @@ impl InteractiveMode {
                 }
             })); }}; }
             persist!(on_show_images_change, "showImages", bool); persist!(on_image_width_cells_change, "imageWidthCells", usize); persist!(on_auto_resize_images_change, "imageAutoResize", bool); persist!(on_block_images_change, "blockImages", bool); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
-            persist!(on_transport_change, "transport", String); persist!(on_http_idle_timeout_ms_change, "httpIdleTimeoutMs", u64); persist!(on_theme_change, "theme", String); persist!(on_hide_thinking_block_change, "hideThinkingBlock", bool);
+            persist!(on_theme_change, "theme", String); persist!(on_hide_thinking_block_change, "hideThinkingBlock", bool);
+            { let ui = self.extension_ui.clone(); callbacks.on_theme_preview = Some(Box::new(move |setting: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::ThemePreview(setting))))); }
+            // senpi `onTransportChange`: persist, then `session.agent.transport = transport`.
+            { let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.on_transport_change = Some(Box::new(move |value: String| {
+                let values = [("transport".into(), serde_json::json!(value))].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => session.agent().set_transport(Some(session.with_settings_manager(|settings| settings.get_transport()))),
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }
+            // senpi `onHttpIdleTimeoutMsChange`: persist, refresh the agent stream timeouts and report it.
+            // The HTTP client reads `httpIdleTimeoutMs` per request (`apply_stream_request_settings`),
+            // which stands in for `configureHttpDispatcher`.
+            { let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.on_http_idle_timeout_ms_change = Some(Box::new(move |timeout_ms: u64| {
+                let values = [("httpIdleTimeoutMs".into(), serde_json::json!(timeout_ms))].into_iter().collect();
+                match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
+                    Ok(()) => {
+                        let (idle, start) = session.with_settings_manager(|settings| (settings.get_agent_stream_idle_timeout_ms(), settings.get_agent_stream_start_timeout_ms()));
+                        session.agent().set_timeout_ms(idle); session.agent().set_stream_start_timeout_ms(start);
+                        maho_ext_api::ExtensionUi::notify(ui.as_ref(), &format!("HTTP idle timeout: {}", maho_core::http_dispatcher::format_http_idle_timeout_ms(timeout_ms)), maho_ext_api::NotificationType::Info);
+                    }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }
             persist!(on_smooth_streaming_change, "smoothStreaming", bool); persist!(on_smooth_streaming_fps_change, "smoothStreamingFps", u32); persist!(on_show_cache_miss_notices_change, "showCacheMissNotices", bool); persist!(on_collapse_changelog_change, "collapseChangelog", bool); persist!(on_enable_install_telemetry_change, "enableInstallTelemetry", bool);
             persist!(on_double_escape_action_change, "doubleEscapeAction", String); persist!(on_tree_filter_mode_change, "treeFilterMode", String); persist!(on_show_hardware_cursor_change, "showHardwareCursor", bool); persist!(on_editor_padding_x_change, "editorPaddingX", usize); persist!(on_output_pad_change, "outputPad", u8); persist!(on_autocomplete_max_visible_change, "autocompleteMaxVisible", usize);
-            persist!(on_quiet_startup_change, "quietStartup", bool); persist!(on_clear_on_shrink_change, "clearOnShrink", bool); persist!(on_show_terminal_progress_change, "showTerminalProgress", bool); persist!(on_terminal_mouse_change, "terminalMouse", String); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            persist!(on_quiet_startup_change, "quietStartup", bool); persist!(on_clear_on_shrink_change, "clearOnShrink", bool); persist!(on_show_terminal_progress_change, "showTerminalProgress", bool); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
+            // when no overlay is open; the setting is persisted once the host accepts the change.
+            { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }
             let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); let values = [("compaction".into(), serde_json::json!({"enabled":enabled}))].into_iter().collect(); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
             let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
             let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
@@ -2901,11 +3037,14 @@ impl InteractiveMode {
                     Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
                 }
             })); }
-            persist_enum!(on_tui_mode_change, "tuiMode", TuiMode, |value: TuiMode| serde_json::json!(value.as_str()));
+            // senpi `onTuiModeChange`: `switchTuiMode` first, persisting only when it succeeds.
+            { let ui = self.extension_ui.clone(); callbacks.on_tui_mode_change = Some(Box::new(move |value: TuiMode| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("tuiMode".into(), serde_json::json!(value.as_str())))))); }
             persist_enum!(on_fullscreen_exit_output_change, "fullscreenExitOutput", FullscreenExitOutput, |value: FullscreenExitOutput| serde_json::json!(value.as_str()));
             persist_enum!(on_default_project_trust_change, "defaultProjectTrust", DefaultProjectTrust, |value: DefaultProjectTrust| serde_json::json!(match value { DefaultProjectTrust::Ask => "ask", DefaultProjectTrust::Always => "always", DefaultProjectTrust::Never => "never" }));
             persist_enum!(on_warnings_change, "warnings", WarningSettings, |value: WarningSettings| serde_json::json!({"anthropicExtraUsage":value.anthropic_extra_usage}));
-            self.ui_dialog = Some(Box::new(SettingsSelectorComponent::new(&self.theme, config, callbacks, self.host_model().input.contains(&maho_ai::types::InputModality::Image))));
+            let selector = Rc::new(RefCell::new(SettingsSelectorComponent::new(&self.theme, config, callbacks, self.host_model().input.contains(&maho_ai::types::InputModality::Image))));
+            self.settings_selector = Some(Rc::downgrade(&selector));
+            self.ui_dialog = Some(Box::new(SharedDialog(selector)));
             return Ok(true);
         }
         if text == "/trust" {
@@ -4109,11 +4248,8 @@ impl InteractiveMode {
                     "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.apply_smooth_streaming_render_fps(); self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
                     "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; self.apply_smooth_streaming_render_fps(); },
                     "theme" => {
-                        let setting = value.as_str().expect("theme setting");
-                        let name = crate::theme::resolve_theme_setting(Some(setting), self.terminal_theme).unwrap_or("dark").to_owned();
-                        self.apply_theme_name(&name);
-                        // senpi `setThemeSetting` -> `applyFromSettings`: an auto setting re-detects and follows.
-                        self.request_terminal_theme_detection(Some(setting.to_owned()));
+                        let setting = value.as_str().expect("theme setting").to_owned();
+                        self.set_theme_setting(setting);
                     }
                     "outputPad" => { for component in &self.assistant_cards { component.borrow_mut().set_output_pad(value.as_u64().expect("output padding") as usize); } if self.agent_idle { self.rebuild_history(); } },
                     "showCacheMissNotices" if self.agent_idle => self.rebuild_history(),
@@ -4124,6 +4260,8 @@ impl InteractiveMode {
                     _ => self.chat.invalidate(),
                 }
             }
+            UiRequest::ThemePreview(setting) => self.preview_theme(&setting),
+            UiRequest::TerminalSetting(key, value) => self.pending_terminal_setting = Some((key, value)),
             UiRequest::Question { request, options, reply } => {
                 if reply.is_closed() { return; }
                 use crate::components::ask_user_question_state as state;
