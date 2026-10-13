@@ -18,6 +18,10 @@ pub fn resolve_dream_trigger_settings(settings:&serde_json::Value,agent:Option<&
 }
 #[derive(Debug,PartialEq,Eq)]
 pub enum DreamGateRejection{Disabled,ShutdownDisabled,TooSoon,InsufficientVolume}
+impl DreamGateRejection{
+    /// Upstream string literal (`"disabled" | "shutdown_disabled" | "too_soon" | "insufficient_volume"`).
+    pub fn as_code(&self)->&'static str{match self{Self::Disabled=>"disabled",Self::ShutdownDisabled=>"shutdown_disabled",Self::TooSoon=>"too_soon",Self::InsufficientVolume=>"insufficient_volume"}}
+}
 pub fn evaluate_dream_gates<E>(origin:DreamOrigin,settings:&DreamTriggerSettings,now_ms:f64,last_dream_at_ms:impl FnOnce()->Result<Option<f64>,E>,unreflected_bytes:impl FnOnce()->Result<usize,E>)->Result<Result<(),DreamGateRejection>,E>{
     if origin==DreamOrigin::Manual{return Ok(Ok(()));}
     if !settings.enabled{return Ok(Err(DreamGateRejection::Disabled));}
@@ -39,6 +43,7 @@ mod tests{
         let result=resolve_dream_trigger_settings(&settings,Some("agent")).unwrap();assert!(!result.enabled);assert_eq!(result.idle_minutes,0.5);assert_eq!(result.auto_select_max,2);assert_eq!(result.min_hours_between,24.0);assert!(result.shutdown_launch);assert_eq!(result.auto_select_max_chars,150000);
         assert!(resolve_dream_trigger_settings(&settings,Some("other")).unwrap().enabled);
     }
+    #[test]fn rejection_codes_match_upstream_literals(){assert_eq!(DreamGateRejection::Disabled.as_code(),"disabled");assert_eq!(DreamGateRejection::ShutdownDisabled.as_code(),"shutdown_disabled");assert_eq!(DreamGateRejection::TooSoon.as_code(),"too_soon");assert_eq!(DreamGateRejection::InsufficientVolume.as_code(),"insufficient_volume");}
     #[test]fn manual_bypasses_all_probes(){let settings=DreamTriggerSettings{enabled:false,shutdown_launch:false,..Default::default()};assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Manual,&settings,0.0,||panic!("last"),||panic!("volume")),Ok(Ok(())));}
     #[test]fn early_rejections_are_lazy(){let settings=DreamTriggerSettings{enabled:false,..Default::default()};assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Idle,&settings,0.0,||panic!("last"),||panic!("volume")),Ok(Err(DreamGateRejection::Disabled)));let settings=DreamTriggerSettings{shutdown_launch:false,..Default::default()};assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Shutdown,&settings,0.0,||panic!("last"),||panic!("volume")),Ok(Err(DreamGateRejection::ShutdownDisabled)));}
     #[test]fn spacing_and_volume_are_strict(){let settings=DreamTriggerSettings::default();let spacing=settings.min_hours_between*3_600_000.0;assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Idle,&settings,spacing,||Ok(Some(0.0)),||panic!("volume")),Ok(Err(DreamGateRejection::TooSoon)));assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Idle,&settings,spacing+1.0,||Ok(Some(0.0)),||Ok(8192)),Ok(Err(DreamGateRejection::InsufficientVolume)));assert_eq!(evaluate_dream_gates::<()>(DreamOrigin::Shutdown,&settings,spacing+1.0,||Ok(Some(0.0)),||Ok(8193)),Ok(Ok(())));}
