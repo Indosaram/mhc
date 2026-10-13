@@ -3665,7 +3665,7 @@ impl InteractiveMode {
             AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
             AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
             AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
-            AgentSessionEvent::ThinkingLevelChanged { level } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
+            AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
             AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
             AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
                 self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
