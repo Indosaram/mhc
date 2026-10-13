@@ -134,12 +134,19 @@ pub struct AgentSessionConfig {
 
 pub type ExtensionErrorListener = Arc<dyn Fn(&ExtensionError) + Send + Sync>;
 
+/// Session-bus channel published after an in-place session replacement (`reason` new/resume/fork)
+/// or a reload (`reason` reload). Native adaptation of senpi `AgentSessionRuntime.setRebindSession`:
+/// single-session hosts replace the session in place, so connections learn of it here.
+pub const SESSION_REBIND_CHANNEL: &str = "maho:session-rebind";
+
 #[derive(Clone, Default)]
 pub struct ExtensionBindings {
     pub ui_context: Option<Arc<dyn ExtensionUi>>,
     pub mode: Option<ExtensionMode>,
     pub abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_error: Option<ExtensionErrorListener>,
+    /// senpi `shutdownHandler`: what an extension's `ctx.shutdown()` asks the host mode to do.
+    pub shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,6 +453,7 @@ struct AgentSessionState {
     extension_ui_context: Option<Arc<dyn ExtensionUi>>,
     extension_bound_ui: Option<(Arc<dyn ExtensionUi>, Arc<dyn ExtensionUi>)>,
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
+    extension_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
     /// Tracks startup dispatch so RPC attach can install UI without repeating the lifecycle.
     extension_lifecycle_started: bool,
@@ -567,6 +575,9 @@ pub struct AgentSessionInner {
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
     agent_run_active: std::sync::atomic::AtomicBool,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
+    /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
+    /// connection subscribed once keeps receiving across runner recreation (senpi `onRpcEvent`).
+    extension_rpc_event_forward: Mutex<Option<maho_ext_api::BusSubscription>>,
     settings_source_subscription: Mutex<Option<crate::settings_manager::SettingsSourceSubscription>>,
     settled_delivery: Mutex<crate::agent_settled_delivery::AgentSettledDelivery>,
     user_abort_generation: AtomicU64,
@@ -946,7 +957,14 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let result = self.session()?.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await.map_err(maho_ext_api::ExtensionFailure::new)?;
         Ok(maho_ext_api::ReloadVetoDecision { cancelled: result.cancel == Some(true), reason: result.reason })
     }) }
-    fn shutdown(&self) { if let Ok(session) = self.session() { tokio::spawn(async move { session.dispose().await; }); } }
+    fn shutdown(&self) { if let Ok(session) = self.session() {
+        // senpi `shutdown: () => this._extensionShutdownHandler?.()`: the bound mode owns shutdown.
+        let handler = session.state().extension_shutdown_handler.clone();
+        match handler {
+            Some(handler) => handler(),
+            None => { tokio::spawn(async move { session.dispose().await; }); }
+        }
+    } }
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
@@ -1660,6 +1678,7 @@ impl AgentSession {
             extension_ui_context: None,
             extension_bound_ui: None,
             extension_abort_handler: None,
+            extension_shutdown_handler: None,
             extension_error_listener: None,
             extension_lifecycle_started: false,
             message_revision: 0,
@@ -1750,6 +1769,7 @@ impl AgentSession {
             settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
             agent_run_active: std::sync::atomic::AtomicBool::new(false),
             wake_source_subscription: Mutex::new(None),
+            extension_rpc_event_forward: Mutex::new(None),
             settings_source_subscription: Mutex::new(None),
             settled_delivery: Mutex::new(crate::agent_settled_delivery::AgentSettledDelivery::new()),
             user_abort_generation: AtomicU64::new(0),
@@ -3722,6 +3742,8 @@ impl AgentSession {
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
             reason, initial_model_provenance: None, previous_session_file: previous,
         })).await;
+        let reason = match reason { maho_ext_api::SessionReason::Fork => "fork", maho_ext_api::SessionReason::New => "new", _ => "resume" };
+        self.event_bus.emit(SESSION_REBIND_CHANNEL, &serde_json::json!({"reason": reason}));
         Ok(())
     }
 
@@ -4434,6 +4456,7 @@ impl AgentSession {
             })).await;
             self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
         }
+        self.event_bus.emit(SESSION_REBIND_CHANNEL, &serde_json::json!({"reason": "reload"}));
         Ok(maho_ext_api::ReloadVetoDecision::default())
     }
 
@@ -5798,6 +5821,10 @@ impl AgentSession {
         *lock(&self.wake_source_subscription) = Some(runner.events.on("wake_source_state", Arc::new(move |data| {
             if let Some(inner) = weak.upgrade() { lock(&inner.state).wake_sources.observe(data); }
         })));
+        let weak = Arc::downgrade(&self.inner);
+        *lock(&self.extension_rpc_event_forward) = Some(runner.events.on(crate::event_bus::EXTENSION_RPC_EVENT_CHANNEL, Arc::new(move |data: &Value| {
+            if let Some(inner) = weak.upgrade() { inner.event_bus.emit(crate::event_bus::EXTENSION_RPC_EVENT_CHANNEL, data); }
+        })));
         if let Ok(mut context) = runner.create_context() {
             context.cwd = self.cwd().into();
             context.agent_dir = self.agent_dir().into();
@@ -6263,6 +6290,7 @@ impl AgentSession {
             if let Some(mode) = bindings.mode { state.extension_mode = mode; }
             if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+            if let Some(handler) = bindings.shutdown_handler { state.extension_shutdown_handler = Some(handler); }
         }
         self.apply_extension_bindings().await;
         let event = self.state().session_start_event.clone();
@@ -6303,6 +6331,7 @@ impl AgentSession {
             if let Some(mode) = bindings.mode { state.extension_mode = mode; }
             if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+            if let Some(handler) = bindings.shutdown_handler { state.extension_shutdown_handler = Some(handler); }
         }
         self.apply_extension_bindings().await;
     }
@@ -6968,6 +6997,7 @@ impl AgentSession {
         self.abort_bash();
         self.agent.abort(None);
         lock(&self.wake_source_subscription).take();
+        lock(&self.extension_rpc_event_forward).take();
         lock(&self.settings_source_subscription).take();
         lock(&self.agent_subscription).take();
         self.state().extension_event_sender.take();

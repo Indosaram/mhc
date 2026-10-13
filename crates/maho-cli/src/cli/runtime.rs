@@ -299,10 +299,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(15), runtime.refresh(maho_ai::models::ModelsRefreshOptions::default())).await;
                 });
             }
-            session.bind_extensions(maho_core::agent_session::ExtensionBindings {
-                mode: Some(maho_ext_api::ExtensionMode::Rpc), ..Default::default()
-            }).await;
-            maho_rpc::rpc_mode::run_command_stream(&session, tokio::io::stdin(), tokio::io::stdout()).await.map(|()| 0).map_err(|error| error.to_string())
+            // The connection handler performs the first extension bind with the RPC UI context
+            // (senpi `createRpcConnectionHandler` -> `rebindSession`), so extensions see `hasUI`.
+            let code = maho_rpc::rpc_mode::run_rpc_mode(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())?;
+            // senpi `createRpcShutdown`: SIGTERM/SIGHUP (143/129) kill tracked detached children.
+            #[cfg(unix)]
+            if code == 143 || code == 129 { crate::utils::shell::kill_tracked_detached_children(); }
+            Ok(code)
         },
         AppMode::Print | AppMode::Json => {
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
@@ -339,8 +342,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     } };
     // senpi print-mode.ts:55-73 / rpc-mode.ts:150-162: SIGTERM/SIGHUP in print, json and RPC mode
     // kill tracked detached children, run `session_shutdown` and dispose, then exit 143/129.
+    // RPC mode owns its SIGTERM/SIGHUP handling inside `run_rpc_mode` (connection release first) and
+    // returns 143/129 as its exit code.
     #[cfg(unix)]
-    let (result, signal_code) = if mode == AppMode::Interactive { (run.await, None) } else {
+    let (result, signal_code) = if matches!(mode, AppMode::Interactive | AppMode::Rpc) { (run.await, None) } else {
         use tokio::signal::unix::{signal, SignalKind};
         let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
         let mut hangup = signal(SignalKind::hangup()).map_err(|error| error.to_string())?;
