@@ -1345,9 +1345,8 @@ impl InteractiveMode {
                 self.update_editor_border_color();
                 let suffix = system_prompt_name.map(|name| format!(" (optimized system prompt applied: {name})")).unwrap_or_default();
                 self.show_status(format!("Model: {}{suffix}", model.id));
-                if crate::risky_main_model_warning::is_risky_main_model(&model) {
-                    self.show_notice_box(crate::components::earendil_announcement::NoticeSpec { title: "Risky model warning".into(), tone: Some(crate::theme::ThemeColor::Error), why: crate::risky_main_model_warning::RISKY_MAIN_MODEL_WARNING.into(), extra: Vec::new(), expanded_line: None });
-                }
+                self.show_risky_main_model_warning(&model);
+                self.maybe_warn_about_anthropic_subscription_auth(model);
             }
             Err(error) => self.show_error(&error),
         }
@@ -2415,7 +2414,6 @@ impl InteractiveMode {
                 return Ok(PromptDisposition::Handled);
             }
             let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
-            component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
             component.borrow_mut().set_expanded(self.tools_expanded);
             // senpi shows a `!` started while streaming in the pending area until the next submission.
             if self.host_is_streaming() { self.pending_bash_components.push(component.clone()); } else { self.chat.add_component(component.clone()); }
@@ -2562,19 +2560,6 @@ impl InteractiveMode {
         }
         if text.trim() == "/tree-navigate" {
             self.apply_tree_navigation().await?;
-            return Ok(PromptDisposition::Handled);
-        }
-        if let Some(reference) = text.trim().strip_prefix("/model ") {
-            let (provider, id) = reference.trim().split_once('/').ok_or("Model reference requires provider/model")?;
-            let model = self.host_find_model(provider, id).ok_or_else(|| format!("Model not found: {reference}"))?;
-            let requested = model.clone();
-            self.host_set_model(provider, id).await?;
-            if maho_ai::models::models_are_equal(Some(&self.host_model()), Some(&requested)) {
-                self.show_status(format!("Switched to {}", self.host_model().name));
-                self.show_risky_main_model_warning(&requested);
-                self.maybe_warn_about_anthropic_subscription_auth(requested);
-            }
-            else { self.show_status(format!("Model switch pending: {reference}")); }
             return Ok(PromptDisposition::Handled);
         }
         if let Some(reference) = text.trim().strip_prefix("/model-select ") {
@@ -2914,38 +2899,6 @@ impl InteractiveMode {
             let Some((provider_id, method)) = args.trim().split_once(' ') else { return Ok(true); };
             let auth_type = match method { "oauth" => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, "api_key" => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey, _ => return Ok(true) };
             if let Some(provider) = self.login_provider_options(Some(auth_type)).into_iter().find(|provider| provider.id == provider_id) { self.start_provider_login(&provider); }
-            return Ok(true);
-        }
-
-        if text == "/logout" {
-            // senpi `showOAuthSelector("logout")`.
-            let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
-                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, login_label: None, method_has_login: true, status: None,
-            }).collect::<Vec<_>>();
-            if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
-            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None)));
-            return Ok(true);
-        }
-        if let Some(provider_id) = text.strip_prefix("/logout-provider ") {
-            let provider_id = provider_id.trim();
-            let Some(provider) = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().find(|provider| provider.id == provider_id) else { return Ok(true); };
-            let runtime = self.session.model_registry().model_runtime.clone();
-            let sender = self.auth_ui_sender.clone();
-            let auth_type = match provider.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey };
-            tokio::spawn(async move {
-                // senpi bounds logout with `AbortSignal.timeout(15_000)`.
-                let abort = maho_ai::utils::abort::AbortController::new();
-                let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, None, options)).await {
-                    Ok(result) => result.map_err(|error| error.to_string()),
-                    Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
-                };
-                let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
-            });
             return Ok(true);
         }
         if text == "/changelog" {
@@ -3842,6 +3795,8 @@ impl InteractiveMode {
         };
         self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
         self.chat.add_component(build_notice_box(&spec, self.tools_expanded, &self.theme));
+    }
+
     /// senpi `showAmbientAuthDialog`: an info-only dialog for a method configured outside the app.
     fn show_ambient_auth_dialog(&mut self, provider: &crate::components::oauth_selector::AuthSelectorProvider) {
         let mut dialog = crate::components::login_dialog::LoginDialogComponent::new(&self.theme, &provider.id, Box::new(|_, _| {}), Some(&provider.name), Some(&format!("{} setup", provider.name)));
@@ -4075,12 +4030,6 @@ impl InteractiveMode {
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
-            AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
-            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, error_message, .. } => self.show_status(format!("Retrying ({attempt}/{max_attempts}): {error_message}")),
-            AgentSessionEvent::AutoRetryEnd { final_error:Some(error), .. } => self.show_status(error.clone()),
-            AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
-            AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
-            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
             AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
             AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
             AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
