@@ -198,6 +198,12 @@ pub struct InteractiveMode {
     /// senpi `headerContainer`: the document header slot holding the built-in header (with its tip
     /// sibling) or an extension header.
     header_container: Container,
+    /// senpi `loadedResourcesContainer`: the startup resource listing between header and chat.
+    loaded_resources_container: Container,
+    /// The `LoadedResourceSection`s in `loaded_resources_container`, which follow the tools toggle.
+    loaded_resource_sections: Vec<Rc<RefCell<crate::components::loaded_resource_section::LoadedResourceSection>>>,
+    /// senpi `resourceLoader.getExtensions().extensions` as path + source info.
+    loaded_extensions: Vec<crate::loaded_resource_scopes::ScopedResource>,
     /// senpi `builtInHeader`.
     built_in_header: Option<HeaderSlot>,
     /// The built-in header when it is an `ExpandableText` (senpi's `isExpandable` probe).
@@ -383,6 +389,44 @@ impl InteractiveMode {
     pub fn initialize_startup_header(&mut self) {
         self.load_startup_changelog();
         self.mount_startup_header();
+        self.show_loaded_resources(false, true);
+    }
+
+    /// senpi `showLoadedResources`: rebuild the loaded-resources container from the session's
+    /// context files, skills, prompts, extensions and custom themes.
+    pub fn show_loaded_resources(&mut self, force: bool, show_diagnostics_when_quiet: bool) {
+        use crate::interactive_loaded_resources::{LoadedPrompt, LoadedResources, LoadedSkill, LoadedThemeResource, build_loaded_resources};
+        self.loaded_resources_container.clear();
+        self.loaded_resource_sections.clear();
+        let quiet = self.session.with_settings_manager(|settings| settings.get_bool("quietStartup").unwrap_or(false));
+        let show_listing = force || self.verbose || !quiet;
+        let show_diagnostics = show_listing || show_diagnostics_when_quiet;
+        if !show_listing && !show_diagnostics { return; }
+        let cwd = self.session.cwd();
+        let (system_prompt_source, append_sources) = self.session.system_prompt_sources();
+        let existing = |source: &String| std::path::Path::new(source).exists().then(|| maho_core::paths::resolve_path(source, &cwd, &maho_core::paths::PathInputOptions::default()));
+        let mut context_paths: Vec<String> = system_prompt_source.iter().filter_map(existing).collect();
+        context_paths.extend(append_sources.iter().filter_map(existing));
+        context_paths.extend(self.session.project_context_files().into_iter().map(|file| file.path));
+        let skills_result = self.session.loaded_skills().unwrap_or_default();
+        let themes = crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode())
+            .map(|registry| registry.get_available_themes_with_paths()).unwrap_or_default()
+            .into_iter().filter_map(|theme| theme.path.map(|path| LoadedThemeResource { name: theme.name, source_path: path.to_string_lossy().into_owned(), source_info: None })).collect();
+        let resources = LoadedResources {
+            cwd,
+            context_paths,
+            skills: skills_result.skills.into_iter().map(|skill| LoadedSkill { name: skill.name, file_path: skill.file_path, source_info: Some(skill.source_info) }).collect(),
+            skill_diagnostics: skills_result.diagnostics,
+            prompts: self.session.prompt_templates().into_iter().map(|template| LoadedPrompt { name: template.name, file_path: template.file_path, source_info: Some(template.source_info) }).collect(),
+            prompt_diagnostics: Vec::new(),
+            extensions: self.loaded_extensions.clone(),
+            extension_diagnostics: Vec::new(),
+            themes,
+            theme_diagnostics: Vec::new(),
+        };
+        let view = build_loaded_resources(&resources, show_listing, show_diagnostics, self.get_startup_expansion_state(), self.tools_expanded, &self.theme);
+        for child in view.children { self.loaded_resources_container.add_child(child); }
+        self.loaded_resource_sections = view.sections;
     }
 
     /// Production `mount_startup_header`, using the wall clock for the tip schedule (senpi `Date.now()`).
@@ -557,7 +601,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -928,6 +972,12 @@ impl InteractiveMode {
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
+        self.loaded_extensions = extensions.iter().map(|extension| {
+            let info = &extension.source_info;
+            let scope = match info.scope { maho_ext_api::SourceScope::User => maho_core::source_info::SourceScope::User, maho_ext_api::SourceScope::Project => maho_core::source_info::SourceScope::Project, maho_ext_api::SourceScope::Temporary => maho_core::source_info::SourceScope::Temporary, maho_ext_api::SourceScope::System => maho_core::source_info::SourceScope::System };
+            let origin = match info.origin { maho_ext_api::SourceOrigin::Package => maho_core::source_info::SourceOrigin::Package, maho_ext_api::SourceOrigin::TopLevel => maho_core::source_info::SourceOrigin::TopLevel };
+            crate::loaded_resource_scopes::ScopedResource { path: extension.identity.path.clone(), source_info: Some(maho_core::source_info::SourceInfo { path: info.path.clone(), source: info.source.clone(), scope, origin, base_dir: info.base_dir.clone() }) }
+        }).collect();
         self.markdown_transformers = extensions.iter().filter_map(|extension| extension.markdown_transformer.clone()).map(|transformer| -> crate::components::markdown_transform::MarkdownTransformer {
             Rc::new(move |text, context| {
                 use crate::components::markdown_transform::MessageType;
@@ -1207,6 +1257,7 @@ impl InteractiveMode {
         self.tools_expanded = expanded;
         // senpi `setToolsExpanded`: the active header follows the expansion.
         if self.custom_header.is_none() && let Some(expandable) = &self.built_in_expandable { expandable.borrow_mut().set_expanded(expanded); }
+        for section in &self.loaded_resource_sections { section.borrow_mut().set_expanded(expanded); }
         for component in &self.tool_cards { component.borrow_mut().set_expanded(expanded); }
         for component in &self.assistant_cards { component.borrow_mut().set_expanded(expanded); }
         for update in &mut self.history_expansion { update(expanded); }
@@ -1331,7 +1382,7 @@ impl InteractiveMode {
             if self.host_reload().await? {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
+                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true); self.show_status("Reloaded session resources".into());
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -3212,6 +3263,7 @@ impl InteractiveMode {
     }
     pub(crate) fn render_document(&mut self,width:usize)->Vec<String> {
         let mut lines = self.header_container.render(width);
+        lines.extend(self.loaded_resources_container.render(width));
         lines.extend(self.chat.render(width));
         lines
     }
