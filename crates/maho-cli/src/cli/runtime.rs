@@ -146,6 +146,21 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     session.set_context_files_enabled(!parsed.no_context_files);
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
+    {
+        // senpi export-html resolves theme colors from the configured theme in every mode; the
+        // single-session print/RPC path installs the same resolver as the shared host runtime.
+        let mut theme_paths = Vec::new();
+        let session_cwd = session.cwd();
+        let session_agent_dir = session.agent_dir();
+        let mut theme_settings = maho_core::settings_manager::SettingsManager::in_memory(session.with_settings_manager(|settings| settings.get_global().clone()), false);
+        let packages = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions { cwd: &session_cwd, agent_dir: &session_agent_dir, settings_manager: &mut theme_settings });
+        match packages.resolve(None).await {
+            Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource| resource.enabled).map(|resource| std::path::PathBuf::from(resource.path))),
+            Err(error) => maho_core::output_guard::maho_write_stderr(&format!("package themes: {error}\n")),
+        }
+        theme_paths.extend(runtime_config.resolved_theme_paths().into_iter().map(std::path::PathBuf::from));
+        super::default_extensions::configure_rpc_html_theme_with_paths(&session, theme_paths);
+    }
     let hook_sources = session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&runtime_config, settings));
     session.set_hook_sources(Some(hook_sources));
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
