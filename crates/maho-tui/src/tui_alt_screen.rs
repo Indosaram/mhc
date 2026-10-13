@@ -184,6 +184,8 @@ pub struct TuiAltScreen {
     image_protocol: ImageProtocol,
     flashes: AltScreenFlashContainer,
     scroll_to_end_indicator: Option<Rc<dyn Fn() -> String>>,
+    /// senpi's `scrollToEndIndicatorRect`: `(row, column, width)` of the last painted pill.
+    scroll_to_end_indicator_rect: Option<(i64, i64, i64)>,
     /// senpi's `implicitDocument`: renders the base container's children when no layout root
     /// is set. Its children are refreshed from `base.children()` before each layout pass because
     /// this port's `TuiBase` owns its `Container` by value.
@@ -240,6 +242,7 @@ impl TuiAltScreen {
             image_protocol: ImageProtocol::None,
             flashes: AltScreenFlashContainer::new(),
             scroll_to_end_indicator: None,
+            scroll_to_end_indicator_rect: None,
             implicit_document,
             implicit_scroll_view,
         }
@@ -744,14 +747,13 @@ impl TuiAltScreen {
         result
     }
 
-    /// senpi's `compositeScrollToEndIndicator`.
+    /// senpi's `compositeScrollToEndIndicator`; records the pill's rect for click handling.
     fn composite_scroll_to_end_indicator(&mut self, screen: Vec<String>, layout: &LayoutFrame, width: usize) -> Vec<String> {
+        self.scroll_to_end_indicator_rect = None;
         let Some(indicator) = self.scroll_to_end_indicator.clone() else {
             return screen;
         };
-        let Some(scroll_view) = layout.primary_scroll_view.clone() else {
-            return screen;
-        };
+        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
         if !scroll_view.borrow().follows_end() || scroll_view.borrow().is_following_end() {
             return screen;
         }
@@ -777,7 +779,23 @@ impl TuiAltScreen {
         let mut result = screen;
         let base = result[row as usize].clone();
         result[row as usize] = composite_tui_line(&base, &text, column.max(0) as usize, text_width, width);
+        self.scroll_to_end_indicator_rect = Some((row, column, text_width as i64));
         result
+    }
+
+    /// senpi's `handleScrollToEndIndicatorMouseEvent`: a primary press on the pill jumps to the end.
+    fn handle_scroll_to_end_indicator_mouse_event(&mut self, event: &SgrMouseEvent) -> bool {
+        let Some((row, column, width)) = self.scroll_to_end_indicator_rect else {
+            return false;
+        };
+        if event.release || (event.button & 32) != 0 || (event.button & 3) != 0 {
+            return false;
+        }
+        if event.y != row || event.x < column || event.x >= column + width {
+            return false;
+        }
+        self.scroll_to_bottom();
+        true
     }
 
     /// senpi's `compositeFlashes`.
@@ -1284,6 +1302,9 @@ impl TuiAltScreen {
 
         let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&event);
         if !hit {
+            if self.handle_scroll_to_end_indicator_mouse_event(&raw) {
+                return;
+            }
             let scrollbar_handled = self.handle_scrollbar_mouse_event(&raw);
             if self.scrollbar_drag.is_none() {
                 self.update_scrollbar_hover(raw.x, raw.y);
