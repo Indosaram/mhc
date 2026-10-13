@@ -74,6 +74,9 @@ async fn prompt_main_hooks_match_pinned_reference() {
  }
  for value in &mut actual {
   if let Some(prompt) = value.get_mut("systemPrompt").and_then(|value| value.as_str().map(str::to_owned)) {
+   let start = prompt.find("<workstation>\n").unwrap();
+   let end = prompt.find("</workstation>").unwrap() + "</workstation>".len();
+   let prompt = format!("{}<workstation>\n- OS: darwin (kernel Darwin 27.0.0)\n- Arch: arm64\n- CPU: Apple M3 Pro (12 cores)\n- GPU: Apple M3 Pro\n</workstation>{}", &prompt[..start], &prompt[end..]);
    let normalized = prompt.lines().map(|line| if line.starts_with("Current date: ") { "Current date: <date>" } else { line }).collect::<Vec<_>>().join("\n");
    value["systemPrompt"] = normalized.into();
   }
