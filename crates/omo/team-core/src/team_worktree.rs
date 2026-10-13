@@ -148,7 +148,6 @@ fn remove_path_force(path: &Path) -> io::Result<()> {
 
 /// `removeWorktree`: delete the directory, then deregister it from git.
 pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
-    remove_path_force(worktree_path)?;
     let path_text = worktree_path.display().to_string();
     let (root_lookup, root_stdout) = run_git_in(
         &strings(&[
@@ -161,10 +160,36 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     );
     let superproject = root_stdout.trim().to_owned();
     let has_root = root_lookup.code == 0 && !superproject.is_empty();
+    let (common_dir_lookup, common_dir_stdout) = run_git_in(
+        &strings(&[
+            "-C",
+            &path_text,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ]),
+        None,
+    );
+    let common_dir = common_dir_stdout.trim();
+    let worktree_root = if common_dir_lookup.code == 0 && !has_root {
+        Path::new(common_dir).parent().map(Path::to_path_buf)
+    } else {
+        None
+    };
+    remove_path_force(worktree_path)?;
     let result = if has_root {
         run_git(&strings(&[
             "-C",
             &superproject,
+            "worktree",
+            "remove",
+            "--force",
+            &path_text,
+        ]))
+    } else if let Some(root) = &worktree_root {
+        run_git(&strings(&[
+            "-C",
+            &root.display().to_string(),
             "worktree",
             "remove",
             "--force",
@@ -187,6 +212,13 @@ pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
     }
     if has_root {
         let _prune = run_git(&strings(&["-C", &superproject, "worktree", "prune"]));
+    } else if let Some(root) = &worktree_root {
+        let _prune = run_git(&strings(&[
+            "-C",
+            &root.display().to_string(),
+            "worktree",
+            "prune",
+        ]));
     }
     Ok(())
 }
