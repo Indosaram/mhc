@@ -6,10 +6,34 @@ pub mod reference_images;
 pub mod tool;
 
 use maho_ext_api::*;
-use std::{sync::Arc,path::PathBuf};
+use std::{sync::{Arc,atomic::{AtomicBool,Ordering}},path::{Path,PathBuf}};
 pub const IMAGE_GEN_SECTION: &str = "\n## Image Generation\n\nWhen image generation tooling is present, read the gpt-image-gen skill before generating.\nUse the image generation tool currently available in this session.\n";
 pub struct ImageGen { pub skill_path: PathBuf }
-impl Default for ImageGen { fn default()->Self{Self{skill_path:PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skill/SKILL.md")}} }
+impl Default for ImageGen { fn default()->Self{Self{skill_path:default_skill_path()}} }
+
+const EMBEDDED_SKILL:&str=include_str!("../skill/SKILL.md");
+static LOGGED_MISSING_SKILL:AtomicBool=AtomicBool::new(false);
+fn default_skill_path()->PathBuf{PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("skill/SKILL.md")}
+
+/// The binary carries the skill text, so a run away from the build tree materializes it once
+/// under the temp dir (the shipped-asset path upstream's compiled bundle resolves to).
+pub fn embedded_skill_path()->Option<PathBuf>{
+    let path=std::env::temp_dir().join(format!("maho-imagegen-{}",env!("CARGO_PKG_VERSION"))).join("skill").join("SKILL.md");
+    if std::fs::read_to_string(&path).ok().as_deref()!=Some(EMBEDDED_SKILL){
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        std::fs::write(&path,EMBEDDED_SKILL).ok()?;
+    }
+    Some(path)
+}
+
+fn bundled_skill_path(skill:&Path)->Option<PathBuf>{
+    if skill.is_file(){return Some(skill.to_owned());}
+    if skill==default_skill_path().as_path() && let Some(embedded)=embedded_skill_path() && embedded.is_file(){return Some(embedded);}
+    if !LOGGED_MISSING_SKILL.swap(true,Ordering::SeqCst){
+        eprintln!("[imagegen] bundled skill not found at {}; skipping contribution",skill.display());
+    }
+    None
+}
 impl Extension for ImageGen {
     fn register(&self,api:&mut ExtensionApi){
         let mut definition=ToolDefinition::new("generate_image","Generate or edit an image with OpenAI gpt-image-2.5 (Sunburst by default, the most capable; Flare when speed matters more than quality) and save it as a png, jpeg, or webp file, optionally with a transparent background. Pass reference_image_paths to edit or reference existing images. Generate directly when the request is clear instead of asking for confirmation. Returns the saved file paths.",params::parameters(),Arc::new(|_|Box::pin(async{Err(ToolError::Message("Extension context required".into()))})));
@@ -19,7 +43,7 @@ impl Extension for ImageGen {
         api.register_tool_with_extension_context(definition,Arc::new(|id,args,signal,_,ctx|Box::pin(async move{tool::execute_image(id,&args,signal,ctx).await}))).unwrap_or_else(|error|std::panic::panic_any(error));
         let skill=self.skill_path.clone();
         api.on(EventKind::ResourcesDiscover,Arc::new(move|_,ctx|{let skill=skill.clone();Box::pin(async move{
-            if matches!(auth::resolve_context_image_gen_auth(ctx).await?,auth::ImageGenAuthResolution::Configured{..})&&skill.is_file(){
+            if matches!(auth::resolve_context_image_gen_auth(ctx).await?,auth::ImageGenAuthResolution::Configured{..})&&let Some(skill)=bundled_skill_path(&skill){
                 return Ok(EventResult::ResourcesDiscover(ResourcesDiscoverResult{skill_paths:vec![skill.to_string_lossy().into_owned().into()],..Default::default()}));
             }
             Ok(EventResult::None)
