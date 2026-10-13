@@ -92,8 +92,7 @@ pub fn omo_native_event_schemas()->serde_json::Value {
 }
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
-    let legacy=crate::index::get_senpi_telemetry_state_dir(env);
-    legacy.parent().unwrap_or(&legacy).join("omo-native")
+    crate::index::get_senpi_agent_dir(env).join("omo-senpi/omo-native")
 }
 pub fn hash_session_id(raw:&str,state_dir:&Path)->std::io::Result<String> {
     let path=state_dir.join("session-id-salt");
