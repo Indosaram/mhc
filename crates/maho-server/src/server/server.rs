@@ -296,7 +296,8 @@ impl Server {
             self.fail_protocol(&connection, error).await;
             return Ok(());
         }
-        let presentation = Arc::new(Presentation {
+        let presentation = Arc::new_cyclic(|this| Presentation {
+            this: this.clone(),
             router: self.router.clone(),
             connection: connection.clone(),
             attachment: Mutex::new(None),
@@ -497,6 +498,7 @@ pub async fn send(
     connection.send(&frame).await
 }
 struct Presentation {
+    this: std::sync::Weak<Presentation>,
     router: Arc<SessionRouter>,
     connection: Arc<dyn ByteConnection>,
     attachment: Mutex<Option<Arc<Attachment>>>,
@@ -511,6 +513,19 @@ impl Presentation {
             None => Ok(()),
         }
     }
+    /// Pinned `clearAttachment` with publish=true for router-initiated releases: forget the
+    /// attachment if it is still current, then tell the client unless it already disconnected.
+    async fn publish_detached(&self, detached: &std::sync::Weak<Attachment>) -> Result<(), ServerError> {
+        let mut current = self.attachment.lock().await;
+        if !current.as_ref().is_some_and(|attachment| Arc::as_ptr(attachment) == detached.as_ptr()) {
+            return Ok(());
+        }
+        current.take();
+        if self.connection.closed() {
+            return Ok(());
+        }
+        send(&self.connection, &json!({"type":"attachment","attachment":null}), self.max).await
+    }
 }
 impl RoutedServerPresentation for Presentation {
     fn attach_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
@@ -523,6 +538,18 @@ impl RoutedServerPresentation for Presentation {
                 return Ok(());
             }
             let attachment = self.router.attach(session_id).await?;
+            let presentation = self.this.clone();
+            let detached = Arc::downgrade(&attachment);
+            attachment.set_detach_notifier(Arc::new(move || {
+                let presentation = presentation.clone();
+                let detached = detached.clone();
+                Box::pin(async move {
+                    match presentation.upgrade() {
+                        Some(presentation) => presentation.publish_detached(&detached).await,
+                        None => Ok(()),
+                    }
+                })
+            }));
             if let Some(previous) = current.take() {
                 previous.release().await?;
             }
