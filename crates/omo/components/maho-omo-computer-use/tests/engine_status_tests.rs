@@ -18,6 +18,22 @@ use senpi_desktop_service::rpc_client::{DesktopEngineRpcError, DesktopError};
 use senpi_desktop_service::service::DesktopServiceOptions;
 use tempfile::tempdir;
 
+#[cfg(unix)]
+fn write_executable_script(path: &std::path::Path, contents: &str) {
+    use std::fs::File;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_path = path.with_extension("tmp");
+    {
+        let mut file = File::create(&temp_path).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+    }
+    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::rename(temp_path, path).unwrap();
+}
+
 #[test]
 fn test_engine_state_display() {
     assert_eq!(EngineState::NotStarted.to_string(), "not started");
@@ -78,17 +94,7 @@ cat << 'EOF'
 EOF
 "#
     );
-    fs::write(&engine_script, script_content).unwrap();
-    #[cfg(unix)]
-    {
-        let mut perms = match fs::metadata(&engine_script).map(|m| m.permissions()) {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-        use std::os::unix::fs::PermissionsExt;
-        perms.set_mode(0o755);
-        fs::set_permissions(&engine_script, perms).unwrap();
-    }
+    write_executable_script(&engine_script, &script_content);
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -126,14 +132,7 @@ sleep 30
 "#,
         marker_file.display()
     );
-    fs::write(&engine_script, script_content).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&engine_script, perms).unwrap();
-    }
+    write_executable_script(&engine_script, &script_content);
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -165,14 +164,7 @@ for i in $(seq 1 2000); do
 done
 exit 1
 "#;
-    fs::write(&engine_script, script_content).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&engine_script, perms).unwrap();
-    }
+    write_executable_script(&engine_script, &script_content);
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -200,20 +192,15 @@ async fn test_describe_engine_permissions_passive() {
     let engine_script = dir.path().join("senpi-desktop-engine");
     let script_content = format!(
         r#"#!/bin/sh
+IFS= read -r hello || exit 1
+IFS= read -r capabilities || exit 1
 cat << 'EOF'
 {{"jsonrpc":"2.0","result":{{"abi":"{ENGINE_ABI}","protocolVersion":"{PROTOCOL_VERSION}","engineVersion":"1.0.0","buildSha":"abc1234"}},"id":1}}
 {{"jsonrpc":"2.0","result":{{"backend":"test","capture":true,"input":false,"ax":true,"backgroundWindowInput":false,"deliveryModes":[],"capturePermission":"granted","inputPermission":"denied","axPermission":"granted","displayCount":1,"focusGuard":false,"stopPath":"global","screenLocked":false}},"id":2}}
 EOF
 "#
     );
-    fs::write(&engine_script, script_content).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&engine_script, perms).unwrap();
-    }
+    write_executable_script(&engine_script, &script_content);
 
     let env = BTreeMap::new();
     let opts = maho_omo_computer_use::installed_engine::DesktopEngineLocatorOptions {
