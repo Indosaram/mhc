@@ -17,11 +17,24 @@ pub struct AppServerRuntime {
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
 }
+fn node_os_type() -> &'static str {
+    match std::env::consts::OS { "macos" => "Darwin", "windows" => "Windows_NT", "linux" => "Linux", "freebsd" => "FreeBSD", "openbsd" => "OpenBSD", _ => "Unknown" }
+}
+#[cfg(unix)]
+fn node_os_release() -> String { rustix::system::uname().release().to_string_lossy().into_owned() }
+#[cfg(not(unix))]
+fn node_os_release() -> String { String::new() }
+fn node_arch() -> &'static str {
+    match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", "x86" => "ia32", other => other }
+}
+fn node_platform() -> &'static str {
+    match std::env::consts::OS { "macos" => "darwin", "windows" => "win32", other => other }
+}
 impl AppServerRuntime {
     pub async fn new(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
         let threads = Arc::new(ThreadRegistry::new(agent_dir.clone(), session_dir, factory));
         let turn_log = Arc::new(Mutex::new(TurnLog::default()));
-        let mut core = ServerCore::new(agent_dir.clone(), version.clone(), "Linux".into(), String::new(), "x64".into(), "linux".into());
+        let mut core = ServerCore::new(agent_dir.clone(), version.clone(), node_os_type().into(), node_os_release(), node_arch().into(), node_platform().into());
         super::account::register_account_methods(&mut core.registry, agent_dir.clone());
         super::config::register_config_methods(&mut core.registry, agent_dir.clone(), cwd.clone());
         super::models::register_remote_status_method(&mut core.registry,agent_dir.clone());

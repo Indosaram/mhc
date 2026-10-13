@@ -344,3 +344,15 @@ async fn daemon_exit_is_described_with_code_or_signal_and_stderr_is_appended() {
     std::fs::write(&paths.stderr_log,"\n  bind failed  \n").unwrap();
     assert_eq!(append_daemon_stderr(&paths,"message").await.unwrap(),"message\nbind failed");
 }
+
+#[tokio::test]
+async fn runtime_reports_the_host_os_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let core = runtime.core.read().await;
+    let platform = match std::env::consts::OS { "macos" => "darwin", other => other };
+    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", other => other };
+    assert_eq!(core.platform, platform);
+    assert_eq!(core.arch, arch);
+    assert!(!core.os_release.is_empty());
+}

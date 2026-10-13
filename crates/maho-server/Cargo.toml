@@ -36,7 +36,7 @@ ignore = "=0.4.33"
 tokio = { version = "=1.52.3", features = ["net", "io-util", "io-std", "signal", "sync", "rt", "macros", "time", "fs", "process"] }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["process"] }
+rustix = { version = "=1.1.4", features = ["process", "system"] }
 
 [dev-dependencies]
 tokio = { version = "=1.52.3", features = ["test-util"] }
