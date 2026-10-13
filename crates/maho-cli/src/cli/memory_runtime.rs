@@ -66,7 +66,6 @@ pub struct MemoryRuntime {
     skills: maho_omo_memory::skills_usage_wiring::SkillsUsageTrackers,
     health_notices: Mutex<BTreeSet<String>>,
     prompt: Arc<maho_omo_memory::prompt::MemoryPromptHandler>,
-    advisory_notified: Mutex<BTreeSet<String>>,
     static_options: Mutex<Option<MemoryStaticOptions>>,
 }
 
@@ -105,7 +104,7 @@ impl MemoryRuntime {
                 let runtime = maho_omo_memory::identity_runtime::MemoryIdentityRuntime {
                     identity, store: worker.store.clone(), runner: Default::default(), sandbox: Default::default(),
                 };
-                let mut launch = |run| this.launch(worker.clone(), run);
+                let mut launch = |run| this.launch(worker.clone(), run, false);
                 let aborted = || signal.as_ref().is_some_and(maho_ext_api::AbortSignal::is_aborted);
                 let mut session = maho_omo_memory::wiring_runtime::RuntimeDreamSession { session_id: session, runtime: &runtime, launch: &mut launch, aborted: &aborted };
                 maho_omo_memory::dream_trigger_fire::fire_dream(&mut session, origin, &policy, &request,
@@ -146,7 +145,7 @@ impl MemoryRuntime {
                 let identity=this.identity(session).ok_or("no bound memory session")?;
                 let worker=this.worker(&identity)?;
                 let result=worker.store.evaluate(session,event).map_err(|error|error.to_string())?.ok_or("reflection reservation rejected")?;
-                if result.status=="active"{this.launch(worker,result.run.clone())?;}
+                if result.status=="active"{this.launch(worker,result.run.clone(),true)?;}
                 Ok((result.status,result.run.run_id))
             })}),
             dream: Some(dream_sink),
@@ -210,7 +209,7 @@ impl MemoryRuntime {
         Ok(Arc::new(Self { component, wiring, host, skills, current: Mutex::new(None), contexts: Mutex::new(BTreeMap::new()), workers: Mutex::new(BTreeMap::new()),
             ledgers: Mutex::new(BTreeMap::new()), write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())), health_notices: Mutex::new(BTreeSet::new()),
-            prompt: Arc::new(Default::default()), advisory_notified: Mutex::new(BTreeSet::new()), static_options: Mutex::new(None) }))
+            prompt: Arc::new(Default::default()), static_options: Mutex::new(None) }))
     }
 
     pub fn capture_context(&self, context: &ExtensionContext) {
@@ -351,9 +350,13 @@ impl MemoryRuntime {
                 }).await.map_err(|error| error.to_string())?
             })
         });
+        let this = self.clone();
+        let initial_status = Arc::new(move |identity: &MemoryIdentityContext, context: &ExtensionContext| {
+            if let Err(error) = this.refresh_status(identity, context, StatusRefresh::Initial) { (this.host.warn)(&error); }
+        });
         MemoryExtensionOptions {
             component: self.component.clone(), wiring: self.wiring.clone(),
-            wiring_options: NativeMemoryWiringOptions { facts, reconcile,
+            wiring_options: NativeMemoryWiringOptions { facts, reconcile, initial_status,
                 now: Arc::new(|| memory_core::support::time::now_millis() as f64), warn: self.host.warn.clone() },
             static_options: self.static_options(),
         }
@@ -396,6 +399,10 @@ impl MemoryRuntime {
         let this = self.clone(); let search = Arc::new(move || match this.settings() {
             Ok(settings) => settings["tool_exposure"] == "search", Err(error) => { (this.host.warn)(&error); false }
         });
+        let tool_exposure = match self.settings() {
+            Ok(settings) => (settings["tool_exposure"] == "search").then_some(maho_ext_api::ToolExposure::Search),
+            Err(error) => { (self.host.warn)(&error); None }
+        };
         let this = self.clone(); let tools = Arc::new(move || this.active_identity());
         let this = self.clone();
         let write_notice: maho_omo_memory::tools::WriteNoticeGate = Arc::new(move || {
@@ -415,11 +422,14 @@ impl MemoryRuntime {
             Some(this.write_sessions.lock().unwrap_or_else(PoisonError::into_inner).entry(session.into()).or_insert_with(||
                 Arc::new(Mutex::new(maho_omo_memory::wiring_memory_write::MemoryWriteSession { context: identity, memory_status_attempted: false }))).clone())
         });
-        let this = self.clone(); let refresh = Arc::new(move |identity: &MemoryIdentityContext, context: &ExtensionContext| this.refresh_status(identity, context));
-        let this = self.clone(); let on_write = Arc::new(move |session: &str| {
-            let identity = this.identity(session).ok_or("no bound memory session")?;
-            let context = this.context().ok_or("no captured memory context")?;
-            this.refresh_status(&identity, &context).map(|_| ())
+        let this = self.clone(); let refresh = Arc::new(move |identity: &MemoryIdentityContext, context: &ExtensionContext| this.refresh_status(identity, context, StatusRefresh::Footer));
+        let this = self.clone(); let on_write = Arc::new(move |_: &str| {
+            // pin `wiring.ts:133` onMemoryWrite: reflectionLive.syncRpc. The listener runs inside
+            // the async ToolResult dispatch, so the wiring lock is only tried, never awaited.
+            match this.wiring.try_lock() {
+                Ok(mut wiring) => wiring.sync_rpc(memory_core::support::time::now_millis()),
+                Err(_) => Ok(()),
+            }
         });
         let this = self.clone(); let skills = Arc::new(move |_: &maho_ext_api::ToolCallEvent| this.active_identity());
         let this = self.clone(); let triggers = Arc::new(move |session: Option<&str>| {
@@ -432,7 +442,7 @@ impl MemoryRuntime {
             let worker = this.worker(&identity)?;
             let active = memory_core::reflection::ReflectionReservationStore::read_state(&worker.store).map_err(|error| error.to_string())?.active.ok_or("no active reflection reservation")?;
             if active.request != request { return Err("reflection request does not match active reservation".into()); }
-            this.launch(worker, active)
+            this.launch(worker, active, true)
         });
         MemoryStaticOptions {
             register_host: Some({let this=self.clone();Arc::new(move |api| this.register_host(api))}),
@@ -442,7 +452,7 @@ impl MemoryRuntime {
                 resolve_context: resolve.clone(), create_repo: Some(Arc::new(|identity| GitMemoryRepo::open(&identity.identity_paths.repo, &identity.identity).map_err(|error| error.to_string()))),
                 search_exposure: Some(search), resolve_nudge_turns: Some(nudge), resolve_soul_notice: Some(soul),
             }, nudge: self.nudge.clone(), resolve_context: resolve, resolve_tool_context: tools,
-            write_notice: Some(write_notice), resolve_cwd: resolve_cwd.clone(),
+            write_notice: Some(write_notice), tool_exposure, resolve_cwd: resolve_cwd.clone(),
             captured_tools: self.host.captured_tools.clone(), warn: self.host.warn.clone(), edit_notice,
             theme: Arc::new(|theme| Arc::new(MemoryEntryTheme(theme.clone()))),
             memory_write: maho_omo_memory::wiring_memory_write::MemoryWriteOptions { resolve_session: writes, on_memory_write: on_write, refresh_status: refresh },
@@ -459,26 +469,45 @@ impl MemoryRuntime {
         Ok(maho_omo_memory::trigger_wiring::ReflectionTriggerSession { conversation_id: session.into(), ledger, engine: worker.store.clone(), enabled })
     }
 
-    fn refresh_status(&self, identity: &MemoryIdentityContext, context: &ExtensionContext) -> Result<maho_omo_memory::status::MemoryStatusResult, String> {
+    fn refresh_status(&self, identity: &MemoryIdentityContext, context: &ExtensionContext, mode: StatusRefresh) -> Result<maho_omo_memory::status::MemoryStatusResult, String> {
         let settings = self.settings()?;
         let repo = GitMemoryRepo::open(&identity.identity_paths.repo, &identity.identity).map_err(|error| error.to_string())?;
-        let key=format!("{}:{}",context.session_manager.session_id(),identity.identity);
         let result=maho_omo_memory::status::refresh_memory_status(&repo, &mut StatusUi(context.ui.clone()), &maho_omo_memory::status::RefreshMemoryStatusInput {
             context: identity, compile_warn_tokens: settings["compile_warn_tokens"].as_u64().ok_or("compile_warn_tokens missing")? as usize,
-            already_notified: self.advisory_notified.lock().unwrap_or_else(PoisonError::into_inner).contains(&key), now_ms: memory_core::support::time::now_millis(), show_footer: context.has_ui,
-            check_advisory: true, session_id: Some(context.session_manager.session_id()),
+            already_notified: false, now_ms: memory_core::support::time::now_millis(),
+            show_footer: context.has_ui, check_advisory: mode == StatusRefresh::Initial, session_id: Some(context.session_manager.session_id()),
         }).map_err(|error| error.to_string())?;
-        if result.notified{self.advisory_notified.lock().unwrap_or_else(PoisonError::into_inner).insert(key);}
         Ok(result)
     }
 
-    fn launch(self: &Arc<Self>, worker: Arc<IdentityWorker>, run: ReservedRun) -> Result<(), String> {
+    /// `announce` marks the trigger/manual launch sites that fire the reflection-launched hook
+    /// (pin `wiring-runtime.ts:186`, `wiring-static.ts:162`); chained, recovery and dream launches do not.
+    fn launch(self: &Arc<Self>, worker: Arc<IdentityWorker>, run: ReservedRun, announce: bool) -> Result<(), String> {
         let this = self.clone();
         std::thread::Builder::new().name(format!("memory-{}", run.run_id)).spawn(move || {
+            if announce { this.announce_launch(&worker.identity.identity, &run); }
             let result = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())
                 .and_then(|runtime| runtime.block_on(this.run_worker(&worker, run)));
             if let Err(error) = result { (this.host.warn)(&format!("memory reflection launch failed: {error}")); }
         }).map(|_| ()).map_err(|error| error.to_string())
+    }
+
+    /// Runs on the launch thread before its runtime starts, so the blocking wiring lock is legal.
+    fn announce_launch(self: &Arc<Self>, identity: &str, run: &ReservedRun) {
+        let category = self.settings()
+            .and_then(|settings| maho_omo_memory::reflection_settings::resolve_agent_reflection_settings(Some(&settings), identity))
+            .map(|reflection| reflection["category"].as_str().unwrap_or_default().to_owned());
+        let category = match category { Ok(category) => category, Err(error) => { (self.host.warn)(&error); String::new() } };
+        let trigger = serde_json::to_value(run.request.trigger).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
+        let now = memory_core::support::time::now_millis();
+        let details = maho_omo_memory::status_active_runs::ActiveReflectionRunDetails {
+            trigger, category, model: None,
+            started_at: run.reserved_at.clone().unwrap_or_else(|| memory_core::support::time::format_rfc3339_millis(now)),
+        };
+        let start_ticker = self.wiring.blocking_lock().on_reflection_launched(identity, &run.run_id, details, now, self.host.warn.as_ref());
+        if start_ticker && let Err(error) = maho_omo_memory::wiring::spawn_footer_ticker(self.wiring.clone()) {
+            (self.host.warn)(&format!("memory footer ticker failed: {error}"));
+        }
     }
 
     async fn run_worker(self: &Arc<Self>, worker: &IdentityWorker, mut run: ReservedRun) -> Result<(), String> {
@@ -532,7 +561,7 @@ impl MemoryRuntime {
 
     async fn reconcile_worker(self: &Arc<Self>, worker: &Arc<IdentityWorker>) -> Result<(), String> {
         let identity = maho_omo_memory::identity_runtime::as_memory_identity(&worker.identity);
-        let launch = |run: &ReservedRun| if let Err(error) = self.launch(worker.clone(), run.clone()) { (self.host.warn)(&error); };
+        let launch = |run: &ReservedRun| if let Err(error) = self.launch(worker.clone(), run.clone(), false) { (self.host.warn)(&error); };
         let receipts = maho_omo_memory::receipts_port::DefaultReceiptsPort;
         let warn = |message: &str, _fields: &BTreeMap<String, String>| (self.host.warn)(message);
         let context = worker::run_finalization_types::RunFinalizationContext {
@@ -572,6 +601,10 @@ fn sandbox_policy(settings: &Value) -> Result<maho_omo_memory::sandbox::SandboxP
 }
 fn platform() -> &'static str { if cfg!(target_os = "macos") { "darwin" } else if cfg!(target_os = "windows") { "win32" } else { "linux" } }
 
+/// `Initial` is bind-time refreshInitialStatus (advisory on); `Footer` is the write-listener and
+/// completion refresh with `checkAdvisory: false` (pin `wiring-memory-write.ts`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusRefresh { Initial, Footer }
 struct StatusUi(Arc<dyn ExtensionUi>);
 impl maho_omo_memory::status::MemoryStatusUi for StatusUi {
     fn set_status(&mut self, key: &str, text: Option<&str>) { self.0.set_status(key, text); }
@@ -597,9 +630,15 @@ impl worker::completion_delivery::ReflectionLiveSession for LiveSession<'_> {
         self.context.ui.notify(message, if warning { NotificationType::Warning } else { NotificationType::Info }); Ok(())
     }
     fn warn(&mut self, message: &str, error: &str) { (self.runtime.host.warn)(&format!("{message}: {error}")); }
-    fn on_completion(&mut self, _: &str) {
-        if let Some(identity) = self.runtime.identity(self.context.session_manager.session_id()).filter(|identity| identity.identity == self.identity)
-            && let Err(error) = self.runtime.refresh_status(&identity, self.context) { (self.runtime.host.warn)(&error); }
+    fn on_completion(&mut self, run_id: &str) {
+        // pin `wiring-runtime.ts:160` onLiveCompletion -> onLiveReflectionCompleted. Delivery runs
+        // inside the worker's async runtime, so the wiring lock is taken on a helper thread.
+        let wiring = self.runtime.wiring.clone(); let warn = self.runtime.host.warn.clone();
+        let identity = self.identity.to_owned(); let run_id = run_id.to_owned();
+        let spawned = std::thread::Builder::new().name("memory-completion".into()).spawn(move || {
+            if let Err(error) = wiring.blocking_lock().on_live_reflection_completed(&identity, &run_id, memory_core::support::time::now_millis()) { warn(&error); }
+        });
+        if let Err(error) = spawned { (self.runtime.host.warn)(&error.to_string()); }
     }
 }
 impl worker::health_alert::ReflectionHealthLiveSession for LiveSession<'_> {

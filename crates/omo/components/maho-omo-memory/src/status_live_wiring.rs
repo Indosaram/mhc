@@ -36,6 +36,7 @@ impl MemoryFooterStatusLive{
         let mut probe=Probe{context,session_id,active,now_ms,repos:&mut self.repos};self.live.refresh(Some(&context.identity),ui,&mut probe);
     }
     pub fn tick(&mut self,ui:&mut dyn MemoryFooterUi){self.live.tick(ui);}
+    pub fn is_animating(&self)->bool{self.live.is_animating()}
     pub fn stop(&mut self){self.live.stop();}
     pub fn dispose(&mut self){self.live.dispose();}
 }
