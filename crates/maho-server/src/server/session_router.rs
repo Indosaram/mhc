@@ -12,6 +12,9 @@ use std::{
 };
 use tokio::sync::{Mutex, RwLock, watch};
 
+/// Pinned `SessionRouterOptions.reportError`: router diagnostics go to the server's observer.
+pub type RouterErrorReporter = Arc<dyn Fn(ServerError) + Send + Sync>;
+
 pub struct Attachment {
     pub target: Value,
     pub lease: Arc<dyn RoutedSessionAttachment>,
@@ -54,11 +57,12 @@ pub struct SessionRouter {
     close_result: tokio::sync::OnceCell<Result<(),ServerError>>,
     self_weak: std::sync::Mutex<Weak<SessionRouter>>,
     invalidations: watch::Sender<u64>,
+    report_error: RouterErrorReporter,
 }
 struct OpenSlot { receiver: watch::Receiver<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>> }
 enum Acquire { Wait(Arc<OpenSlot>), Lead(watch::Sender<Option<Result<Arc<dyn RoutedSessionHandle>, ServerError>>>, Arc<OpenSlot>) }
 impl SessionRouter {
-    pub fn new(host: Arc<dyn ServerHost>, server_id: String) -> Self {
+    pub fn new(host: Arc<dyn ServerHost>, server_id: String, report_error: RouterErrorReporter) -> Self {
         Self {
             host,
             server_id,
@@ -70,6 +74,7 @@ impl SessionRouter {
             close_result: tokio::sync::OnceCell::new(),
             self_weak: std::sync::Mutex::new(Weak::new()),
             invalidations: watch::channel(0).0,
+            report_error,
         }
     }
     pub fn bind_self(self: &Arc<Self>) {
@@ -207,9 +212,9 @@ impl SessionRouter {
         };
         if let Some(leases) = leases {
             for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
-                if let Err(release) = lease.release().await { eprintln!("{}", release.message); }
+                if let Err(release) = lease.release().await { (self.report_error)(release); }
             }
-            if let Some(error) = error { eprintln!("{}", error.message); }
+            if let Some(error) = error { (self.report_error)(error); }
         }
         self.invalidations.send_modify(|count| *count += 1);
     }
