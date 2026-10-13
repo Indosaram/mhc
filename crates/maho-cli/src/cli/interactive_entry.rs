@@ -76,6 +76,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         initial_title_prompt: initial.initial_title_prompt.clone(),
     });
     *mode.extension_ui.registered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registered_themes;
+    *mode.extension_ui.builtin_theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(PathBuf::from(crate::config::get_themes_dir()));
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
         mode.set_session_host(host);
     }
