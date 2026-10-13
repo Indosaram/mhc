@@ -248,6 +248,10 @@ pub fn host_shutdown_signals_from_env()->HostShutdownSignals{
     let policy=resolve_host_idle_policy(&env,None,None);
     HostShutdownSignals{watchdog:crate::host_watchdog::read_host_watchdog_config_from_brand_env(&env),empty_exit_ms:Some(policy.empty_exit_ms)}
 }
+/// Process cleanup the embedding binary runs on SIGTERM/SIGHUP before the host exits (senpi
+/// `registerShutdownSignals` calls `killTrackedDetachedChildren`, which lives in the CLI crate).
+static SIGNAL_CLEANUP:std::sync::OnceLock<fn()>=std::sync::OnceLock::new();
+pub fn set_host_signal_cleanup(cleanup:fn()){let _=SIGNAL_CLEANUP.set(cleanup);}
 /// Serve the shared host: stdio when no socket was named, otherwise the public Unix socket
 /// (senpi `runMultiSessionHost`).
 pub async fn run_multi_session_host(core:std::sync::Arc<HostCore>,listen:Option<String>)->std::io::Result<()>{
@@ -376,8 +380,8 @@ async fn run_socket_host(core:std::sync::Arc<HostCore>,listen:String,signals:Hos
                     core.begin_drain().await;
                 }
             },
-            _=terminate.recv()=>{signal_code=Some(143);break;},
-            _=hangup.recv()=>{signal_code=Some(129);break;},
+            _=terminate.recv()=>{if let Some(cleanup)=SIGNAL_CLEANUP.get(){cleanup();}signal_code=Some(143);break;},
+            _=hangup.recv()=>{if let Some(cleanup)=SIGNAL_CLEANUP.get(){cleanup();}signal_code=Some(129);break;},
             accepted=listener.accept()=>{
                 let(socket,_)=accepted?;
                 if draining{drop(socket);continue;}

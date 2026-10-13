@@ -169,7 +169,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(name) = &parsed.name { session.set_session_name(name); }
     indicator.stop();
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
-    let result = async { match mode {
+    let run = async { match mode {
         AppMode::Rpc => {
             // senpi main.ts:1324-1332: RPC refreshes model catalogs in the background, bounded to 15 s
             // and skipped offline; interactive mode starts its own refresh after TUI startup.
@@ -217,9 +217,27 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests).await.map(|()| 0)
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
-    } }.await;
+    } };
+    // senpi print-mode.ts:55-73 / rpc-mode.ts:150-162: SIGTERM/SIGHUP in print, json and RPC mode
+    // kill tracked detached children, run `session_shutdown` and dispose, then exit 143/129.
+    #[cfg(unix)]
+    let (result, signal_code) = if mode == AppMode::Interactive { (run.await, None) } else {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
+        let mut hangup = signal(SignalKind::hangup()).map_err(|error| error.to_string())?;
+        tokio::select! {
+            result = run => (result, None),
+            _ = terminate.recv() => (Ok(143), Some(143)),
+            _ = hangup.recv() => (Ok(129), Some(129)),
+        }
+    };
+    #[cfg(not(unix))]
+    let (result, signal_code): (Result<i32, String>, Option<i32>) = (run.await, None);
+    #[cfg(unix)]
+    { if signal_code.is_some() { crate::utils::shell::kill_tracked_detached_children(); } }
     session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
+    if let Some(code) = signal_code { std::process::exit(code); }
     let exit_code = result?;
     if exit_code != 0 { std::process::exit(exit_code); }
     Ok(())
