@@ -1438,6 +1438,8 @@ impl InteractiveMode {
             self.apply_session_name(name).await;
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim() == "/logout" { self.show_logout_selector().await; return Ok(PromptDisposition::Handled); }
+        if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.logout_provider(provider_id.trim()).await; return Ok(PromptDisposition::Handled); }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
         if self.pending_turn.is_some() {
             // A turn is already in flight: hand the submission to the session's steer/follow-up
@@ -1695,37 +1697,6 @@ impl InteractiveMode {
             let Some((provider_id, method)) = args.trim().split_once(' ') else { return Ok(true); };
             let auth_type = match method { "oauth" => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, "api_key" => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey, _ => return Ok(true) };
             if let Some(provider) = self.login_provider_options(Some(auth_type)).into_iter().find(|provider| provider.id == provider_id) { self.start_provider_login(&provider); }
-            return Ok(true);
-        }
-        if text == "/logout" {
-            // senpi `showOAuthSelector("logout")`.
-            let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
-                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
-            }).collect::<Vec<_>>();
-            if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
-            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None)));
-            return Ok(true);
-        }
-        if let Some(provider_id) = text.strip_prefix("/logout-provider ") {
-            let provider_id = provider_id.trim();
-            let Some(provider) = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().find(|provider| provider.id == provider_id) else { return Ok(true); };
-            let runtime = self.session.model_registry().model_runtime.clone();
-            let sender = self.auth_ui_sender.clone();
-            let auth_type = match provider.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey };
-            tokio::spawn(async move {
-                // senpi bounds logout with `AbortSignal.timeout(15_000)`.
-                let abort = maho_ai::utils::abort::AbortController::new();
-                let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
-                    Ok(result) => result.map_err(|error| error.to_string()),
-                    Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
-                };
-                let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
-            });
             return Ok(true);
         }
         if text == "/changelog" {
@@ -2201,6 +2172,64 @@ impl InteractiveMode {
         options
     }
 
+    /// senpi `getLogoutProviderOptions`: the stored credentials, listed under a 15 s abort.
+    async fn get_logout_provider_options(&self) -> Result<Vec<crate::components::oauth_selector::AuthSelectorProvider>, String> {
+        use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let abort = maho_ai::utils::abort::AbortController::new();
+        let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+        let credentials = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.list_credentials(Some(options))).await {
+            Ok(result) => result.map_err(|error| error.to_string())?,
+            Err(_) => { abort.abort(None); return Err("The operation was aborted due to timeout".to_owned()); }
+        };
+        let registry = self.session.model_registry();
+        let mut options = credentials.into_iter().map(|credential| {
+            let auth_type = match credential.credential_type { maho_ai::auth::types::CredentialType::OAuth => AuthSelectorAuthType::OAuth, maho_ai::auth::types::CredentialType::ApiKey => AuthSelectorAuthType::ApiKey };
+            AuthSelectorProvider {
+                name: registry.get_provider_display_name(&credential.provider_id), id: credential.provider_id, auth_type, method_name: None,
+                status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
+            }
+        }).collect::<Vec<_>>();
+        options.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(options)
+    }
+
+    /// senpi `showOAuthSelector("logout")`.
+    async fn show_logout_selector(&mut self) {
+        let options = match self.get_logout_provider_options().await {
+            Ok(options) => options,
+            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
+        };
+        if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return; }
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+        self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
+            Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
+            Box::new(move || { cancelled.borrow_mut().take(); }), None)));
+    }
+
+    /// senpi's logout selector callback: remove the chosen provider's stored credential.
+    async fn logout_provider(&mut self, provider_id: &str) {
+        let options = match self.get_logout_provider_options().await {
+            Ok(options) => options,
+            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
+        };
+        let Some(provider) = options.into_iter().find(|provider| provider.id == provider_id) else { return; };
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let sender = self.auth_ui_sender.clone();
+        let auth_type = provider.auth_type;
+        tokio::spawn(async move {
+            // senpi bounds logout with `AbortSignal.timeout(15_000)`.
+            let abort = maho_ai::utils::abort::AbortController::new();
+            let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
+            };
+            let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
+        });
+    }
+
     /// senpi `showLoginAuthTypeSelector`.
     fn show_login_auth_type_selector(&mut self, provider_options: Option<Vec<crate::components::oauth_selector::AuthSelectorProvider>>) {
         use crate::components::oauth_selector::AuthSelectorAuthType;
@@ -2339,10 +2368,15 @@ impl InteractiveMode {
                 AuthUiEvent::LogoutFinished { provider_name, auth_type, result } => {
                     let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LogoutCompleted { provider_name: provider_name.clone(), auth_type, outcome: result.clone() });
                     match result {
-                    Ok(()) => self.show_status(match auth_type {
+                    Ok(()) => {
+                        // senpi `updateAvailableProviderCount` after a successful logout.
+                        self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model| &model.provider).collect::<std::collections::BTreeSet<_>>().len());
+                        if let Some(footer) = &mut self.footer { footer.invalidate(); }
+                        self.show_status(match auth_type {
                         crate::components::oauth_selector::AuthSelectorAuthType::OAuth => format!("Logged out of {provider_name}"),
                         crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => format!("Removed stored API key for {provider_name}. Environment variables and models.json config are unchanged."),
-                    }),
+                    });
+                    }
                     Err(error) => self.show_error(&format!("Logout failed: {error}")),
                     }
                 },
