@@ -938,7 +938,26 @@ impl InteractiveMode {
         commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
         commands.extend(session.prompt_templates().into_iter().map(|template| maho_tui::autocomplete::CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
         editor.editor.cancel_autocomplete();
-        editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &session.cwd(), None))));
+        editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &session.cwd(), crate::startup_tools::startup_fd_path()))));
+    }
+
+    /// senpi interactive-mode.ts init: `ensureTool("fd")` and `ensureTool("rg")` after mounting, reporting
+    /// managed-tool status in the chat, then handing the fd path to autocomplete.
+    pub async fn ensure_managed_tools(&mut self) {
+        use maho_tools::managed_tools::{ensure_tool_with_status, ManagedTool, ManagedToolStatus};
+        let statuses = Arc::new(std::sync::Mutex::new(Vec::<ManagedToolStatus>::new()));
+        let sink = statuses.clone();
+        let on_status: maho_tools::managed_tools::ManagedToolStatusCallback = Arc::new(move |status| { if let Ok(mut statuses) = sink.lock() { statuses.push(status); } });
+        let (fd_path, _) = tokio::join!(ensure_tool_with_status(ManagedTool::Fd, Some(on_status.clone())), ensure_tool_with_status(ManagedTool::Rg, Some(on_status)));
+        let statuses = statuses.lock().map(|mut statuses| std::mem::take(&mut *statuses)).unwrap_or_default();
+        if !statuses.is_empty() { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); }
+        for status in statuses {
+            let text = if status.warning { self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {}", status.message)) }
+                else { self.theme.fg(crate::theme::ThemeColor::Dim, &status.message) };
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+        }
+        crate::startup_tools::record_startup_fd_path(fd_path);
+        Self::setup_autocomplete(&self.session, &mut self.editor);
     }
 
     pub fn rebuild_history(&mut self) {
@@ -2529,7 +2548,7 @@ impl InteractiveMode {
             UiRequest::Autocomplete(factory) => {
                 let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| maho_tui::autocomplete::CommandSpec::command(command.name)).collect();
                 commands.push(maho_tui::autocomplete::CommandSpec::command("answer"));
-                let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.host_cwd(), None)));
+                let provider = factory(Box::new(maho_tui::autocomplete::CombinedAutocompleteProvider::new(commands, &self.host_cwd(), crate::startup_tools::startup_fd_path())));
                 maho_tui::editor_component::EditorComponent::set_autocomplete_provider(&mut self.editor, provider);
             }
             UiRequest::EditorFactory(factory) => {

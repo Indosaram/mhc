@@ -3,7 +3,10 @@ use tokio::io::AsyncWriteExt;
 use crate::{definition::AbortSignal, grep::engine::GrepEngineError};
 pub async fn run(args: &[String], cwd: &Path, input: Option<Vec<u8>>, deadline: Instant, signal: &AbortSignal) -> Result<Vec<u8>, GrepEngineError> {
     if signal.is_aborted() { return Err(GrepEngineError::Aborted); }
-    let mut command = tokio::process::Command::new("rg");
+    let executable = crate::managed_tools::ensure_tool(crate::managed_tools::ManagedTool::Rg).await
+        .ok_or_else(|| GrepEngineError::EngineUnavailable("ripgrep is unavailable and could not be downloaded".into()))?;
+    if signal.is_aborted() { return Err(GrepEngineError::Aborted); }
+    let mut command = tokio::process::Command::new(executable);
     command.args(args).current_dir(cwd).kill_on_drop(true).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|e| GrepEngineError::EngineUnavailable(format!("Failed to run ripgrep: {e}")))?;
     let stdin = child.stdin.take();
