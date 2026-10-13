@@ -161,9 +161,37 @@ fn install_eval(api:&mut ExtensionApi,host:&Arc<Mutex<ExtensionApi>>,state:&Arc<
     let prompt_active=api.get_active_tools().unwrap_or_default();
     let prompt_tools=api.get_all_tools().unwrap_or_default().into_iter().map(|tool|bridges::schema_bridge::EvalSchemaToolInfo {name:tool.name,description:Some(tool.description),parameters:Some(tool.parameters),kernel_prelude:tool.kernel_prelude}).collect::<Vec<_>>();
     let prompt_preludes=extension::kernel_preludes::active_kernel_preludes(&prompt_active,&prompt_tools);
-    let prompt=prompt::eval_prompt::EvalPromptOptions {model_id:state.model_id.clone(),spawns:runtime.as_ref().is_some_and(|runtime|runtime.spawns),monitor:runtime.is_some() && api.get_all_tools()?.iter().any(|tool|tool.name=="monitor"),spawn_default_agent:Some(settings.task_tools.task.clone()),js_runtime:Some(options.js_runtime.clone()),kernel_preludes:prompt_preludes,..Default::default()};
+    let prompt=prompt::eval_prompt::EvalPromptOptions {model_id:state.model_id.clone(),spawns:runtime.as_ref().is_some_and(|runtime|runtime.spawns),monitor:runtime.is_some() && monitor_is_registered(api),spawn_default_agent:Some(settings.task_tools.task.clone()),host_line:Some(host_line(&options.js_runtime)),js_runtime:Some(options.js_runtime.clone()),bun_skill_path:active_bun_skill_path(&options.js_runtime),kernel_preludes:prompt_preludes,..Default::default()};
     let definition=tool::eval_tool::create_eval_tool(Arc::new(CreateEvalToolOptions {kernel_manager:proxy.clone(),executor,list_tools:Some(catalog),complete:Some(completion),settings,artifacts_dir:runtime.as_ref().map(|runtime|runtime.artifacts_dir.clone()),image_sdk:options.image_sdk.clone(),cell_manager:cells,on_cell_settled:Some(on_settled),prompt,runtimes:runtime.as_ref().map_or_else(HashMap::new,|runtime|runtime.runtimes.iter().cloned().collect()),mode:state.context.as_ref().map_or("print",|context|if matches!(context.mode,maho_ext_api::ExtensionMode::Print|maho_ext_api::ExtensionMode::Json) {"print"} else {"interactive"}).into(),active_kernel_preludes:Some(active_preludes_fn),eval_handle_host:api.runtime.eval_handle_host()?,owner_session_id:state.context.as_ref().map(|context|context.session_manager.session_id().to_owned()),completion_handles:state.completion_handles.clone()})).map_err(ExtensionFailure::new)?;
     api.register_tool_with_renderers(definition,tool::render::eval_tool_renderers())
+}
+
+/// Whether the session registry holds `monitor`; false when the runtime cannot be read yet.
+fn monitor_is_registered(api:&ExtensionApi) -> bool {
+    api.get_all_tools().map(|tools|tools.iter().any(|tool|tool.name=="monitor")).unwrap_or(false)
+}
+
+fn active_bun_skill_path(js_runtime:&tool::types::EvalRuntimeInfo) -> Option<String> {
+    let version=(js_runtime.name=="bun").then_some(js_runtime.version.as_str());
+    let executable=std::env::current_exe().ok()?;
+    extension::skill_contribution::active_bun_skill_path(version,&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),&executable).map(|path|path.to_string_lossy().into_owned())
+}
+
+fn host_line(js_runtime:&tool::types::EvalRuntimeInfo) -> String {
+    let platform=match std::env::consts::OS {"macos"=>"darwin","windows"=>"win32",other=>other};
+    let arch=match std::env::consts::ARCH {"x86_64"=>"x64","aarch64"=>"arm64","x86"=>"ia32",other=>other};
+    let cores=std::thread::available_parallelism().map_or(1,std::num::NonZeroUsize::get);
+    [Some(format!("{platform} {arch}")),cpu_model(),Some(format!("{cores} cores")),Some(format!("{} {}",js_runtime.name,js_runtime.version))]
+        .into_iter().flatten().filter(|part|!part.trim().is_empty()).collect::<Vec<_>>().join(" \u{00b7} ")
+}
+
+fn cpu_model() -> Option<String> {
+    if cfg!(target_os="macos") {
+        let output=std::process::Command::new("sysctl").args(["-n","machdep.cpu.brand_string"]).output().ok().filter(|output|output.status.success())?;
+        return Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()).filter(|model|!model.is_empty());
+    }
+    let cpuinfo=std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    cpuinfo.lines().find_map(|line|line.split_once(':').filter(|(key,_)|matches!(key.trim(),"model name"|"Hardware"|"Processor")).map(|(_,value)|value.trim().to_owned())).filter(|model|!model.is_empty())
 }
 
 async fn complete_with_signal(complete:&ContextCompletion,request:completion::handler::CompletionRequest,mut context:ExtensionContext,signal:maho_ai::utils::abort::AbortSignal) -> Result<serde_json::Value,completion::handler::CompletionError> {
@@ -187,6 +215,18 @@ async fn await_completion(operation:impl std::future::Future<Output=Result<serde
     tokio::select! {
         result=&mut operation=>{guard.0.take();result},
         ()=signal.cancelled()=>Err(completion::handler::CompletionError("completion() request aborted.".into()))
+    }
+}
+
+#[cfg(test)]
+mod host_line_tests {
+    use super::*;
+
+    #[test]
+    fn host_line_names_platform_cores_and_js_runtime() {
+        let line=host_line(&tool::types::EvalRuntimeInfo {name:"bun".into(),version:"1.4.0".into(),path:None});
+        assert!(line.contains(" cores"),"{line}");
+        assert!(line.ends_with(" \u{00b7} bun 1.4.0"),"{line}");
     }
 }
 
