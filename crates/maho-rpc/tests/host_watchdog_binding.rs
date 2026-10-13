@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! senpi host-watchdog.ts / multi-session-host.ts lifetime bindings, ported at the behaviour level.
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};

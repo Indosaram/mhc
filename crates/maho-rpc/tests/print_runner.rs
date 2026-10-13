@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_core::{model_runtime::{CreateModelRuntimeOptions,ModelRuntime},sdk::{create_agent_session,CreateAgentSessionOptions,NoToolsMode},session_manager::SessionManager,settings_manager::{SettingsManager,InMemorySettingsStorage}};
 use maho_ai::providers::faux::{faux_provider,faux_assistant_message,FauxAssistantMessageOptions};
 #[tokio::test]

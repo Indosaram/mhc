@@ -76,7 +76,7 @@ pub fn apply_keybindings_file_edit(path: &Path, keybindings: &mut KeybindingsMan
     KeybindingsEditResult::Reloaded
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
