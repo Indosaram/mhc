@@ -1373,10 +1373,32 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/reload" {
-            if self.host_reload().await? {
-                let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
-                self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
+            // senpi `handleReloadCommand`: never reload under a live response or compaction.
+            if self.host_is_streaming() { self.show_warning("Wait for the current response to finish before reloading."); return Ok(PromptDisposition::Handled); }
+            if self.host_is_compacting() { self.show_warning("Wait for compaction to finish before reloading."); return Ok(PromptDisposition::Handled); }
+            // Pre-check the extension veto so a blocked reload warns before anything is torn down;
+            // `reload` re-checks internally. A mounted host answers the veto inside its own reload.
+            if self.session_host.is_none() {
+                match self.session.check_reload_veto().await {
+                    Ok(true) => { self.show_warning("Reload blocked by an extension."); return Ok(PromptDisposition::Handled); }
+                    Ok(false) => {}
+                    Err(error) => { self.show_error(&format!("Reload failed: {error}")); return Ok(PromptDisposition::Handled); }
+                }
+            }
+            match self.host_reload().await {
+                Ok(true) => {
+                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+                    self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
+                    self.rebuild_history();
+                    // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
+                    self.editor.set_keybindings(Arc::new(self.keybindings()));
+                    if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
+                    Self::setup_autocomplete(&self.session, &mut self.editor); self.refresh_tool_renderer_snapshots().await;
+                    if let Some(error) = self.session.model_registry().get_error() { self.show_error(&format!("models.json error: {error}")); }
+                    self.show_status("Reloaded keybindings, extensions, skills, prompts, themes, and context files".into());
+                }
+                Ok(false) => self.show_warning("Reload blocked by an extension."),
+                Err(error) => self.show_error(&format!("Reload failed: {error}")),
             }
             return Ok(PromptDisposition::Handled);
         }
