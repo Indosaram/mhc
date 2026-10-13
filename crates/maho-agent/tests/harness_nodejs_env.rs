@@ -89,6 +89,7 @@ async fn expands_home_relative_paths_and_file_urls() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn returns_file_info_for_files_directories_and_symlinks_without_following_symlinks() {
     let dir = unique_dir("info");
     let env = env_for(&dir);
@@ -114,6 +115,7 @@ async fn returns_file_info_for_files_directories_and_symlinks_without_following_
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn lists_symlinks_as_symlinks() {
     let dir = unique_dir("listsym");
     let env = env_for(&dir);

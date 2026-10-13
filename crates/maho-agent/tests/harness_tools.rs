@@ -324,6 +324,7 @@ async fn rejects_missing_and_duplicate_targets() {
     }
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn serializes_canonical_and_symlink_edits() {
     let f = Fixture::new();
     f.put("target.txt", "alpha\nbeta\ngamma\n");
@@ -343,6 +344,7 @@ async fn serializes_canonical_and_symlink_edits() {
     assert_eq!(f.get("target.txt"), "ALPHA\nBETA\ngamma\n");
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn edits_regular_files_through_symlinks() {
     let f = Fixture::new();
     f.put("target.txt", "before\n");
@@ -715,7 +717,10 @@ async fn resolves_at_prefix_and_unicode_spaces() {
     );
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn resolves_decomposed_read_filename() {
+    use std::os::unix::fs::MetadataExt;
+
     let f = Fixture::new();
     f.put("e\u{301}.txt", "x");
     let created = std::fs::metadata(f.dir.join("e\u{301}.txt")).expect("tool test operation must succeed");
@@ -723,7 +728,6 @@ async fn resolves_decomposed_read_filename() {
         .await
         .expect("tool test operation must succeed");
     let resolved = std::fs::metadata(resolved).expect("tool test operation must succeed");
-    use std::os::unix::fs::MetadataExt;
     assert_eq!((created.dev(), created.ino()), (resolved.dev(), resolved.ino()));
 }
 #[tokio::test]
