@@ -427,7 +427,8 @@ impl InteractiveMode {
             prompts: self.session.prompt_templates().into_iter().map(|template| LoadedPrompt { name: template.name, file_path: template.file_path, source_info: Some(template.source_info) }).collect(),
             prompt_diagnostics: Vec::new(),
             extensions: self.loaded_extensions.clone(),
-            extension_diagnostics: Vec::new(),
+            // senpi: extension issues include built-in command conflicts.
+            extension_diagnostics: get_built_in_command_conflict_diagnostics(&self.session.extension_registered_commands()),
             themes,
             theme_diagnostics: Vec::new(),
         };
@@ -1000,16 +1001,49 @@ impl InteractiveMode {
         }).collect();
     }
 
-    fn create_base_autocomplete_provider(session: &AgentSession, cwd: &str, fd_path: Option<String>) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
-        use maho_tui::autocomplete::CommandSpec;
-        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
-        commands.push(CommandSpec::command("answer"));
+    fn create_base_autocomplete_provider(session: &Arc<AgentSession>, cwd: &str, fd_path: Option<String>) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
+        use maho_tui::autocomplete::{ArgumentCompletions, AutocompleteItem, CommandSpec};
+        use maho_tui::fuzzy::fuzzy_filter;
+        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| {
+            // senpi: `/model` completes scoped (else available) models, `/login` provider options.
+            let get_argument_completions: Option<ArgumentCompletions> = match command.name {
+                "model" => {
+                    let session = Arc::clone(session);
+                    Some(Rc::new(move |prefix: &str| {
+                        let scoped = session.scoped_models();
+                        let models: Vec<_> = if scoped.is_empty() { session.model_registry().get_available() } else { scoped.into_iter().map(|entry| entry.model).collect() };
+                        if models.is_empty() { return None; }
+                        let items: Vec<_> = models.into_iter().map(|model| crate::model_search::ModelSearchItem { id: model.id, provider: model.provider, name: Some(model.name) }).collect();
+                        let filtered = fuzzy_filter(&items, prefix, crate::model_search::get_model_search_text);
+                        if filtered.is_empty() { return None; }
+                        Some(filtered.into_iter().map(|item| AutocompleteItem { value: format!("{}/{}", item.provider, item.id), label: item.id, description: Some(item.provider) }).collect())
+                    }) as ArgumentCompletions)
+                }
+                "login" => {
+                    let session = Arc::clone(session);
+                    Some(Rc::new(move |prefix: &str| {
+                        let providers = get_login_provider_completion_options(&Self::login_provider_options_for(&session, None));
+                        let filtered = fuzzy_filter(&providers, prefix, get_login_provider_search_text);
+                        if filtered.is_empty() { return None; }
+                        Some(filtered.iter().map(|provider| AutocompleteItem { value: provider.id.clone(), label: provider.id.clone(), description: Some(format_login_provider_completion_description(provider)) }).collect())
+                    }) as ArgumentCompletions)
+                }
+                _ => None,
+            };
+            CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions }
+        }).collect();
         let builtin_command_names: std::collections::BTreeSet<String> = commands.iter().map(|command| command.name().to_owned()).collect();
         commands.extend(session.prompt_templates().into_iter().map(|template| CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
-        // senpi: registered extension commands (by invocation name) that do not shadow a built-in,
-        // then `skill:<name>` entries when `enableSkillCommands` is on.
-        let (extension_commands, _, skills) = session.command_groups();
-        commands.extend(extension_commands.into_iter().filter(|command| !builtin_command_names.contains(&command.name)).map(|command| CommandSpec::Command { name:command.name, description:command.description, argument_hint:None, get_argument_completions:None }));
+        // senpi: the runner's registered extension commands whose name does not shadow a built-in,
+        // by invocation name with their argument completions, then `skill:<name>` entries when
+        // `enableSkillCommands` is on.
+        commands.extend(session.extension_registered_commands().into_iter().filter(|command| !builtin_command_names.contains(&command.command.name)).map(|command| {
+            let completion_session = Arc::clone(session);
+            let invocation_name = command.invocation_name.clone();
+            let get_argument_completions: ArgumentCompletions = Rc::new(move |prefix: &str| completion_session.extension_command_argument_completions(&invocation_name, prefix));
+            CommandSpec::Command { name:command.invocation_name, description:command.command.description, argument_hint:None, get_argument_completions:Some(get_argument_completions) }
+        }));
+        let (_, _, skills) = session.command_groups();
         if session.with_settings_manager(|settings| settings.get_bool("enableSkillCommands").unwrap_or(true)) {
             commands.extend(skills.into_iter().map(|skill| CommandSpec::Command { name:format!("skill:{}", skill.name), description:skill.description, argument_hint:None, get_argument_completions:None }));
         }
@@ -2309,8 +2343,12 @@ impl InteractiveMode {
 
     /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
     fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
+        Self::login_provider_options_for(&self.session, auth_type)
+    }
+
+    fn login_provider_options_for(session: &AgentSession, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
         use crate::components::oauth_selector::AuthSelectorAuthType;
-        let registry = self.session.model_registry();
+        let registry = session.model_registry();
         let mut options = maho_core::auth_providers::build_login_provider_infos(registry, None).into_iter().filter_map(|info| {
             let kind = match info.auth_type { maho_core::auth_storage::CredentialKind::Oauth => AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => AuthSelectorAuthType::ApiKey };
             if auth_type.is_some_and(|wanted| wanted != kind) { return None; }
@@ -3261,6 +3299,66 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
     }
 }
 
+/// senpi `LoginProviderCompletionOption`: one row per provider with every auth type it supports.
+#[derive(Clone)]
+struct LoginProviderCompletionOption {
+    id: String,
+    name: String,
+    auth_types: Vec<crate::components::oauth_selector::AuthSelectorAuthType>,
+}
+
+/// senpi `AUTH_TYPE_ORDER`.
+fn auth_type_order(auth_type: crate::components::oauth_selector::AuthSelectorAuthType) -> u8 {
+    match auth_type { crate::components::oauth_selector::AuthSelectorAuthType::OAuth => 0, crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => 1 }
+}
+
+/// senpi `getLoginProviderCompletionOptions`.
+fn get_login_provider_completion_options(provider_options: &[crate::components::oauth_selector::AuthSelectorProvider]) -> Vec<LoginProviderCompletionOption> {
+    let mut by_id: Vec<LoginProviderCompletionOption> = Vec::new();
+    for provider in provider_options {
+        if let Some(existing) = by_id.iter_mut().find(|existing| existing.id == provider.id) {
+            if !existing.auth_types.contains(&provider.auth_type) {
+                existing.auth_types.push(provider.auth_type);
+                existing.auth_types.sort_by_key(|auth_type| auth_type_order(*auth_type));
+            }
+            continue;
+        }
+        by_id.push(LoginProviderCompletionOption { id: provider.id.clone(), name: provider.name.clone(), auth_types: vec![provider.auth_type] });
+    }
+    by_id.sort_by(|left, right| left.name.cmp(&right.name));
+    by_id
+}
+
+/// senpi `getLoginProviderSearchText`.
+fn get_login_provider_search_text(provider: &LoginProviderCompletionOption) -> String {
+    let auth_types = provider.auth_types.iter().map(|auth_type| {
+        let id = match auth_type { crate::components::oauth_selector::AuthSelectorAuthType::OAuth => "oauth", crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => "api_key" };
+        format!("{id} {}", crate::components::oauth_selector::format_auth_selector_provider_type(*auth_type))
+    }).collect::<Vec<_>>().join(" ");
+    format!("{} {} {auth_types}", provider.id, provider.name)
+}
+
+/// senpi `formatLoginProviderCompletionDescription`.
+fn format_login_provider_completion_description(provider: &LoginProviderCompletionOption) -> String {
+    let auth_types = provider.auth_types.iter().map(|auth_type| crate::components::oauth_selector::format_auth_selector_provider_type(*auth_type)).collect::<Vec<_>>().join("/");
+    if provider.name == provider.id { auth_types } else { format!("{} \u{b7} {auth_types}", provider.name) }
+}
+
+/// senpi `getBuiltInCommandConflictDiagnostics`: extension commands named like a built-in.
+fn get_built_in_command_conflict_diagnostics(commands: &[maho_ext_api::ResolvedCommand]) -> Vec<maho_core::diagnostics::ResourceDiagnostic> {
+    let builtin_names: std::collections::BTreeSet<&str> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| command.name).collect();
+    commands.iter().filter(|command| builtin_names.contains(command.command.name.as_str())).map(|command| maho_core::diagnostics::ResourceDiagnostic {
+        diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Warning,
+        message: if command.invocation_name == command.command.name {
+            format!("Extension command '/{}' conflicts with built-in interactive command. Skipping in autocomplete.", command.command.name)
+        } else {
+            format!("Extension command '/{}' conflicts with built-in interactive command. Available as '/{}'.", command.command.name, command.invocation_name)
+        },
+        path: Some(command.command.source_info.path.clone()),
+        collision: None,
+    }).collect()
+}
+
 pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {
     let args = text.strip_prefix(command)?.strip_prefix(' ')?.trim_start();
     let first = args.chars().next()?;
@@ -3493,6 +3591,30 @@ mod tests {
         let data = format_debug_log("t", 10, 10, &["\u{1b}[31mred\u{1b}[0m".into()], &[]);
         assert!(data.contains("(w=3)"));
         assert!(data.contains("\\u001b[31mred"));
+    }
+
+    #[test]
+    fn login_completion_options_merge_auth_types_per_provider_sorted_by_name() {
+        use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
+        let row = |id: &str, name: &str, auth_type| AuthSelectorProvider { id: id.into(), name: name.into(), auth_type, method_name: None, status: None };
+        let options = get_login_provider_completion_options(&[row("zed", "Zed", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::OAuth)]);
+        assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["anthropic", "zed"]);
+        assert_eq!(format_login_provider_completion_description(&options[0]), "Anthropic \u{b7} subscription/API key");
+        assert_eq!(get_login_provider_search_text(&options[1]), "zed Zed api_key API key");
+    }
+
+    #[test]
+    fn built_in_command_conflicts_name_the_skip_or_the_renamed_invocation() {
+        let command = |name: &str, invocation: &str| maho_ext_api::ResolvedCommand {
+            command: maho_ext_api::RegisteredCommand { name: name.into(), source_info: maho_ext_api::SourceInfo { path: "/ext/a".into(), ..Default::default() }, description: None, argument_hint: None, handler: Arc::new(|_, _| Box::pin(async { Ok(()) })) },
+            invocation_name: invocation.into(),
+        };
+        let diagnostics = get_built_in_command_conflict_diagnostics(&[command("model", "model"), command("model", "model:2"), command("custom", "custom")]);
+        assert_eq!(diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>(), [
+            "Extension command '/model' conflicts with built-in interactive command. Skipping in autocomplete.",
+            "Extension command '/model' conflicts with built-in interactive command. Available as '/model:2'.",
+        ]);
+        assert_eq!(diagnostics[0].path.as_deref(), Some("/ext/a"));
     }
 
     #[test]

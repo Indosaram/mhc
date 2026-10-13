@@ -461,6 +461,8 @@ struct AgentSessionState {
     prompt_templates: Vec<crate::prompt_templates::PromptTemplate>,
     extension_commands: Vec<maho_ext_api::SlashCommandInfo>,
     extension_command_catalog: Option<Arc<dyn Fn() -> Vec<maho_ext_api::SlashCommandInfo> + Send + Sync>>,
+    /// The bound runner for synchronous UI lookups (senpi's `session.extensionRunner` getter).
+    extension_runner_snapshot: Option<ExtensionRunner>,
     extension_event_sender: Option<tokio::sync::mpsc::UnboundedSender<maho_ext_api::ExtensionEvent>>,
     extension_events: Option<maho_ext_api::EventBus>,
     /// Latest MCP wire-status snapshot published for this session (pinned
@@ -1652,6 +1654,7 @@ impl AgentSession {
             prompt_templates: Vec::new(),
             extension_commands: Vec::new(),
             extension_command_catalog: None,
+            extension_runner_snapshot: None,
             extension_event_sender: None,
             extension_events: None,
             mcp_wire_status: None,
@@ -5039,6 +5042,40 @@ impl AgentSession {
         }
     }
 
+    /// senpi `session.extensionRunner.getRegisteredCommands()`, read synchronously for the UI.
+    pub fn extension_registered_commands(&self) -> Vec<maho_ext_api::ResolvedCommand> {
+        self.extension_runner_snapshot().map(|runner| runner.get_registered_commands()).unwrap_or_default()
+    }
+
+    /// senpi `command.getArgumentCompletions(prefix)` for an extension command, by invocation name.
+    /// The autocomplete provider is synchronous here, so the completion future is polled once:
+    /// registered completions resolve immediately; one still pending yields no suggestions.
+    pub fn extension_command_argument_completions(&self, name: &str, prefix: &str) -> Option<Vec<maho_ext_api::AutocompleteItem>> {
+        let runner = self.extension_runner_snapshot()?;
+        let future = runner.get_command_argument_completions(name, prefix);
+        let mut future = std::pin::pin!(future);
+        match std::future::Future::poll(future.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            std::task::Poll::Ready(Ok(items)) => items,
+            std::task::Poll::Ready(Err(_)) | std::task::Poll::Pending => None,
+        }
+    }
+
+    /// senpi `session.extensionRunner.getMessageRenderer(customType)`.
+    pub fn extension_message_renderer(&self, custom_type: &str) -> Option<maho_ext_api::MessageRenderer> {
+        self.extension_runner_snapshot()?.get_message_renderer(custom_type)
+    }
+
+    /// senpi `getEntryRenderer(customType)` with its `getEntryRendererOptions(customType)`.
+    pub fn extension_entry_renderer(&self, custom_type: &str) -> Option<(maho_ext_api::EntryRenderer, Option<maho_ext_api::EntryRendererOptions>)> {
+        self.extension_runner_snapshot()?.get_entry_renderer_owned(custom_type)
+    }
+
+    /// senpi's synchronous `session.extensionRunner` getter: the bound runner (its registrations are
+    /// read live through the shared runtime), for UI paths that cannot await the runner lock.
+    fn extension_runner_snapshot(&self) -> Option<ExtensionRunner> {
+        self.state().extension_runner_snapshot.clone()
+    }
+
     /// The extension runner currently bound to the session, if any.
     pub async fn extension_runner_bound(&self) -> bool {
         self.extension_runner.lock().await.is_some()
@@ -5194,6 +5231,7 @@ impl AgentSession {
             name: command.invocation_name, description: command.command.description,
             argument_hint: command.command.argument_hint, source_info: Some(command.command.source_info),
         }).collect()));
+        self.state().extension_runner_snapshot = Some(runner.clone());
         self.state().extension_bound_ui = None;
         *self.extension_runner.lock().await = Some(runner);
         self.apply_extension_bindings().await;
