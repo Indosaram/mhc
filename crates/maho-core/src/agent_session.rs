@@ -724,25 +724,31 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
 
 struct AbortSignalBridge(tokio::task::JoinHandle<()>);
 
+/// Two-way link between the compaction controller and the extension feedback signal (pinned
+/// `_beginExtensionCompactionFeedback` hands the extension the controller's own signal). The
+/// controller side is a synchronous abort listener; the extension signal is a watch flag with no
+/// listener API, so its abort is forwarded by a task that the bridge cancels on drop.
 struct CompactionSignalBridge {
     controller_signal: maho_ai::utils::abort::AbortSignal,
-    extension_signal: maho_ext_api::AbortSignal,
     controller_listener: maho_ai::utils::abort::ListenerId,
-    extension_listener: maho_ai::utils::abort::ListenerId,
+    extension_forward: Option<AbortSignalBridge>,
 }
 impl CompactionSignalBridge {
     fn new(controller: crate::compaction::lifecycle::CompactionAbortController, signal: maho_ext_api::AbortSignal) -> Self {
         let controller_signal = controller.signal();
         let extension_abort = signal.clone();
         let controller_listener = controller_signal.add_abort_listener(move |_| extension_abort.abort());
-        let extension_listener = signal.add_abort_listener(move |_| controller.abort());
-        Self { controller_signal, extension_signal: signal, controller_listener, extension_listener }
+        let extension_forward = tokio::runtime::Handle::try_current().ok().map(|runtime| AbortSignalBridge(runtime.spawn(async move {
+            signal.cancelled().await;
+            controller.abort();
+        })));
+        Self { controller_signal, controller_listener, extension_forward }
     }
 }
 impl Drop for CompactionSignalBridge {
     fn drop(&mut self) {
         self.controller_signal.remove_abort_listener(self.controller_listener);
-        self.extension_signal.remove_abort_listener(self.extension_listener);
+        self.extension_forward.take();
     }
 }
 
@@ -9782,7 +9788,7 @@ mod tests {
     #[tokio::test]
     async fn begin_compaction_bridges_the_controller_abort_to_the_extension_signal() {
         let session = retry_session(Vec::new(), 0);
-        let signal = session.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
+        let signal = session.extension_context_actions().begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
             .expect("feedback signal");
         let controller = session.state().compaction_abort_controller.clone().expect("controller");
         controller.abort();
@@ -9794,7 +9800,7 @@ mod tests {
     #[tokio::test]
     async fn an_extension_abort_reaches_the_compaction_controller() {
         let session = retry_session(Vec::new(), 0);
-        let signal = session.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
+        let signal = session.extension_context_actions().begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
             .expect("feedback signal");
         let controller = session.state().compaction_abort_controller.clone().expect("controller");
         signal.abort();
