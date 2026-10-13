@@ -972,6 +972,15 @@ impl SessionManager {
         entry
     }
 
+    /// Append a durable Responses configuration update as child of current leaf.
+    pub fn append_configuration_update(&mut self, effort: &str) -> Value {
+        let mut entry = self.base_entry("configuration_update");
+        entry.insert("reasoning".to_owned(), json!({ "effort": effort }));
+        let entry = Value::Object(entry);
+        self.append_entry(entry.clone());
+        entry
+    }
+
     pub fn append_model_change(&mut self, provider: &str, model_id: &str, reason: Option<&str>, original: Option<(&str, &str)>) -> Value {
         let mut entry = self.base_entry("model_change");
         entry.insert("provider".to_owned(), Value::from(provider));

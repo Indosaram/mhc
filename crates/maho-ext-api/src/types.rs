@@ -1130,7 +1130,7 @@ pub enum ExtensionEvent {
     ToolExecutionUpdate { tool_call_id: String, tool_name: String, args: JsonValue, partial_result: JsonValue },
     ToolExecutionEnd { tool_call_id: String, tool_name: String, result: JsonValue, is_error: bool },
     ModelSelect(ModelSelectEvent), SystemPromptChange { system_prompt: String, previous_system_prompt: String, system_prompt_name: Option<String>, model: Model, previous_model: Option<Model> },
-    ThinkingLevelSelect { level: ThinkingLevel, previous_level: ThinkingLevel }, ToolCall(ToolCallEvent), ToolResult(ToolResultEvent),
+    ThinkingLevelSelect { level: ModelThinkingLevel, previous_level: ModelThinkingLevel }, ToolCall(ToolCallEvent), ToolResult(ToolResultEvent),
     UserBash { command: String, exclude_from_context: bool, cwd: PathBuf }, Input(InputEvent), InputDisposition { input_id: String, disposition: InputDisposition },
 }
 impl ExtensionEvent {
@@ -2211,7 +2211,7 @@ pub enum AgentSessionEvent {
     CompactionStart { reason: CompactionReason, request_id: Option<String> }, CompactionProgress { reason: CompactionReason, delta: Option<String>, text: Option<String> },
     EntryAppended { entry: SessionEntry }, SessionInfoChanged { name: Option<String> }, ToolHookStatus(ToolHookLifecycleEvent),
     SystemPromptChange { system_prompt: String, previous_system_prompt: String, system_prompt_name: Option<String>, model: Model, previous_model: Option<Model> },
-    ThinkingLevelChanged { level: ThinkingLevel }, HighReasoningWarning { model_id: String, provider: String, thinking_level: ThinkingLevel },
+    ThinkingLevelChanged { level: ThinkingLevel, thinking_selection: Option<maho_ai::types::ThinkingSelection> }, HighReasoningWarning { model_id: String, provider: String, thinking_level: ThinkingLevel },
     SettingsSourceSelected { selection: JsonValue }, ModelChanged { model: Model, thinking_level: ThinkingLevel, source: ModelSelectSource },
     ModelChangeRejected { model: Model, reason: String, detail: String, budget: Option<ModelBudget> },
     ModelChangeSkipped { model: Model, budget: ModelBudget, direction: String }, ModelChangePending { model: Model, budget: ModelBudget, notice: String },
