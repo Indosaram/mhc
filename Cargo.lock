@@ -4788,6 +4788,7 @@ version = "0.0.0"
 dependencies = [
  "chrono",
  "futures",
+ "getrandom 0.4.2",
  "indexmap",
  "maho-ai",
  "maho-core",

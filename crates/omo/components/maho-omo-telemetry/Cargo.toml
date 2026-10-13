@@ -22,6 +22,7 @@ chrono = { workspace = true, features = ["clock", "std"] }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures.workspace = true
 sha2.workspace = true
+getrandom = "=0.4.2"
 
 [dev-dependencies]
 tempfile.workspace = true
