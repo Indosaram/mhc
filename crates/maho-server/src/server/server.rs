@@ -1,5 +1,5 @@
 use super::{
-    errors::ServerError,
+    errors::{INTERNAL_SERVER_ERROR_MESSAGE, ServerError},
     listener::{ServerListener, ServerListeners},
     session_router::{Attachment, SessionRouter},
     types::*,
@@ -17,7 +17,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -27,8 +27,19 @@ use tokio::{
 };
 
 /// Observer invoked with every internal server error (pinned `ServerOptions.onError`). The default
-/// `Server::new` has no observer and falls back to stderr diagnostics.
+/// `Server::new` has no observer, and errors are then dropped like the pinned optional `onError`.
 pub type ServerErrorObserver = Arc<dyn Fn(ServerError) + Send + Sync>;
+/// Pinned `ServerOptions.onConnectionCountChanged`: called with the live connection count after
+/// each connect and disconnect.
+pub type ConnectionCountObserver = Arc<dyn Fn(usize) + Send + Sync>;
+
+/// Pinned `reportError`: deliver to the observer, swallowing observer panics.
+pub(crate) fn report_to(observer: Option<&ServerErrorObserver>, error: ServerError) {
+    if let Some(observer) = observer {
+        let observer = Arc::clone(observer);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
+    }
+}
 
 pub struct Server {
     pub server_id: String,
@@ -39,6 +50,8 @@ pub struct Server {
     closing: AtomicBool,
     listeners: Vec<Arc<dyn ServerListener>>,
     on_error: Option<ServerErrorObserver>,
+    on_connection_count_changed: Option<ConnectionCountObserver>,
+    connections: AtomicUsize,
     started: AtomicBool,
     listener_shutdown: Mutex<Option<watch::Sender<bool>>>,
     closed: watch::Sender<Option<Result<(), ServerError>>>,
@@ -51,7 +64,7 @@ impl Server {
         max_frame_length: Option<u32>,
         handshake_timeout: Option<Duration>,
     ) -> Result<Arc<Self>, ServerError> {
-        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None)
+        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None, None)
     }
     /// Pinned `ServerOptions` construction: the server owns its listener set and error observer
     /// (`listeners`/`onError`), exactly like the pinned `new Server(host, options)`.
@@ -62,6 +75,7 @@ impl Server {
         handshake_timeout: Option<Duration>,
         listeners: Vec<Arc<dyn ServerListener>>,
         on_error: Option<ServerErrorObserver>,
+        on_connection_count_changed: Option<ConnectionCountObserver>,
     ) -> Result<Arc<Self>, ServerError> {
         if !is_server_id(&server_id) {
             return Err(ServerError::new(
@@ -83,7 +97,12 @@ impl Server {
                 "Server handshakeTimeoutMs must be an integer between 1 and 2147483647",
             ));
         }
-        let router = Arc::new(SessionRouter::new(host.clone(), server_id.clone()));
+        let router_observer = on_error.clone();
+        let router = Arc::new(SessionRouter::new(
+            host.clone(),
+            server_id.clone(),
+            Arc::new(move |error| report_to(router_observer.as_ref(), error)),
+        ));
         router.bind_self();
         let (closed, _) = watch::channel(None);
         Ok(Arc::new(Self {
@@ -95,24 +114,50 @@ impl Server {
             closing: AtomicBool::new(false),
             listeners,
             on_error,
+            on_connection_count_changed,
+            connections: AtomicUsize::new(0),
             started: AtomicBool::new(false),
             listener_shutdown: Mutex::new(None),
             closed,
             close_lock: Mutex::new(()),
         }))
     }
-    /// Report one internal server error to the pinned `onError` observer, falling back to stderr
-    /// when no observer is configured. Pinned `reportError` swallows observer exceptions: error
-    /// observers cannot affect server state.
+    /// Report one internal server error to the pinned `onError` observer. Pinned `reportError`
+    /// swallows observer exceptions: error observers cannot affect server state.
     pub(crate) fn report_error(&self, error: &ServerError) {
-        match &self.on_error {
-            Some(observer) => {
-                let observer = Arc::clone(observer);
-                let error = error.clone();
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
+        report_to(self.on_error.as_ref(), error.clone());
+    }
+    /// Pinned `notifyConnectionCountChanged`: observer panics are reported, never propagated.
+    fn notify_connection_count_changed(&self, count: usize) {
+        if let Some(observer) = &self.on_connection_count_changed {
+            let observer = Arc::clone(observer);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(count))).is_err() {
+                self.report_error(&ServerError::new("internal_error", "Connection count observer failed"));
             }
-            None => eprintln!("{}", error.message),
         }
+    }
+    /// Pinned `failProtocol`: close the connection with one final `hello_error` frame. Encode and
+    /// close failures are reported, never surfaced, like the pinned `closeConnection`.
+    async fn fail_protocol(&self, connection: &Arc<dyn ByteConnection>, error: ServerError) {
+        let final_frame = encode_server_message(
+            &json!({"type":"hello_error","error":{"code":error.code,"message":error.message}}),
+            self.max_frame_length,
+        );
+        if let Err(encode) = &final_frame {
+            self.report_error(&ServerError::new("internal_error", &encode.to_string()));
+        }
+        if let Err(close) = connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {
+            self.report_error(&close);
+        }
+    }
+    /// Pinned `toProtocolError`: only client-safe server, remote-service and protocol-validation
+    /// errors reach the wire; anything else is reported and replaced by a generic internal error.
+    pub(crate) fn to_protocol_error(&self, error: ServerError) -> ServerError {
+        if PROTOCOL_ERROR_CODES.contains(&error.code.as_str()) {
+            return error;
+        }
+        self.report_error(&error);
+        ServerError::new("internal_error", INTERNAL_SERVER_ERROR_MESSAGE)
     }
     /// Pinned `Server.start()`: start the owned listeners, rolling back every already-started
     /// listener and the server state when any listener fails to start.
@@ -199,29 +244,63 @@ impl Server {
         if self.closing.load(Ordering::SeqCst) {
             return connection.close(None).await;
         }
+        let count = self.connections.fetch_add(1, Ordering::SeqCst) + 1;
+        self.notify_connection_count_changed(count);
+        // Every exit from `serve` is a disconnect (pinned `disconnect` deletes the connection
+        // and notifies once).
+        struct Connected<'a>(&'a Server);
+        impl Drop for Connected<'_> {
+            fn drop(&mut self) {
+                let count = self.0.connections.fetch_sub(1, Ordering::SeqCst) - 1;
+                self.0.notify_connection_count_changed(count);
+            }
+        }
+        let _connected = Connected(self.as_ref());
         let mut decoder = MessageDecoder::new(
             crate::protocol::codec::MessageKind::Client,
             self.max_frame_length,
         );
+        // A transport failure closes without a frame; a protocol failure (malformed frame or
+        // handshake timeout) goes through pinned `failProtocol`.
+        enum HandshakeFailure {
+            Transport(ServerError),
+            Protocol(ServerError),
+        }
         let handshake = tokio::time::timeout(self.handshake_timeout, async {
             loop {
-                let bytes = inbound.recv().await.ok_or_else(|| {
-                    ServerError::new("invalid_request", "Byte transport closed")
-                })??;
-                let mut messages = decoder
-                    .push(&bytes)
-                    .map_err(|e| ServerError::new("invalid_request", &e.to_string()))?;
+                let bytes = inbound
+                    .recv()
+                    .await
+                    .ok_or_else(|| {
+                        HandshakeFailure::Transport(ServerError::new(
+                            "invalid_request",
+                            "Byte transport closed",
+                        ))
+                    })?
+                    .map_err(HandshakeFailure::Transport)?;
+                let mut messages = decoder.push(&bytes).map_err(|e| {
+                    HandshakeFailure::Protocol(ServerError::new("invalid_request", &e.to_string()))
+                })?;
                 if !messages.is_empty() {
                     let hello = messages.remove(0);
-                    return Ok::<_, ServerError>((hello, messages));
+                    return Ok::<_, HandshakeFailure>((hello, messages));
                 }
             }
         })
         .await
-        .unwrap_or_else(|_| Err(ServerError::new("invalid_request", "Handshake timeout")));
+        .unwrap_or_else(|_| {
+            Err(HandshakeFailure::Protocol(ServerError::new(
+                "invalid_request",
+                "Handshake timeout",
+            )))
+        });
         let (hello, remaining) = match handshake {
             Ok(hello) => hello,
-            Err(error) => {
+            Err(HandshakeFailure::Protocol(error)) => {
+                self.fail_protocol(&connection, error).await;
+                return Ok(());
+            }
+            Err(HandshakeFailure::Transport(error)) => {
                 connection.close(None).await?;
                 return Err(error);
             }
@@ -243,14 +322,11 @@ impl Server {
             None
         };
         if let Some(error) = hello_error {
-            let final_frame = encode_server_message(
-                &json!({"type":"hello_error","error":{"code":error.code,"message":error.message}}),
-                self.max_frame_length,
-            )
-            .map_err(|e| ServerError::new("invalid_request", &e.to_string()))?;
-            return connection.close(Some(&final_frame)).await;
+            self.fail_protocol(&connection, error).await;
+            return Ok(());
         }
-        let presentation = Arc::new(Presentation {
+        let presentation = Arc::new_cyclic(|this| Presentation {
+            this: this.clone(),
             router: self.router.clone(),
             connection: connection.clone(),
             attachment: Mutex::new(None),
@@ -264,12 +340,7 @@ impl Server {
                 Ok(services)=>services,
                 Err(error)=>{
                     if let Err(release)=presentation.detach_session().await {self.report_error(&ServerError::new("internal_error",&release.message));}
-                    let final_frame=encode_server_message(
-                        &json!({"type":"hello_error","error":{"code":error.code,"message":error.message}}),
-                        self.max_frame_length,
-                    );
-                    if let Err(encode)=&final_frame {self.report_error(&ServerError::new("internal_error",&encode.to_string()));}
-                    if let Err(close)=connection.close(final_frame.as_ref().ok().map(Vec::as_slice)).await {self.report_error(&ServerError::new("internal_error",&close.message));}
+                    self.fail_protocol(&connection,self.to_protocol_error(error.clone())).await;
                     return Err(error);
                 },
             };
@@ -292,7 +363,7 @@ impl Server {
             loop {
                 for message in pending.drain(..) {
                     match message["type"].as_str() {
-                        Some("hello")=>return Err(ServerError::new("invalid_request","hello may only be sent as the first message")),
+                        Some("hello")=>return Ok(Some(ServerError::new("invalid_request","hello may only be sent as the first message"))),
                         Some("cancel")=>{
                             if message["target"]["serverId"]==self.server_id {
                                 let active=active.lock().await;
@@ -300,16 +371,25 @@ impl Server {
                             }
                         },
                         Some("request")=>{
-                            let subscribing=(message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="subscribe").then(||message["call"]["args"][0].as_str().unwrap_or_default().to_owned());
-                            if let Some(subscription_id)=&subscribing && !subscriptions.lock().await.insert(subscription_id.clone()) {
-                                send(&connection,&json!({"type":"response","id":message["id"],"ok":false,"error":{"code":"invalid_request","message":"Duplicate service subscription"}}),self.max_frame_length).await?;
-                                continue;
-                            }
                             let id=message["id"].as_str().unwrap_or_default().to_owned(); let (cancel,signal)=watch::channel(false);
                             { let mut active=active.lock().await;
-                                if active.contains_key(&id) { if let Some(subscription_id)=&subscribing {subscriptions.lock().await.remove(subscription_id);} send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":"Request ID is already active"}}),self.max_frame_length).await?; continue; }
+                                if active.contains_key(&id) { send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":"Request ID is already active"}}),self.max_frame_length).await?; continue; }
                                 active.insert(id.clone(),(message["target"].clone(),cancel));
                             }
+                            let subscribing=(message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="subscribe").then(||message["call"]["args"][0].as_str().unwrap_or_default().to_owned());
+                            // Pinned handleRequest order: parse the call and check the target server
+                            // before rejecting a duplicate subscription id.
+                            let reserved=match &subscribing {
+                                Some(subscription_id) if parse_service_call(&message["call"]).is_ok() && message["target"]["serverId"]==self.server_id => {
+                                    if !subscriptions.lock().await.insert(subscription_id.clone()) {
+                                        active.lock().await.remove(&id);
+                                        send(&connection,&json!({"type":"response","id":id,"ok":false,"error":{"code":"invalid_request","message":format!("Duplicate service subscription {subscription_id}")}}),self.max_frame_length).await?;
+                                        continue;
+                                    }
+                                    Some(subscription_id.clone())
+                                },
+                                _=>None,
+                            };
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
                             let subscriptions=subscriptions.clone();
                             requests.spawn(async move {
@@ -341,7 +421,7 @@ impl Server {
                                     Ok(result) if subscribing.is_some()=>{
                                         let subscription_id=subscribing.as_ref().expect("subscription branch");
                                         let mut codecs=encoders.lock().await;
-                                        if codecs.contains_key(subscription_id) { Err(ServerError::new("invalid_request","Duplicate service subscription")) }
+                                        if codecs.contains_key(subscription_id) { Err(ServerError::new("invalid_request",&format!("Duplicate service subscription {subscription_id}"))) }
                                         else if let Some(snapshot)=result {
                                             let mut encoder=super::state_codec::ServiceStateEncoder::default();
                                             match encoder.snapshot(&snapshot) { Ok(snapshot)=>{ codecs.insert(subscription_id.clone(),encoder);Ok(Some(snapshot)) },Err(error)=>Err(error) }
@@ -352,9 +432,12 @@ impl Server {
                                 let response=match result {
                                     Ok(Some(result))=>json!({"type":"response","id":id,"ok":true,"result":result}),
                                     Ok(None)=>json!({"type":"response","id":id,"ok":true}),
-                                    Err(error)=>json!({"type":"response","id":id,"ok":false,"error":{"code":error.code,"message":error.message}}),
+                                    Err(error)=>{
+                                        let error=if *cancelled.borrow() {ServerError::new("cancelled","RPC request cancelled")} else {server.to_protocol_error(error)};
+                                        json!({"type":"response","id":id,"ok":false,"error":{"code":error.code,"message":error.message}})
+                                    },
                                 };
-                                if response["ok"]!=true && let Some(subscription_id)=&subscribing {subscriptions.lock().await.remove(subscription_id);}
+                                if response["ok"]!=true && let Some(subscription_id)=&reserved {subscriptions.lock().await.remove(subscription_id);}
                                 let sent:Result<(),ServerError>=async {
                                     send(&connection,&response,max).await?;
                                     if response["ok"]==true {
@@ -369,21 +452,34 @@ impl Server {
                                 }.await; active.lock().await.remove(&id); sent
                             });
                         },
-                        _=>return Err(ServerError::new("invalid_request","Invalid client protocol message")),
+                        _=>return Ok(Some(ServerError::new("invalid_request","Invalid client protocol message"))),
                     }
                 }
                 tokio::select! {
                     _=shutdown.wait_for(|v| *v)=>break,
                     result=requests.join_next(),if !requests.is_empty()=>{ if let Some(result)=result { result.map_err(|e| ServerError::new("internal_error",&e.to_string()))??; } },
                     bytes=inbound.recv()=>match bytes {
-                        Some(Ok(bytes))=>pending=decoder.push(&bytes).map_err(|e| ServerError::new("invalid_request",&e.to_string()))?,
+                        Some(Ok(bytes))=>match decoder.push(&bytes) {
+                            Ok(messages)=>pending=messages,
+                            Err(error)=>return Ok(Some(ServerError::new("invalid_request",&error.to_string()))),
+                        },
                         Some(Err(error))=>return Err(error),
                         None=>{ decoder.end().map_err(|e| ServerError::new("invalid_request",&e.to_string()))?; break; },
                     }
                 }
             }
-            Ok(())
+            Ok(None)
         }.await;
+        // A protocol failure closes with a final `hello_error` frame before teardown (pinned
+        // `failProtocol` then `disconnect`).
+        let (result, closed) = match result {
+            Ok(Some(error)) => {
+                self.fail_protocol(&connection, error).await;
+                (Ok(()), true)
+            }
+            Ok(None) => (Ok(()), false),
+            Err(error) => (Err(error), false),
+        };
         for (_, (_, cancel)) in active.lock().await.iter() {
             cancel.send_replace(true);
         }
@@ -394,12 +490,32 @@ impl Server {
                 Err(error) => self.report_error(&ServerError::new("internal_error", &error.to_string())),
             }
         }
-        let release = presentation.detach_session().await;
+        // Pinned `disconnect` releases with publish=false: never write to a departing peer.
+        let release = presentation.release_silently().await;
         let release_services = services.release().await;
-        let close = connection.close(None).await;
+        let close = if closed { Ok(()) } else { connection.close(None).await };
         result.and(release).and(release_services).and(close)
     }
 }
+
+/// Codes whose messages may cross the protocol boundary (pinned `ServerError`,
+/// `RemoteServiceError` and `ProtocolValidationError`).
+const PROTOCOL_ERROR_CODES: &[&str] = &[
+    "service_not_allowed",
+    "service_not_found",
+    "service_mode_mismatch",
+    "service_member_not_found",
+    "service_member_mismatch",
+    "service_instance_not_found",
+    "service_stale_instance",
+    "service_invalid_value",
+    "wrong_server",
+    "session_not_found",
+    "session_ambiguous",
+    "session_not_attached",
+    "server_draining",
+    "invalid_request",
+];
 
 pub async fn send(
     connection: &Arc<dyn ByteConnection>,
@@ -411,10 +527,34 @@ pub async fn send(
     connection.send(&frame).await
 }
 struct Presentation {
+    this: std::sync::Weak<Presentation>,
     router: Arc<SessionRouter>,
     connection: Arc<dyn ByteConnection>,
     attachment: Mutex<Option<Arc<Attachment>>>,
     max: u32,
+}
+impl Presentation {
+    /// Release the current attachment without publishing `attachment:null` (connection teardown).
+    async fn release_silently(&self) -> Result<(), ServerError> {
+        let previous = self.attachment.lock().await.take();
+        match previous {
+            Some(previous) => previous.release().await,
+            None => Ok(()),
+        }
+    }
+    /// Pinned `clearAttachment` with publish=true for router-initiated releases: forget the
+    /// attachment if it is still current, then tell the client unless it already disconnected.
+    async fn publish_detached(&self, detached: &std::sync::Weak<Attachment>) -> Result<(), ServerError> {
+        let mut current = self.attachment.lock().await;
+        if !current.as_ref().is_some_and(|attachment| Arc::as_ptr(attachment) == detached.as_ptr()) {
+            return Ok(());
+        }
+        current.take();
+        if self.connection.closed() {
+            return Ok(());
+        }
+        send(&self.connection, &json!({"type":"attachment","attachment":null}), self.max).await
+    }
 }
 impl RoutedServerPresentation for Presentation {
     fn attach_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
@@ -427,6 +567,18 @@ impl RoutedServerPresentation for Presentation {
                 return Ok(());
             }
             let attachment = self.router.attach(session_id).await?;
+            let presentation = self.this.clone();
+            let detached = Arc::downgrade(&attachment);
+            attachment.set_detach_notifier(Arc::new(move || {
+                let presentation = presentation.clone();
+                let detached = detached.clone();
+                Box::pin(async move {
+                    match presentation.upgrade() {
+                        Some(presentation) => presentation.publish_detached(&detached).await,
+                        None => Ok(()),
+                    }
+                }) as ServerFuture<'static, ()>
+            }));
             if let Some(previous) = current.take() {
                 previous.release().await?;
             }
@@ -473,11 +625,11 @@ mod tests {
         let captured = Arc::clone(&errors);
         let host: Arc<dyn ServerHost> = Arc::new(crate::server::testing::TestServerHost::default());
         let server = Server::with_options(Arc::clone(&host), "00000000-0000-4000-8000-000000000001".into(), None, None, Vec::new(),
-            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message)))).expect("server");
+            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message))), None).expect("server");
         server.report_error(&ServerError::new("internal_error", "boom"));
         assert_eq!(errors.lock().expect("errors").as_slice(), ["boom".to_string()]);
         let panicking = Server::with_options(host, "00000000-0000-4000-8000-000000000002".into(), None, None, Vec::new(),
-            Some(Arc::new(|_: ServerError| panic!("observer failure")))).expect("server");
+            Some(Arc::new(|_: ServerError| panic!("observer failure"))), None).expect("server");
         panicking.report_error(&ServerError::new("internal_error", "ignored"));
     }
 }

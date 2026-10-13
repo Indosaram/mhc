@@ -1,8 +1,11 @@
 use super::{
     Server,
     errors::ServerError,
-    types::{ByteConnection, ServerFuture},
+    listener::{AcceptedConnection, ByteConnectionAcceptor, ServerListener},
+    runtime::{ConnectionCountObserver, ServerErrorObserver, report_to},
+    types::{ByteConnection, ServerFuture, ServerHost},
 };
+use crate::protocol::framing::DEFAULT_MAX_FRAME_LENGTH;
 use sha2::{Digest, Sha256};
 use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
@@ -14,7 +17,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener, UnixStream, unix::OwnedWriteHalf},
+    net::{UnixListener as NetUnixListener, UnixStream, unix::OwnedWriteHalf},
     sync::{Mutex, mpsc, watch},
     task::JoinSet,
 };
@@ -105,147 +108,221 @@ pub fn get_unix_socket_path(server_id: &str, directory: &Path) -> Result<PathBuf
     }
     Ok(directory.join(format!("{server_id}.sock")))
 }
-pub struct UnixServer {
-    server: Arc<Server>,
-    path: PathBuf,
-    identity: (u64, u64),
-    shutdown: watch::Sender<bool>,
-    tasks: JoinSet<Result<(), ServerError>>,
+/// Pinned `UnixListenerOptions`; unset fields take the pinned defaults.
+#[derive(Clone, Default)]
+pub struct UnixListenerOptions {
+    pub path: PathBuf,
+    /// Socket filesystem permissions. Defaults to owner read/write only (0o600).
+    pub mode: Option<u32>,
+    /// Maximum framed bytes queued per connection before a slow peer is disconnected.
+    pub max_pending_bytes: Option<u64>,
+    pub graceful_close_timeout_ms: Option<u32>,
+    /// Used to derive and validate max_pending_bytes. Must match the server when customized.
+    pub max_frame_length: Option<u32>,
+    pub on_error: Option<ServerErrorObserver>,
+}
+/// Pinned `UnixServerOptions`: server options without listeners plus the Unix listener options.
+#[derive(Clone, Default)]
+pub struct UnixServerOptions {
+    pub server_id: String,
+    pub path: PathBuf,
+    pub mode: Option<u32>,
+    pub max_frame_length: Option<u32>,
+    pub max_pending_bytes: Option<u64>,
+    pub graceful_close_timeout_ms: Option<u32>,
+    pub handshake_timeout: Option<std::time::Duration>,
+    pub on_connection_count_changed: Option<ConnectionCountObserver>,
+    pub on_error: Option<ServerErrorObserver>,
 }
 #[derive(Clone, Copy)]
-pub struct UnixListenerOptions {
-    pub mode: u32,
-    pub max_pending_bytes: u64,
-    pub graceful_close_timeout_ms: u32,
+struct ResolvedUnixListenerOptions {
+    mode: u32,
+    max_pending_bytes: u64,
+    graceful_close_timeout_ms: u32,
 }
-impl UnixServer {
-    pub async fn start(server: Arc<Server>, path: PathBuf) -> Result<Self, ServerError> {
-        let max_pending_bytes = u64::from(server.max_frame_length()) * 4;
-        Self::start_with_options(
-            server,
-            path,
-            UnixListenerOptions {
-                mode: 0o600,
-                max_pending_bytes,
-                graceful_close_timeout_ms: 5000,
-            },
-        )
-        .await
+fn resolve_unix_listener_options(
+    options: &UnixListenerOptions,
+) -> Result<ResolvedUnixListenerOptions, ServerError> {
+    if options.path.as_os_str().is_empty() {
+        return Err(ServerError::new(
+            "invalid_request",
+            "Server Unix socket path must not be empty",
+        ));
     }
-    pub async fn start_with_options(
-        server: Arc<Server>,
-        path: PathBuf,
-        options: UnixListenerOptions,
-    ) -> Result<Self, ServerError> {
-        if options.mode > 0o777
-            || options.max_pending_bytes < u64::from(server.max_frame_length()) + 4
-            || options.max_pending_bytes > 9_007_199_254_740_991
-            || options.graceful_close_timeout_ms == 0
-            || options.graceful_close_timeout_ms > 2_147_483_647
-        {
-            return Err(ServerError::new(
-                "invalid_request",
-                "Invalid Unix listener options",
-            ));
-        }
-        if path.as_os_str().is_empty() {
-            return Err(ServerError::new(
-                "invalid_request",
-                "Server Unix socket path must not be empty",
-            ));
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| ServerError::new("invalid_request", "Socket path has no parent"))?;
-        tokio::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).await?;
-        remove_stale_socket(&path).await?;
-        let hash = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
-        let owned = parent.join(format!("bind-{}", &hash[..8]));
-        remove_stale_socket(&owned).await?;
-        let listener = UnixListener::bind(&owned)?;
-        let metadata = tokio::fs::symlink_metadata(&owned).await?;
-        let identity = (metadata.dev(), metadata.ino());
-        let publication = async {
-            tokio::fs::hard_link(&owned, &path).await?;
-            tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(options.mode))
-                .await?;
-            Ok::<_, ServerError>(())
-        }
-        .await;
-        tokio::fs::remove_file(&owned).await?;
-        if let Err(error) = publication {
-            drop(listener);
-            remove_owned_socket(&path, identity, "cleanup").await?;
-            return Err(error);
-        }
-        let (shutdown, mut signal) = watch::channel(false);
-        let mut tasks = JoinSet::new();
-        let runtime = server.clone();
-        tasks.spawn(async move {
-            let mut connections=JoinSet::new();
-            loop {
-                let connection_signal=signal.clone();
-                tokio::select! {
-                    biased;
-                    _=signal.wait_for(|v| *v)=>break,
-                    connection=listener.accept()=>{
-                        let (stream,_)=connection?; let server=runtime.clone(); let stop=connection_signal;
-                        connections.spawn(async move { serve_socket(server,stream,stop,options).await });
-                    },
-                    result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>eprintln!("{}",error.message),Err(error)=>eprintln!("{error}") } } }
-                }
+    let max_frame_length = options.max_frame_length.unwrap_or(DEFAULT_MAX_FRAME_LENGTH);
+    let resolved = ResolvedUnixListenerOptions {
+        mode: options.mode.unwrap_or(0o600),
+        max_pending_bytes: options
+            .max_pending_bytes
+            .unwrap_or(u64::from(max_frame_length) * 4),
+        graceful_close_timeout_ms: options.graceful_close_timeout_ms.unwrap_or(5000),
+    };
+    if max_frame_length == 0
+        || resolved.mode > 0o777
+        || resolved.max_pending_bytes < u64::from(max_frame_length) + 4
+        || resolved.max_pending_bytes > 9_007_199_254_740_991
+        || resolved.graceful_close_timeout_ms == 0
+        || resolved.graceful_close_timeout_ms > 2_147_483_647
+    {
+        return Err(ServerError::new(
+            "invalid_request",
+            "Invalid Unix listener options",
+        ));
+    }
+    Ok(resolved)
+}
+struct RunningUnixListener {
+    identity: (u64, u64),
+    shutdown: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<Result<(), ServerError>>,
+}
+/// Pinned `UnixListener`: a `ServerListener` that publishes one Unix-domain socket and hands
+/// each accepted connection to the owning `Server`.
+pub struct UnixListener {
+    path: PathBuf,
+    options: ResolvedUnixListenerOptions,
+    on_error: Option<ServerErrorObserver>,
+    closing: AtomicBool,
+    running: Mutex<Option<RunningUnixListener>>,
+}
+/// Pinned `createUnixListener`.
+pub fn create_unix_listener(options: UnixListenerOptions) -> Result<Arc<dyn ServerListener>, ServerError> {
+    let resolved = resolve_unix_listener_options(&options)?;
+    Ok(Arc::new(UnixListener {
+        path: options.path,
+        options: resolved,
+        on_error: options.on_error,
+        closing: AtomicBool::new(false),
+        running: Mutex::new(None),
+    }))
+}
+/// Pinned `createUnixServer`: compose `Server` with one Unix-domain socket listener. The caller
+/// starts and closes the returned server; `Server::close` also closes the listener.
+pub fn create_unix_server(
+    host: Arc<dyn ServerHost>,
+    options: UnixServerOptions,
+) -> Result<Arc<Server>, ServerError> {
+    let listener = create_unix_listener(UnixListenerOptions {
+        path: options.path,
+        mode: options.mode,
+        max_pending_bytes: options.max_pending_bytes,
+        graceful_close_timeout_ms: options.graceful_close_timeout_ms,
+        max_frame_length: options.max_frame_length,
+        on_error: options.on_error.clone(),
+    })?;
+    Server::with_options(
+        host,
+        options.server_id,
+        options.max_frame_length,
+        options.handshake_timeout,
+        vec![listener],
+        options.on_error,
+        options.on_connection_count_changed,
+    )
+}
+impl ServerListener for UnixListener {
+    fn start(&self, accept: ByteConnectionAcceptor) -> ServerFuture<'_, ()> {
+        Box::pin(async move {
+            let mut running = self.running.lock().await;
+            if running.is_some() {
+                return Err(ServerError::new("internal_error", "Unix listener is already started"));
             }
-            let mut failures = Vec::new();
-            let drained = tokio::time::timeout(std::time::Duration::from_millis(u64::from(options.graceful_close_timeout_ms)),async {
-                while let Some(result)=connections.join_next().await {
-                    match result {
-                        Ok(Ok(()))=>{},
-                        Ok(Err(error))=>failures.push(error.message),
-                        Err(error)=>failures.push(error.to_string()),
+            if self.closing.load(Ordering::SeqCst) {
+                return Err(ServerError::new("internal_error", "Unix listener is closing or closed"));
+            }
+            let path = &self.path;
+            let options = self.options;
+            let parent = path
+                .parent()
+                .ok_or_else(|| ServerError::new("invalid_request", "Socket path has no parent"))?;
+            tokio::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent).await?;
+            remove_stale_socket(path).await?;
+            let hash = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+            let owned = parent.join(format!("bind-{}", &hash[..8]));
+            remove_stale_socket(&owned).await?;
+            let listener = NetUnixListener::bind(&owned)?;
+            let metadata = tokio::fs::symlink_metadata(&owned).await?;
+            let identity = (metadata.dev(), metadata.ino());
+            let publication = async {
+                tokio::fs::hard_link(&owned, path).await?;
+                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(options.mode))
+                    .await?;
+                Ok::<_, ServerError>(())
+            }
+            .await;
+            tokio::fs::remove_file(&owned).await?;
+            if let Err(error) = publication {
+                drop(listener);
+                remove_owned_socket(path, identity, "cleanup").await?;
+                return Err(error);
+            }
+            let (shutdown, mut signal) = watch::channel(false);
+            let on_error = self.on_error.clone();
+            let task = tokio::spawn(async move {
+                let mut connections=JoinSet::new();
+                loop {
+                    let connection_signal=signal.clone();
+                    tokio::select! {
+                        biased;
+                        _=signal.wait_for(|v| *v)=>break,
+                        connection=listener.accept()=>{
+                            let (stream,_)=connection?; let accept=accept.clone(); let stop=connection_signal;
+                            connections.spawn(async move { serve_socket(accept,stream,stop,options).await });
+                        },
+                        result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>report_to(on_error.as_ref(),error),Err(error)=>report_to(on_error.as_ref(),ServerError::new("internal_error",&error.to_string())) } } }
                     }
                 }
-            }).await;
-            if drained.is_err() {
-                connections.abort_all();
-                while let Some(result)=connections.join_next().await {
-                    if let Err(error)=result && !error.is_cancelled() {failures.push(error.to_string());}
+                let mut failures = Vec::new();
+                let drained = tokio::time::timeout(std::time::Duration::from_millis(u64::from(options.graceful_close_timeout_ms)),async {
+                    while let Some(result)=connections.join_next().await {
+                        match result {
+                            Ok(Ok(()))=>{},
+                            Ok(Err(error))=>failures.push(error.message),
+                            Err(error)=>failures.push(error.to_string()),
+                        }
+                    }
+                }).await;
+                if drained.is_err() {
+                    connections.abort_all();
+                    while let Some(result)=connections.join_next().await {
+                        if let Err(error)=result && !error.is_cancelled() {failures.push(error.to_string());}
+                    }
                 }
-            }
-            if failures.is_empty() {Ok(())} else {Err(ServerError::new("internal_error",&failures.join("; ")))}
-        });
-        Ok(Self {
-            server,
-            path,
-            identity,
-            shutdown,
-            tasks,
+                if failures.is_empty() {Ok(())} else {Err(ServerError::new("internal_error",&failures.join("; ")))}
+            });
+            *running = Some(RunningUnixListener { identity, shutdown, task });
+            Ok(())
         })
     }
-    pub async fn close(&mut self) -> Result<(), ServerError> {
-        self.shutdown.send_replace(true);
-        let mut failure = None;
-        while let Some(result) = self.tasks.join_next().await {
-            if let Err(error) = result
+    fn close(&self) -> ServerFuture<'_, ()> {
+        Box::pin(async move {
+            self.closing.store(true, Ordering::SeqCst);
+            let mut running = self.running.lock().await;
+            let Some(listener) = running.take() else {
+                return Ok(());
+            };
+            listener.shutdown.send_replace(true);
+            let mut failure = listener
+                .task
+                .await
                 .map_err(|e| ServerError::new("internal_error", &e.to_string()))
                 .and_then(|r| r)
-            {
+                .err();
+            if let Err(error) = remove_owned_socket(&self.path, listener.identity, "cleanup").await {
                 failure = Some(error);
             }
-        }
-        if let Err(error)=self.server.close().await {failure=Some(error);}
-        if let Err(error)=remove_owned_socket(&self.path, self.identity, "cleanup").await {failure=Some(error);}
-        if let Some(error) = failure {
-            Err(error)
-        } else {
-            Ok(())
-        }
+            match failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
     }
 }
 struct SocketConnection {
     writer: Mutex<OwnedWriteHalf>,
     closed: AtomicBool,
     pending_bytes: AtomicU64,
-    options: UnixListenerOptions,
+    options: ResolvedUnixListenerOptions,
 }
 struct PendingBytes<'a> {
     pending: &'a AtomicU64,
@@ -311,10 +388,10 @@ impl ByteConnection for SocketConnection {
     }
 }
 async fn serve_socket(
-    server: Arc<Server>,
+    accept: ByteConnectionAcceptor,
     stream: UnixStream,
-    signal: watch::Receiver<bool>,
-    options: UnixListenerOptions,
+    mut stop: watch::Receiver<bool>,
+    options: ResolvedUnixListenerOptions,
 ) -> Result<(), ServerError> {
     let (mut reader, writer) = stream.into_split();
     let connection = Arc::new(SocketConnection {
@@ -326,23 +403,30 @@ async fn serve_socket(
     let (tx, rx) = mpsc::channel(64);
     let mut tasks = JoinSet::new();
     tasks.spawn(async move {
-        let mut bytes = [0; 65536];
-        loop {
-            match reader.read(&mut bytes).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    if tx.send(Ok(bytes[..n].to_vec())).await.is_err() {
+        let reading = async {
+            let mut bytes = [0; 65536];
+            loop {
+                match reader.read(&mut bytes).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if tx.send(Ok(bytes[..n].to_vec())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _receiver_closed = tx.send(Err(error.into())).await;
                         break;
                     }
                 }
-                Err(error) => {
-                    let _receiver_closed = tx.send(Err(error.into())).await;
-                    break;
-                }
             }
+        };
+        // Listener close ends the inbound stream, so the server tears the connection down.
+        tokio::select! {
+            _ = reading => {},
+            _ = stop.wait_for(|v| *v) => {},
         }
     });
-    let result = server.serve(connection, rx, signal).await;
+    let result = accept(AcceptedConnection { connection, inbound: rx }).await;
     tasks.abort_all();
     while let Some(result) = tasks.join_next().await {
         if let Err(error) = result
@@ -364,7 +448,7 @@ mod tests {
             writer: Mutex::new(writer),
             closed: AtomicBool::new(false),
             pending_bytes: AtomicU64::new(0),
-            options: UnixListenerOptions {
+            options: ResolvedUnixListenerOptions {
                 mode: 0o600,
                 max_pending_bytes: 2,
                 graceful_close_timeout_ms: 5000,
