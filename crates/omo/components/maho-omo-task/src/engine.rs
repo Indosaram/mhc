@@ -63,7 +63,7 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     let warning_state = runtime.clone();
     let planner = crate::category_unavailable_warning::create_category_unavailable_warning_planner(planner, deps.config.clone(), settings.clone(), Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), Arc::new(move |text, details| {
         let ui = warning_state.lock().unwrap_or_else(PoisonError::into_inner).ui().cloned();
-        if let Err(error) = crate::category_unavailable_warning::deliver_category_warning(actions.as_ref(), ui.as_deref(), text, details) { eprintln!("task category warning failed: {error}"); }
+        if let Err(error) = crate::category_unavailable_warning::deliver_category_warning(actions.as_ref(), ui.as_deref(), text, details) { maho_ext_api::diagnostic(&format!("task category warning failed: {error}")); }
     }));
     let mut options = TaskManagerOptions::new(store.clone(), deps.runners, planner, deps.cwd.to_string_lossy());
     options.rpc_respawn_runner = rpc_respawn;

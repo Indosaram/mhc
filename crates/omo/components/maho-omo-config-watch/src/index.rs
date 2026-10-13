@@ -83,8 +83,8 @@ impl Extension for ConfigWatchComponent {
         self.release();
         let cwd=match &self.options.resolve_cwd { Some(resolve)=>resolve(), None=>std::env::current_dir().map_or_else(|_|String::new(),|path|path.to_string_lossy().into_owned()) };
         let log=self.options.log.clone().or_else(||self.options.logger.clone().map(logger_sink)).unwrap_or_else(||Arc::new(|level:ConfigWatchLogLevel,message:&str,details:Option<&JsonValue>|match details {
-            Some(details)=>eprintln!("config-watch {}: {message} {details}",level.as_str()),
-            None=>eprintln!("config-watch {}: {message}",level.as_str()),
+            Some(details)=>maho_ext_api::diagnostic(&format!("config-watch {}: {message} {details}",level.as_str())),
+            None=>maho_ext_api::diagnostic(&format!("config-watch {}: {message}",level.as_str())),
         }));
         let resolution=self.options.resolve_target_resolution.clone().unwrap_or_else(||{
             let resolve_targets=self.options.resolve_targets.clone();

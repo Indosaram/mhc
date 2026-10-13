@@ -101,7 +101,7 @@ impl Extension for GatewayComponent {
             ensure_store,
             on_lookup_error: Some(Arc::new(move |msg: &str| {
                 if !registration_warned.swap(true, Ordering::Relaxed) {
-                    eprintln!("{msg}");
+                    maho_ext_api::diagnostic(msg);
                 }
             })),
         }));
