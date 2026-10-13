@@ -113,6 +113,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     }));
     let registry = options.model_registry.take().unwrap_or_else(|| ModelRegistry::new(runtime.clone()));
     let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), false));
+    runtime.set_settings_manager(&settings);
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
     let context = manager.build_context(manager.leaf_id());
