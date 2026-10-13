@@ -180,10 +180,11 @@ pub enum DagNodeErrorCode {
     TaskLost,
     TaskCancelled,
     ResumeTaskMissing,
+    ResumeTaskOrphaned,
     JournalCorrupt,
 }
 
-pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 10] = [
+pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 11] = [
     DagNodeErrorCode::PlanUnresolved,
     DagNodeErrorCode::DepthDenied,
     DagNodeErrorCode::StartFailed,
@@ -193,6 +194,7 @@ pub const DAG_NODE_ERROR_CODES: [DagNodeErrorCode; 10] = [
     DagNodeErrorCode::TaskLost,
     DagNodeErrorCode::TaskCancelled,
     DagNodeErrorCode::ResumeTaskMissing,
+    DagNodeErrorCode::ResumeTaskOrphaned,
     DagNodeErrorCode::JournalCorrupt,
 ];
 
@@ -355,6 +357,21 @@ pub struct DagRunSnapshot {
     pub bottlenecks: Vec<DagBottleneck>,
     pub diagnostics: Vec<DagDiagnostic>,
     pub counts: DagNodeCounts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amend_history: Option<Vec<AmendRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_holder_pid: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AmendRecord {
+    pub at: String,
+    pub previous_fingerprint: String,
+    pub fingerprint: String,
+    pub changed_node_ids: Vec<DagNodeId>,
+    pub added_node_ids: Vec<DagNodeId>,
+    pub invalidated_node_ids: Vec<DagNodeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,13 +387,28 @@ pub enum DagNodeTransitionReason {
     Interrupted,
     Lost,
     Resumed,
+    Retried,
+    AmendInvalidated,
+    Revived,
     TaskQueued {
         #[serde(rename = "queuePosition")]
         queue_position: u64,
     },
+    ResidencyQueued {
+        residents: u64,
+        #[serde(rename = "heldByOtherOwners")]
+        held_by_other_owners: u64,
+    },
 }
 
-pub const DAG_NODE_TRANSITION_REASONS: [DagNodeTransitionReason; 10] = [
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DagNodeDelivery {
+    Steer,
+    Revive,
+}
+
+pub const DAG_NODE_TRANSITION_REASONS: [DagNodeTransitionReason; 13] = [
     DagNodeTransitionReason::Unblocked,
     DagNodeTransitionReason::Scheduled,
     DagNodeTransitionReason::Started,
@@ -387,9 +419,12 @@ pub const DAG_NODE_TRANSITION_REASONS: [DagNodeTransitionReason; 10] = [
     DagNodeTransitionReason::Interrupted,
     DagNodeTransitionReason::Lost,
     DagNodeTransitionReason::Resumed,
+    DagNodeTransitionReason::Retried,
+    DagNodeTransitionReason::AmendInvalidated,
+    DagNodeTransitionReason::Revived,
 ];
 
-pub const DAG_RUN_EVENT_TYPES: [&str; 14] = [
+pub const DAG_RUN_EVENT_TYPES: [&str; 17] = [
     "dag.run.created",
     "dag.run.started",
     "dag.run.paused",
@@ -402,11 +437,14 @@ pub const DAG_RUN_EVENT_TYPES: [&str; 14] = [
     "dag.node.transitioned",
     "dag.node.task-attached",
     "dag.node.reused",
+    "dag.node.retried",
+    "dag.node.steered",
+    "dag.definition.amended",
     "dag.diagnostic.added",
     "dag.stream.overflow",
 ];
 
-/// The journaled payload union: exactly 14 members, every one written with a WAL seq.
+/// The journaled payload union: exactly 17 members, every one written with a WAL seq.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DagRunEventPayload {
@@ -469,6 +507,35 @@ pub enum DagRunEventPayload {
         task_id: String,
         source_run_id: DagRunId,
     },
+    #[serde(rename = "dag.node.retried", rename_all = "camelCase")]
+    NodeRetried {
+        node_id: DagNodeId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prior_task_id: Option<String>,
+        exec_attempt: u32,
+        prompt_changed: bool,
+    },
+    #[serde(rename = "dag.node.steered", rename_all = "camelCase")]
+    NodeSteered {
+        node_id: DagNodeId,
+        task_id: String,
+        delivery: DagNodeDelivery,
+    },
+    #[serde(rename = "dag.definition.amended", rename_all = "camelCase")]
+    DefinitionAmended {
+        previous_fingerprint: String,
+        fingerprint: String,
+        changed_node_ids: Vec<DagNodeId>,
+        added_node_ids: Vec<DagNodeId>,
+        invalidated_node_ids: Vec<DagNodeId>,
+        definition: crate::dag::manager::DagPersistedDefinition,
+        nodes: Vec<DagNode>,
+        edges: Vec<DagEdge>,
+        waves: Vec<DagWave>,
+        critical_path: Vec<DagNodeId>,
+        bottlenecks: Vec<DagBottleneck>,
+        diagnostics: Vec<DagDiagnostic>,
+    },
     #[serde(rename = "dag.diagnostic.added")]
     DiagnosticAdded { diagnostic: DagDiagnostic },
     #[serde(rename = "dag.stream.overflow", rename_all = "camelCase")]
@@ -493,6 +560,9 @@ pub enum DagRunEventType {
     NodeTransitioned,
     NodeTaskAttached,
     NodeReused,
+    NodeRetried,
+    NodeSteered,
+    DefinitionAmended,
     DiagnosticAdded,
     StreamOverflow,
 }
@@ -512,6 +582,9 @@ impl DagRunEventType {
             Self::NodeTransitioned => "dag.node.transitioned",
             Self::NodeTaskAttached => "dag.node.task-attached",
             Self::NodeReused => "dag.node.reused",
+            Self::NodeRetried => "dag.node.retried",
+            Self::NodeSteered => "dag.node.steered",
+            Self::DefinitionAmended => "dag.definition.amended",
             Self::DiagnosticAdded => "dag.diagnostic.added",
             Self::StreamOverflow => "dag.stream.overflow",
         }
@@ -533,6 +606,9 @@ impl DagRunEventPayload {
             Self::NodeTransitioned { .. } => DagRunEventType::NodeTransitioned,
             Self::NodeTaskAttached { .. } => DagRunEventType::NodeTaskAttached,
             Self::NodeReused { .. } => DagRunEventType::NodeReused,
+            Self::NodeRetried { .. } => DagRunEventType::NodeRetried,
+            Self::NodeSteered { .. } => DagRunEventType::NodeSteered,
+            Self::DefinitionAmended { .. } => DagRunEventType::DefinitionAmended,
             Self::DiagnosticAdded { .. } => DagRunEventType::DiagnosticAdded,
             Self::StreamOverflow { .. } => DagRunEventType::StreamOverflow,
         }

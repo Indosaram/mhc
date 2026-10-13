@@ -33,7 +33,7 @@ pub fn reconcile_workpool_with_tasks(pools:&WorkpoolStore,tasks:&TaskRecordStore
         let queued=pool.items.iter().any(|item|belongs_to_turn(item,&turn)&&item.status==WorkpoolItemStatus::Assigned&&item.delivery.as_ref().is_some_and(|delivery|delivery.phase==super::types::WorkpoolDeliveryPhase::Queued));
         let recoverable=task.as_ref().is_some_and(|task|task.killed!=Some(true)&&
             ((task.status.is_terminal()&&task.notification.run_epoch==i64::from(epoch))||
-                (task.status==TaskStatus::Pending&&epoch==0)));
+                (task.status==TaskStatus::Pending&&task.started_at.is_none()&&epoch==0)));
         if queued&&recoverable {
             super::worker_turn::append_assigned_messages(pools,tasks,&turn)?;
         }else if queued {

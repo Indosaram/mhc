@@ -96,6 +96,7 @@ fn given_a_node_requesting_a_present_skill_when_materialized_then_the_skill_bloc
         at: AT,
     });
 
+    let result = result.expect("materialization");
     let effective_prompt = &result.nodes[0].1;
     let expected = skill_prompt(&cwd, "programming", "programming skill body", "ship the feature");
     assert_eq!(effective_prompt, &expected);
@@ -115,9 +116,9 @@ fn given_a_resolved_skill_when_materialized_then_the_manifest_records_the_reques
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("commit", "commit it", Some(vec!["git-master"]))]),
         at: AT,
-    });
+    }).expect("materialization");
 
-    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("manifest exists");
+    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists");
     assert_eq!(manifest.cwd, cwd.to_string_lossy());
     let recorded = &manifest.nodes[0];
     assert_eq!(recorded.node_id, "commit");
@@ -142,7 +143,7 @@ fn given_a_node_requesting_an_absent_skill_when_materialized_then_a_missing_skil
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("build", "ship the feature", Some(vec!["programming", "nonexistent"]))]),
         at: AT,
-    });
+    }).expect("materialization");
 
     assert_eq!(result.diagnostics.len(), 1);
     let DagDiagnostic::MissingSkill { node_id, skill, message, at } = &result.diagnostics[0] else {
@@ -155,7 +156,7 @@ fn given_a_node_requesting_an_absent_skill_when_materialized_then_a_missing_skil
     let expected = skill_prompt(&cwd, "programming", "programming skill body", "ship the feature");
     assert_eq!(result.nodes[0].1, expected);
     assert_eq!(
-        read_dag_skill_manifest(&store, RUN_ID).expect("manifest exists").nodes[0].missing,
+        read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists").nodes[0].missing,
         vec!["nonexistent".to_string()]
     );
 }
@@ -172,11 +173,11 @@ fn given_a_materialized_run_when_skill_md_is_rewritten_on_disk_then_the_persiste
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("build", "ship the feature", Some(vec!["programming"]))]),
         at: AT,
-    });
+    }).expect("materialization");
 
     write_skill(&cwd, "programming", "v2 skill body");
 
-    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("manifest exists");
+    let manifest = read_dag_skill_manifest(&store, RUN_ID).expect("read manifest").expect("manifest exists");
     let persisted = &manifest.nodes[0];
     assert!(persisted.effective_prompt.contains("v1 skill body"));
     assert!(!persisted.effective_prompt.contains("v2 skill body"));
@@ -196,10 +197,37 @@ fn given_a_node_without_load_skills_when_materialized_then_the_effective_prompt_
         run_id: &RUN_ID.to_string(),
         definition: &definition(vec![node("plain", "no skills here", None)]),
         at: AT,
-    });
+    }).expect("materialization");
 
     assert_eq!(result.nodes, vec![("plain".to_string(), "no skills here".to_string())]);
     assert_eq!(result.diagnostics.len(), 0);
+}
+
+#[test]
+fn given_a_corrupt_skill_manifest_when_read_then_the_parse_failure_is_propagated() {
+    let project = temp_dir();
+    let store = dag_store(&project);
+    let path = store.paths.root.join("skills").join(format!("{RUN_ID}.json"));
+    std::fs::create_dir_all(path.parent().expect("manifest parent")).expect("create manifest directory");
+    std::fs::write(path, "{").expect("write corrupt manifest");
+    let error = read_dag_skill_manifest(&store, RUN_ID).expect_err("invalid manifest must fail");
+    assert!(error.message.contains("invalid DAG skill manifest"));
+}
+
+#[test]
+fn given_a_manifest_path_that_is_a_directory_when_materialized_then_the_write_failure_is_propagated() {
+    let project = temp_dir();
+    let cwd = temp_dir();
+    let store = dag_store(&project);
+    let path = store.paths.root.join("skills").join(format!("{RUN_ID}.json"));
+    std::fs::create_dir_all(&path).expect("plant directory at manifest path");
+    let materialize = materializer(std::sync::Arc::clone(&store), &cwd);
+    let error = materialize(DagMaterializeSkillsInput {
+        run_id: &RUN_ID.to_string(),
+        definition: &definition(vec![node("plain", "prompt", None)]),
+        at: AT,
+    }).expect_err("manifest write failure must escape materialization");
+    assert!(error.message.contains("DAG skill manifest persistence failed"));
 }
 
 #[test]

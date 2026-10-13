@@ -2,7 +2,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use maho_ext_api::{ToolDefinition, ToolError, ToolResult};
-use regex::Regex;
 use senpi_task::{
     dag::{
         graph::{DagDefinition, DagNodeInput},
@@ -15,7 +14,6 @@ use senpi_task::{
 use crate::tools::tool_text;
 
 pub const WORKFLOW_TOOL_NAME: &str = "workflow";
-pub const DAG_TOOL_NAME: &str = "dag";
 
 pub const DESCRIPTION: &str = "Dependency-graph execution for child tasks. COMPOSE THE SPEC PROGRAMMATICALLY INSIDE AN eval CELL - the kernel exposes this tool as `tool.workflow` alongside a JS SDK, so build the graph as code: partition the work into logically distinct steps, name one node per step, and wire the ordering as data. A graph is a program; write it as one instead of hand-authoring a call. A node starts only after every node it dependsOn has finished, and unrelated nodes run in parallel up to the resident-child cap. dependsOn is ordering ONLY - no upstream output is substituted into a downstream prompt, so each prompt must stand alone. Each node targets EITHER category OR subagent_type, never both; model is an explicit override valid only alongside subagent_type. start is idempotent per definition key: re-starting the same key with the same graph reuses the run instead of duplicating it. wait detaches by default against a live run: the session is woken as each node completes and when the run settles, and detach=false restores the blocking wait that returns the final result. snapshot carries each settled node's own output plus outputBytes, and each running node's lastActivityAt, so a midpoint peek can audit a child's claim and tell a working child from a silent one. When a run settles badly, do NOT start a new one: retry re-runs the failed nodes in place, amend edits the graph and re-runs only what changed, and send steers or revives one node's child.";
 
@@ -150,26 +148,22 @@ pub fn quiet_nodes_notice(nodes: &[DagNode], now: i64) -> String {
 }
 
 pub fn lint_dag_definition_nodes(nodes: &[NodeInput]) -> Vec<String> {
-    let task_marker = Regex::new(r"TASK:").expect("valid regex");
-    let stop_marker = Regex::new(r"STOP WHEN").expect("valid regex");
-    let verification_shape = Regex::new(r"(?i)\b(verify|verification|verifier|audit|validate|validation|qa)\b").expect("valid regex");
-
     let mut warnings = Vec::new();
     for node in nodes {
-        if !task_marker.is_match(&node.prompt) {
+        if !node.prompt.contains("TASK:") {
             warnings.push(format!(
                 "node \"{}\": prompt is missing the TASK: marker from the mass-ulw node prompt contract (TASK/DELIVERABLE/SCOPE/VERIFY/STOP WHEN)",
                 node.id
             ));
         }
-        if !stop_marker.is_match(&node.prompt) {
+        if !node.prompt.contains("STOP WHEN") {
             warnings.push(format!(
                 "node \"{}\": prompt is missing a STOP WHEN condition from the mass-ulw node prompt contract",
                 node.id
             ));
         }
     }
-    if nodes.len() >= 2 && !nodes.iter().any(|node| verification_shape.is_match(&node.id) || verification_shape.is_match(&node.prompt)) {
+    if nodes.len() >= 2 && !nodes.iter().any(|node| [node.id.as_str(), node.prompt.as_str()].iter().any(|text| text.split(|character: char| !character.is_ascii_alphanumeric()).any(|word| matches!(word.to_ascii_lowercase().as_str(), "verify" | "verification" | "verifier" | "audit" | "validate" | "validation" | "qa")))) {
         warnings.push(format!(
             "run has {} nodes but no verification node; a graph that produces work ends with a verification wave (mass-ulw planning reference)",
             nodes.len()
@@ -252,7 +246,6 @@ fn validate_nodes(definition_nodes: &[NodeInput]) -> Result<Vec<DagNodeInput>, T
 }
 
 pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResult, ToolError> {
-    let parent = (deps.parent_session_id)();
     if input.action == "start" {
         let Some(definition) = input.definition else {
             return Ok(failure("invalid_definition", "action=start requires a definition. Provide definition.key, definition.name, and definition.nodes.", vec![], vec![], vec![], vec![]));
@@ -268,7 +261,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 name: definition.name,
                 nodes,
             },
-            parent_session_id: parent,
+            parent_session_id: (deps.parent_session_id)(),
             root_session_id: (deps.root_session_id)(),
         }) {
             Ok(result) => result,
@@ -292,6 +285,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
         ));
     }
 
+    let parent = (deps.parent_session_id)();
     let Some(run_id) = input.run_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
         return Ok(failure("run_not_found", &format!("action={} requires run_id.", input.action), vec![], vec![], vec![], vec![]));
     };
@@ -304,10 +298,12 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
 
     match input.action.as_str() {
         "attach" => {
-            let _ = match deps.manager.attach(&run_id.to_owned(), &parent) {
+            let handle = match deps.manager.attach(&run_id.to_owned(), &parent) {
                 Ok(h) => h,
                 Err(error) => return Ok(manager_failure(error)),
             };
+            let snapshot = handle.snapshot().map_err(|error| ToolError::Message(error.to_string()))?;
+            let status = snapshot.status.as_str();
             Ok(tool_text(
                 format!("Attached to dag run {run_id} ({status})."),
                 json!({
@@ -371,20 +367,6 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 }),
             ))
         }
-        "detach" => {
-            let quiet = quiet_nodes_notice(&snapshot.nodes, chrono::Utc::now().timestamp_millis());
-            Ok(tool_text(
-                format!(
-                    "Detached from dag run {run_id} ({status}, {}/{} nodes complete). The session is woken as each node completes and again when the run settles; use action=snapshot for a midpoint peek or action=wait with detach=false to block until settle.{}",
-                    snapshot.counts.completed, snapshot.counts.total, quiet
-                ),
-                json!({
-                    "kind": "detached",
-                    "run_id": run_id,
-                    "snapshot": snapshot,
-                }),
-            ))
-        }
         "cancel" => {
             if let Some(cancel) = &deps.cancel {
                 cancel(run_id, input.reason.as_deref())?;
@@ -442,7 +424,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
             let Some(node_id) = input.node_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
                 return Ok(failure("invalid_arguments", "action=send requires node_id.", vec![], vec![], vec![], vec![]));
             };
-            let Some(message) = input.message.as_deref().map(str::trim).filter(|msg| !msg.is_empty()) else {
+            let Some(message) = input.message.as_deref().filter(|msg| !msg.trim().is_empty()) else {
                 return Ok(failure("invalid_arguments", "action=send requires a non-empty message.", vec![], vec![], vec![], vec![]));
             };
             let Some(send) = &deps.send else {
@@ -504,7 +486,7 @@ pub fn run_dag_tool(deps: &DagToolDeps, input: DagToolInput) -> Result<ToolResul
                 }),
             ))
         }
-        _ => Err(ToolError::Message("invalid dag action".into())),
+        _ => Ok(failure("invalid_arguments", &format!("unknown action={}.", input.action), vec![], vec![], vec![], vec![])),
     }
 }
 

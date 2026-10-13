@@ -355,6 +355,75 @@ fn transitions_table_every_status_and_normal_event_matches_lifecycle() {
 // ---- state/transitions.test.ts ----
 
 #[test]
+fn transitions_start_stamps_started_at_and_later_transitions_preserve_it() {
+    let pending = pending_record();
+    assert_eq!(pending.started_at, None);
+
+    let started_at = "2026-07-06T00:00:00.000Z";
+    let started = transition_task_record(&pending, &start());
+    assert!(started.applied);
+    assert_eq!(started.record.started_at.as_deref(), Some(started_at));
+
+    let timestamp = "2026-07-06T00:00:01.000Z";
+    let later = [
+        complete("done", None),
+        fail("failed"),
+        cancel(None),
+        interrupt("interrupted"),
+        TaskTransition::Evict { timestamp: ts(timestamp) },
+        TaskTransition::Dispose { timestamp: ts(timestamp) },
+        TaskTransition::PersistOnly { timestamp: ts(timestamp) },
+        TaskTransition::DetachRpc { timestamp: ts(timestamp) },
+        TaskTransition::MarkResident { timestamp: ts(timestamp) },
+    ];
+    for transition in &later {
+        let result = transition_task_record(&started.record, transition);
+        assert!(result.applied);
+        assert_eq!(result.record.started_at.as_deref(), Some(started_at));
+    }
+
+    let rejected = transition_task_record(&started.record, &lose("lost"));
+    assert!(!rejected.applied);
+    assert_eq!(rejected.record.started_at.as_deref(), Some(started_at));
+
+    let lost = mark_record_lost_for_reconciliation(
+        &started.record,
+        timestamp,
+        "owner died",
+        LostReason::KeepExisting,
+    );
+    assert!(lost.applied);
+    assert_eq!(lost.record.started_at.as_deref(), Some(started_at));
+
+    let queued_lost = mark_record_lost_for_reconciliation(
+        &pending,
+        timestamp,
+        "queued owner died",
+        LostReason::KeepExisting,
+    );
+    assert!(queued_lost.applied);
+    assert_eq!(queued_lost.record.started_at, None);
+}
+
+#[test]
+fn record_started_at_round_trips_and_legacy_record_defaults_to_none() {
+    let mut value = serde_json::to_value(pending_record()).expect("serialize");
+    assert!(value.get("started_at").is_none());
+    let legacy = parse_task_record(&value, "/tmp/legacy.json", &mut Vec::new())
+        .expect("legacy record without started_at");
+    assert_eq!(legacy.started_at, None);
+
+    value["started_at"] = json!("2026-07-06T00:00:00.000Z");
+    let parsed = parse_task_record(&value, "/tmp/started.json", &mut Vec::new())
+        .expect("record with started_at");
+    assert_eq!(parsed.started_at.as_deref(), Some("2026-07-06T00:00:00.000Z"));
+    assert_eq!(
+        serde_json::to_value(parsed).expect("serialize started record")["started_at"],
+        json!("2026-07-06T00:00:00.000Z")
+    );
+}
+
+#[test]
 fn transitions_pending_rejects_running_only_terminals() {
     let results: Vec<_> = [
         complete("done", None),

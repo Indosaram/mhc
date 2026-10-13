@@ -49,6 +49,7 @@ pub fn create_task_record(
         notify_on_terminal,
         created_at: timestamp.clone(),
         updated_at: timestamp,
+        started_at: None,
         notification: TaskNotification::default(),
         name,
         task_summary,

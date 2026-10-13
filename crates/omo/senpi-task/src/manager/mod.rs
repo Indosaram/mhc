@@ -18,6 +18,7 @@ pub mod names;
 pub mod outcome;
 pub mod parent_registry_context;
 pub mod respawn;
+pub mod residency_signal;
 pub mod runner;
 pub mod runtime_fallback_event;
 pub mod transcript_log;

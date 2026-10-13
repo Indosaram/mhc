@@ -5,6 +5,9 @@ pub type DagBridgeListener = Arc<dyn Fn(&Value) + Send + Sync>;
 pub type DagBridgeSubscribe = Arc<dyn Fn(DagBridgeListener) -> Unsubscribe + Send + Sync>;
 pub type DagBridgeEmit = Arc<dyn Fn(&str, Value) + Send + Sync>;
 pub type DagBridgeSnapshots = Arc<dyn Fn() -> Vec<(DagRunSnapshot, String)> + Send + Sync>;
+pub trait DagBridgeLogger: Send + Sync {
+    fn warn(&self, message: &str, details: &Value);
+}
 pub struct DagBridgeRun { pub run_id: String, pub status: String, pub subscribe: DagBridgeSubscribe }
 pub struct DagRpcBridgeDeps {
     pub live_runs: Arc<dyn Fn() -> Vec<DagBridgeRun> + Send + Sync>,
@@ -16,4 +19,9 @@ pub struct DagRpcBridgeDeps {
     pub heartbeat_ms: Option<u64>,
     pub activity_coalesce_ms: Option<u64>,
     pub snapshot_debounce_ms: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct DagRpcBridgeOptions {
+    pub logger: Option<Arc<dyn DagBridgeLogger>>,
 }

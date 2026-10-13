@@ -92,6 +92,21 @@ fn every_payload() -> Vec<DagRunEventPayload> {
             task_id: "t".to_string(),
             source_run_id: "run-1".to_string(),
         },
+        DagRunEventPayload::NodeRetried {
+            node_id: "node-a".to_string(), prior_task_id: Some("old".to_string()),
+            exec_attempt: 2, prompt_changed: true,
+        },
+        DagRunEventPayload::NodeSteered {
+            node_id: "node-a".to_string(), task_id: "task-1".to_string(),
+            delivery: crate::dag::types::DagNodeDelivery::Revive,
+        },
+        DagRunEventPayload::DefinitionAmended {
+            previous_fingerprint: "old".to_string(), fingerprint: "new".to_string(),
+            changed_node_ids: ids(&["node-a"]), added_node_ids: ids(&["node-b"]),
+            invalidated_node_ids: ids(&["node-c"]),
+            definition: crate::dag::manager::DagPersistedDefinition { key: "key".into(), name: "name".into(), nodes: Vec::new() },
+            nodes: Vec::new(), edges: Vec::new(), waves: Vec::new(), critical_path: Vec::new(), bottlenecks: Vec::new(), diagnostics: Vec::new(),
+        },
         DagRunEventPayload::DiagnosticAdded {
             diagnostic: run_flag(),
         },
@@ -105,8 +120,8 @@ fn every_payload() -> Vec<DagRunEventPayload> {
 // dagEventLane
 
 #[test]
-fn given_all_14_journaled_event_types_then_every_one_classifies_as_boundary() {
-    assert_eq!(journaled_event_types().len(), 14);
+fn given_all_17_journaled_event_types_then_every_one_classifies_as_boundary() {
+    assert_eq!(journaled_event_types().len(), 17);
     for tag in journaled_event_types() {
         assert_eq!(dag_event_lane_of(tag), Ok(DagEventLane::Boundary), "{tag}");
     }

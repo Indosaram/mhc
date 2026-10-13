@@ -185,6 +185,25 @@ fn given_a_downstream_node_when_compiled_then_the_prompt_is_never_templated_with
     assert_eq!(compile(&templated).nodes[1].prompt, "use {{plan}}");
 }
 
+#[test]
+fn given_an_agent_route_with_surrounding_whitespace_when_compiled_then_route_agent_is_trimmed() {
+    let input = definition(vec![DagNodeInput {
+        target: DagNodeTarget::SubagentType {
+            subagent_type: "  custom-agent  ".to_string(),
+            model: None,
+        },
+        ..node("agent", &[])
+    }]);
+
+    assert_eq!(
+        compile(&input).nodes[0].route,
+        DagRoute::Agent {
+            agent: "custom-agent".to_string(),
+            model: None,
+        }
+    );
+}
+
 // compileDag ordering determinism
 
 #[test]
@@ -413,6 +432,18 @@ fn given_65_nodes_when_compiled_with_default_settings_then_rejected_on_max_nodes
 #[test]
 fn given_64_nodes_when_compiled_with_default_settings_then_accepted() {
     assert!(compile(&definition(numbered(64))).ok);
+}
+
+#[test]
+fn given_a_definition_with_zero_nodes_when_compiled_then_it_fails_with_empty_graph() {
+    let result = compile(&definition(Vec::new()));
+
+    assert!(!result.ok);
+    assert_eq!(codes(&result), vec![DagCompileErrorCode::EmptyGraph]);
+    assert_eq!(
+        result.errors[0].message,
+        "dag has no nodes; a run needs at least one node"
+    );
 }
 
 #[test]

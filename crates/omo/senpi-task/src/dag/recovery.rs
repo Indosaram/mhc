@@ -14,7 +14,8 @@ use crate::dag::manager::{DagPersistedNode, DagRunRecordV1};
 use crate::dag::owner::{DagOwnerKind, DagTaskOwner};
 use crate::dag::results::{DagNodeResultReadInput, read_dag_node_result};
 use crate::dag::scheduler::{
-    DagSchedulerOptions, apply_dag_scheduler_event_with_results_for_recovery, create_dag_scheduler,
+    DagNodeSpawnPolicy, DagSchedulerAncestry, DagSchedulerOptions,
+    apply_dag_scheduler_event_with_results_for_recovery, create_dag_scheduler,
 };
 use crate::dag::store::DagFileStore;
 use crate::dag::types::{
@@ -33,6 +34,7 @@ fn is_live_run_status(status: DagRunStatus) -> bool {
 type LivenessProbe = Arc<dyn Fn(i64) -> bool + Send + Sync>;
 type StopAdmission = Arc<dyn Fn(&DagRunId) + Send + Sync>;
 type Reattach = Arc<dyn Fn(&DagRunId, &str) + Send + Sync>;
+type HeldInProcess = Arc<dyn Fn(&DagRunId) -> bool + Send + Sync>;
 type PendingErrors = Arc<Mutex<BTreeMap<DagNodeId, DagNodeError>>>;
 type PendingTerminalResults = Arc<Mutex<BTreeMap<DagNodeId, TaskRecord>>>;
 type PendingRecoveryState = (PendingErrors, PendingTerminalResults);
@@ -54,7 +56,9 @@ pub enum DagRecoveryOutcome {
     Skipped {
         run_id: DagRunId,
         reason: DagRecoverySkipReason,
+        holder_pid: Option<i64>,
     },
+    Adopted { run_id: DagRunId, record: Box<DagRunRecordV1>, reused_outputs: HashMap<DagNodeId, String> },
 }
 
 /// `RecoverableRecord`: the journal checkpoint extended with lease-holder bookkeeping the
@@ -93,10 +97,13 @@ pub struct DagRecoveryOptions {
     /// Liveness probe for a paused run's previous lease holder; defaults to the shared allowlisted
     /// signal-0 probe so this module never invokes a process signal directly.
     pub is_process_alive: Option<LivenessProbe>,
+    pub is_run_held_in_process: Option<HeldInProcess>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     pub subscriber_ring: Option<usize>,
     pub stop_admission: Option<StopAdmission>,
     pub reattach: Option<Reattach>,
+    pub ancestry: Option<DagSchedulerAncestry>,
+    pub node_spawn_policy: Option<DagNodeSpawnPolicy>,
 }
 
 struct RecoveryContext {
@@ -104,10 +111,13 @@ struct RecoveryContext {
     task_manager: Arc<TaskManager>,
     host_pid: i64,
     is_process_alive: LivenessProbe,
+    is_run_held_in_process: Option<HeldInProcess>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     subscriber_ring: Option<usize>,
     stop_admission: Option<StopAdmission>,
     reattach: Option<Reattach>,
+    ancestry: Option<DagSchedulerAncestry>,
+    node_spawn_policy: Option<DagNodeSpawnPolicy>,
 }
 
 pub struct DagRecovery {
@@ -128,10 +138,13 @@ pub fn create_dag_recovery(options: DagRecoveryOptions) -> DagRecovery {
             task_manager: options.task_manager,
             host_pid,
             is_process_alive,
+            is_run_held_in_process: options.is_run_held_in_process.clone(),
             now,
             subscriber_ring: options.subscriber_ring,
             stop_admission: options.stop_admission,
             reattach: options.reattach,
+            ancestry: options.ancestry,
+            node_spawn_policy: options.node_spawn_policy,
         }),
     }
 }
@@ -145,7 +158,10 @@ impl DagRecovery {
     }
 
     pub fn resume_paused_runs(&self, parent_session_id: &str) -> Vec<DagRecoveryOutcome> {
-        resume_paused_runs(&self.context, parent_session_id)
+        self.resume_paused_runs_from(parent_session_id, None)
+    }
+    pub fn resume_paused_runs_from(&self, parent_session_id: &str, fork_source_session_id: Option<&str>) -> Vec<DagRecoveryOutcome> {
+        resume_paused_runs(&self.context, parent_session_id, fork_source_session_id)
     }
 }
 
@@ -185,23 +201,31 @@ fn pause_runs_for_shutdown(context: &RecoveryContext, parent_session_id: &str) -
     Ok(paused)
 }
 
-fn resume_paused_runs(context: &RecoveryContext, parent_session_id: &str) -> Vec<DagRecoveryOutcome> {
+fn resume_paused_runs(context: &RecoveryContext, parent_session_id: &str, fork_source: Option<&str>) -> Vec<DagRecoveryOutcome> {
     let mut outcomes = Vec::new();
     for observed in list_run_records(&context.store) {
-        if observed.record.parent_session_id != parent_session_id {
+        let foreign = observed.record.parent_session_id != parent_session_id;
+        let source = fork_source.map(str::trim).filter(|s| !s.is_empty());
+        if foreign && source != Some(observed.record.parent_session_id.trim()) {
             continue;
         }
         let run_id = observed.record.run_id.clone();
-        match claim_paused_run(context, &run_id, parent_session_id) {
-            ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease) => {
+        match if foreign { claim_orphaned_run(context, &observed, parent_session_id) } else { claim_paused_run(context, &run_id, parent_session_id) } {
+            ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, holder_pid) if !foreign => {
                 outcomes.push(DagRecoveryOutcome::Skipped {
                     run_id,
                     reason: DagRecoverySkipReason::LiveLease,
+                    holder_pid,
                 });
             }
-            ClaimedRun::Skipped(_) => {}
+            ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, _) => {}
+            ClaimedRun::Skipped(_, _) => {}
             ClaimedRun::Claimed(claimed) => {
-                outcomes.push(resume_claimed_run(context, *claimed));
+                let mut outcome = resume_claimed_run(context, *claimed);
+                if foreign && let DagRecoveryOutcome::Resumed { run_id, record, reused_outputs } = outcome {
+                    outcome = DagRecoveryOutcome::Adopted { run_id, record, reused_outputs };
+                }
+                outcomes.push(outcome);
             }
         }
     }
@@ -210,7 +234,7 @@ fn resume_paused_runs(context: &RecoveryContext, parent_session_id: &str) -> Vec
 
 enum ClaimedRun {
     Claimed(Box<RecoverableRecord>),
-    Skipped(DagRecoverySkipReason),
+    Skipped(DagRecoverySkipReason, Option<i64>),
 }
 
 fn claim_paused_run(context: &RecoveryContext, run_id: &DagRunId, parent_session_id: &str) -> ClaimedRun {
@@ -218,28 +242,48 @@ fn claim_paused_run(context: &RecoveryContext, run_id: &DagRunId, parent_session
         .store
         .with_run_lock(run_id, || {
             let Ok(Some(fresh)) = context.store.read_checkpoint::<RecoverableRecord>(run_id) else {
-                return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused);
+                return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None);
             };
             if fresh.record.status != DagRunStatus::Paused {
-                return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused);
+                return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None);
             }
             if fresh.record.parent_session_id != parent_session_id {
-                return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession);
+                return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession, None);
             }
             let prior_holder = fresh.lease_holder_pid.or(fresh.previous_lease_holder_pid);
             if let Some(pid) = prior_holder
-                && (context.is_process_alive)(pid)
+                && holder_still_live(context, run_id, pid)
             {
-                return ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease);
+                return ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, Some(pid));
             }
             let claimed = RecoverableRecord {
                 lease_holder_pid: Some(context.host_pid),
+                previous_lease_holder_pid: None,
                 ..fresh
             };
             let _ = context.store.write_checkpoint(run_id, &claimed);
             ClaimedRun::Claimed(Box::new(claimed))
         })
-        .unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused))
+        .unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None))
+}
+
+fn holder_still_live(context: &RecoveryContext, run_id: &DagRunId, pid: i64) -> bool {
+    if pid == context.host_pid { context.is_run_held_in_process.as_ref().is_some_and(|held| held(run_id)) }
+    else { (context.is_process_alive)(pid) }
+}
+
+fn claim_orphaned_run(context: &RecoveryContext, observed: &RecoverableRecord, parent: &str) -> ClaimedRun {
+    let run_id = &observed.record.run_id;
+    context.store.with_run_lock(run_id, || {
+        let Ok(Some(fresh)) = context.store.read_checkpoint::<RecoverableRecord>(run_id) else { return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None) };
+        if fresh.record.status != DagRunStatus::Paused { return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None) }
+        if fresh.record.parent_session_id != observed.record.parent_session_id { return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession, None) }
+        let Some(pid) = fresh.lease_holder_pid.or(fresh.previous_lease_holder_pid) else { return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession, None) };
+        if pid != context.host_pid && (context.is_process_alive)(pid) { return ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, Some(pid)) }
+        let claimed = RecoverableRecord { record: DagRunRecordV1 { parent_session_id: parent.to_string(), root_session_id: parent.to_string(), ..fresh.record.clone() }, lease_holder_pid: Some(context.host_pid), ..fresh };
+        let _ = context.store.write_checkpoint(run_id, &claimed);
+        ClaimedRun::Claimed(Box::new(claimed))
+    }).unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None))
 }
 
 fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> DagRecoveryOutcome {
@@ -253,17 +297,19 @@ fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> 
     );
     let run_id = claimed.record.run_id.clone();
     let mut reused_outputs = HashMap::new();
-    reconcile_nodes(context, &journal, &mut reused_outputs, &pending_errors, &pending_terminal_results);
+    let mut pre_attached_tasks = BTreeMap::new();
+    reconcile_nodes(context, &journal, &mut reused_outputs, &pending_errors, &pending_terminal_results, &mut pre_attached_tasks);
     let generation = journal.snapshot().record.generation + 1;
     let _ = journal.append(DagRunEventPayload::RunResumed { generation });
     let scheduler_result = create_dag_scheduler(DagSchedulerOptions {
         store: Arc::clone(&context.store),
         task_manager: Arc::clone(&context.task_manager),
         initial_record: journal.snapshot().record,
-        execution_mode_agents: None,
-        execution_mode_config: None,
-        ancestry_depth: None,
+        execution_mode: None,
+        ancestry: context.ancestry,
+        node_spawn_policy: context.node_spawn_policy.clone(),
         subscriber_ring: context.subscriber_ring,
+        pre_attached_tasks: (!pre_attached_tasks.is_empty()).then_some(pre_attached_tasks),
         now: Some(Arc::clone(&context.now)),
     });
     let outcome = match scheduler_result {
@@ -276,11 +322,13 @@ fn resume_claimed_run(context: &RecoveryContext, claimed: RecoverableRecord) -> 
             Err(_) => DagRecoveryOutcome::Skipped {
                 run_id: run_id.clone(),
                 reason: DagRecoverySkipReason::NotPaused,
+                holder_pid: None,
             },
         },
         Err(_) => DagRecoveryOutcome::Skipped {
             run_id: run_id.clone(),
             reason: DagRecoverySkipReason::NotPaused,
+            holder_pid: None,
         },
     };
     release_lease(context, &run_id);
@@ -294,6 +342,7 @@ fn reconcile_nodes(
     reused_outputs: &mut HashMap<DagNodeId, String>,
     pending_errors: &Arc<Mutex<BTreeMap<DagNodeId, DagNodeError>>>,
     pending_terminal_results: &Arc<Mutex<BTreeMap<DagNodeId, TaskRecord>>>,
+    pre_attached_tasks: &mut BTreeMap<DagNodeId, String>,
 ) {
     let nodes = journal.snapshot().record.nodes;
     for observed in &nodes {
@@ -320,13 +369,10 @@ fn reconcile_nodes(
             DagNodeState::Pending | DagNodeState::Blocked => continue,
         }
 
-        let owned = context
-            .task_manager
-            .find_owned_task(&journal.snapshot().record.run_id, &observed.id);
-        let mut task = match &observed.task_id {
-            None => owned,
-            Some(task_id) => context.task_manager.get(task_id).or(owned),
-        };
+        let owner_stamp = task_owner(&journal.snapshot().record, &observed.id, observed.exec_attempt);
+        let owned = context.task_manager.find_owned_task(&owner_stamp.run_id, &owner_stamp.node_id);
+        let mut task = owned.or_else(|| observed.task_id.as_ref().and_then(|task_id| context.task_manager.get(task_id)));
+        let mut started_here = false;
         if let Some(task) = &task
             && observed.task_id.as_deref() != Some(task.task_id.as_str())
         {
@@ -334,8 +380,8 @@ fn reconcile_nodes(
         }
 
         if task.is_none() && observed.state == DagNodeState::Scheduled && observed.task_id.is_none() {
-            let spec = start_spec(&journal.snapshot().record, &observed.id);
-            let owner = task_owner(&journal.snapshot().record, &observed.id);
+            let spec = start_spec(&journal.snapshot().record, &observed.id, context.ancestry.map_or(0, |ancestry| ancestry.depth));
+            let owner = task_owner(&journal.snapshot().record, &observed.id, observed.exec_attempt);
             let result = context.task_manager.start_owned(&spec, &owner);
             match result {
                 OwnedStartResult::NotStarted(StartResult::ResidencyDenied { .. }) => {
@@ -349,6 +395,7 @@ fn reconcile_nodes(
                 }
                 OwnedStartResult::Started { task: started, .. } => {
                     attach_task(journal, &observed.id, &started.task_id);
+                    started_here = true;
                     task = context.task_manager.get(&started.task_id);
                 }
                 other => {
@@ -359,7 +406,7 @@ fn reconcile_nodes(
             }
         }
 
-        let Some(mut current_task) = task else {
+        let Some(current_task) = task else {
             let result = read_dag_node_result(DagNodeResultReadInput {
                 store: &context.store,
                 run_id: &journal.snapshot().record.run_id,
@@ -393,23 +440,31 @@ fn reconcile_nodes(
         };
 
         if matches!(current_task.status, TaskStatus::Pending | TaskStatus::Running) {
-            if let Some(reattach) = &context.reattach {
-                reattach(&journal.snapshot().record.run_id, &current_task.task_id);
+            if !started_here && context.task_manager.get_resident_handle(&current_task.task_id).is_none() {
+                let detail = format!("residency_state={}, host_pid={:?}, runner_kind={:?}", current_task.residency_state.as_str(), current_task.host_pid, current_task.runner_kind);
+                fail_node(journal, &observed.id, DagNodeErrorCode::ResumeTaskOrphaned,
+                    &format!("task {} still reads {:?} but no child of this host backs it ({detail}); its settlement can never be observed here. Retry or send revives the node.", current_task.task_id, current_task.status),
+                    &context.now, pending_errors);
+                continue;
             }
-            current_task = match context.task_manager.wait_for(&current_task.task_id, None, None) {
-                Ok(record) => record,
-                Err(error) => {
-                    fail_node(
-                        journal,
-                        &observed.id,
-                        DagNodeErrorCode::TaskError,
-                        &error.to_string(),
-                        &context.now,
-                        pending_errors,
-                    );
-                    continue;
-                }
-            };
+            if let Some(reattach) = &context.reattach { reattach(&journal.snapshot().record.run_id, &current_task.task_id); }
+            transition_to_running(journal, &observed.id);
+            pre_attached_tasks.insert(observed.id.clone(), current_task.task_id);
+            continue;
+        }
+        // Legacy task records without a launch stamp remain eligible; a stamp proves the runner
+        // launch boundary was crossed even if the DAG admission batch never attached the task.
+        if current_task.status == TaskStatus::Lost
+            && current_task.started_at.is_none()
+            && observed.state == DagNodeState::Scheduled
+            && observed.exec_attempt.unwrap_or(0) < MAX_RECOVERY_READMISSIONS {
+            let next_attempt = observed.exec_attempt.unwrap_or(0) + 1;
+            pending_terminal_results.lock().unwrap_or_else(PoisonError::into_inner).remove(&observed.id);
+            let _ = journal.append(DagRunEventPayload::NodeRetried {
+                node_id: observed.id.clone(), prior_task_id: Some(current_task.task_id),
+                exec_attempt: next_attempt, prompt_changed: false,
+            });
+            continue;
         }
         fold_task_outcome(context, journal, &observed.id, current_task, pending_errors, pending_terminal_results);
     }
@@ -501,6 +556,7 @@ fn apply_recovery_event(
             record: DagRunRecordV1 {
                 status: DagRunStatus::Running,
                 generation: *generation,
+                completed_at: None,
                 updated_at: event.at.clone(),
                 ..record.record.clone()
             },
@@ -545,6 +601,13 @@ fn transition_terminal(journal: &Arc<DagJournal<RecoverableRecord>>, node_id: &D
         to,
         reason,
     });
+}
+
+fn transition_to_running(journal: &Arc<DagJournal<RecoverableRecord>>, node_id: &DagNodeId) {
+    let Some(node) = node_by_id(&journal.snapshot().record, node_id) else { return };
+    if node.state == DagNodeState::Running { return; }
+    let _ = journal.append(DagRunEventPayload::NodeTransitioned { node_id: node_id.clone(), from: node.state,
+        to: DagNodeState::Running, reason: DagNodeTransitionReason::Resumed });
 }
 
 fn fail_node(
@@ -605,7 +668,7 @@ fn list_run_records(store: &DagFileStore) -> Vec<RecoverableRecord> {
     records
 }
 
-fn start_spec(record: &DagRunRecordV1, node_id: &DagNodeId) -> ManagerStartSpec {
+fn start_spec(record: &DagRunRecordV1, node_id: &DagNodeId, session_depth: u32) -> ManagerStartSpec {
     let node = node_by_id(record, node_id).expect("reconciled node exists");
     let persisted = persisted_node(record, node_id).expect("persisted definition exists");
     let (category, subagent_type, model) = match &node.route {
@@ -617,7 +680,7 @@ fn start_spec(record: &DagRunRecordV1, node_id: &DagNodeId) -> ManagerStartSpec 
         task_summary: persisted.task_summary.clone(),
         parent_session_id: record.parent_session_id.clone(),
         root_session_id: Some(record.root_session_id.clone()),
-        depth: 1,
+        depth: session_depth + 1,
         category,
         subagent_type,
         model,
@@ -628,15 +691,19 @@ fn start_spec(record: &DagRunRecordV1, node_id: &DagNodeId) -> ManagerStartSpec 
     }
 }
 
-fn task_owner(record: &DagRunRecordV1, node_id: &DagNodeId) -> DagTaskOwner {
+const MAX_RECOVERY_READMISSIONS: u32 = 3;
+
+fn task_owner(record: &DagRunRecordV1, node_id: &DagNodeId, exec_attempt: Option<u32>) -> DagTaskOwner {
+    let mut identity = serde_json::json!({
+        "definitionFingerprint": record.definition_fingerprint,
+        "nodeId": node_id,
+    });
+    if let Some(exec_attempt) = exec_attempt { identity["execAttempt"] = serde_json::json!(exec_attempt); }
     DagTaskOwner {
         kind: DagOwnerKind::Dag,
         run_id: record.run_id.clone(),
         node_id: node_id.clone(),
-        fingerprint: dag_fingerprint(&serde_json::json!({
-            "definitionFingerprint": record.definition_fingerprint,
-            "nodeId": node_id,
-        })),
+        fingerprint: dag_fingerprint(&identity),
     }
 }
 
@@ -668,7 +735,7 @@ fn start_failure(result: &OwnedStartResult) -> (DagNodeErrorCode, String) {
         OwnedStartResult::NotStarted(StartResult::StartFailed(StartFailure { error_message, .. })) => {
             (DagNodeErrorCode::StartFailed, error_message.clone())
         }
-        OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason }) => {
+        OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason, .. }) => {
             (DagNodeErrorCode::ResidencyDenied, reason.clone())
         }
         OwnedStartResult::Started { .. } | OwnedStartResult::NotStarted(StartResult::Started(_)) => {

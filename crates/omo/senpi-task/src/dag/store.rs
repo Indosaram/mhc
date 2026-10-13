@@ -4,7 +4,7 @@
 //! Filesystem primitives that the TS tests intercept through `spyOn(fs, ...)` (exclusive create,
 //! fsync, rename, hard link) go through the injectable [`DagFs`] seam.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -25,6 +25,8 @@ use crate::dag::types::{
 
 const LOCK_RETRY_MS: u64 = 10;
 const LOCK_WAIT_TIMEOUT_MS: i64 = 1_000;
+const WINDOWS_CLEANUP_RETRIES: usize = 8;
+const WINDOWS_CLEANUP_RETRY_MS: u64 = 5;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const TERMINAL_STATUSES: [&str; 3] = ["completed", "failed", "cancelled"];
@@ -353,15 +355,6 @@ pub fn create_dag_file_store(
         #[cfg(test)]
         append_hook: Mutex::new(None),
     };
-    for directory in [
-        &store.paths.keys,
-        &store.paths.runs,
-        &store.paths.events,
-        &store.paths.results,
-        &store.paths.locks,
-    ] {
-        fs::create_dir_all(directory)?;
-    }
     store.inspect_existing_event_logs()?;
     Ok(store)
 }
@@ -492,12 +485,7 @@ impl DagFileStore {
         checkpoint: &C,
     ) -> Result<(), DagStoreError> {
         assert_safe_segment(run_id, "run id")?;
-        let mut value = serde_json::to_value(checkpoint)?;
-        if let (Some(next), Some(existing)) = (value.as_object_mut(), self.read_checkpoint::<Value>(run_id)?) {
-            for field in ["leaseHolderPid", "previousLeaseHolderPid"] {
-                if !next.contains_key(field) && let Some(prior) = existing.get(field) { next.insert(field.into(), prior.clone()); }
-            }
-        }
+        let value = serde_json::to_value(checkpoint)?;
         #[cfg(test)]
         if let Some(hook) = guard(&self.checkpoint_hook).clone() {
             hook(&value)?;
@@ -605,6 +593,7 @@ impl DagFileStore {
             .saturating_mul(DAY_MS);
         let cutoff = prune_now.saturating_sub(retention_ms);
         let mut pruned = Vec::new();
+        let artifacts = self.index_run_artifacts()?;
         for name in list_files(&self.paths.runs, ".json")? {
             let stem = name.strip_suffix(".json").unwrap_or(&name);
             let path = self.paths.runs.join(&name);
@@ -629,7 +618,7 @@ impl DagFileStore {
             {
                 continue;
             }
-            self.prune_run_artifacts(&checkpoint, &run_id)?;
+            self.prune_run_artifacts(&checkpoint, &run_id, &artifacts)?;
             pruned.push(run_id);
         }
         Ok(pruned)
@@ -640,7 +629,7 @@ impl DagFileStore {
         run_id: &str,
         checkpoint: &Value,
     ) -> Result<(), DagStoreError> {
-        let path = self.paths.run(run_id);
+            let path = self.paths.run(run_id);
         let parent_session_id = match read_optional_string(checkpoint, "parentSessionId") {
             Some(parent) if !path.exists() => parent,
             _ => return self.write_json_atomic(&path, checkpoint),
@@ -797,7 +786,9 @@ impl DagFileStore {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
         assert_safe_segment(&name, "lock name")?;
-        let started_at = (self.now)();
+        let mut stalled_since = (self.now)();
+        let mut stalled_behind: Option<LockHolder> = None;
+        let mut observed_holder_changed = false;
         let acquired = loop {
             let content = self.lock_content(run_id);
             if self.try_create_lock(path, &content)? {
@@ -807,14 +798,26 @@ impl DagFileStore {
                 };
             }
             let Some(observed) = read_lock_holder(path)? else {
+                stalled_behind = None;
+                stalled_since = (self.now)();
                 continue;
             };
-            if observed.pid.is_none_or(|pid| !self.alive(pid))
-                && let Some(reclaimed) = self.reclaim_observed_lock(path, &observed, run_id)?
-            {
-                break reclaimed;
+            if stalled_behind.as_ref() != Some(&observed) {
+                stalled_behind = Some(observed.clone());
+                stalled_since = (self.now)();
+                observed_holder_changed = true;
             }
-            if (self.now)() - started_at >= LOCK_WAIT_TIMEOUT_MS {
+            if observed.pid.is_none_or(|pid| !self.alive(pid))
+                {
+                    if let Some(reclaimed) = self.reclaim_observed_lock(path, &observed, run_id)? {
+                        break reclaimed;
+                    }
+                    if observed_holder_changed {
+                        stalled_since = (self.now)();
+                    }
+            }
+            observed_holder_changed = false;
+            if (self.now)() - stalled_since >= LOCK_WAIT_TIMEOUT_MS {
                 return Err(DagStoreError::Message(format!(
                     "Timed out acquiring DAG lock: {}",
                     path.display()
@@ -828,12 +831,27 @@ impl DagFileStore {
     }
 
     fn try_create_lock(&self, path: &Path, content: &str) -> Result<bool, DagStoreError> {
+        self.try_create_lock_with_recreation(path, content, true)
+    }
+
+    fn try_create_lock_with_recreation(
+        &self,
+        path: &Path,
+        content: &str,
+        recreate_missing_directory: bool,
+    ) -> Result<bool, DagStoreError> {
         let temporary_path = suffixed(path, &format!(".{}.{}.tmp", host_pid(), random_uuid()));
         let result = self.link_new_file(&temporary_path, path, content);
         remove_force(&temporary_path)?;
         match result {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && recreate_missing_directory => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                self.try_create_lock_with_recreation(path, content, false)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -922,17 +940,24 @@ impl DagFileStore {
             return Ok(false);
         }
         let quarantine_path = suffixed(path, &format!(".{}.{}.stale", host_pid(), random_uuid()));
-        match self.fs.rename(path, &quarantine_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(error.into()),
+        let mut attempts = 0;
+        loop {
+            match self.fs.rename(path, &quarantine_path) {
+                Ok(()) => break,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                Err(error) if self.is_windows_cleanup_error(&error) && attempts < WINDOWS_CLEANUP_RETRIES => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(WINDOWS_CLEANUP_RETRY_MS));
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         let moved = read_lock_holder(&quarantine_path)?;
         if observed != moved.as_ref() || !can_remove(moved.as_ref()) {
             self.restore_quarantined_lock(path, &quarantine_path)?;
             return Ok(false);
         }
-        remove_force(&quarantine_path)?;
+        self.remove_windows_contended_file(&quarantine_path)?;
         Ok(true)
     }
 
@@ -942,28 +967,64 @@ impl DagFileStore {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.into()),
         }
-        remove_force(quarantine_path)?;
+        self.remove_windows_contended_file(quarantine_path)?;
         Ok(())
     }
 
-    fn prune_run_artifacts(&self, checkpoint: &Value, run_id: &str) -> Result<(), DagStoreError> {
+    fn is_windows_cleanup_error(&self, error: &io::Error) -> bool {
+        self.platform == "win32"
+            && (error.raw_os_error() == Some(1) || error.raw_os_error() == Some(16))
+    }
+
+    fn remove_windows_contended_file(&self, path: &Path) -> Result<(), DagStoreError> {
+        let mut attempts = 0;
+        loop {
+            match remove_force(path) {
+                Ok(()) => return Ok(()),
+                Err(error) if self.is_windows_cleanup_error(&error) && attempts < WINDOWS_CLEANUP_RETRIES => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(WINDOWS_CLEANUP_RETRY_MS));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn index_run_artifacts(&self) -> Result<RunArtifactIndex, DagStoreError> {
+        let mut key_files_by_run: HashMap<String, Vec<String>> = HashMap::new();
+        for name in list_files(&self.paths.keys, ".json")? {
+            let path = self.paths.keys.join(&name);
+            if let Some(value) = read_json_file(&path, None, &system_now)?
+                && let Some(run_id) = value.get("runId").and_then(Value::as_str)
+            {
+                key_files_by_run.entry(run_id.to_string()).or_default().push(name);
+            }
+        }
+        let mut lock_files_by_run: HashMap<String, Vec<String>> = HashMap::new();
+        for name in list_files(&self.paths.locks, ".lock")? {
+            match fs::read(self.paths.locks.join(&name)) {
+                Ok(bytes) => {
+                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                        && let Some(run_id) = value.get("runId").and_then(Value::as_str)
+                    {
+                        lock_files_by_run.entry(run_id.to_string()).or_default().push(name);
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(RunArtifactIndex { key_files_by_run, lock_files_by_run })
+    }
+
+    fn prune_run_artifacts(&self, checkpoint: &Value, run_id: &str, artifacts: &RunArtifactIndex) -> Result<(), DagStoreError> {
         remove_force(&self.paths.event(run_id))?;
         remove_dir_force(&self.paths.results.join(run_id))?;
         remove_force(&self.paths.root.join("skills").join(format!("{run_id}.json")))?;
         remove_force(&self.paths.run_lock(run_id))?;
-        for name in list_files(&self.paths.keys, ".json")? {
-            let key_path = self.paths.keys.join(&name);
-            let value = read_json_file(&key_path, None, &system_now)?;
-            if value
-                .as_ref()
-                .and_then(|value| value.get("runId"))
-                .and_then(Value::as_str)
-                != Some(run_id)
-            {
-                continue;
-            }
-            remove_force(&key_path)?;
-            let stem = name.strip_suffix(".json").unwrap_or(&name);
+        for name in artifacts.key_files_by_run.get(run_id).into_iter().flatten() {
+            remove_force(&self.paths.keys.join(name))?;
+            let stem = name.strip_suffix(".json").unwrap_or(name);
             remove_force(&self.paths.locks.join(format!("key-{stem}.lock")))?;
         }
         if let Some(nodes) = checkpoint.get("nodes").and_then(Value::as_array) {
@@ -973,23 +1034,17 @@ impl DagFileStore {
                 }
             }
         }
-        for name in list_files(&self.paths.locks, ".lock")? {
-            let lock_path = self.paths.locks.join(&name);
-            match fs::read(&lock_path) {
-                Ok(bytes) => {
-                    if let Ok(value) = serde_json::from_slice::<Value>(&bytes)
-                        && value.get("runId").and_then(Value::as_str) == Some(run_id)
-                    {
-                        remove_force(&lock_path)?;
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+        for name in artifacts.lock_files_by_run.get(run_id).into_iter().flatten() {
+            remove_force(&self.paths.locks.join(name))?;
         }
         remove_force(&self.paths.run(run_id))?;
         Ok(())
     }
+}
+
+struct RunArtifactIndex {
+    key_files_by_run: HashMap<String, Vec<String>>,
+    lock_files_by_run: HashMap<String, Vec<String>>,
 }
 
 fn read_lock_holder(path: &Path) -> Result<Option<LockHolder>, DagStoreError> {
@@ -1186,7 +1241,12 @@ fn read_optional_string(value: &Value, key: &str) -> Option<String> {
 /// Regular-file names in `directory` ending with `suffix`, sorted for deterministic iteration.
 fn list_files(directory: &Path, suffix: &str) -> io::Result<Vec<String>> {
     let mut names = Vec::new();
-    for entry in fs::read_dir(directory)? {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(names),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;

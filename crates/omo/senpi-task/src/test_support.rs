@@ -21,6 +21,7 @@ pub(crate) fn base_record(task_id: &str, parent_session_id: &str) -> TaskRecord 
         notify_on_terminal: false,
         created_at: "2026-07-06T01:00:00.000Z".to_string(),
         updated_at: "2026-07-06T01:00:03.000Z".to_string(),
+        started_at: None,
         notification: TaskNotification::default(),
         name: None,
         task_summary: None,

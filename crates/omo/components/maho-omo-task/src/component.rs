@@ -83,13 +83,14 @@ impl TaskComponent {
         let rpc = crate::task_rpc_bridge::wire_task_rpc_bridge(api, component.engine.manager.clone(), Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned)), component.engine.store.state_dir().to_string_lossy().into_owned(), Arc::new(move |name, value| events.emit("senpi:extension-rpc-event", &serde_json::json!({"name":name,"data":value}))))?;
         *component.rpc.lock().unwrap_or_else(PoisonError::into_inner) = Some(rpc);
         let tracker = crate::skill_invocation_tracker::SkillInvocationTracker::new().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let dag_policy: Arc<dyn senpi_task::tools::task::spawn_policy::SpawnPolicyDeps + Send + Sync> = tracker.clone();
         tracker.register(api);
         crate::renderers::register_task_message_renderers(api);
         crate::registration::register_removed_team_wait_hint(api);
         let weak = Arc::downgrade(&component);
         crate::commands::register_task_commands_with_sync(api, component.engine.manager.clone(), Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
         let weak = Arc::downgrade(&component);
-        crate::tools::register_task_tools_with_sync(api, TaskToolsDeps { manager: component.engine.manager.clone(), state_dir: component.engine.store.state_dir().to_string_lossy().into_owned(), omo_config: component.engine.config.clone(), agents: component.engine.agents.clone(), spawn, policy: tracker, team_routing: component.team_routing.clone() }, Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
+        crate::tools::register_task_tools_with_sync(api, TaskToolsDeps { manager: component.engine.manager.clone(), state_dir: component.engine.store.state_dir().to_string_lossy().into_owned(), omo_config: component.engine.config.clone(), agents: component.engine.agents.clone(), spawn, policy: tracker.clone(), team_routing: component.team_routing.clone() }, Arc::new(move || { if let Some(component) = weak.upgrade() { component.sync(); } }));
         crate::reload_guard::wire_reload_guard(api, component.engine.manager.clone());
         let usage = api.get_flag("omo-task-usage-hint") != Some(FlagValue::Boolean(false));
         crate::event_bridge::wire_task_usage_guidance(api, Arc::new(move || usage));
@@ -141,7 +142,27 @@ impl TaskComponent {
                 Ok(EventResult::None)
             }) }));
         }
-        let dag = Arc::new(crate::dag_engine::TaskDagEngine::compose(&component.engine, None).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?);
+        // TS index.ts createDagRuntime: the task spawn policy governs agent-routed nodes, the session's
+        // ancestry sets child depth, and node skills are materialized through the task skill loader.
+        let env: BTreeMap<String, String> = std::env::vars().collect();
+        let materialize_store_cwd = component.engine.runtime.clone();
+        let scheduling = crate::dag_engine::DagRuntimeSchedulingOptions {
+            ancestry: crate::dag_engine::read_session_ancestry(&api.profile.session_context, &env),
+            node_spawn_policy: Some(crate::dag_engine::dag_node_spawn_policy(dag_policy)),
+            auto_mode: None,
+            lease_watch: None,
+            retention_sweep: None,
+            logger: None,
+        };
+        let dag_store_for_skills: Arc<std::sync::OnceLock<Arc<senpi_task::dag::store::DagFileStore>>> = Arc::new(std::sync::OnceLock::new());
+        let materialize_store = dag_store_for_skills.clone();
+        let materialize: senpi_task::dag::manager::DagMaterializeSkills = Arc::new(move |input| {
+            let cwd = materialize_store_cwd.lock().unwrap_or_else(PoisonError::into_inner).cwd().to_string_lossy().into_owned();
+            let store = materialize_store.get().cloned().ok_or_else(|| senpi_task::dag::manager::DagManagerError::new(senpi_task::dag::manager::DagManagerErrorCode::InvalidDefinition, "DAG store is not ready for skill materialization"))?;
+            senpi_task::dag::skills::create_dag_skill_materializer(senpi_task::dag::skills::DagSkillMaterializerOptions { store, cwd, load_skills: None, home_dir: None, extra_dirs: vec![] })(input)
+        });
+        let dag = crate::dag_engine::TaskDagEngine::compose_with_options(&component.engine, Some(materialize), scheduling).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+        let _ = dag_store_for_skills.set(dag.store.clone());
         dag.register_queries(api, &component)?;
         dag.register_rpc_with_timers(api, &component, dag_status_timers, rpc_timers);
         dag.register_tool(api, component.clone());

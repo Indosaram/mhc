@@ -274,3 +274,24 @@ fn given_a_terminal_record_without_run_stats_when_persisted_then_no_sidecar_is_w
     assert_eq!(reused.output, "no stats output");
     assert_eq!(reused.run_stats, None);
 }
+
+
+#[test]
+fn given_an_existing_result_when_replaced_then_only_final_artifacts_remain() {
+    let project_dir = temp_project();
+    let store = dag_store(&project_dir);
+    let first = terminal_record(&project_dir, "first result");
+    let second = terminal_record(&project_dir, "second result");
+    assert!(matches!(persist_dag_node_result(DagNodeResultPersistInput {
+        store: &store, run_id: RUN_ID.to_string(), node_id: NODE_ID.to_string(), record: &first, now: None,
+    }), DagNodeResultPersistOutcome::Persisted { .. }));
+    assert!(matches!(persist_dag_node_result(DagNodeResultPersistInput {
+        store: &store, run_id: RUN_ID.to_string(), node_id: NODE_ID.to_string(), record: &second, now: None,
+    }), DagNodeResultPersistOutcome::Persisted { .. }));
+    let result = read_dag_node_result(DagNodeResultReadInput { store: &store, run_id: RUN_ID, node_id: NODE_ID }).expect("result");
+    assert_eq!(result.output, "second result");
+    let mut files: Vec<_> = std::fs::read_dir(store.paths.result(RUN_ID, NODE_ID).parent().expect("result directory"))
+        .expect("list artifacts").map(|entry| entry.expect("directory entry").file_name()).collect();
+    files.sort();
+    assert_eq!(files, vec![std::ffi::OsString::from(format!("{NODE_ID}.stats.json")), std::ffi::OsString::from(format!("{NODE_ID}.txt"))]);
+}

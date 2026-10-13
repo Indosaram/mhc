@@ -110,6 +110,43 @@ fn open(project: &Path, options: DagStoreOptions) -> DagFileStore {
     create_dag_file_store(&config(project), options).expect("store opens")
 }
 
+#[test]
+fn given_a_fresh_store_without_directories_when_acquiring_a_run_lock_then_the_lock_directory_is_created() {
+    let project = temp_project();
+    let store = open(project.path(), DagStoreOptions::default());
+    assert!(!store.paths.locks.exists());
+
+    store.with_run_lock(RUN_ID, || {}).expect("fresh run lock");
+
+    assert!(store.paths.locks.exists());
+}
+
+#[test]
+fn given_a_missing_dag_directory_when_opening_then_reads_treat_it_as_empty_without_creating_it() {
+    let project = temp_project();
+    let store = open(project.path(), DagStoreOptions::default());
+    fs::remove_dir_all(&store.paths.root).expect("remove DAG root");
+
+    assert_eq!(store.prune_expired(None).expect("empty retention sweep"), Vec::<String>::new());
+    assert!(!store.paths.root.exists());
+
+    store.append_event(&event(1)).expect("write recreates event directory");
+    assert!(store.paths.events.exists());
+}
+
+#[test]
+fn given_a_checkpoint_without_lease_holder_fields_when_rewriting_then_prior_lease_fields_are_not_carried_forward() {
+    let project = temp_project();
+    let store = open(project.path(), DagStoreOptions::default());
+    store.write_checkpoint(RUN_ID, &json!({"schemaVersion":1,"runId":RUN_ID,"leaseHolderPid":7,"previousLeaseHolderPid":6})).expect("initial checkpoint");
+
+    store.write_checkpoint(RUN_ID, &json!({"schemaVersion":1,"runId":RUN_ID,"status":"paused"})).expect("replacement checkpoint");
+
+    let value = store.read_checkpoint::<Value>(RUN_ID).expect("read").expect("checkpoint");
+    assert!(value.get("leaseHolderPid").is_none());
+    assert!(value.get("previousLeaseHolderPid").is_none());
+}
+
 fn run_lock_path(project: &Path) -> PathBuf {
     DagStorePaths::new(&resolve_dag_state_dir(&config(project))).run_lock(RUN_ID)
 }

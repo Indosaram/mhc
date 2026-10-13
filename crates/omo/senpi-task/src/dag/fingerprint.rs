@@ -16,7 +16,7 @@ pub struct DagSchedulerContract {
 }
 
 pub const DAG_SCHEDULER_CONTRACT: DagSchedulerContract = DagSchedulerContract {
-    wave_admission: "strict-barrier",
+    wave_admission: "dependency-frontier",
     failure_policy: "continue-independent",
     dependency_data: "filesystem-only",
 };

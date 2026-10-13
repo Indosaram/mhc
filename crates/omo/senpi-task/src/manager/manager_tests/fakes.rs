@@ -21,7 +21,7 @@ use crate::lifecycle::{
 use crate::manager::concurrency::TaskConcurrencyConfig;
 use crate::manager::execution_mode::ExecutionMode;
 use crate::manager::types::{
-    ChildPlanner, ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedRunners,
+    ChildPlanner, ManagedRunner, ManagedRunnerError, ManagedRunnerResult, ManagedRunners, MaxChildren,
     ManagedStartSpec, ManagerConfig, ManagerStartSpec, ResolvedChildPlan, SpawnAdmission,
     StartResult, StartedTask, TaskManagerOptions,
 };
@@ -500,6 +500,43 @@ pub(crate) fn make_manager(options: HarnessOptions) -> Harness {
     }
 }
 
+pub(crate) fn make_lifecycle_manager_with_cap(cap: usize) -> Harness {
+    let project = Project::new();
+    let store = project.store();
+    let runner = Arc::new(FakeRunner::default());
+    let registry = Arc::new(ManagerRegistry::default());
+    let lifecycle = Arc::new(create_task_lifecycle(LifecycleDeps::new(
+        Arc::new(store.clone()),
+        Arc::clone(&registry) as Arc<dyn ResidencyRegistry>,
+        lifecycle_settings(serde_json::json!({ "residency_max_children": cap })),
+    )));
+    let lifecycle_slot = Arc::new(Mutex::new(Some(Arc::clone(&lifecycle))));
+    let mut options = TaskManagerOptions::new(
+        store.clone(),
+        ManagedRunners {
+            in_process: Arc::clone(&runner) as Arc<dyn ManagedRunner>,
+            process: Arc::clone(&runner) as Arc<dyn ManagedRunner>,
+        },
+        category_planner(&[]),
+        project.cwd(),
+    );
+    options.destruction = Some(Arc::new(LifecycleDestruction(lifecycle_slot)));
+    let admit = Arc::clone(&lifecycle);
+    options.admit = Some(Arc::new(move |parent| match admit.admit_resident(parent) {
+        Ok(AdmissionResult::Admitted) => SpawnAdmission::Admitted,
+        Ok(AdmissionResult::Evicted { evicted_task_id }) => SpawnAdmission::Evicted { evicted_task_id },
+        Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
+            message: error.to_string(),
+            max_children: Some(MaxChildren::Number(error.max_children)),
+            residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary { task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.clone() }).collect()),
+        },
+        Err(error) => SpawnAdmission::Rejected { message: error.to_string(), max_children: None, residents: None },
+    }));
+    let manager = create_task_manager(options);
+    *lock(&registry.0) = Some(manager.clone());
+    Harness { manager, store, in_process: Arc::clone(&runner), process: Arc::clone(&runner), project }
+}
+
 pub(crate) fn default_manager() -> Harness {
     make_manager(HarnessOptions::default())
 }
@@ -725,7 +762,7 @@ pub(crate) fn make_lifecycle_manager(
         store.clone(),
         ManagedRunners {
             in_process: Arc::clone(&runner),
-            process: runner,
+        process: Arc::clone(&runner) as Arc<dyn ManagedRunner>,
         },
         category_planner(&[]),
         project.cwd(),
@@ -741,9 +778,15 @@ pub(crate) fn make_lifecycle_manager(
             }
             Ok(AdmissionResult::Rejected(error)) => SpawnAdmission::Rejected {
                 message: error.to_string(),
+                max_children: Some(MaxChildren::Number(error.max_children)),
+                residents: Some(error.residents.iter().map(|resident| crate::manager::types::ResidentSummary {
+                    task_id: resident.task_id.clone(), name: resident.name.clone(), status: resident.status.clone(),
+                }).collect()),
             },
             Err(error) => SpawnAdmission::Rejected {
                 message: error.to_string(),
+                max_children: None,
+                residents: None,
             },
         }
     }));

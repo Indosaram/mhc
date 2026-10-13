@@ -31,6 +31,7 @@ pub fn parse_task_record(
     let pid = read_optional_integer(record, "pid")?;
     let host_pid = read_optional_integer(record, "host_pid")?;
     let child_session_id = read_optional_string(record, "child_session_id")?;
+    let started_at = read_optional_string(record, "started_at")?;
     let final_response = read_optional_string(record, "final_response")?;
     let error_message = read_optional_string(record, "error_message")?;
     let killed = read_optional_bool(record, "killed")?;
@@ -62,6 +63,7 @@ pub fn parse_task_record(
         notify_on_terminal,
         created_at: read_string(record, "created_at")?,
         updated_at: read_string(record, "updated_at")?,
+        started_at,
         notification: read_notification(record)?,
         name,
         task_summary,

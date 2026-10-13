@@ -8,7 +8,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use crate::dag::journal::{DagJournalUnsubscribe, subscribe_dag_journal};
 use crate::dag::manager::DagRunRecordV1;
-use crate::dag::store::{DagEventReadOptions, DagFileStore};
+use crate::dag::store::{DagEventReadOptions, DagFileStore, DagStoreError};
 use crate::dag::types::{
     DagNode, DagNodeCounts, DagNodeError, DagNodeErrorCode, DagNodeId, DagNodeState, DagRunEventPayload,
     DagRunEventType, DagRunId, DagRunSnapshot, DagRunStatus,
@@ -30,6 +30,7 @@ pub enum DagWaitErrorCode {
     RunNotFound,
     RunNotOwned,
     InvalidArguments,
+    StoreError,
 }
 
 impl DagWaitErrorCode {
@@ -38,6 +39,7 @@ impl DagWaitErrorCode {
             Self::RunNotFound => "run_not_found",
             Self::RunNotOwned => "run_not_owned",
             Self::InvalidArguments => "invalid_arguments",
+            Self::StoreError => "store_error",
         }
     }
 }
@@ -173,18 +175,20 @@ impl Inner {
             )
             .with_run_id(run_id.clone()));
         }
-        let record = self
-            .store
-            .read_checkpoint::<DagRunRecordV1>(run_id)
-            .ok()
-            .flatten()
-            .ok_or_else(|| {
+        let record = self.store.read_checkpoint::<DagRunRecordV1>(run_id).map_err(|error| {
+            if matches!(&error, DagStoreError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound) {
                 DagWaitError::new(
                     DagWaitErrorCode::RunNotFound,
                     format!("unknown dag run \"{run_id}\""),
                 )
                 .with_run_id(run_id.clone())
-            })?;
+            } else {
+                DagWaitError::new(DagWaitErrorCode::StoreError, error.to_string()).with_run_id(run_id.clone())
+            }
+        })?.ok_or_else(|| {
+            DagWaitError::new(DagWaitErrorCode::RunNotFound, format!("unknown dag run \"{run_id}\""))
+                .with_run_id(run_id.clone())
+        })?;
         // A run whose owning session is gone stays owned by it: a new session gets a rejection
         // here rather than a subscription that would never settle.
         if record.parent_session_id != parent_session_id {
@@ -478,6 +482,8 @@ fn project_snapshot(record: DagRunRecordV1) -> DagRunSnapshot {
         critical_path: record.critical_path,
         bottlenecks: record.bottlenecks,
         diagnostics: record.diagnostics,
+        amend_history: record.amend_history,
+        lease_holder_pid: record.lease_holder_pid,
     }
 }
 

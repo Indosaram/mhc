@@ -10,6 +10,10 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::lifecycle::port::ReattachFailureKind;
+use crate::lifecycle::admission_lease::{
+    AcquireAdmissionLeaseResult, AdmissionLeaseTimingOverrides, SessionAdmissionLease,
+    acquire_session_admission_lease,
+};
 use crate::lifecycle::{
     DestroyCause, LifecycleReattachPorts, ReattachResult, RespawnResult,
     register_lifecycle_reattach_ports,
@@ -31,11 +35,13 @@ use crate::manager::launch_fence::{launch_run_of, owns_run};
 use crate::manager::names::NameRegistry;
 use crate::manager::outcome::{ErrorOutcomeInput, OutcomeTrackerPorts, track_outcome};
 use crate::manager::respawn::{RespawnInput, respawn_managed_task};
+use crate::manager::residency_signal::{ResidencyChange, ResidencySignal};
 use crate::manager::transcript_log::subscribe_transcript_log;
 use crate::manager::types::{
     Clock, FallibleAdmit, ListScope, ListedTask, ManagedRunner, ManagedRunnerError,
     ManagedStartSpec, ManagerStartSpec, NoopDestruction, OwnedStartResult, PlanResolutionCode, PlanResolutionError, ResolvedChildPlan,
-    RpcRespawnRunner, SpawnAdmission, StartFailure, StartResult, StartedTask, TaskManagerOptions,
+    ResidencyDeniedCause, RpcRespawnRunner, SpawnAdmission, StartFailure,
+    StartResult, StartedTask, TaskManagerOptions,
 };
 use crate::run_stats::{RunStatsTracker, create_run_stats_tracker};
 use crate::runners::RunnerFailureKind;
@@ -150,6 +156,7 @@ struct Inner {
     steering: SteeringEngine,
     isolation: IsolationWiring,
     stops_pending: PendingStops,
+    residency: ResidencySignal,
     this: Weak<Inner>,
 }
 
@@ -334,6 +341,7 @@ impl TaskManager {
                 steering: SteeringEngine::new(port),
                 isolation,
                 stops_pending: PendingStops::default(),
+                residency: ResidencySignal::default(),
                 this: this.clone(),
             }
         });
@@ -365,6 +373,10 @@ impl TaskManager {
 
     pub fn store(&self) -> &TaskRecordStore {
         &self.inner.store
+    }
+
+    pub fn residency_changed(&self, parent_session_id: &str) -> ResidencyChange {
+        self.inner.residency.changed(parent_session_id)
     }
 
     pub fn has_free_slot(&self, model: &str) -> bool { lock(&self.inner.concurrency).has_free_slot(model) }
@@ -456,7 +468,7 @@ impl TaskManager {
             admit(session_id).map_err(|error| crate::workpool::ports::WorkpoolAdmissionError(error.to_string()))?
         } else if let Some(admit) = &self.inner.admit { admit(session_id) } else { return Ok(()); };
         match admission {
-            SpawnAdmission::Rejected { message } => Err(crate::workpool::ports::WorkpoolAdmissionError(message)),
+            SpawnAdmission::Rejected { message, .. } => Err(crate::workpool::ports::WorkpoolAdmissionError(message)),
             SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => Ok(()),
         }
     }
@@ -527,7 +539,9 @@ impl TaskManager {
             Ok(plan) => plan,
             Err(error) => return StartResult::PlanUnresolved(*error),
         };
-        if let Some(rejected) = self.admission_rejection(spec, &plan) {
+        let (admission_lease, rejection) = self.admission_rejection(spec, &plan);
+        if let Some(rejected) = rejection {
+            if let Some(lease) = admission_lease { lease.release(); }
             return rejected;
         }
         let mut spec = spec.clone();
@@ -536,9 +550,12 @@ impl TaskManager {
             config_mode: Some(self.inner.config.default_execution_mode),
         });
         if let Err(message) = prepare(&mut spec, &plan, mode) {
+            if let Some(lease) = admission_lease {
+                lease.release();
+            }
             return StartResult::PlanUnresolved(PlanResolutionError::new(PlanResolutionCode::InvalidTarget, message));
         }
-        self.inner.start_resolved(&spec, &plan, None)
+        self.inner.start_resolved(&spec, &plan, None, admission_lease)
     }
 
     pub fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> OwnedStartResult {
@@ -546,12 +563,17 @@ impl TaskManager {
             Ok(plan) => plan,
             Err(error) => return OwnedStartResult::NotStarted(StartResult::PlanUnresolved(*error)),
         };
-        if let Some(rejected) = self.admission_rejection(spec, &plan) {
+        let (admission_lease, rejection) = self.admission_rejection(spec, &plan);
+        if let Some(rejected) = rejection {
+            if let Some(lease) = admission_lease { lease.release(); }
             return OwnedStartResult::NotStarted(rejected);
         }
         let lock_path = match owner_lock_path(self.inner.store.state_dir(), owner) {
             Ok(path) => path,
             Err(error) => {
+                if let Some(lease) = admission_lease {
+                    lease.release();
+                }
                 return OwnedStartResult::NotStarted(bookkeeping_failure(spec, &plan, error));
             }
         };
@@ -559,7 +581,7 @@ impl TaskManager {
             if let Some(raced) = self.owned_result(owner) {
                 return Ok(raced);
             }
-            Ok(match self.inner.start_resolved(spec, &plan, Some(owner)) {
+            Ok(match self.inner.start_resolved(spec, &plan, Some(owner), admission_lease.clone()) {
                 StartResult::Started(task) => OwnedStartResult::Started {
                     task,
                     reused: false,
@@ -567,30 +589,79 @@ impl TaskManager {
                 other => OwnedStartResult::NotStarted(other),
             })
         });
-        locked.unwrap_or_else(|error| {
-            OwnedStartResult::NotStarted(bookkeeping_failure(spec, &plan, error))
-        })
+        match locked {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(lease) = &admission_lease { lease.release(); }
+                OwnedStartResult::NotStarted(bookkeeping_failure(spec, &plan, error))
+            }
+        }
     }
 
-    fn admission_rejection(&self, spec: &ManagerStartSpec, plan: &ResolvedChildPlan) -> Option<StartResult> {
-        let admission = if let Some(admit) = &self.inner.fallible_admit {
-            match admit(&spec.parent_session_id) {
-                Ok(admission) => admission,
-                Err(error) => return Some(StartResult::StartFailed(StartFailure {
+    fn admission_rejection(&self, spec: &ManagerStartSpec, plan: &ResolvedChildPlan) -> (Option<Arc<dyn SessionAdmissionLease>>, Option<StartResult>) {
+        if self.inner.admit.is_none() && self.inner.fallible_admit.is_none() {
+            return (None, None);
+        }
+        let lease = match acquire_session_admission_lease(
+            self.inner.store.state_dir(),
+            &spec.parent_session_id,
+            AdmissionLeaseTimingOverrides::default(),
+        ) {
+            Ok(AcquireAdmissionLeaseResult::Acquired(lease)) => lease,
+            Ok(AcquireAdmissionLeaseResult::Contended) => {
+                return (None, Some(StartResult::ResidencyDenied {
+                    reason: "Residency admission is contended.".to_string(),
+                    cause: ResidencyDeniedCause::Lease,
+                }));
+            }
+            Err(error) => {
+                return (None, Some(StartResult::StartFailed(StartFailure {
                     task_id: String::new(), name: spec.name.clone().unwrap_or_default(),
                     category: spec.category.clone().or(plan.category.clone()),
                     subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
                     execution_mode: spec.execution_mode.unwrap_or_default(), model: plan.model.clone(),
                     resolved_model: plan.resolved_model.clone(), run_in_background: spec.run_in_background,
                     error_message: error.to_string(),
-                })),
+                })));
             }
-        } else { (self.inner.admit.as_ref()?)(&spec.parent_session_id) };
+        };
+        let admission = if let Some(admit) = &self.inner.fallible_admit {
+            match admit(&spec.parent_session_id) {
+                Ok(admission) => admission,
+                Err(error) => {
+                    lease.release();
+                    return (None, Some(StartResult::StartFailed(StartFailure {
+                    task_id: String::new(), name: spec.name.clone().unwrap_or_default(),
+                    category: spec.category.clone().or(plan.category.clone()),
+                    subagent_type: spec.subagent_type.clone().or(plan.agent_type.clone()),
+                    execution_mode: spec.execution_mode.unwrap_or_default(), model: plan.model.clone(),
+                    resolved_model: plan.resolved_model.clone(), run_in_background: spec.run_in_background,
+                    error_message: error.to_string(),
+                })));
+                }
+            }
+        } else if let Some(admit) = &self.inner.admit {
+            admit(&spec.parent_session_id)
+        } else {
+            return (Some(lease), None);
+        };
         match admission {
-            SpawnAdmission::Rejected { message } => {
-                Some(StartResult::ResidencyDenied { reason: message })
+            SpawnAdmission::Rejected { message, max_children, residents } => {
+                let residents = residents.unwrap_or_default();
+                let cause = ResidencyDeniedCause::Residents { max_children, residents };
+                lease.release();
+                (None, Some(StartResult::ResidencyDenied { reason: message, cause }))
             }
-            SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => None,
+            SpawnAdmission::Admitted | SpawnAdmission::Evicted { .. } => {
+                if !lease.is_owner() {
+                    lease.release();
+                    return (None, Some(StartResult::ResidencyDenied {
+                        reason: "Residency admission lease was displaced.".to_string(),
+                        cause: ResidencyDeniedCause::Lease,
+                    }));
+                }
+                (Some(lease), None)
+            }
         }
     }
 
@@ -805,6 +876,7 @@ impl TaskManager {
     }
 
     pub fn forget(&self, task_id: &str) {
+        self.inner.residency.notify(self.inner.try_load(task_id).as_ref().map(|record| record.parent_session_id.as_str()));
         let (unsubscribe, detaches) = {
             let mut state = lock(&self.inner.state);
             let unsubscribe = state
@@ -907,6 +979,45 @@ impl TaskManager {
         record: &TaskRecord,
         resume_session_path: Option<&Path>,
     ) -> RespawnResult {
+        let mut moved = false;
+        let timestamp = self.inner.now_iso();
+        let stamped = self.inner.store.mutate(&record.task_id, &mut |fresh: &TaskRecord| {
+            moved = (is_terminal_record(fresh) && !is_terminal_record(record))
+                || fresh.killed == Some(true)
+                || fresh.host_pid != record.host_pid
+                || fresh.notification.run_epoch != record.notification.run_epoch;
+            if moved || fresh.started_at.is_some() {
+                fresh.clone()
+            } else {
+                let mut next = fresh.clone();
+                next.started_at = Some(timestamp.clone());
+                next
+            }
+        });
+        match stamped {
+            Ok(Some(_)) if !moved => {}
+            Ok(Some(_)) => {
+                return RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                    code: crate::lifecycle::port::RespawnFailureCode::RespawnFailed,
+                    reason: "task was stopped or moved before its respawn launched".to_string(),
+                };
+            }
+            Ok(None) => {
+                return RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Unrecoverable,
+                    code: crate::lifecycle::port::RespawnFailureCode::SpawnSpecUnavailable,
+                    reason: format!("Task record not found before respawn: {}", record.task_id),
+                };
+            }
+            Err(error) => {
+                return RespawnResult::Failed {
+                    disposition: crate::lifecycle::port::RespawnDisposition::Retryable,
+                    code: crate::lifecycle::port::RespawnFailureCode::RespawnFailed,
+                    reason: error.to_string(),
+                };
+            }
+        }
         respawn_managed_task(&RespawnInput {
             record,
             session_path: resume_session_path,
@@ -1036,6 +1147,7 @@ impl Inner {
         spec: &ManagerStartSpec,
         plan: &ResolvedChildPlan,
         owner: Option<&DagTaskOwner>,
+        admission_lease: Option<Arc<dyn SessionAdmissionLease>>,
     ) -> StartResult {
         let max_depth = plan.max_depth.unwrap_or(self.config.max_depth);
         let allowed_subagents: Vec<String> = spec
@@ -1053,6 +1165,7 @@ impl Inner {
             allowed_subagents: Some(&allowed_subagents),
         });
         if let DepthDecision::Denied { reason } = decision {
+            if let Some(lease) = &admission_lease { lease.release(); }
             return StartResult::DepthDenied {
                 reason,
                 child_depth: spec.depth,
@@ -1086,6 +1199,7 @@ impl Inner {
                 if let Some(registration) = &requested_registration {
                     lock(&self.names).release(&spec.parent_session_id, &registration.name);
                 }
+                if let Some(lease) = &admission_lease { lease.release(); }
                 return StartResult::StartFailed(StartFailure {
                     task_id: String::new(),
                     name: requested_name.unwrap_or_default(),
@@ -1149,6 +1263,7 @@ impl Inner {
                         started && failed,
                         "isolation refusal transitions were not applied"
                     );
+                    if let Some(lease) = &admission_lease { lease.release(); }
                     return StartResult::StartFailed(StartFailure {
                         task_id: claimed.task_id.clone(),
                         name: registration.name.clone(),
@@ -1193,8 +1308,10 @@ impl Inner {
             if prepared.is_some() {
                 self.isolation.discard(&claimed.task_id);
             }
+            if let Some(lease) = &admission_lease { lease.release(); }
             return self.bookkeeping_failed(spec, &claimed, &registration.name, execution_mode);
         }
+        if let Some(lease) = &admission_lease { lease.release(); }
         if let Some((handle, baseline, _)) = prepared {
             self.isolation.bind(&final_record.task_id, handle, baseline);
         }
@@ -1847,6 +1964,9 @@ impl Inner {
         let Some(record) = self.try_load(task_id) else {
             return;
         };
+        if is_terminal_record(&record) {
+            self.residency.notify(Some(&record.parent_session_id));
+        }
         let waiters = lock(&self.state)
             .waiters
             .remove(task_id)
@@ -1926,6 +2046,7 @@ impl Inner {
         let reattached = TaskRecord {
             status: TaskStatus::Running,
             updated_at: self.now_iso(),
+            started_at: fresh.started_at.clone().or_else(|| Some(self.now_iso())),
             notification,
             pid,
             error_message: None,

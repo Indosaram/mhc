@@ -49,6 +49,140 @@ fn plan_build_definition() -> DagDefinition {
     }
 }
 
+fn diamond(b_prompt: &str, extra: Vec<DagNodeInput>) -> DagDefinition {
+    let node = |id: &str, prompt: &str, depends_on: Option<Vec<&str>>| DagNodeInput {
+        id: id.into(), prompt: prompt.into(), target: DagNodeTarget::Category("quick".into()),
+        label: None, depends_on: depends_on.map(|deps| deps.into_iter().map(str::to_string).collect()),
+        task_summary: None, description: None, load_skills: None,
+    };
+    let mut nodes = vec![node("A", "build a", None), node("B", b_prompt, Some(vec!["A"])), node("C", "build c", Some(vec!["A"])), node("D", "build d", Some(vec!["B", "C"]))];
+    nodes.extend(extra);
+    DagDefinition { key: "diamond".into(), name: "diamond".into(), nodes }
+}
+
+fn complete_diamond(store: &DagFileStore, run_id: &str) -> DagRunRecordV1 {
+    let mut record = store.read_checkpoint::<DagRunRecordV1>(run_id).expect("checkpoint read").expect("checkpoint exists");
+    record.status = DagRunStatus::Completed;
+    record.completed_at = Some("2026-01-01T00:01:00.000Z".into());
+    for node in &mut record.nodes {
+        node.state = DagNodeState::Completed;
+        node.task_id = Some(format!("task-{}", node.id));
+        node.attempt = 1;
+        node.completed_at = Some("2026-01-01T00:01:00.000Z".into());
+    }
+    store.write_checkpoint(run_id, &record).expect("completed checkpoint");
+    record
+}
+
+#[test]
+fn given_a_pending_run_when_amended_with_a_changed_node_then_dependents_are_invalidated_and_history_is_recorded() {
+    let project = temp_project();
+    let store = open_store(&project);
+    let dag = manager_over(&store);
+    let started = dag.start(DagStartParams { definition: plan_build_definition(), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let mut definition = plan_build_definition();
+    definition.nodes[0].prompt = "revise plan".into();
+    let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition, parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
+    assert_eq!(amended.nodes.iter().map(|node| node.exec_attempt).collect::<Vec<_>>(), vec![Some(1), Some(1)]);
+    assert_eq!(amended.amend_history.expect("history").len(), 1);
+    assert_eq!(amended.definition.nodes[0].prompt, "revise plan");
+}
+
+#[test]
+fn given_a_completed_diamond_when_b_prompt_is_amended_then_only_b_and_d_are_invalidated_and_cached_siblings_survive() {
+    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
+    let started = dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    complete_diamond(&store, &started.snapshot.run_id);
+    let amended = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into() }).expect("amend");
+    assert_eq!(amended.nodes.iter().map(|n| (n.id.as_str(), n.state, n.exec_attempt)).collect::<Vec<_>>(), vec![("A", DagNodeState::Completed, None), ("B", DagNodeState::Pending, Some(1)), ("C", DagNodeState::Completed, None), ("D", DagNodeState::Pending, Some(1))]);
+    assert_eq!(amended.amend_history.as_ref().expect("history").len(), 1);
+    assert_eq!(dag.snapshot(&started.snapshot.run_id, PARENT_SESSION_ID).expect("snapshot").amend_history.expect("projected history").len(), 1);
+    let reused=dag.start(DagStartParams { definition: diamond("changed b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("reuse");
+    assert!(reused.reused);
+    let conflict=dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect_err("conflict");
+    assert_eq!(conflict.code,DagManagerErrorCode::DefinitionConflict);
+}
+
+#[test]
+fn given_changed_running_and_removed_graph_members_when_amended_then_unsafe_nodes_and_dangling_removals_are_rejected_but_leaf_removal_is_allowed() {
+    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
+    let started = dag.start(DagStartParams { definition: diamond("build b", vec![]), parent_session_id: PARENT_SESSION_ID.into(), root_session_id: ROOT_SESSION_ID.into() }).expect("start");
+    let complete = complete_diamond(&store, &started.snapshot.run_id);
+    let mut running = complete.clone(); running.status = DagRunStatus::Running; running.completed_at = None;
+    running.nodes.iter_mut().find(|n| n.id == "B").expect("B").state = DagNodeState::Running;
+    store.write_checkpoint(&started.snapshot.run_id, &running).expect("running checkpoint");
+    let error = dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: diamond("changed", vec![]), parent_session_id: PARENT_SESSION_ID.into() }).expect_err("running node refusal");
+    assert_eq!(error.code, DagManagerErrorCode::AmendRunningNode); assert_eq!(error.node_ids(), &["B"]);
+    store.write_checkpoint(&started.snapshot.run_id, &complete).expect("restore checkpoint");
+    let dangling = diamond("build b", vec![]).nodes.into_iter().filter(|n| n.id != "A").collect();
+    assert_eq!(dag.amend(DagAmendParams { run_id: Some(started.snapshot.run_id.clone()), key: None, definition: DagDefinition { key:"diamond".into(), name:"diamond".into(), nodes:dangling }, parent_session_id:PARENT_SESSION_ID.into() }).expect_err("dangling graph").code, DagManagerErrorCode::InvalidDefinition);
+    let leaf_removed = diamond("build b", vec![]).nodes.into_iter().filter(|n| n.id != "D").collect();
+    assert_eq!(dag.amend(DagAmendParams { run_id:None, key:Some("diamond".into()), definition:DagDefinition { key:"diamond".into(), name:"diamond".into(), nodes:leaf_removed }, parent_session_id:PARENT_SESSION_ID.into() }).expect("leaf removal").nodes.len(), 3);
+}
+
+#[test]
+fn given_a_completed_run_when_a_node_is_added_then_compiled_graph_projections_include_the_new_node() {
+    let project = temp_project(); let store = open_store(&project); let dag = manager_over(&store);
+    let base = diamond("build b", vec![]); let started = dag.start(DagStartParams { definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store, &started.snapshot.run_id);
+    let mut added=base; added.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:Some(vec!["D".into()]), task_summary:None, description:None, load_skills:None });
+    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id), key:None, definition:added, parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
+    assert_eq!(amended.nodes.iter().find(|n| n.id=="E").expect("E").state,DagNodeState::Pending);
+    assert_eq!(amended.waves.last().expect("last wave").node_ids, vec!["E"]);
+    assert!(amended.edges.iter().any(|e| e.from=="D" && e.to=="E"));
+}
+
+#[test]
+fn given_a_materialized_run_when_changed_and_added_nodes_are_amended_then_only_those_nodes_are_rematerialized() {
+    let project=temp_project(); let store=open_store(&project); let calls=Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new())); let seen=Arc::clone(&calls);
+    let materializer: DagMaterializeSkills=Arc::new(move |input| {
+        seen.lock().expect("calls").push(input.definition.nodes.iter().map(|node| node.id.clone()).collect());
+        Ok(DagSkillMaterialization { nodes:input.definition.nodes.iter().map(|node|(node.id.clone(),format!("skill:{}",node.prompt))).collect(),diagnostics:Vec::new() })
+    });
+    let dag=create_dag_manager(DagManagerOptions { store:Arc::clone(&store), new_run_id:Some(counter_run_ids()), now:None, materialize_skills:Some(materializer), settings:None });
+    let base=diamond("build b",vec![]); let started=dag.start(DagStartParams { definition:base.clone(), parent_session_id:PARENT_SESSION_ID.into(), root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
+    let mut changed=base; changed.nodes[1].prompt="changed".into(); changed.nodes.push(DagNodeInput { id:"E".into(), prompt:"build e".into(), target:DagNodeTarget::Category("quick".into()), label:None, depends_on:None, task_summary:None, description:None, load_skills:None });
+    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id),key:None,definition:changed,parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
+    let expected_calls = vec![
+        vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()],
+        vec!["B".to_string(), "E".to_string()],
+    ];
+    assert_eq!(*calls.lock().expect("calls"), expected_calls);
+    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="A").expect("A").effective_prompt,"skill:build a");
+    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="B").expect("B").effective_prompt,"skill:changed");
+    assert_eq!(amended.definition.nodes.iter().find(|node|node.id=="E").expect("E").effective_prompt,"skill:build e");
+}
+
+#[test]
+fn given_invalid_amend_selectors_or_missing_runs_when_amended_then_invalid_arguments_and_not_found_are_returned() {
+    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let definition=diamond("build b",vec![]);
+    assert_eq!(dag.amend(DagAmendParams { run_id:Some("run-missing".into()), key:Some("missing".into()), definition:definition.clone(), parent_session_id:PARENT_SESSION_ID.into() }).expect_err("both selectors").code,DagManagerErrorCode::InvalidArguments);
+    assert_eq!(dag.amend(DagAmendParams { run_id:Some("run-missing".into()), key:None, definition, parent_session_id:PARENT_SESSION_ID.into() }).expect_err("missing run").code,DagManagerErrorCode::RunNotFound);
+}
+
+#[test]
+fn given_amended_and_retried_events_when_replayed_from_old_checkpoint_then_the_reducer_rebuilds_the_same_record() {
+    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); let old=complete_diamond(&store,&started.snapshot.run_id);
+    let amended=dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
+    let expected=amended;
+    store.write_checkpoint(&started.snapshot.run_id,&DagRunRecordV1 { checkpoint_seq:1,..old.clone() }).expect("restore old checkpoint");
+    let events=store.read_events(&started.snapshot.run_id,1,&DagEventReadOptions { limit:10,..Default::default() }).expect("events").events;
+    let _amendment=events.first().expect("amendment event");
+    let replayed=create_dag_journal(DagJournalOptions { store:Arc::clone(&store),run_id:started.snapshot.run_id.clone(),initial_checkpoint:old.clone(),apply_event:Arc::new(apply_run_event),subscriber_ring:None,now:None }).expect("replay journal").snapshot();
+    assert_eq!(replayed.definition_fingerprint,expected.definition_fingerprint);
+    assert_eq!(replayed.nodes,expected.nodes);
+    assert_eq!(replayed.amend_history,expected.amend_history);
+}
+
+#[test]
+fn given_a_durable_amendment_with_stale_preconditions_when_replayed_then_the_reducer_noops() {
+    let project=temp_project(); let store=open_store(&project); let dag=manager_over(&store); let started=dag.start(DagStartParams { definition:diamond("build b",vec![]),parent_session_id:PARENT_SESSION_ID.into(),root_session_id:ROOT_SESSION_ID.into() }).expect("start"); complete_diamond(&store,&started.snapshot.run_id);
+    dag.amend(DagAmendParams { run_id:Some(started.snapshot.run_id.clone()),key:None,definition:diamond("changed",vec![]),parent_session_id:PARENT_SESSION_ID.into() }).expect("amend");
+    let event=store.read_events(&started.snapshot.run_id,1,&DagEventReadOptions { limit:1,..Default::default() }).expect("read").events.remove(0);
+    let mut hostile=store.read_checkpoint::<DagRunRecordV1>(&started.snapshot.run_id).expect("read checkpoint").expect("record");
+    hostile.definition_fingerprint="stale-fingerprint".into(); hostile.status=DagRunStatus::Running; hostile.nodes.iter_mut().find(|n|n.id=="B").expect("B").state=DagNodeState::Running;
+    assert_eq!(apply_run_event(&hostile,&event),hostile);
+}
+
 fn counter_run_ids() -> Arc<dyn Fn() -> DagRunId + Send + Sync> {
     // One process-wide counter shared by every manager built in this test binary: the TS fixture
     // lets each manager mint real UUIDs, so two managers over the same store must never collide on
@@ -413,7 +547,7 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
         new_run_id: Some(counter_run_ids()),
         now: None,
         materialize_skills: Some(Arc::new(|input: DagMaterializeSkillsInput<'_>| {
-            DagSkillMaterialization {
+            Ok(DagSkillMaterialization {
                 nodes: input
                     .definition
                     .nodes
@@ -426,7 +560,7 @@ fn given_a_materialize_skills_hook_when_a_run_is_created_then_per_node_effective
                     })
                     .collect(),
                 diagnostics: Vec::new(),
-            }
+            })
         })),
         settings: None,
     });

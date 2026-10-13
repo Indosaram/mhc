@@ -202,7 +202,30 @@ pub enum StartResult {
     StartFailed(StartFailure),
     ResidencyDenied {
         reason: String,
+        cause: ResidencyDeniedCause,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResidentSummary {
+    pub task_id: String,
+    pub name: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResidencyDeniedCause {
+    Residents {
+        max_children: Option<MaxChildren>,
+        residents: Vec<ResidentSummary>,
+    },
+    Lease,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxChildren {
+    Number(usize),
+    Unlimited,
 }
 
 impl StartResult {
@@ -258,7 +281,11 @@ pub struct ListedTask {
 pub enum SpawnAdmission {
     Admitted,
     Evicted { evicted_task_id: String },
-    Rejected { message: String },
+    Rejected {
+        message: String,
+        max_children: Option<MaxChildren>,
+        residents: Option<Vec<ResidentSummary>>,
+    },
 }
 
 pub type AdmitResident = Arc<dyn Fn(&str) -> SpawnAdmission + Send + Sync>;

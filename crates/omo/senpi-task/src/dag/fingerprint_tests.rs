@@ -162,7 +162,7 @@ fn given_semantically_identical_definitions_built_independently_when_fingerprint
         scheduler: DagSchedulerContract {
             dependency_data: "filesystem-only",
             failure_policy: "continue-independent",
-            wave_admission: "strict-barrier",
+            wave_admission: "dependency-frontier",
         },
         name: "example".to_string(),
     };

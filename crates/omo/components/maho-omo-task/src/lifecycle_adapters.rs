@@ -10,6 +10,12 @@ pub fn admit_lifecycle(lifecycle:&TaskLifecycle,session:&str)->Result<SpawnAdmis
     lifecycle.admit_resident(session).map(|admission| match admission {
         AdmissionResult::Admitted=>SpawnAdmission::Admitted,
         AdmissionResult::Evicted { evicted_task_id }=>SpawnAdmission::Evicted { evicted_task_id },
-        AdmissionResult::Rejected(error)=>SpawnAdmission::Rejected { message:error.to_string() },
+        AdmissionResult::Rejected(error)=>SpawnAdmission::Rejected {
+            message:error.to_string(),
+            max_children:Some(senpi_task::manager::types::MaxChildren::Number(error.max_children)),
+            residents:Some(error.residents.iter().map(|resident| senpi_task::manager::types::ResidentSummary {
+                task_id:resident.task_id.clone(), name:resident.name.clone(), status:resident.status.clone(),
+            }).collect()),
+        },
     })
 }

@@ -1,12 +1,12 @@
 //! The pinned scheduler suite's FakeTaskManager, behind the scheduler's test-only port.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::dag::owner::{DagTaskOwner, OwnedStartResult};
 use crate::dag::scheduler::TestTaskPort;
-use crate::manager::types::{ManagerStartSpec, PlanResolutionCode, PlanResolutionError, StartFailure, StartResult, StartedTask};
+use crate::manager::types::{ManagerStartSpec, PlanResolutionCode, PlanResolutionError, ResidentSummary, ResidencyDeniedCause, StartFailure, StartResult, StartedTask};
 use crate::manager::execution_mode::ExecutionMode;
 use crate::state::{TaskRecord, TaskRecordInput, TaskRunStats, TaskStatus, create_task_record};
 
@@ -20,6 +20,9 @@ pub(crate) struct FakeOptions {
     pub cancel_errors: BTreeMap<String, String>,
     pub start_failures: BTreeMap<String, &'static str>,
     pub cancel_gate: Option<Arc<Gate>>,
+    pub lease_denials: BTreeSet<String>,
+    pub empty_resident_denials: BTreeSet<String>,
+    pub owner_conflicts: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -51,17 +54,19 @@ pub(crate) struct FakeState {
     pub waits: BTreeSet<String>,
     pub max_residents: usize,
     records: BTreeMap<String, TaskRecord>,
+    residency_waiters: BTreeMap<String, Arc<(Mutex<bool>, Condvar)>>,
+    lease_denial_used: BTreeSet<String>,
 }
 
 pub(crate) struct FakeTaskManager {
-    pub options: FakeOptions,
+    pub options: Mutex<FakeOptions>,
     pub state: Mutex<FakeState>,
     changed: Condvar,
 }
 
 impl FakeTaskManager {
     pub fn new(options: FakeOptions) -> Arc<Self> {
-        Arc::new(Self { options, state: Mutex::new(FakeState::default()), changed: Condvar::new() })
+        Arc::new(Self { options: Mutex::new(options), state: Mutex::new(FakeState::default()), changed: Condvar::new() })
     }
 
     pub fn when_started(&self, node_id: &str) {
@@ -70,6 +75,10 @@ impl FakeTaskManager {
 
     pub fn when_cancelling(&self) {
         self.wait_state("cancellation", |state| !state.cancellations.is_empty());
+    }
+
+    pub fn add_owner_conflict(&self, node_id: &str) {
+        self.options.lock().unwrap().owner_conflicts.insert(node_id.to_string());
     }
 
     pub fn when_waiting(&self, node_id: &str) {
@@ -88,7 +97,7 @@ impl FakeTaskManager {
 
     pub fn complete(&self, node_id: &str, status: TaskStatus) {
         let mut state = self.state.lock().unwrap();
-        let record = state.records.values_mut().find(|record| record.owner.as_ref().is_some_and(|owner| owner.node_id == node_id)).expect("started task");
+        let record = state.records.values_mut().find(|record| record.name.as_deref() == Some(node_id) && !record.status.is_terminal()).expect("started task");
         record.status = status;
         if status == TaskStatus::Completed {
             record.final_response = Some(format!("done {node_id}"));
@@ -97,6 +106,27 @@ impl FakeTaskManager {
             record.error_message = Some(format!("{} {node_id}", status.as_str()));
         }
         self.changed.notify_all();
+        if let Some(waiter) = state.residency_waiters.remove("ses-parent") {
+            *waiter.0.lock().unwrap() = true;
+            waiter.1.notify_all();
+        }
+    }
+
+    fn residency_change(&self, session: &str) -> Arc<(Mutex<bool>, Condvar)> {
+        self.state.lock().unwrap().residency_waiters.entry(session.to_owned()).or_insert_with(|| Arc::new((Mutex::new(false), Condvar::new()))).clone()
+    }
+
+    pub fn release_residency(&self, session: &str) {
+        let waiter = self.state.lock().unwrap().residency_waiters.remove(session);
+        if let Some(waiter) = waiter { *waiter.0.lock().unwrap() = true; waiter.1.notify_all(); }
+    }
+
+    pub fn add_external_resident(&self, session: &str) -> String {
+        let mut record = create_task_record(TaskRecordInput { name: Some("external".into()), parent_session_id: session.into(), root_session_id: session.into(), depth: 1, category: Some("quick".into()), execution_mode: "in-process".into(), model: "fake-model".into(), ..Default::default() }, None).unwrap();
+        record.status = TaskStatus::Running;
+        let id = record.task_id.clone();
+        self.state.lock().unwrap().records.insert(id.clone(), record);
+        id
     }
 }
 
@@ -105,11 +135,17 @@ impl TestTaskPort for FakeTaskManager {
         let node_id = &owner.node_id;
         let mut state = self.state.lock().unwrap();
         state.attempts.push(node_id.clone());
-        if self.options.reject_start.contains(node_id) {
+        let options = self.options.lock().unwrap();
+        if options.owner_conflicts.contains(node_id)
+            && let Some(record) = state.records.values().find(|record| record.owner.as_ref().is_some_and(|existing| existing.node_id == *node_id)).cloned()
+        {
+            return Ok(OwnedStartResult::OwnerConflict { task_id: record.task_id, existing_fingerprint: "old".into(), requested_fingerprint: owner.fingerprint.clone() });
+        }
+        if options.reject_start.contains(node_id) {
             return Err(format!("start rejected {node_id}"));
         }
         state.specs.push(spec.clone());
-        let failure = match self.options.start_failures.get(node_id).copied() {
+        let failure = match options.start_failures.get(node_id).copied() {
             Some("plan") => Some(StartResult::PlanUnresolved(PlanResolutionError::new(PlanResolutionCode::UnknownTarget, format!("unresolved {node_id}")))),
             Some("depth") => Some(StartResult::DepthDenied { reason: format!("depth denied {node_id}"), child_depth: 2, max_depth: 1 }),
             Some("start") => Some(StartResult::StartFailed(StartFailure { task_id: format!("failed-{node_id}"), name: node_id.clone(), category: Some("quick".into()), subagent_type: None, execution_mode: ExecutionMode::InProcess, model: "fake-model".into(), resolved_model: None, run_in_background: true, error_message: format!("failed to start {node_id}") })),
@@ -117,22 +153,36 @@ impl TestTaskPort for FakeTaskManager {
         };
         if let Some(failure) = failure { return Ok(OwnedStartResult::NotStarted(failure)); }
         let residents = state.records.values().filter(|record| !record.status.is_terminal()).count();
-        if self.options.residency_limit.is_some_and(|limit| residents >= limit) {
+        if options.lease_denials.contains(node_id) && state.lease_denial_used.insert(node_id.clone()) {
+            state.denials.push(node_id.clone()); self.changed.notify_all();
+            return Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason: "lease busy".into(), cause: ResidencyDeniedCause::Lease }));
+        }
+        if options.empty_resident_denials.contains(node_id) {
+            state.denials.push(node_id.clone()); self.changed.notify_all();
+            return Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason: "resident child cap reached".into(), cause: ResidencyDeniedCause::Residents { max_children: options.residency_limit.map(crate::manager::types::MaxChildren::Number), residents: Vec::new() } }));
+        }
+        if options.residency_limit.is_some_and(|limit| residents >= limit) {
             state.denials.push(node_id.clone());
             self.changed.notify_all();
-            return Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason: "resident child cap reached".into() }));
+            let residents: Vec<_> = state.records.values().filter(|record| !record.status.is_terminal() && record.parent_session_id == spec.parent_session_id).map(|record| ResidentSummary { task_id: record.task_id.clone(), name: record.name.clone().unwrap_or_else(|| record.task_id.clone()), status: record.status.as_str().into() }).collect();
+            return Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied {
+                reason: "resident child cap reached".into(),
+                cause: ResidencyDeniedCause::Residents { max_children: options.residency_limit.map(crate::manager::types::MaxChildren::Number), residents },
+            }));
         }
         let mut record = create_task_record(TaskRecordInput {
             name: Some(node_id.clone()), parent_session_id: spec.parent_session_id.clone(), root_session_id: spec.root_session_id.clone().unwrap_or_default(), depth: 1, category: spec.category.clone(), execution_mode: "in-process".into(), model: "fake-model".into(), notify_on_terminal: true, owner: Some(owner.clone()), ..Default::default()
         }, None).unwrap();
-        record.status = if self.options.queued.contains(node_id) { TaskStatus::Pending } else { TaskStatus::Running };
-        let task = StartedTask { task_id: record.task_id.clone(), status: record.status, name: node_id.clone(), resolved_model: None, queue_position: self.options.queued.contains(node_id).then_some(3), name_warning: None };
+        record.status = if options.queued.contains(node_id) { TaskStatus::Pending } else { TaskStatus::Running };
+        let task = StartedTask { task_id: record.task_id.clone(), status: record.status, name: node_id.clone(), resolved_model: None, queue_position: options.queued.contains(node_id).then_some(3), name_warning: None };
         state.max_residents = state.max_residents.max(residents + 1);
         state.starts.push(node_id.clone());
         state.records.insert(record.task_id.clone(), record);
         self.changed.notify_all();
+        drop(options);
         drop(state);
-        if !self.options.manual { self.complete(node_id, TaskStatus::Completed); }
+        let manual = self.options.lock().unwrap().manual;
+        if !manual { self.complete(node_id, TaskStatus::Completed); }
         Ok(OwnedStartResult::Started { task, reused: false })
     }
 
@@ -141,7 +191,7 @@ impl TestTaskPort for FakeTaskManager {
         let node_id = state.records[task_id].owner.as_ref().unwrap().node_id.clone();
         state.waits.insert(node_id.clone());
         self.changed.notify_all();
-        if self.options.reject_wait.contains(&node_id) { return Err(format!("wait rejected {node_id}")); }
+        if self.options.lock().unwrap().reject_wait.contains(&node_id) { return Err(format!("wait rejected {node_id}")); }
         let (state, timeout) = self.changed.wait_timeout_while(state, Duration::from_secs(5), |state| !state.records[task_id].status.is_terminal()).unwrap();
         assert!(!timeout.timed_out(), "task never settled");
         Ok(state.records[task_id].clone())
@@ -155,9 +205,23 @@ impl TestTaskPort for FakeTaskManager {
             self.changed.notify_all();
             node_id
         };
-        if let Some(gate) = &self.options.cancel_gate { gate.wait(); }
-        if let Some(error) = self.options.cancel_errors.get(&node_id) { return Err(error.clone()); }
+        let options = self.options.lock().unwrap();
+        if let Some(gate) = &options.cancel_gate { gate.wait(); }
+        if let Some(error) = options.cancel_errors.get(&node_id) { return Err(error.clone()); }
         self.complete(&node_id, TaskStatus::Cancelled);
         Ok(())
+    }
+
+    fn residency_changed(&self, parent_session_id: &str, sender: mpsc::Sender<()>) {
+        let waiter = self.residency_change(parent_session_id);
+        std::thread::spawn(move || {
+            let mut fired = waiter.0.lock().unwrap();
+            while !*fired { fired = waiter.1.wait(fired).unwrap(); }
+            let _ = sender.send(());
+        });
+    }
+
+    fn get_task(&self, task_id: &str) -> Option<TaskRecord> {
+        self.state.lock().unwrap().records.get(task_id).cloned()
     }
 }

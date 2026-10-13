@@ -40,7 +40,7 @@ impl senpi_task::team::runtime_types::TeamRuntimeManagerPort for TeamManager {
             StartResult::DepthDenied { reason, .. } => TeamStartResult::Rejected { kind: "depth_denied".into(), reason },
             StartResult::PlanUnresolved(error) => TeamStartResult::Rejected { kind: "plan_unresolved".into(), reason: format!("{error:?}") },
             StartResult::StartFailed(error) => TeamStartResult::Rejected { kind: "start_failed".into(), reason: error.error_message },
-            StartResult::ResidencyDenied { reason } => TeamStartResult::Rejected { kind: "residency_denied".into(), reason },
+            StartResult::ResidencyDenied { reason, .. } => TeamStartResult::Rejected { kind: "residency_denied".into(), reason },
         })
     }
     fn get_resident_handle(&self, task_id: &str) -> Option<senpi_task::team::member_projection::ResidentSessionRef> {
