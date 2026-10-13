@@ -69,7 +69,7 @@ fn test_command(env: &BTreeMap<String,String>, name: &str) -> std::io::Result<Op
 fn spawn_termination_command(command: &[String], args: &[String], env: &BTreeMap<String,String>, synchronous: bool) -> std::io::Result<()> {
     let mut child=std::process::Command::new(&command[0]);
     child.args(&command[1..]).args(args).envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    if synchronous { child.status()?; } else { let mut child=child.spawn()?; std::thread::spawn(move || { if let Err(error)=child.wait(){eprintln!("termination command wait failed: {error}");} }); }
+    if synchronous { child.status()?; } else { let mut child=child.spawn()?; std::thread::spawn(move || { if let Err(error)=child.wait(){maho_ext_api::diagnostic(&format!("termination command wait failed: {error}"));} }); }
     Ok(())
 }
 
@@ -133,7 +133,7 @@ pub fn schedule_supervisor_deadline(instant: f64, env: &BTreeMap<String, String>
             let time=read_injected_clock(&directory);
             if time.is_finite() && time >= instant { drop(watcher); callback(); return; }
             match received.recv().await {
-                Some(Ok(_))=>{},Some(Err(error))=>{eprintln!("supervisor clock watcher failed: {error}");return;},None=>return,
+                Some(Ok(_))=>{},Some(Err(error))=>{maho_ext_api::diagnostic(&format!("supervisor clock watcher failed: {error}"));return;},None=>return,
             }
         }
     }))))

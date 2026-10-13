@@ -2,7 +2,7 @@ use std::{path::PathBuf,sync::{Arc,Mutex}};
 use maho_ext_api::{BusSubscription,EventKind,EventResult,Extension,ExtensionApi,ExtensionEvent,SessionReason};
 use crate::{index::SenpiTelemetryOptions,omo_native_parallel::ParallelTelemetryRegistry,omo_native_parallel_summary::{SummaryCapture,register_omo_native_parallel_summary},product_identity::{get_omo_native_state_dir,hash_session_id}};
 pub type ConfigEnabled=Arc<dyn Fn(&std::path::Path)->bool+Send+Sync>;
-pub fn warn(ctx:&maho_ext_api::ExtensionContext,message:&str) {match &ctx.logger {Some(logger)=>logger.warn(message,None),None=>eprintln!("{message}")}}
+pub fn warn(ctx:&maho_ext_api::ExtensionContext,message:&str) {match &ctx.logger {Some(logger)=>logger.warn(message,None),None=>maho_ext_api::diagnostic(message)}}
 pub struct OmoNativeTelemetryComponent {
     pub options:SenpiTelemetryOptions,
     pub skills_root:PathBuf,
@@ -40,7 +40,7 @@ impl Extension for OmoNativeTelemetryComponent {
         let identity_client=Arc::clone(&shared);
         let hash:Arc<dyn Fn(&str)->String+Send+Sync>=Arc::new(move |id| {
             if identity_client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() {return String::new();}
-            hash_session_id(id,&state_dir).unwrap_or_else(|error| {eprintln!("omo-native session identity failed: {error}");String::new()})
+            hash_session_id(id,&state_dir).unwrap_or_else(|error| {maho_ext_api::diagnostic(&format!("omo-native session identity failed: {error}"));String::new()})
         });
         let registry=Arc::new(Mutex::new(ParallelTelemetryRegistry::default()));
         let now=Arc::clone(&self.clock);

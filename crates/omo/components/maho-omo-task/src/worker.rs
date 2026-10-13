@@ -9,10 +9,10 @@ struct OwnedWorker<C: FnOnce() -> Result<(), ToolError>> {
 impl<C: FnOnce() -> Result<(), ToolError>> Drop for OwnedWorker<C> {
     fn drop(&mut self) {
         if let Some(cancel) = self.cancel.take() && let Err(error) = cancel() {
-            eprintln!("dropped task worker cancellation failed: {error}");
+            maho_ext_api::diagnostic(&format!("dropped task worker cancellation failed: {error}"));
         }
         if let Some(thread) = self.thread.take() && thread.join().is_err() {
-            eprintln!("dropped task worker panicked");
+            maho_ext_api::diagnostic("dropped task worker panicked");
         }
     }
 }

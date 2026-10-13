@@ -47,7 +47,7 @@ pub fn create_team_service(deps: TeamServiceDeps) -> TeamServiceResult<TeamServi
     let append_event = deps.append_task_event.clone().unwrap_or_else(|| {
         let store = TaskRecordStore::new(&deps.state_dir);
         Arc::new(move |id, event: PersistedTaskEvent| {
-            if let Err(error) = store.append_event(id, &event) { eprintln!("omo-senpi task event append failed: taskId={id} eventType={} error={error}", event.event_type); }
+            if let Err(error) = store.append_event(id, &event) { maho_ext_api::diagnostic(&format!("omo-senpi task event append failed: taskId={id} eventType={} error={error}", event.event_type)); }
         })
     });
     Ok(TeamService { deps, config, append_event })
