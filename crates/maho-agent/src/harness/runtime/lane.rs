@@ -1424,8 +1424,8 @@ impl RuntimeDriveLane for Lane {
         self.read_config()
     }
 
-    fn hooks(&self) -> &HookRegistry {
-        self.hooks.as_ref()
+    fn hooks(&self) -> Arc<HookRegistry> {
+        self.hooks.clone()
     }
 
     fn models(&self) -> &maho_ai::models::Models {
