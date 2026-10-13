@@ -880,27 +880,29 @@ impl SessionManager {
         let _ = std::fs::write(&session_file, content);
     }
 
-    fn persist_entry(&mut self, entry: &Value) {
+    fn persist_entry(&mut self, entry: &Value) -> std::io::Result<()> {
         if !self.persist {
-            return;
+            return Ok(());
         }
-        let Some(session_file) = self.session_file.clone() else { return };
+        let Some(session_file) = self.session_file.clone() else { return Ok(()) };
+        crate::session_write_reservation::reserve_session_write(&session_file);
         let has_assistant = self.file_entries.iter().any(|candidate| {
             entry_type(candidate) == "message"
                 && candidate.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant")
         });
         if !has_assistant {
             if self.flushed {
-                append_line(&session_file, entry);
+                append_line(&session_file, entry)?;
             }
-            return;
+            return Ok(());
         }
         if !self.flushed {
             self.rewrite_file();
             self.flushed = true;
         } else {
-            append_line(&session_file, entry);
+            append_line(&session_file, entry)?;
         }
+        Ok(())
     }
 
     fn append_entry(&mut self, entry: Value) {
@@ -929,7 +931,14 @@ impl SessionManager {
                 }
             }
         }
-        self.persist_entry(&entry);
+        // senpi's appendFileSync throws to the appending caller; the append_* surface here returns
+        // the entry rather than a Result, so a failed write is reported instead of dropped.
+        if let Err(error) = self.persist_entry(&entry) {
+            crate::output_guard::maho_write_stderr(&format!(
+                "Failed to persist session entry to {}: {error}\n",
+                self.session_file.as_deref().unwrap_or_default()
+            ));
+        }
     }
 
     pub fn append_entry_raw(&mut self, entry: Value) {
@@ -1197,11 +1206,9 @@ pub fn serialize_entry(entry: &Value) -> String {
     serde_json::to_string(entry).unwrap_or_else(|_| "null".to_owned())
 }
 
-fn append_line(session_file: &str, entry: &Value) {
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(session_file) {
-        let _ = file.write_all(serialize_entry(entry).as_bytes());
-        let _ = file.write_all(b"\n");
-    }
+fn append_line(session_file: &str, entry: &Value) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(session_file)?;
+    file.write_all(format!("{}\n", serialize_entry(entry)).as_bytes())
 }
 
 pub fn sessions_dir() -> String {
