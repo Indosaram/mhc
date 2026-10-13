@@ -15,6 +15,9 @@ fn output(text: &str) -> Result<(), String> {
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
+    // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
+    // statically embedded OAuth flows once per process before any login/auth resolution.
+    maho_ai::bun_oauth::register_bun_oauth_flows();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(&argv);
