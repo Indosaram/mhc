@@ -25,6 +25,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use maho_agent::harness::utils::adaptive_publisher::{AdaptivePublisher, AdaptivePublisherOptions, PublisherClock};
 
 struct Invocation;
 impl AgentHarnessToolInvocation for Invocation {
@@ -463,6 +464,33 @@ async fn prepares_command_cwd_and_explicit_environment() {
 }
 #[tokio::test]
 async fn coalesces_updates_and_spills_full_output() {
+    let clock = Arc::new(ManualPublisherClock::default());
+    let value = Arc::new(Mutex::new(String::new()));
+    let coalesced_updates = Arc::new(Mutex::new(Vec::new()));
+    let snapshot_value = value.clone();
+    let published_updates = coalesced_updates.clone();
+    let publisher = AdaptivePublisher::new(
+        AdaptivePublisherOptions {
+            snapshot: Box::new(move || snapshot_value.lock().expect("tool test operation must succeed").clone()),
+            update: Box::new(|_previous: Option<&String>, current: &String| Some(current.clone())),
+            measure: Box::new(|update: &String| update.len() as u64),
+            publish: Box::new(move |update| published_updates.lock().expect("tool test operation must succeed").push(update)),
+            on_error: Box::new(|message| panic!("{message}")),
+            min_interval_ms: Some(100),
+            target_bytes_per_second: Some(u64::MAX),
+        },
+        clock.clone(),
+    );
+    publisher.mark_dirty();
+    for chunk in 1..=3000 {
+        *value.lock().expect("tool test operation must succeed") = format!("line-{chunk}");
+        publisher.mark_dirty();
+    }
+    clock.advance(100);
+    let published = coalesced_updates.lock().expect("tool test operation must succeed");
+    assert_eq!(published.len(), 2);
+    assert_eq!(published.last().map(String::as_str), Some("line-3000"));
+
     let f = Fixture::new();
     let updates = Arc::new(Mutex::new(Vec::new()));
     let observed = updates.clone();
@@ -475,7 +503,6 @@ async fn coalesces_updates_and_spills_full_output() {
     )
     .await
     .expect("tool test operation must succeed");
-    assert!(updates.lock().expect("tool test operation must succeed").len() < 25);
     assert_eq!(result.details["truncation"]["totalLines"], 3000);
     assert_eq!(result.details["truncation"]["outputLines"], 2000);
     assert!(text(&result).contains("line-3000"));
@@ -484,6 +511,48 @@ async fn coalesces_updates_and_spills_full_output() {
     assert!(full.contains("line-1\nline-2"));
     assert!(full.contains("line-2999\nline-3000"));
     std::fs::remove_file(path).expect("tool test operation must succeed");
+}
+
+#[derive(Default)]
+struct ManualPublisherClock {
+    state: Mutex<ManualPublisherClockState>,
+}
+
+#[derive(Default)]
+struct ManualPublisherClockState {
+    now_ms: i64,
+    pending: Option<(i64, Box<dyn FnOnce() + Send>)>,
+}
+
+impl ManualPublisherClock {
+    fn advance(&self, ms: i64) {
+        let callback = {
+            let mut state = self.state.lock().expect("tool test operation must succeed");
+            state.now_ms += ms;
+            match state.pending.as_ref() {
+                Some((deadline, _)) if *deadline <= state.now_ms => state.pending.take().map(|(_, callback)| callback),
+                _ => None,
+            }
+        };
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+}
+
+impl PublisherClock for ManualPublisherClock {
+    fn now_ms(&self) -> i64 {
+        self.state.lock().expect("tool test operation must succeed").now_ms
+    }
+
+    fn set_timeout(&self, wait_ms: u64, callback: Box<dyn FnOnce() + Send>) {
+        let mut state = self.state.lock().expect("tool test operation must succeed");
+        state.pending = Some((state.now_ms + wait_ms as i64, callback));
+    }
+
+    fn clear_timeout(&self) {
+        self.state.lock().expect("tool test operation must succeed").pending = None;
+    }
 }
 
 #[test]
