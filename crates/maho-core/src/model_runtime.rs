@@ -291,19 +291,21 @@ impl ModelRuntime {
     }
     pub fn stream(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();
-        Self::lazy_request(model,async move {
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();
+        let inner=Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options).await?;
             Ok(models.stream(&request_model,&context,Some(options),Default::default()))
-        })
+        });
+        maho_ai::wrap_stream_with_model_recovery(inner,model,&tools)
     }
     pub fn stream_simple(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();
-        Self::lazy_request(model,async move {
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();
+        let inner=Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
             Ok(models.stream_simple(&request_model,&context,Some(options),Default::default()))
-        })
+        });
+        maho_ai::wrap_stream_with_model_recovery(inner,model,&tools)
     }
     async fn apply_configured_headers(model:&Model,config:Option<&crate::model_config_schema::ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,options:&mut StreamOptions)->Result<(),String> {
         let env=options.request.env.as_ref().map(|v|v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
@@ -364,6 +366,28 @@ mod tests {
         assert_eq!(error.to_string(), maho_ai::utils::abort::AbortReason::dom_default().message);
         assert!(runtime.check_auth("p", Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
         assert!(runtime.list_credentials(Some(maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) })).await.is_err());
+    }
+    #[tokio::test]
+    async fn runtime_stream_recovers_leaked_text_tool_calls_for_claude_models() {
+        use maho_ai::providers::faux::{FauxAssistantMessageOptions, FauxModelDefinition, RegisterFauxProviderOptions, faux_assistant_message, faux_provider};
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{}}"#);
+        let faux = faux_provider(RegisterFauxProviderOptions {
+            provider: Some("faux-recovery".into()),
+            models: Some(vec![FauxModelDefinition { id: "claude-fixture".into(), ..Default::default() }]),
+            ..Default::default()
+        });
+        let invoke = r#"<invoke name="get_weather"><parameter name="city">Seoul</parameter></invoke>"#;
+        faux.core.set_responses(vec![faux_assistant_message(invoke, FauxAssistantMessageOptions::default()).into()]);
+        runtime.register_native_provider(faux.provider.clone());
+        let model = runtime.get_model("faux-recovery", "claude-fixture").expect("model");
+        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type":"object"}), freeform: None, constrained_sampling: None };
+        let context = Context { system_prompt: None, messages: Vec::new(), tools: Some(vec![tool]) };
+        let mut options = StreamOptions::default();
+        options.request.api_key = Some("fixture-key".into());
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), runtime.stream(&model, &context, Some(options)).result())
+            .await.expect("bounded stream").expect("result");
+        assert_eq!(message.stop_reason, maho_ai::types::StopReason::ToolUse);
+        assert!(message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
     }
     #[tokio::test]
     async fn preaborted_configured_stream_preserves_headers_and_stops_setup() {
