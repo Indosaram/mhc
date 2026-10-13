@@ -2725,9 +2725,17 @@ impl AgentSession {
             return Err("Compaction rejected: summary-would-overflow".to_owned());
         }
         let usage = result.usage.as_ref().map(serde_json::to_value).transpose().map_err(|error| error.to_string())?;
+        let latest_configuration_effort = branch.iter().rev()
+            .find(|entry| entry.get("type").and_then(Value::as_str) == Some("configuration_update"))
+            .and_then(|entry| entry.get("reasoning")?.get("effort")?.as_str().map(str::to_owned));
         let entry = self.with_session_manager_mut(|manager| manager.append_compaction(
             &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, from_hook,
         ));
+        if let Some(effort) = latest_configuration_effort
+            && is_reasoning_configuration_model(&self.model())
+        {
+            self.with_session_manager_mut(|manager| manager.append_configuration_update(&effort));
+        }
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
         let mut messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
@@ -6842,6 +6850,17 @@ impl AgentSession {
             self.with_session_manager_mut(|manager| {
                 manager.append_thinking_level_change(effective.as_str(), None);
             });
+            if is_reasoning_configuration_model(&self.model()) {
+                self.agent.init_reasoning_baseline(previous.as_str());
+                let context = self.with_session_manager_mut(|manager| {
+                    manager.append_configuration_update(effective.as_str());
+                    manager.build_context(manager.leaf_id())
+                });
+                match context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>() {
+                    Ok(messages) => self.agent.set_messages(messages),
+                    Err(error) => self.emit(AgentSessionEvent::ContinuationError { error_message: error.to_string() }),
+                }
+            }
             if let Some(level) = thinking_level_from_model_level(effective) {
                 self.emit(AgentSessionEvent::ThinkingLevelChanged { level });
             }
@@ -7000,6 +7019,11 @@ pub fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_j
         AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => serde_json::to_value(message),
         AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => serde_json::to_value(message),
     }
+}
+
+/// senpi gates `configuration_update` entries on gpt-6-astra over the OpenAI Responses providers.
+fn is_reasoning_configuration_model(model: &Model) -> bool {
+    model.id == "gpt-6-astra" && matches!(model.provider.as_str(), "openai" | "chatgpt-subscription")
 }
 
 pub(crate) fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
