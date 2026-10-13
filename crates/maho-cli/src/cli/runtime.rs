@@ -12,7 +12,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if mode == AppMode::AppServer {
         let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::AppServer);
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let code = super::app_server::run_app_server_with_signals(argv, config, env!("CARGO_PKG_VERSION"), parsed.session_dir.clone(), &executable, &[]).await?;
+        let code = super::app_server::run_app_server_with_signals(argv, config, env!("CARGO_PKG_VERSION"), resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None), &executable, &[]).await?;
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
@@ -20,7 +20,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. It never
         // returns until its watchdog or empty-exit policy ends it.
-        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        let mut config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        config.session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None);
         let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
@@ -73,11 +74,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
     });
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
+    let session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), settings.get_string("sessionDir").as_deref());
     let manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
-        else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, parsed.session_dir.as_deref(), parsed.session_id.as_deref())? }
-        else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
-        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
-        else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
+        else if let Some(source) = &parsed.fork { fork_session(source, &cwd_text, session_dir.as_deref(), parsed.session_id.as_deref())? }
+        else if let Some(path) = &parsed.session { SessionManager::open(path, session_dir.as_deref(), None, identity) }
+        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, session_dir.as_deref()) }
+        else { SessionManager::create(&cwd_text, session_dir.as_deref(), identity) };
     // senpi main.ts:1181-1188: a blank `--name` is rejected before the runtime is built.
     let session_name = match parsed.name.as_deref() {
         Some(raw) => Some(super::args::normalize_session_name(raw).ok_or("Error: --name requires a non-empty value")?.to_owned()),
@@ -195,6 +197,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
     result
+}
+
+/// senpi main.ts:1162-1166: `--session-dir` (path-normalized), then `<PREFIX>_CODING_AGENT_SESSION_DIR`
+/// (tilde-expanded), then the `sessionDir` setting (path-normalized). Empty values count as unset.
+pub fn resolve_session_dir(flag: Option<&str>, env: Option<&str>, setting: Option<&str>) -> Option<String> {
+    let options = maho_core::paths::PathInputOptions::expanding_tilde(maho_core::config::home_dir());
+    [flag, env, setting].into_iter().flatten().find(|value| !value.is_empty())
+        .map(|value| maho_core::paths::normalize_path(value, &options))
 }
 
 pub fn fork_session(source_path: &str, cwd: &str, session_dir: Option<&str>, session_id: Option<&str>) -> Result<SessionManager, String> {
