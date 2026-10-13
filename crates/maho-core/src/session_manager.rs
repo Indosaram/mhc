@@ -2138,7 +2138,7 @@ mod tests {
         let context = manager.build_context(after["id"].as_str());
         assert_eq!(context.messages.len(), 3);
         assert_eq!(context.thinking_level, "high");
-        manager.set_leaf(Some(&first_id));
+        manager.set_leaf(Some(&first_id)).expect("reload trimmed history");
         assert_eq!(manager.leaf_id(), Some(first_id.as_str()));
         assert_eq!(manager.file_entries.len(), 7);
     }
