@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_cursor_cli_oauth::{transport::*,spawn_args::CursorCliArgsInput};
 use std::{collections::BTreeMap,path::Path,os::unix::fs::PermissionsExt,time::Duration};
 

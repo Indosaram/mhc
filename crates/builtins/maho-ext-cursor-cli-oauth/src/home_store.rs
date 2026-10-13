@@ -1,5 +1,5 @@
 use crate::accounts::{CursorCliAccountSlot,assert_valid_account_name};
-use std::{future::Future, path::{Path,PathBuf}, os::unix::fs::PermissionsExt};
+use std::{future::Future, path::{Path,PathBuf}};
 use serde_json::{Value,json};
 
 pub struct AccountHomeContext { pub home: PathBuf, pub auth_path: PathBuf }
@@ -12,15 +12,31 @@ where F: FnOnce(AccountHomeContext) -> Fut, Fut: Future<Output=anyhow::Result<T>
     let extension = root.join("cursor-cli-oauth"); let accounts = extension.join("accounts");
     let account = accounts.join(&slot.name); let home = account.join("home"); let cursor = home.join(".cursor");
     for directory in [&extension,&accounts,&account,&home,&cursor] {
-        std::fs::create_dir_all(directory)?; std::fs::set_permissions(directory,std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir_all(directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory,std::fs::Permissions::from_mode(0o700))?;
+        }
     }
     let auth_path = cursor.join("auth.json");
     let credential = json!({"accessToken":slot.access,"refreshToken":slot.refresh,"apiKey":null,"bedrockCredentials":null});
-    use std::os::unix::fs::OpenOptionsExt;
     use std::io::Write;
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&auth_path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&auth_path)?;
     file.write_all(serde_json::to_string(&credential)?.as_bytes())?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?; drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    drop(file);
     log(format!("cursor_cli_oauth_credential_written accessBytes={} refreshBytes={}",slot.access.len(),slot.refresh.len()));
     let result = run(AccountHomeContext { home:home.clone(),auth_path:auth_path.clone() }).await?;
     let content = std::fs::read_to_string(&auth_path)?;
@@ -48,7 +64,9 @@ mod tests {
             expires:4102444800000.0,source:AccountSource::Login,blocked_until:None,block_reason:None }
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn private_tree_and_credentials() {
+        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap(); let account = slot();
         let result = run_in_account_home(root.path(),&account,|context| async move {
             assert_eq!(std::fs::metadata(&context.auth_path)?.permissions().mode() & 0o777,0o600);

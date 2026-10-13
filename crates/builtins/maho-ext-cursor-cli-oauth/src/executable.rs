@@ -35,9 +35,16 @@ pub fn resolve_cursor_agent_executable(
     Err(CursorAgentNotInstalledError)
 }
 pub fn resolve_default(environment: &BTreeMap<String,String>, settings_path: Option<&str>, home: &Path) -> Result<String,CursorAgentNotInstalledError> {
-    use std::os::unix::fs::PermissionsExt;
     resolve_cursor_agent_executable(environment,settings_path,home,|path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            path.is_file()
+        }
     },|path| std::fs::read_dir(path)?.map(|entry| {
         let entry = entry?; Ok((entry.file_name().to_string_lossy().into_owned(),entry.file_type()?.is_dir()))
     }).collect())
