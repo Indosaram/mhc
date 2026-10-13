@@ -167,6 +167,7 @@ mod tests {
         files(t.path(), "dist", 20);
         assert!(compute_candidate_dirs(t.path()).unwrap().is_empty());
     }
+    #[cfg(unix)]
     #[test]
     fn symlink_skipped() {
         let t = tempfile::tempdir().unwrap();

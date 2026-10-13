@@ -73,6 +73,8 @@ mod tests {
     #[test] fn unknown_delegation_masked() {let mut t=ToolTelemetry::default();for (input,expected) in [(json!({"subagent_type":"explore"}),"explore"),(json!({"category":"private-category"}),"custom")] {let e=json!({"type":"tool_result","toolName":"task","input":input});let events=t.record(&e,"s","hash",Path::new("/"),Path::new("/"));assert_eq!(events[0].1["name"],expected);}}
     #[test] fn missing_input_ignored() {let mut t=ToolTelemetry::default();assert!(t.record(&json!({"type":"tool_result","toolName":"read"}),"s","hash",Path::new("/"),Path::new("/")).is_empty());}
     #[test] fn exact_event_allowlists() {let mut t=ToolTelemetry::default();for name in ["task","create_goal"] {let e=json!({"type":"tool_result","toolName":name,"input":{"subagent_type":"explore"}});for (kind,p) in t.record(&e,"s","hash",Path::new("/"),Path::new("/")) {let (_,expected)=crate::product_identity::EVENT_PROPERTY_ALLOWLISTS.iter().find(|(event,_)|*event==kind).unwrap();let mut expected=expected.to_vec();expected.sort_unstable();let mut keys:Vec<_>=p.as_object().unwrap().keys().map(String::as_str).collect();keys.sort_unstable();assert_eq!(keys,expected);}}}
+    #[cfg(unix)]
+    #[cfg(unix)]
     #[test] fn symlink_escape_rejected() {let t=tempfile::tempdir().unwrap();let root=t.path().join("skills");let outside=t.path().join("outside");std::fs::create_dir(&root).unwrap();std::fs::create_dir(&outside).unwrap();std::fs::write(outside.join("SKILL.md"),"").unwrap();std::os::unix::fs::symlink(&outside,root.join("debugging")).unwrap();assert!(builtin_skill_name(&root,&root.join("debugging/SKILL.md")).is_none());}
     #[test] fn staged_manifest_gates_skill_loaded() {
         let t=tempfile::tempdir().unwrap();let skills=t.path().join("skills");
