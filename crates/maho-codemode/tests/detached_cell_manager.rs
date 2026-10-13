@@ -98,3 +98,18 @@ async fn disposal_dequeues_before_interrupt_and_flushes_notifications() {
     for terminal in terminals {assert_eq!(terminal.borrow().as_ref().unwrap().state,EvalDetachedCellState::Cancelled);}
     let locked=manager.lock().unwrap();assert!(locked.list().0.is_empty());assert!(locked.list().1.is_empty());
 }
+
+#[tokio::test]
+async fn deadline_killed_cell_settles_cancelled_not_failed() {
+    let mut manager = EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
+    let cell = manager.create("killed".into(), input(EvalLanguage::Py)).unwrap();
+    manager.bind_kernel(&cell, Arc::new(||AgentToolResult::text("")), Arc::new(||(None, vec![])));
+    manager.mark_running(&cell);
+    cell.lock().unwrap().record_deadline_expiry(maho_codemode::tool::cell_deadlines::CellDeadlineKind::HardLimit);
+    let mut result = AgentToolResult::text("killed");
+    result.details = serde_json::json!({"isError":true,"cells":[{"status":"error"}]});
+    assert!(manager.complete(&cell, result));
+    let snapshot = manager.peek("killed").unwrap();
+    assert_eq!(snapshot.state, EvalDetachedCellState::Cancelled);
+    assert!(snapshot.hard_limit_seconds.is_some());
+}
