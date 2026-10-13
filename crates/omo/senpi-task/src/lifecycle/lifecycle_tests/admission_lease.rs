@@ -99,10 +99,14 @@ fn racing_takeover_has_exactly_one_winner() {
     let dir = tempfile::tempdir().expect("tempdir");
     let crashed = acquired(acquire(
         dir.path(),
-        &timing(60_000, Some(150), Some(300), Some(10)),
+        &timing(60_000, Some(600), Some(300), Some(10)),
     ));
-    std::thread::sleep(Duration::from_millis(200));
-    let overrides = timing(50, Some(150), Some(1_500), Some(5));
+    // Age the crashed lease past the stale window (time is the behavior under test).
+    std::thread::sleep(Duration::from_millis(700));
+    // senpi drives this race on fake timers; on real time the loser must give up long before
+    // the winner's fresh lease could itself go stale, or a starved renew thread on a loaded host
+    // hands the loser a second, legitimate takeover. acquire_timeout (300ms) << stale (600ms).
+    let overrides = timing(50, Some(600), Some(300), Some(5));
     let barrier = Arc::new(std::sync::Barrier::new(2));
     let racers: Vec<_> = (0..2)
         .map(|_| {
