@@ -88,7 +88,7 @@ impl Signing {
         Ok([("X-Client-Ts",ts.clone()),("X-Client-Version",version.clone()),("X-Client-Sig",request_signature(key,id,&ts,&version,session_id(),&nonce)),("X-Session-Id",session_id().into()),("X-Client-Nonce",nonce),("X-App-Id","zcode".into()),("X-Client-Pow",pow),("x-request-id",uuid::Uuid::new_v4().to_string()),("x-zcode-trace-id",uuid::Uuid::new_v4().to_string()),("x-query-id",uuid::Uuid::new_v4().to_string()),("x-zcode-session-type","main".into())].into_iter().map(|(key,value)|(key.into(),value)).collect())
     }
     pub async fn resolve(&self, headers: &BTreeMap<String, Option<String>>) -> BTreeMap<String, String> {
-        match self.resolve_inner(headers).await { Ok(headers) => headers, Err(error) => { eprintln!("glm-zcode: client signing unavailable, sending unsigned ({})", crate::oauth::redact_secrets(&error.to_string())); BTreeMap::new() } }
+        match self.resolve_inner(headers).await { Ok(headers) => headers, Err(error) => { maho_ext_api::diagnostic(&format!("glm-zcode: client signing unavailable, sending unsigned ({})", crate::oauth::redact_secrets(&error.to_string()))); BTreeMap::new() } }
     }
 }
 #[cfg(test)]

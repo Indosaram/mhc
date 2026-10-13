@@ -35,8 +35,8 @@ fn log_error(scope:&str,error:&McpError,sink:&McpAsyncErrorSink) {
     let data=json!({"name":"Error","message":error.message});
     if !matches!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||(sink.logger)(scope,&data))),Ok(Ok(()))) {
         match redact_mcp_log_text(scope) {
-            Ok(scope)=>eprintln!("MCP {scope} logger failed; suppressed async error details"),
-            Err(_)=>eprintln!("MCP logger failed; suppressed async error details"),
+            Ok(scope)=>maho_ext_api::diagnostic(&format!("MCP {scope} logger failed; suppressed async error details")),
+            Err(_)=>maho_ext_api::diagnostic(&format!("MCP logger failed; suppressed async error details")),
         }
     }
 }

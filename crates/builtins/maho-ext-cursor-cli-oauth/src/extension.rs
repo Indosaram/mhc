@@ -29,7 +29,7 @@ impl CursorCliExtension {
             let stream=crate::stream::stream_cursor_cli(model.clone(),context.clone(),Some(options),crate::stream::StreamDeps {cwd:cwd.clone(),agent_dir:agent_dir.clone(),executable:executable.clone(),store:oauth.store.clone(),oauth:oauth.clone(),settings:(oauth.settings)(),router:router.clone(),environment:environment.clone(),now:oauth.now.clone()});
             let completion=stream.clone();
             tokio::spawn(async move {
-                if let Err(error)=completion.result().await {eprintln!("Cursor CLI completion failed: {error}");}
+                if let Err(error)=completion.result().await {maho_ext_api::diagnostic(&format!("Cursor CLI completion failed: {error}"));}
                 for (signal,id) in subscriptions {signal.remove_abort_listener(id);}
             });
             stream
@@ -76,7 +76,7 @@ impl Extension for CursorCliExtension {
                         if let Ok(Some(models))=crate::catalog_refresh::refresh_catalog(&agent_dir,&settings,credential.as_ref(),&executable,&environment,(oauth.now)() as f64,||async {(oauth.resolve)(&settings)}).await
                             && models.iter().map(|model|&model.id).ne(crate::models::static_models().iter().map(|model|&model.id)) && runtime.assert_active().is_ok() && shutdown.as_ref().is_none_or(|shutdown|!shutdown.signal().aborted()) {
                             config.models=Some(models);
-                            if let Err(error)=runtime.register_provider(maho_ext_api::types::ProviderRegistration::Config {name:crate::oauth_login::PROVIDER_ID.into(),config:Box::new(config)},&path) {eprintln!("Cursor CLI catalog registration failed: {error}");}
+                            if let Err(error)=runtime.register_provider(maho_ext_api::types::ProviderRegistration::Config {name:crate::oauth_login::PROVIDER_ID.into(),config:Box::new(config)},&path) {maho_ext_api::diagnostic(&format!("Cursor CLI catalog registration failed: {error}"));}
                         }
                     };
                     if let Some(task)=catalog_refresh {

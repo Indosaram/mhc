@@ -220,7 +220,7 @@ impl McpClient {
                     let is_message=event_type.is_empty() || event_type=="message";event_type.clear();
                     if !is_message || data.is_empty(){data.clear();continue;}
                     let parsed=serde_json::from_str::<Value>(&data);data.clear();
-                    let event=match parsed {Ok(event)=>event,Err(error)=>{eprintln!("MCP {} SSE message parse failed: {error}",self.server);continue;}};
+                    let event=match parsed {Ok(event)=>event,Err(error)=>{maho_ext_api::diagnostic(&format!("MCP {} SSE message parse failed: {error}",self.server));continue;}};
                     if event.get("id")==value.get("id") && event.get("method").is_none(){return self.http_reply(event,value.get("id"));}
                     let _=self.notifications.send(event);
                 }
@@ -298,7 +298,7 @@ impl McpClient {
                 let result=crate::elicitation::handle_mcp_elicitation(ui.as_deref(),value.get("params").unwrap_or(&Value::Null),Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await;
                 json!({"jsonrpc":"2.0","id":id,"result":result})
             }else{json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})};
-            if let Err(error)=client.send(&response).await {eprintln!("MCP server request response failed: {error}");}
+            if let Err(error)=client.send(&response).await {maho_ext_api::diagnostic(&format!("MCP server request response failed: {error}"));}
         }})
     }
     pub async fn close(&self)->Result<(),McpError> {

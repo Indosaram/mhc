@@ -37,7 +37,7 @@ impl SharedMcpConnection {
             let dispose={let mut state=shared.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);state.idle=None;let dispose=!state.disposed && state.leases.is_empty() && state.in_flight==0;if dispose{state.disposed=true;}dispose};
             if dispose {
                 if let Some(task)=shared.subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(){task.abort();}
-                if let Err(error)=shared.connection.dispose().await {eprintln!("MCP shared idle disposal failed: {error}");}
+                if let Err(error)=shared.connection.dispose().await {maho_ext_api::diagnostic(&format!("MCP shared idle disposal failed: {error}"));}
             }
         }));
     }
