@@ -61,13 +61,14 @@ impl ClientServiceTransport {
                     }
                 }
             }}
-            subscription
+            (subscription, listener)
         });
         Ok(CallbackSubscription {
             snapshot,
             activate: Some(activate),
             stop,
             tasks,
+            client: self.client.clone(),
         })
     }
 }
@@ -75,7 +76,8 @@ pub struct CallbackSubscription {
     pub snapshot: Value,
     activate: Option<oneshot::Sender<()>>,
     stop: watch::Sender<bool>,
-    tasks: JoinSet<ServiceSubscription>,
+    tasks: JoinSet<(ServiceSubscription, ServiceListener)>,
+    client: Arc<Client>,
 }
 impl CallbackSubscription {
     pub fn activate(&mut self) {
@@ -86,8 +88,16 @@ impl CallbackSubscription {
     pub async fn close(&mut self) -> Result<(), ClientError> {
         self.stop.send_replace(true);
         while let Some(result) = self.tasks.join_next().await {
-            let mut subscription = result.map_err(|e| ClientError::Disconnected(e.to_string()))?;
+            let (mut subscription, listener) =
+                result.map_err(|e| ClientError::Disconnected(e.to_string()))?;
             subscription.dispose().await?;
+            // Await updates already handed to delivery, like upstream `await active.deliveryTail`.
+            // `dispose` removed the client-side sender, so the queue ends after the backlog.
+            while let Some(update) = subscription.updates.recv().await {
+                if let Err(error) = listener(update).await {
+                    self.client.report_listener_error(error);
+                }
+            }
         }
         Ok(())
     }
