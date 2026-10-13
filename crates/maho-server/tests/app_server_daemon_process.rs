@@ -26,3 +26,17 @@ async fn identity_guard_matches_current_process_and_never_signals_mismatched_chi
     child.wait().await.unwrap();
     assert!(!process_matches_pid_file(&file).await.unwrap());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn liveness_and_signals_use_the_native_kill_api() {
+    assert!(process_is_live(u64::from(std::process::id())).await.unwrap());
+    let mut child = tokio::process::Command::new("sleep").arg("600").kill_on_drop(true).spawn().unwrap();
+    let pid = u64::from(child.id().unwrap());
+    signal_pid(pid,"-TERM").unwrap();
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.unwrap().unwrap();
+    assert!(!status.success());
+    assert!(!process_is_live(pid).await.unwrap());
+    signal_pid(pid,"-KILL").unwrap();
+    assert!(signal_pid(pid,"-HUP").is_err());
+}

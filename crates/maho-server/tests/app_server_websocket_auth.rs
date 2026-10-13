@@ -39,7 +39,7 @@ async fn managed_token_receipt_is_written_through_the_injected_stderr_seam() {
     let path = directory.path().join("token");
     let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let writer = captured.clone();
-    let auth = resolve_websocket_listener_auth_with_receipt(None, Some(&path), Some(Arc::new(move |message: &str| writer.lock().unwrap().push(message.to_owned())))).await.unwrap();
+    let auth = resolve_websocket_listener_auth_with_receipt(None, Some(&path), "app-server websocket token", Some(Arc::new(move |message: &str| writer.lock().unwrap().push(message.to_owned())))).await.unwrap();
     assert!(matches!(auth, ResolvedWebSocketListenerAuth::Bearer { .. }));
     assert_eq!(captured.lock().unwrap().as_slice(), [format!("app-server websocket token: {}", path.display())]);
     // Fail-closed empty-token file must NOT emit a success receipt.
@@ -47,6 +47,16 @@ async fn managed_token_receipt_is_written_through_the_injected_stderr_seam() {
     tokio::fs::write(&empty, " \n").await.unwrap();
     let captured_empty: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let writer_empty = captured_empty.clone();
-    assert!(resolve_websocket_listener_auth_with_receipt(Some(WebSocketListenerAuth::TokenFile(empty)), None, Some(Arc::new(move |message: &str| writer_empty.lock().unwrap().push(message.to_owned())))).await.is_err());
+    assert!(resolve_websocket_listener_auth_with_receipt(Some(WebSocketListenerAuth::TokenFile(empty)), None, "app-server websocket token", Some(Arc::new(move |message: &str| writer_empty.lock().unwrap().push(message.to_owned())))).await.is_err());
     assert!(captured_empty.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn token_receipt_uses_the_transport_label() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("token");
+    tokio::fs::write(&path, "fixture\n").await.unwrap();
+    let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let writer = captured.clone();
+    resolve_websocket_listener_auth_with_receipt(Some(WebSocketListenerAuth::TokenFile(path.clone())), None, "app-server unix socket websocket token", Some(Arc::new(move |message: &str| writer.lock().unwrap().push(message.to_owned())))).await.unwrap();
+    assert_eq!(captured.lock().unwrap().as_slice(), [format!("app-server unix socket websocket token: {}", path.display())]);
 }
