@@ -617,6 +617,7 @@ impl maho_ext_api::ModelRegistry for ExtensionModelRegistryView {
             maho_ai::types::ServiceTierPreference::Priority => maho_ext_api::ServiceTier::Priority,
         })
     }
+    fn prompt_preset(&self, model: &Model) -> Option<String> { self.registry.get_prompt_preset(model) }
     fn has_configured_auth(&self, model: &Model) -> bool { self.registry.has_configured_auth(model) }
     fn get_api_key_for_provider<'a>(&'a self, provider: &'a str) -> maho_ext_api::ExtensionFuture<'a, Option<String>> {
         Box::pin(async move { Ok(self.registry.get_api_key_for_provider(provider).await) })

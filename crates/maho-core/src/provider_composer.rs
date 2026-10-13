@@ -172,6 +172,8 @@ pub fn compose_model_provider(id: &str, base: Option<Arc<dyn Provider>>, config:
 #[derive(Debug,Clone,Default)]
 pub struct CompatibilityRequestConfig {
     pub extra_body:Option<Map<String,Value>>,pub upstream_model_id:Option<String>,pub service_tier:Option<maho_ai::types::ServiceTierPreference>,pub auth_header:bool,
+    /// `promptPreset` from `modelOverrides`, extension or models.json definition (upstream keeps it on the model).
+    pub prompt_preset:Option<String>,
 }
 pub fn resolve_compatibility_request_config(model:&Model,config:Option<&ModelsJsonProvider>,extension:Option<&ProviderConfigInput>)->CompatibilityRequestConfig {
     let definition=config.and_then(|c|c.models.as_ref()).and_then(|v|v.iter().find(|d|d.id==model.id));
@@ -179,7 +181,7 @@ pub fn resolve_compatibility_request_config(model:&Model,config:Option<&ModelsJs
     let overlay=config.and_then(|c|c.model_overrides.as_ref()).and_then(|v|v.get(&model.id));
     let mut body=Map::new();
     for value in [config.and_then(|c|c.extra_body.as_ref()),extension.and_then(|c|c.extra_body.as_ref()),overlay.and_then(|c|c.extra_body.as_ref()),definition.and_then(|c|c.extra_body.as_ref()),ext.and_then(|c|c.extra_body.as_ref())].into_iter().flatten(){body.extend(value.clone());}
-    CompatibilityRequestConfig{extra_body:(!body.is_empty()).then_some(body),upstream_model_id:ext.and_then(|d|d.upstream_model_id.clone()).or_else(||definition.and_then(|d|d.upstream_model_id.clone())).or_else(||model.upstream_model_id.clone()),service_tier:ext.and_then(|d|d.service_tier).or_else(||definition.and_then(|d|d.service_tier)).or(model.service_tier),auth_header:extension.and_then(|c|c.auth_header).or(config.and_then(|c|c.auth_header)).unwrap_or(false)}
+    CompatibilityRequestConfig{extra_body:(!body.is_empty()).then_some(body),upstream_model_id:ext.and_then(|d|d.upstream_model_id.clone()).or_else(||definition.and_then(|d|d.upstream_model_id.clone())).or_else(||model.upstream_model_id.clone()),service_tier:ext.and_then(|d|d.service_tier).or_else(||definition.and_then(|d|d.service_tier)).or(model.service_tier),auth_header:extension.and_then(|c|c.auth_header).or(config.and_then(|c|c.auth_header)).unwrap_or(false),prompt_preset:overlay.and_then(|o|o.prompt_preset.clone()).or_else(||ext.and_then(|d|d.prompt_preset.clone())).or_else(||definition.and_then(|d|d.prompt_preset.clone()))}
 }
 pub async fn resolve_compatibility_request_headers(model:&Model,config:Option<&ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,env:Option<&std::collections::HashMap<String,String>>)->Result<Option<maho_ai::types::ProviderHeaders>,String> {
     let mut headers=crate::provider_api_key_auth::configured_headers(config,extension.map(|e|&e.config)).unwrap_or_default();
@@ -207,6 +209,14 @@ mod tests {
         let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol"}],"modelOverrides":{"sol":{"maxTokens":42}}}}}"#, "memory");
         let extension = ModelsJsonProvider { api: Some("openai-completions".into()), base_url: Some("http://localhost/v1".into()), models: Some(vec![ModelsJsonModel {id:"sol".into(),max_tokens:Some(100.0),..Default::default()}]), ..Default::default() };
         assert_eq!(compose_models("proxy", &[], config.get_provider("proxy"), Some(&extension.into())).expect("compose")[0].max_tokens, 42);
+    }
+
+    #[test]
+    fn model_override_prompt_preset_reaches_request_config() {
+        let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol","promptPreset":"gpt-5.4"}],"modelOverrides":{"sol":{"promptPreset":"glm-5.3"}}}}}"#, "memory");
+        assert_eq!(resolve_compatibility_request_config(&test_model(), config.get_provider("proxy"), None).prompt_preset.as_deref(), Some("glm-5.3"));
+        let config = ModelConfig::parse(r#"{"providers":{"proxy":{"models":[{"id":"sol","promptPreset":"gpt-5.4"}]}}}"#, "memory");
+        assert_eq!(resolve_compatibility_request_config(&test_model(), config.get_provider("proxy"), None).prompt_preset.as_deref(), Some("gpt-5.4"));
     }
 
     struct CancelRecordingProvider {
