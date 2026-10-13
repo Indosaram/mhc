@@ -4309,6 +4309,7 @@ dependencies = [
 name = "maho-lsp-daemon"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.2",
  "libc",
  "maho-lsp-core",
  "maho-mcp-stdio-core",
@@ -4317,6 +4318,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
