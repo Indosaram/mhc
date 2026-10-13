@@ -128,7 +128,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let model_patterns = parsed.models.as_deref().unwrap_or_default();
     let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
-    let options = startup::build_session_options(&parsed, &scope.scoped_models, manager.has_context_messages(), &models, &settings);
+    let has_context_messages = manager.has_context_messages();
+    let options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
     let host_factory = maho_core::sdk::HostRuntimeFactory {
@@ -143,7 +144,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         thinking_selection: options.options.thinking_selection,
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
         scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true,
-        session_profile, ..Default::default()
+        session_profile,
+        auto_title_sessions: Some(startup::resolve_auto_title_sessions(
+            mode, &parsed, has_context_messages,
+            &maho_rpc::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES", &maho_core::config::current_env()).as_deref()),
+            None,
+        )),
+        ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
