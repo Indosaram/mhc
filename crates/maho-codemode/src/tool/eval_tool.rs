@@ -15,7 +15,9 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
     let settings=&options.settings;
     let deadlines=EvalDeadlineSeconds {run_budget_seconds:settings.run_budget_seconds,detach_after_seconds:settings.cell_timeout_seconds.min(settings.foreground_window_seconds),foreground_window_seconds:settings.foreground_window_seconds,hard_limit_seconds:settings.hard_limit_seconds};
     let parameters=create_eval_input_schema(&settings.languages,&deadlines).map_err(str::to_owned)?;
-    let prompt=crate::prompt::eval_prompt::build_eval_prompt(&settings.languages,&options.prompt).map_err(|error|error.to_string())?;
+    let max_detached_cells=options.cell_manager.lock().expect("cell manager lock").max_detached_cells() as f64;
+    let prompt_options=crate::prompt::eval_prompt::EvalPromptOptions {run_budget_seconds:Some(deadlines.run_budget_seconds),max_detached_cells:Some(max_detached_cells),..options.prompt.clone()};
+    let prompt=crate::prompt::eval_prompt::build_eval_prompt(&settings.languages,&prompt_options).map_err(|error|error.to_string())?;
     let mut definition=ToolDefinition::new("eval",&prompt.description,parameters,Arc::new(move |call| {
         let options=options.clone();
         Box::pin(async move {
