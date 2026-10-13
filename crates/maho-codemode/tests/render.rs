@@ -40,3 +40,15 @@ fn collapsed_calls_bound_error_and_show_exact_omissions() {
     assert_eq!(lines.iter().filter(|line|line.as_str()=="[tool error omitted]").count(),5);
     assert!(!lines.iter().any(|line|line.contains("tool.call-0")));
 }
+
+#[test]
+fn registered_renderers_draw_the_eval_card_instead_of_raw_arguments() {
+    let renderers=std::sync::Arc::new(eval_tool_renderers());
+    let args=json!({"language":"js","summary":"collect project facts","code":"const a = 1;\nconsole.log(a)"});
+    let context=maho_ext_api::ToolRenderContext {args:args.clone(),tool_call_id:"call".into(),invalidate:std::rc::Rc::new(||{}),last_component:None,state:(),cwd:"/tmp".into(),
+        execution_started:false,args_complete:true,is_partial:true,expanded:false,show_images:false,image_protocol:None,is_error:false,has_result:Some(false),spinner_frame:None};
+    let mut session=maho_ext_api::ToolRendererSession {renderers,context};
+    let lines=session.render_call(&Default::default(),80).expect("eval call renderer");
+    assert_eq!(lines,vec!["eval js","collect project facts","const a = 1;","console.log(a)"]);
+    assert!(!lines.iter().any(|line|line.contains("\"summary\"")));
+}
