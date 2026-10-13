@@ -436,12 +436,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::GetCommands=>{
             // Upstream `case "get_commands"`: `buildRpcCommandsForSession(session)` classifies each of the
             // three groups by its real source; the session's `command_groups` reads the same three.
-            let (extensions,templates,skills)=session.command_groups();
-            let commands=crate::rpc_command_surface::build_rpc_commands(
-                &crate::rpc_command_surface::command_inputs(&extensions),
-                &crate::rpc_command_surface::command_inputs(&templates),
-                &crate::rpc_command_surface::command_inputs(&skills),
-            );
+            let commands=build_rpc_commands_for_session(session);
             ("get_commands",Ok(Some(serde_json::json!({"commands":commands}))))
         },
         RpcCommandBody::GetAuthProviders=>{
@@ -471,7 +466,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 let callbacks=std::sync::Arc::new(crate::login_prompts::RpcLoginPromptCallbacks::with_sink(combined_signal,provider.clone(),event_sink.clone(),ui));
                 let result=storage.login(&provider,callbacks).await;
                 if result.is_ok(){let _=runtime.refresh(Default::default()).await;}
-                if provider=="anthropic-subscription"&&result.is_ok(){event_sink(serde_json::json!({"type":"provider_accounts_changed","provider":provider}));}
+                if provider=="anthropic-subscription"&&result.is_ok(){maho_core::emit_provider_accounts_changed(&provider);}
                 let mut end=serde_json::json!({"type":"auth_login_end","provider":provider,"success":result.is_ok()});
                 if let Err(error)=result{end["error"]=error.into();}
                 event_sink(end);
@@ -605,9 +600,92 @@ pub struct RpcExtensionUi{
     pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,
     questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,
     capabilities:Vec<String>,
+    client_width:std::sync::atomic::AtomicUsize,
+    live_renderers:std::sync::Mutex<std::collections::BTreeMap<String,(LiveRenderer,RenderedTarget)>>,
+    retained_renderer_factories:std::sync::Mutex<std::collections::BTreeMap<String,(maho_ext_api::ComponentFactory,RenderedTarget)>>,
 }
+/// Where a rendered component's lines go on the wire (senpi's three `createLiveComponentRenderer` emits).
+#[derive(Clone,Copy)]
+enum RenderedTarget{Widget(&'static str),Header,Footer}
+impl RenderedTarget{
+    fn record(self,key:&str,lines:Option<Vec<String>>)->serde_json::Value{
+        let id=uuid::Uuid::new_v4().to_string();
+        match self{
+            Self::Widget(placement)=>{
+                let mut record=serde_json::json!({"type":"extension_ui_request","id":id,"method":"setWidget","widgetKey":key,"widgetPlacement":placement});
+                if let Some(lines)=lines{record["widgetLines"]=lines.into();}
+                record
+            },
+            Self::Header|Self::Footer=>{
+                let method=if matches!(self,Self::Header){"setHeader"}else{"setFooter"};
+                let mut record=serde_json::json!({"type":"extension_ui_request","id":id,"method":method});
+                if let Some(lines)=lines{record["widgetLines"]=lines.into();}
+                record
+            },
+        }
+    }
+    fn rendered(self,key:&str,lines:Vec<String>)->serde_json::Value{
+        let mut record=self.record(key,Some(lines));
+        record[crate::session_event_fanout::RENDERED_COMPONENT_RECORD]=true.into();
+        record
+    }
+}
+const HEADER_RENDERER_KEY:&str="__header__";
+const FOOTER_RENDERER_KEY:&str="__footer__";
+/// Adaptation: native component factories return non-`Send` components, so the RPC renderer keeps
+/// the (thread-safe) factory and instantiates a component per render, disposing it right after.
+struct FactoryComponent{factory:maho_ext_api::ComponentFactory,theme:maho_ext_api::Theme}
+impl maho_tui::tui::Component for FactoryComponent{
+    fn render(&mut self,width:usize)->Vec<String>{let mut component=(self.factory)(&self.theme);let lines=component.render(width);component.dispose();lines}
+}
+type LiveRenderer=crate::widget_line_renderer::LiveComponentRenderer<FactoryComponent>;
 impl RpcExtensionUi{
-    pub fn new(out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,capabilities:Vec<String>)->Self{Self{out,pending,questions,capabilities}}
+    pub fn new(out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>,questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>,capabilities:Vec<String>)->Self{
+        Self{out,pending,questions,capabilities,client_width:std::sync::atomic::AtomicUsize::new(80),live_renderers:Default::default(),retained_renderer_factories:Default::default()}
+    }
+    fn has_rendered_components(&self)->bool{self.capabilities.iter().any(|capability|capability==crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY)}
+    fn dispose_renderer(&self,key:&str){
+        let removed=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
+        if let Some((mut renderer,_))=removed{renderer.dispose();}
+        self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(key);
+    }
+    fn create_renderer(&self,key:&str){
+        let Some((factory,target))=self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(key).cloned() else{return;};
+        let mut renderer=LiveRenderer::new(FactoryComponent{factory,theme:maho_ext_api::Theme::default()});
+        let lines=renderer.rerender(self.client_width.load(std::sync::atomic::Ordering::SeqCst));
+        self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.to_owned(),(renderer,target));
+        if let Some(lines)=lines{(self.out)(target.rendered(key,lines));}
+    }
+    /// Retain a component factory; render it now only for a `rendered_components` client.
+    fn retain_renderer(&self,key:&str,factory:maho_ext_api::ComponentFactory,target:RenderedTarget){
+        self.dispose_renderer(key);
+        self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.to_owned(),(factory,target));
+        if self.has_rendered_components(){self.create_renderer(key);}
+    }
+    /// The client width live components render at (senpi `clientWidth`).
+    pub fn set_client_width(&self,width:usize){self.client_width.store(width,std::sync::atomic::Ordering::SeqCst);}
+    /// Re-render every live component at the current width; unchanged frames are not re-emitted.
+    pub fn rerender_live_components(&self){
+        let width=self.client_width.load(std::sync::atomic::Ordering::SeqCst);
+        let records=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter_mut()
+            .filter_map(|(key,(renderer,target))|renderer.rerender(width).map(|lines|target.rendered(key,lines))).collect::<Vec<_>>();
+        for record in records{(self.out)(record);}
+    }
+    /// senpi `rerenderComponents`: drop renderers for a client without `rendered_components`,
+    /// otherwise materialize retained factories and re-render.
+    pub fn rerender_components(&self){
+        if !self.has_rendered_components(){self.dispose_all_renderers();return;}
+        let missing=self.retained_renderer_factories.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect::<Vec<_>>();
+        for key in missing{
+            let live=self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&key);
+            if !live{self.create_renderer(&key);}
+        }
+        self.rerender_live_components();
+    }
+    pub fn dispose_all_renderers(&self){
+        let renderers=std::mem::take(&mut *self.live_renderers.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        for(_,(mut renderer,_))in renderers{renderer.dispose();}
+    }
     fn ask<T:'static+Send>(&self,opts:&maho_ext_api::ExtensionUiDialogOptions,default:T,mut request:serde_json::Value,parse:impl Fn(serde_json::Value)->T+Send+'static)->maho_ext_api::UiFuture<'static,T>{
         if opts.signal.as_ref().is_some_and(|signal|signal.is_aborted()){return Box::pin(async move{default});}
         let id=uuid::Uuid::new_v4().to_string();
@@ -673,11 +751,25 @@ impl maho_ext_api::ExtensionUi for RpcExtensionUi{
     }
     fn set_status(&self,key:&str,text:Option<&str>){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setStatus","statusKey":key,"statusText":text}));}
     fn set_widget(&self,key:&str,content:Option<maho_ext_api::WidgetContent>,options:maho_ext_api::ExtensionWidgetOptions){
-        let lines=match &content{Some(maho_ext_api::WidgetContent::Lines(lines))=>Some(lines.clone()),_=>None};
-        (self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setWidget","widgetKey":key,"widgetLines":lines,"widgetPlacement":options.placement.as_str()}));
+        let target=RenderedTarget::Widget(options.placement.as_str());
+        match content{
+            Some(maho_ext_api::WidgetContent::Component(factory))=>self.retain_renderer(key,factory,target),
+            Some(maho_ext_api::WidgetContent::Lines(lines))=>{self.dispose_renderer(key);(self.out)(target.record(key,Some(lines)));},
+            None=>{self.dispose_renderer(key);(self.out)(target.record(key,None));},
+        }
     }
-    fn set_header(&self,_factory:Option<maho_ext_api::ComponentFactory>){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setHeader"}));}
-    fn set_footer(&self,_factory:Option<maho_ext_api::ComponentFactory>){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setFooter"}));}
+    fn set_header(&self,factory:Option<maho_ext_api::ComponentFactory>){
+        match factory{
+            Some(factory)=>self.retain_renderer(HEADER_RENDERER_KEY,factory,RenderedTarget::Header),
+            None=>{self.dispose_renderer(HEADER_RENDERER_KEY);if self.has_rendered_components(){(self.out)(RenderedTarget::Header.record(HEADER_RENDERER_KEY,None));}},
+        }
+    }
+    fn set_footer(&self,factory:Option<maho_ext_api::ComponentFactory>){
+        match factory{
+            Some(factory)=>self.retain_renderer(FOOTER_RENDERER_KEY,factory,RenderedTarget::Footer),
+            None=>{self.dispose_renderer(FOOTER_RENDERER_KEY);if self.has_rendered_components(){(self.out)(RenderedTarget::Footer.record(FOOTER_RENDERER_KEY,None));}},
+        }
+    }
     fn set_title(&self,title:&str){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"setTitle","title":title}));}
     fn paste_to_editor(&self,text:&str){self.set_editor_text(text);}
     fn set_editor_text(&self,text:&str){(self.out)(serde_json::json!({"type":"extension_ui_request","id":uuid::Uuid::new_v4().to_string(),"method":"set_editor_text","text":text}));}
@@ -705,19 +797,82 @@ pub struct RpcConnectionHandler{
     loaded_surfaces_subscription: std::sync::Mutex<Option<maho_ext_api::BusSubscription>>,
     loaded_surfaces_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) last_abort_source:LastAbortSource,
+    /// senpi `unsubscribeExtensionEvents`: present only for an `extension_events` client.
+    extension_events_subscription:std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    /// senpi `setRebindSession`: in-place session replacement and reload notifications.
+    rebind_subscription:std::sync::Mutex<Option<maho_core::event_bus::EventSubscription>>,
+    /// senpi `unsubscribeProviderAccountEvents`.
+    provider_account_unsubscribe:std::sync::Mutex<Option<Box<dyn FnOnce()+Send+Sync>>>,
+    /// senpi `replacementIssuedHere`: replacements this connection's own commands drive.
+    local_replacements:std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+/// senpi `buildRpcCommandsForSession`: the three command groups classified by their real source.
+pub fn build_rpc_commands_for_session(session:&AgentSession)->Vec<crate::rpc_command_surface::RpcSlashCommand>{
+    let (extensions,templates,skills)=session.command_groups();
+    crate::rpc_command_surface::build_rpc_commands(
+        &crate::rpc_command_surface::command_inputs(&extensions),
+        &crate::rpc_command_surface::command_inputs(&templates),
+        &crate::rpc_command_surface::command_inputs(&skills),
+    )
+}
+/// The command half of senpi `refreshLoadedSurfacesAfter`: record the new digest and publish
+/// `commands_changed` only for a post-baseline change.
+fn refresh_rpc_commands(session:&AgentSession,digest:&std::sync::Mutex<Option<String>>,out:&RpcRecordSink){
+    let commands=build_rpc_commands_for_session(session);
+    let changed={
+        let mut digest=digest.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed=crate::rpc_command_surface::create_commands_changed_event(digest.as_deref(),&commands);
+        if let Ok(next)=crate::rpc_command_surface::rpc_command_list_digest(&commands){*digest=Some(next);}
+        changed
+    };
+    match changed{Ok(Some(event))=>out(event),Ok(None)=>{},Err(error)=>out(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
 }
 impl RpcConnectionHandler{
     /// Build a handler over `session` and install the RPC extension UI on it.
     pub async fn create(session:AgentSession,out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>)->Self{
+        Self::create_with_shutdown_handler(session,out,capabilities,None).await
+    }
+    /// senpi `options.shutdownHandler`: an extension's `ctx.shutdown()` calls `shutdown_handler` when
+    /// given, otherwise it only marks this connection for the host's shutdown check.
+    pub async fn create_with_shutdown_handler(session:AgentSession,out:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>,shutdown_handler:Option<std::sync::Arc<dyn Fn()+Send+Sync>>)->Self{
         let pending:std::sync::Arc<std::sync::Mutex<crate::session_extension_ui_requests::SessionExtensionUiRequests>>=Default::default();
         let questions:std::sync::Arc<std::sync::Mutex<crate::connection_question_bridge::ConnectionQuestionBridge>>=Default::default();
+        let extension_events=capabilities.iter().any(|capability|capability==crate::custom_capability::EXTENSION_EVENTS_CAPABILITY);
         let ui=std::sync::Arc::new(RpcExtensionUi::new(out.clone(),pending.clone(),questions.clone(),capabilities));
         let shutdown_requested:std::sync::Arc<std::sync::atomic::AtomicBool>=Default::default();
+        let account_out=out.clone();
+        let provider_account_unsubscribe=maho_core::subscribe_provider_account_events(std::sync::Arc::new(move|event:maho_core::ProviderAccountEvent|{
+            account_out(match event{
+                maho_core::ProviderAccountEvent::AccountsChanged{provider}=>serde_json::json!({"type":"auth_accounts_changed","provider":provider}),
+                maho_core::ProviderAccountEvent::Failover{provider,from,to,reason}=>serde_json::json!({"type":"account_failover","provider":provider,"from":from,"to":to,"reason":reason}),
+            });
+        }));
+        let extension_events_subscription=extension_events.then(||{
+            let event_out=out.clone();
+            session.on_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,std::sync::Arc::new(move|data:&serde_json::Value|{
+                event_out(serde_json::json!({"type":"extension_event","name":data["name"],"data":data["data"]}));
+            }))
+        });
+        let local_replacements:std::sync::Arc<std::sync::atomic::AtomicUsize>=Default::default();
+        let commands_digest:std::sync::Arc<std::sync::Mutex<Option<String>>>=Default::default();
+        let rebind_session=session.weak_accessor();let rebind_out=out.clone();let rebind_digest=commands_digest.clone();let rebind_local=local_replacements.clone();
+        let rebind_subscription=session.on_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,std::sync::Arc::new(move|data:&serde_json::Value|{
+            let Some(session)=rebind_session() else{return;};
+            // A replacement driven by this connection's own command is acknowledged by its response.
+            if data["reason"]!="reload"&&rebind_local.load(std::sync::atomic::Ordering::SeqCst)==0{
+                let event=crate::rpc_types::RpcSessionLifecycleEvent::SessionReplaced{durable_session_id:session.session_id(),session_file:session.session_file(),cwd:session.with_session_manager(|manager|manager.cwd().to_owned()),session_name:session.session_name()};
+                match serde_json::to_value(event){Ok(record)=>rebind_out(record),Err(error)=>rebind_out(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
+            }
+            refresh_rpc_commands(&session,&rebind_digest,&rebind_out);
+        }));
         let sink=out.clone();
-        let bindings=maho_core::agent_session::ExtensionBindings{ui_context:Some(ui.clone()),mode:Some(maho_ext_api::ExtensionMode::Rpc),on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{(sink)(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}));})),..Default::default()};
+        let shutdown_flag=shutdown_requested.clone();
+        let bindings=maho_core::agent_session::ExtensionBindings{ui_context:Some(ui.clone()),mode:Some(maho_ext_api::ExtensionMode::Rpc),on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{(sink)(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error}));})),shutdown_handler:Some(std::sync::Arc::new(move||match &shutdown_handler{Some(handler)=>handler(),None=>shutdown_flag.store(true,std::sync::atomic::Ordering::SeqCst)})),..Default::default()};
         // The CLI mount already starts host sessions; attach only replaces the connection context.
         if session.has_started_extension_lifecycle() {session.rebind_extension_context(bindings).await;}
         else {session.bind_extensions(bindings).await;}
+        // The first snapshot is the baseline and is never published.
+        refresh_rpc_commands(&session,&commands_digest,&out);
         let inventory_session = session.weak_accessor();
         let inventory_out = out.clone();
         let (inventory_tx, mut inventory_rx) = tokio::sync::mpsc::unbounded_channel::<maho_ext_api::mcp_wire::McpWireStatusSnapshot>();
@@ -741,26 +896,53 @@ impl RpcConnectionHandler{
                 if changed { inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"})); }
             }
         });
-        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task)),last_abort_source:Default::default()}
+        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task)),
+            extension_events_subscription:std::sync::Mutex::new(extension_events_subscription),rebind_subscription:std::sync::Mutex::new(Some(rebind_subscription)),
+            provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)),local_replacements,last_abort_source:Default::default()}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
     pub async fn handle_input_line(&self,line:&str)->Result<Option<String>,serde_json::Error>{
-        if let Ok(value)=serde_json::from_str::<serde_json::Value>(line)&&matches!(value["type"].as_str(),Some("extension_ui_response"|"extension_ui_progress")){
+        let parsed=serde_json::from_str::<serde_json::Value>(line).ok();
+        if let Some(value)=&parsed&&matches!(value["type"].as_str(),Some("extension_ui_response"|"extension_ui_progress")){
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0,|elapsed|elapsed.as_millis() as u64);
-            let(kind,resolved)=self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).respond(&value,now);
+            let(kind,resolved)=self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).respond(value,now);
             match kind{crate::connection_question_bridge::QuestionReply::Accepted|crate::connection_question_bridge::QuestionReply::AlreadyResolved=>{if let Some(record)=resolved{self.out_record(record);}}
-                crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value);}}
+                crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value.clone());}}
             return Ok(None);
         }
-        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone()),Some(&self.last_abort_source)).await
+        let kind=parsed.as_ref().and_then(|value|value["type"].as_str());
+        // senpi `set_client_info`: live components re-render at the client's width.
+        if kind==Some("set_client_info")&&let Some(width)=parsed.as_ref().and_then(|value|value["width"].as_f64()).filter(|width|width.is_finite()&&*width>0.){
+            self.ui.set_client_width(width as usize);
+            self.ui.rerender_live_components();
+        }
+        let replaces=matches!(kind,Some("new_session"|"switch_session"|"fork"|"clone"|"import_jsonl"));
+        if replaces{self.local_replacements.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}
+        let result=handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone()),Some(&self.last_abort_source)).await;
+        if replaces{self.local_replacements.fetch_sub(1,std::sync::atomic::Ordering::SeqCst);}
+        result
     }
     fn out_record(&self,record:serde_json::Value){(self.ui.out)(record);}
     pub fn is_shutdown_requested(&self)->bool{self.shutdown_requested.load(std::sync::atomic::Ordering::SeqCst)}
+    /// senpi `rerenderComponents`.
+    pub fn rerender_components(&self){self.ui.rerender_components();}
     /// Cancel UI requests that can no longer be answered by this connection.
     pub fn cancel_pending_extension_ui_requests(&self){self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all();self.questions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cancel_all(0);}
+    /// Tear down this connection's subscriptions and renderers while leaving the session alive
+    /// (senpi `dispose` with `disposeRuntime: false`).
+    pub async fn release(&self){
+        self.ui.dispose_all_renderers();
+        self.cancel_pending_extension_ui_requests();
+        let unsubscribe=self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(unsubscribe)=unsubscribe{unsubscribe();}
+        self.extension_events_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        self.rebind_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        self.loaded_surfaces_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        if let Some(task)=self.loaded_surfaces_task.lock().await.take(){task.abort();if let Err(error)=task.await && !error.is_cancelled(){eprintln!("RPC inventory consumer failed: {error}");}}
+    }
     /// Tear down subscriptions and dispose the session runtime. Never exits the process.
-    pub async fn dispose(&self){self.loaded_surfaces_subscription.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();if let Some(task)=self.loaded_surfaces_task.lock().await.take(){task.abort();if let Err(error)=task.await && !error.is_cancelled(){eprintln!("RPC inventory consumer failed: {error}");}}self.cancel_pending_extension_ui_requests();self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
+    pub async fn dispose(&self){self.release().await;self.session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;self.session.dispose().await;}
 }
 
 #[cfg(test)]
@@ -1002,5 +1184,147 @@ mod new_session_tests{
     async fn account_remove_preserves_provider_error(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"account_remove","provider":"openai","name":"missing"})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"account_remove"); assert_eq!(response["success"],false); assert_eq!(response["error"],"Provider account not found: missing");
+    }
+}
+
+#[cfg(test)]
+mod connection_events_tests{
+    use super::*;
+    use std::sync::{Arc,Mutex};
+    fn session()->AgentSession{
+        let runtime=maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions{providers:Some(vec![]),..Default::default()});
+        AgentSession::new(maho_core::agent_session::AgentSessionConfig{
+            agent:maho_agent::Agent::new(maho_agent::AgentOptions{stream_fn:Some(Arc::new(|_,_,_|maho_ai::types::AssistantMessageEventStream::assistant())),..Default::default()}),
+            session_manager:maho_core::session_manager::SessionManager::in_memory("/tmp",None,None),
+            settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
+            cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
+        }).expect("session")
+    }
+    async fn handler(session:&AgentSession,capabilities:&[&str])->(RpcConnectionHandler,Arc<Mutex<Vec<serde_json::Value>>>){
+        let records=Arc::new(Mutex::new(Vec::new()));let captured=records.clone();
+        let handler=RpcConnectionHandler::create(session.clone(),Arc::new(move|record|captured.lock().expect("records").push(record)),capabilities.iter().map(|capability|(*capability).to_owned()).collect()).await;
+        (handler,records)
+    }
+    fn of_type(records:&Arc<Mutex<Vec<serde_json::Value>>>,kind:&str)->Vec<serde_json::Value>{records.lock().expect("records").iter().filter(|record|record["type"]==kind).cloned().collect()}
+    struct Lines(Vec<String>);
+    impl maho_tui::tui::Component for Lines{fn render(&mut self,width:usize)->Vec<String>{self.0.iter().map(|line|format!("{line}@{width}")).collect()}}
+    fn factory()->maho_ext_api::ComponentFactory{Arc::new(|_:&maho_ext_api::Theme|->Box<dyn maho_tui::tui::Component>{Box::new(Lines(vec!["row".into()]))})}
+
+    #[tokio::test]
+    async fn command_stream_routes_ui_responses_to_the_handler(){
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let session=session();
+        let(mut client,host)=tokio::io::duplex(4096);
+        let(input,output)=tokio::io::split(host);
+        let run=crate::rpc_mode::run_command_stream(&session,input,output);
+        let drive=async{
+            client.write_all(b"{\"type\":\"extension_ui_response\",\"id\":\"unknown\",\"cancelled\":true}\n{\"id\":\"after\",\"type\":\"get_messages\"}\n").await.expect("write");
+            client.shutdown().await.expect("close input");
+            let mut received=String::new();client.read_to_string(&mut received).await.expect("read");received
+        };
+        let(result,received)=tokio::time::timeout(std::time::Duration::from_secs(5),async{tokio::join!(run,drive)}).await.expect("bounded stream");
+        result.expect("stream");
+        let records=received.lines().map(|line|serde_json::from_str::<serde_json::Value>(line).expect("record")).collect::<Vec<_>>();
+        assert!(records.iter().all(|record|record["command"]!="extension_ui_response"));
+        let responses=records.iter().filter(|record|record["type"]=="response").collect::<Vec<_>>();
+        assert_eq!(responses.len(),1);
+        assert_eq!(responses[0]["id"],"after");
+        assert_eq!(responses[0]["success"],true);
+    }
+
+    #[tokio::test]
+    async fn extension_rpc_events_reach_only_extension_events_clients(){
+        let session=session();
+        let(capable,capable_records)=handler(&session,&[crate::custom_capability::EXTENSION_EVENTS_CAPABILITY]).await;
+        let(plain,plain_records)=handler(&session,&[]).await;
+        session.emit_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,&serde_json::json!({"name":"omo.memory.updated","data":{"n":1}}));
+        assert_eq!(of_type(&capable_records,"extension_event"),vec![serde_json::json!({"type":"extension_event","name":"omo.memory.updated","data":{"n":1}})]);
+        assert!(of_type(&plain_records,"extension_event").is_empty());
+        capable.release().await;
+        session.emit_extension_event(maho_core::EXTENSION_RPC_EVENT_CHANNEL,&serde_json::json!({"name":"later","data":null}));
+        assert_eq!(of_type(&capable_records,"extension_event").len(),1);
+        plain.release().await;
+    }
+
+    #[tokio::test]
+    async fn provider_account_events_map_to_upstream_records(){
+        let session=session();
+        let(handler,records)=handler(&session,&[]).await;
+        maho_core::emit_provider_accounts_changed("rpc-account-fixture");
+        maho_core::emit_provider_account_failover("rpc-account-fixture","first","second","rate_limit");
+        let mine=records.lock().expect("records").iter().filter(|record|record["provider"]=="rpc-account-fixture").cloned().collect::<Vec<_>>();
+        assert_eq!(mine,vec![
+            serde_json::json!({"type":"auth_accounts_changed","provider":"rpc-account-fixture"}),
+            serde_json::json!({"type":"account_failover","provider":"rpc-account-fixture","from":"first","to":"second","reason":"rate_limit"}),
+        ]);
+        handler.release().await;
+        maho_core::emit_provider_accounts_changed("rpc-account-fixture");
+        assert_eq!(records.lock().expect("records").iter().filter(|record|record["provider"]=="rpc-account-fixture").count(),2);
+    }
+
+    #[tokio::test]
+    async fn commands_changed_suppresses_baseline_and_publishes_later_change(){
+        let session=session();
+        let(handler,records)=handler(&session,&[]).await;
+        assert!(of_type(&records,"commands_changed").is_empty());
+        session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
+        assert!(of_type(&records,"commands_changed").is_empty());
+        let source_info=maho_core::source_info::create_synthetic_source_info("rpc-commands-changed",maho_core::source_info::SyntheticSourceInfoOptions{source:"test".into(),..Default::default()});
+        session.set_prompt_resources(vec![maho_core::prompt_templates::PromptTemplate{name:"review".into(),description:"Review work".into(),argument_hint:None,content:"review".into(),source_info,file_path:"/tmp/review.md".into()}],Vec::new());
+        session.emit_extension_event(maho_core::agent_session::SESSION_REBIND_CHANNEL,&serde_json::json!({"reason":"reload"}));
+        let changed=of_type(&records,"commands_changed");
+        assert_eq!(changed.len(),1);
+        assert_eq!(changed[0]["commands"][0]["name"],"review");
+        assert!(of_type(&records,"session_replaced").is_empty());
+        handler.release().await;
+    }
+
+    #[tokio::test]
+    async fn session_replaced_announces_external_replacement_only(){
+        let session=session();
+        let(handler,records)=handler(&session,&[]).await;
+        let response=handler.handle_input_line(&serde_json::json!({"id":"own","type":"new_session"}).to_string()).await.expect("dispatch").expect("response");
+        assert!(response.contains("\"success\":true"));
+        assert!(of_type(&records,"session_replaced").is_empty());
+        assert!(session.new_session(None).await.expect("external replacement"));
+        let replaced=of_type(&records,"session_replaced");
+        assert_eq!(replaced.len(),1);
+        assert_eq!(replaced[0]["durableSessionId"],session.session_id());
+        assert_eq!(replaced[0]["cwd"],"/tmp");
+        handler.release().await;
+    }
+
+    #[tokio::test]
+    async fn extension_shutdown_marks_the_connection_without_disposing(){
+        let session=session();
+        let(handler,_records)=handler(&session,&[]).await;
+        assert!(!handler.is_shutdown_requested());
+        maho_ext_api::ExtensionContextActions::shutdown(session.extension_context_actions().as_ref());
+        assert!(handler.is_shutdown_requested());
+        handler.release().await;
+    }
+
+    #[tokio::test]
+    async fn component_widgets_render_only_for_rendered_components_clients(){
+        let session=session();
+        let(rendered,rendered_records)=handler(&session,&[crate::custom_capability::RENDERED_COMPONENTS_CAPABILITY]).await;
+        let(plain,plain_records)=handler(&session,&[]).await;
+        for ui in [rendered.ui().clone(),plain.ui().clone()]{
+            maho_ext_api::ExtensionUi::set_widget(ui.as_ref(),"panel",Some(maho_ext_api::WidgetContent::Component(factory())),Default::default());
+            maho_ext_api::ExtensionUi::set_header(ui.as_ref(),Some(factory()));
+            maho_ext_api::ExtensionUi::set_footer(ui.as_ref(),None);
+        }
+        assert!(of_type(&plain_records,"extension_ui_request").is_empty());
+        let requests=of_type(&rendered_records,"extension_ui_request");
+        assert_eq!(requests.iter().map(|record|record["method"].clone()).collect::<Vec<_>>(),vec![serde_json::json!("setWidget"),serde_json::json!("setHeader"),serde_json::json!("setFooter")]);
+        assert_eq!(requests[0]["widgetLines"],serde_json::json!(["row@80"]));
+        assert_eq!(requests[0][crate::session_event_fanout::RENDERED_COMPONENT_RECORD],true);
+        assert!(requests[2].get("widgetLines").is_none());
+        let response=rendered.handle_input_line(&serde_json::json!({"id":"width","type":"set_client_info","width":40}).to_string()).await.expect("dispatch");
+        assert!(response.is_some());
+        let widths=of_type(&rendered_records,"extension_ui_request").into_iter().skip(3).map(|record|record["widgetLines"].clone()).collect::<Vec<_>>();
+        assert_eq!(widths,vec![serde_json::json!(["row@40"]),serde_json::json!(["row@40"])]);
+        rendered.release().await;
+        plain.release().await;
     }
 }
