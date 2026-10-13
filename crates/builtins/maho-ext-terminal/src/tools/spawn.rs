@@ -10,7 +10,9 @@ pub fn command_options(command:&str,cwd:Option<&std::path::Path>,shell_path:Opti
     if matches!(name.as_str(),"cmd"|"cmd.exe") {options=options.arg("/c");}
     else if matches!(name.as_str(),"powershell"|"powershell.exe"|"pwsh"|"pwsh.exe") {options=options.arg("-NoProfile").arg("-Command");}
     else {options=options.arg("-c");}
-    options=options.arg(command);if let Some(cwd)=cwd {options=options.cwd(cwd);}Ok(options)
+    options=options.arg(command);if let Some(cwd)=cwd {options=options.cwd(cwd);}
+    // spawn.ts: `env: { ...ctx.getEnv(), ...request.envOverrides }`; getEnv is `getShellEnv()`. Later `.env()` pushes override.
+    options.env=maho_core::utils::shell::get_shell_env().into_iter().collect();Ok(options)
 }
 pub fn describe_exit(exit:Option<&PtyExit>)->Option<String> {let exit=exit?;Some(if exit.timed_out {"timed_out".to_owned()} else if exit.cancelled {"killed".to_owned()} else if exit.exit_code==Some(0) {"completed".to_owned()} else if let Some(code)=exit.exit_code {format!("exited_{code}")} else {"exited".to_owned()})}
 #[cfg(test)]
@@ -24,6 +26,13 @@ mod tests {
             let options=command_options("echo ready",Some(dir.path()),Some(path.to_str().unwrap()))?;assert_eq!(options.args,args);assert_eq!(options.cwd.as_deref(),Some(dir.path()));
         }
         assert!(command_options("echo ready",None,Some(dir.path().join("missing").to_str().unwrap())).is_err());Ok(())
+    }
+    #[test]
+    fn command_env_puts_the_agent_bin_dir_on_path()->std::io::Result<()> {
+        let options=command_options("echo ready",None,None)?;
+        let bin=maho_core::config::get_bin_dir();let delimiter=if cfg!(windows) {';'} else {':'};
+        let path=options.env.iter().find(|(key,_)|key.eq_ignore_ascii_case("path")).map(|(_,value)|value.clone()).unwrap_or_default();
+        assert!(path.split(delimiter).any(|entry|entry==bin));Ok(())
     }
     #[test] fn exit_priority() {assert_eq!(describe_exit(None),None);assert_eq!(describe_exit(Some(&PtyExit {exit_code:Some(0),cancelled:true,timed_out:true})),Some("timed_out".to_owned()));assert_eq!(describe_exit(Some(&PtyExit {exit_code:Some(9),cancelled:false,timed_out:false})),Some("exited_9".to_owned()));}
 }

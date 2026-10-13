@@ -124,3 +124,11 @@ async fn powershell_config_is_windows_only() {
     let error = maho_tools::powershell::get_powershell_config().await.unwrap_err();
     assert_eq!(error.to_string(), "The powershell tool is only available on Windows.");
 }
+
+#[test]
+fn spawn_context_starts_from_the_injected_shell_env() {
+    let shell_env: ShellEnvProvider = Arc::new(|| [("PATH".to_owned(), "/agent/bin:/usr/bin".to_owned()), ("PI_SESSION_ID".to_owned(), "stale".to_owned())].into_iter().collect());
+    let context = resolve_spawn_context("true".into(), ".".into(), None, true, None, Some(&shell_env)).unwrap();
+    assert_eq!(context.env.get("PATH").map(String::as_str), Some("/agent/bin:/usr/bin"));
+    assert!(!context.env.contains_key("PI_SESSION_ID"));
+}
