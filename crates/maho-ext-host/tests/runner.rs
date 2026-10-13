@@ -798,7 +798,24 @@ fn native_loader_preserves_factory_identity_profile_and_order() {
     let factories = ["first", "second"].into_iter().map(|path| NativeExtensionFactory { path: path.into(), source_info: SourceInfo::default(), extension: Box::new(Register) }).collect();
     let loaded = load_extensions(factories, Path::new("/tmp"), ExtensionSessionProfile { session_kind: SessionKind::Worker, ..Default::default() });
     assert_eq!(loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>(), ["first", "second"]);
-    assert_eq!(loaded.runtime.get_flag("test"), Some(FlagValue::String("first".into()))); assert!(loaded.errors.is_empty());
+    assert_eq!(loaded.runtime.get_flag("test"), Some(FlagValue::String("first".into())));
+    assert_eq!(loaded.errors.iter().map(|error| (error.extension_path.as_str(), error.error.as_str())).collect::<Vec<_>>(),
+        [("second", "Flag \"--test\" conflicts with first")]);
+}
+#[test]
+fn native_loader_reports_tool_conflicts_except_with_builtins() {
+    use maho_ext_host::loader::*;
+    struct Tool;
+    impl Extension for Tool {
+        fn register(&self, api: &mut ExtensionApi) {
+            api.register_tool(ToolDefinition::new("shared", "shared", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }))));
+        }
+    }
+    let factories = ["<user:a>", "<user:b>", "<builtin:base>"].into_iter().map(|path| NativeExtensionFactory { path: path.into(), source_info: SourceInfo::default(), extension: Box::new(Tool) }).collect();
+    let loaded = load_extensions(factories, Path::new("/tmp"), ExtensionSessionProfile::default());
+    assert_eq!(loaded.extensions.len(), 3, "conflicting extensions stay loaded");
+    assert_eq!(loaded.errors.iter().map(|error| (error.extension_path.as_str(), error.error.as_str())).collect::<Vec<_>>(),
+        [("<user:b>", "Tool \"shared\" conflicts with <user:a>")]);
 }
 #[tokio::test]
 async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools() {
