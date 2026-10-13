@@ -432,7 +432,7 @@ mod tests {
         let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
         let assistant = manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
         let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None);
-        durable.append_label(user["id"].as_str().expect("user"), Some("durable label"));
+        durable.append_label(user["id"].as_str().expect("user"), Some("durable label")).expect("label");
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
             session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
@@ -582,11 +582,11 @@ mod tests {
         assert_eq!(runtime.session().messages().len(), 1);
         assert!(runtime.session().get_tool_definition("retained").is_some());
         let target_id = runtime.session().with_session_manager(|manager| manager.leaf_id().unwrap().to_owned());
-        let label = runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("old label")));
+        let label = runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("old label"))).expect("label");
         let descendant = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
             "role":"user","content":[{"type":"text","text":"descendant"}],"timestamp":0
         })));
-        runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("resolved label")));
+        runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("resolved label"))).expect("label");
         let forked = runtime.fork(descendant["id"].as_str().unwrap(), true).await.expect("labeled fork");
         assert!(!forked.cancelled);
         runtime.session().with_session_manager(|manager| {

@@ -1906,7 +1906,7 @@ impl InteractiveMode {
                 Arc::new(self.keybindings()),
                 tree, leaf.as_deref(), self.editor_host.terminal_rows(),
                 Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
-                Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok());
+                Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
             let copies=self.tree_copies.clone();
             selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
             // senpi `selector.onEditMessage`: close the selector, then open the edit flow.

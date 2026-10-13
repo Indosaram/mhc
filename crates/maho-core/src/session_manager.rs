@@ -1058,7 +1058,10 @@ impl SessionManager {
         entry
     }
 
-    pub fn append_label(&mut self, target_id: &str, label: Option<&str>) -> Value {
+    pub fn append_label(&mut self, target_id: &str, label: Option<&str>) -> Result<Value, String> {
+        if !self.by_id.contains_key(target_id) {
+            return Err(format!("Entry {target_id} not found"));
+        }
         let mut entry = self.base_entry("label");
         entry.insert("targetId".to_owned(), Value::from(target_id));
         match label {
@@ -1067,13 +1070,14 @@ impl SessionManager {
         };
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
-        entry
+        Ok(entry)
     }
 
     pub fn append_session_info(&mut self, name: Option<&str>) -> Value {
         let mut entry = self.base_entry("session_info");
         if let Some(name) = name {
-            entry.insert("name".to_owned(), Value::from(name));
+            let sanitized: String = name.split(['\r', '\n']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+            entry.insert("name".to_owned(), Value::from(sanitized.trim()));
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
@@ -1460,14 +1464,23 @@ mod tests {
         let dir = tmp.path().to_string_lossy().into_owned();
         let mut manager = SessionManager::create(&dir, Some(&dir), None);
         let first = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
-        manager.append_label(first["id"].as_str().unwrap_or_default(), Some("start"));
+        manager.append_label(first["id"].as_str().unwrap_or_default(), Some("start")).expect("label");
         assert_eq!(manager.label(first["id"].as_str().unwrap_or_default()), Some("start"));
-        manager.append_label(first["id"].as_str().unwrap_or_default(), None);
+        manager.append_label(first["id"].as_str().unwrap_or_default(), None).expect("label");
         assert_eq!(manager.label(first["id"].as_str().unwrap_or_default()), None);
         manager.append_session_info(Some("  named  "));
         assert_eq!(manager.session_name(), Some("named"));
         manager.append_session_info(Some("   "));
         assert_eq!(manager.session_name(), None);
+    }
+
+    #[test]
+    fn session_names_collapse_line_breaks_and_labels_require_an_existing_target() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let entry = manager.append_session_info(Some(" first\r\n\nsecond "));
+        assert_eq!(entry["name"], "first second");
+        assert_eq!(manager.session_name(), Some("first second"));
+        assert_eq!(manager.append_label("missing", Some("x")), Err("Entry missing not found".to_owned()));
     }
 
     #[test]
