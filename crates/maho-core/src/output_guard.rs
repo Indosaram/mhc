@@ -16,6 +16,7 @@ type WriteSink = Arc<dyn Fn(&str) + Send + Sync>;
 type Observer = Arc<dyn Fn() + Send + Sync>;
 type ObserverList = Arc<Mutex<Vec<Observer>>>;
 type DiagnosticFallback = Arc<dyn Fn(&str) -> String + Send + Sync>;
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
 
 thread_local! {
     static IN_GUARDED_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
@@ -239,8 +240,8 @@ fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_s
     &PREVIOUS
 }
 
-fn process_panic_hook_before_takeover() -> &'static Mutex<Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>>> {
-    static PREVIOUS: Mutex<Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>>> = Mutex::new(None);
+fn process_panic_hook_before_takeover() -> &'static Mutex<Option<PanicHook>> {
+    static PREVIOUS: Mutex<Option<PanicHook>> = Mutex::new(None);
     &PREVIOUS
 }
 
