@@ -2642,25 +2642,6 @@ impl InteractiveMode {
         self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0)))));
     }
 
-    /// senpi `showNoticeBox`: sanitize every visible line, then append the notice box.
-    fn show_notice_box(&mut self, spec: crate::components::earendil_announcement::NoticeSpec) {
-        use crate::extension_error_format::sanitize_tui_error_message as sanitize;
-        let spec = crate::components::earendil_announcement::NoticeSpec {
-            title: sanitize(&spec.title), tone: spec.tone, why: sanitize(&spec.why),
-            extra: spec.extra.into_iter().map(|line| crate::components::earendil_announcement::NoticeLine { text: sanitize(&line.text), tone: line.tone }).collect(),
-            expanded_line: spec.expanded_line.as_deref().map(sanitize),
-        };
-        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_component(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
-    }
-
-    /// senpi `showWarning`.
-    fn show_warning(&mut self, message: &str) {
-        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}"));
-        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
-    }
-
     /// Bridge the running login/logout tasks into the UI: mount prompts, forward answers, report outcomes.
     fn drain_auth_ui_events(&mut self) {
         let selected = self.pending_auth_select.as_ref().and_then(|(answer, _)| answer.borrow_mut().take());
