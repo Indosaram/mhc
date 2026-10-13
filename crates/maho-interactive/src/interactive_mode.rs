@@ -2410,6 +2410,7 @@ impl InteractiveMode {
         use maho_ext_api::AgentSessionEvent;
         match event {
             AgentSessionEvent::Agent(event) => self.handle_event(event),
+            AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),

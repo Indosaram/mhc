@@ -104,7 +104,7 @@ async fn scenario(opts: Scenario) -> Result<(), Box<dyn std::error::Error + Send
     session.bind_extensions(ExtensionBindings { ui_context: Some(ui.clone() as Arc<dyn ExtensionUi>), mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
     let (end_tx, mut end_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _end_subscription = session.subscribe(Arc::new(move |event| {
-        if matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })) { let _ = end_tx.send(()); }
+        if matches!(event, maho_ext_api::AgentSessionEvent::AgentEnd { .. } | maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. })) { let _ = end_tx.send(()); }
     }));
     let controller = maho_ai::utils::abort::AbortController::new();
     let signal = controller.signal();
