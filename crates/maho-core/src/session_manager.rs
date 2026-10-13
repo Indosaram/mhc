@@ -676,6 +676,7 @@ impl SessionManager {
     }
 
     pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Self {
+        crate::session_write_reservation::reserve_session_write(&resolve_path(path, path, &PathInputOptions::default()));
         let entries = load_entries_from_file(path);
         let header_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(str::to_owned);
         let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| ".".to_owned());
@@ -738,6 +739,9 @@ impl SessionManager {
     }
 
     pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) {
+        if self.persist {
+            crate::session_write_reservation::reserve_session_write(&resolve_path(session_file, session_file, &PathInputOptions::default()));
+        }
         self.session_file = Some(resolve_path(session_file, session_file, &PathInputOptions::default()));
         self.sync_session_file_ownership();
         let Some(current) = self.session_file.clone() else { return };
@@ -781,8 +785,9 @@ impl SessionManager {
         let timestamp = self.reset_to_new_session(options);
         if self.persist {
             let file_timestamp = timestamp.replace([':', '.'], "-");
-            let path = Path::new(&self.session_dir).join(format!("{file_timestamp}_{}.jsonl", self.session_id));
-            self.session_file = Some(path.to_string_lossy().into_owned());
+            let path = Path::new(&self.session_dir).join(format!("{file_timestamp}_{}.jsonl", self.session_id)).to_string_lossy().into_owned();
+            crate::session_write_reservation::reserve_session_write(&path);
+            self.session_file = Some(path);
         }
         self.sync_session_file_ownership();
         self.session_file.clone()
@@ -876,6 +881,7 @@ impl SessionManager {
             return;
         }
         let Some(session_file) = self.session_file.clone() else { return };
+        crate::session_write_reservation::reserve_session_write(&session_file);
         let mut content = String::new();
         for entry in &self.file_entries {
             content.push_str(&serialize_entry(entry));
@@ -889,6 +895,7 @@ impl SessionManager {
             return;
         }
         let Some(session_file) = self.session_file.clone() else { return };
+        crate::session_write_reservation::reserve_session_write(&session_file);
         let has_assistant = self.file_entries.iter().any(|candidate| {
             entry_type(candidate) == "message"
                 && candidate.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant")
@@ -1567,6 +1574,28 @@ mod tests {
         assert_eq!(manager.usage_totals().latest_cache_hit_rate, Some(75.0));
         manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 0, "output": 1, "cacheRead": 0, "cacheWrite": 0 } }));
         assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
+    }
+
+    #[test]
+    fn every_persisted_write_path_reserves_the_session_file() {
+        static RESERVED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let _ = crate::session_write_reservation::install_session_write_reservation(|path| {
+            RESERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(path.to_owned());
+        });
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let session_file = manager.session_file().expect("session file").to_owned();
+        let count = |path: &str| RESERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|reserved| reserved.as_str() == path).count();
+        assert_eq!(count(&session_file), 1);
+        manager.append_message(json!({ "role": "assistant", "content": [] }));
+        let after_flush = count(&session_file);
+        assert!(after_flush >= 3);
+        manager.append_message(json!({ "role": "user", "content": "next", "timestamp": 2 }));
+        assert_eq!(count(&session_file), after_flush + 1);
+        let before_open = count(&session_file);
+        drop(SessionManager::open(&session_file, Some(&dir), None, None));
+        assert!(count(&session_file) >= before_open + 2);
     }
 
     #[test]
