@@ -225,12 +225,12 @@ impl ExtensionUiActions for InteractiveExtensionUi {
     fn get_editor_component(&self) -> Option<EditorFactory> { self.editor_factory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() }
     fn get_all_themes(&self) -> Vec<ThemeInfo> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor)
+        self.theme_registry(directory, "dark", crate::theme::detect_color_mode())
             .map(|registry| registry.get_available_themes_with_paths().into_iter().map(|theme| ThemeInfo { name:theme.name, path:theme.path }).collect()).unwrap_or_default()
     }
     fn get_theme(&self, name: &str) -> Option<Theme> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        self.theme_registry(directory, name, crate::theme::ColorMode::Truecolor).ok()
+        self.theme_registry(directory, name, crate::theme::detect_color_mode()).ok()
             .map(|registry| extension_theme(&registry.current))
     }
     fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult {
