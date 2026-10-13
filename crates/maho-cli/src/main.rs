@@ -231,7 +231,24 @@ fn run() -> Result<(), String> {
         #[cfg(not(unix))]
         return Err("facts read-only bootstrap broker requires Unix sockets".into());
     }
-    if parsed.help { return output(&maho_cli::cli::args::help_text(grok, "")); }
+    if parsed.help {
+        // senpi cli.ts `tryPrintHelpWithoutEngine` + main.ts:1043-1058: answer plain help from the
+        // cached extension flags, else load the extensions for their flags and refill the cache.
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let agent = PathBuf::from(maho_core::config::get_agent_dir());
+        let version = env!("CARGO_PKG_VERSION");
+        use maho_cli::cli::{args::{extension_flags_text, help_text}, help_extension_flags::resolve_help_extension_flags, help_fast_path};
+        if let Some(flags) = help_fast_path::cached_help_flags(&argv, grok, &cwd, &agent, version) {
+            return output(&help_text(grok, &extension_flags_text(&flags)));
+        }
+        let resolved = resolve_help_extension_flags(&cwd, parsed.no_extensions);
+        if help_fast_path::is_plain_help_request(&parsed) {
+            let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
+            let scope = help_fast_path::help_flags_scope(&parsed, &cwd, &agent, trusted);
+            maho_cli::cli::help_flags_cache::write_help_flags_cache(&scope, &resolved.flags, &resolved.extension_paths, version);
+        }
+        return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
+    }
     if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
