@@ -75,16 +75,13 @@ impl Driver {
             .expect("write the request");
         client.flush().expect("flush the request");
 
-        // The client connected before this accept, so the connection is already in the
-        // accept queue: a nonblocking accept returns it at once, and `WouldBlock` is a
-        // deterministic failure rather than a hang.
-        let (mut server, _) = match self.listener.accept() {
-            Ok(connection) => connection,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                panic!("no connection was queued after a successful connect")
-            }
-            Err(error) => panic!("accept failed: {error}"),
-        };
+        // connect() returning does not mean the kernel has queued the connection on the
+        // listener yet: on macOS a nonblocking accept right after connect can see WouldBlock.
+        // Accept blocking; connect already succeeded, so the connection is in flight.
+        self.listener.set_nonblocking(false).expect("blocking listener");
+        let accepted = self.listener.accept();
+        self.listener.set_nonblocking(true).expect("nonblocking listener");
+        let (mut server, _) = accepted.unwrap_or_else(|error| panic!("accept failed: {error}"));
         server.set_nonblocking(false).expect("blocking server stream");
         server.set_read_timeout(Some(IO_TIMEOUT)).expect("read timeout");
         server.set_write_timeout(Some(IO_TIMEOUT)).expect("write timeout");
