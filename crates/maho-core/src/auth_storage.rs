@@ -674,58 +674,55 @@ impl AuthStorage {
         credential: OAuthCredential,
         signal: Option<AbortSignal>,
     ) -> Result<Option<AccountLoginReceipt>, String> {
+        self.append_login_account(provider_id, Credential::OAuth(credential), signal).await
+    }
+
+    /// senpi `Models.login`'s `credentials.modify(appendLoginSlot)`: appends a completed api-key
+    /// or OAuth login to the provider's credential pool (`login-N` beside existing slots). The
+    /// receipt is returned only after the serialized auth.json write succeeds.
+    pub async fn append_login_account(
+        &self,
+        provider_id: &str,
+        flat: Credential,
+        signal: Option<AbortSignal>,
+    ) -> Result<Option<AccountLoginReceipt>, String> {
         let _mutation = self.account_mutation.lock().await;
         if let Some(signal) = &signal {
             signal.throw_if_aborted().map_err(|reason| reason.message)?;
         }
-        let flat = Credential::OAuth(credential);
-        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut receipt = None;
+        let apply = |current: Option<&str>| -> Result<(AuthStorageData, Option<String>), String> {
+            if let Some(signal) = &signal {
+                signal.throw_if_aborted().map_err(|reason| reason.message)?;
+            }
+            let (mut data, _, _) = Self::parse_storage_content(current)?;
+            let current = data.get(provider_id).cloned()
+                .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
+                .transpose()?;
+            let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
+            let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
+                receipt = Some(AccountLoginReceipt {
+                    provider_id: provider_id.to_owned(),
+                    name: name.to_owned(),
+                    origin: match origin {
+                        maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
+                        maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
+                    },
+                });
+            })?;
+            // An api-key `ApiKeyCredential` has no room for `accounts`/`pinned`; persist the pooled
+            // object itself, as senpi does.
+            let stored = match next.credential_type {
+                maho_ai::auth::pool::slots::PooledCredentialType::ApiKey => serde_json::to_value(&next),
+                maho_ai::auth::pool::slots::PooledCredentialType::OAuth => serde_json::to_value(next.to_stored_credential()),
+            }.map_err(|error| error.to_string())?;
+            data.insert(provider_id.to_owned(), stored);
+            Ok((data.clone(), Some(serialize_auth_data(&data))))
+        };
+        let mut cached = self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let result: Result<AuthStorageData, String> = match &self.storage {
-            AuthStorageBackend::File(backend) => backend.with_lock(|current| {
-                if let Some(signal) = &signal {
-                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
-                }
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                let current = data.get(provider_id).cloned()
-                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
-                    .transpose()?;
-                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
-                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
-                    receipt = Some(AccountLoginReceipt {
-                        provider_id: provider_id.to_owned(),
-                        name: name.to_owned(),
-                        origin: match origin {
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                        },
-                    });
-                })?;
-                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
-            AuthStorageBackend::InMemory(backend) => backend.with_lock(|current| {
-                if let Some(signal) = &signal {
-                    signal.throw_if_aborted().map_err(|reason| reason.message)?;
-                }
-                let (mut data, _, _) = Self::parse_storage_content(current)?;
-                let current = data.get(provider_id).cloned()
-                    .map(|value| serde_json::from_value::<maho_ai::auth::pool::slots::PooledCredential>(value).map_err(|error| error.to_string()))
-                    .transpose()?;
-                let pooled = maho_ai::auth::pool::slots::PooledCredential::from(flat.clone());
-                let next = maho_ai::auth::pool::slots::append_login_slot(current, pooled, |name, origin| {
-                    receipt = Some(AccountLoginReceipt {
-                        provider_id: provider_id.to_owned(),
-                        name: name.to_owned(),
-                        origin: match origin {
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Generated => AccountLoginOrigin::Generated,
-                            maho_ai::auth::pool::slots::LoginSlotOrigin::Provider => AccountLoginOrigin::Provider,
-                        },
-                    });
-                })?;
-                data.insert(provider_id.to_owned(), serde_json::to_value(next.to_stored_credential()).map_err(|error| error.to_string())?);
-                Ok((data.clone(), Some(serialize_auth_data(&data))))
-            }),
+            AuthStorageBackend::File(backend) => backend.with_lock(apply),
+            AuthStorageBackend::InMemory(backend) => backend.with_lock(apply),
         };
         match result {
             Ok(data) => {

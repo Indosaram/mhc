@@ -2685,6 +2685,7 @@ impl InteractiveMode {
             if let Some(provider) = self.login_provider_options(Some(auth_type)).into_iter().find(|provider| provider.id == provider_id) { self.start_provider_login(&provider); }
             return Ok(true);
         }
+
         if text == "/changelog" {
             let source=maho_core::changelog_source::resolve_changelog_source();
             let entries=crate::interactive_changelog::entries(&source.path);
@@ -3368,7 +3369,7 @@ impl InteractiveMode {
             // senpi bounds logout with `AbortSignal.timeout(15_000)`.
             let abort = maho_ai::utils::abort::AbortController::new();
             let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, None, options)).await {
                 Ok(result) => result.map_err(|error| error.to_string()),
                 Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
             };

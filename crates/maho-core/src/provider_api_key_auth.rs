@@ -62,7 +62,7 @@ pub async fn resolve_configured_auth(id: &str, config: Option<&ModelsJsonProvide
         else {
             let provider_env = env.map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
             if id == "anthropic" { env_auth_token = maho_ai::utils::provider_env::get_provider_env_value(maho_ai::env_api_keys::ANTHROPIC_AUTH_TOKEN_ENV, provider_env.as_ref()); }
-            if env_auth_token.is_some() { None } else { maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref()) }
+            if env_auth_token.is_some() { None } else { maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref()).filter(|key| key != maho_ai::models::AMBIENT_AUTH_MARKER) }
         };
     let raw_headers = configured_headers(config, extension);
     let headers = resolve_headers_or_throw(raw_headers.as_ref(), &format!("provider \"{id}\""), env).await?
@@ -300,6 +300,11 @@ mod tests {
         let auth = resolve_configured_auth("anthropic",None,None,None,Some(&env)).await.expect("resolve").expect("auth");
         assert_eq!(auth.api_key,None);
         assert_eq!(auth.headers.expect("headers")["Authorization"].as_deref(),Some("Bearer token"));
+    }
+    #[tokio::test]
+    async fn ambient_marker_is_never_a_configured_key() {
+        let env = HashMap::from([("AWS_PROFILE".to_owned(), "work".to_owned())]);
+        assert!(resolve_configured_auth("amazon-bedrock", None, None, None, Some(&env)).await.expect("resolve").is_none());
     }
     #[test]
     fn bearer_auth_requires_a_key() { assert!(with_configured_auth(Default::default(),None,true).is_err()); }
