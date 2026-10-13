@@ -4029,12 +4029,37 @@ impl AgentSession {
         let (custom, append) = self.system_prompt_sources();
         let custom_prompt = crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt");
         let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
-        let base = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
-            custom_prompt, append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
-            cwd: self.cwd(), selected_tools: Some(active), skills: Some(skills),
-            tool_snippets: Some(snippets), prompt_guidelines: Some(guidelines),
-            context_files: Some(self.project_context_files()),
-        });
+        let base_prompt = custom_prompt.unwrap_or_else(|| crate::dynamic_prompt::build::build_dynamic_system_prompt(
+            &crate::dynamic_prompt::build::BuildDynamicSystemPromptOptions {
+                cwd: self.cwd(), selected_tools: active, tool_snippets: snippets, prompt_guidelines: guidelines,
+                context_files: self.project_context_files(), skills, tuning_section: None, core_prompt: None, workstation_dialect: None,
+            },
+        ));
+        let mut base = if append.is_empty() { base_prompt } else { format!("{base_prompt}\n\n{}", append.join("\n\n")) };
+        if self.is_eval_only_policy_armed() {
+            let registered: BTreeSet<String> = {
+                let state = self.state();
+                state.eval_only_tool_names.clone().unwrap_or_default().into_iter().filter(|name| state.tool_registry.contains_key(name)).collect()
+            };
+            let mut sentences = Vec::new();
+            let shell_helpers: Vec<String> = ["bash", "powershell"].into_iter().filter(|name| registered.contains(*name)).map(eval_helper_call).collect();
+            if !shell_helpers.is_empty() {
+                sentences.push(format!("Shell commands run ONLY inside eval cells via {}; hooks and permissions still apply.", shell_helpers.join(" or ")));
+            }
+            if registered.contains("workflow") {
+                sentences.push(format!("The workflow tool runs ONLY inside eval cells via {}; hooks and permissions still apply.", eval_helper_call("workflow")));
+            }
+            let other_helpers: Vec<String> = registered.iter()
+                .filter(|name| !["bash", "powershell", "workflow", "grep"].contains(&name.as_str()))
+                .map(|name| eval_helper_call(name)).collect();
+            if !other_helpers.is_empty() {
+                sentences.push(format!("These tools run ONLY inside eval cells via {}; hooks and permissions still apply.", other_helpers.join(" or ")));
+            }
+            if registered.contains("grep") {
+                sentences.push(format!("Text search runs ONLY inside eval cells via {}; it returns structured matches, respects .gitignore, and applies hooks and permissions - prefer it over rg/grep in tool.bash.", eval_helper_call("grep")));
+            }
+            if !sentences.is_empty() { base = format!("{base}\n\n{}", sentences.join("\n\n")); }
+        }
         self.state().base_system_prompt = base.clone();
         let prompt = self.state().system_prompt_override.clone().unwrap_or(base);
         self.agent.set_system_prompt(prompt);
@@ -9886,6 +9911,35 @@ mod tests {
         assert_eq!(session.get_active_tool_names(), vec!["read".to_owned()]);
         assert!(session.requested_active_tool_names().unwrap().contains(&"workflow".to_owned()));
         assert!(session.agent().removed_tool_hints().contains_key("workflow"));
+    }
+
+    #[test]
+    fn rebuilt_prompt_uses_dynamic_builder_without_custom_prompt() {
+        let session = test_session();
+        session.rebuild_system_prompt();
+        let prompt = session.system_prompt();
+        assert!(prompt.contains("## Intent Gate"));
+        assert!(prompt.contains("<workstation>"));
+        assert!(prompt.contains("Current date: "));
+    }
+
+    #[test]
+    fn custom_system_prompt_is_used_verbatim_with_appends() {
+        let session = test_session();
+        session.set_system_prompt_sources(Some("custom baseline".to_owned()), vec!["append context".to_owned()]);
+        assert_eq!(session.system_prompt(), "custom baseline\n\nappend context");
+    }
+
+    #[test]
+    fn armed_eval_only_shell_and_grep_get_eval_routing_sentences() {
+        let session = test_session_with_eval_only(vec!["bash".to_owned(), "grep".to_owned()]);
+        session.register_tool_definition(test_definition("eval"), empty_source_info(), test_tool("eval"));
+        session.register_tool_definition(test_definition("bash"), empty_source_info(), test_tool("bash"));
+        session.register_tool_definition(test_definition("grep"), empty_source_info(), test_tool("grep"));
+        session.set_active_tools_by_name(vec!["eval".to_owned(), "bash".to_owned(), "grep".to_owned()]);
+        let prompt = session.system_prompt();
+        assert!(prompt.contains("Shell commands run ONLY inside eval cells via tool.bash({ command: \"...\" }); hooks and permissions still apply."));
+        assert!(prompt.ends_with("Text search runs ONLY inside eval cells via tool.grep({ pattern: \"...\", path: \"...\" }); it returns structured matches, respects .gitignore, and applies hooks and permissions - prefer it over rg/grep in tool.bash."));
     }
 
     fn test_session_with_eval_only(names: Vec<String>) -> AgentSession {
