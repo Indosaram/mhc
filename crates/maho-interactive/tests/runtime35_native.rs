@@ -594,8 +594,22 @@ async fn unintegrated_builtin_does_not_silently_become_provider_input() {
     let (mut mode, _directory) = native_mode();
     assert_eq!(mode.submit("/compact", Default::default()).await.expect("compact is handled with the pinned warning"), maho_core::agent_session::PromptDisposition::Handled);
     assert!(mode.render(80).join("\n").contains("Nothing to compact (no messages yet)"));
-    assert!(mode.submit("/export session.html", Default::default()).await.is_err(), "an unintegrated command errors instead of reaching the provider");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "no command became a provider turn");
+}
+
+#[tokio::test]
+async fn html_export_writes_the_document_without_a_shared_host() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode_with_session(None, |cwd| {
+        let session_dir = std::path::Path::new(cwd).join("sessions");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        maho_core::session_manager::SessionManager::create(cwd, Some(&session_dir.to_string_lossy()), None)
+    });
+    mode.submit("hi", Default::default()).await.expect("prompt");
+    let path = directory.path().join("session.html");
+    assert_eq!(mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("html export"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(std::fs::read_to_string(&path).expect("html document").contains("id=\"session-data\""));
+    assert!(mode.render(80).join("\n").contains("Session exported to:"));
 }
 
 #[test]
