@@ -208,7 +208,7 @@ use crate::harness::compaction::compaction::{
     compact_with_request, prepare_compaction, should_compact, CompactGenerationOptions, CompactResult,
     SummaryRequest,
 };
-use crate::harness::context::{Context, with_abort_signal};
+use crate::harness::context::{Context, provider_telemetry_context, with_abort_signal};
 use crate::harness::events::{HarnessEvent, HarnessEventPayload, RunEndPayload};
 use crate::harness::execution::effect_gate::GateRefusal;
 use crate::harness::hooks::{HookInvocation, HookName, HookResult, HookRunError, apply_stream_options_patch, before_payload_hook};
@@ -336,7 +336,7 @@ fn request_stream_options(
     options.stream.cache_retention = Some(CacheRetention::None);
     options.deferred = Some(DeferredOption::Enabled(false));
     options.stream.request.signal = context.abort_signal();
-    options.stream.request.telemetry_context = None;
+    options.stream.request.telemetry_context = provider_telemetry_context(context);
     options
 }
 

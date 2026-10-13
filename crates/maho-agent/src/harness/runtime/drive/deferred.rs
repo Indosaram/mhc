@@ -48,6 +48,7 @@ pub async fn run_deferred(lane: &dyn RuntimeDriveLane, drive: &Drive, expected: 
     *drive.deferred_permits.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
     let mut options = maho_ai::types::DeferredFetchOptions::default();
     options.request.signal = Some(drive.gate.signal());
+    options.request.telemetry_context = crate::harness::context::provider_telemetry_context(&drive.context);
     options.wait = Some(0);
     options.request.timeout_ms = stream_options.timeout_ms;
     options.request.max_retries = stream_options.max_retries;

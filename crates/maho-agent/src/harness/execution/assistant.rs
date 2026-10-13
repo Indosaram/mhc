@@ -10,7 +10,7 @@ use maho_ai::types::{
 };
 use serde_json::{Map, Value};
 
-use crate::harness::context::{Context, get_telemetry_context};
+use crate::harness::context::{Context, provider_telemetry_context};
 use crate::harness::execution::effect_gate::{AbortRequested, Cancellation};
 use crate::harness::session::types::SettledAssistantMessage;
 use crate::harness::types::AgentHarnessStreamOptions;
@@ -107,7 +107,7 @@ pub fn create_request_options(
             .collect()
     });
     stream.request.signal = context.abort_signal();
-    let _ = get_telemetry_context(context);
+    stream.request.telemetry_context = provider_telemetry_context(context);
     if let Some(before_payload) = config.before_payload.clone() {
         let context = context.clone();
         stream.request.async_on_payload = Some(Arc::new(move |payload, model, _metadata| {

@@ -76,6 +76,7 @@ pub async fn run_generation(lane: &dyn RuntimeDriveLane, drive: &Drive, generati
         maho_ai::types::ModelThinkingLevel::Max => Some(maho_ai::types::ThinkingLevel::Max),
     };
     options.stream.request.signal = Some(drive.gate.signal());
+    options.stream.request.telemetry_context = crate::harness::context::provider_telemetry_context(&drive.context);
     options.stream.session_id = Some(format!("{}:{}", lane.session().metadata().id, lane.name()));
     let metadata = super::response::ResponseMetadataSlot::default();
     options.stream.request.on_response = Some(super::response::capture_response_metadata(&metadata));
