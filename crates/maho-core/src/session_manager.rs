@@ -1160,6 +1160,51 @@ impl SessionManager {
         self.leaf_id.as_deref().and_then(|id| self.entry(id))
     }
 
+    /// senpi `getChildren`: direct children of an entry.
+    pub fn children(&self, parent_id: &str) -> Vec<Value> {
+        self.file_entries
+            .iter()
+            .filter(|entry| entry_type(entry) != "session" && entry.get("parentId").and_then(Value::as_str) == Some(parent_id))
+            .cloned()
+            .collect()
+    }
+
+    /// senpi `getEntryOrder`: the runtime/file append position of an entry.
+    pub fn entry_order(&self, entry_id: &str) -> Option<usize> {
+        self.by_id.get(entry_id).copied()
+    }
+
+    pub fn has_context_messages(&self) -> bool {
+        self.has_branch_entry(|entry| match entry_type(entry) {
+            "message" | "custom_message" | "compaction" => true,
+            "branch_summary" => entry.get("summary").and_then(Value::as_str).is_some_and(|summary| !summary.is_empty()),
+            _ => false,
+        })
+    }
+
+    pub fn has_thinking_level_changes(&self) -> bool {
+        self.has_branch_entry(|entry| entry_type(entry) == "thinking_level_change")
+    }
+
+    pub fn count_compactions(&self) -> usize {
+        self.file_entries.iter().filter(|entry| entry_type(entry) == "compaction").count()
+    }
+
+    fn has_branch_entry(&self, predicate: impl Fn(&Value) -> bool) -> bool {
+        let mut current = self.leaf_id.as_deref().and_then(|id| self.by_id.get(id)).and_then(|order| self.file_entries.get(*order));
+        while let Some(entry) = current {
+            if predicate(entry) {
+                return true;
+            }
+            current = entry
+                .get("parentId")
+                .and_then(Value::as_str)
+                .and_then(|parent| self.by_id.get(parent))
+                .and_then(|order| self.file_entries.get(*order));
+        }
+        false
+    }
+
     pub fn label(&self, id: &str) -> Option<&str> {
         self.labels_by_id.get(id).map(String::as_str)
     }
@@ -1591,6 +1636,24 @@ mod tests {
         let at_root = manager.branch_with_summary(None, "t", None, None, None).expect("root summary");
         assert_eq!(at_root["fromId"], "root");
         assert_eq!(at_root["parentId"], Value::Null);
+    }
+
+    #[test]
+    fn branch_queries_follow_the_current_leaf() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let info = manager.append_session_info(Some("n"));
+        assert!(!manager.has_context_messages());
+        let thinking = manager.append_thinking_level_change("high", None);
+        assert!(manager.has_thinking_level_changes());
+        let message = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        assert!(manager.has_context_messages());
+        manager.append_compaction("s", message["id"].as_str().unwrap_or_default(), 1, None, None, None);
+        assert_eq!(manager.count_compactions(), 1);
+        assert_eq!(manager.children(info["id"].as_str().unwrap_or_default()), vec![thinking.clone()]);
+        assert!(manager.entry_order(message["id"].as_str().unwrap_or_default()) > manager.entry_order(thinking["id"].as_str().unwrap_or_default()));
+        manager.set_leaf(info["id"].as_str()).expect("leaf");
+        assert!(!manager.has_context_messages());
+        assert!(!manager.has_thinking_level_changes());
     }
 
     #[test]
