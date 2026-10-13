@@ -1187,9 +1187,16 @@ impl InteractiveMode {
         }
         if keys.matches(data,"app.message.copy") { self.submit("/copy",Default::default()).await?;return Ok(()); }
         if keys.matches(data,"app.clipboard.pasteImage") {
-            if let Some(text)=crate::interactive_clipboard::read_text().await {
-                if let Some(editor)=&mut self.custom_editor {editor.insert_text_at_cursor(&text);}else{self.editor.editor.insert_text_at_cursor(&text);}
-            }
+            // senpi `onPasteImage` -> `handleClipboardPaste` (image first, text fallback); a
+            // replacement editor has no image markers, so it keeps the plain-text paste.
+            if let Some(editor)=&mut self.custom_editor {
+                if let Some(text)=crate::interactive_clipboard::read_text().await { editor.insert_text_at_cursor(&text); }
+            } else { self.handle_clipboard_paste().await; }
+            return Ok(());
+        }
+        if keys.matches(data, "app.history.search") {
+            // senpi `app.history.search`: `session.prompt("/history")` opens the history-search extension.
+            if let Err(error) = self.submit_start("/history", Default::default()).await { self.show_error(&format!("Failed to open history search: {error}")); }
             return Ok(());
         }
         if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue(); return Ok(()); }
