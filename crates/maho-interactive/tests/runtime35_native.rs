@@ -690,6 +690,28 @@ fn native_editor_completes_builtin_command_from_canonical_catalog() {
     assert!(mode.editor.editor.get_text().starts_with("/thinking"));
 }
 
+#[test]
+fn native_autocomplete_offers_skill_commands_only_while_enable_skill_commands_is_on() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    session.set_prompt_resources(Vec::new(), vec![maho_core::skills::Skill {
+        name: "guide".into(), description: "guide skill".into(), file_path: "/tmp/guide/SKILL.md".into(), base_dir: "/tmp/guide".into(),
+        source_info: maho_core::source_info::create_synthetic_source_info("/tmp/guide/SKILL.md", Default::default()),
+        disable_model_invocation: false,
+    }]);
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("enableSkillCommands".into(), serde_json::json!(true)));
+    mode.editor.editor.set_text("/skill:gu"); mode.render(80); mode.handle_input_at("\t", 0);
+    assert!(mode.editor.editor.is_showing_autocomplete());
+    mode.handle_input_at("\t", 1);
+    assert!(mode.editor.editor.get_text().starts_with("/skill:guide"), "{}", mode.editor.editor.get_text());
+
+    session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &[("enableSkillCommands".to_owned(), serde_json::json!(false))].into_iter().collect())).expect("setting");
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("enableSkillCommands".into(), serde_json::json!(false)));
+    mode.editor.editor.set_text("/skill:gu"); mode.render(80); mode.handle_input_at("\t", 2);
+    mode.handle_input_at("\t", 3);
+    assert!(!mode.editor.editor.get_text().starts_with("/skill:guide"), "{}", mode.editor.editor.get_text());
+}
+
 #[tokio::test]
 async fn runtime_input_listener_consumes_model_shortcut_before_dispatch() {
     use maho_ext_api::{ExtensionUi, TerminalInputResult}; use maho_tui::tui::Component;

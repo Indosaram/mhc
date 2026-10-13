@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use common::{create_editor, create_editor_with_theme, large_paste, paste, TestHost};
 use maho_tui::autocomplete::{
-    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions,
-    MentionRange,
+    ApplyCompletionResult, AutocompleteItem, AutocompleteProvider, AutocompleteSignal,
+    AutocompleteSuggestions, MentionRange, SuggestionRequest,
 };
 use maho_tui::components::editor::{Editor, EditorOptions, EditorTheme};
 use maho_tui::components::select_list::SelectListTheme;
@@ -1160,4 +1160,104 @@ fn keeps_a_plain_editor_building_with_default_options() {
     let host = TestHost::new(30);
     let editor = Editor::new(host, common::plain_editor_theme(), EditorOptions::default());
     assert_eq!(editor.get_text(), "");
+}
+
+// ---------- asynchronous `@` autocomplete: debounce, cancellation ----------
+
+/// Requests answered later through a channel the test resolves, like senpi's awaited fd walk.
+#[derive(Default)]
+struct DeferredRequests {
+    requests: Vec<(
+        AutocompleteSignal,
+        std::sync::mpsc::Sender<Option<AutocompleteSuggestions>>,
+    )>,
+}
+
+fn deferred_provider(state: Rc<RefCell<DeferredRequests>>) -> Rc<RefCell<dyn AutocompleteProvider>> {
+    struct DeferredProvider(Rc<RefCell<DeferredRequests>>);
+    impl AutocompleteProvider for DeferredProvider {
+        fn get_suggestions(&mut self, _: &[String], _: usize, _: usize, _: bool) -> Option<AutocompleteSuggestions> {
+            None
+        }
+
+        fn request_suggestions(
+            &mut self,
+            _lines: &[String],
+            _cursor_line: usize,
+            _cursor_col: usize,
+            _force: bool,
+            signal: &AutocompleteSignal,
+        ) -> SuggestionRequest {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            self.0.borrow_mut().requests.push((signal.clone(), sender));
+            SuggestionRequest::Pending(receiver)
+        }
+
+        fn apply_completion(
+            &self,
+            lines: &[String],
+            cursor_line: usize,
+            cursor_col: usize,
+            _item: &AutocompleteItem,
+            _prefix: &str,
+        ) -> ApplyCompletionResult {
+            ApplyCompletionResult { lines: lines.to_vec(), cursor_line, cursor_col }
+        }
+    }
+    Rc::new(RefCell::new(DeferredProvider(state)))
+}
+
+fn file_page(prefix: &str) -> Option<AutocompleteSuggestions> {
+    Some(AutocompleteSuggestions {
+        items: vec![AutocompleteItem {
+            value: "@src/main.rs".to_string(),
+            label: "main.rs".to_string(),
+            description: Some("src/main.rs".to_string()),
+        }],
+        prefix: prefix.to_string(),
+    })
+}
+
+fn after_debounce() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(1)
+}
+
+#[test]
+fn debounces_an_at_trigger_until_the_host_polls_past_the_deadline() {
+    let (mut editor, _host) = create_editor(30);
+    let state = Rc::new(RefCell::new(DeferredRequests::default()));
+    editor.set_autocomplete_provider(deferred_provider(state.clone()));
+
+    editor.handle_editor_input("@");
+    assert_eq!(state.borrow().requests.len(), 0, "the @ request waits for the debounce");
+
+    assert!(editor.poll_autocomplete_at(after_debounce()), "the request is in flight");
+    assert_eq!(state.borrow().requests.len(), 1);
+    assert!(!editor.is_showing_autocomplete());
+
+    state.borrow().requests[0].1.send(file_page("@")).expect("resolve request");
+    assert!(!editor.poll_autocomplete_at(after_debounce()));
+    assert!(editor.is_showing_autocomplete());
+}
+
+#[test]
+fn aborts_the_in_flight_request_and_ignores_its_stale_answer_after_another_keystroke() {
+    let (mut editor, _host) = create_editor(30);
+    let state = Rc::new(RefCell::new(DeferredRequests::default()));
+    editor.set_autocomplete_provider(deferred_provider(state.clone()));
+
+    editor.handle_editor_input("@");
+    editor.poll_autocomplete_at(after_debounce());
+    editor.handle_editor_input("s");
+    assert!(state.borrow().requests[0].0.is_aborted(), "a newer keystroke aborts the walk");
+
+    // The superseded request's receiver is gone, so its late answer cannot reach the editor.
+    assert!(state.borrow().requests[0].1.send(file_page("@")).is_err());
+    editor.poll_autocomplete_at(after_debounce());
+    assert_eq!(state.borrow().requests.len(), 2);
+    assert!(!editor.is_showing_autocomplete());
+
+    state.borrow().requests[1].1.send(file_page("@s")).expect("resolve request");
+    editor.poll_autocomplete_at(after_debounce());
+    assert!(editor.is_showing_autocomplete());
 }

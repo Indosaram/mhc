@@ -54,6 +54,12 @@ pub trait EditorComponent: Component {
     /// Set the autocomplete provider.
     fn set_autocomplete_provider(&mut self, _provider: Box<dyn AutocompleteProvider>) {}
 
+    /// Native seam for senpi's timer/promise-driven autocomplete: fire an elapsed debounce and apply
+    /// a resolved asynchronous provider request. Returns whether a request is still outstanding.
+    fn poll_autocomplete(&mut self) -> bool {
+        false
+    }
+
     /// Set horizontal padding.
     fn set_padding_x(&mut self, _padding: usize) {}
 
