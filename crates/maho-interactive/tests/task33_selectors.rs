@@ -815,6 +815,8 @@ fn oauth_selector_labels_and_filters_providers() {
             name: "Anthropic".to_owned(),
             auth_type: AuthSelectorAuthType::OAuth,
             method_name: Some("Claude Pro".to_owned()),
+            login_label: None,
+            method_has_login: true,
             status: None,
         },
         AuthSelectorProvider {
@@ -822,6 +824,8 @@ fn oauth_selector_labels_and_filters_providers() {
             name: "OpenAI".to_owned(),
             auth_type: AuthSelectorAuthType::ApiKey,
             method_name: None,
+            login_label: None,
+            method_has_login: true,
             status: None,
         },
     ];

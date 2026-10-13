@@ -1719,7 +1719,7 @@ impl InteractiveMode {
         if text == "/logout" {
             // senpi `showOAuthSelector("logout")`.
             let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
-                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
+                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, login_label: None, method_has_login: true, status: None,
             }).collect::<Vec<_>>();
             if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
@@ -2204,18 +2204,24 @@ impl InteractiveMode {
 
     /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
     fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
-        use crate::components::oauth_selector::AuthSelectorAuthType;
-        let registry = self.session.model_registry();
-        let mut options = maho_core::auth_providers::build_login_provider_infos(registry, None).into_iter().filter_map(|info| {
-            let kind = match info.auth_type { maho_core::auth_storage::CredentialKind::Oauth => AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => AuthSelectorAuthType::ApiKey };
-            if auth_type.is_some_and(|wanted| wanted != kind) { return None; }
-            let status = registry.model_runtime.get_provider_auth_status(&info.id);
+        use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
+        let runtime = &self.session.model_registry().model_runtime;
+        let mut options = Vec::new();
+        for provider in runtime.get_providers() {
+            let id = provider.id().to_owned();
+            let Some(auth) = runtime.get_provider_auth(&id) else { continue };
+            let status = runtime.get_provider_auth_status(&id);
             let status = status.configured.then(|| maho_ai::auth::types::AuthCheck {
-                auth_type: if registry.model_runtime.is_using_oauth(&info.id) { maho_ai::auth::types::AuthType::OAuth } else { maho_ai::auth::types::AuthType::ApiKey },
+                auth_type: if runtime.is_using_oauth(&id) { maho_ai::auth::types::AuthType::OAuth } else { maho_ai::auth::types::AuthType::ApiKey },
                 source: status.label.or(status.source),
             });
-            Some(crate::components::oauth_selector::AuthSelectorProvider { id: info.id, name: info.name, auth_type: kind, method_name: None, status })
-        }).collect::<Vec<_>>();
+            if auth_type.is_none_or(|wanted| wanted == AuthSelectorAuthType::OAuth) && let Some(oauth) = &auth.oauth {
+                options.push(AuthSelectorProvider { id: id.clone(), name: provider.name().to_owned(), auth_type: AuthSelectorAuthType::OAuth, method_name: Some(oauth.name().to_owned()), login_label: oauth.login_label().map(str::to_owned), method_has_login: true, status: status.clone() });
+            }
+            if auth_type.is_none_or(|wanted| wanted == AuthSelectorAuthType::ApiKey) && let Some(api_key) = &auth.api_key {
+                options.push(AuthSelectorProvider { id, name: provider.name().to_owned(), auth_type: AuthSelectorAuthType::ApiKey, method_name: Some(api_key.name().to_owned()), login_label: None, method_has_login: api_key.has_login(), status });
+            }
+        }
         options.sort_by(|left, right| left.name.cmp(&right.name));
         options
     }
@@ -2223,11 +2229,12 @@ impl InteractiveMode {
     /// senpi `showLoginAuthTypeSelector`.
     fn show_login_auth_type_selector(&mut self, provider_options: Option<Vec<crate::components::oauth_selector::AuthSelectorProvider>>) {
         use crate::components::oauth_selector::AuthSelectorAuthType;
-        const SUBSCRIPTION: &str = "Sign in with an account";
         const API_KEY: &str = "Sign in with an API key";
+        let subscription = provider_options.as_ref().and_then(|providers| providers.iter().find(|provider| provider.auth_type == AuthSelectorAuthType::OAuth))
+            .and_then(|provider| provider.login_label.clone()).unwrap_or_else(|| "Sign in with an account".to_owned());
         let available = provider_options.as_ref().map_or_else(|| vec![AuthSelectorAuthType::OAuth, AuthSelectorAuthType::ApiKey], |providers| providers.iter().map(|provider| provider.auth_type).collect());
         let mut labels = Vec::new();
-        if available.contains(&AuthSelectorAuthType::OAuth) { labels.push(SUBSCRIPTION.to_owned()); }
+        if available.contains(&AuthSelectorAuthType::OAuth) { labels.push(subscription.clone()); }
         if available.contains(&AuthSelectorAuthType::ApiKey) { labels.push(API_KEY.to_owned()); }
         if labels.is_empty() { self.show_status("No login methods available.".into()); return; }
         if let Some(providers) = &provider_options && labels.len() == 1 && let Some(provider) = providers.first().cloned() { self.start_provider_login(&provider); return; }
@@ -2237,7 +2244,7 @@ impl InteractiveMode {
         let provider_id = provider_options.as_ref().and_then(|providers| providers.first()).map(|provider| provider.id.clone());
         self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, labels,
             Box::new(move |label| {
-                let method = if label == SUBSCRIPTION { "oauth" } else { "api_key" };
+                let method = if label == subscription { "oauth" } else { "api_key" };
                 submissions.borrow_mut().push_back(match &provider_id { Some(id) => format!("/login-provider {id} {method}"), None => format!("/login-select-provider {method}") });
                 selected.borrow_mut().take();
             }),
@@ -2265,6 +2272,7 @@ impl InteractiveMode {
     /// and run `modelRuntime.login` on the runtime, answering its prompts through the UI channel.
     fn start_provider_login(&mut self, provider: &crate::components::oauth_selector::AuthSelectorProvider) {
         use crate::components::oauth_selector::AuthSelectorAuthType;
+        if provider.auth_type == AuthSelectorAuthType::ApiKey && !provider.method_has_login { self.show_ambient_auth_dialog(provider); return; }
         let method = match provider.auth_type { AuthSelectorAuthType::OAuth => crate::login_outcome::LoginMethod::Oauth, AuthSelectorAuthType::ApiKey => crate::login_outcome::LoginMethod::ApiKey };
         let mut dialog = crate::components::login_dialog::LoginDialogComponent::new(&self.theme, &provider.id, Box::new(|_, _| {}), Some(&provider.name), None);
         if provider.id == "amazon-bedrock" && provider.auth_type == AuthSelectorAuthType::ApiKey {
@@ -2306,6 +2314,14 @@ impl InteractiveMode {
             }
             let _ = sender.send(AuthUiEvent::LoginFinished { provider_id: event_provider_id, provider_name, method, result, selection_error });
         });
+    }
+
+    /// senpi `showAmbientAuthDialog`: an info-only dialog for a method configured outside the app.
+    fn show_ambient_auth_dialog(&mut self, provider: &crate::components::oauth_selector::AuthSelectorProvider) {
+        let mut dialog = crate::components::login_dialog::LoginDialogComponent::new(&self.theme, &provider.id, Box::new(|_, _| {}), Some(&provider.name), Some(&format!("{} setup", provider.name)));
+        dialog.show_info(&format!("{} is configured outside {}.", provider.method_name.as_deref().unwrap_or("Authentication"), maho_core::config::app_name()), &[], true);
+        maho_tui::tui::Focusable::set_focused(&mut dialog, true);
+        self.login_dialog = Some(dialog);
     }
 
     fn show_error(&mut self, message: &str) {
@@ -2869,6 +2885,7 @@ impl InteractiveMode {
         let stats = self.host_session_stats();
         let model = self.host_model();
         let usage = self.host_context_usage();
+        let subscription = self.session.model_registry().model_runtime.is_using_subscription(&model.provider);
         crate::components::footer::FooterSnapshot {
             cwd: self.host_cwd(), home: std::env::var("HOME").ok(), session_name: self.host_session_name(),
             cache_read: stats.tokens.cache_read as f64, cache_write: stats.tokens.cache_write as f64, cost: stats.cost,
@@ -2885,7 +2902,6 @@ impl InteractiveMode {
             AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
-        let subscription = self.session.model_registry().model_runtime.is_using_subscription(&model.provider);
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
@@ -3285,10 +3301,15 @@ impl InteractiveMode {
             return;
         }
         if let Some(dialog) = &mut self.login_dialog {
+            let was_cancelled = dialog.is_cancelled();
             dialog.handle_input(data);
             // senpi aborts the dialog signal on cancel; the login task then reports the neutral outcome.
-            if dialog.is_cancelled() && let Some(abort) = self.auth_abort.take() {
-                abort.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError", crate::login_outcome::LOGIN_CANCELLED_NOTICE)));
+            // An ambient info dialog has no login task, so closing it restores the editor directly.
+            if !was_cancelled && dialog.is_cancelled() {
+                match self.auth_abort.take() {
+                    Some(abort) => abort.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError", crate::login_outcome::LOGIN_CANCELLED_NOTICE))),
+                    None => self.login_dialog = None,
+                }
             }
             self.drain_auth_ui_events();
             return;
