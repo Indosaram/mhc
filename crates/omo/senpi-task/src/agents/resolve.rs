@@ -5,7 +5,10 @@ use std::collections::BTreeSet;
 
 use super::builtin::agent_fallback_chain;
 use super::types::{AgentDefinition, AgentModelEntry, agent_model_candidates};
-use crate::delegate_adapter::{DelegateModelResolutionInput, resolve_model_for_delegate_task};
+use crate::delegate_adapter::{
+    DelegateModelResolutionInput, DelegateModelResolutionResult, resolve_model_for_delegate_task,
+    warm_cache_deps,
+};
 use crate::host::{
     ParsedModel, SenpiModelRegistry, parse_available_models, parse_model, parse_registry_model,
 };
@@ -202,14 +205,14 @@ pub fn resolve_agent(
     }
 
     if let (Some(available), Some(chain)) = (&available_models, fallback_chain)
-        && let Some(resolution) = resolve_model_for_delegate_task(&DelegateModelResolutionInput {
-            user_model: None,
-            user_fallback_models: None,
-            category_default_model: None,
-            fallback_chain: Some(chain),
-            available_models: available.clone(),
-            system_default_model: None,
-        })
+        && let Some(DelegateModelResolutionResult::Resolved(resolution)) = resolve_model_for_delegate_task(
+            &DelegateModelResolutionInput {
+                fallback_chain: Some(chain.to_vec()),
+                available_models: available.iter().cloned().collect(),
+                ..Default::default()
+            },
+            &warm_cache_deps(),
+        )
     {
         attempted_model = Some(resolution.model.clone());
         if let Some(found) = find_exact_agent_model(&resolution.model, registry) {

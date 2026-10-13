@@ -434,7 +434,7 @@ fn builtin_descriptions_are_non_empty_and_unbranded() {
 // ---- agents/builtin/fallback-chains.test.ts ----
 
 fn entry(providers: &[&str], model: &str, variant: Option<&str>) -> DelegateFallbackEntry {
-    DelegateFallbackEntry::new(providers, model, variant)
+    crate::delegate_adapter::fallback_entry(providers, model, variant)
 }
 
 #[test]
