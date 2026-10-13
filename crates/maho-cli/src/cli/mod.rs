@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod interactive_entry;
 pub mod setup;
 pub mod startup_ui;
+pub mod session_picker;
 pub mod codemode_services;
 pub mod task_runners;
 pub mod doctor;

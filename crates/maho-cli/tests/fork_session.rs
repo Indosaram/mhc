@@ -1,4 +1,4 @@
-use maho_cli::cli::runtime::{fork_session, resolve_session_dir};
+use maho_cli::cli::runtime::{find_local_session_by_exact_id, fork_session, resolve_session_dir, resolve_session_path, ResolvedSession};
 use maho_core::session_manager::SessionManager;
 
 #[test]
@@ -49,4 +49,28 @@ fn session_dir_prefers_flag_then_env_then_setting_and_expands_tilde() {
     assert_eq!(resolve_session_dir(None, Some("~/env"), Some("/setting")), Some(format!("{}/env", home.trim_end_matches('/'))));
     assert_eq!(resolve_session_dir(None, Some(""), Some("/setting")).as_deref(), Some("/setting"));
     assert_eq!(resolve_session_dir(None, None, None), None);
+}
+
+#[test]
+fn session_argument_resolves_paths_then_local_then_global_ids() {
+    let directory = tempfile::tempdir().expect("directory");
+    let session_dir = directory.path().join("sessions").to_string_lossy().into_owned();
+    let here = directory.path().join("here").to_string_lossy().into_owned();
+    let there = directory.path().join("there").to_string_lossy().into_owned();
+    let options = |id: &str| Some(maho_core::session_manager::NewSessionOptions { id: Some(id.to_owned()), ..Default::default() });
+    let mut local = SessionManager::create(&here, Some(&session_dir), options("local-session"));
+    let mut remote = SessionManager::create(&there, Some(&session_dir), options("remote-session"));
+    for manager in [&mut local, &mut remote] {
+        manager.append_message(serde_json::json!({"role":"user","content":"hello"}));
+        manager.append_message(serde_json::json!({"role":"assistant","content":[],"stopReason":"stop","timestamp":2}));
+    }
+    let local_path = local.session_file().expect("local path").to_owned();
+    let remote_path = remote.session_file().expect("remote path").to_owned();
+
+    assert_eq!(resolve_session_path("local-", &here, Some(&session_dir)), ResolvedSession::Local(local_path.clone()));
+    assert_eq!(resolve_session_path("remote", &here, Some(&session_dir)), ResolvedSession::Global { path: remote_path, cwd: there });
+    assert_eq!(resolve_session_path(&local_path, &here, Some(&session_dir)), ResolvedSession::Path(local_path.clone()));
+    assert_eq!(resolve_session_path("absent", &here, Some(&session_dir)), ResolvedSession::NotFound("absent".to_owned()));
+    assert_eq!(find_local_session_by_exact_id("local-session", &here, Some(&session_dir)), Some(local_path));
+    assert_eq!(find_local_session_by_exact_id("local", &here, Some(&session_dir)), None);
 }
