@@ -13,7 +13,12 @@ fn keybindings() -> std::sync::Arc<maho_tui::keybindings::KeybindingsManager> {
 
 #[test]
 fn helper_renders_equal_pinned_senpi_at_three_widths() {
-    let cases: serde_json::Value = serde_json::from_str(include_str!("golden/task35-helpers.json")).expect("golden");
+    let fixture = if cfg!(target_os = "macos") {
+        include_str!("golden/task35-helpers-darwin.json")
+    } else {
+        include_str!("golden/task35-helpers.json")
+    };
+    let cases: serde_json::Value = serde_json::from_str(fixture).expect("golden");
     let theme = Theme::builtin("dark", ColorMode::Truecolor).expect("theme");
     for case in cases.as_array().expect("cases") {
         let width = usize::try_from(case["width"].as_u64().expect("width")).expect("width fits");
