@@ -106,7 +106,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
     }
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
-    let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
+    // senpi `main.ts` `resolveModelScope`: scope patterns resolve against authenticated models.
+    let model_patterns = parsed.models.as_deref().unwrap_or_default();
+    let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
+    let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
     let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
