@@ -253,10 +253,15 @@ fn given_no_injected_liveness_probe_when_a_paused_runs_previous_holder_is_this_l
 fn given_a_paused_own_host_run_without_a_registered_scheduler_when_it_resumes_then_it_claims_instead_of_waiting_on_itself() {
     let store = temp_store();
     let input = definition(vec![node("only", &[])]);
-    let mut record = base_record(&input, &[ ("only", DagNodeState::Scheduled) ]);
+    let mut record = base_record(&input, &[("only", DagNodeState::Scheduled)]);
     record.previous_lease_holder_pid = Some(101);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
+    *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|spec, _| {
+        let handle = crate::manager::manager_tests::fakes::FakeHandle::new(&spec.task_id, None);
+        handle.complete("claimed run completed");
+        Some(Ok(handle as Arc<dyn crate::manager::ManagedChildHandle>))
+    }));
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| true)), is_run_held_in_process: None, now: None,
@@ -374,7 +379,8 @@ fn given_a_live_resident_child_when_recovery_resumes_then_it_is_handed_to_the_sc
     let store = temp_store();
     let input = definition(vec![node("slow", &[]), node("done", &[]), node("next", &["done"])]);
     let mut record = base_record(&input, &[("slow", DagNodeState::Running), ("done", DagNodeState::Completed), ("next", DagNodeState::Pending)]);
-    record.record.nodes[0].task_id = Some("task-slow".into());
+    record.record.nodes[0].task_id = Some("st_00000007".into());
+    record.record.nodes[1].task_id = Some("st_00000008".into());
     record.record.nodes[0].attempt = 1;
     record.previous_lease_holder_pid = Some(9001);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
@@ -388,9 +394,14 @@ fn given_a_live_resident_child_when_recovery_resumes_then_it_is_handed_to_the_sc
         name: Some("slow".into()), run_in_background: true, ..Default::default()
     }, &DagTaskOwner { kind: DagOwnerKind::Dag, run_id: run_id(), node_id: "slow".into(), fingerprint: "unused".into() });
     let slow_id = match started { OwnedStartResult::Started { task, .. } => task.task_id, other => panic!("task start failed: {other:?}") };
+    let parsed_slow_id = crate::state::parse_task_id(&slow_id).expect("canonical task id");
+    let record_task_id = parsed_slow_id.to_string();
+    let mut task_record = manager.get(&slow_id).expect("resident task record");
+    task_record.task_id = record_task_id.clone();
+    harness.store.replace(&task_record).expect("persist canonical resident id");
     let handle = runner.wait_handle(&slow_id);
-    let expected_task_id = slow_id.clone();
-    record.record.nodes[0].task_id = Some(slow_id.clone());
+    let expected_task_id = record_task_id.clone();
+    record.record.nodes[0].task_id = Some(record_task_id.clone());
     store.write_checkpoint(&run_id(), &record).expect("checkpoint with resident task id");
     let (reattach_tx, reattach_rx) = mpsc::channel();
     let recovery = create_dag_recovery(DagRecoveryOptions {
@@ -419,6 +430,7 @@ fn given_a_live_resident_child_when_recovery_resumes_then_it_is_handed_to_the_sc
     assert_eq!(checkpoint.nodes[0].state, DagNodeState::Running);
     assert!(store.read_events(&run_id(), 0, &crate::dag::store::DagEventReadOptions { limit: 100, ..Default::default() }).expect("events").events.iter().any(|event| matches!(&event.payload, DagRunEventPayload::NodeReused { node_id, .. } if node_id == "done")));
     handle.complete("slow done");
+    crate::dag::test_support::wait_for_attached_handle(&store, &runner, &run_id(), "next").complete("next done");
     let outcomes = done.join().expect("resume thread");
     let result = recovered(outcomes);
     assert_eq!(result.status, DagRunStatus::Completed);
@@ -430,18 +442,17 @@ fn given_running_tasks_without_a_local_resident_handle_when_recovery_resumes_the
     let store = temp_store();
     let input = definition(vec![node("parked", &[]), node("foreign", &[]), node("gate", &["parked", "foreign"])]);
     let mut record = base_record(&input, &[("parked", DagNodeState::Running), ("foreign", DagNodeState::Running)]);
-    record.record.nodes[0].task_id = Some("task-parked".into());
-    record.record.nodes[1].task_id = Some("task-foreign".into());
+    record.record.nodes[0].task_id = Some("st_00000001".into());
+    record.record.nodes[1].task_id = Some("st_00000002".into());
     record.previous_lease_holder_pid = Some(9001);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
-    for (id, status) in [("parked", TaskStatus::Running), ("foreign", TaskStatus::Running)] {
-        let task = durable_task(&harness, id, status);
-        let mut task = task;
-        task.task_id = format!("task-{id}");
+    for (id, status, task_id) in [("parked", TaskStatus::Running, "st_00000001"), ("foreign", TaskStatus::Running, "st_00000002")] {
+        let mut task = durable_task(&harness, id, status);
+        task.task_id = task_id.into();
         task.residency_state = if id == "parked" { crate::state::ResidencyState::RpcDetached } else { crate::state::ResidencyState::Resident };
         task.host_pid = Some(if id == "foreign" { 9002 } else { 101 });
-        harness.store.replace(&task).expect("persist fixture");
+        harness.store.replace(&task).expect("persist fixture details");
     }
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
@@ -461,15 +472,14 @@ fn given_unstarted_lost_tasks_below_the_exec_attempt_limit_when_resumed_then_rec
     let store = temp_store();
     let input = definition(vec![node("queued", &[])]);
     let mut record = base_record(&input, &[("queued", DagNodeState::Scheduled)]);
-    record.record.nodes[0].task_id = Some("task-queued-prev".into());
+    record.record.nodes[0].task_id = Some("st_00000003".into());
     record.record.nodes[0].attempt = 9;
     record.record.nodes[0].exec_attempt = Some(1);
     record.previous_lease_holder_pid = Some(9001);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
-    let task = durable_task(&harness, "queued", TaskStatus::Lost);
-    let mut task = task;
-    task.task_id = "task-queued-prev".into();
+    let mut task = durable_task(&harness, "queued", TaskStatus::Lost);
+    task.task_id = "st_00000003".into();
     harness.store.replace(&task).expect("persist lost task");
     *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|spec, _| {
         let handle = crate::manager::manager_tests::fakes::FakeHandle::new(&spec.task_id, None);
@@ -480,7 +490,7 @@ fn given_unstarted_lost_tasks_below_the_exec_attempt_limit_when_resumed_then_rec
     assert_eq!(result.nodes[0].state, DagNodeState::Completed);
     assert_eq!(result.nodes[0].attempt, 10);
     assert_eq!(result.nodes[0].exec_attempt, Some(2));
-    assert!(store.read_events(&run_id(), 0, &crate::dag::store::DagEventReadOptions { limit: 100, ..Default::default() }).expect("events").events.iter().any(|event| matches!(&event.payload, DagRunEventPayload::NodeRetried { node_id, prior_task_id: Some(prior), exec_attempt: 2, .. } if node_id == "queued" && prior == "task-queued-prev")));
+    assert!(store.read_events(&run_id(), 0, &crate::dag::store::DagEventReadOptions { limit: 100, ..Default::default() }).expect("events").events.iter().any(|event| matches!(&event.payload, DagRunEventPayload::NodeRetried { node_id, prior_task_id: Some(prior), exec_attempt: 2, .. } if node_id == "queued" && prior == "st_00000003")));
 }
 
 #[test]
@@ -488,13 +498,14 @@ fn given_a_lost_scheduled_task_with_started_at_when_resumed_then_it_fails_withou
     let store = temp_store();
     let input = definition(vec![node("launched", &[])]);
     let mut record = base_record(&input, &[("launched", DagNodeState::Scheduled)]);
-    record.record.nodes[0].task_id = Some("task-launched".into());
+    record.record.nodes[0].task_id = Some("st_00000004".into());
     record.record.nodes[0].exec_attempt = Some(1);
     record.previous_lease_holder_pid = Some(9001);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
     let mut task = durable_task(&harness, "launched", TaskStatus::Lost);
-    task.task_id = "task-launched".into();
+    task.task_id = "st_00000004".into();
+    harness.store.replace(&task).expect("persist canonical task id");
     task.started_at = Some(AT.to_string());
     harness.store.replace(&task).expect("persist launched loss");
 
@@ -511,13 +522,13 @@ fn given_a_lost_unstarted_node_at_the_readmission_limit_when_resumed_then_it_fai
     let store = temp_store();
     let input = definition(vec![node("queued", &[])]);
     let mut record = base_record(&input, &[("queued", DagNodeState::Scheduled)]);
-    record.record.nodes[0].task_id = Some("task-queued-prev".into());
+    record.record.nodes[0].task_id = Some("st_00000005".into());
     record.record.nodes[0].exec_attempt = Some(3);
     record.previous_lease_holder_pid = Some(9001);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
     let mut task = durable_task(&harness, "queued", TaskStatus::Lost);
-    task.task_id = "task-queued-prev".into();
+    task.task_id = "st_00000005".into();
     harness.store.replace(&task).expect("persist lost task");
     let result = recovered(recovery_for(&store, Arc::new(harness.manager)).resume_paused_runs(PARENT_SESSION_ID));
     assert_eq!(result.nodes[0].state, DagNodeState::Failed);
@@ -529,10 +540,15 @@ fn given_a_lost_unstarted_node_at_the_readmission_limit_when_resumed_then_it_fai
 fn given_own_host_lease_holder_when_no_scheduler_is_registered_then_recovery_claims_it() {
     let store = temp_store();
     let input = definition(vec![node("only", &[])]);
-    let mut record = base_record(&input, &[ ("only", DagNodeState::Scheduled) ]);
+    let mut record = base_record(&input, &[("only", DagNodeState::Scheduled)]);
     record.previous_lease_holder_pid = Some(101);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
+    *harness.in_process.hook.lock().unwrap() = Some(Arc::new(|spec, _| {
+        let handle = crate::manager::manager_tests::fakes::FakeHandle::new(&spec.task_id, None);
+        handle.complete("recovered");
+        Some(Ok(handle as Arc<dyn crate::manager::ManagedChildHandle>))
+    }));
     let recovery = create_dag_recovery(DagRecoveryOptions {
         store: Arc::clone(&store), task_manager: Arc::new(harness.manager), host_pid: Some(101),
         is_process_alive: Some(Arc::new(|_| true)), is_run_held_in_process: Some(Arc::new(|_| false)),
@@ -545,7 +561,7 @@ fn given_own_host_lease_holder_when_no_scheduler_is_registered_then_recovery_cla
 fn given_own_host_lease_holder_with_registered_scheduler_when_recovery_claims_then_it_reports_its_holder_pid() {
     let store = temp_store();
     let input = definition(vec![node("only", &[])]);
-    let mut record = base_record(&input, &[ ("only", DagNodeState::Scheduled) ]);
+    let mut record = base_record(&input, &[("only", DagNodeState::Scheduled)]);
     record.previous_lease_holder_pid = Some(101);
     store.write_checkpoint(&run_id(), &record).expect("checkpoint");
     let harness = make_manager(HarnessOptions::default());
@@ -653,7 +669,11 @@ fn plain_scheduler_checkpoint_preserves_and_explicit_release_clears_lease() {
     let mut record = base_record(&definition(vec![node("active", &[])]), &[]);
     record.lease_holder_pid = Some(101);
     store.write_checkpoint(&run_id(), &record).expect("leased checkpoint");
-    store.write_checkpoint(&run_id(), &record.record).expect("plain scheduler checkpoint");
+    // TS: the store no longer carries the lease forward; a scheduler checkpoint preserves it
+    // because the record it journals was read back from the leased checkpoint.
+    let scheduler_record = store.read_checkpoint::<DagRunRecordV1>(&run_id()).expect("read").expect("record");
+    assert_eq!(scheduler_record.lease_holder_pid, Some(101));
+    store.write_checkpoint(&run_id(), &scheduler_record).expect("plain scheduler checkpoint");
     assert_eq!(store.read_checkpoint::<RecoverableRecord>(&run_id()).expect("read").expect("record").lease_holder_pid, Some(101));
     record.lease_holder_pid = None;
     store.write_checkpoint(&run_id(), &record).expect("release checkpoint");
@@ -733,13 +753,22 @@ fn two_recovery_managers_observe_one_live_claim_and_one_resume() {
     use std::sync::mpsc;
     use std::time::Duration;
     let store = temp_store();
-    let harness = make_manager(HarnessOptions::default());
-    let task = durable_task(&harness, "active", TaskStatus::Running);
+    // A live resident child of this host (the latest recovery treats a running record without a
+    // resident handle as orphaned, so the fixture starts a real resident child).
+    let runner = crate::manager::manager_tests::fakes::FakeRunner::new();
+    let harness = make_manager(HarnessOptions { in_process: Some(Arc::clone(&runner)), ..HarnessOptions::default() });
+    let manager = Arc::new(harness.manager);
+    let started = manager.start_owned(&crate::manager::types::ManagerStartSpec {
+        prompt: "do active".into(), parent_session_id: PARENT_SESSION_ID.into(),
+        root_session_id: Some(ROOT_SESSION_ID.into()), depth: 1, category: Some("quick".into()),
+        name: Some("active".into()), run_in_background: true, ..Default::default()
+    }, &DagTaskOwner { kind: DagOwnerKind::Dag, run_id: run_id(), node_id: "active".into(), fingerprint: "unused".into() });
+    let task_id = match started { OwnedStartResult::Started { task, .. } => task.task_id, other => panic!("task start failed: {other:?}") };
+    let handle = runner.wait_handle(&task_id);
     let mut record = base_record(&definition(vec![node("active", &[])]), &[("active", DagNodeState::Running)]);
-    record.record.nodes[0].task_id = Some(task.task_id.clone());
+    record.record.nodes[0].task_id = Some(task_id.clone());
     store.write_checkpoint(&run_id(), &record).unwrap();
     let second_store = Arc::new(create_dag_file_store(&DagStoreConfig { project_dir: store.state_dir.clone(), task: Some(crate::dag::store::DagStoreTaskConfig { state_dir: Some(store.state_dir.clone()), dag: None }) }, DagStoreOptions::default()).unwrap());
-    let manager = Arc::new(harness.manager);
     let (claimed_tx, claimed_rx) = mpsc::channel();
     let release = Arc::new(crate::manager::manager_tests::fakes::dag_fake::Gate::default());
     let reattach_release = Arc::clone(&release);
@@ -752,10 +781,9 @@ fn two_recovery_managers_observe_one_live_claim_and_one_resume() {
         store: second_store, task_manager: Arc::clone(&manager), host_pid: Some(202), is_process_alive: Some(Arc::new(|pid| pid == 101 || pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None,
     });
     assert_eq!(second.resume_paused_runs(PARENT_SESSION_ID), vec![DagRecoveryOutcome::Skipped { run_id: run_id(), reason: DagRecoverySkipReason::LiveLease, holder_pid: Some(101) }]);
-    let mut completed = task; completed.status = TaskStatus::Completed; completed.final_response = Some("done active".into());
-    harness.store.replace(&completed).unwrap();
     release.release();
+    handle.complete("done active");
     let result = recovered(first_thread.join().unwrap());
     assert_eq!(result.status, DagRunStatus::Completed);
-    assert_eq!(harness.in_process.started_count(), 0);
+    assert_eq!(runner.started_count(), 1, "the resident child is reattached, never respawned");
 }

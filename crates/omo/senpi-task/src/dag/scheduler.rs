@@ -88,11 +88,7 @@ pub enum DagNodeSpawnPolicyVerdict { Allow, Deny { message: String }, Force { pr
 
 pub type DagNodeSpawnPolicy = Arc<dyn Fn(&DagNodeId, &str, &str, &str) -> DagNodeSpawnPolicyVerdict + Send + Sync>;
 
-struct AttachedTask {
-    _task_id: String,
-}
-
-enum SchedulerWake { Settled(DagNodeId, AttachedTaskSettlement), ResidencyReleased, Wake }
+enum SchedulerWake { Settled(DagNodeId, String, AttachedTaskSettlement), ResidencyReleased(u64), Wake }
 
 enum AttachedTaskSettlement {
     Record(Box<TaskRecord>),
@@ -112,7 +108,6 @@ struct SchedulerState {
     cancellation_completed_condvar: Condvar,
     admission_in_progress: Mutex<bool>,
     admission_condvar: Condvar,
-    residency_waiting: Mutex<bool>,
     wake: Condvar,
     settlement_tx: Sender<SchedulerWake>,
     settlement_rx: Mutex<std::sync::mpsc::Receiver<SchedulerWake>>,
@@ -132,6 +127,11 @@ pub struct DagSchedulerContext {
     node_spawn_policy: Option<DagNodeSpawnPolicy>,
     residency_queued: Mutex<std::collections::BTreeSet<DagNodeId>>,
     pending_admission: Mutex<Vec<DagNodeId>>,
+    /// Recovery-reattached children whose settlement waits start with the run loop.
+    pre_attached: Mutex<Vec<(DagNodeId, String)>>,
+    /// Generation of the residency release armed by the current admission pass; a release from an
+    /// earlier pass is stale (TS races only the promise the current pass armed).
+    residency_generation: std::sync::atomic::AtomicU64,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     state: Arc<SchedulerState>,
     options: DagSchedulerOptions,
@@ -160,7 +160,6 @@ pub fn create_dag_scheduler(
         cancellation_completed_condvar: Condvar::new(),
         admission_in_progress: Mutex::new(false),
         admission_condvar: Condvar::new(),
-        residency_waiting: Mutex::new(false),
         wake: Condvar::new(),
         settlement_tx,
         settlement_rx: Mutex::new(settlement_rx),
@@ -209,6 +208,8 @@ pub fn create_dag_scheduler(
         node_spawn_policy: options.node_spawn_policy.clone(),
         residency_queued: Mutex::new(std::collections::BTreeSet::new()),
         pending_admission: Mutex::new(Vec::new()),
+        pre_attached: Mutex::new(Vec::new()),
+        residency_generation: std::sync::atomic::AtomicU64::new(0),
         now,
         state,
         options: DagSchedulerOptions {
@@ -223,7 +224,7 @@ pub fn create_dag_scheduler(
         if let Some(node) = node && node.task_id.as_deref() != Some(&task_id) {
             let _ = context.journal.append(DagRunEventPayload::NodeTaskAttached { node_id: node_id.clone(), task_id: task_id.clone(), attempt: node.attempt });
         }
-        spawn_wait_for(&context, node_id, task_id);
+        context.pre_attached.lock().unwrap_or_else(PoisonError::into_inner).push((node_id, task_id));
     }
     if let Some(registry) = DAG_SCHEDULER_OBSERVERS.get() {
         let observers: Vec<_> = registry.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|(registered, _)| *registered == task_manager_key).map(|(_, observer)| Arc::clone(observer)).collect();
@@ -574,6 +575,8 @@ impl DagSchedulerContext {
             }
         }
         let _running = RunGuard(&self.state);
+        let pre_attached = std::mem::take(&mut *self.pre_attached.lock().unwrap_or_else(PoisonError::into_inner));
+        for (node_id, task_id) in pre_attached { spawn_wait_for(self, node_id, task_id); }
     run_frontier(self)
     }
 
@@ -774,11 +777,6 @@ fn run_frontier(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::
             .journal
             .append(DagRunEventPayload::RunStarted { generation })?;
     }
-    if !context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
-        let mut attached = recover_attached(context);
-        if !settle_one(context, &mut attached)? { return Ok(context.journal.snapshot()); }
-    }
-
     let mut emitted_admissions = std::collections::BTreeSet::new();
     let mut emitted_completions = std::collections::BTreeSet::new();
     loop {
@@ -786,28 +784,32 @@ fn run_frontier(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::
         if cancellation_started(context) {
             return Ok(cancelled_snapshot(context));
         }
-        if context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+        // The skip cascade runs only at frontier quiescence (nothing attached): a failed node stays
+        // revivable while any sibling is still mid-flight.
+        if attached_is_empty(context) {
             apply_dependent_skip_cascade(context)?;
         }
-        emit_frontier_wave_events(context, &mut emitted_admissions, &mut emitted_completions)?;
+        // Completions are reported before the next admission pass so a finishing wave reads as
+        // settled before later-wave nodes it unblocked start interleaving their own events.
+        emit_completed_waves(context, &emitted_admissions, &mut emitted_completions)?;
         if !admit_frontier(context, &mut emitted_admissions)? {
             if admission_stopped(context) { return Ok(context.journal.snapshot()); }
             return Ok(cancelled_snapshot(context));
         }
         let snapshot = context.journal.snapshot();
         if snapshot.nodes.iter().all(|node| is_terminal_node_state(node.state)) { break; }
-        if context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
-            continue;
+        if attached_is_empty(context) {
+            // Every admission of this pass failed at start: the dependents' skip cascade runs at the
+            // top of the loop instead of leaving the run live forever.
+            if has_cascadable_dependent(&snapshot) { continue; }
+            return Err(crate::dag::store::DagStoreError::Message(format!("DAG run \"{}\" cannot terminalize while nodes are active", snapshot.run_id)));
         }
-        let mut attached = recover_attached(context);
-        if !settle_one(context, &mut attached)? {
+        if !settle_one(context, None)? {
             if admission_stopped(context) { return Ok(context.journal.snapshot()); }
             return Ok(cancelled_snapshot(context));
         }
     }
 
-    apply_dependent_skip_cascade(context)?;
-    if admission_stopped(context) { return Ok(context.journal.snapshot()); }
     let snapshot = context.journal.snapshot();
     if let Some(failed) = primary_failure(&snapshot) {
         let error = failed.error.clone().unwrap_or_else(|| {
@@ -825,138 +827,157 @@ fn run_frontier(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::
     Ok(context.journal.snapshot())
 }
 
-fn recover_attached(context: &DagSchedulerContext) -> BTreeMap<DagNodeId, AttachedTask> {
-    let ids = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).clone();
-    ids.into_iter().map(|(node_id, task_id)| {
-        spawn_wait_for(context, node_id.clone(), task_id.clone());
-        (node_id, AttachedTask { _task_id: task_id })
-    }).collect()
+fn attached_is_empty(context: &DagSchedulerContext) -> bool {
+    context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty()
 }
 
+/// A waiting node whose dependency ended in any terminal state other than completed can never run.
+fn has_cascadable_dependent(record: &DagRunRecordV1) -> bool {
+    record.nodes.iter().any(|node| {
+        matches!(node.state, DagNodeState::Pending | DagNodeState::Blocked)
+            && node.depends_on.iter().any(|dependency| node_by_id(record, dependency).is_ok_and(|dependency| is_terminal_node_state(dependency.state) && dependency.state != DagNodeState::Completed))
+    })
+}
+
+/// Arms the session-wide residency release BEFORE the admission probe (the wake is edge
+/// triggered): a release observed by the waiter thread lands on the settlement channel.
+fn arm_residency_release(context: &DagSchedulerContext, parent_session_id: &str) -> (crate::manager::residency_signal::ResidencyChange, u64) {
+    let generation = context.residency_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let residency_changed = context.task_manager.residency_changed(parent_session_id);
+    let wake_tx = context.state.settlement_tx.clone();
+    #[cfg(test)]
+    let fake_change = {
+        let port = context.task_port.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        port.map(|port| { let (tx, rx) = channel(); port.residency_changed(parent_session_id, tx); rx })
+    };
+    let change = residency_changed.clone();
+    let _ = std::thread::Builder::new().name("dag-residency-wake".into()).spawn(move || {
+        #[cfg(test)]
+        if let Some(receiver) = fake_change { let _ = receiver.recv(); } else { change.wait(); }
+        #[cfg(not(test))]
+        change.wait();
+        let _ = wake_tx.send(SchedulerWake::ResidencyReleased(generation));
+    });
+    (residency_changed, generation)
+}
+
+// One admission pass over the frontier: the ordered residency-denied queue first (oldest denial
+// gets the first freed slot), then every newly ready node. Denials park in the queue and retry
+// after ANY slot-freeing event in the parent session; a lease denial re-probes immediately.
 fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections::BTreeSet<usize>) -> Result<bool, crate::dag::store::DagStoreError> {
-    let mut queued = std::mem::take(&mut *context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner));
-    let queued_set: std::collections::BTreeSet<_> = queued.iter().cloned().collect();
-    let snapshot = context.journal.snapshot();
-    let mut ready: Vec<_> = snapshot.nodes.iter().filter(|node| !queued_set.contains(&node.id) && is_runnable(&snapshot, &node.id)).map(|node| node.id.clone()).collect();
-    queued.append(&mut ready);
-    if queued.is_empty() { return Ok(true); }
-    let mut groups: BTreeMap<usize, Vec<DagNodeId>> = BTreeMap::new();
-    for node_id in &queued {
-        if is_runnable(&context.journal.snapshot(), node_id) { transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled); }
-        if let Some(wave) = snapshot.waves.iter().find(|wave| wave.node_ids.contains(node_id)) { groups.entry(wave.index).or_default().push(node_id.clone()); }
-    }
-    for (index, ids) in groups { let _ = context.journal.append(DagRunEventPayload::WaveStarted { wave_index: index, node_ids: ids }); emitted.insert(index); }
-    let residency_changed = context.task_manager.residency_changed(&snapshot.parent_session_id);
-    #[cfg(test)]
-    let (test_residency_tx, test_residency_rx) = channel();
-    #[cfg(test)]
-    if let Some(port) = context.task_port.lock().unwrap().as_ref() { port.residency_changed(&snapshot.parent_session_id, test_residency_tx); }
-    let mut attached = BTreeMap::new();
-    let mut denied = Vec::new();
-    let mut lease_denied = false;
-    {
-        let mut busy = context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner); *busy = true;
-    }
-    for node_id in queued {
-        let (spec, policy_failure) = start_spec(context, &node_id);
-        let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner(context, &node_id)) };
-        match result {
-            Err(message) => fail_node(context, &node_id, DagNodeErrorCode::StartFailed, &message)?,
-            Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason, cause })) => {
-                match cause {
-                    ResidencyDeniedCause::Lease => { lease_denied = true; denied.push(node_id); }
+    loop {
+        if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
+        let denied = std::mem::take(&mut *context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner));
+        let denied_set: std::collections::BTreeSet<_> = denied.iter().cloned().collect();
+        let snapshot = context.journal.snapshot();
+        let runnable: Vec<_> = snapshot.nodes.iter()
+            .filter(|node| !denied_set.contains(&node.id) && is_runnable(&snapshot, &node.id))
+            .map(|node| node.id.clone())
+            .collect();
+        if denied.is_empty() && runnable.is_empty() { return Ok(true); }
+        for node_id in &runnable { transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled); }
+        emit_wave_admissions(context, &runnable, emitted)?;
+        let residency_released = arm_residency_release(context, &snapshot.parent_session_id);
+        *context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        let mut next_denied = Vec::new();
+        let mut lease_denied = false;
+        // TS Promise.allSettled: every start of the pass settles before any result is folded, so
+        // attachments and failures land after the whole admission batch.
+        let awaiting: Vec<_> = denied.into_iter().chain(runnable).collect();
+        let results: Vec<_> = awaiting.into_iter().map(|node_id| {
+            let (spec, policy_failure) = start_spec(context, &node_id);
+            let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner(context, &node_id)) };
+            (node_id, result)
+        }).collect();
+        resolve_admission_idle(context);
+        if admission_stopped(context) && !cancellation_started(context) { return Ok(false); }
+        for (node_id, result) in results {
+            match result {
+                Err(message) => { if !cancellation_started(context) { fail_node(context, &node_id, DagNodeErrorCode::StartFailed, &message)?; } }
+                Ok(result) if cancellation_started(context) => {
+                    if matches!(result, OwnedStartResult::Started { .. }) { attach_or_fail(context, &node_id, result)?; }
+                }
+                Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason, cause })) => match cause {
+                    ResidencyDeniedCause::Lease => { lease_denied = true; next_denied.push(node_id); }
                     ResidencyDeniedCause::Residents { residents, .. } if residents.is_empty() => {
                         context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
                         fail_node(context, &node_id, DagNodeErrorCode::ResidencyDenied, &format!("resident child cap reached and the denial names no resident child that could free a slot: {reason}"))?;
                     }
                     ResidencyDeniedCause::Residents { residents, .. } => {
-                        let mut first = context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner);
-                        if first.insert(node_id.clone()) {
-                            let own_ids = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner);
-                            let held_by_other_owners = residents.iter().filter(|resident| !own_ids.values().any(|own| own == &resident.task_id)).count() as u64;
-                            let _ = context.journal.append(DagRunEventPayload::NodeTransitioned { node_id: node_id.clone(), from: DagNodeState::Scheduled, to: DagNodeState::Scheduled, reason: DagNodeTransitionReason::ResidencyQueued { residents: residents.len() as u64, held_by_other_owners } });
+                        let first = context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).insert(node_id.clone());
+                        if first {
+                            let held_by_other_owners = {
+                                let own_ids = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner);
+                                residents.iter().filter(|resident| !own_ids.values().any(|own| own == &resident.task_id)).count() as u64
+                            };
+                            context.journal.append(DagRunEventPayload::NodeTransitioned { node_id: node_id.clone(), from: DagNodeState::Scheduled, to: DagNodeState::Scheduled, reason: DagNodeTransitionReason::ResidencyQueued { residents: residents.len() as u64, held_by_other_owners } })?;
                         }
-                        denied.push(node_id);
+                        next_denied.push(node_id);
                     }
+                },
+                Ok(result) => {
+                    context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
+                    attach_or_fail(context, &node_id, result)?;
                 }
             }
-            Ok(result) => { context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id); attach_or_fail(context, &mut attached, &node_id, result)?; }
         }
+        // The task owner record is durable even when admission finishes after suspension; this
+        // retired controller must not attach, fail, or promote the node.
+        if cancellation_started(context) { return Ok(false); }
+        let parked = !next_denied.is_empty();
+        context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner).extend(next_denied);
+        if !parked { return Ok(true); }
+        // A contended or displaced admission lease is a bounded wait inside acquisition itself, so
+        // the next probe is already paced; only a cap denial has to wait for a slot to free.
+        if lease_denied { continue; }
+        if !settle_one(context, Some((&residency_released.0, residency_released.1)))? { return Ok(false); }
     }
-    resolve_admission_idle(context);
-    *context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner) = false;
-    if !denied.is_empty() {
-        *context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner) = denied;
-    }
-    if lease_denied { return Ok(true); }
-    if !context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
-        *context.state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        let state = Arc::clone(&context.state);
-        let change = residency_changed.clone();
-        #[cfg(test)]
-        let fake_change = context.task_port.lock().unwrap_or_else(PoisonError::into_inner).is_some().then_some(test_residency_rx);
-        let _ = std::thread::Builder::new().name("dag-residency-wake".into()).spawn(move || {
-            #[cfg(test)]
-            if let Some(receiver) = fake_change { let _ = receiver.recv(); } else { change.wait(); }
-            #[cfg(not(test))]
-            change.wait();
-            *state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = false;
-            let _ = state.settlement_tx.send(SchedulerWake::ResidencyReleased);
-        });
-        let mut residency_released = false;
-        loop {
-            if residency_changed.is_fired() || admission_stopped(context) || cancellation_started(context) { break; }
-            match context.state.settlement_rx.lock().unwrap_or_else(PoisonError::into_inner).recv() {
-                Ok(SchedulerWake::Settled(node_id, settlement)) => {
-                    if attached.contains_key(&node_id) {
-                        attached.remove(&node_id);
-                        context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
-                        match settlement {
-                            AttachedTaskSettlement::Error(message) => fail_node(context, &node_id, DagNodeErrorCode::TaskError, &message)?,
-                            AttachedTaskSettlement::Record(record) => fold_task_outcome(context, &node_id, *record)?,
-                        }
-                    }
-                }
-                Ok(SchedulerWake::ResidencyReleased) => { residency_released = true; break; }
-                Ok(SchedulerWake::Wake) => {}
-                Err(_) => break,
-            }
-        }
-        *context.state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = false;
-        if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
-        if residency_released || residency_changed.is_fired() { return Ok(true); }
-    }
-    if attached.is_empty() { return Ok(true); }
-    while !attached.is_empty() { if !settle_one(context, &mut attached)? { return Ok(false); } }
-    Ok(true)
 }
 
-fn emit_frontier_wave_events(context: &DagSchedulerContext, admitted: &mut std::collections::BTreeSet<usize>, completed: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
+// dag.wave.started is informational: one event per wave index touched by this admission pass,
+// listing exactly the nodes the pass scheduled.
+fn emit_wave_admissions(context: &DagSchedulerContext, scheduled: &[DagNodeId], emitted: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
+    if scheduled.is_empty() { return Ok(()); }
+    let snapshot = context.journal.snapshot();
+    let mut groups: BTreeMap<usize, Vec<DagNodeId>> = BTreeMap::new();
+    for node_id in scheduled {
+        if let Some(wave) = snapshot.waves.iter().find(|wave| wave.node_ids.contains(node_id)) { groups.entry(wave.index).or_default().push(node_id.clone()); }
+    }
+    for (index, node_ids) in groups {
+        context.journal.append(DagRunEventPayload::WaveStarted { wave_index: index, node_ids })?;
+        emitted.insert(index);
+    }
+    Ok(())
+}
+
+// dag.wave.completed is informational and once per instance per wave index: it fires when EVERY
+// member of the compiled wave holds a terminal state. Waves this instance never admitted stay silent.
+fn emit_completed_waves(context: &DagSchedulerContext, admitted: &std::collections::BTreeSet<usize>, completed: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
+    if admitted.is_empty() { return Ok(()); }
     let snapshot = context.journal.snapshot();
     for wave in &snapshot.waves {
-        if admitted.contains(&wave.index) && !completed.contains(&wave.index) && wave.node_ids.iter().all(|id| node_by_id(&snapshot, id).is_ok_and(|node| is_terminal_node_state(node.state))) {
-            context.journal.append(DagRunEventPayload::WaveCompleted { wave_index: wave.index, node_ids: wave.node_ids.clone() })?;
-            completed.insert(wave.index);
-        }
+        if !admitted.contains(&wave.index) || completed.contains(&wave.index) { continue; }
+        if !wave.node_ids.iter().all(|id| node_by_id(&snapshot, id).is_ok_and(|node| is_terminal_node_state(node.state))) { continue; }
+        context.journal.append(DagRunEventPayload::WaveCompleted { wave_index: wave.index, node_ids: wave.node_ids.clone() })?;
+        completed.insert(wave.index);
     }
     Ok(())
 }
 
 fn attach_or_fail(
     context: &DagSchedulerContext,
-    attached: &mut BTreeMap<DagNodeId, AttachedTask>,
     node_id: &DagNodeId,
     result: OwnedStartResult,
 ) -> Result<(), crate::dag::store::DagStoreError> {
     match result {
-        OwnedStartResult::Started { task, reused } => attach_started(context, attached, node_id, &task, reused),
+        OwnedStartResult::Started { task, reused } => attach_started(context, node_id, &task, reused),
         OwnedStartResult::OwnerConflict { task_id, .. } => {
             #[cfg(test)]
             let record = context.task_port.lock().unwrap().as_ref().and_then(|port| port.get_task(&task_id)).or_else(|| context.task_manager.get(&task_id));
             #[cfg(not(test))]
             let record = context.task_manager.get(&task_id);
             let Some(record) = record else { return fail_node(context, node_id, DagNodeErrorCode::StartFailed, &format!("DAG owner-conflict task {task_id} is unavailable")); };
-            attach_started(context, attached, node_id, &crate::manager::types::StartedTask { task_id, status: record.status, name: record.name.unwrap_or_default(), resolved_model: record.resolved_model, queue_position: None, name_warning: None }, true)
+            attach_started(context, node_id, &crate::manager::types::StartedTask { task_id, status: record.status, name: record.name.unwrap_or_default(), resolved_model: record.resolved_model, queue_position: None, name_warning: None }, true)
         },
         OwnedStartResult::NotStarted(start_result) => {
             let failure = start_failure(&start_result);
@@ -967,7 +988,6 @@ fn attach_or_fail(
 
 fn attach_started(
     context: &DagSchedulerContext,
-    attached: &mut BTreeMap<DagNodeId, AttachedTask>,
     node_id: &DagNodeId,
     task: &crate::manager::types::StartedTask,
     reused: bool,
@@ -1011,10 +1031,6 @@ fn attach_started(
         .unwrap_or_else(PoisonError::into_inner)
         .insert(node_id.clone(), task.task_id.clone());
     spawn_wait_for(context, node_id.clone(), task.task_id.clone());
-    attached.insert(
-        node_id.clone(),
-        AttachedTask { _task_id: task.task_id.clone() },
-    );
     Ok(())
 }
 
@@ -1035,7 +1051,7 @@ fn spawn_wait_for(context: &DagSchedulerContext, node_id: DagNodeId, task_id: St
             Ok(record) => AttachedTaskSettlement::Record(Box::new(record)),
             Err(error) => AttachedTaskSettlement::Error(error.to_string()),
         };
-        let _ = state.settlement_tx.send(SchedulerWake::Settled(node_id, settlement));
+        let _ = state.settlement_tx.send(SchedulerWake::Settled(node_id, task_id, settlement));
         state.wake.notify_all();
     });
 }
@@ -1068,36 +1084,36 @@ fn cancel_task(context: &DagSchedulerContext, task_id: &str, reason: Option<&str
     }).map(|_| ()).map_err(|error| error.to_string())
 }
 
+// Waits for the next settle-loop wake: one of this run's own children settling (folded here),
+// cancellation/suspension, or - when admission parked a residency denial - the session-wide
+// residency release the caller armed before its probe. Returns true when the caller should run
+// another admission pass, false when the run is cancelled or suspended.
 fn settle_one(
     context: &DagSchedulerContext,
-    attached: &mut BTreeMap<DagNodeId, AttachedTask>,
+    residency_released: Option<(&crate::manager::residency_signal::ResidencyChange, u64)>,
 ) -> Result<bool, crate::dag::store::DagStoreError> {
     loop {
-        if admission_stopped(context) { return Ok(false); }
-        if cancellation_started(context) {
-            return Ok(false);
-        }
-        let wake = context.state.settlement_rx.lock().unwrap_or_else(PoisonError::into_inner).recv();
-        if let Ok(SchedulerWake::Settled(node_id, settlement)) = wake {
-            if !attached.contains_key(&node_id) { continue; }
-            attached.remove(&node_id);
-            context
-                .state
-                .attached_task_ids
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&node_id);
-            match settlement {
-                AttachedTaskSettlement::Error(message) => {
-                    fail_node(context, &node_id, DagNodeErrorCode::TaskError, &message)?;
-                }
-                AttachedTaskSettlement::Record(record) => {
-                    fold_task_outcome(context, &node_id, *record)?;
-                }
-            }
-            return Ok(true);
-        }
         if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
+        if residency_released.is_some_and(|(change, _)| change.is_fired()) { return Ok(true); }
+        let wake = context.state.settlement_rx.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        match wake {
+            Ok(SchedulerWake::Settled(node_id, task_id, settlement)) => {
+                // A settlement for a task no longer attached to the node (a duplicate or a stale
+                // attempt) is not this run's wake.
+                let current = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).get(&node_id).cloned();
+                if current.as_deref() != Some(task_id.as_str()) { continue; }
+                if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
+                context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
+                match settlement {
+                    AttachedTaskSettlement::Error(message) => fail_node(context, &node_id, DagNodeErrorCode::TaskError, &message)?,
+                    AttachedTaskSettlement::Record(record) => fold_task_outcome(context, &node_id, *record)?,
+                }
+                return Ok(true);
+            }
+            Ok(SchedulerWake::ResidencyReleased(generation)) => { if residency_released.is_some_and(|(_, armed)| armed == generation) { return Ok(true); } }
+            Ok(SchedulerWake::Wake) => {}
+            Err(_) => return Ok(false),
+        }
     }
 }
 
