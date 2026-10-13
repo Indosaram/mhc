@@ -78,6 +78,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         else if let Some(path) = &parsed.session { SessionManager::open(path, parsed.session_dir.as_deref(), None, identity) }
         else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, parsed.session_dir.as_deref()) }
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
+    // senpi main.ts:1181-1188: a blank `--name` is rejected before the runtime is built.
+    let session_name = match parsed.name.as_deref() {
+        Some(raw) => Some(super::args::normalize_session_name(raw).ok_or("Error: --name requires a non-empty value")?.to_owned()),
+        None => None,
+    };
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
@@ -161,7 +166,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         session.rebuild_system_prompt();
     }
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
-    if let Some(name) = &parsed.name { session.set_session_name(name); }
+    if let Some(name) = &session_name { session.set_session_name(name); }
     indicator.stop();
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
     let result = async { match mode {
