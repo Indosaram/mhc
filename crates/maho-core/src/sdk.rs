@@ -50,6 +50,9 @@ pub struct CreateAgentSessionOptions {
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    /// The first `bind_extensions` call's bindings, built over the created session (pinned
+    /// `createBoundAppServerSession` binding a mode's handlers before `session_start`).
+    pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
 }
 
 /// `noTools` suppression mode.
@@ -262,7 +265,10 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
                 }
             } };
         session.set_extension_runner(runner).await;
-        if !options.defer_extension_start { session.bind_extensions(Default::default()).await; }
+        if !options.defer_extension_start {
+            let bindings = options.extension_bindings.as_ref().map(|factory| factory(&session)).unwrap_or_default();
+            session.bind_extensions(bindings).await;
+        }
         drop(construction.session.take());
     }
     session.set_cursor_exec_bridge_factory(Arc::new({

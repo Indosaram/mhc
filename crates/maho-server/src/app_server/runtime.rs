@@ -13,13 +13,131 @@ pub struct AppServerRuntime {
     pub user_input: Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>,
     pub lifecycle: Arc<super::handlers::ThreadLifecycleController>,
     provider_account_unsubscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
+    /// senpi `createAppServerRuntime(requestShutdown)`: extension `ctx.shutdown()` lands here.
+    pub shutdown_request: Arc<AppServerShutdownRequest>,
 }
+/// The runtime half of senpi `requestShutdown`: the first reason wins and wakes the mode loop.
+#[derive(Default)]
+pub struct AppServerShutdownRequest {
+    reason: std::sync::Mutex<Option<String>>,
+    notify: tokio::sync::Notify,
+}
+impl AppServerShutdownRequest {
+    pub fn request(&self, reason: &str) {
+        let mut current = self.reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if current.is_none() { *current = Some(reason.to_owned()); self.notify.notify_one(); }
+    }
+    pub async fn requested(&self) -> String {
+        loop {
+            if let Some(reason) = self.reason.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() { return reason; }
+            self.notify.notified().await;
+        }
+    }
+}
+type ThreadNotificationSender = tokio::sync::mpsc::UnboundedSender<(String, Value)>;
+fn queue_thread_notification(sender: &ThreadNotificationSender, thread_id: &str, notification: Value) {
+    if sender.send((thread_id.to_owned(), notification)).is_err() { eprintln!("app-server thread notification dropped: runtime is closed"); }
+}
+/// senpi `createBoundAppServerSession` bindings: relay extension RPC events as `extension_event`,
+/// extension errors as thread `error` notifications, and `ctx.shutdown()` as a server shutdown.
+/// `binding` holds the pinned `initialNotifications` while `bindingExtensions` is true.
+type BindingNotifications = Arc<std::sync::Mutex<Option<Vec<Value>>>>;
+fn app_server_extension_bindings(sender: ThreadNotificationSender, shutdown: Arc<AppServerShutdownRequest>, binding: BindingNotifications) -> maho_core::agent_session::ExtensionBindingsFactory {
+    Arc::new(move |session: &maho_core::agent_session::AgentSession| {
+        let thread_id = session.session_id();
+        let events = sender.clone();
+        let event_thread = thread_id.clone();
+        let binding = binding.clone();
+        session.add_extension_rpc_event_listener(Arc::new(move |name: &str, data: &Value| {
+            let notification = json!({"method":"extension_event","params":{"type":"extension_event","name":name,"data":data,"threadId":event_thread}});
+            if let Some(initial) = binding.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() { initial.push(notification); return; }
+            queue_thread_notification(&events, &event_thread, notification);
+        }));
+        let errors = sender.clone();
+        let shutdown = shutdown.clone();
+        maho_core::agent_session::ExtensionBindings {
+            on_error: Some(Arc::new(move |error: &maho_ext_api::ExtensionError| {
+                let mut params = json!({"extensionPath":error.extension_path,"event":error.event,"error":error.error});
+                if let Some(stack) = &error.stack { params["stack"] = json!(stack); }
+                queue_thread_notification(&errors, &thread_id, json!({"method":"error","params":params}));
+            })),
+            shutdown_handler: Some(Arc::new(move || shutdown.request("extension shutdown"))),
+            ..Default::default()
+        }
+    })
+}
+/// Wrap a session factory so every created session is bound for app-server delivery. A factory
+/// that never runs the first bind with the supplied bindings is rebound after it returns.
+fn bind_app_server_session_factory(inner: SessionFactory, sender: ThreadNotificationSender, shutdown: Arc<AppServerShutdownRequest>, registry: Arc<std::sync::OnceLock<std::sync::Weak<ThreadRegistry>>>) -> SessionFactory {
+    Arc::new(move |mut options: maho_core::sdk::CreateAgentSessionOptions| {
+        let binding: BindingNotifications = Arc::new(std::sync::Mutex::new(Some(Vec::new())));
+        let bindings = app_server_extension_bindings(sender.clone(), shutdown.clone(), binding.clone());
+        let bound = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mark = bound.clone();
+        let first_bind = bindings.clone();
+        options.extension_bindings = Some(Arc::new(move |session: &maho_core::agent_session::AgentSession| {
+            mark.store(true, std::sync::atomic::Ordering::SeqCst);
+            first_bind(session)
+        }));
+        let inner = inner.clone();
+        let registry = registry.clone();
+        Box::pin(async move {
+            let session = inner(options).await;
+            {
+                // End `bindingExtensions` and hand the buffer over under one lock, so no live
+                // event can be queued ahead of the bind-time notifications.
+                let mut buffered = binding.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let initial = buffered.take().unwrap_or_default();
+                if let (Ok(session), Some(registry)) = (&session, registry.get().and_then(std::sync::Weak::upgrade)) { registry.queue_initial_notifications(&session.session_id(), initial); }
+            }
+            let session = session?;
+            if !bound.load(std::sync::atomic::Ordering::SeqCst) { session.rebind_extension_context(bindings(&session)).await; }
+            Ok::<_, String>(session)
+        })
+    })
+}
+
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
 }
 impl AppServerRuntime {
     pub async fn new(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
-        let threads = Arc::new(ThreadRegistry::new(agent_dir.clone(), session_dir, factory));
+        let (thread_notification_sender, mut thread_notifications) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+        let shutdown_request = Arc::new(AppServerShutdownRequest::default());
+        let registry_slot = Arc::new(std::sync::OnceLock::<std::sync::Weak<ThreadRegistry>>::new());
+        let factory = bind_app_server_session_factory(factory.unwrap_or_else(super::thread_registry::default_session_factory), thread_notification_sender, shutdown_request.clone(), registry_slot.clone());
+        let threads = Arc::new(ThreadRegistry::new(agent_dir.clone(), session_dir, Some(factory)));
+        if registry_slot.set(Arc::downgrade(&threads)).is_err() {unreachable!("thread registry is initialized once");}
+        let thread_notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
+        {
+            // senpi `notifications.toThread`: one ordered consumer, queued as initial notifications
+            // until the thread entry exists, then routed to subscribers past the allowlist.
+            let threads = Arc::downgrade(&threads);
+            let delivery_core = thread_notification_core.clone();
+            tokio::spawn(async move {
+                while let Some((thread_id, notification)) = thread_notifications.recv().await {
+                    let Some(registry) = threads.upgrade() else { break; };
+                    let entry = registry.loaded_or_queue_initial(&thread_id, notification.clone()).await;
+                    drop(registry);
+                    let Some(entry) = entry else { continue; };
+                    let subscribers = entry.lock().await.subscribers.clone();
+                    let mut routed = false;
+                    if let Some(core) = delivery_core.get().and_then(std::sync::Weak::upgrade) {
+                        for id in subscribers {
+                            match core.read().await.send_thread_notification_to_connection(&id, notification.clone(), chrono::Utc::now().timestamp_millis() as u64).await {
+                                Ok(sent) => routed |= sent,
+                                Err(error) => eprintln!("app-server thread notification: {}", error.message),
+                            }
+                        }
+                    }
+                    if !routed && notification["method"] == "error" {
+                        let mut entry = entry.lock().await;
+                        entry.queued_terminal_notifications.push(notification);
+                        if entry.queued_terminal_notifications.len() > 100 { entry.queued_terminal_notifications.remove(0); }
+                    }
+                }
+            });
+        }
         let turn_log = Arc::new(Mutex::new(TurnLog::default()));
         let mut core = ServerCore::new(agent_dir.clone(), version.clone(), "Linux".into(), String::new(), "x64".into(), "linux".into());
         super::account::register_account_methods(&mut core.registry, agent_dir.clone());
@@ -59,7 +177,7 @@ impl AppServerRuntime {
             Box::pin(async move {
                 let entry = threads.get_loaded_thread(&thread_id).await.map_err(|error| JsonRpcError::new(-32603, error))?;
                 let session = entry.lock().await.session.clone();
-                Ok(Arc::new(session) as Arc<dyn super::registry::ExtensionRequestTarget>)
+                Ok::<_, JsonRpcError>(Arc::new(session) as Arc<dyn super::registry::ExtensionRequestTarget>)
             })
         }));
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
@@ -128,7 +246,7 @@ impl AppServerRuntime {
                                 user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
                             }
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
+                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
                         // Bind the live connection UI into the session runner first, then the MCP
                         // inventory — the pinned `createBoundAppServerSession` order (bindExtensions
@@ -191,7 +309,7 @@ impl AppServerRuntime {
                                 user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
                             }
                             if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
+                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
                         }
                         // Bind the live connection UI into the session runner first, then the MCP
                         // inventory — the pinned `createBoundAppServerSession` order (bindExtensions
@@ -222,6 +340,7 @@ impl AppServerRuntime {
         }));
         let core = Arc::new(RwLock::new(core));
         if notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("notification core is initialized once");}
+        if thread_notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("thread notification core is initialized once");}
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
         super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
@@ -241,7 +360,7 @@ impl AppServerRuntime {
                 tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
             }
         }));
-        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)) }
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)), shutdown_request }
     }
     pub async fn dispose(&self) {
         if let Some(unsubscribe) = self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {unsubscribe();}
