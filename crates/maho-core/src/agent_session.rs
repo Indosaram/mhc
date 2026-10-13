@@ -582,6 +582,9 @@ pub struct AgentSessionInner {
     settling_with_background_work: std::sync::atomic::AtomicBool,
     /// senpi `_isAgentRunActive`: set right before the agent run starts, cleared when it settles.
     agent_run_active: std::sync::atomic::AtomicBool,
+    /// senpi `_runtimeMessagesTokenized`: the idle release tokenized the agent's runtime messages
+    /// in place; the next reader or run re-materializes them through `runtime_messages()`.
+    runtime_messages_tokenized: std::sync::atomic::AtomicBool,
     wake_source_subscription: Mutex<Option<maho_ext_api::BusSubscription>>,
     /// Forwards the bound runner's `senpi:extension-rpc-event` channel onto the session bus, so a
     /// connection subscribed once keeps receiving across runner recreation (senpi `onRpcEvent`).
@@ -1781,6 +1784,7 @@ impl AgentSession {
             work_barrier: Arc::new(crate::session_work_barrier::SessionWorkBarrier::new()),
             settling_with_background_work: std::sync::atomic::AtomicBool::new(false),
             agent_run_active: std::sync::atomic::AtomicBool::new(false),
+            runtime_messages_tokenized: std::sync::atomic::AtomicBool::new(false),
             wake_source_subscription: Mutex::new(None),
             extension_rpc_event_forward: Mutex::new(None),
             settings_source_subscription: Mutex::new(None),
@@ -2246,6 +2250,7 @@ impl AgentSession {
         *disposition_reported = true;
         drop(readiness.take());
         if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Started); }
+        self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
@@ -4933,11 +4938,49 @@ impl AgentSession {
 
     /// A copy of the agent transcript; the TS getter hands out the live array.
     pub fn messages(&self) -> Vec<AgentMessage> {
-        self.agent.state().messages().to_vec()
+        self.runtime_messages()
     }
 
     pub fn state_snapshot(&self) -> AgentState {
+        self.runtime_messages();
         self.agent.state()
+    }
+
+    /// senpi `_runtimeMessages()`: the agent transcript with resident tokens hydrated. The idle
+    /// release tokenizes the runtime messages in place; every reader that can run between two
+    /// turns goes through here so a sentinel never reaches a consumer.
+    fn runtime_messages(&self) -> Vec<AgentMessage> {
+        if self.runtime_messages_tokenized.swap(false, Ordering::SeqCst) {
+            let messages = self.agent.state().messages().to_vec();
+            self.agent.set_messages(self.materialize_resident_messages(messages));
+        }
+        self.agent.state().messages().to_vec()
+    }
+
+    fn materialize_resident_messages(&self, messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
+        let store = self.with_session_manager(|manager| manager.resident_store().clone());
+        messages.into_iter().map(|message| {
+            let Ok(mut value) = session_message_to_value(&message) else { return message };
+            store.materialize_in_place(&mut value);
+            session_message_from_value(value).unwrap_or(message)
+        }).collect()
+    }
+
+    /// The idle half of senpi `_emitAgentIdleAfterDeferredTurns`. Releasing frees memory only for
+    /// strings the store already spilled to its blob backing: a resident string is shared with the
+    /// store, so tokenizing it hands back nothing while costing every settled-time reader a
+    /// re-materialization. senpi also drops the session manager's memoized materialized views here;
+    /// the native `SessionManager` keeps none (every view re-materializes from the store).
+    fn release_idle_runtime_messages(&self) {
+        let store = self.with_session_manager(|manager| manager.resident_store().clone());
+        if store.stats().evicted_count == 0 { return; }
+        let messages = self.agent.state().messages().iter().map(|message| {
+            let Ok(mut value) = session_message_to_value(message) else { return message.clone() };
+            store.externalize_in_place(&mut value);
+            session_message_from_value(value).unwrap_or_else(|_| message.clone())
+        }).collect();
+        self.agent.set_messages(messages);
+        self.runtime_messages_tokenized.store(true, Ordering::SeqCst);
     }
 
     pub fn model(&self) -> Model {
@@ -5950,6 +5993,13 @@ impl AgentSession {
                 if signal.as_ref().is_some_and(maho_ai::utils::abort::AbortSignal::aborted) { extension_signal.abort(); }
                 session.state().extension_event_signal = Some(extension_signal.clone());
                 let _bridge = signal.map(|signal| AbortSignalBridge(tokio::spawn(async move { signal.cancelled().await; extension_signal.abort(); })));
+                // The idle path tokenizes the runtime messages in place; a provider request that
+                // starts before any reader re-hydrates them materializes here so tokens never reach a model.
+                let messages = if session.runtime_messages_tokenized.swap(false, Ordering::SeqCst) {
+                    let state_messages = session.agent.state().messages().to_vec();
+                    session.agent.set_messages(session.materialize_resident_messages(state_messages));
+                    session.materialize_resident_messages(messages)
+                } else { messages };
                 let mut runner = session.extension_runner.lock().await.clone();
                 let transformed = match runner.as_mut() {
                     Some(runner) => match runner.emit_context(&messages, None).await {
@@ -6033,6 +6083,7 @@ impl AgentSession {
                 self.state().message_revision += 1;
             }
         }
+        self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.continue_with_queued_messages(Default::default()).await;
@@ -6128,8 +6179,11 @@ impl AgentSession {
             session.wait_for_idle().await;
             if !session.state().disposed && session.monitor_generation.load(Ordering::SeqCst) == runtime_generation
                 && session.settlement_epoch.load(Ordering::SeqCst) == epoch && !session.is_streaming()
-                && !session.work_barrier.has_active_work()
-            { session.emit(AgentSessionEvent::AgentIdle); }
+                && !session.agent_run_active.load(Ordering::SeqCst) && !session.work_barrier.has_active_work()
+            {
+                session.release_idle_runtime_messages();
+                session.emit(AgentSessionEvent::AgentIdle);
+            }
         });
     }
 
@@ -8765,6 +8819,38 @@ mod tests {
             .join("extensions/goal")
             .join(format!("{}.json", crate::sdk::extension_context::encode_uri_component(&id)));
         assert_eq!(context.goal_store_file.as_deref(), Some(expected.as_path()));
+    }
+
+    fn raw_first_user_text(session: &AgentSession) -> String {
+        session.agent.state().messages().first().map(user_message_text).unwrap_or_default()
+    }
+
+    #[test]
+    fn idle_release_tokenizes_spilled_runtime_strings_and_the_next_read_rehydrates_them() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_str().expect("utf8 dir").to_owned();
+        let session = test_session_with_manager(SessionManager::create("/workspace", Some(&dir), None));
+        let large = "x".repeat(40 * 1024);
+        session.agent.set_messages(vec![make_user_message(&large, None)]);
+        let store = session.with_session_manager(|manager| manager.resident_store().clone());
+        store.externalize_string(&large);
+        store.spill_resident();
+        assert!(store.stats().evicted_count > 0);
+
+        session.release_idle_runtime_messages();
+        assert!(raw_first_user_text(&session).starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX));
+
+        assert_eq!(user_message_text(&session.messages()[0]), large);
+        assert_eq!(raw_first_user_text(&session), large);
+    }
+
+    #[test]
+    fn idle_release_keeps_runtime_strings_when_nothing_was_spilled() {
+        let session = test_session();
+        let large = "y".repeat(40 * 1024);
+        session.agent.set_messages(vec![make_user_message(&large, None)]);
+        session.release_idle_runtime_messages();
+        assert_eq!(raw_first_user_text(&session), large);
     }
 
     #[test]
