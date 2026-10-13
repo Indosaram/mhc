@@ -1,3 +1,4 @@
+pub mod ansi;
 pub mod bounded_realpath;
 pub mod bash;
 pub mod bash_executor;
