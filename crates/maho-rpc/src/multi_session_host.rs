@@ -123,6 +123,27 @@ impl HostCore{
         if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed{session_id:session_id.into(),reason:Some("handoff_parked".into()),session_path:retained}){self.broadcast_record(&value);}
         self.default_writer.forget_session(session_id);
     }
+    /// Releases the RETAINED sessions a dropped connection still owned (senpi `releaseConnection`
+    /// -> `releaseOwnedSession` for `retainOnDisconnect` entries): a retained session is never closed
+    /// by a drop, so each attachment is released at once, and the release that leaves the session
+    /// with no attachment parks it and tells its extensions `session_parked`.
+    pub async fn release_retained_attachments(&self,connection:&str){
+        let owned=self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).owned_by(connection);
+        for(session_id,count)in owned{
+            for _ in 0..count{
+                let parked={let mut registry=self.registry.lock().await;
+                    let Some(entry)=registry.get(&session_id)else{break;};
+                    if entry.close.state!=crate::session_registry::RpcSessionState::Open||!entry.close.retain_on_disconnect{break;}
+                    let parks=entry.close.attachments==1;
+                    let parked=if parks{entry.runtime.clone()}else{None};
+                    // A failed claim means the entry is already closed or owned by another path.
+                    if registry.mark_close(&session_id,true).is_err(){break;}
+                    parked};
+                self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).release(connection,&session_id);
+                if let Some(runtime)=parked{runtime.emit_attachment_event(maho_core::agent_session_runtime::AttachmentEvent::SessionParked).await;}
+            }
+        }
+    }
     fn writer_for(&self,connection:Option<&str>)->std::sync::Arc<crate::session_event_writer::SessionWriterActor>{
         connection.and_then(|connection|self.writers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(connection).cloned()).unwrap_or_else(||self.default_writer.clone())
     }
@@ -170,6 +191,11 @@ impl HostCore{
                 match admitted{
                     Err(error)=>self.error(connection,command.id.clone(),"open_session",error.to_string(),None),
                     Ok(crate::session_registry::OpenAdmission::Attached(handle))=>{
+                        // senpi session-registry.ts: an attach that ends a retained session's parked
+                        // (zero-attachment) window tells its extensions `session_resumed`.
+                        let resumed={let registry=self.registry.lock().await;registry.get(&handle).filter(|entry|entry.close.retain_on_disconnect&&entry.close.attachments==1).and_then(|entry|entry.runtime.clone())};
+                        if let Some(runtime)=resumed{runtime.emit_attachment_event(maho_core::agent_session_runtime::AttachmentEvent::SessionResumed).await;}
+                        if let Some(connection_id)=connection{self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).attach(connection_id,&handle);}
                         let state=self.session_state(&handle).await;
                         self.success(connection,command.id.clone(),"open_session",Some(serde_json::json!({"sessionId":handle,"state":state,"attached":true})),None);
                     },
@@ -435,6 +461,7 @@ async fn serve_socket_connection(core:std::sync::Arc<HostCore>,connection:String
         commands.push(Box::pin(async move{core.handle(Some(&tag),&line).await}) as HostCommand);
     }
     drop(commands);
+    core.release_retained_attachments(&connection).await;
     core.unregister_connection(&connection);
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn explicit_policy_overrides_environment_and_bad_env_uses_defaults(){let env=HashMap::from([(RPC_SESSION_IDLE_EVICTION_MS_ENV.into(),"100".into()),(RPC_HOST_EMPTY_EXIT_MS_ENV.into(),"invalid".into())]);assert_eq!(resolve_host_idle_policy(&env,None,None),HostIdlePolicy{idle_eviction_ms:100.,empty_exit_ms:DEFAULT_HOST_EMPTY_EXIT_MS});assert_eq!(resolve_host_idle_policy(&env,Some(f64::INFINITY),Some(0.)),HostIdlePolicy{idle_eviction_ms:f64::INFINITY,empty_exit_ms:0.});}}
