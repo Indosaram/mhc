@@ -70,11 +70,10 @@ pub fn compose_task_engine_with_clock(deps: ComposeTaskEngineDeps, rpc_respawn: 
     options.isolation = Some(isolation_runtime);
     options.isolation_settings = isolation_settings;
     options.config = ManagerConfig { max_depth: settings["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1), default_execution_mode: settings["default_execution_mode"].as_str().and_then(senpi_task::manager::execution_mode::ExecutionMode::parse).unwrap_or_default(), ..ManagerConfig::default() };
-    let concurrency = &deps.config["background_task"];
     options.config.concurrency = senpi_task::manager::concurrency::TaskConcurrencyConfig {
-        default_concurrency: concurrency["defaultConcurrency"].as_u64().and_then(|value| usize::try_from(value).ok()),
-        provider_concurrency: concurrency["providerConcurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
-        model_concurrency: concurrency["modelConcurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
+        default_concurrency: settings["default_concurrency"].as_u64().and_then(|value| usize::try_from(value).ok()),
+        provider_concurrency: settings["provider_concurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
+        model_concurrency: settings["model_concurrency"].as_object().map(|values| values.iter().filter_map(|(name,value)| value.as_u64().and_then(|value| usize::try_from(value).ok()).map(|value| (name.clone(),value))).collect()),
     };
     options.destruction = Some(Arc::new(TaskLifecycleDestruction((*lifecycle).clone())));
     let admission = lifecycle.clone();
