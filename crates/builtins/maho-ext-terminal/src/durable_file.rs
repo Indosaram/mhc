@@ -33,12 +33,12 @@ pub fn restore_file(monitor:&ManifestMonitor,registry:&mut crate::monitor_regist
     registry.adopt_fire_window(&monitor.monitor_id,&monitor.fire_window);
     outcome
 }
-#[cfg(unix)]
 pub fn file_checkpoint(path:&std::path::Path)->std::io::Result<TerminalManifestCheckpoint> {
     file_checkpoint_with_identity(path,None)
 }
-#[cfg(unix)]
 pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,f64)>)->std::io::Result<TerminalManifestCheckpoint> {
+    #[cfg(unix)]
+    {
     use std::os::unix::fs::MetadataExt;
     let absent=||TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:0.0,mtime_ms:0.0,digest:String::new(),present:false};
     let initial=match std::fs::symlink_metadata(path) {Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(absent()),Err(error)=>return Err(error)};
@@ -53,6 +53,25 @@ pub fn file_checkpoint_with_identity(path:&std::path::Path,identity:Option<(f64,
     let after=std::fs::symlink_metadata(path)?;
     if after.file_type().is_symlink()||after.dev()!=opened.dev()||after.ino()!=opened.ino() {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
     Ok(TerminalManifestCheckpoint {dev:opened.dev() as f64,ino:opened.ino() as f64,size:opened.len() as f64,mtime_ms:opened.mtime() as f64*1000.0+opened.mtime_nsec() as f64/1_000_000.0,digest,present:true})
+    }
+    #[cfg(not(unix))]
+    {
+        let absent=||TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:0.0,mtime_ms:0.0,digest:String::new(),present:false};
+        let initial=match std::fs::symlink_metadata(path) {Ok(metadata)=>metadata,Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(absent()),Err(error)=>return Err(error)};
+        if initial.file_type().is_symlink() {return Err(std::io::Error::other(format!("Cannot watch file: target is a symbolic link: {}",path.display())));}
+        if !initial.is_file() {return Err(std::io::Error::other(format!("Cannot watch file: target is not a regular file: {}",path.display())));}
+        let mut handle=std::fs::File::open(path)?;
+        let opened=handle.metadata()?;
+        let modified=opened.modified()?.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()*1000.0;
+        let rebound=std::fs::symlink_metadata(path)?;
+        if !opened.is_file()||rebound.file_type().is_symlink()||rebound.len()!=opened.len()||rebound.modified()?!=opened.modified()? {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
+        let digest=crate::monitor_file_digest::digest_file_handle(&mut handle)?;
+        let after=std::fs::symlink_metadata(path)?;
+        if after.file_type().is_symlink()||after.len()!=opened.len()||after.modified()?!=opened.modified()? {return Err(std::io::Error::other(format!("Cannot watch file: target identity changed: {}",path.display())));}
+        let _=identity;
+        // No portable dev/ino: report 0 so identity never differs and changes surface through size, mtime and digest.
+        Ok(TerminalManifestCheckpoint {dev:0.0,ino:0.0,size:opened.len() as f64,mtime_ms:modified,digest,present:true})
+    }
 }
 #[cfg(all(test,unix))]
 mod filesystem_tests {

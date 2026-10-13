@@ -13,8 +13,9 @@ const MAX_SYMLINK_HOPS:usize=40;
 /// trigger). Not opening is not the same as never mounting; the walker only avoids the open-based
 /// resolution path. A component that cannot be lstat'd (or a hop overflow) is kept verbatim from
 /// that point on, so a not-yet-created tail still lands where its symlinked parent points.
-#[cfg(unix)]
 pub fn realpath_without_open(input:&Path)->PathBuf {
+    #[cfg(unix)]
+    {
     use std::path::Component;
     fn join(base:&Path,parts:impl Iterator<Item=std::ffi::OsString>)->PathBuf {let mut path=base.to_path_buf();for part in parts {path.push(part);}path}
     let absolute=if input.is_absolute() {input.to_path_buf()} else {std::env::current_dir().unwrap_or_default().join(input)};
@@ -51,6 +52,24 @@ pub fn realpath_without_open(input:&Path)->PathBuf {
         }
     }
     join(&root,resolved.into_iter())
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms lack the lstat/readlink walker used above; canonicalize performs
+        // platform-native resolution, and a not-yet-created tail is retained lexically.
+        let absolute=if input.is_absolute() {input.to_path_buf()} else {std::env::current_dir().unwrap_or_default().join(input)};
+        let mut existing=absolute.as_path();
+        let mut tail=Vec::new();
+        while !existing.exists() {
+            let Some(name)=existing.file_name() else {break;};
+            tail.push(name.to_os_string());
+            let Some(parent)=existing.parent() else {break;};
+            existing=parent;
+        }
+        let mut resolved=std::fs::canonicalize(existing).unwrap_or_else(|_|existing.to_path_buf());
+        for part in tail.into_iter().rev() {resolved.push(part);}
+        resolved
+    }
 }
 
 pub struct FileMonitor {
@@ -65,7 +84,6 @@ pub struct FileMonitor {
     pub settled:bool,
     reservation:Option<crate::manager::CapacityReservation>,
 }
-#[cfg(unix)]
 impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
