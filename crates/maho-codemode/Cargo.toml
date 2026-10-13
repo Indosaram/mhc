@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 maho-ext-api = { path = "../maho-ext-api" }
 maho-ext-host = { path = "../maho-ext-host" }
+maho-interactive = { path = "../maho-interactive" }
 maho-ai = { path = "../maho-ai" }
 maho-tools = { path = "../maho-tools" }
 maho-tui = { path = "../maho-tui" }
