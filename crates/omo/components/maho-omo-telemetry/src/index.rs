@@ -8,10 +8,12 @@ pub const SENPI_MACHINE_ID_PREFIX:&str="omo-senpi:";
 pub struct SenpiTelemetryOptions {pub env:Option<TelemetryEnv>,pub now:Option<DateTime<Utc>>,pub os_provider:Option<Arc<dyn TelemetryOsProvider>>,pub state_dir:Option<PathBuf>,pub timeout_ms:Option<u64>,pub transport_factory:Option<TelemetryTransportFactory>,pub set_timeout_fn:Option<telemetry_core::EventTelemetrySetTimeout>,pub diagnostics:Option<telemetry_core::TelemetryDiagnostics>,pub inventory_diagnostics:Option<crate::omo_native_session::InventoryDiagnostics>}
 pub fn create_senpi_telemetry_product_config() -> TelemetryProductConfig {TelemetryProductConfig {cache_dir_name:"omo-senpi".into(),default_api_key:DEFAULT_POSTHOG_API_KEY.into(),default_host:DEFAULT_POSTHOG_HOST.into(),event_name:SENPI_TELEMETRY_EVENT_NAME.into(),machine_id_prefix:SENPI_MACHINE_ID_PREFIX.into(),package_name:"@oh-my-opencode/omo-senpi".into(),package_version:"5.0.0-beta.9".into(),platform:"omo-senpi".into(),product_env_prefix:"OMO_SENPI".into(),product_name:"omo-senpi".into(),..Default::default()}}
 pub fn get_senpi_telemetry_state_dir(env:&TelemetryEnv) -> PathBuf {
-    let agent=["OMO_CODING_AGENT_DIR","SENPI_CODING_AGENT_DIR","PI_CODING_AGENT_DIR"].iter().find_map(|name|env.get(*name).map(|s|s.trim()).filter(|s|!s.is_empty()));
-    let path=match agent {Some(s)=>PathBuf::from(s),None=>PathBuf::from(env.get("HOME").cloned().unwrap_or_default()).join(".maho/agent")};
-    let path=if path.is_absolute() {path} else {std::env::current_dir().unwrap_or_default().join(path)};
-    path.join("omo-senpi/posthog")
+    get_senpi_agent_dir(env).join("omo-senpi/posthog")
+}
+pub(crate) fn get_senpi_agent_dir(env:&TelemetryEnv) -> PathBuf {
+    let env:std::collections::BTreeMap<String,String>=env.iter().map(|(key,value)|(key.clone(),value.clone())).collect();
+    let home=env.get("HOME").filter(|home|!home.is_empty()).cloned().or_else(||std::env::var("HOME").ok()).unwrap_or_default();
+    maho_omo_agent_home::resolve_agent_home(&env,std::path::Path::new(&home),&std::env::current_dir().unwrap_or_default(),std::path::Path::exists)
 }
 pub async fn record_senpi_daily_active(options:&SenpiTelemetryOptions) -> Result<(),TelemetryError> {
     let options=options.clone();
@@ -58,5 +60,7 @@ mod tests {
     #[tokio::test] async fn product_disable() {optout("OMO_SENPI_DISABLE_POSTHOG","1").await;}
     #[tokio::test] async fn anonymous_disable() {optout("OMO_SENPI_SEND_ANONYMOUS_TELEMETRY","0").await;}
     #[tokio::test] async fn global_disable() {optout("OMO_DISABLE_POSTHOG","1").await;}
+    #[test] fn state_dir_honors_maho_agent_dir() {let env=TelemetryEnv::from([("MAHO_CODING_AGENT_DIR".into(),"/fixture/maho".into()),("SENPI_CODING_AGENT_DIR".into(),"/fixture/senpi".into())]);assert_eq!(get_senpi_telemetry_state_dir(&env),PathBuf::from("/fixture/maho/omo-senpi/posthog"));}
+    #[test] fn state_dir_detects_agent_home_sentinel() {let t=tempfile::tempdir().unwrap();std::fs::create_dir_all(t.path().join(".maho/agent")).unwrap();std::fs::write(t.path().join(".maho/agent/settings.json"),"{}").unwrap();let env=TelemetryEnv::from([("HOME".into(),t.path().to_string_lossy().into_owned())]);assert_eq!(get_senpi_telemetry_state_dir(&env),t.path().join(".maho/agent/omo-senpi/posthog"));}
     #[tokio::test] async fn isolated_stamp() {let t=tempfile::tempdir().unwrap();let (o,_)=options(t.path());record_senpi_daily_active(&o).await.unwrap();let dir=get_senpi_telemetry_state_dir(o.env.as_ref().unwrap());assert!(dir.starts_with(t.path()));let v:serde_json::Value=serde_json::from_str(&std::fs::read_to_string(get_telemetry_activity_state_file_path(&dir)).unwrap()).unwrap();assert_eq!(v["lastActiveDayUTC"],"2026-07-03");}
 }
