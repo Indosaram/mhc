@@ -6,7 +6,7 @@ use maho_ext_config_reload::watch_engine::WatchClock;
 
 struct RetryClock {
     now: Arc<std::sync::Mutex<tokio::time::Instant>>,
-    armed: tokio::sync::mpsc::UnboundedSender<tokio::time::Instant>,
+    armed: tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, tokio::time::Instant)>,
     advanced: Arc<tokio::sync::Notify>,
 }
 impl RetryClock {
@@ -20,10 +20,11 @@ impl WatchClock for RetryClock {
     fn now(&self) -> tokio::time::Instant { *self.now.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
     fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()> {
         let now = Arc::clone(&self.now);
-        let armed = self.armed.clone();
         let advanced = Arc::clone(&self.advanced);
+        // Record the clock at the moment the deadline is set, before any other waiter advances it.
+        let armed_at = *now.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if deadline > armed_at { self.armed.send((armed_at, deadline)).expect("clock deadline receiver remains active"); }
         Box::pin(async move {
-            armed.send(deadline).expect("clock deadline receiver remains active");
             loop {
                 let notified = advanced.notified();
                 tokio::pin!(notified);
@@ -260,7 +261,7 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
     ctx.session_manager = Arc::new(BoundSession(session.extension_context_actions()));
     let (sender, mut reloaded) = tokio::sync::mpsc::unbounded_channel();
     let (veto_sender, mut vetoed) = tokio::sync::mpsc::unbounded_channel();
-    let (clock_sender, mut clock_armed) = tokio::sync::mpsc::unbounded_channel::<tokio::time::Instant>();
+    let (clock_sender, mut clock_armed) = tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, tokio::time::Instant)>();
     let clock_now = tokio::time::Instant::now();
     let retry_clock = Arc::new(RetryClock { now: Arc::new(std::sync::Mutex::new(clock_now)), armed: clock_sender, advanced: Arc::new(tokio::sync::Notify::new()) });
     // The injected clock also drives the watcher debounce (default 200ms). Release each debounce
@@ -269,9 +270,8 @@ async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
     let (recheck_sender, mut rechecks) = tokio::sync::mpsc::unbounded_channel();
     let driver_clock = Arc::clone(&retry_clock);
     let driver = tokio::spawn(async move {
-        while let Some(deadline) = clock_armed.recv().await {
-            let armed_at = driver_clock.now();
-            if deadline.saturating_duration_since(armed_at) == std::time::Duration::from_millis(200) { driver_clock.advance_to(deadline); }
+        while let Some((armed_at, deadline)) = clock_armed.recv().await {
+            if deadline - armed_at == std::time::Duration::from_millis(200) { driver_clock.advance_to(deadline); }
             else if recheck_sender.send((armed_at, deadline)).is_err() { break; }
         }
     });
@@ -476,7 +476,9 @@ async fn scoped_real_reload_preserves_session_identity_and_provider_scope() {
     let mut runner = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, factory(ctx)).await.unwrap().unwrap();
     runner.set_runtime_factory(factory);
     session.set_extension_runner(runner).await;
-    session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    // Bind inside the scope: session_start starts the watcher, which captures the active provider
+    // scope and carries it into the reload it later requests.
+    maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() })).await.unwrap();
     let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
     std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").unwrap();
     let path = root.path().join("keybindings.json");
