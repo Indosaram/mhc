@@ -28,6 +28,7 @@ fn wiring_options() -> NativeMemoryWiringOptions {
             warn: Arc::new(|_| {}),
         })),
         reconcile: Arc::new(|_| Box::pin(async { Ok(()) })),
+        initial_status: Arc::new(|_, _| {}),
         now: Arc::new(|| 0.0),
         warn: Arc::new(|_| {}),
     }
@@ -40,6 +41,7 @@ fn static_options() -> MemoryStaticOptions {
         skills_trackers: None,
         prompt_handler: None,
         write_notice: None,
+        tool_exposure: None,
         prompt: MemoryPromptInjectionOptions { resolve_context: resolve.clone(), create_repo: None, search_exposure: None, resolve_nudge_turns: None, resolve_soul_notice: None },
         nudge: Arc::new(Mutex::new(Default::default())),
         resolve_context: resolve,
@@ -87,6 +89,7 @@ fn re_registers_into_each_new_runner_and_reuses_the_single_store() {
     let starts = session_start_count(&first);
     assert!(starts >= 1, "memory must install its lifecycle handlers");
     assert!(first.registered.handlers.get(&EventKind::ToolCall).map_or(0, Vec::len) >= 1, "memory must install its guard handler");
+    assert!(first.registered.rpc_handlers.contains_key(maho_omo_memory::memory_rpc_bridge::MEMORY_STATUS_RPC_METHOD), "memory must serve the omo.memory.status pull request");
     let mut second = api(root.path());
     extension.register(&mut second);
     assert_eq!(session_start_count(&second), starts, "a new runner must receive the same handlers (reload rebind, not a no-op)");
