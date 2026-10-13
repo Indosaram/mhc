@@ -72,7 +72,7 @@ impl WatchSubscription {
         Ok(worker)
     }
 }
-impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { maho_ext_api::diagnostic(&format!("{error}")); } } }
+impl Drop for WatchSubscription { fn drop(&mut self) { if let Err(error) = self.close() { maho_ext_api::diagnostic(&error.to_string()); } } }
 pub fn subscribe(path: PathBuf, recursive: bool, listener: WatchEventListener, on_error: WatchErrorListener) -> Result<WatchSubscription, String> {
     FsWatchEventSource::shared().subscribe(path, recursive, listener, on_error)
 }
