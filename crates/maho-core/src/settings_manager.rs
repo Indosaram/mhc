@@ -708,6 +708,28 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_bool)
     }
 
+    /// senpi `getTerminalCapabilityOverrides`: `terminal.images`/`trueColor`/`hyperlinks`, falling back
+    /// to the brand-prefixed `IMAGE_PROTOCOL`/`TRUE_COLOR`/`HYPERLINKS` env values.
+    pub fn get_terminal_capability_overrides(&self, env: &HashMap<String, String>) -> maho_tui::terminal_image::CapabilityOverrides {
+        use maho_tui::terminal_capabilities::ImageProtocol;
+        let terminal = self.settings.get("terminal");
+        let setting = |key: &str| terminal.and_then(|terminal| terminal.get(key)).filter(|value| !value.is_null()).cloned();
+        let env_value = |suffix: &str| crate::brand::env_value(suffix, env).map(Value::String);
+        let images = match setting("images").or_else(|| env_value("IMAGE_PROTOCOL").map(|value| Value::String(value.as_str().unwrap_or_default().to_lowercase()))) {
+            Some(Value::String(value)) if value == "kitty" => Some(Some(ImageProtocol::Kitty)),
+            Some(Value::String(value)) if value == "iterm2" => Some(Some(ImageProtocol::Iterm2)),
+            Some(Value::Bool(false)) => Some(None),
+            Some(Value::String(value)) if value == "none" || value == "0" => Some(None),
+            _ => None,
+        };
+        let boolean = |key: &str, suffix: &str| match setting(key).or_else(|| env_value(suffix)) {
+            Some(Value::Bool(value)) => Some(value),
+            Some(Value::String(value)) if value == "1" || value == "0" => Some(value == "1"),
+            _ => None,
+        };
+        maho_tui::terminal_image::CapabilityOverrides { images, true_color: boolean("trueColor", "TRUE_COLOR"), hyperlinks: boolean("hyperlinks", "HYPERLINKS") }
+    }
+
     pub fn get_image_auto_resize(&self) -> bool {
         self.settings
             .get("images")
@@ -1198,6 +1220,21 @@ mod tests {
         assert!(manager.get_project().is_empty());
         assert!(!manager.is_project_trusted());
         assert_eq!(manager.get_value("theme"), Some(&serde_json::json!("custom")));
+    }
+
+    #[test]
+    fn terminal_capability_overrides_prefer_settings_then_env() {
+        use maho_tui::terminal_capabilities::ImageProtocol;
+        let env: HashMap<String, String> = [("PI_IMAGE_PROTOCOL", "KITTY"), ("PI_TRUE_COLOR", "0"), ("PI_HYPERLINKS", "maybe")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        let from_env = SettingsManager::in_memory(Settings::new(), false).get_terminal_capability_overrides(&env);
+        assert_eq!(from_env.images, Some(Some(ImageProtocol::Kitty)));
+        assert_eq!(from_env.true_color, Some(false));
+        assert_eq!(from_env.hyperlinks, None);
+        let configured = SettingsManager::in_memory(settings(r#"{"terminal":{"images":false,"trueColor":true,"hyperlinks":true}}"#), false);
+        let overrides = configured.get_terminal_capability_overrides(&env);
+        assert_eq!(overrides.images, Some(None));
+        assert_eq!(overrides.true_color, Some(true));
+        assert_eq!(overrides.hyperlinks, Some(true));
     }
 
     #[test]

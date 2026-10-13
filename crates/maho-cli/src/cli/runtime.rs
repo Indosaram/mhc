@@ -160,6 +160,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         return Err(maho_core::auth_guidance::format_no_models_available_message());
     }
     let session = Arc::new(created.session);
+    // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
+    maho_tui::terminal_image::set_capability_overrides(session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
     let model_fallback_message = created.model_fallback_message;
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     session.set_context_files_enabled(!parsed.no_context_files);
