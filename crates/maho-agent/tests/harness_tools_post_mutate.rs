@@ -156,6 +156,7 @@ async fn hook_observes_freshly_written_bytes() {
     assert_eq!(*seen.lock().expect("tool test operation must succeed"), Some("written-bytes".into()));
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn hook_receives_symlink_path_not_canonical_target() {
     let mut f = Fixture::new();
     f.put("alpha\nbeta\n");

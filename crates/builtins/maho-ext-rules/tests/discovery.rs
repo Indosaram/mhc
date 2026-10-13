@@ -38,6 +38,7 @@ fn scanner_excludes_build_directories_and_limits_depth() {
 }
 
 #[test]
+#[cfg(unix)]
 fn scanner_breaks_symlink_cycles_and_preserves_aliases() {
     // Given
     let root = tempfile::tempdir().unwrap();

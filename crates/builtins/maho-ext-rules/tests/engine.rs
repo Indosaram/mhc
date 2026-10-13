@@ -47,6 +47,7 @@ fn dynamic_targets_deduplicate_shared_rule() {
     assert_eq!(loaded.rules.len(), 1);
 }
 #[test]
+#[cfg(unix)]
 fn project_rule_symlink_outside_root_is_rejected() {
     let root = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
