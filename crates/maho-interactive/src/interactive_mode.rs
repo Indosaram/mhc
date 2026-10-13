@@ -12,6 +12,15 @@ use crate::grok::chrome::InteractiveChrome;
 type ImageSubmissions = std::collections::VecDeque<(String, Vec<maho_ai::types::ImageContent>)>;
 type CustomUiBuild = std::pin::Pin<Box<dyn std::future::Future<Output=Result<Box<dyn Component>, maho_ext_api::ExtensionFailure>>>>;
 type QuestionActions = Rc<RefCell<std::collections::VecDeque<QuestionAction>>>;
+
+/// senpi `handleShareCommand`'s in-flight state: the loader replacing the editor, the `gh gist
+/// create` result, the cancel handle that kills the process when dropped, and the temp export.
+struct ShareInFlight {
+    loader: crate::components::bordered_loader::BorderedLoader,
+    result: tokio::sync::oneshot::Receiver<std::io::Result<std::process::Output>>,
+    _cancel: tokio::sync::oneshot::Sender<()>,
+    tmp_file: std::path::PathBuf,
+}
 type AuthUiEvents = tokio::sync::mpsc::UnboundedReceiver<AuthUiEvent>;
 /// A queued tree-edit prefill: `(entryId, editedText, expectedLeafId)`.
 type PendingTreeEdit = (String, String, Option<String>);
@@ -194,6 +203,8 @@ pub struct InteractiveMode {
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
     login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
+    /// senpi `handleShareCommand`: the in-flight gist upload whose loader replaces the editor.
+    share: Option<ShareInFlight>,
     ui_reply: Rc<RefCell<Option<tokio::sync::oneshot::Sender<Option<String>>>>>,
     /// senpi `headerContainer`: the document header slot holding the built-in header (with its tip
     /// sibling) or an extension header.
@@ -553,7 +564,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, share: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1050,7 +1061,7 @@ impl InteractiveMode {
             self.collapse_shown_question(); return;
         }
         if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.handle_input(data); self.settle_questions(); return; }
-        if self.ui_dialog.is_some() || self.login_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
+        if self.share.is_some() || self.ui_dialog.is_some() || self.login_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
@@ -1178,7 +1189,7 @@ impl InteractiveMode {
     pub async fn handle_runtime_input(&mut self, data: &str, now_ms: u64) -> Result<(), String> {
         let Some(data) = self.filter_terminal_input(data) else { return Ok(()); };
         let data = data.as_str();
-        if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
+        if self.share.is_some() || self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
             if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {name}")); }
@@ -1429,6 +1440,11 @@ impl InteractiveMode {
                 Ok(exported) => self.show_status(format!("Session exported to: {}", exported.or(path).unwrap_or_default())),
                 Err(error) => self.show_error(&format!("Failed to export session: {error}")),
             }
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/share" {
+            self.handle_share_command().await;
+            self.editor.editor.set_text("");
             return Ok(PromptDisposition::Handled);
         }
         if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
@@ -2180,9 +2196,77 @@ impl InteractiveMode {
             self.handle_session_event(&event);
         }
         self.drain_auth_ui_events();
+        self.drain_share_result();
     }
 
-    /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
+    /// senpi `handleShareCommand`: check `gh auth status`, export the session to a temp HTML file,
+    /// then create a secret gist behind a cancellable bordered loader that replaces the editor.
+    async fn handle_share_command(&mut self) {
+        match tokio::process::Command::new("gh").args(["auth", "status"]).output().await {
+            Ok(output) if output.status.success() => {}
+            Ok(_) => { self.show_error("GitHub CLI is not logged in. Run 'gh auth login' first."); return; }
+            Err(_) => { self.show_error("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"); return; }
+        }
+        let tmp_file = std::env::temp_dir().join("session.html");
+        let theme_name = self.theme.name.clone();
+        if let Err(error) = self.host_export_html(Some(tmp_file.to_string_lossy().as_ref()), &theme_name).await {
+            self.show_error(&format!("Failed to export session: {error}"));
+            return;
+        }
+        let now_ms = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let hint = crate::components::keybinding_hints::key_hint("tui.select.cancel", "cancel", &self.theme);
+        let loader = crate::components::bordered_loader::BorderedLoader::new(self.theme.clone(), "Creating gist...", true, &hint, now_ms);
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let (reply, result) = tokio::sync::oneshot::channel();
+        let file = tmp_file.clone();
+        tokio::spawn(async move {
+            // Dropping the cancel sender (abort or restore) drops the child, which kills it.
+            let mut command = tokio::process::Command::new("gh");
+            command.args(["gist", "create", "--public=false"]).arg(&file).kill_on_drop(true);
+            tokio::select! {
+                output = command.output() => { let _ = reply.send(output); }
+                _ = cancelled => {}
+            }
+        });
+        self.share = Some(ShareInFlight { loader, result, _cancel: cancel, tmp_file });
+    }
+
+    /// senpi `restoreEditor`: dispose the loader, give the editor back, remove the temp export.
+    fn restore_editor_after_share(&mut self) {
+        if let Some(mut share) = self.share.take() {
+            share.loader.dispose();
+            // senpi ignores temp-file cleanup errors.
+            let _ = std::fs::remove_file(&share.tmp_file);
+        }
+    }
+
+    /// Settle a finished gist upload: report the share viewer URL or the gh failure.
+    fn drain_share_result(&mut self) {
+        let Some(share) = self.share.as_mut() else { return; };
+        let output = match share.result.try_recv() {
+            Ok(output) => output,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Err(std::io::Error::other("gist process ended without a result")),
+        };
+        self.restore_editor_after_share();
+        match output {
+            Err(error) => self.show_error(&format!("Failed to create gist: {error}")),
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                self.show_error(&format!("Failed to create gist: {}", if stderr.is_empty() { "Unknown error" } else { stderr.as_str() }));
+            }
+            Ok(output) => {
+                let gist_url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                match gist_url.rsplit('/').next().filter(|id| !id.is_empty()) {
+                    Some(gist_id) => {
+                        let preview_url = maho_core::config::get_share_viewer_url(gist_id);
+                        self.show_status(format!("Share URL: {preview_url}\nGist: {gist_url}"));
+                    }
+                    None => self.show_error("Failed to parse gist ID from gh output"),
+                }
+            }
+        }
+    }: one row per provider and supported auth type, by name.
     fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
         use crate::components::oauth_selector::AuthSelectorAuthType;
         let registry = self.session.model_registry();
@@ -2973,6 +3057,7 @@ impl InteractiveMode {
         self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model|&model.provider).collect::<std::collections::BTreeSet<_>>().len());
         self.footer_data.refresh_branch();
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
+        if let Some(share) = &mut self.share { share.loader.tick(now_ms.max(0.0) as u64); }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
         self.settle_questions();
@@ -3217,7 +3302,7 @@ impl InteractiveMode {
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
-        lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(dialog) = &mut self.login_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.render_prompt_editor(width) });
+        lines.extend(if self.async_question_widget.is_none() && let Some(question) = &mut self.question { question.render(width) } else if let Some(share) = &mut self.share { share.loader.render(width) } else if let Some(dialog) = &mut self.ui_dialog { dialog.render(width) } else if let Some(dialog) = &mut self.login_dialog { dialog.render(width) } else if let Some(input) = &mut self.rename_input { input.render(width) } else if let Some(editor) = &mut self.custom_editor { editor.render(width) } else { self.render_prompt_editor(width) });
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::BelowEditor { lines.extend(widget.render(width)); } }
         let mut footer = crate::components::footer::FooterComponent::new(self.footer_snapshot());
         footer.set_auto_compact_enabled(self.host_auto_compaction_enabled());
@@ -3256,6 +3341,14 @@ impl InteractiveMode {
 impl InteractiveMode {
     fn handle_editor_input(&mut self, data: &str) {
         let submit = self.keybindings().matches(data, "tui.input.submit");
+        if let Some(share) = &mut self.share {
+            share.loader.handle_input(data);
+            if share.loader.aborted() {
+                self.restore_editor_after_share();
+                self.show_status("Share cancelled".into());
+            }
+            return;
+        }
         if let Some(dialog) = &mut self.ui_dialog {
             dialog.handle_input(data);
             if self.ui_reply.borrow().is_none() && self.custom_ui_reply.is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
