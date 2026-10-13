@@ -50,6 +50,6 @@ impl ModelRuntimeHandle {
     }
 
     pub async fn logout(&self, provider_id: &str, options: AuthOperationOptions) -> Result<(), ModelsError> {
-        self.inner.lock().await.logout(provider_id, options).await
+        self.inner.lock().await.logout(provider_id, None, options).await
     }
 }

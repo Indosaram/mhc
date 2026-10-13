@@ -116,29 +116,37 @@ fn models_error(error: maho_ai::auth::resolve::ModelsError) -> ModelsError {
     ModelsError::new(code, error.message)
 }
 
+/// senpi composes provider auth once in `composeProvider` (`composeApiKeyAuth` /
+/// `composeOAuthAuth`); the models.json / extension overlays live in this runtime, so the
+/// composition happens at resolution (and login) time against the provider's own `auth()`.
+fn compose_provider_auth(
+    config: &RwLock<ModelConfig>,
+    extensions: &RwLock<IndexMap<String, ProviderConfigInput>>,
+    provider: &dyn Provider,
+) -> ProviderAuth {
+    let id = provider.id();
+    let config = config.read().unwrap_or_else(|p| p.into_inner()).get_provider(id).cloned();
+    let extension = extensions.read().unwrap_or_else(|p| p.into_inner()).get(id).cloned();
+    let base = provider.auth();
+    let oauth = extension.as_ref().and_then(|e| e.oauth.clone())
+        .or_else(|| base.and_then(|auth| auth.oauth.clone()))
+        .or_else(|| builtin_oauth(id));
+    // Providers registered without declared auth keep the env-var lookup senpi's builtin
+    // factories declare through `envApiKeyAuth`.
+    let inherited = base.and_then(|auth| auth.api_key.clone()).or_else(|| {
+        maho_ai::env_api_keys::get_api_key_env_vars(id)
+            .map(|vars| Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars)) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>)
+    });
+    let api_key = crate::provider_api_key_auth::compose_api_key_auth(id, inherited, oauth.is_some(), config.as_ref(), extension.as_ref().map(|e| &e.config))
+        .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>);
+    let oauth = crate::provider_composer::compose_oauth_auth(id, oauth, config.as_ref(), extension.as_ref().map(|e| &e.config))
+        .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::OAuthAuth>);
+    ProviderAuth { api_key, oauth }
+}
+
 impl RuntimeAuth {
-    /// senpi composes provider auth once in `composeProvider` (`composeApiKeyAuth` /
-    /// `composeOAuthAuth`); the models.json / extension overlays live in this runtime, so the
-    /// composition happens at resolution time against the provider's own `auth()`.
     fn provider_auth(&self, provider: &dyn Provider) -> ProviderAuth {
-        let id = provider.id();
-        let config = self.config.read().unwrap_or_else(|p| p.into_inner()).get_provider(id).cloned();
-        let extension = self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(id).cloned();
-        let base = provider.auth();
-        let oauth = extension.as_ref().and_then(|e| e.oauth.clone())
-            .or_else(|| base.and_then(|auth| auth.oauth.clone()))
-            .or_else(|| builtin_oauth(id));
-        // Providers registered without declared auth keep the env-var lookup senpi's builtin
-        // factories declare through `envApiKeyAuth`.
-        let inherited = base.and_then(|auth| auth.api_key.clone()).or_else(|| {
-            maho_ai::env_api_keys::get_api_key_env_vars(id)
-                .map(|vars| Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars)) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>)
-        });
-        let api_key = crate::provider_api_key_auth::compose_api_key_auth(id, inherited, oauth.is_some(), config.as_ref(), extension.as_ref().map(|e| &e.config))
-            .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>);
-        let oauth = crate::provider_composer::compose_oauth_auth(id, oauth, config.as_ref(), extension.as_ref().map(|e| &e.config))
-            .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::OAuthAuth>);
-        ProviderAuth { api_key, oauth }
+        compose_provider_auth(&self.config, &self.extensions, provider)
     }
 
     /// An api-key pool's `accounts` live outside the typed `ApiKeyCredential`, so a slot of a stored
@@ -513,54 +521,68 @@ impl ModelRuntime {
         signal.throw_if_aborted().map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.message))?;
         self.models.check_auth(&normalize_provider_id(id), &signal).await
     }
-    /// Pinned `ModelRuntime.login` (`model-runtime.ts:996-1000`): run the provider's OAuth or
-    /// api-key login flow and persist the returned credential through the shared store.
+    /// Pinned `ModelRuntime.login` -> `Models.login` (`models.ts:583-637`): run the provider's
+    /// composed OAuth or api-key login flow, append the credential as a login slot
+    /// (`appendLoginSlot`) and report the committed account through `on_account_committed`.
     pub async fn login(&self, provider_id: &str, auth_type: maho_ai::auth::types::AuthType, interaction: std::sync::Arc<dyn maho_ai::auth::types::AuthInteraction>) -> Result<maho_ai::auth::types::Credential, ModelsError> {
-        use maho_ai::auth::types::{ApiKeyCredential, AuthPrompt, AuthPromptKind, Credential, ProviderAuthInteraction};
+        use maho_ai::auth::types::{AuthType, Credential, ProviderAuthInteraction};
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(interaction.signal());
-        signal.throw_if_aborted().map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
-        if self.get_provider(&id).is_none() { return Err(ModelsError::new(ModelsErrorCode::Provider, format!("Unknown provider: {id}"))); }
+        let aborted = |reason: maho_ai::utils::abort::AbortReason| ModelsError::new(ModelsErrorCode::Auth, reason.message);
+        signal.throw_if_aborted().map_err(aborted)?;
+        let Some(provider) = self.get_provider(&id) else { return Err(ModelsError::new(ModelsErrorCode::Provider, format!("Unknown provider: {id}"))) };
+        let auth = compose_provider_auth(&self.config, &self.extensions, provider.as_ref());
         let provider_interaction = ProviderAuthInteraction::new(signal.clone(), interaction.clone());
+        let unsupported = |kind: &str| ModelsError::new(ModelsErrorCode::Auth, format!("{} does not support {kind} login", provider.name()));
         let credential = match auth_type {
-            maho_ai::auth::types::AuthType::OAuth => {
-                let oauth = self.extensions.read().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&id).and_then(|extension| extension.oauth.clone())
-                    .or_else(|| self.get_provider(&id).and_then(|provider| provider.auth().and_then(|auth| auth.oauth.clone())))
-                    .or_else(|| builtin_oauth(&id))
-                    .ok_or_else(|| ModelsError::new(ModelsErrorCode::Auth, format!("{id} does not support oauth login")))?;
-                let credential = oauth.login(&provider_interaction).await.map_err(|error| ModelsError::new(ModelsErrorCode::OAuth, error.to_string()))?;
-                Credential::OAuth(credential)
+            AuthType::OAuth => {
+                let oauth = auth.oauth.ok_or_else(|| unsupported("oauth"))?;
+                let login = maho_ai::utils::abort::race_with_abort_signal(oauth.login(&provider_interaction), &signal).await.map_err(aborted)?;
+                Credential::OAuth(login.map_err(|error| ModelsError::new(ModelsErrorCode::OAuth, error.to_string()))?)
             }
-            maho_ai::auth::types::AuthType::ApiKey => {
-                if let Some(api_key) = self.get_provider(&id).and_then(|provider| provider.auth().and_then(|auth| auth.api_key.clone())).filter(|api_key| api_key.has_login()) {
-                    let credential = api_key.login(&provider_interaction).await.map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-                    let value = serde_json::to_value(Credential::ApiKey(credential.clone())).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-                    self.credentials.set(&id, Some(value)).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
-                    return Ok(Credential::ApiKey(credential));
-                }
-                let key = provider_interaction.prompt(AuthPrompt { kind: AuthPromptKind::Secret { message: format!("Enter API key for {id}"), placeholder: None }, signal: Some(signal.clone()) })
-                    .await.map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-                Credential::ApiKey(ApiKeyCredential { key: Some(key), env: None })
+            AuthType::ApiKey => {
+                let api_key = auth.api_key.filter(|api_key| api_key.has_login()).ok_or_else(|| unsupported("api_key"))?;
+                let login = maho_ai::utils::abort::race_with_abort_signal(api_key.login(&provider_interaction), &signal).await.map_err(aborted)?;
+                Credential::ApiKey(login.map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?)
             }
         };
-        let value = serde_json::to_value(&credential).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
-        self.credentials.set(&id, Some(value)).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+        let receipt = self.credentials.append_login_account(&id, credential.clone(), Some(signal.clone())).await.map_err(|error| {
+            match signal.throw_if_aborted() {
+                Err(reason) => aborted(reason),
+                Ok(()) => ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store modify failed for {id}"), &error),
+            }
+        })?;
+        if let Some(receipt) = receipt { maho_ai::auth::types::AuthInteraction::on_account_committed(interaction.as_ref(), receipt); }
         // senpi `synchronizeCredentialState`: the snapshot follows the credential change. A
         // failed pass is recorded as the availability error surfaced by `get_error`.
         let _ = self.refresh_provider_availability(&id, signal).await;
         Ok(credential)
     }
 
-    /// Pinned `ModelRuntime.logout` (`model-runtime.ts:1002-1008`): remove the provider's stored
-    /// credential.
-    pub async fn logout(&self, provider_id: &str, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
+    /// Pinned `ModelRuntime.logout` -> `Models.logout` (`models.ts:639-655`): with `slot_id`,
+    /// remove only that account slot (deleting the entry when it was the last); otherwise remove
+    /// the provider's stored credential.
+    pub async fn logout(&self, provider_id: &str, slot_id: Option<&str>, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
+        use maho_ai::auth::pool::slots::{PooledCredentialType, remove_slot};
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(options.signal);
         signal.throw_if_aborted().map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
-        self.credentials.delete(&id).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+        let result = 'mutation: {
+            let failed = |error: String| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store delete failed for {id}"), &error);
+            let _mutation = self.credentials.account_mutation.lock().await;
+            let Some(slot_id) = slot_id else { break 'mutation self.credentials.delete(&id).map_err(failed) };
+            let current = self.credentials.get(&id)
+                .map(serde_json::from_value::<PooledCredential>).transpose().map_err(|error| failed(error.to_string()))?;
+            let Some(next) = remove_slot(current, slot_id) else { break 'mutation self.credentials.delete(&id).map_err(failed) };
+            let value = match next.credential_type {
+                PooledCredentialType::ApiKey => serde_json::to_value(&next),
+                PooledCredentialType::OAuth => serde_json::to_value(next.to_stored_credential()),
+            }.map_err(|error| failed(error.to_string()))?;
+            self.credentials.set(&id, Some(value)).map_err(failed)
+        };
         // senpi `synchronizeCredentialState`; a failed pass is recorded for `get_error`.
         let _ = self.refresh_provider_availability(&id, signal).await;
-        Ok(())
+        result
     }
 
     pub async fn get_auth_for_model(&self, model: &Model, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
@@ -879,7 +901,7 @@ mod tests {
         assert!(matches!(credential, maho_ai::auth::types::Credential::OAuth(_)));
         assert!(runtime.is_using_oauth("p"));
         assert!(runtime.credentials.get("p").is_some());
-        runtime.logout("p", Default::default()).await.expect("logout");
+        runtime.logout("p", None, Default::default()).await.expect("logout");
         assert!(runtime.credentials.get("p").is_none());
     }
 
@@ -950,6 +972,72 @@ mod tests {
         assert!(runtime.has_configured_auth("ext"));
         assert!(runtime.get_available_snapshot().iter().any(|model| model.provider == "ext" && model.id == "sol"));
     }
+    /// Answers selects with the first option id and every text/secret prompt with its own message,
+    /// recording committed account receipts.
+    #[derive(Default)]
+    struct ScriptedInteraction { prompts: std::sync::Mutex<Vec<String>>, receipts: std::sync::Mutex<Vec<maho_ai::auth::types::AccountLoginReceipt>> }
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::AuthInteraction for ScriptedInteraction {
+        fn signal(&self) -> Option<maho_ai::utils::abort::AbortSignal> { None }
+        fn on_account_committed(&self, receipt: maho_ai::auth::types::AccountLoginReceipt) { self.receipts.lock().expect("receipts").push(receipt); }
+        async fn prompt(&self, prompt: maho_ai::auth::types::AuthPrompt) -> anyhow::Result<String> {
+            use maho_ai::auth::types::AuthPromptKind;
+            let (message, answer) = match prompt.kind {
+                AuthPromptKind::Select { message, options } => (message, options.first().map(|option| option.id.clone()).unwrap_or_default()),
+                AuthPromptKind::Text { message, .. } | AuthPromptKind::Secret { message, .. } | AuthPromptKind::ManualCode { message, .. } => (message.clone(), message),
+            };
+            self.prompts.lock().expect("prompts").push(message);
+            Ok(answer)
+        }
+        fn notify(&self, _: maho_ai::auth::types::AuthEvent) {}
+    }
+
+    #[tokio::test]
+    async fn api_key_login_runs_the_provider_flow_and_stores_its_env() {
+        let runtime = builtin_runtime("cloudflare-ai-gateway");
+        let interaction = std::sync::Arc::new(ScriptedInteraction::default());
+        let credential = runtime.login("cloudflare-ai-gateway", maho_ai::auth::types::AuthType::ApiKey, interaction.clone()).await.expect("login");
+        let maho_ai::auth::types::Credential::ApiKey(credential) = credential else { panic!("api key credential") };
+        let env = credential.env.expect("provider login env");
+        assert!(env.contains_key("CLOUDFLARE_ACCOUNT_ID") && env.contains_key("CLOUDFLARE_GATEWAY_ID"));
+        assert!(interaction.prompts.lock().expect("prompts").len() > 1);
+        assert!(runtime.credentials.get("cloudflare-ai-gateway").expect("stored")["env"]["CLOUDFLARE_ACCOUNT_ID"].is_string());
+    }
+
+    #[tokio::test]
+    async fn bedrock_login_asks_for_the_method_first() {
+        let runtime = builtin_runtime("amazon-bedrock");
+        let interaction = std::sync::Arc::new(ScriptedInteraction::default());
+        runtime.login("amazon-bedrock", maho_ai::auth::types::AuthType::ApiKey, interaction.clone()).await.expect("login");
+        assert_eq!(interaction.prompts.lock().expect("prompts").first().map(String::as_str), Some("Select Amazon Bedrock authentication method:"));
+    }
+
+    #[tokio::test]
+    async fn second_oauth_login_appends_a_slot_and_commits_its_receipt() {
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(TestOAuth)), ..Default::default() }).expect("register oauth");
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"oauth","access":"first","refresh":"first-r","expires":1.0}))).expect("seed");
+        let interaction = std::sync::Arc::new(ScriptedInteraction::default());
+        runtime.login("p", maho_ai::auth::types::AuthType::OAuth, interaction.clone()).await.expect("login");
+        let stored = runtime.credentials.get("p").expect("stored");
+        let names: Vec<_> = stored["accounts"].as_array().expect("accounts").iter().filter_map(|slot| slot["name"].as_str()).collect();
+        assert_eq!(names, ["default", "login-2"]);
+        let receipts = interaction.receipts.lock().expect("receipts");
+        assert_eq!(receipts.iter().map(|receipt| receipt.name.as_str()).collect::<Vec<_>>(), ["login-2"]);
+    }
+
+    #[tokio::test]
+    async fn logout_with_slot_id_removes_only_that_slot() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"api_key","key":"a","accounts":[{"name":"default","key":"a"},{"name":"work","key":"b"}]}))).expect("seed");
+        runtime.logout("p", Some("work"), Default::default()).await.expect("slot logout");
+        let stored = runtime.credentials.get("p").expect("remaining pool");
+        assert_eq!(stored["accounts"].as_array().expect("accounts").len(), 1);
+        assert_eq!(stored["key"], "a");
+        runtime.logout("p", Some("default"), Default::default()).await.expect("last slot logout");
+        assert!(runtime.credentials.get("p").is_none());
+    }
+
     #[test]
     fn real_models_copy_qa_when_requested() {
         let config=match std::env::var("TASK17_MODELS_COPY") {
