@@ -95,6 +95,10 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     };
     screen.set_render_root(component.clone());
     screen.base_mut().set_focus(Some(component));
+    // senpi focuses the editor (`ui.setFocus(this.editor)`); a focused editor emits the cursor
+    // marker the renderer turns into the per-frame hardware cursor restore (row move + absolute
+    // column). The mounted root here is a line buffer, so focus is handed to the mode directly.
+    maho_tui::tui::Component::focusable_set(&mut mode, true);
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
     screen.before_terminal_start(&mut terminal, false, false);
