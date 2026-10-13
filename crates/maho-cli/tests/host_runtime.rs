@@ -1,5 +1,5 @@
 use maho_cli::cli::args::Args;
-use maho_cli::cli::host_runtime::{mount_agent_session_runtime, resolve_cli_initial_model, resolve_cli_path, CliRuntimeConfiguration, CliRuntimeRequest};
+use maho_cli::cli::host_runtime::{mount_agent_session_runtime, resolve_cli_initial_model, resolve_cli_path, resolve_runtime_project_trust, CliRuntimeConfiguration, CliRuntimeRequest};
 use maho_core::project_trust::AppMode;
 
 #[tokio::test]
@@ -193,4 +193,39 @@ fn cli_paths_resolve_against_the_launch_cwd() {
 fn configuration_carries_the_parsed_session_directory() {
     let parsed = Args { session_dir: Some("/sessions".to_owned()), ..Default::default() };
     assert_eq!(config(&parsed).session_dir.as_deref(), Some("/sessions"));
+}
+
+fn trust_fixture() -> (tempfile::TempDir, String, String) {
+    let dir = tempfile::tempdir().expect("trust fixture");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join(".maho")).expect("project config dir");
+    std::fs::write(project.join(".maho/settings.json"), "{}").expect("project settings");
+    let agent = dir.path().join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    let project = project.to_string_lossy().into_owned();
+    let agent = agent.to_string_lossy().into_owned();
+    (dir, project, agent)
+}
+
+#[tokio::test]
+async fn the_approve_override_trusts_the_runtime_project() {
+    let (_dir, project, agent) = trust_fixture();
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, project_trust_override: Some(true), ..Default::default() };
+    assert!(resolve_runtime_project_trust(&config, &project, AppMode::Print, false, Box::new(|_, _| None)).await);
+}
+
+#[tokio::test]
+async fn a_saved_trust_decision_is_honoured_and_cached_per_cwd() {
+    let (_dir, project, agent) = trust_fixture();
+    maho_core::trust_manager::ProjectTrustStore::new(&agent).set(&project, Some(true)).expect("saved decision");
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, ..Default::default() };
+    assert!(resolve_runtime_project_trust(&config, &project, AppMode::Print, false, Box::new(|_, _| None)).await);
+    assert_eq!(config.project_trust_by_cwd.lock().expect("cache").get(&project).copied(), Some(true));
+}
+
+#[tokio::test]
+async fn an_unsaved_project_without_ui_stays_untrusted() {
+    let (_dir, project, agent) = trust_fixture();
+    let config = CliRuntimeConfiguration { cwd: project.clone(), agent_dir: agent, ..Default::default() };
+    assert!(!resolve_runtime_project_trust(&config, &project, AppMode::Print, false, Box::new(|_, _| None)).await);
 }

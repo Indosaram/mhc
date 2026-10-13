@@ -176,7 +176,7 @@ pub fn create_agent_session_services(mut options: CreateAgentSessionServicesOpti
     let settings_manager = options
         .settings_manager
         .take()
-        .unwrap_or_else(|| SettingsManager::create(&options.cwd, &agent_dir, &crate::config::home_dir(), false));
+        .unwrap_or_else(|| SettingsManager::create(&options.cwd, &agent_dir, &crate::config::home_dir(), true));
     let model_registry = ModelRegistry::new(model_runtime);
     let diagnostics = apply_extension_flag_values(options.extension_flag_values.as_ref());
     AgentSessionServices {

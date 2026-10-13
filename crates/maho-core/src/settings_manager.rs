@@ -554,6 +554,7 @@ impl SettingsManager {
     /// settings, so unsaved in-memory overrides are honoured instead of being lost to a fresh disk
     /// reload; project settings stay excluded (`projectTrusted: false`).
     pub fn in_memory(global_settings: Settings, project_trusted: bool) -> SettingsManager {
+        let global_settings = migrate_settings(global_settings);
         let storage = InMemorySettingsStorage::default();
         // `with_lock` takes `&mut dyn FnMut` and may call the update closure more than once (a lost
         // write race re-runs it), so the closure must yield the seeded content on every call instead
@@ -579,7 +580,7 @@ impl SettingsManager {
                     loaded = Settings::new();
                 }
                 Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => loaded = parsed,
+                    Ok(parsed) => loaded = migrate_settings(parsed),
                     Err(parse_error) => error = Some(parse_error),
                 },
             }
@@ -606,6 +607,33 @@ impl SettingsManager {
 
     pub fn is_project_trusted(&self) -> bool {
         self.project_trusted
+    }
+
+    /// senpi `setProjectTrusted`: an untrusted project drops its scope; a newly trusted project
+    /// selects and loads its settings source.
+    pub fn set_project_trusted(&mut self, trusted: bool) {
+        if self.project_trusted == trusted {
+            return;
+        }
+        self.project_trusted = trusted;
+        if !trusted {
+            self.project_settings = Settings::new();
+            self.project_settings_load_error = None;
+            self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+            return;
+        }
+        self.select_and_publish_source(SettingsScope::Project);
+        let (project_settings, error) = Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Project, true);
+        self.project_settings = project_settings;
+        self.project_settings_load_error = error.clone();
+        if let Some(error) = error {
+            self.errors.push(SettingsError {
+                scope: SettingsScope::Project,
+                path: self.settings_paths.get(&SettingsScope::Project).cloned(),
+                error,
+            });
+        }
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
     }
 
     pub fn errors(&self) -> &[SettingsError] {
@@ -777,7 +805,7 @@ impl SettingsManager {
         let mut apply = |current: Option<&str>| -> Option<String> {
             let mut parsed = match current {
                 Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => parsed,
+                    Ok(parsed) => migrate_settings(parsed),
                     Err(error) => {
                         write_error = Some(error);
                         return None;
@@ -822,6 +850,143 @@ impl SettingsManager {
         self.project_settings_load_error = project_load.1;
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
     }
+}
+
+/// senpi `SettingsManager.migrateSettings`: rewrite old settings shapes to the current ones.
+pub fn migrate_settings(mut settings: Settings) -> Settings {
+    // queueMode -> steeringMode
+    if settings.contains_key("queueMode") && !settings.contains_key("steeringMode")
+        && let Some(queue_mode) = settings.remove("queueMode")
+    {
+        settings.insert("steeringMode".to_owned(), queue_mode);
+    }
+
+    // legacy websockets boolean -> transport enum
+    if !settings.contains_key("transport")
+        && let Some(Value::Bool(websockets)) = settings.get("websockets").cloned()
+    {
+        settings.insert("transport".to_owned(), Value::from(if websockets { "websocket" } else { "sse" }));
+        settings.remove("websockets");
+    }
+
+    // old skills object format -> array format
+    if let Some(Value::Object(skills)) = settings.get("skills").cloned() {
+        if let Some(enable) = skills.get("enableSkillCommands")
+            && !settings.contains_key("enableSkillCommands")
+        {
+            settings.insert("enableSkillCommands".to_owned(), enable.clone());
+        }
+        match skills.get("customDirectories") {
+            Some(Value::Array(directories)) if !directories.is_empty() => {
+                settings.insert("skills".to_owned(), Value::Array(directories.clone()));
+            }
+            _ => {
+                settings.remove("skills");
+            }
+        }
+    }
+
+    // retry.maxDelayMs -> retry.provider.maxRetryDelayMs
+    if let Some(Value::Object(retry)) = settings.get_mut("retry") {
+        if let Some(max_delay) = retry.get("maxDelayMs").filter(|value| value.is_number()).cloned() {
+            let provider = match retry.get("provider") {
+                Some(Value::Object(provider)) => Some(provider.clone()),
+                _ => None,
+            };
+            let configured = provider.as_ref().and_then(|provider| provider.get("maxRetryDelayMs")).is_some_and(|value| !value.is_null());
+            if !configured {
+                let mut provider = provider.unwrap_or_default();
+                provider.insert("maxRetryDelayMs".to_owned(), max_delay);
+                retry.insert("provider".to_owned(), Value::Object(provider));
+            }
+        }
+        retry.remove("maxDelayMs");
+    }
+
+    migrate_renamed_provider_ids(&mut settings);
+    settings
+}
+
+/// camelCase provider-settings block key, e.g. `claude-sdk-oauth` -> `claudeSdkOauthProvider`.
+fn provider_settings_key(provider_id: &str) -> String {
+    let mut key = String::new();
+    for (index, part) in provider_id.split('-').enumerate() {
+        if index == 0 {
+            key.push_str(part);
+            continue;
+        }
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            key.extend(first.to_uppercase());
+            key.push_str(characters.as_str());
+        }
+    }
+    key.push_str("Provider");
+    key
+}
+
+/// senpi `migrateRenamedProviderIds`: idempotent, and an unrecognised shape is left untouched.
+fn migrate_renamed_provider_ids(settings: &mut Settings) {
+    use maho_ai::legacy_provider_ids::{LEGACY_PROVIDER_IDS, normalize_model_ref, normalize_provider_id};
+
+    for (legacy_id, canonical_id) in LEGACY_PROVIDER_IDS {
+        let legacy_key = provider_settings_key(legacy_id);
+        let canonical_key = provider_settings_key(canonical_id);
+        if settings.contains_key(&legacy_key) && !settings.contains_key(&canonical_key)
+            && let Some(block) = settings.remove(&legacy_key)
+        {
+            settings.insert(canonical_key, block);
+        }
+    }
+
+    if let Some(Value::String(provider)) = settings.get("defaultProvider") {
+        let provider = normalize_provider_id(provider);
+        settings.insert("defaultProvider".to_owned(), Value::String(provider));
+    }
+    if let Some(Value::String(model)) = settings.get("defaultModel") {
+        let model = normalize_model_ref(model);
+        settings.insert("defaultModel".to_owned(), Value::String(model));
+    }
+    if let Some(Value::Array(favorites)) = settings.get_mut("favoriteModels") {
+        for entry in favorites.iter_mut() {
+            if let Value::String(model) = entry {
+                *model = normalize_model_ref(model);
+            }
+        }
+    }
+
+    for field in ["modelThinkingLevels", "modelServiceTiers", "modelLastOnThinkingLevels"] {
+        if let Some(Value::Object(map)) = settings.get(field) {
+            let rekeyed = rekey_by_model_ref(map);
+            settings.insert(field.to_owned(), Value::Object(rekeyed));
+        }
+    }
+
+    if let Some(Value::Object(retry)) = settings.get_mut("retry")
+        && let Some(Value::Object(chains)) = retry.get("fallbackChains")
+    {
+        let mut rekeyed = Map::new();
+        for (key, rungs) in chains {
+            let next_rungs = match rungs {
+                Value::Array(rungs) => Value::Array(rungs.iter().map(|rung| match rung {
+                    Value::String(rung) => Value::String(normalize_model_ref(rung)),
+                    other => other.clone(),
+                }).collect()),
+                other => other.clone(),
+            };
+            rekeyed.insert(normalize_model_ref(key), next_rungs);
+        }
+        retry.insert("fallbackChains".to_owned(), Value::Object(rekeyed));
+    }
+}
+
+/// Rewrite every `${provider}/${id}` key of a model map through `normalize_model_ref`.
+fn rekey_by_model_ref(map: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in map {
+        out.insert(maho_ai::legacy_provider_ids::normalize_model_ref(key), value.clone());
+    }
+    out
 }
 
 fn values_into(base: &Settings, values: &Settings) -> Settings {
@@ -1175,6 +1340,61 @@ mod tests {
         std::fs::write(format!("{agent}/settings.json"), "{\"a\":2}").expect("write");
         manager.reload();
         assert_eq!(manager.get_number("a"), Some(2.0));
+    }
+
+    #[test]
+    fn migrate_renames_queue_mode_websockets_skills_and_retry_max_delay() {
+        let migrated = migrate_settings(settings(r#"{"queueMode":"all","websockets":true,"skills":{"enableSkillCommands":false,"customDirectories":["/s"]},"retry":{"maxDelayMs":5}}"#));
+        assert_eq!(migrated["steeringMode"], "all");
+        assert!(!migrated.contains_key("queueMode"));
+        assert_eq!(migrated["transport"], "websocket");
+        assert!(!migrated.contains_key("websockets"));
+        assert_eq!(migrated["enableSkillCommands"], false);
+        assert_eq!(migrated["skills"], json!(["/s"]));
+        assert_eq!(migrated["retry"], json!({"provider":{"maxRetryDelayMs":5}}));
+    }
+
+    #[test]
+    fn migrate_rewrites_legacy_provider_ids() {
+        let migrated = migrate_settings(settings(r#"{"claudeSdkOauthProvider":{"x":1},"defaultProvider":"openai-codex","defaultModel":"claude-sdk-oauth/opus","favoriteModels":["openai-codex/gpt",1],"modelServiceTiers":{"openai-codex/gpt":"flex"},"retry":{"fallbackChains":{"claude-sdk-oauth/opus":["openai-codex/gpt"]}}}"#));
+        assert_eq!(migrated["anthropicSubscriptionProvider"], json!({"x":1}));
+        assert!(!migrated.contains_key("claudeSdkOauthProvider"));
+        assert_eq!(migrated["defaultProvider"], "chatgpt-subscription");
+        assert_eq!(migrated["defaultModel"], "anthropic-subscription/opus");
+        assert_eq!(migrated["favoriteModels"], json!(["chatgpt-subscription/gpt", 1]));
+        assert_eq!(migrated["modelServiceTiers"], json!({"chatgpt-subscription/gpt":"flex"}));
+        assert_eq!(migrated["retry"]["fallbackChains"], json!({"anthropic-subscription/opus":["chatgpt-subscription/gpt"]}));
+    }
+
+    #[test]
+    fn a_loaded_file_is_migrated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent = tmp.path().to_string_lossy().into_owned();
+        std::fs::write(tmp.path().join("settings.json"), r#"{"queueMode":"one-at-a-time","defaultModel":"openai-codex/gpt"}"#).expect("write");
+        let manager = SettingsManager::create(&agent, &agent, &agent, false);
+        assert_eq!(manager.get_string("steeringMode").as_deref(), Some("one-at-a-time"));
+        assert_eq!(manager.get_string("defaultModel").as_deref(), Some("chatgpt-subscription/gpt"));
+    }
+
+    #[test]
+    fn set_project_trusted_loads_and_drops_the_project_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = home.join(".maho/agent");
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::write(agent.join("settings.json"), "{\"theme\":\"dark\"}").expect("write");
+        std::fs::write(project.join(".maho/settings.json"), "{\"theme\":\"light\"}").expect("write");
+        let mut manager = SettingsManager::create(&project.to_string_lossy(), &agent.to_string_lossy(), &home.to_string_lossy(), false);
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        manager.set_project_trusted(true);
+        assert!(manager.is_project_trusted());
+        assert_eq!(manager.get_string("theme").as_deref(), Some("light"));
+        assert!(manager.selected_source(SettingsScope::Project).is_some());
+        manager.set_project_trusted(false);
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        assert!(manager.get_project().is_empty());
     }
 
     #[test]
