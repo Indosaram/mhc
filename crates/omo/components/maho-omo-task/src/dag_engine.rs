@@ -97,10 +97,10 @@ impl DagSurfaces {
 }
 impl crate::dag_status_ui::DagStatusUiManager for DagManager {
     fn list(&self, session: &str) -> Vec<senpi_task::dag::manager::DagRunSummary> {
-        match self.list(session, None) { Ok(runs) => runs, Err(error) => { eprintln!("DAG status list failed: {error}"); vec![] } }
+        match self.list(session, None) { Ok(runs) => runs, Err(error) => { maho_ext_api::diagnostic(&format!("DAG status list failed: {error}")); vec![] } }
     }
     fn snapshot(&self, run: &str, session: &str) -> Option<senpi_task::dag::types::DagRunSnapshot> {
-        match self.snapshot(&run.to_owned(), session) { Ok(snapshot) => Some(snapshot), Err(error) => { eprintln!("DAG status snapshot failed: {error}"); None } }
+        match self.snapshot(&run.to_owned(), session) { Ok(snapshot) => Some(snapshot), Err(error) => { maho_ext_api::diagnostic(&format!("DAG status snapshot failed: {error}")); None } }
     }
 }
 impl TaskDagEngine {
@@ -157,7 +157,7 @@ impl TaskDagEngine {
         let bridge = crate::dag_rpc_bridge::create_dag_rpc_bridge(crate::dag_rpc_bridge_contract::DagRpcBridgeDeps {
             live_runs: Arc::new(move || {
                 let (Some(dag), Some(session)) = (live.upgrade(), live_session()) else { return vec![]; };
-                let runs = match dag.manager.list(&session, None) { Ok(runs) => runs, Err(error) => { eprintln!("DAG live run list failed: {error}"); return vec![]; } };
+                let runs = match dag.manager.list(&session, None) { Ok(runs) => runs, Err(error) => { maho_ext_api::diagnostic(&format!("DAG live run list failed: {error}")); return vec![]; } };
                 runs.into_iter().map(|run| {
                     let store = dag.store.clone(); let id = run.run_id.clone();
                     let owner = Arc::downgrade(&dag); let tasks = tasks.clone();
@@ -169,7 +169,7 @@ impl TaskDagEngine {
                                 let bridge = dag.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone();
                                 if let (Some(surfaces), Some(bridge)) = (surfaces, bridge) { surfaces.on_event(event, &tasks, &bridge); }
                             }
-                            match serde_json::to_value(event) { Ok(event) => listener(&event), Err(error) => eprintln!("DAG event serialization failed: {error}") }
+                            match serde_json::to_value(event) { Ok(event) => listener(&event), Err(error) => maho_ext_api::diagnostic(&format!("DAG event serialization failed: {error}")) }
                         }))
                     }) }
                 }).collect()
@@ -177,8 +177,8 @@ impl TaskDagEngine {
             run_snapshots: Some(Arc::new(move || {
                 let (Some(dag), Some(session)) = (snapshots.upgrade(), snapshot_session()) else { return vec![]; };
                 match dag.manager.list(&session, None) {
-                    Ok(runs) => runs.into_iter().filter_map(|run| match dag.manager.snapshot(&run.run_id, &session) { Ok(snapshot) => Some((snapshot, run.status.as_str().into())), Err(error) => { eprintln!("DAG snapshot failed: {error}"); None } }).collect(),
-                    Err(error) => { eprintln!("DAG snapshot list failed: {error}"); vec![] }
+                    Ok(runs) => runs.into_iter().filter_map(|run| match dag.manager.snapshot(&run.run_id, &session) { Ok(snapshot) => Some((snapshot, run.status.as_str().into())), Err(error) => { maho_ext_api::diagnostic(&format!("DAG snapshot failed: {error}")); None } }).collect(),
+                    Err(error) => { maho_ext_api::diagnostic(&format!("DAG snapshot list failed: {error}")); vec![] }
                 }
             })),
             parent_session_id: session.clone(),
@@ -222,7 +222,7 @@ impl TaskDagEngine {
             }) }));
         }
         bridge.attach();
-        if let Err(error) = surfaces.reconcile_activity(&self.manager, session().as_deref(), &lifecycle_tasks, &bridge) { eprintln!("DAG activity reconciliation failed: {error}"); }
+        if let Err(error) = surfaces.reconcile_activity(&self.manager, session().as_deref(), &lifecycle_tasks, &bridge) { maho_ext_api::diagnostic(&format!("DAG activity reconciliation failed: {error}")); }
         surfaces.status.sync_now();
     }
     pub fn register_tool(self: &Arc<Self>, api: &mut maho_ext_api::ExtensionApi, component: Arc<crate::component::TaskComponent>) {

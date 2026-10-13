@@ -65,12 +65,12 @@ impl ExitResources {
                 drop(work);
                 task_connected.store(false, Ordering::SeqCst);
                 drop(server);
-                if exited.send(result).is_err() { eprintln!("model child exit receiver closed"); }
+                if exited.send(result).is_err() { maho_ext_api::diagnostic("model child exit receiver closed"); }
                 return;
             }
-            if exited.send(Err(format!("waited {wait_ms}ms for model child exit"))).is_err() { eprintln!("model child exit receiver closed"); }
+            if exited.send(Err(format!("waited {wait_ms}ms for model child exit"))).is_err() { maho_ext_api::diagnostic("model child exit receiver closed"); }
             tokio::select! {
-                result = &mut work => if let Err(error) = result { eprintln!("model socket close failed: {error}"); },
+                result = &mut work => if let Err(error) = result { maho_ext_api::diagnostic(&format!("model socket close failed: {error}")); },
                 _ = &mut cleaned => {},
             }
             drop(work);
@@ -118,7 +118,7 @@ impl ExitResources {
                     }
                     Err(_) => {
                         server.task.abort();
-                        if let Err(error) = (&mut server.task).await && !error.is_cancelled() { eprintln!("{error}"); }
+                        if let Err(error) = (&mut server.task).await && !error.is_cancelled() { maho_ext_api::diagnostic(&error.to_string()); }
                         server.joined = true;
                         first_error.get_or_insert_with(|| "waited 5000ms for forced model socket close".into());
                     }

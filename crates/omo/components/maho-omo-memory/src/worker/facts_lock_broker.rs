@@ -49,8 +49,8 @@ impl Drop for FactsLockBrokerTask {
 #[cfg(unix)]
 impl Drop for FactsLockBroker {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.socket_path) && error.kind() != std::io::ErrorKind::NotFound { eprintln!("facts broker socket cleanup failed: {error}"); }
-        if let Err(error)=std::fs::remove_dir(&self.owned_socket_dir) && error.kind()!=std::io::ErrorKind::NotFound {eprintln!("facts broker directory cleanup failed: {error}");}
+        if let Err(error) = std::fs::remove_file(&self.socket_path) && error.kind() != std::io::ErrorKind::NotFound { maho_ext_api::diagnostic(&format!("facts broker socket cleanup failed: {error}")); }
+        if let Err(error)=std::fs::remove_dir(&self.owned_socket_dir) && error.kind()!=std::io::ErrorKind::NotFound {maho_ext_api::diagnostic(&format!("facts broker directory cleanup failed: {error}"));}
     }
 }
 
@@ -84,7 +84,7 @@ impl FactsLockBroker {
                     if let Some(result) = joined {
                         match result {
                             Ok(Ok(())) => {},
-                            Ok(Err(error)) => eprintln!("facts lock broker client failed: {error}"),
+                            Ok(Err(error)) => maho_ext_api::diagnostic(&format!("facts lock broker client failed: {error}")),
                             Err(error) => break Err(error.to_string()),
                         }
                     }

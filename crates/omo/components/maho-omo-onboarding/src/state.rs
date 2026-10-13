@@ -34,7 +34,7 @@ fn write_decline(dest: &Path) -> io::Result<()> {
         file.write_all(json!({"declinedAt":jiff::Timestamp::now().as_millisecond()}).to_string().as_bytes())?;
         fs::rename(&tmp,dest)
     })();
-    if let Err(error) = fs::remove_file(&tmp) && error.kind() != io::ErrorKind::NotFound { eprintln!("onboarding temp cleanup failed: {error}"); }
+    if let Err(error) = fs::remove_file(&tmp) && error.kind() != io::ErrorKind::NotFound { maho_ext_api::diagnostic(&format!("onboarding temp cleanup failed: {error}")); }
     result
 }
 pub fn write_global_decline(state_dir: &Path) -> io::Result<()> { write_decline(&state_dir.join("onboarding-declined-global")) }

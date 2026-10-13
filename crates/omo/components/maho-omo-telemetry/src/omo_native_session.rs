@@ -39,7 +39,7 @@ pub fn start_native_session(options:&crate::index::SenpiTelemetryOptions,session
     let properties=inventory.as_object_mut().ok_or_else(||TelemetryError::new("Inventory must be an object"))?;
     for (key,value) in [("$session_id",json!(hash)),("$os",json!(os.platform())),("$os_version",json!(os.release())),("arch",json!(os.arch())),("cpu_count",json!(os.cpus()?.len())),("memory_bucket",json!(memory_bucket(os.totalmem()))),("reason",json!(session_reason(payload)))] {properties.insert(key.into(),value);}
     client.capture_event("session_started",properties);
-    let mut options=options.clone();options.state_dir=Some(crate::index::get_senpi_telemetry_state_dir(&env));tokio::spawn(async move {if let Err(error)=crate::index::record_senpi_daily_active(&options).await {eprintln!("omo-senpi legacy telemetry failed: {error}");}});
+    let mut options=options.clone();options.state_dir=Some(crate::index::get_senpi_telemetry_state_dir(&env));tokio::spawn(async move {if let Err(error)=crate::index::record_senpi_daily_active(&options).await {maho_ext_api::diagnostic(&format!("omo-senpi legacy telemetry failed: {error}"));}});
     Ok(Some(client))
 }
 #[cfg(test)]

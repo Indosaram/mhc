@@ -60,7 +60,7 @@ impl OwnedResumptionChannels {
         let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(worker) = worker.as_ref() {
             let future = match emission { Emission::Start => self.emitter.emit_session_start(), Emission::Changed => self.emitter.emit_if_changed(), Emission::Shutdown => self.emitter.emit_shutdown() };
-            if worker.sender.send(EmissionJob { future, completed }).is_err() { eprintln!("task resumption worker stopped before emission"); }
+            if worker.sender.send(EmissionJob { future, completed }).is_err() { maho_ext_api::diagnostic("task resumption worker stopped before emission"); }
         }
         receiver
     }
@@ -71,7 +71,7 @@ impl OwnedResumptionChannels {
         let worker = self.worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(worker) = worker {
             worker.stop.notify_one(); drop(worker.sender);
-            if worker.thread.join().is_err() { eprintln!("task resumption worker panicked"); }
+            if worker.thread.join().is_err() { maho_ext_api::diagnostic("task resumption worker panicked"); }
         }
     }
 }
