@@ -18,6 +18,17 @@ pub struct CreateModelRuntimeOptions {
     pub providers: Option<Vec<Arc<dyn Provider>>>,
     /// senpi `agentDir`: where `credential-pool-state.json` lives (else beside `auth_path`).
     pub agent_dir: Option<PathBuf>,
+    /// Dynamic catalog store; defaults to `models-store.json` beside `models.json` (in-memory without one).
+    pub models_store: Option<Arc<dyn maho_ai::models_store::ModelsStore>>,
+    pub models_store_path: Option<PathBuf>,
+    pub catalog_base_url: Option<String>,
+    /// Allow `create()` (and registration refreshes) to refresh catalogs over the network.
+    pub allow_model_network: Option<bool>,
+    /// Timeout for the create-time network refresh (default 15 s for registration refreshes).
+    pub model_refresh_timeout_ms: Option<u64>,
+    /// Skip the initial catalog refresh; static models remain available.
+    pub refresh_on_create: Option<bool>,
+    pub signal: Option<maho_ai::utils::abort::AbortSignal>,
 }
 
 #[derive(Clone)]
@@ -273,6 +284,8 @@ pub struct ModelRuntime {
     provider_settings_subscription: Arc<std::sync::Mutex<Option<crate::settings_manager::ProviderSettingsSubscription>>>,
     /// senpi `poolStatePath` repository: the credential-pool sidecar written by rotating requests.
     pool_repository: Arc<crate::credential_pool::state_store::CredentialSlotRepository>,
+    model_network_enabled: bool,
+    model_refresh_timeout_ms: u64,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -299,17 +312,54 @@ impl ModelRuntime {
         let provider_semaphores = Arc::new(crate::provider_concurrency::ProviderSemaphores::new(move |id| {
             crate::settings_manager::provider_concurrency_limit(limits.read().unwrap_or_else(|p| p.into_inner()).as_ref(), id).unwrap_or(0)
         }));
+        // senpi: `FileModelsStore` beside models.json, else an in-memory store.
+        let models_store: Arc<dyn maho_ai::models_store::ModelsStore> = match (options.models_store, &options.models_path) {
+            (Some(store), _) => store,
+            (None, Some(models_path)) => {
+                let path = options.models_store_path.clone().unwrap_or_else(|| models_path.parent().map_or_else(|| PathBuf::from("models-store.json"), |dir| dir.join("models-store.json")));
+                Arc::new(crate::models_store::FileModelsStore::new(Some(&path.to_string_lossy())))
+            }
+            (None, None) => Arc::new(crate::models_store::InMemoryCodingAgentModelsStore::new()),
+        };
+        // Builtins without their own refresh get the persisted remote catalog overlay.
+        let generated_at = maho_ai::providers::all::get_builtin_model_data_generated_at();
+        let catalog_base_url = options.catalog_base_url.clone();
+        let builtins: IndexMap<String,Arc<dyn Provider>> = options.providers.unwrap_or_else(|| maho_ai::providers::all::builtin_providers().into_iter().map(|provider| {
+            if provider.supports_refresh() || !crate::remote_catalog_provider::remote_catalog_serves_provider(provider.id(), catalog_base_url.as_deref()) { provider }
+            else { crate::remote_catalog_provider::with_remote_catalog(provider, catalog_base_url.as_deref(), generated_at) }
+        }).collect()).into_iter().map(|p| (p.id().to_owned(),p)).collect();
+        let model_network_enabled = options.allow_model_network.unwrap_or(false);
+        let model_refresh_timeout_ms = options.model_refresh_timeout_ms.unwrap_or(15_000);
         let runtime = Self {
-            models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
-            config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),
+            models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),models_store:Some(models_store)})),
+            config, builtins,
             native:IndexMap::new(), extensions, errors:Arc::new(RwLock::new(IndexMap::new())),models_path:options.models_path,credentials,
             credential_operations:Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             provider_semaphores, provider_settings, provider_settings_subscription:Arc::new(std::sync::Mutex::new(None)),
-            pool_repository,
+            pool_repository, model_network_enabled, model_refresh_timeout_ms,
         };
         runtime.rebuild_providers(); runtime
     }
-    pub async fn create(options: CreateModelRuntimeOptions) -> Self { Self::create_sync(options) }
+    /// senpi `ModelRuntime.create`: construct, then (unless `refresh_on_create: false`) restore the
+    /// stored catalogs and, when network is allowed and not `OFFLINE`, refresh them within the
+    /// create-time timeout.
+    pub async fn create(mut options: CreateModelRuntimeOptions) -> Self {
+        let offline = crate::brand::env_value("OFFLINE", &crate::config::current_env()).is_some();
+        let refresh_from_network = !offline && options.allow_model_network == Some(true);
+        options.allow_model_network = Some(refresh_from_network);
+        let (timeout_ms, signal, refresh_on_create) = (options.model_refresh_timeout_ms, options.signal.clone(), options.refresh_on_create);
+        let mut runtime = Self::create_sync(options);
+        if refresh_on_create != Some(false) {
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let combined = maho_ai::utils::abort_signals::combine_abort_signals(&[signal, Some(controller.signal())]);
+            let refresh = runtime.refresh(ModelsRefreshOptions { allow_network: Some(refresh_from_network), signal: combined.signal.clone(), ..Default::default() });
+            match timeout_ms.filter(|_| refresh_from_network) {
+                Some(ms) => { if tokio::time::timeout(std::time::Duration::from_millis(ms), refresh).await.is_err() { controller.abort(None); } }
+                None => { refresh.await; }
+            }
+        }
+        runtime
+    }
     /// senpi `setSettingsManager`: provider concurrency limits follow the settings, resizing live
     /// semaphores whenever the merged settings change.
     pub fn set_settings_manager(&self, settings: &crate::settings_manager::SettingsManager) {
@@ -541,11 +591,19 @@ impl ModelRuntime {
         let extension=self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(&model.provider).cloned();
         crate::provider_composer::resolve_compatibility_request_headers(model,config.as_ref(),extension.as_ref(),env).await
     }
-    pub async fn refresh(&mut self,options:ModelsRefreshOptions) -> ModelsRefreshResult {
+    pub async fn refresh(&mut self,mut options:ModelsRefreshOptions) -> ModelsRefreshResult {
         let config = ModelConfig::load_with_migration(self.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled()).await;
         *self.config.write().unwrap_or_else(|p|p.into_inner()) = config;
+        // senpi: `allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled`.
+        options.allow_network = Some(options.allow_network.unwrap_or(self.model_network_enabled));
         self.rebuild_providers(); self.models.refresh(options).await
     }
+    /// senpi `reloadConfig`.
+    pub async fn reload_config(&mut self) -> ModelsRefreshResult {
+        let allow_network = self.model_network_enabled;
+        self.refresh(ModelsRefreshOptions { allow_network: Some(allow_network), ..Default::default() }).await
+    }
+    pub fn model_refresh_timeout_ms(&self) -> u64 { self.model_refresh_timeout_ms }
     pub fn register_provider(&mut self,id:&str,config:ProviderConfigInput) -> Result<(),String> {
         let id = normalize_provider_id(id);
         compose_model_provider(&id,self.native.get(&id).or_else(||self.builtins.get(&id)).cloned(),&self.config.read().unwrap_or_else(|p|p.into_inner()),Some(&config))?;
@@ -1022,6 +1080,17 @@ mod tests {
         runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(AmbientOAuth)), ..Default::default() }).expect("register oauth");
         assert_eq!(runtime.get_auth("p").await.expect("resolve").expect("ambient auth").auth.api_key.as_deref(), Some("ambient-token"));
         assert!(runtime.get_available(Some("p")).await.iter().any(|model| model.id == "sol"));
+    }
+
+    #[tokio::test]
+    async fn create_defaults_the_models_store_beside_models_json_and_restores_offline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let models_path = dir.path().join("models.json");
+        std::fs::write(&models_path, "{}").expect("config");
+        let runtime = ModelRuntime::create(CreateModelRuntimeOptions { models_path: Some(models_path), providers: Some(Vec::new()), ..Default::default() }).await;
+        assert!(runtime.get_error().is_none());
+        assert!(!runtime.model_network_enabled);
+        assert_eq!(runtime.model_refresh_timeout_ms(), 15_000);
     }
 
     #[tokio::test]
