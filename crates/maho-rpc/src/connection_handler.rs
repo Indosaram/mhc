@@ -198,6 +198,12 @@ fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::A
     if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
     Ok(Some(value))
 }
+/// The `{ cancelled, reason? }` wire shape of `reload` and `check_reload_veto` (rpc-types.ts).
+fn reload_veto_json(decision:&maho_ext_api::ReloadVetoDecision)->serde_json::Value{
+    let mut value=serde_json::json!({"cancelled":decision.cancelled});
+    if let Some(reason)=&decision.reason{value["reason"]=reason.clone().into();}
+    value
+}
 async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
@@ -251,7 +257,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if !completed{abort.await;}
             ("abort",Ok(None))
         },
-        RpcCommandBody::Reload=>("reload",session.reload().await.map(|result|Some(serde_json::json!({"cancelled":!result})))),
+        RpcCommandBody::Reload=>("reload",session.reload().await.map(|decision|Some(reload_veto_json(&decision)))),
         RpcCommandBody::SetFavoriteModels{models}|RpcCommandBody::SetScopedModels{models}=>{
             #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]struct WireModel{model:maho_ai::types::Model,thinking_level:Option<maho_ai::types::ThinkingLevel>,thinking_selection:Option<maho_ai::types::ThinkingSelection>,service_tier:Option<String>}
             let parsed=models.iter().cloned().map(|value|{
@@ -313,7 +319,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::SetAutoRetry{enabled}=>("set_auto_retry",session.set_auto_retry_enabled(*enabled).map(|()|None)),
         RpcCommandBody::AbortRetry=>{session.abort_retry();("abort_retry",Ok(None))},
         RpcCommandBody::AbortCompaction=>{session.abort_compaction();("abort_compaction",Ok(None))},
-        RpcCommandBody::CheckReloadVeto=>("check_reload_veto",session.check_reload_veto().await.map(|value|Some(value.into()))),
+        RpcCommandBody::CheckReloadVeto=>("check_reload_veto",session.check_reload_veto().await.map(|decision|Some(reload_veto_json(&decision)))),
         RpcCommandBody::AbortBranchSummary=>{session.abort_branch_summary();("abort_branch_summary",Ok(None))},
         RpcCommandBody::AbortBash=>{session.abort_bash();("abort_bash",Ok(None))},
         RpcCommandBody::SetSteeringMode{mode}|RpcCommandBody::SetFollowUpMode{mode}=>{let mode=match mode{crate::rpc_types::QueueMode::All=>maho_agent::types::QueueMode::All,crate::rpc_types::QueueMode::OneAtATime=>maho_agent::types::QueueMode::OneAtATime};let kind=if matches!(&command.body,RpcCommandBody::SetSteeringMode{..}){session.set_steering_mode(mode);"set_steering_mode"}else{session.set_follow_up_mode(mode);"set_follow_up_mode"};(kind,Ok(None))},
@@ -849,7 +855,7 @@ mod new_session_tests{
     #[tokio::test]
     async fn check_reload_veto_dispatches(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"check_reload_veto"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],false);
+        assert_eq!(response["command"],"check_reload_veto"); assert_eq!(response["success"],true); assert_eq!(response["data"],serde_json::json!({"cancelled":false}));
     }
     #[tokio::test]
     async fn set_fast_mode_without_extension_returns_command_error(){

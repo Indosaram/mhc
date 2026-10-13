@@ -185,7 +185,7 @@ impl InteractiveSession for LocalInteractiveSession {
     }
 
     fn reload(&self) -> SessionFuture<'_, Result<bool, String>> {
-        Box::pin(async move { self.session.reload().await })
+        Box::pin(async move { self.session.reload().await.map(|decision| !decision.cancelled) })
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
