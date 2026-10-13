@@ -2266,3 +2266,38 @@ async fn configured_resume_shortcut_opens_session_selector() {
     mode.handle_input_at("\x0b", 0);
     assert!(mode.render(80).join("\n").contains("Resume Session"));
 }
+
+#[test]
+fn settings_theme_preview_swaps_the_live_theme_without_persisting_it() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let before = session.with_settings_manager(|settings| settings.get_string("theme"));
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::ThemePreview("light".into()));
+    assert_eq!(mode.active_theme().name, "light");
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")), before);
+}
+
+#[test]
+fn unloadable_theme_setting_falls_back_to_dark_and_shows_an_error() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, _session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!("no-such-theme")));
+    assert_eq!(mode.active_theme().name, "dark");
+    assert!(mode.render(80).join("\n").contains("Failed to load theme \"no-such-theme\""));
+}
+
+#[test]
+fn tui_mode_change_is_saved_only_when_the_host_accepts_it() {
+    use maho_interactive::tui_renderer::TuiMode;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let request = || maho_interactive::interactive_extension_ui::UiRequest::TerminalSetting("tuiMode".into(), serde_json::json!("fullscreen"));
+    mode.handle_ui_request(request());
+    assert_eq!(mode.pending_terminal_setting(TuiMode::Regular).map(|(next, _)| next), Some(TuiMode::Fullscreen));
+    mode.reject_terminal_setting(TuiMode::Regular);
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("tuiMode")), None);
+    assert!(mode.render(80).join("\n").contains("Close active overlays before changing TUI mode"));
+    mode.handle_ui_request(request());
+    assert!(mode.commit_terminal_setting());
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("tuiMode")).as_deref(), Some("fullscreen"));
+    assert!(mode.render(80).join("\n").contains("TUI mode: fullscreen"));
+}
