@@ -27,8 +27,16 @@ use tokio::{
 };
 
 /// Observer invoked with every internal server error (pinned `ServerOptions.onError`). The default
-/// `Server::new` has no observer and falls back to stderr diagnostics.
+/// `Server::new` has no observer, and errors are then dropped like the pinned optional `onError`.
 pub type ServerErrorObserver = Arc<dyn Fn(ServerError) + Send + Sync>;
+
+/// Pinned `reportError`: deliver to the observer, swallowing observer panics.
+fn report_to(observer: Option<&ServerErrorObserver>, error: ServerError) {
+    if let Some(observer) = observer {
+        let observer = Arc::clone(observer);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
+    }
+}
 
 pub struct Server {
     pub server_id: String,
@@ -83,7 +91,12 @@ impl Server {
                 "Server handshakeTimeoutMs must be an integer between 1 and 2147483647",
             ));
         }
-        let router = Arc::new(SessionRouter::new(host.clone(), server_id.clone()));
+        let router_observer = on_error.clone();
+        let router = Arc::new(SessionRouter::new(
+            host.clone(),
+            server_id.clone(),
+            Arc::new(move |error| report_to(router_observer.as_ref(), error)),
+        ));
         router.bind_self();
         let (closed, _) = watch::channel(None);
         Ok(Arc::new(Self {
@@ -101,18 +114,10 @@ impl Server {
             close_lock: Mutex::new(()),
         }))
     }
-    /// Report one internal server error to the pinned `onError` observer, falling back to stderr
-    /// when no observer is configured. Pinned `reportError` swallows observer exceptions: error
-    /// observers cannot affect server state.
+    /// Report one internal server error to the pinned `onError` observer. Pinned `reportError`
+    /// swallows observer exceptions: error observers cannot affect server state.
     pub(crate) fn report_error(&self, error: &ServerError) {
-        match &self.on_error {
-            Some(observer) => {
-                let observer = Arc::clone(observer);
-                let error = error.clone();
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
-            }
-            None => eprintln!("{}", error.message),
-        }
+        report_to(self.on_error.as_ref(), error.clone());
     }
     /// Pinned `failProtocol`: close the connection with one final `hello_error` frame. Encode and
     /// close failures are reported, never surfaced, like the pinned `closeConnection`.

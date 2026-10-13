@@ -37,7 +37,7 @@ async fn removal_during_attachment_acquisition_rejects_stale_reopened_handle() {
     }
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         let gate=OpenGate::default();let releases=Arc::new(AtomicUsize::new(0));
-        let router=Arc::new(SessionRouter::new(Arc::new(GatedHost {gate:gate.clone(),opens:AtomicUsize::new(0),releases:releases.clone()}),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(Arc::new(GatedHost {gate:gate.clone(),opens:AtomicUsize::new(0),releases:releases.clone()}),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         let first={let router=router.clone();tokio::spawn(async move {router.attach("same").await})};
         gate.entered.wait().await;
         router.remove("same").await.unwrap();
@@ -69,7 +69,7 @@ async fn attachment_release_repeats_failure_without_releasing_twice() {
         fn release(&self)->ServerFuture<'_,()> {Box::pin(async move {self.0.fetch_add(1,Ordering::SeqCst);Err(ServerError::new("internal_error","lease release failed"))})}
     }
     let releases=Arc::new(AtomicUsize::new(0));
-    let router=SessionRouter::new(Arc::new(FailingHost(releases.clone())),"00000000-0000-4000-8000-000000000001".into());
+    let router=SessionRouter::new(Arc::new(FailingHost(releases.clone())),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let attachment=router.attach("session").await.unwrap();
     let (first,second)=tokio::join!(attachment.release(),attachment.release());
     assert!(first.is_err());assert_eq!(first,second);assert_eq!(first,attachment.release().await);
@@ -80,7 +80,7 @@ async fn attachment_release_repeats_failure_without_releasing_twice() {
 async fn concurrent_clients_share_one_session_open() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let (first,second)=tokio::join!(router.attach("session-1"),router.attach("session-1"));
     let first=first.unwrap();let second=second.unwrap();
     assert_eq!(host.state.lock().await.open_session_count,1);
@@ -95,7 +95,7 @@ async fn independent_session_open_is_not_blocked_by_another_open() {
         host.seed(Some("first".into()),None).await.unwrap();
         host.seed(Some("second".into()),None).await.unwrap();
         let gate=host.gate_next_open_session().await;
-        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         let opening={let router=router.clone();tokio::spawn(async move {router.attach("first").await})};
         gate.entered.wait().await;
         let second=router.attach("second").await.unwrap();
@@ -154,7 +154,7 @@ async fn router_close_waits_for_all_handles_and_repeats_the_same_failure() {
         fn attach_client(&self)->ServerFuture<'_,Arc<dyn RoutedSessionAttachment>> {Box::pin(async {Ok(Arc::new(Lease(Arc::new(AtomicUsize::new(0)))) as Arc<dyn RoutedSessionAttachment>)})}
         fn close(&self)->ServerFuture<'_,()> {Box::pin(async move {self.0.wait().await;Err(ServerError::new("internal_error","handle close failed"))})}
     }
-    let router=SessionRouter::new(Arc::new(ClosingHost(Arc::new(tokio::sync::Barrier::new(2)))),"00000000-0000-4000-8000-000000000001".into());
+    let router=SessionRouter::new(Arc::new(ClosingHost(Arc::new(tokio::sync::Barrier::new(2)))),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let _first=router.attach("first").await.unwrap();
     let _second=router.attach("second").await.unwrap();
     let (first,second)=tokio::time::timeout(std::time::Duration::from_secs(2),async {tokio::join!(router.close(),router.close())}).await.unwrap();
@@ -166,7 +166,7 @@ async fn router_close_waits_for_all_handles_and_repeats_the_same_failure() {
 #[tokio::test]
 async fn released_attachment_rejects_calls_and_releases_lease_only_once() {
     let releases = Arc::new(AtomicUsize::new(0));
-    let router = SessionRouter::new(Arc::new(Host(releases.clone())), "00000000-0000-4000-8000-000000000001".into());
+    let router = SessionRouter::new(Arc::new(Host(releases.clone())), "00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let attachment = router.attach("session").await.unwrap();
     attachment.release().await.unwrap();
     attachment.release().await.unwrap();
@@ -180,7 +180,7 @@ async fn released_attachment_rejects_calls_and_releases_lease_only_once() {
 #[tokio::test]
 async fn session_removal_invalidates_all_client_leases() {
     let releases = Arc::new(AtomicUsize::new(0));
-    let router = SessionRouter::new(Arc::new(Host(releases.clone())), "00000000-0000-4000-8000-000000000001".into());
+    let router = SessionRouter::new(Arc::new(Host(releases.clone())), "00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let first = router.attach("session").await.unwrap();
     let second = router.attach("session").await.unwrap();
     router.remove("session").await.unwrap();
@@ -200,7 +200,7 @@ async fn concurrent_failed_open_shares_one_result_and_later_attach_retries() {
         let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
         host.state.lock().await.next_open_session_error=Some(ServerError::new("internal_error","faux open failure"));
         let gate=host.gate_next_open_session().await;
-        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         let first={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
         gate.entered.wait().await;
         let mut second=Box::pin(router.attach("session-1"));
@@ -224,7 +224,7 @@ async fn cancelled_leader_releases_waiter_which_then_opens() {
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
         let gate=host.gate_next_open_session().await;
-        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         let leader={let router=router.clone();tokio::spawn(async move {router.attach("session-1").await})};
         gate.entered.wait().await;
         let mut waiter=Box::pin(router.attach("session-1"));
@@ -243,7 +243,7 @@ async fn cancelled_leader_releases_waiter_which_then_opens() {
 async fn client_service_calls_serialize_on_one_attachment() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+    let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
     let attachment=router.attach("session-1").await.unwrap();
     let harness=host.latest_harness("session-1").await.unwrap();
     let gate=harness.gate_next_service_call().await;
@@ -266,7 +266,8 @@ async fn client_service_calls_serialize_on_one_attachment() {
 async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
     use maho_server::server::testing::TestServerHost;
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+    let reported=Arc::new(std::sync::Mutex::new(Vec::<String>::new()));let captured=reported.clone();
+    let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(move |error| captured.lock().unwrap().push(error.message))));
     router.bind_self();
     let attachment=router.attach("session-1").await.unwrap();
     let harness=host.latest_harness("session-1").await.unwrap();
@@ -276,6 +277,7 @@ async fn terminated_handle_invalidates_hosted_session_and_releases_leases() {
     harness.terminate(ServerError::new("internal_error","session crashed")).await;
     harness.terminated.wait().await;
     await_invalidation(&mut events,1).await;
+    assert_eq!(reported.lock().unwrap().as_slice(),["session crashed".to_string()],"termination errors go to the router reporter");
     assert_eq!(harness.state.lock().await.attachment_release_count,1);
     assert_eq!(harness.state.lock().await.attached_clients,0);
     let (_cancel,cancelled)=tokio::sync::watch::channel(false);
@@ -314,7 +316,7 @@ async fn stale_terminated_handle_cannot_invalidate_reopened_session() {
     }
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         let host=Arc::new(WatchHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
-        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         router.bind_self();
         let _first=router.attach("s").await.unwrap();
         router.remove("s").await.unwrap();
@@ -367,7 +369,7 @@ async fn termination_releases_only_the_matched_handle_leases() {
     }
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         let host=Arc::new(TermHost {handles:std::sync::Mutex::new(Vec::new()),opens:AtomicUsize::new(0)});
-        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into()));
+        let router=Arc::new(SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {})));
         router.bind_self();
         let first=router.attach("s").await.unwrap();
         let mut events=router.invalidation_events();
@@ -391,7 +393,7 @@ async fn calls_on_one_attachment_run_concurrently() {
     use maho_server::server::testing::TestServerHost;
     tokio::time::timeout(std::time::Duration::from_secs(2),async {
         let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-        let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+        let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_| {}));
         let attachment=router.attach("session-1").await.unwrap();
         let harness=host.latest_harness("session-1").await.unwrap();
         let gate=harness.gate_next_service_call().await;

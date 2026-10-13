@@ -192,7 +192,7 @@ impl UnixServer {
                         let (stream,_)=connection?; let server=runtime.clone(); let stop=connection_signal;
                         connections.spawn(async move { serve_socket(server,stream,stop,options).await });
                     },
-                    result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>eprintln!("{}",error.message),Err(error)=>eprintln!("{error}") } } }
+                    result=connections.join_next(),if !connections.is_empty()=>{ if let Some(result)=result { match result { Ok(Ok(()))=>{},Ok(Err(error))=>runtime.report_error(&error),Err(error)=>runtime.report_error(&ServerError::new("internal_error",&error.to_string())) } } }
                 }
             }
             let mut failures = Vec::new();
