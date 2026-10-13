@@ -5770,6 +5770,36 @@ impl AgentSession {
         runner.create_command_context(Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))).ok()
     }
 
+    /// senpi `extensionRunner.getShortcuts(resolvedKeybindings)`: the extension shortcuts resolved
+    /// against the built-in keybindings (reserved editor-global actions block an override), plus the
+    /// conflict diagnostics. Empty when no runner is bound.
+    pub async fn extension_shortcuts(&self, resolved: &maho_tui::keybindings::KeybindingsConfig) -> (BTreeMap<String, maho_ext_api::ExtensionShortcut>, Vec<String>) {
+        const RESERVED: [&str; 18] = ["app.interrupt", "app.clear", "app.exit", "app.suspend", "app.thinking.cycle", "app.model.cycleForward",
+            "app.model.cycleBackward", "app.model.select", "app.tools.expand", "app.thinking.toggle", "app.editor.external", "app.message.copy",
+            "app.message.followUp", "tui.input.submit", "tui.select.confirm", "tui.select.cancel", "tui.input.copy", "tui.editor.deleteToLineEnd"];
+        let Some(runner) = self.extension_runner.lock().await.clone() else { return (BTreeMap::new(), Vec::new()); };
+        let mut builtins: BTreeMap<String, maho_ext_host::runner::BuiltinShortcut> = BTreeMap::new();
+        for (keybinding, keys) in resolved {
+            let keys = match keys { Some(maho_tui::keybindings::Keys::One(key)) => vec![key.clone()], Some(maho_tui::keybindings::Keys::Many(keys)) => keys.clone(), None => continue };
+            let restrict_override = RESERVED.contains(&keybinding.as_str());
+            for key in keys {
+                let key = key.to_lowercase();
+                // The reserved action wins when several actions bind the same key.
+                if builtins.get(&key).is_some_and(|existing| existing.restrict_override && !restrict_override) { continue; }
+                builtins.insert(key, maho_ext_host::runner::BuiltinShortcut { keybinding: keybinding.clone(), restrict_override });
+            }
+        }
+        let (shortcuts, diagnostics) = runner.resolve_shortcuts(&builtins);
+        (shortcuts, diagnostics.into_iter().map(|diagnostic| diagnostic.message).collect())
+    }
+
+    /// A fresh runner context for an extension shortcut handler (senpi `setupExtensionShortcuts`'
+    /// `createContext`); `None` when no runner is bound or it is stale.
+    pub async fn extension_shortcut_context(&self) -> Option<maho_ext_api::ExtensionContext> {
+        let runner = self.extension_runner.lock().await.clone()?;
+        runner.create_context().ok()
+    }
+
     pub async fn apply_fast_mode(&self, enabled: bool) -> Result<maho_ext_api::FastModeResult, maho_ext_api::ExtensionFailure> {
         let runner=self.extension_runner.lock().await.clone().ok_or_else(||maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?;
         let context=runner.create_context()?;
@@ -7096,6 +7126,21 @@ mod tests {
             get_system_prompt_fn: Arc::new(String::new), get_system_prompt_options_fn: Arc::new(Default::default),
             registered_mcp_servers: Vec::new(), update_tool_hook_status: None, idle_coordinator: None, logger: None, defer_macrotask: None, compaction_signal: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn extension_shortcuts_skip_reserved_builtins_and_keep_free_keys() {
+        let session = test_session();
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:shortcuts>", session.cwd().into(), Default::default());
+        for key in ["Escape", "alt+k"] {
+            extension.shortcuts.insert(key.into(), maho_ext_api::ExtensionShortcut { shortcut: key.into(), description: Some(key.into()), handler: Arc::new(|_| Box::pin(async { Ok(()) })), extension_path: "<inline:shortcuts>".into() });
+        }
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), test_extension_context(&session))).await;
+        let resolved = crate::keybindings::KeybindingsManager::new(Default::default(), None).get_effective_config();
+        let (shortcuts, diagnostics) = session.extension_shortcuts(&resolved).await;
+        assert_eq!(shortcuts.keys().map(String::as_str).collect::<Vec<_>>(), ["alt+k"]);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(session.extension_shortcut_context().await.is_some());
     }
 
     #[tokio::test]

@@ -2014,3 +2014,67 @@ async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame
     assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
 }
 
+
+#[test]
+fn double_escape_on_empty_editor_opens_tree_within_the_window() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let opened = |frame: String| frame.contains("Session Tree") || frame.contains("No entries in session");
+    mode.handle_input_at("\x1b", 1000);
+    assert!(!opened(mode.render(80).join("\n")), "a single escape only arms the window");
+    mode.handle_input_at("\x1b", 1499);
+    assert!(opened(mode.render(80).join("\n")), "the second escape inside 500ms runs /tree");
+}
+
+#[test]
+fn escape_clears_a_bash_mode_draft() {
+    let (mut mode, _directory) = native_mode();
+    mode.editor.editor.set_text("!ls");
+    mode.handle_input_at("\x1b", 0);
+    assert!(mode.editor.editor.get_text().is_empty());
+}
+
+#[tokio::test]
+async fn alt_enter_when_idle_submits_like_enter() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_input("hi");
+    mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    assert!(mode.editor.editor.get_text().is_empty(), "the draft is cleared");
+    assert_eq!(mode.submit_editor().await.expect("submit"), Some(maho_core::agent_session::PromptDisposition::Started));
+    assert!(mode.render(80).join("\n").contains("hello"));
+}
+
+#[tokio::test]
+async fn alt_enter_while_streaming_queues_a_follow_up() {
+    let mut gated = gated_native_mode();
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    gated.mode.handle_input("later");
+    gated.mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    assert!(gated.mode.editor.editor.get_text().is_empty(), "the draft is cleared");
+    assert_eq!(gated.session.get_follow_up_messages(), ["later"]);
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+}
+
+#[tokio::test]
+async fn suspend_and_external_editor_keys_request_a_terminal_hand_off() {
+    use maho_interactive::interactive_mode::TerminalRequest;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_runtime_input("\x07", 0).await.expect("ctrl+g");
+    assert_eq!(mode.take_terminal_request(), Some(TerminalRequest::ExternalEditor));
+    mode.handle_runtime_input("\x1a", 1).await.expect("ctrl+z");
+    assert_eq!(mode.take_terminal_request(), if cfg!(windows) { None } else { Some(TerminalRequest::Suspend) });
+    assert_eq!(mode.take_terminal_request(), None, "a request is consumed once");
+}
+
+#[tokio::test]
+async fn configured_resume_shortcut_opens_session_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    std::fs::write(directory.path().join("keybindings.json"), r#"{"app.session.resume":"ctrl+k"}"#).expect("configuration");
+    mode.handle_input_at("\x0b", 0);
+    assert!(mode.render(80).join("\n").contains("Resume Session"));
+}

@@ -124,6 +124,25 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             let chunks = std::mem::take(&mut *input.borrow_mut());
             for chunk in chunks { mode.handle_runtime_input(&chunk, now).await?; }
+            if let Some(request) = mode.take_terminal_request() {
+                // senpi `handleCtrlZ` / `handleOpenExternalEditor`: release the terminal (and the
+                // stderr takeover), run the step, then restart and force a full redraw.
+                screen.before_terminal_stop(&mut terminal, false);
+                terminal.stop().map_err(|error| error.to_string())?;
+                screen.after_terminal_stop(&mut terminal, false);
+                maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
+                match request {
+                    maho_interactive::interactive_mode::TerminalRequest::ExternalEditor => mode.open_external_editor().await,
+                    maho_interactive::interactive_mode::TerminalRequest::Suspend => suspend_process()?,
+                }
+                maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
+                screen.before_terminal_start(&mut terminal, false, false);
+                let captured = input.clone();
+                terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+                screen.base_mut().reset_for_stop();
+                screen.base_mut().invalidate();
+                screen.base_mut().request_render(true, now);
+            }
             mode.pump_turn().await;
             if fullscreen {
                 let (document, dock) = mode.render_split(usize::from(terminal.columns()));
@@ -146,6 +165,16 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     drop(shared_host);
     result.and(stopped)
 }
+
+/// senpi `handleCtrlZ`: stop the whole process group with `SIGTSTP`. The kernel stops this process
+/// before `kill` returns, so returning here means `SIGCONT` (`fg`) resumed it.
+#[cfg(unix)]
+fn suspend_process() -> Result<(), String> {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(0), nix::sys::signal::Signal::SIGTSTP).map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn suspend_process() -> Result<(), String> { Ok(()) }
 
 /// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
 /// package/CLI-resolved theme resources before the first frame, then resolve the configured name.
