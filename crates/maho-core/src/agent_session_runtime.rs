@@ -444,7 +444,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
@@ -468,7 +468,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let manager = crate::session_manager::SessionManager::create(&cwd, None, None);
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
@@ -486,7 +486,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let entry = manager.append_message(serde_json::json!({"role":"user","content":"unsaved","timestamp":0}));
@@ -510,7 +510,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             models: Some(vec![
                 maho_ai::providers::faux::FauxModelDefinition { id: "original".to_owned(), ..Default::default() },
@@ -551,7 +551,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            });
+            }).await;
         let model = serde_json::from_value(serde_json::json!({
             "id":"faux-1", "name":"faux-1", "provider":"faux", "api":"faux", "baseUrl":"",
             "reasoning":false, "input":[], "contextWindow":128000, "maxTokens":4096,

@@ -55,6 +55,8 @@ pub struct CliRuntimeConfiguration {
     pub project_trust_override: Option<bool>,
     /// senpi `projectTrustByCwd`: one decision per cwd for every runtime this factory creates.
     pub project_trust_by_cwd: Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
+    /// senpi `parsed.unknownFlags`: extension flag values every mounted session applies.
+    pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
 }
 
 impl Default for CliRuntimeConfiguration {
@@ -81,6 +83,7 @@ impl Default for CliRuntimeConfiguration {
             additional_hook_paths: Vec::new(),
             project_trust_override: None,
             project_trust_by_cwd: Arc::default(),
+            extension_flag_values: None,
         }
     }
 }
@@ -109,6 +112,10 @@ impl CliRuntimeConfiguration {
             additional_hook_paths: Vec::new(),
             project_trust_override: parsed.project_trust_override,
             project_trust_by_cwd: Arc::default(),
+            extension_flag_values: (!parsed.unknown_flags.is_empty()).then(|| parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+                super::args::FlagValue::Boolean(value) => FlagValue::Boolean(*value),
+                super::args::FlagValue::String(value) => FlagValue::String(value.clone()),
+            })).collect()),
         }
     }
 
@@ -292,8 +299,7 @@ pub async fn mount_agent_session_runtime(
         agent_dir: Some(config.agent_dir.clone()),
         settings_manager,
         model_runtime,
-        extension_flag_values,
-    });
+    }).await;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let mut extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(widget_sender, task_parent.clone(), mcp_registry);
@@ -323,6 +329,7 @@ pub async fn mount_agent_session_runtime(
             auto_title_sessions,
             extension_factories,
             session_profile,
+            extension_flag_values,
             defer_extension_start: true,
             ..Default::default()
         },
@@ -406,6 +413,7 @@ pub fn create_cli_runtime_factory(config: CliRuntimeConfiguration) -> CliSession
                 session_manager: request.session_manager,
                 session_start_event: request.session_start_event,
                 auto_title_sessions: config.auto_title_sessions,
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             mount_agent_session_runtime(&config, mount_request, model_runtime, settings_manager).await
@@ -514,6 +522,7 @@ pub fn host_runtime_factory_with_mcp_registry(config: CliRuntimeConfiguration, m
                     session_context: profile.session_context.clone().unwrap_or_default(),
                 },
                 mcp_registry: Some(mcp_registry),
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), Some(settings)).await?;

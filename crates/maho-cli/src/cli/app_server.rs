@@ -106,6 +106,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 no_tools,
                 custom_tools,
                 auto_title_sessions,
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, model_runtime, settings_manager).await?;
