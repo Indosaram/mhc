@@ -102,6 +102,28 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     maho_tui::tui::Component::focusable_set(&mut mode, true);
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
+    // senpi `registerSignalHandlers`: SIGTERM/SIGHUP shut down gracefully (terminal restore, then
+    // the caller's `session_shutdown`); SIGWINCH re-reports the width to a mounted shared host.
+    #[cfg(unix)]
+    let mut signals = {
+        use tokio::signal::unix::{signal, SignalKind};
+        let install = |kind: SignalKind| signal(kind).map_err(|error| error.to_string());
+        (install(SignalKind::terminate())?, install(SignalKind::hangup())?, install(SignalKind::window_change())?)
+    };
+    // senpi `run()`: the version check and tmux probe start asynchronously; their notices land in
+    // the transcript when they resolve.
+    let (notice_sender, mut notices) = tokio::sync::mpsc::unbounded_channel::<StartupNotice>();
+    let version_sender = notice_sender.clone();
+    tokio::spawn(async move {
+        if let Some(release) = crate::utils::version_check::check_for_new_version(env!("CARGO_PKG_VERSION")).await {
+            let _ = version_sender.send(StartupNotice::NewVersion(release.version));
+        }
+    });
+    tokio::spawn(async move {
+        if let Some(warning) = maho_interactive::interactive_mode::check_tmux_keyboard_setup().await {
+            let _ = notice_sender.send(StartupNotice::Warning(warning));
+        }
+    });
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
     let result = async {
@@ -110,6 +132,31 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
         while !mode.shutdown_requested {
+            #[cfg(unix)]
+            {
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                let (terminate, hangup, resize) = &mut signals;
+                if terminate.poll_recv(&mut context).is_ready() || hangup.poll_recv(&mut context).is_ready() {
+                    crate::utils::shell::kill_tracked_detached_children();
+                    mode.shutdown_requested = true;
+                    break;
+                }
+                if resize.poll_recv(&mut context).is_ready()
+                    && let Some(maho_interactive::interactive_host_runtime::InteractiveHostRuntimeOutcome::Remote(runtime)) = shared_host.as_ref().map(|mount| &mount.outcome) {
+                    runtime.set_client_info(f64::from(terminal.columns())).await;
+                }
+            }
+            while let Ok(notice) = notices.try_recv() {
+                match notice {
+                    StartupNotice::NewVersion(version) => {
+                        let brand = maho_core::brand::brand_profile();
+                        let action = brand.update.as_ref().map_or_else(|| format!("{} update", maho_core::config::app_name()), |channel| channel.command.clone());
+                        let url = crate::utils::version_check::get_release_changelog_url(&version, brand.update.as_ref().and_then(|channel| channel.changelog_url.as_deref()));
+                        mode.show_new_version_notification(&version, &action, &url);
+                    }
+                    StartupNotice::Warning(warning) => mode.show_warning(&warning),
+                }
+            }
             mode.drain_events();
             while let Ok(request) = widget_requests.try_recv() { mode.handle_ui_request(request); }
             let native = session.native_tool_renderers_snapshot::<(), serde_json::Value>().await;
@@ -152,7 +199,16 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
     drop(shared_host);
+    // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
+    let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
+    if let Some(command) = resume_command { maho_core::output_guard::maho_write_stdout(&format!("\x1b[2mTo resume this session:\x1b[22m {command}\n")); }
     result.and(stopped)
+}
+
+/// A startup check result delivered to the render loop (senpi's `.then` callbacks in `run()`).
+enum StartupNotice {
+    NewVersion(String),
+    Warning(String),
 }
 
 /// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
