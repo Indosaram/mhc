@@ -7,6 +7,8 @@ use crate::models::{
     create_provider,
 };
 use crate::models_store::ModelsStoreEntry;
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::lazy_oauth;
 use crate::providers::builtin_api_streams;
 use crate::types::{
     AssistantMessageEventStream, BoxFuture, Context, DeferredCancelOptions, DeferredFetchOptions, DeferredHandle, Model,
@@ -32,6 +34,7 @@ pub fn devin_provider() -> Arc<dyn Provider> {
         name: Some("Devin".into()),
         base_url: Some(DEVIN_DEFAULT_BASE_URL.to_owned()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: None, oauth: Some(Arc::new(lazy_oauth("Devin", false, Some("Sign in with Devin".into()), || Box::pin(crate::auth::oauth::load::load_devin_oauth())))) }),
         models: seed.clone(),
         fetch_models: None,
         restore_models: None,

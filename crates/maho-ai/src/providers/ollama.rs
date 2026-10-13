@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/ollama.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::model::ModelCompat;
 use crate::models::{CreateProviderOptions, FetchModels, ModelsError, ModelsErrorCode, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
@@ -280,6 +282,7 @@ pub fn ollama_provider(options: Option<OllamaProviderOptions>) -> Arc<dyn Provid
         name: Some("Ollama Cloud".into()),
         base_url: Some(base_url),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("Ollama API key", &["OLLAMA_API_KEY"]))), oauth: None }),
         models: Vec::new(),
         fetch_models: Some(fetch_models),
         restore_models: None,
