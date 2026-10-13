@@ -19,6 +19,17 @@ pub fn parse_daemon_pid_file(text: &str) -> Option<DaemonPidFile> {
     Some(DaemonPidFile { pid, process_start_time: identity })
 }
 
+#[cfg(unix)]
+pub async fn process_is_live(pid: u64) -> Result<bool, std::io::Error> {
+    let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else { return Ok(false); };
+    match rustix::process::test_kill_process(pid) {
+        Ok(()) => Ok(true),
+        Err(error) if error == rustix::io::Errno::SRCH => Ok(false),
+        Err(error) if error == rustix::io::Errno::PERM => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+#[cfg(not(unix))]
 pub async fn process_is_live(pid: u64) -> Result<bool, std::io::Error> {
     let output = tokio::process::Command::new("kill").args(["-0", &pid.to_string()]).output().await?;
     if output.status.success() { return Ok(true); }
@@ -26,6 +37,26 @@ pub async fn process_is_live(pid: u64) -> Result<bool, std::io::Error> {
     if error.contains("No such process") { return Ok(false); }
     if error.contains("Operation not permitted") { return Ok(true); }
     Err(std::io::Error::other(error.into_owned()))
+}
+#[cfg(unix)]
+pub fn signal_pid(pid: u64, signal: &str) -> Result<(), std::io::Error> {
+    let signal = match signal {
+        "-TERM" | "-SIGTERM" => rustix::process::Signal::TERM,
+        "-KILL" | "-SIGKILL" => rustix::process::Signal::KILL,
+        other => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unsupported daemon signal {other}"))),
+    };
+    let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else { return Ok(()); };
+    match rustix::process::kill_process(pid, signal) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::SRCH => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+#[cfg(not(unix))]
+pub fn signal_pid(pid: u64, signal: &str) -> Result<(), std::io::Error> {
+    let output = std::process::Command::new("kill").args([signal, &pid.to_string()]).output()?;
+    if !output.status.success() && !String::from_utf8_lossy(&output.stderr).contains("No such process") { return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned())); }
+    Ok(())
 }
 pub async fn read_process_start_time(pid: u64) -> Result<Option<String>, std::io::Error> {
     let output = tokio::process::Command::new("ps").args(["-o", "lstart=", "-p", &pid.to_string()]).output().await?;
@@ -72,8 +103,7 @@ pub async fn wait_for_start_time(pid: u64, timeout_ms: u64) -> Result<Option<Str
 }
 pub async fn stop_validated_pid(file: &DaemonPidFile, signal: &str) -> Result<(), std::io::Error> {
     if !process_matches_pid_file(file).await? { return Ok(()); }
-    let output = tokio::process::Command::new("kill").args([signal, &file.pid.to_string()]).output().await?;
-    if !output.status.success() && !String::from_utf8_lossy(&output.stderr).contains("No such process") { return Err(std::io::Error::other(String::from_utf8_lossy(&output.stderr).into_owned())); }
+    signal_pid(file.pid, signal)?;
     match signal {
         "-TERM" | "-SIGTERM" => { wait_for_gone(file,10_000).await?; },
         "-KILL" | "-SIGKILL" => { wait_for_gone(file,2_000).await?; },

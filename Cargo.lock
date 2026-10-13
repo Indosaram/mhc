@@ -5186,6 +5186,7 @@ dependencies = [
  "maho-tui",
  "rand 0.9.3",
  "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
