@@ -14,9 +14,15 @@ pub trait ServerListener: Send + Sync {
 pub struct ServerListeners {
     listeners: Vec<Arc<dyn ServerListener>>,
 }
+/// A listener start failure: the original start error plus every rollback cleanup error, kept
+/// separate so `Server::start` can settle `closed` by the pinned startup-cleanup contract.
+pub struct ListenerStartFailure {
+    pub error: ServerError,
+    pub cleanup_errors: Vec<ServerError>,
+}
 impl ServerListeners {
     pub fn new(listeners: Vec<Arc<dyn ServerListener>>) -> Self { Self { listeners } }
-    pub async fn start(&self, server: Arc<super::Server>, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<(), ServerError> {
+    pub async fn start(&self, server: Arc<super::Server>, shutdown: tokio::sync::watch::Receiver<bool>) -> Result<(), ListenerStartFailure> {
         let accept = Arc::new(move |accepted: AcceptedConnection| {
             let server = server.clone(); let shutdown = shutdown.clone();
             Box::pin(async move { server.serve(accepted.connection, accepted.inbound, shutdown).await }) as ServerFuture<'static, ()>
@@ -25,9 +31,12 @@ impl ServerListeners {
             if let Err(error) = listener.start(accept.clone()).await {
                 // Roll back only the already-started listeners (pinned `startInternal`); the owning
                 // Server closes its own state in `Server::start`.
-                let mut errors = vec![error.message];
-                for result in futures_util::future::join_all(self.listeners[..index].iter().map(|started|started.close())).await { if let Err(error) = result { errors.push(error.message); } }
-                return Err(ServerError::new("internal_error", &errors.join("; ")));
+                let cleanup_errors = futures_util::future::join_all(self.listeners[..index].iter().map(|started|started.close()))
+                    .await
+                    .into_iter()
+                    .filter_map(Result::err)
+                    .collect();
+                return Err(ListenerStartFailure { error, cleanup_errors });
             }
         }
         Ok(())

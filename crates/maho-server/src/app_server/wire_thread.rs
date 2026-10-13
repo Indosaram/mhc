@@ -1,13 +1,14 @@
 use super::{metadata_state::{MetadataStateError, ThreadMetadataState}, thread_registry::ThreadEntry, turn_log::{LoggedTurn, TurnLog, TurnStatus}};
 use serde_json::{Value, json};
 
-fn iso_seconds(value: &str) -> Option<f64> {
-    super::js_semantics::date_parse_ms(value).map(|millis| millis as f64 / 1000.0)
+/// Pinned `wire-thread.ts` `isoSeconds`: `Date.parse(value) / 1000`, or `0` when unparseable.
+fn iso_seconds(value: &str) -> f64 {
+    super::js_semantics::date_parse_ms(value).map_or(0.0, |millis| millis as f64 / 1000.0)
 }
 pub async fn build_disk_wire_thread(wire: &Value,version: &str) -> Result<Value,MetadataStateError> {
     let git_info = match wire["sessionPath"].as_str() {Some(path)=>ThreadMetadataState.read_git_info(std::path::Path::new(path)).await?,None=>None};
-    let created = wire["createdAt"].as_str().and_then(iso_seconds);
-    let updated = wire["updatedAt"].as_str().and_then(iso_seconds);
+    let created = iso_seconds(wire["createdAt"].as_str().unwrap_or_default());
+    let updated = iso_seconds(wire["updatedAt"].as_str().unwrap_or_default());
     Ok(json!({"id":wire["id"],"sessionId":wire["sessionId"],"forkedFromId":null,"parentThreadId":null,"preview":wire["preview"].as_str().unwrap_or_default(),"ephemeral":false,"modelProvider":"unknown","createdAt":created,"updatedAt":updated,"recencyAt":updated,"status":wire["status"],"path":wire["sessionPath"],"cwd":wire["cwd"],"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":wire["name"],"turns":[]}))
 }
 pub fn logged_turn_to_wire_turn(turn: &LoggedTurn) -> Value {
@@ -20,7 +21,7 @@ pub fn logged_turn_with_view(turn: &LoggedTurn,view: &str) -> Value {
         let last = items.iter().rev().find(|item|item["type"] == "agentMessage");
         match (first,last) {(Some(first),Some(last)) if first["id"] != last["id"]=>vec![first.clone(),last.clone()],(Some(first),_)=>vec![first.clone()],(_,Some(last))=>vec![last.clone()],_=>Vec::new()}
     },_=>items};
-    json!({"id":turn.turn_id,"items":items,"itemsView":view,"status":match turn.status { TurnStatus::Running => "inProgress", TurnStatus::Completed => "completed", TurnStatus::Failed => "failed", TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message|json!({"message":message,"codexErrorInfo":"other","additionalDetails":null})),"startedAt":iso_seconds(&turn.started_at),"completedAt":turn.completed_at.as_deref().and_then(iso_seconds),"durationMs":turn.duration_ms})
+    json!({"id":turn.turn_id,"items":items,"itemsView":view,"status":match turn.status { TurnStatus::Running => "inProgress", TurnStatus::Completed => "completed", TurnStatus::Failed => "failed", TurnStatus::Interrupted => "interrupted" },"error":turn.error.as_ref().map(|message|json!({"message":message,"codexErrorInfo":"other","additionalDetails":null})),"startedAt":iso_seconds(&turn.started_at),"completedAt":turn.completed_at.as_deref().map(iso_seconds),"durationMs":turn.duration_ms})
 }
 pub fn wire_item_to_thread_item(item: &Value) -> Value {
     let mut item = item.clone();
