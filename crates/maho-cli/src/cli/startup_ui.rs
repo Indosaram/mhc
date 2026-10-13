@@ -44,7 +44,7 @@ pub fn resolve_startup_theme_with_registered(
     let name = resolve_theme_setting(setting, terminal)
         .unwrap_or_else(|| terminal.name())
         .to_owned();
-    let mut registry = ThemeRegistry::new(custom_directory.to_path_buf(), "dark", ColorMode::Truecolor)
+    let mut registry = ThemeRegistry::new(custom_directory.to_path_buf(), "dark", maho_interactive::theme::detect_color_mode())
         .map_err(|error| error.to_string())?;
     let mut diagnostics = Vec::new();
     if let Err(error) = registry.set_registered_themes(registered) {

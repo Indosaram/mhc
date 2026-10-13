@@ -371,7 +371,7 @@ async fn resolve_interactive_startup_theme(
     // senpi `resolveCliPaths`: the `--theme` paths resolved against the launch cwd.
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(parsed, &cwd, &agent_dir, maho_core::project_trust::AppMode::Interactive);
     theme_paths.extend(runtime_config.resolved_theme_paths().into_iter().map(PathBuf::from));
-    let (registered, theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::ColorMode::Truecolor);
+    let (registered, theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::detect_color_mode());
     diagnostics.extend(theme_diagnostics);
     let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(

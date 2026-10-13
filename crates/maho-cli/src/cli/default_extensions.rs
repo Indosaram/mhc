@@ -5,7 +5,7 @@ use maho_ext_host::loader::{NativeExtensionFactory, NativeAsyncExtensionFactory}
 
 pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::AgentSession, theme_paths: Vec<std::path::PathBuf>) {
     let agent_dir = std::path::PathBuf::from(session.agent_dir());
-    let (registered, diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::ColorMode::Truecolor);
+    let (registered, diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::detect_color_mode());
     for diagnostic in diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{diagnostic}\n")); }
     let themes_dir = agent_dir.join("themes");
     let config_theme = session.with_settings_manager(|manager| manager.get_string("theme")).unwrap_or_else(|| "dark".into());
@@ -17,11 +17,11 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
         let name = maho_interactive::theme::resolve_theme_setting(Some(setting), terminal_theme)
             .unwrap_or("dark");
         let mut registry = maho_interactive::theme::registry::ThemeRegistry::new(
-            themes_dir.clone(), "dark", maho_interactive::theme::ColorMode::Truecolor,
+            themes_dir.clone(), "dark", maho_interactive::theme::detect_color_mode(),
         ).map_err(|error|error.to_string())?;
         // senpi `extendResources`: themes an extension discovered join the registered set.
         let discovered = session_ref().map(|session| session.discovered_theme_paths()).unwrap_or_default();
-        let (discovered, _) = super::startup_ui::load_theme_resources(discovered.into_iter().map(std::path::PathBuf::from), maho_interactive::theme::ColorMode::Truecolor);
+        let (discovered, _) = super::startup_ui::load_theme_resources(discovered.into_iter().map(std::path::PathBuf::from), maho_interactive::theme::detect_color_mode());
         let mut themes = registered.clone();
         for theme in discovered { if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme); } }
         registry.set_registered_themes(themes).map_err(|error|error.to_string())?;
@@ -257,7 +257,7 @@ pub fn factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSe
                 theme: Arc::new(|theme| {
                     maho_interactive::theme::Theme::builtin(
                         theme.name.as_deref().unwrap_or("dark"),
-                        maho_interactive::theme::ColorMode::Truecolor,
+                        maho_interactive::theme::detect_color_mode(),
                     ).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))
                 }),
             }) }),
@@ -272,7 +272,7 @@ pub fn factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSe
                     theme: Arc::new(|theme| {
                         maho_interactive::theme::Theme::builtin(
                             theme.name.as_deref().unwrap_or("dark"),
-                            maho_interactive::theme::ColorMode::Truecolor,
+                            maho_interactive::theme::detect_color_mode(),
                         ).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))
                     }),
                 }),
