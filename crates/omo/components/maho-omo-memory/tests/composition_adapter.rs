@@ -28,6 +28,7 @@ fn wiring_options() -> NativeMemoryWiringOptions {
             warn: Arc::new(|_| {}),
         })),
         reconcile: Arc::new(|_| Box::pin(async { Ok(()) })),
+        initial_status: Arc::new(|_, _| {}),
         now: Arc::new(|| 0.0),
         warn: Arc::new(|_| {}),
     }
