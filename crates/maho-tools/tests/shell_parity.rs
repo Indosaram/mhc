@@ -117,3 +117,10 @@ async fn executor_awaits_async_observer_signal() {
     sender.send(()).unwrap();
     assert_eq!(execution.await.unwrap().unwrap().output, "output");
 }
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn powershell_config_is_windows_only() {
+    let error = maho_tools::powershell::get_powershell_config().await.unwrap_err();
+    assert_eq!(error.to_string(), "The powershell tool is only available on Windows.");
+}

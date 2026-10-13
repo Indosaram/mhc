@@ -16,6 +16,26 @@ impl LsOperations for LocalLsOperations {
         while let Some(entry) = entries.next_entry().await? { names.push(entry.file_name().to_string_lossy().into_owned()); } Ok(names)
     }) }
 }
+const ASCII_PUNCTUATION_ORDER: &str = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+fn collation_elements(text: &str) -> (Vec<(u8, u32)>, Vec<u32>) {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    let (mut primary, mut secondary) = (Vec::new(), Vec::new());
+    for c in text.nfd() {
+        if is_combining_mark(c) { if let Some(last) = secondary.last_mut() { *last = u32::from(c); } continue; }
+        let weight = if let Some(index) = ASCII_PUNCTUATION_ORDER.find(c) { (0, u32::try_from(index).unwrap_or(u32::MAX)) }
+            else if c.is_alphabetic() { (3, u32::from(c)) }
+            else if let Some(digit) = c.to_digit(10) { (2, digit) }
+            else { (1, u32::from(c)) };
+        primary.push(weight); secondary.push(0);
+    }
+    (primary, secondary)
+}
+/// Approximates JS `String.prototype.localeCompare` (ICU root collation): punctuation and symbols
+/// sort before digits, digits before letters, and accents only break ties between equal base letters.
+pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    let (left, right) = (collation_elements(a), collation_elements(b));
+    left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)).then_with(|| a.cmp(b))
+}
 #[derive(Default, Clone)]
 pub struct LsToolOptions { pub operations: Option<Arc<dyn LsOperations>>, pub filesystem_policy: Option<FilesystemPolicyChecker> }
 #[derive(Deserialize)]
@@ -34,7 +54,7 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
                 if !ops.exists(&path).await? { return Err(ToolError::Message(format!("Path not found: {}", path.display()))); }
                 if !ops.is_directory(&path).await? { return Err(ToolError::Message(format!("Not a directory: {}", path.display()))); }
                 let mut entries = ops.readdir(&path).await.map_err(|e| ToolError::Message(format!("Cannot read directory: {e}")))?;
-                entries.sort_by_key(|a| a.to_lowercase());
+                entries.sort_by(|a, b| locale_compare(&a.to_lowercase(), &b.to_lowercase()));
                 let mut results = Vec::new(); let mut limited = false;
                 for entry in entries {
                     if results.len() >= limit { limited = true; break; }

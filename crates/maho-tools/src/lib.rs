@@ -11,6 +11,7 @@ pub mod find;
 pub mod grep;
 pub mod index;
 pub mod ls;
+pub mod managed_tools;
 pub mod model_only_text;
 pub mod path_utils;
 pub mod output_accumulator;
