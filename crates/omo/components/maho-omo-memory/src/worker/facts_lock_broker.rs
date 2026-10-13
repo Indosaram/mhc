@@ -57,7 +57,10 @@ impl Drop for FactsLockBroker {
 #[cfg(unix)]
 impl FactsLockBroker {
     pub fn bind(auth_path: &Path, settings_path: &Path) -> Result<Self, String> {
-        let owned_socket_dir=std::env::temp_dir().join(format!("facts-lock-{}",memory_core::support::random::random_uuid()));
+        let mut owned_socket_dir=std::env::temp_dir().join(format!("facts-lock-{}",memory_core::support::random::random_uuid()));
+        if owned_socket_dir.join("broker.sock").as_os_str().as_encoded_bytes().len() > 100 {
+            owned_socket_dir=PathBuf::from("/tmp").join(format!("facts-lock-{}",memory_core::support::random::random_uuid()));
+        }
         let mut dir_builder=std::fs::DirBuilder::new();
         use std::os::unix::fs::DirBuilderExt;dir_builder.mode(0o700);dir_builder.create(&owned_socket_dir).map_err(|error|error.to_string())?;
         let socket_dir=owned_socket_dir.clone();
