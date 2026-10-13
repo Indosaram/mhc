@@ -359,3 +359,23 @@ async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_loaded_thr
     assert_eq!(harness.probe_read(&thread).await, "", "loaded thread/resume must bind a fresh AppServerUiContext, clearing the prior editor state");
     harness.runtime.dispose().await;
 }
+
+/// Every load path binds at creation: a thread loaded only by thread/read (no start/resume attach)
+/// already has its per-thread MCP inventory and the stateful AppServerUiContext when the response
+/// arrives, so a later turn has approvals/questions and `mcpServerStatus/list {threadId}` resolves.
+#[tokio::test]
+async fn runtime_binds_ui_and_mcp_inventory_for_a_thread_loaded_by_thread_read() {
+    let mut harness = ProbeHarness::new().await;
+    let anchor = harness.anchor().await;
+    let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
+    let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
+    harness.await_anchor(&anchor).await;
+    assert!(harness.runtime.threads.unload_thread(&thread).await);
+    harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
+    let read = harness.call(json!({"id":3,"method":"thread/read","params":{"threadId":thread}})).await;
+    assert_eq!(read["result"]["thread"]["id"].as_str(), Some(thread.as_str()));
+    assert!(harness.runtime.mcp_inventory.lock().await.resolve(Some(&thread)).is_some(), "thread/read must register the thread's MCP inventory");
+    harness.probe_write(&thread, "read-marker").await;
+    assert_eq!(harness.probe_read(&thread).await, "read-marker", "thread/read must bind the stateful AppServerUiContext");
+    harness.runtime.dispose().await;
+}

@@ -91,6 +91,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 custom_tools,
                 session_start_event,
                 auto_title_sessions,
+                extension_ui,
                 ..
             } = options;
             let request = CliRuntimeRequest {
@@ -106,6 +107,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 no_tools,
                 custom_tools,
                 auto_title_sessions,
+                extension_ui,
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, model_runtime, settings_manager).await?;

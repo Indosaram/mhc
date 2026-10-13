@@ -225,6 +225,7 @@ pub struct CliRuntimeRequest {
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     pub auto_title_sessions: Option<bool>,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    pub extension_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -272,6 +273,7 @@ pub async fn mount_agent_session_runtime(
         extension_flag_values,
         auto_title_sessions,
         session_profile,
+        extension_ui,
     } = request;
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
@@ -347,6 +349,7 @@ pub async fn mount_agent_session_runtime(
             AppMode::Json => maho_ext_api::ExtensionMode::Json,
             AppMode::Print => maho_ext_api::ExtensionMode::Print,
         }),
+        ui_context: extension_ui,
         ..Default::default()
     }).await;
     let diagnostics = created.services.diagnostics.clone();
