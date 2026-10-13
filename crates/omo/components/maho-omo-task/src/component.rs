@@ -144,6 +144,7 @@ impl TaskComponent {
                         if let Some(team)=team { let runtime=component.engine.runtime.clone(); team.liveness.acknowledge_persisted(Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_file().map(ToOwned::to_owned))); }
                         component.sync();
                     }
+                    ExtensionEvent::ModelSelect(_) => component.status.schedule_sync(),
                     _ => component.sync(),
                 }
                 Ok(EventResult::None)
