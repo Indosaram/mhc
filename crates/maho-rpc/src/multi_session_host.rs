@@ -33,12 +33,23 @@ pub struct HostCoreOptions{
     pub close_grace_ms:u64,
 }
 /// Process-local lifecycle owner for multi-session RPC runtimes (senpi's `createHostCore`
-/// result): one registry, one binding per session, and one record writer per connection.
+/// result): one registry, one binding per session, and one event fanout every connection is
+/// registered with (senpi `SessionEventWriter`'s `SessionEventFanout`).
 pub struct HostCore{
     pub registry:tokio::sync::Mutex<crate::session_registry::RpcSessionRegistry>,
     pub default_writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>,
     pub attachments:std::sync::Mutex<crate::session_command_router::ConnectionAttachments>,
-    writers:std::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<crate::session_event_writer::SessionWriterActor>>>,
+    /// Per-connection delivery: attachment sets, capabilities, late-joiner snapshots.
+    pub fanout:std::sync::Arc<std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>>,
+    /// Loop time the stall watchdog recorded; socket sinks extend their drain deadline by it.
+    pub blocked:std::sync::Arc<std::sync::Mutex<crate::loop_blocked_time::LoopBlockedTime>>,
+    widths:std::sync::Mutex<crate::session_command_router::SharedSessionWidths>,
+    /// Session attribution the stall watchdog blames a blocked loop on (senpi `runWithSessionAttribution`).
+    pub activity:crate::session_attribution::SessionActivityRegistry,
+    /// Raised by the memory sampler: idle sessions park at half the window (senpi `setMemoryPressure`).
+    memory_pressure:std::sync::atomic::AtomicBool,
+    /// `set_client_info` capabilities a connection sent before it attached (senpi `pendingCapabilities`).
+    pending_capabilities:std::sync::Mutex<std::collections::BTreeMap<String,Vec<String>>>,
     bindings:tokio::sync::Mutex<std::collections::BTreeMap<String,std::sync::Arc<crate::session_binding::RpcSessionBinding>>>,
     options:HostCoreOptions,
     /// Set only where a SIGUSR1 drain handler is actually installed (senpi `runSocketHost`): the
@@ -52,12 +63,16 @@ pub struct HostCore{
 }
 impl HostCore{
     pub fn new(options:HostCoreOptions,default_writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>)->Self{
-        Self{registry:tokio::sync::Mutex::new(crate::session_registry::RpcSessionRegistry::default()),default_writer,attachments:Default::default(),writers:Default::default(),bindings:tokio::sync::Mutex::new(std::collections::BTreeMap::new()),options,handoff_enabled:std::sync::atomic::AtomicBool::new(false),drain:std::sync::Mutex::new(crate::session_command_router::HandoffDrain::default()),handoff_closed:std::sync::Mutex::new(std::collections::BTreeSet::new()),handoff_parks:std::sync::atomic::AtomicUsize::new(0)}
+        Self{registry:tokio::sync::Mutex::new(crate::session_registry::RpcSessionRegistry::default()),default_writer,attachments:Default::default(),fanout:Default::default(),blocked:Default::default(),widths:Default::default(),activity:Default::default(),memory_pressure:std::sync::atomic::AtomicBool::new(false),pending_capabilities:Default::default(),bindings:tokio::sync::Mutex::new(std::collections::BTreeMap::new()),options,handoff_enabled:std::sync::atomic::AtomicBool::new(false),drain:std::sync::Mutex::new(crate::session_command_router::HandoffDrain::default()),handoff_closed:std::sync::Mutex::new(std::collections::BTreeSet::new()),handoff_parks:std::sync::atomic::AtomicUsize::new(0)}
     }
-    /// Registers the writer one connection's responses go to.
-    pub fn register_connection(&self,connection:&str,writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>){self.writers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(connection.into(),writer);}
-    /// Releases a connection's writer and its session attachments.
-    pub fn unregister_connection(&self,connection:&str){self.writers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(connection);}
+    /// Registers one connection's sink with the fanout (senpi `SessionEventWriter.registerConnection`).
+    pub fn register_connection(&self,connection:&str,actor:crate::socket_event_fanout::SocketEventSinkActor){self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).register(connection,actor);}
+    /// Unregisters a connection's sink, its capabilities and its render widths.
+    pub fn unregister_connection(&self,connection:&str){
+        self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unregister(connection);
+        self.pending_capabilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(connection);
+        self.widths.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear_connection(connection);
+    }
     /// Advertises `generation_handoff` only once a SIGUSR1 handler is actually installed (senpi
     /// `runSocketHost`): the capability IS the proof a handler exists, and a host without it is
     /// never signalled - SIGUSR1 would simply terminate it, sessions and all.
@@ -76,9 +91,17 @@ impl HostCore{
     /// Broadcasts one host-lifecycle record to every registered connection (senpi
     /// `SessionEventWriter.broadcastHostRecord`); a host with no connection answers on its default writer.
     pub fn broadcast_record(&self,record:&serde_json::Value){
-        let writers=self.writers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().cloned().collect::<Vec<_>>();
-        if writers.is_empty(){let _=self.default_writer.enqueue("",record.clone());}
-        else{for writer in writers{let _=writer.enqueue("",record.clone());}}
+        let stdio=self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).broadcast_host_record(record);
+        match stdio{Ok(Some(record))=>{let _=self.default_writer.enqueue("",record);},Ok(None)=>{},Err(error)=>eprintln!("senpi rpc host record failed: {error}"),}
+    }
+    /// Routes one session record through the fanout (senpi `SessionEventWriter.enqueue`).
+    fn route(&self,session_id:&str,owner:Option<&str>,record:serde_json::Value){route_session_record(&self.fanout,&self.default_writer,session_id,owner,record);}
+    /// Drops every per-connection record of a handle the host ended (senpi `forgetSessionOwnership`).
+    fn forget_session(&self,session_id:&str){
+        self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget_session(session_id);
+        self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget_session(session_id);
+        self.widths.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget_session(session_id);
+        self.default_writer.forget_session(session_id);
     }
     /// Starts the drain this host parks itself with (senpi `SessionCommandRouter.beginDrain`).
     pub async fn begin_drain(self:&std::sync::Arc<Self>){self.drain.lock().unwrap_or_else(std::sync::PoisonError::into_inner).begin();let _=self.drain_sweep().await;}
@@ -126,14 +149,15 @@ impl HostCore{
             retained};
         if let Some(binding)=self.bindings.lock().await.remove(session_id){binding.cancel_pending_extension_ui_requests();binding.dispose().await;}
         {let mut registry=self.registry.lock().await;let _=registry.close_marked(session_id,self.options.close_grace_ms).await;}
-        if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed{session_id:session_id.into(),reason:Some("handoff_parked".into()),session_path:retained}){self.broadcast_record(&value);}
-        self.default_writer.forget_session(session_id);
-    }
-    fn writer_for(&self,connection:Option<&str>)->std::sync::Arc<crate::session_event_writer::SessionWriterActor>{
-        connection.and_then(|connection|self.writers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(connection).cloned()).unwrap_or_else(||self.default_writer.clone())
+        if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed{session_id:session_id.into(),reason:Some("handoff_parked".into()),session_path:retained}){self.route(session_id,None,value);}
+        self.forget_session(session_id);
     }
     fn respond(&self,connection:Option<&str>,response:&crate::rpc_types::RpcResponse){
-        if let Ok(value)=serde_json::to_value(response){let _=self.writer_for(connection).enqueue(response.session_id.as_deref().unwrap_or(""),value);}
+        let Ok(value)=serde_json::to_value(response)else{return;};
+        if let Some(connection)=connection{
+            match self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).enqueue_control(connection,&value){Ok(true)=>return,Ok(false)=>{},Err(error)=>{eprintln!("senpi rpc connection {connection} failed: {error}");return;}}
+        }
+        let _=self.default_writer.enqueue(response.session_id.as_deref().unwrap_or(""),value);
     }
     fn error(&self,connection:Option<&str>,id:Option<String>,command:&str,message:impl Into<String>,session_id:Option<String>){
         self.respond(connection,&crate::rpc_types::RpcResponse{id,record_type:crate::rpc_types::ResponseRecordType::Response,command:command.into(),session_id,result:crate::rpc_types::RpcResponseResult::Error{error:message.into(),error_code:None,error_data:None}});
@@ -160,7 +184,17 @@ impl HostCore{
                 data["mode"]="multi".into();
                 self.success(connection,command.id.clone(),"get_protocol_info",Some(data),None);
             },
-            crate::rpc_types::RpcCommandBody::SetClientInfo{..}=>self.success(connection,command.id.clone(),"set_client_info",None,command.session_id.clone()),
+            crate::rpc_types::RpcCommandBody::SetClientInfo{width,capabilities}=>{
+                // Session-less: the connection's capabilities (senpi router `set_client_info`); with a
+                // handle, also this connection's render width for that session (senpi `sharedWidth`).
+                if let Some(connection)=connection{
+                    let capabilities=capabilities.clone().unwrap_or_default();
+                    self.pending_capabilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(connection.to_owned(),capabilities.clone());
+                    if let Err(error)=self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_capabilities(connection,&capabilities){eprintln!("senpi rpc connection {connection} failed: {error}");}
+                    if let Some(session_id)=&command.session_id{self.widths.lock().unwrap_or_else(std::sync::PoisonError::into_inner).set_width(session_id,Some(connection),*width);}
+                }
+                self.success(connection,command.id.clone(),"set_client_info",None,command.session_id.clone());
+            },
             crate::rpc_types::RpcCommandBody::ListSessions{include_workers}=>{
                 let sessions=self.registry.lock().await.list_sessions(include_workers.unwrap_or(false));
                 self.success(connection,command.id.clone(),"list_sessions",Some(serde_json::json!({"sessions":sessions})),None);
@@ -176,6 +210,9 @@ impl HostCore{
                 match admitted{
                     Err(error)=>self.error(connection,command.id.clone(),"open_session",error.to_string(),None),
                     Ok(crate::session_registry::OpenAdmission::Attached(handle))=>{
+                        // A second client joins the live session: register it with the fanout so it
+                        // receives the session's records and the in-flight snapshot (senpi `open`).
+                        self.attach_connection(connection,&handle).await;
                         let state=self.session_state(&handle).await;
                         self.success(connection,command.id.clone(),"open_session",Some(serde_json::json!({"sessionId":handle,"state":state,"attached":true})),None);
                     },
@@ -185,7 +222,7 @@ impl HostCore{
                             Err(error)=>self.error(connection,command.id.clone(),"open_session",error.to_string(),None),
                             Ok(())=>{
                                 let state=self.session_state(&handle).await;
-                                if let Some(connection_id)=connection{self.attach_binding(connection,connection_id,&handle).await;}
+                                self.attach_connection(connection,&handle).await;
                                 self.success(connection,command.id.clone(),"open_session",Some(serde_json::json!({"sessionId":handle,"state":state})),None);
                             }
                         }
@@ -198,7 +235,14 @@ impl HostCore{
                     match registry.get_mut(&session_id){Some(entry)=>attachments.admit_close((connection,&session_id),&serde_json::json!({}),&mut entry.close,false,&self.default_writer),None=>Err(crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION.to_owned())}};
                 match admitted{
                     Err(error)=>self.error(connection,command.id.clone(),"close_session",error,Some(session_id)),
-                    Ok(_)=>{if let Some(binding)=self.bindings.lock().await.remove(&session_id){binding.dispose().await;}
+                    Ok(None)=>{},
+                    Ok(Some((reservation,claim)))=>{
+                        self.default_writer.release_close_response(reservation);
+                        if let Some(connection)=connection{self.release_owner_attachment(connection,&session_id);}
+                        // Only the LAST attachment tears the session down; a surviving attachment keeps
+                        // the shared binding and its event stream (senpi `close`/`claimClose`).
+                        if claim.finalizer!=Some(true){self.success(connection,command.id.clone(),"close_session",None,Some(session_id));return Ok(());}
+                        if let Some(binding)=self.bindings.lock().await.remove(&session_id){binding.dispose().await;}
                         let completion=self.registry.lock().await.close_marked(&session_id,self.options.close_grace_ms).await;
                         let result=match completion{
                             Err(error)=>Err(error.to_string()),
@@ -206,13 +250,19 @@ impl HostCore{
                             Ok(Some(crate::session_teardown::RuntimeCloseCompletion::Draining(task)))=>task.await.map_err(|error|error.to_string()).and_then(|result|result.map_err(|error|error.to_string())),
                             Ok(None)=>Ok(()),
                         };
+                        // The terminal record precedes the close answer, and follows the lifecycle
+                        // visibility rule (senpi `reply.complete(true,"client_close")`).
+                        if let Ok(value)=serde_json::to_value(crate::rpc_types::RpcSessionLifecycleEvent::SessionClosed{session_id:session_id.clone(),reason:Some("client_close".into()),session_path:None}){self.route(&session_id,None,value);}
+                        self.forget_session(&session_id);
                         match result{Ok(())=>self.success(connection,command.id.clone(),"close_session",None,Some(session_id)),Err(error)=>self.error(connection,command.id.clone(),"close_session",error,Some(session_id))}}
                 }
             },
             _=>{
                 let Some(session_id)=command.session_id.clone()else{self.error(connection,command.id.clone(),value["type"].as_str().unwrap_or_default(),crate::rpc_types::RPC_ERROR_MISSING_SESSION_ID,None);return Ok(());};
                 let binding=self.bindings.lock().await.get(&session_id).cloned();
-                match binding{Some(binding)=>binding.handle(&value).await?,None=>self.error(connection,command.id.clone(),value["type"].as_str().unwrap_or_default(),crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,Some(session_id))}
+                // Every routed command runs inside its session's attribution scope (senpi router
+                // `handle`) and its connection's scope, so a response reaches only its requester.
+                match binding{Some(binding)=>crate::session_attribution::run_with_session_attribution(&self.activity,crate::session_attribution::SessionAttribution{session_id:Some(session_id.clone()),tool:None},CURRENT_CONNECTION.scope(connection.map(str::to_owned),binding.handle(&value))).await?,None=>self.error(connection,command.id.clone(),value["type"].as_str().unwrap_or_default(),crate::rpc_types::RPC_ERROR_UNKNOWN_SESSION,Some(session_id))}
             }
         }
         Ok(())
@@ -222,13 +272,46 @@ impl HostCore{
         registry.get(handle).and_then(|entry|entry.runtime.as_ref()).map_or_else(||serde_json::json!({}),|runtime|crate::connection_handler::build_rpc_session_state(runtime.session(),None))
     }
     async fn only_session(&self)->Option<String>{let registry=self.registry.lock().await;if registry.size()==1{registry.list_sessions(true).first().and_then(|row|row["sessionId"].as_str().map(str::to_owned))}else{None}}
-    async fn attach_binding(&self,writer_connection:Option<&str>,attachment:&str,session_id:&str){
-        let runtime={let registry=self.registry.lock().await;registry.get(session_id).and_then(|entry|entry.runtime.as_ref().map(std::sync::Arc::clone))};
+    /// Attaches one opening connection to a session (senpi `open`): ownership, the fanout target
+    /// with its capabilities and late-joiner replay, the session's visibility class, and the shared
+    /// binding the first opener creates. A stdio open owns no connection and keeps no binding.
+    async fn attach_connection(&self,connection:Option<&str>,session_id:&str){
+        let(runtime,kind)={let registry=self.registry.lock().await;match registry.get(session_id){Some(entry)=>(entry.runtime.as_ref().map(std::sync::Arc::clone),entry.identity.kind),None=>return}};
+        let capabilities=connection.and_then(|connection|self.pending_capabilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(connection).cloned()).unwrap_or_else(||self.options.capabilities.clone());
+        {let mut fanout=self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            fanout.set_session_kind(session_id,kind);
+            if let Some(connection)=connection{
+                if fanout.targets.capabilities(connection).is_none()&&let Err(error)=fanout.set_capabilities(connection,&capabilities){eprintln!("senpi rpc connection {connection} failed: {error}");}
+                if let Err(error)=fanout.attach(connection,session_id,crate::connection_handler::now_ms()){eprintln!("senpi rpc connection {connection} failed: {error}");}
+            }}
+        let Some(connection)=connection else{return;};
+        self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).attach(connection,session_id);
         let Some(runtime)=runtime else{return;};
-        let writer=self.writer_for(writer_connection);
-        let binding=std::sync::Arc::new(crate::session_binding::create_rpc_session_binding(session_id.to_owned(),runtime.session().clone(),writer,self.options.capabilities.clone()).await);
-        self.attachments.lock().unwrap_or_else(std::sync::PoisonError::into_inner).attach(attachment,session_id);
-        self.bindings.lock().await.insert(session_id.to_owned(),binding);
+        let mut bindings=self.bindings.lock().await;
+        if bindings.contains_key(session_id){return;}
+        let fanout=std::sync::Arc::clone(&self.fanout);let writer=std::sync::Arc::clone(&self.default_writer);let tag=session_id.to_owned();
+        let sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>=std::sync::Arc::new(move|value:serde_json::Value|{let owner=CURRENT_CONNECTION.try_with(Clone::clone).ok().flatten();route_session_record(&fanout,&writer,&tag,owner.as_deref(),value);});
+        let binding=std::sync::Arc::new(crate::session_binding::create_rpc_session_binding(session_id.to_owned(),runtime.session().clone(),sink,capabilities).await);
+        bindings.insert(session_id.to_owned(),binding);
+    }
+    /// Detaches the closing connection's UI/width state (senpi `releaseOwnerAttachment`); the
+    /// ownership count itself was released by the close claim.
+    fn release_owner_attachment(&self,owner:&str,session_id:&str){
+        self.widths.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear_width(session_id,Some(owner));
+        self.fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).targets.detach(owner,session_id);
+    }
+}
+tokio::task_local!{static CURRENT_CONNECTION:Option<String>;}
+/// Routes one session record (senpi `SessionEventWriter.enqueue`): responses, bash updates and
+/// blocking UI requests go to their requester only; content goes to the connections attached to
+/// the session and is remembered for late joiners; lifecycle records follow their visibility
+/// rule. With no registered connection the record takes the shared stdio lane.
+fn route_session_record(fanout:&std::sync::Mutex<crate::session_event_fanout::SessionEventFanout>,writer:&crate::session_event_writer::SessionWriterActor,session_id:&str,owner:Option<&str>,record:serde_json::Value){
+    let targeted=matches!(record["type"].as_str(),Some("response"|"bash_execution_update"))||(record["type"]=="extension_ui_request"&&matches!(record["method"].as_str(),Some("select"|"confirm"|"input"|"editor")));
+    let delivered=fanout.lock().unwrap_or_else(std::sync::PoisonError::into_inner).deliver(session_id,owner,targeted,&record);
+    match delivered{
+        Ok(stdio)=>for record in stdio{if let Err(error)=writer.enqueue(session_id,record){eprintln!("senpi rpc session {session_id} output failed: {error}");}},
+        Err(error)=>eprintln!("senpi rpc session {session_id} output failed: {error}"),
     }
 }
 #[cfg(test)]mod handoff_tests{use super::*;
@@ -240,6 +323,29 @@ impl HostCore{
     #[tokio::test]async fn handoff_is_advertised_only_after_its_handler_is_installed(){let core=idle_core();assert!(!core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));core.enable_handoff();assert!(core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));}
     #[tokio::test]async fn protocol_info_advertises_host_capabilities_the_decision_requires(){let capabilities=idle_core().advertised_capabilities();for required in crate::host_decision::REQUIRED_HOST_CAPABILITIES{assert!(capabilities.iter().any(|capability|capability==required),"{required}");}assert_eq!(capabilities.iter().filter(|capability|*capability=="multi_session").count(),1);}
     #[tokio::test]async fn an_empty_host_drains_to_exit_once(){let core=idle_core();assert!(!core.drain_sweep().await);core.begin_drain().await;assert!(core.drain_sweep().await);}
+    fn peer(core:&HostCore,id:&str)->tokio::io::BufReader<tokio::io::DuplexStream>{let(write,read)=tokio::io::duplex(64*1024);core.register_connection(id,crate::socket_event_fanout::SocketEventSinkActor::new(write,4096,30_000,std::sync::Arc::clone(&core.blocked),|error|panic!("{error}")));tokio::io::BufReader::new(read)}
+    async fn next(reader:&mut tokio::io::BufReader<tokio::io::DuplexStream>)->serde_json::Value{use tokio::io::AsyncBufReadExt;let mut line=String::new();tokio::time::timeout(std::time::Duration::from_secs(5),reader.read_line(&mut line)).await.unwrap().unwrap();serde_json::from_str(&line).unwrap()}
+    #[tokio::test]async fn every_attached_connection_receives_session_records_and_responses_stay_with_their_requester(){
+        let core=idle_core();let mut first=peer(&core,"one");let mut second=peer(&core,"two");
+        {let mut fanout=core.fanout.lock().unwrap();fanout.attach("one","s",0.).unwrap();fanout.attach("two","s",0.).unwrap();}
+        route_session_record(&core.fanout,&core.default_writer,"s",Some("one"),serde_json::json!({"type":"agent_end"}));
+        route_session_record(&core.fanout,&core.default_writer,"s",Some("two"),serde_json::json!({"type":"response","command":"prompt"}));
+        assert_eq!(next(&mut first).await["type"],"agent_end");assert_eq!(next(&mut second).await["type"],"agent_end");
+        let response=next(&mut second).await;assert_eq!(response["command"],"prompt");assert_eq!(response["sessionId"],"s");
+    }
+    #[tokio::test]async fn late_joiner_replays_the_in_flight_message(){
+        let core=idle_core();let _first=peer(&core,"one");let mut late=peer(&core,"late");
+        core.fanout.lock().unwrap().attach("one","s",0.).unwrap();
+        route_session_record(&core.fanout,&core.default_writer,"s",None,serde_json::json!({"type":"message_start"}));
+        core.fanout.lock().unwrap().attach("late","s",0.).unwrap();
+        assert_eq!(next(&mut late).await["type"],"message_start");
+    }
+    #[tokio::test]async fn set_client_info_registers_connection_capabilities(){
+        let core=idle_core();let mut client=peer(&core,"c");
+        core.handle(Some("c"),&serde_json::json!({"type":"set_client_info","width":40,"capabilities":["media_placeholders"]}).to_string()).await.unwrap();
+        assert_eq!(next(&mut client).await["command"],"set_client_info");
+        assert_eq!(core.fanout.lock().unwrap().targets.capabilities("c"),Some(&["media_placeholders".to_owned()][..]));
+    }
 }
 /// The supervisor-lifetime and empty-exit triggers one shared host reacts to (senpi
 /// `runSocketHost`'s watchdog binding and its `canExitWhenEmpty` window).
@@ -424,8 +530,9 @@ fn endpoint_superseded(own_path:&str,own:&Option<crate::socket_ownership::Socket
 #[cfg(unix)]
 async fn serve_socket_connection(core:std::sync::Arc<HostCore>,connection:String,socket:tokio::net::UnixStream){
     let(read,write)=socket.into_split();
-    let writer=std::sync::Arc::new(crate::session_event_writer::SessionWriterActor::new(write));
-    core.register_connection(&connection,writer);
+    let failed=connection.clone();
+    let actor=crate::socket_event_fanout::SocketEventSinkActor::new(write,crate::socket_event_fanout::DEFAULT_QUEUE_BYTES,crate::socket_event_fanout::DEFAULT_STALL_MS,std::sync::Arc::clone(&core.blocked),move|error|eprintln!("senpi rpc connection {failed} cut: {error}"));
+    core.register_connection(&connection,actor);
     let mut lines=tokio::io::BufReader::new(read);
     use tokio::io::AsyncBufReadExt;
     let mut buffer=String::new();
