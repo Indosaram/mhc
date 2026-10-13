@@ -808,6 +808,10 @@ impl ModelRuntime {
     pub fn get_registered_provider_config(&self,id:&str) -> Option<ProviderConfigInput> {self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned()}
     pub fn get_registered_native_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.native.get(id).cloned()}
     pub fn is_using_oauth(&self,id:&str) -> bool {self.credentials.get(id).as_ref().and_then(crate::auth_storage::credential_kind)==Some(crate::auth_storage::CredentialKind::Oauth)}
+    /// senpi `isUsingSubscription`: a stored OAuth credential whose provider OAuth is subscription-backed.
+    pub fn is_using_subscription(&self,id:&str) -> bool {self.is_using_oauth(id)&&self.get_provider_auth(id).and_then(|auth|auth.oauth).is_some_and(|oauth|oauth.is_subscription())}
+    /// senpi `provider.auth`: the provider's composed api-key and OAuth methods.
+    pub fn get_provider_auth(&self,id:&str) -> Option<ProviderAuth> {self.get_provider(id).map(|provider|compose_provider_auth(&self.config,&self.extensions,provider.as_ref()))}
     pub fn is_fallback_eligible(&self,id:&str) -> bool {self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).and_then(|e|e.fallback_eligible.as_ref()).is_none_or(|hook|hook())}
     fn prepare_request(&self,model:&Model,options:&mut StreamOptions)->(Model,Option<crate::model_config_schema::ModelsJsonProvider>,Option<ProviderConfigInput>) {
         let config=self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(&model.provider).cloned();
@@ -1195,6 +1199,27 @@ mod tests {
         async fn login(&self, _: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { Ok(maho_ai::auth::types::OAuthCredential::new("access", "refresh", 42.0)) }
         async fn refresh(&self, credential: &maho_ai::auth::types::OAuthCredential, _: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { Ok(credential.clone()) }
         async fn to_auth(&self, _: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> { Ok(maho_ai::auth::types::ModelAuth::default()) }
+    }
+
+    struct SubscriptionOAuth;
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::OAuthAuth for SubscriptionOAuth {
+        fn name(&self) -> &str { "subscription-oauth" }
+        fn is_subscription(&self) -> bool { true }
+        async fn login(&self, _: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { Ok(maho_ai::auth::types::OAuthCredential::new("access", "refresh", 42.0)) }
+        async fn refresh(&self, credential: &maho_ai::auth::types::OAuthCredential, _: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { Ok(credential.clone()) }
+        async fn to_auth(&self, _: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> { Ok(maho_ai::auth::types::ModelAuth::default()) }
+    }
+
+    #[test]
+    fn subscription_requires_a_stored_oauth_credential_on_a_subscription_provider() {
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(SubscriptionOAuth)), ..Default::default() }).expect("register oauth");
+        assert_eq!(runtime.get_provider_auth("p").and_then(|auth| auth.oauth).map(|oauth| oauth.name().to_owned()).as_deref(), Some("subscription-oauth"));
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"api_key","key":"k"}))).expect("seed key");
+        assert!(!runtime.is_using_subscription("p"));
+        runtime.credentials.set("p", Some(serde_json::json!({"type":"oauth","access":"a","refresh":"r","expires":1.0}))).expect("seed oauth");
+        assert!(runtime.is_using_subscription("p"));
     }
 
     #[tokio::test]
