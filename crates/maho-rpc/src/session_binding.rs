@@ -32,7 +32,7 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
         E::ModelChangeRejected{model,reason,detail,budget:b}=>{let mut record=b.as_ref().map_or_else(||json!({}),budget);record["type"]="model_change_rejected".into();record["model"]=json!(model);record["reason"]=json!(reason);record["detail"]=json!(detail);record},
         E::ModelChangeSkipped{model,budget:b,direction}=>{let mut record=budget(b);record["type"]="model_change_skipped".into();record["model"]=json!(model);record["direction"]=json!(direction);record},
         E::ServiceTierChanged{tier,fast_mode}=>{let mut record=json!({"type":"service_tier_changed","fastMode":fast_mode});if let Some(tier)=tier{record["tier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}.into();}record},
-        E::ThinkingLevelChanged{level}=>json!({"type":"thinking_level_changed","level":level}),
+        E::ThinkingLevelChanged{level,thinking_selection}=>{let mut record=json!({"type":"thinking_level_changed","level":level});optional!(record,"thinkingSelection",thinking_selection);record},
         E::HighReasoningWarning{model_id,provider,thinking_level}=>json!({"type":"high_reasoning_warning","modelId":model_id,"provider":provider,"thinkingLevel":thinking_level}),
         E::ServerFallbackAborted{from,to,chain_configured}=>json!({"type":"server_fallback_aborted","from":from,"to":to,"chainConfigured":chain_configured}),
         E::SessionSettingsChanged{steering_mode,follow_up_mode,auto_compaction_enabled}=>json!({"type":"session_settings_changed","steeringMode":steering_mode,"followUpMode":follow_up_mode,"autoCompactionEnabled":auto_compaction_enabled}),

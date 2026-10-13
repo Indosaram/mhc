@@ -392,6 +392,21 @@ impl Agent {
         lock(&self.inner.state).thinking_level = level;
     }
 
+    /// Assign `state.thinkingSelection`.
+    pub fn set_thinking_selection(&self, selection: Option<ThinkingSelection>) {
+        lock(&self.inner.state).thinking_selection = selection;
+    }
+
+    /// `state.reasoningBaseline` alone.
+    pub fn reasoning_baseline(&self) -> Option<String> {
+        lock(&self.inner.state).reasoning_baseline.clone()
+    }
+
+    /// Assign `state.reasoningBaseline`.
+    pub fn set_reasoning_baseline(&self, baseline: Option<String>) {
+        lock(&self.inner.state).reasoning_baseline = baseline;
+    }
+
     pub fn steering_mode(&self) -> QueueMode {
         lock(&self.inner.steering_queue).mode
     }
@@ -1002,6 +1017,16 @@ impl Agent {
     /// `Agent.shouldStopAfterTurn`.
     pub fn set_should_stop_after_turn(&self, callback: Option<ShouldStopAfterTurnWithSignal>) {
         lock(&self.inner.settings).should_stop_after_turn = callback;
+    }
+
+    /// `Agent.prepareNextTurn` (getter).
+    pub fn prepare_next_turn(&self) -> Option<PrepareNextTurnWithoutContext> {
+        lock(&self.inner.settings).prepare_next_turn.clone()
+    }
+
+    /// `Agent.prepareNextTurnWithContext` (getter).
+    pub fn prepare_next_turn_with_context(&self) -> Option<PrepareNextTurnWithContext> {
+        lock(&self.inner.settings).prepare_next_turn_with_context.clone()
     }
 
     /// `Agent.prepareNextTurn`.
