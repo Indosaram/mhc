@@ -106,6 +106,18 @@ impl ServerCore {
         (connection.send)(populate_outbound_notification(notification, now)).await?;
         Ok(true)
     }
+    /// senpi `NotificationRouter.toThread` delivery to one subscriber. Returns whether the
+    /// connection counts as routed (initialized), even when its filters drop the message.
+    pub async fn send_thread_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
+        let Some(connection) = self.connections.get(id) else { return Ok(false); };
+        let deliver = {
+            let state = connection.initialized.lock().await;
+            if state.state.is_none() { return Ok(false); }
+            state.can_route_thread_notification(notification["method"].as_str().unwrap_or_default())
+        };
+        if deliver { (connection.send)(populate_outbound_notification(notification, now)).await?; }
+        Ok(true)
+    }
     pub async fn broadcast_notification(&self, notification: Value, now: u64) -> Result<usize, errors::JsonRpcError> {
         let mut delivered = 0;
         for id in self.connections.keys() {

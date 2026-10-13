@@ -6,6 +6,13 @@ use indexmap::IndexMap;
 
 pub type SessionFactory = Arc<dyn Fn(CreateAgentSessionOptions) -> Pin<Box<dyn Future<Output = Result<AgentSession, String>> + Send>> + Send + Sync>;
 
+/// senpi `ThreadRegistry` default `createSession`: the SDK `createAgentSession`.
+pub fn default_session_factory() -> SessionFactory {
+    Arc::new(|options| Box::pin(async move { Ok(create_agent_session(options).await?.session) }))
+}
+/// senpi `AppServerSessionResult.initialNotifications` cap (the router terminal queue limit).
+const INITIAL_NOTIFICATION_LIMIT: usize = 100;
+
 pub fn fork_session_manager(source_file: Option<&str>, cwd: &str, session_dir: Option<&str>) -> Result<SessionManager, String> {
     match source_file.filter(|path| std::path::Path::new(path).exists()) {
         Some(source_file) => fork_from_session_file(source_file, cwd, session_dir),
@@ -60,17 +67,40 @@ impl ThreadEntry {
 pub struct ThreadRegistry {
     entries: Mutex<IndexMap<String, Arc<Mutex<ThreadEntry>>>>,
     deleted: Mutex<BTreeSet<String>>,
+    /// Notifications a session produced before its thread entry exists (senpi `initialNotifications`).
+    initial_notifications: std::sync::Mutex<BTreeMap<String, Vec<Value>>>,
     pub agent_dir: String,
     pub session_dir: Option<String>,
     factory: SessionFactory,
 }
 impl ThreadRegistry {
     pub fn new(agent_dir: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
-        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(|| Arc::new(|options| Box::pin(async move { Ok(create_agent_session(options).await?.session) }))) }
+        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), initial_notifications: std::sync::Mutex::new(BTreeMap::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(default_session_factory) }
+    }
+    /// Queue notifications for a session whose thread entry is registered next (marking it as
+    /// awaiting registration even when empty); they become the
+    /// entry's queued terminal notifications, replayed to its first subscriber.
+    pub fn queue_initial_notifications(&self, id: &str, notifications: impl IntoIterator<Item = Value>) {
+        let mut pending = self.initial_notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queue = pending.entry(id.to_owned()).or_default();
+        queue.extend(notifications);
+        let excess = queue.len().saturating_sub(INITIAL_NOTIFICATION_LIMIT);
+        queue.drain(..excess);
+    }
+    /// The loaded entry for `id`; while a created session awaits registration its notification is
+    /// queued as an initial notification instead, and for any other thread it is dropped (senpi
+    /// `toThread` on an unknown thread). Checked under the entries lock so registration cannot race.
+    pub async fn loaded_or_queue_initial(&self, id: &str, notification: Value) -> Option<Arc<Mutex<ThreadEntry>>> {
+        let entries = self.entries.lock().await;
+        if let Some(entry) = entries.get(id) { return Some(entry.clone()); }
+        let awaiting = self.initial_notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(id);
+        if awaiting { self.queue_initial_notifications(id, [notification]); }
+        None
     }
     pub async fn register_session(&self, session: AgentSession, cwd: String, timestamps: Option<(String, String)>) -> Arc<Mutex<ThreadEntry>> {
         let id = session.session_id();
         let mut entries = self.entries.lock().await;
+        let initial = self.initial_notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id).unwrap_or_default();
         if let Some(existing) = entries.get(&id).cloned() {
             drop(entries);
             session.dispose().await;
@@ -78,7 +108,7 @@ impl ThreadRegistry {
         }
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (created_at, updated_at) = timestamps.unwrap_or_else(|| (now.clone(), now));
-        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: Vec::new(), created_at, updated_at, tasks: Arc::new(Mutex::new(())) }));
+        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())) }));
         entries.insert(id, entry.clone());
         entry
     }

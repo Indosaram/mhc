@@ -140,7 +140,16 @@ pub struct ExtensionBindings {
     pub mode: Option<ExtensionMode>,
     pub abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_error: Option<ExtensionErrorListener>,
+    /// senpi `ExtensionBindings.shutdownHandler`: what `ctx.shutdown()` requests in this mode.
+    pub shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+
+/// Builds a session's first extension bindings right before `bind_extensions`, so a mode can
+/// subscribe to the session (for example its extension RPC events) before `session_start` runs.
+pub type ExtensionBindingsFactory = Arc<dyn Fn(&AgentSession) -> ExtensionBindings + Send + Sync>;
+
+/// senpi `extensionRunner.onRpcEvent` handler: `(name, data)` of one `senpi:extension-rpc-event`.
+pub type ExtensionRpcEventListener = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeNavigationIntent {
@@ -425,6 +434,7 @@ struct AgentSessionState {
     extension_bound_ui: Option<(Arc<dyn ExtensionUi>, Arc<dyn ExtensionUi>)>,
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
+    extension_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Tracks startup dispatch so RPC attach can install UI without repeating the lifecycle.
     extension_lifecycle_started: bool,
     message_revision: u64,
@@ -558,6 +568,10 @@ pub struct AgentSessionInner {
     /// snapshot on the shared bus reaches the session's retained snapshot without holding the
     /// `AgentSession`.
     mcp_wire_status_retention: Mutex<Option<maho_ext_api::BusSubscription>>,
+    /// Relays the bound runner's `senpi:extension-rpc-event` channel to the session's listeners.
+    extension_rpc_event_forwarding: Mutex<Option<maho_ext_api::BusSubscription>>,
+    /// Held outside `state` so a relay never contends with a caller holding the state lock.
+    extension_rpc_event_listeners: Mutex<Vec<ExtensionRpcEventListener>>,
     tool_context_disposers: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
     html_theme_resolver: Mutex<Option<HtmlThemeResolver>>,
 }
@@ -919,7 +933,13 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         let result = self.session()?.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await.map_err(maho_ext_api::ExtensionFailure::new)?;
         Ok(maho_ext_api::ReloadVetoDecision { cancelled: result.cancel == Some(true), reason: result.reason })
     }) }
-    fn shutdown(&self) { if let Ok(session) = self.session() { tokio::spawn(async move { session.dispose().await; }); } }
+    fn shutdown(&self) { if let Ok(session) = self.session() {
+        let handler = session.state().extension_shutdown_handler.clone();
+        match handler {
+            Some(handler) => handler(),
+            None => { tokio::spawn(async move { session.dispose().await; }); }
+        }
+    } }
     fn get_context_usage(&self) -> Option<maho_ext_api::ContextUsage> { self.session().ok()?.get_context_usage().map(|usage|
         maho_ext_api::ContextUsage { tokens: usage.tokens, context_window: usage.context_window, percent: usage.percent }) }
     fn get_compaction_settings(&self) -> maho_ext_api::CompactionSettings {
@@ -1617,6 +1637,7 @@ impl AgentSession {
             extension_bound_ui: None,
             extension_abort_handler: None,
             extension_error_listener: None,
+            extension_shutdown_handler: None,
             extension_lifecycle_started: false,
             message_revision: 0,
             assistant_generation: 0,
@@ -1713,6 +1734,8 @@ impl AgentSession {
             probe_task: Mutex::new(None),
             mcp_wire_status_order: tokio::sync::Mutex::new(()),
             mcp_wire_status_retention: Mutex::new(None),
+            extension_rpc_event_forwarding: Mutex::new(None),
+            extension_rpc_event_listeners: Mutex::new(Vec::new()),
             tool_context_disposers: Mutex::new(Vec::new()),
             html_theme_resolver: Mutex::new(None),
         }) };
@@ -3905,9 +3928,12 @@ impl AgentSession {
             Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
             Ok(_) => {}, Err(error) => {
                 let error = ExtensionError { extension_path: "<runtime>".to_owned(), event: "session_title_generation".to_owned(), error, stack: None };
-                if let Some(runner) = self.extension_runner.lock().await.as_mut() { runner.emit_error(error.clone()); }
-                let listener = self.state().extension_error_listener.clone();
-                if let Some(listener) = listener { listener(&error); }
+                // A bound runner forwards to the session error listener (pinned `runner.onError`).
+                let reported = match self.extension_runner.lock().await.as_mut() { Some(runner) => { runner.emit_error(error.clone()); runner.has_session_error_listener() }, None => false };
+                if !reported {
+                    let listener = self.state().extension_error_listener.clone();
+                    if let Some(listener) = listener { listener(&error); }
+                }
             },
         }
     }
@@ -4163,8 +4189,10 @@ impl AgentSession {
             let error = ExtensionError { extension_path: format!("command:{name}"), event: "command".to_owned(),
                 error: error.message, stack: error.stack };
             runner.emit_error(error.clone());
-            let listener = self.state().extension_error_listener.clone();
-            if let Some(listener) = listener { listener(&error); }
+            if !runner.has_session_error_listener() {
+                let listener = self.state().extension_error_listener.clone();
+                if let Some(listener) = listener { listener(&error); }
+            }
         }
         Ok(true)
     }
@@ -5122,6 +5150,14 @@ impl AgentSession {
             })
         }));
         let weak = Arc::downgrade(&self.inner);
+        *lock(&self.extension_rpc_event_forwarding) = Some(runner.events.on(crate::event_bus::EXTENSION_RPC_EVENT_CHANNEL, Arc::new(move |event: &Value| {
+            let Some(inner) = weak.upgrade() else { return; };
+            let Some(name) = event.get("name").and_then(Value::as_str) else { return; };
+            let data = event.get("data").cloned().unwrap_or(Value::Null);
+            let listeners = lock(&inner.extension_rpc_event_listeners).clone();
+            for listener in listeners { listener(name, &data); }
+        })));
+        let weak = Arc::downgrade(&self.inner);
         *lock(&self.wake_source_subscription) = Some(runner.events.on("wake_source_state", Arc::new(move |data| {
             if let Some(inner) = weak.upgrade() { lock(&inner.state).wake_sources.observe(data); }
         })));
@@ -5493,9 +5529,13 @@ impl AgentSession {
         {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error });
         }
+        let listener = self.state().extension_error_listener.clone();
         let error = {
             let mut runner = self.extension_runner.lock().await;
-            runner.as_mut().and_then(|runner| runner.set_extension_mode(mode, has_ui).err())
+            runner.as_mut().and_then(|runner| {
+                runner.set_session_error_listener(listener);
+                runner.set_extension_mode(mode, has_ui).err()
+            })
         };
         if let Some(error) = error {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
@@ -5565,6 +5605,7 @@ impl AgentSession {
             if let Some(mode) = bindings.mode { state.extension_mode = mode; }
             if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+            if let Some(handler) = bindings.shutdown_handler { state.extension_shutdown_handler = Some(handler); }
         }
         self.apply_extension_bindings().await;
         let event = self.state().session_start_event.clone();
@@ -5605,6 +5646,7 @@ impl AgentSession {
             if let Some(mode) = bindings.mode { state.extension_mode = mode; }
             if let Some(handler) = bindings.abort_handler { state.extension_abort_handler = Some(handler); }
             if let Some(listener) = bindings.on_error { state.extension_error_listener = Some(listener); }
+            if let Some(handler) = bindings.shutdown_handler { state.extension_shutdown_handler = Some(handler); }
         }
         self.apply_extension_bindings().await;
     }
@@ -5755,6 +5797,12 @@ impl AgentSession {
     pub fn emit_extension_event(&self, channel: &str, data: &Value) {
         self.event_bus.emit(channel, data);
         if let Some(events) = self.state().extension_events.clone() { events.emit(channel, data); }
+    }
+
+    /// senpi `extensionRunner.onRpcEvent`: receive every `senpi:extension-rpc-event` the bound
+    /// runner publishes, across runner reloads, for the rest of this session's lifetime.
+    pub fn add_extension_rpc_event_listener(&self, listener: ExtensionRpcEventListener) {
+        lock(&self.extension_rpc_event_listeners).push(listener);
     }
 
     /// Publish a typed payload natively on the bound runner's bus (no serialization), so a consumer
@@ -6246,6 +6294,8 @@ impl AgentSession {
         self.state().extension_events = None;
         self.state().mcp_wire_status = None;
         lock(&self.mcp_wire_status_retention).take();
+        lock(&self.extension_rpc_event_forwarding).take();
+        lock(&self.extension_rpc_event_listeners).clear();
         {
             let mut guard = self.extension_runner.lock().await;
             if let Some(runner) = guard.as_mut() {
@@ -9329,6 +9379,43 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("cleanup provider");
         result.expect("binding must finish without provider completion");
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("welcome"));
+    }
+
+    #[tokio::test]
+    async fn bound_shutdown_handler_replaces_session_dispose() {
+        let session = test_session();
+        let requested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = requested.clone();
+        session.bind_extensions(ExtensionBindings {
+            shutdown_handler: Some(Arc::new(move || { observed.fetch_add(1, Ordering::SeqCst); })), ..Default::default()
+        }).await;
+        maho_ext_api::ExtensionContextActions::shutdown(&*session.extension_context_actions());
+        assert_eq!(requested.load(Ordering::SeqCst), 1);
+        assert!(!session.state().disposed);
+    }
+
+    #[tokio::test]
+    async fn extension_rpc_events_reach_session_listeners() {
+        let session = test_session();
+        let events = maho_ext_api::EventBus::default();
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), events.clone(), test_extension_context(&session))).await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = seen.clone();
+        session.add_extension_rpc_event_listener(Arc::new(move |name, data| lock(&observed).push((name.to_owned(), data.clone()))));
+        events.emit(crate::event_bus::EXTENSION_RPC_EVENT_CHANNEL, &serde_json::json!({"name":"memory_updated","data":{"n":1}}));
+        assert_eq!(*lock(&seen), [("memory_updated".to_owned(), serde_json::json!({"n":1}))]);
+    }
+
+    #[tokio::test]
+    async fn bound_error_listener_receives_runner_errors_once() {
+        let session = test_session();
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), test_extension_context(&session))).await;
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let observed = errors.clone();
+        session.bind_extensions(ExtensionBindings { on_error: Some(Arc::new(move |error| lock(&observed).push(error.clone()))), ..Default::default() }).await;
+        let error = ExtensionError { extension_path: "<inline:x>".to_owned(), event: "tool_call".to_owned(), error: "boom".to_owned(), stack: None };
+        session.extension_runner.lock().await.as_mut().expect("bound runner").emit_error(error.clone());
+        assert_eq!(*lock(&errors), [error]);
     }
 
     #[tokio::test]

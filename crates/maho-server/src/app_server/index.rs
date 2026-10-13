@@ -4,6 +4,13 @@ use super::unix_socket::start_unix_socket_listener;
 use std::{future::Future, path::Path};
 
 pub async fn run_app_server_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAuth>, shutdown: impl Future<Output = ()>) -> Result<(), String> {
+    // senpi `shutdownSignal`: process signals and extension `requestShutdown` both end the mode.
+    let shutdown = async {
+        tokio::select! {
+            () = shutdown => {},
+            reason = runtime.shutdown_request.requested() => eprintln!("app-server shutdown requested: {reason}"),
+        }
+    };
     let result=run_mode(runtime,listen,auth,shutdown).await;
     runtime.dispose().await;
     result

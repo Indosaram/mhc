@@ -273,6 +273,8 @@ pub struct ExtensionRunner {
     /// `create_context_for_extension`. Cleared whenever the bound context/actions change.
     context_session_manager: Arc<std::sync::Mutex<Option<Arc<dyn SessionManager>>>>,
     factory_context: ExtensionContext,
+    /// The session-bound error listener (pinned `_extensionErrorUnsubscriber` swap in `_applyExtensionBindings`).
+    session_error_listener: Option<ErrorListener>,
 }
 pub type RuntimeFactory = Arc<dyn Fn(ExtensionContext) -> ExtensionFuture<'static, ExtensionRunner> + Send + Sync>;
 struct SharedExtension(Arc<dyn Extension>);
@@ -282,7 +284,7 @@ impl Extension for SharedExtension {
 impl ExtensionRunner {
     pub fn new(extensions: Vec<LoadedExtension>, runtime: ExtensionRuntime, events: EventBus, context: ExtensionContext) -> Self {
         Self { extensions, runtime, events, factory_context: context.clone(), context, error_listeners: Vec::new(), errors: Vec::new(), warnings: Vec::new(),
-            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)) }
+            shutdown_warn_ms: 2000, shutdown_timeout_ms: 10000, hook_observer: None, warning_listener: None, next_hook_index: 0, context_actions: None, reload: Arc::new(std::sync::Mutex::new(None)), shutdown_budget: None, runtime_factory: None, context_session_manager: Arc::new(std::sync::Mutex::new(None)), session_error_listener: None }
     }
     pub fn from_static(extensions: Vec<Box<dyn Extension>>, context: ExtensionContext) -> Self {
         Self::from_shared_static(extensions.into_iter().map(Arc::from).collect(), context)
@@ -342,6 +344,7 @@ impl ExtensionRunner {
         let mut runner = factory(context).await?;
         runner.runtime_factory = self.runtime_factory.clone();
         runner.error_listeners = self.error_listeners.clone();
+        runner.session_error_listener = self.session_error_listener.clone();
         runner.warning_listener = self.warning_listener.clone();
         runner.hook_observer = self.hook_observer.clone();
         runner.shutdown_budget = self.shutdown_budget.clone();
@@ -530,11 +533,15 @@ impl ExtensionRunner {
         }
     }
     pub fn on_error(&mut self, listener: ErrorListener) { self.error_listeners.push(listener); }
+    /// Replace the single session-bound error listener (pinned unsubscribe-then-`onError`).
+    pub fn set_session_error_listener(&mut self, listener: Option<ErrorListener>) { self.session_error_listener = listener; }
+    pub fn has_session_error_listener(&self) -> bool { self.session_error_listener.is_some() }
     pub fn set_tool_hook_lifecycle_observer(&mut self, observer: Option<HookObserver>) { self.hook_observer = observer; }
     pub fn set_warning_listener(&mut self, listener: Option<WarningListener>) { self.warning_listener = listener; }
     pub fn set_shutdown_budget_resolver(&mut self, resolver: Arc<dyn Fn() -> (u64, u64) + Send + Sync>) { self.shutdown_budget = Some(resolver); }
     pub fn emit_error(&mut self, error: ExtensionError) {
         for listener in &self.error_listeners { listener(&error); }
+        if let Some(listener) = &self.session_error_listener { listener(&error); }
         self.errors.push(error);
     }
     fn report(&mut self, path: &str, kind: EventKind, error: ExtensionFailure) {
