@@ -4,8 +4,10 @@ use crate::provider_composer::{AuthStatus, ProviderConfigInput, compose_model_pr
 use maho_ai::legacy_provider_ids::normalize_provider_id;
 use maho_ai::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, Models, ModelsAuth, ModelsError, ModelsErrorCode, ModelsRefreshOptions, ModelsRefreshResult, Provider, create_models};
 use maho_ai::types::{AssistantMessage, AssistantMessageEventStream, BoxFuture, Context, Model, SimpleStreamOptions, StreamOptions};
+use maho_ai::auth::types::{AuthCheck, AuthOperationOptions, AuthType};
+use maho_ai::utils::abort::{AbortSignal, operation_signal};
 use indexmap::IndexMap;
-use std::{path::PathBuf, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, RwLock}};
 
 #[derive(Default)]
 pub struct CreateModelRuntimeOptions {
@@ -84,6 +86,28 @@ fn builtin_oauth(id:&str)->Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
     }
 }
 
+/// senpi `ModelRuntimeSnapshot`: the last availability view, readable synchronously.
+#[derive(Default)]
+struct ModelRuntimeSnapshot {
+    all: Vec<Model>,
+    available: Vec<Model>,
+    configured_providers: HashSet<String>,
+    stored_providers: HashSet<String>,
+    auth: HashMap<String, AuthCheck>,
+}
+
+/// Snapshot plus the availability sequence counters and last availability error. Shared by
+/// clones so a refresh on one handle is visible to every holder, like the single TS object.
+#[derive(Default)]
+struct AvailabilityState {
+    snapshot: ModelRuntimeSnapshot,
+    initialized: bool,
+    refresh_seq: u64,
+    error_seq: u64,
+    provider_seq: HashMap<String, u64>,
+    error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ModelRuntime {
     models: Models,
@@ -94,6 +118,7 @@ pub struct ModelRuntime {
     errors: IndexMap<String,String>,
     models_path: Option<PathBuf>,
     pub credentials: Arc<crate::auth_storage::AuthStorage>,
+    availability: Arc<RwLock<AvailabilityState>>,
 }
 
 impl ModelRuntime {
@@ -106,6 +131,7 @@ impl ModelRuntime {
             models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
             config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),
             native:IndexMap::new(), extensions, errors:IndexMap::new(),models_path:options.models_path,credentials,
+            availability:Arc::new(RwLock::new(AvailabilityState::default())),
         };
         runtime.rebuild_providers(); runtime
     }
@@ -136,10 +162,102 @@ impl ModelRuntime {
         ids.extend(self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider_ids().into_iter().map(str::to_owned));
         ids.extend(self.extensions.read().unwrap_or_else(|p|p.into_inner()).keys().cloned());
         for id in ids { self.recompose_provider(&id); }
+        self.update_model_snapshot();
+    }
+    fn availability_state(&self) -> std::sync::RwLockWriteGuard<'_, AvailabilityState> {
+        self.availability.write().unwrap_or_else(|p| p.into_inner())
+    }
+    fn update_model_snapshot(&self) {
+        let all = self.models.get_models(None);
+        let mut guard = self.availability_state();
+        let snapshot = &mut guard.snapshot;
+        snapshot.available = all.iter().filter(|model| snapshot.configured_providers.contains(&model.provider)).cloned().collect();
+        snapshot.all = all;
+    }
+    async fn run_availability_refresh(&self, seq: u64, error_seq: u64, signal: AbortSignal) -> Result<(), String> {
+        let providers = self.models.get_providers();
+        let available = self.models.get_available(None).await;
+        let checks = futures::future::join_all(providers.iter().map(|provider| {
+            let id = provider.id().to_owned();
+            let options = AuthOperationOptions { signal: Some(signal.clone()) };
+            async move { let check = self.check_auth(&id, Some(options)).await; (id, check) }
+        })).await;
+        let credentials = self.list_credentials(Some(AuthOperationOptions { signal: Some(signal.clone()) })).await.map_err(|error| error.message)?;
+        let mut auth = HashMap::new();
+        for (id, check) in checks {
+            if let Some(check) = check.map_err(|error| error.message)? { auth.insert(id, check); }
+        }
+        let all = self.models.get_models(None);
+        let mut guard = self.availability_state();
+        if seq != guard.refresh_seq { return Ok(()); }
+        guard.snapshot = ModelRuntimeSnapshot {
+            all, available, configured_providers: auth.keys().cloned().collect(),
+            stored_providers: credentials.into_iter().map(|entry| entry.provider_id).collect(), auth,
+        };
+        guard.initialized = true;
+        if error_seq == guard.error_seq { guard.error = None; }
+        Ok(())
+    }
+    async fn queue_availability_refresh(&self, signal: Option<AbortSignal>) -> Result<(), String> {
+        let (seq, error_seq) = {
+            let mut guard = self.availability_state();
+            guard.refresh_seq += 1;
+            for provider_seq in guard.provider_seq.values_mut() { *provider_seq += 1; }
+            guard.error_seq += 1;
+            (guard.refresh_seq, guard.error_seq)
+        };
+        let signal = operation_signal(signal);
+        let result = self.run_availability_refresh(seq, error_seq, signal.clone()).await;
+        if let Err(error) = &result {
+            let mut guard = self.availability_state();
+            if error_seq == guard.error_seq && !signal.aborted() { guard.error = Some(error.clone()); }
+        }
+        result
+    }
+    async fn refresh_provider_availability(&self, provider_id: &str, signal: AbortSignal) -> Result<(), String> {
+        // Invalidate any full availability pass that started before this credential change.
+        let (provider_seq, error_seq) = {
+            let mut guard = self.availability_state();
+            guard.refresh_seq += 1;
+            let provider_seq = guard.provider_seq.get(provider_id).copied().unwrap_or(0) + 1;
+            guard.provider_seq.insert(provider_id.to_owned(), provider_seq);
+            guard.error_seq += 1;
+            (provider_seq, guard.error_seq)
+        };
+        let result = async {
+            let available = self.models.get_available(Some(provider_id)).await;
+            let auth = self.check_auth(provider_id, Some(AuthOperationOptions { signal: Some(signal.clone()) })).await.map_err(|error| error.message)?;
+            signal.throw_if_aborted().map_err(|reason| reason.message)?;
+            let credential = self.credentials.get(provider_id);
+            let all = self.models.get_models(None);
+            let mut guard = self.availability_state();
+            if guard.provider_seq.get(provider_id) != Some(&provider_seq) { return Ok(()); }
+            let state = &mut *guard;
+            let snapshot = &mut state.snapshot;
+            match auth {
+                Some(auth) => { snapshot.configured_providers.insert(provider_id.to_owned()); snapshot.auth.insert(provider_id.to_owned(), auth); }
+                None => { snapshot.configured_providers.remove(provider_id); snapshot.auth.remove(provider_id); }
+            }
+            if credential.is_some() { snapshot.stored_providers.insert(provider_id.to_owned()); } else { snapshot.stored_providers.remove(provider_id); }
+            let available_by_id: HashMap<(String, String), Model> = snapshot.available.iter().filter(|model| model.provider != provider_id).chain(available.iter())
+                .map(|model| ((model.provider.clone(), model.id.clone()), model.clone())).collect();
+            snapshot.available = all.iter().filter_map(|model| available_by_id.get(&(model.provider.clone(), model.id.clone())).cloned()).collect();
+            snapshot.all = all;
+            if error_seq == state.error_seq { state.error = None; }
+            Ok::<(), String>(())
+        }.await;
+        if let Err(error) = &result {
+            let mut guard = self.availability_state();
+            if guard.provider_seq.get(provider_id) == Some(&provider_seq) && error_seq == guard.error_seq && !signal.aborted() {
+                guard.error = Some(error.clone());
+            }
+        }
+        result
     }
     pub fn get_error(&self) -> Option<String> {
         let mut errors:Vec<String> = self.config.read().unwrap_or_else(|p|p.into_inner()).get_error().map(str::to_owned).into_iter().collect();
         errors.extend(self.errors.iter().map(|(id,error)|format!("Provider \"{id}\": {error}")));
+        if let Some(error) = self.availability_state().error.clone() { errors.push(format!("Availability refresh: {error}")); }
         if errors.is_empty() {None} else {Some(errors.join("\n\n"))}
     }
     pub fn get_warnings(&self) -> Vec<String> {self.config.read().unwrap_or_else(|p|p.into_inner()).get_warnings().to_vec()}
@@ -147,7 +265,28 @@ impl ModelRuntime {
     pub fn get_model(&self,provider:&str,id:&str) -> Option<Model> {self.models.get_model(&normalize_provider_id(provider),id)}
     pub fn get_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.models.get_provider(&normalize_provider_id(id))}
     pub fn get_providers(&self) -> Vec<Arc<dyn Provider>> {self.models.get_providers()}
-    pub async fn get_available(&self,provider:Option<&str>) -> Vec<Model> {self.models.get_available(provider).await}
+    /// senpi `getAvailable`: a provider-scoped read goes straight to the registry; a full read
+    /// runs one availability pass and returns the refreshed snapshot. When that pass fails the
+    /// error is recorded for `get_error` and the registry's own filtered list is returned, since
+    /// this signature (unlike the TS promise) cannot carry the failure.
+    pub async fn get_available(&self,provider:Option<&str>) -> Vec<Model> {
+        if let Some(provider) = provider {
+            let error_seq = { let mut guard = self.availability_state(); guard.error_seq += 1; guard.error_seq };
+            let available = self.models.get_available(Some(provider)).await;
+            let mut guard = self.availability_state();
+            if error_seq == guard.error_seq { guard.error = None; }
+            return available;
+        }
+        match self.queue_availability_refresh(None).await {
+            Ok(()) => self.get_available_snapshot(),
+            Err(_) => self.models.get_available(None).await,
+        }
+    }
+    pub fn get_available_snapshot(&self) -> Vec<Model> { self.availability_state().snapshot.available.clone() }
+    /// True only when the most recent availability refresh completed without error.
+    pub fn has_fresh_availability_snapshot(&self) -> bool { let guard = self.availability_state(); guard.initialized && guard.error.is_none() }
+    pub fn has_availability_snapshot(&self) -> bool { self.availability_state().initialized }
+    pub fn has_configured_auth(&self, provider_id: &str) -> bool { self.availability_state().snapshot.configured_providers.contains(provider_id) }
     pub fn get_provider_auth_status(&self,id:&str) -> AuthStatus {
         // senpi `getProviderAuthStatus`: a non-persistent runtime API key wins, so the
         // credential-policy runtime-key branch can fire; the stored credential is next.
@@ -227,6 +366,9 @@ impl ModelRuntime {
         };
         let value = serde_json::to_value(&credential).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))?;
         self.credentials.set(&id, Some(value)).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+        // senpi `synchronizeCredentialState`: the snapshot follows the credential change. A
+        // failed pass is recorded as the availability error surfaced by `get_error`.
+        let _ = self.refresh_provider_availability(&id, signal).await;
         Ok(credential)
     }
 
@@ -236,7 +378,10 @@ impl ModelRuntime {
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(options.signal);
         signal.throw_if_aborted().map_err(|reason| ModelsError::new(ModelsErrorCode::Auth, reason.message))?;
-        self.credentials.delete(&id).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))
+        self.credentials.delete(&id).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error))?;
+        // senpi `synchronizeCredentialState`; a failed pass is recorded for `get_error`.
+        let _ = self.refresh_provider_availability(&id, signal).await;
+        Ok(())
     }
 
     pub async fn get_auth_for_model(&self, model: &Model, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
@@ -266,15 +411,54 @@ impl ModelRuntime {
     pub async fn refresh(&mut self,options:ModelsRefreshOptions) -> ModelsRefreshResult {
         let config = ModelConfig::load_with_migration(self.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled()).await;
         *self.config.write().unwrap_or_else(|p|p.into_inner()) = config;
-        self.rebuild_providers(); self.models.refresh(options).await
+        self.rebuild_providers();
+        let providers = options.providers.clone();
+        let signal = options.signal.clone();
+        let mut result = self.models.refresh(options).await;
+        self.update_model_snapshot();
+        let this: &Self = self;
+        if let Some(providers) = providers {
+            let providers: indexmap::IndexSet<String> = providers.into_iter().collect();
+            let outcomes = futures::future::join_all(providers.iter().map(|provider_id| {
+                let provider_signal = operation_signal(signal.clone());
+                async move { (provider_id.clone(), this.refresh_provider_availability(provider_id, provider_signal).await) }
+            })).await;
+            for (provider_id, outcome) in outcomes {
+                if let Err(error) = outcome && !signal.as_ref().is_some_and(AbortSignal::aborted) {
+                    result.errors.insert(provider_id, ModelsError::new(ModelsErrorCode::Auth, error));
+                }
+            }
+        } else {
+            // Availability errors are recorded by the latest pass (see `get_error`); refreshed
+            // models remain usable.
+            let _ = this.queue_availability_refresh(signal.clone()).await;
+        }
+        result.aborted = result.aborted || signal.as_ref().is_some_and(AbortSignal::aborted);
+        result
     }
     pub fn register_provider(&mut self,id:&str,config:ProviderConfigInput) -> Result<(),String> {
         let id = normalize_provider_id(id);
         compose_model_provider(&id,self.native.get(&id).or_else(||self.builtins.get(&id)).cloned(),&self.config.read().unwrap_or_else(|p|p.into_inner()),Some(&config))?;
-        self.extensions.write().unwrap_or_else(|p|p.into_inner()).insert(id.clone(),config);self.recompose_provider(&id);Ok(())
+        self.extensions.write().unwrap_or_else(|p|p.into_inner()).insert(id.clone(),config.clone());self.recompose_provider(&id);
+        self.update_model_snapshot();
+        let stored = self.availability_state().snapshot.stored_providers.contains(&id);
+        let configured = stored || crate::provider_api_key_auth::configured_request_auth_status(
+            self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(&id), Some(&config.config)).is_some_and(|status| status.configured);
+        if configured {
+            let mut guard = self.availability_state();
+            let snapshot = &mut guard.snapshot;
+            snapshot.configured_providers.insert(id.clone());
+            // Provisional entry until the async refresh lands; never clobber a real check result.
+            snapshot.auth.entry(id.clone()).or_insert_with(|| AuthCheck {
+                source: Some("configured provider".into()),
+                auth_type: if config.oauth.is_some() && config.api_key.is_none() { AuthType::OAuth } else { AuthType::ApiKey },
+            });
+            snapshot.available = snapshot.all.iter().filter(|model| snapshot.configured_providers.contains(&model.provider)).cloned().collect();
+        }
+        Ok(())
     }
-    pub fn register_native_provider(&mut self,provider:Arc<dyn Provider>) {let id=normalize_provider_id(provider.id());self.native.insert(id.clone(),provider);self.recompose_provider(&id);}
-    pub fn unregister_provider(&mut self,id:&str) {let id=normalize_provider_id(id);self.native.shift_remove(&id);self.extensions.write().unwrap_or_else(|p|p.into_inner()).shift_remove(&id);self.recompose_provider(&id);}
+    pub fn register_native_provider(&mut self,provider:Arc<dyn Provider>) {let id=normalize_provider_id(provider.id());self.native.insert(id.clone(),provider);self.recompose_provider(&id);self.update_model_snapshot();}
+    pub fn unregister_provider(&mut self,id:&str) {let id=normalize_provider_id(id);self.native.shift_remove(&id);self.extensions.write().unwrap_or_else(|p|p.into_inner()).shift_remove(&id);self.recompose_provider(&id);self.update_model_snapshot();}
     pub fn get_registered_provider_ids(&self) -> Vec<String> {self.extensions.read().unwrap_or_else(|p|p.into_inner()).keys().chain(self.native.keys()).cloned().collect()}
     pub fn get_registered_provider_config(&self,id:&str) -> Option<ProviderConfigInput> {self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned()}
     pub fn get_registered_native_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.native.get(id).cloned()}
@@ -425,6 +609,56 @@ mod tests {
         assert_eq!(runtime.credentials.get("p").and_then(|value| value.get("key").and_then(|key| key.as_str().map(str::to_owned))), Some("entered-key".into()));
     }
 
+    /// Hides every model but `keep`, like a provider entitlement filter.
+    struct FilteringProvider;
+    impl Provider for FilteringProvider {
+        fn id(&self) -> &str { "filtering" }
+        fn name(&self) -> &str { "filtering" }
+        fn get_models(&self) -> Vec<Model> {
+            ["keep","hide"].into_iter().map(|id| serde_json::from_value(serde_json::json!({
+                "id": id, "name": id, "api": "openai-completions", "provider": "filtering", "baseUrl": "http://localhost/v1",
+                "reasoning": false, "input": [], "contextWindow": 128000, "maxTokens": 4096,
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+            })).expect("model")).collect()
+        }
+        fn filter_models(&self, models: Vec<Model>, credential: Option<&maho_ai::models::Credential>) -> Vec<Model> {
+            assert!(credential.is_some(), "filter receives the stored credential");
+            models.into_iter().filter(|model| model.id == "keep").collect()
+        }
+        fn stream(&self, _model: &Model, _context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream { maho_ai::utils::event_stream::create_assistant_message_event_stream() }
+        fn stream_simple(&self, _model: &Model, _context: &Context, _options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream { maho_ai::utils::event_stream::create_assistant_message_event_stream() }
+    }
+    fn filtering_registry() -> crate::model_registry::ModelRegistry {
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![Arc::new(FilteringProvider) as Arc<dyn Provider>]), ..Default::default() });
+        runtime.credentials.set("filtering", Some(serde_json::json!({"type":"api_key","key":"fixture"}))).expect("seed");
+        crate::model_registry::ModelRegistry::new(runtime)
+    }
+    #[test]
+    fn registry_available_applies_provider_filter_before_snapshot() {
+        let registry = filtering_registry();
+        assert!(!registry.model_runtime.has_availability_snapshot());
+        let ids: Vec<_> = registry.get_available().into_iter().map(|model| model.id).collect();
+        assert_eq!(ids, ["keep"]);
+    }
+    #[tokio::test]
+    async fn registry_available_reads_runtime_snapshot_after_refresh() {
+        let registry = filtering_registry();
+        let async_ids: Vec<_> = registry.model_runtime.get_available(None).await.into_iter().map(|model| model.id).collect();
+        assert!(registry.model_runtime.has_fresh_availability_snapshot());
+        assert!(registry.model_runtime.has_configured_auth("filtering"));
+        let sync_ids: Vec<_> = registry.get_available().into_iter().map(|model| model.id).collect();
+        assert_eq!((async_ids, sync_ids), (vec!["keep".to_owned()], vec!["keep".to_owned()]));
+    }
+    #[test]
+    fn register_provider_provisionally_marks_configured_provider() {
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{}}"#);
+        runtime.register_provider("ext", crate::model_config_schema::ModelsJsonProvider {
+            api: Some("openai-completions".into()), base_url: Some("http://localhost/v1".into()), api_key: Some("fixture-key".into()),
+            models: Some(vec![crate::model_config_schema::ModelsJsonModel { id: "sol".into(), ..Default::default() }]), ..Default::default()
+        }.into()).expect("register");
+        assert!(runtime.has_configured_auth("ext"));
+        assert!(runtime.get_available_snapshot().iter().any(|model| model.provider == "ext" && model.id == "sol"));
+    }
     #[test]
     fn real_models_copy_qa_when_requested() {
         let config=match std::env::var("TASK17_MODELS_COPY") {
