@@ -34,7 +34,7 @@ async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
     let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
     let paths = factories.iter().map(|factory| factory.path.clone()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(paths.len(), factories.len());
-    for path in ["<builtin:gpt-apply-patch>", "<builtin:todowrite>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<builtin:claude-sdk-oauth>", "<builtin:cursor-cli-oauth>", "<user:pi-ast-grep>"] {
+    for path in ["<builtin:gpt-apply-patch>", "<builtin:todowrite>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<builtin:claude-sdk-oauth>", "<builtin:cursor-cli-oauth>"] {
         assert!(paths.contains(path), "Missing factory {path}");
     }
     let registered = factories.iter().filter_map(|factory| factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>')))

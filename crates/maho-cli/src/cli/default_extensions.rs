@@ -96,8 +96,17 @@ pub fn assembled_factories_with_mcp_registry(
         }),
     }
     assembled.extend(super::oauth_providers::runtime_oauth_factories(settings, cwd, agent_dir));
+    let agent_dir_path = std::path::Path::new(agent_dir);
+    if let Err(error) = super::global_default_shims::ensure_global_default_extensions(agent_dir_path) {
+        maho_core::output_guard::maho_write_stderr(&format!("Could not write default extension shims: {error}\n"));
+    }
+    let active_defaults = super::global_default_shims::active_global_default_extension_ids(agent_dir_path);
+    assembled.retain(|factory| {
+        let id = builtin_id(&factory.path);
+        !id.is_some_and(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.contains(&id) && !active_defaults.contains(id))
+    });
     let paths: std::collections::BTreeSet<_> = assembled.iter().map(|factory| factory.path.clone()).collect();
-    let native = super::extension_registry::native_extension_factories().into_iter()
+    let native = super::extension_registry::native_extension_factories_for(agent_dir_path).into_iter()
         .filter(|factory| !paths.contains(&factory.path)).collect();
     assembled.extend(async_factories(native));
     let selection = BuiltinExtensionSelection::from_settings(settings);

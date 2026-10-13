@@ -11,6 +11,7 @@
 //! `register` -> `commit_registration` path a disk-loaded factory takes, with failure isolation per
 //! factory.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -282,7 +283,7 @@ fn orca_titlebar_spinner() -> Box<dyn Extension> {
     Box::new(maho_ext_orca_titlebar_spinner::OrcaTitlebarSpinner)
 }
 fn pi_ast_grep() -> Box<dyn Extension> {
-    Box::new(maho_ext_pi_ast_grep::AstGrep)
+    Box::new(maho_ext_pi_ast_grep::AstGrep { package_entry: Some(installed_git_package_entry("code-yeongyu", "pi-ast-grep")) })
 }
 fn pi_nested_agents_md() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)
@@ -290,25 +291,31 @@ fn pi_nested_agents_md() -> Box<dyn Extension> {
 fn omo_zcode_oauth() -> Box<dyn Extension> {
     Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
 }
+/// Installed package entry for a `git:github.com/<owner>/<repo>` user package; the native port
+/// resolves the package's own `node_modules` from here, as the TS entry does via `import.meta.url`.
+fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(maho_core::config::get_agent_dir())
+        .join("git").join("github.com").join(owner).join(repo).join("src").join("index.ts")
+}
 fn pi_comment_checker() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_comment_checker::CommentChecker {
-        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from).unwrap_or_default(),
+        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| installed_git_package_entry("code-yeongyu", "pi-comment-checker")),
     })
 }
 fn orca_prefill() -> Box<dyn Extension> {
     struct Environment;
     impl maho_ext_orca_prefill::PrefillEnvironment for Environment {
         fn pane_key(&self) -> Option<String> { std::env::var("ORCA_PANE_KEY").ok() }
-        fn take_prefill(&self) -> Option<String> { std::env::var("ORCA_PREFILL").ok() }
+        fn take_prefill(&self) -> Option<String> {
+            maho_ext_orca_prefill::take_process_prefill(|| std::env::var(maho_ext_orca_prefill::PREFILL_ENV).ok())
+        }
     }
     Box::new(maho_ext_orca_prefill::OrcaPrefill { environment: Arc::new(Environment) })
 }
-fn quiet_model_profile() -> Box<dyn Extension> {
-    Box::new(maho_ext_quiet_model_profile::QuietModelProfile::new(Default::default()))
-}
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 10] = [
+static USER_FACTORIES: [NativeExtension; 9] = [
     NativeExtension { id: "pi-ast-grep", crate_name: "maho-ext-pi-ast-grep", factory: pi_ast_grep },
     NativeExtension { id: "pi-nested-agents-md", crate_name: "maho-ext-pi-nested-agents-md", factory: pi_nested_agents_md },
     NativeExtension { id: "ferryx-agent-state", crate_name: "maho-ext-ferryx-agent-state", factory: ferryx_agent_state },
@@ -318,7 +325,6 @@ static USER_FACTORIES: [NativeExtension; 10] = [
     NativeExtension { id: "omo-zcode-oauth", crate_name: "maho-ext-omo-zcode-oauth", factory: omo_zcode_oauth },
     NativeExtension { id: "pi-comment-checker", crate_name: "maho-ext-pi-comment-checker", factory: pi_comment_checker },
     NativeExtension { id: "orca-prefill", crate_name: "maho-ext-orca-prefill", factory: orca_prefill },
-    NativeExtension { id: "quiet-model-profile", crate_name: "maho-ext-quiet-model-profile", factory: quiet_model_profile },
 ];
 
 pub fn user_extensions() -> &'static [NativeExtension] {
@@ -346,14 +352,53 @@ pub fn assemble_extensions() -> Vec<(&'static str, &'static str, Box<dyn Extensi
         .collect()
 }
 
-/// The loader factories for [`assemble_extensions`].
+/// Package name a settings `packages` source installs (`git:host/owner/<name>[@ref]`,
+/// `npm:[@scope/]<name>[@version]`, a local path); the last path segment without ref or `.git`.
+fn package_name(source: &str) -> Option<&str> {
+    let last = source.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let last = last.strip_suffix(".git").unwrap_or(last);
+    last.split('@').next().filter(|name| !name.is_empty())
+}
+
+fn configured_package_names(agent_dir: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(agent_dir.join("settings.json")) else { return BTreeSet::new(); };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) else { return BTreeSet::new(); };
+    settings.get("packages").and_then(serde_json::Value::as_array).into_iter().flatten()
+        .filter_map(|package| package.as_str().or_else(|| package.get("source").and_then(serde_json::Value::as_str)))
+        .filter_map(package_name).map(str::to_owned).collect()
+}
+
+/// senpi loads a user extension only when it is installed: a file (or `<id>/index.*` directory) in
+/// `<agentDir>/extensions`, or a package listed in the global settings `packages`. A linked native
+/// port is registered only for the ids this returns, so uninstalling or deleting one disables it.
+pub fn installed_user_extension_ids(agent_dir: &Path) -> BTreeSet<&'static str> {
+    let packages = configured_package_names(agent_dir);
+    let extensions = agent_dir.join("extensions");
+    USER_FACTORIES.iter().map(|entry| entry.id).filter(|id| {
+        packages.contains(*id)
+            || ["ts", "js"].iter().any(|extension| {
+                extensions.join(format!("{id}.{extension}")).is_file()
+                    || extensions.join(id).join(format!("index.{extension}")).is_file()
+            })
+    }).collect()
+}
+
+/// The loader factories for [`assemble_extensions`], with user ports gated on installation in the
+/// process agent directory.
 pub fn native_extension_factories() -> Vec<NativeExtensionFactory> {
-    assemble_extensions()
-        .into_iter()
-        .map(|(id, kind, extension)| NativeExtensionFactory {
+    native_extension_factories_for(Path::new(&maho_core::config::get_agent_dir()))
+}
+
+/// [`native_extension_factories`] against an explicit agent directory.
+pub fn native_extension_factories_for(agent_dir: &Path) -> Vec<NativeExtensionFactory> {
+    let installed = installed_user_extension_ids(agent_dir);
+    BUILTIN_FACTORIES.iter().map(|entry| (entry.id, "builtin", entry))
+        .chain(USER_FACTORIES.iter().filter(|entry| installed.contains(entry.id)).map(|entry| (entry.id, "user", entry)))
+        .chain(INLINE_FACTORIES.iter().map(|entry| (entry.id, "inline", entry)))
+        .map(|(id, kind, entry)| NativeExtensionFactory {
             path: format!("<{kind}:{id}>"),
             source_info: source_info(id, kind),
-            extension,
+            extension: (entry.factory)(),
         })
         .collect()
 }

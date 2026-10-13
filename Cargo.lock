@@ -3123,7 +3123,6 @@ dependencies = [
  "maho-ext-pi-nested-agents-md",
  "maho-ext-pi-webfetch",
  "maho-ext-prompt-preset",
- "maho-ext-quiet-model-profile",
  "maho-ext-reasoning",
  "maho-ext-recommended-models",
  "maho-ext-rules",
