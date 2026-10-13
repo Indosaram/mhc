@@ -92,3 +92,20 @@ async fn prompt_main_hooks_match_pinned_reference() {
  assert_eq!(actual.len(), expected.as_array().unwrap().len());
 }
 
+
+#[tokio::test]
+async fn preset_prompt_renders_forwarded_tool_snippets_and_guidelines() {
+ let mut ctx = context(); ctx.cwd = "/nonexistent/preset-tools".into(); ctx.agent_dir = ctx.cwd.clone();
+ ctx.is_project_trusted_fn = Arc::new(|| false);
+ let model: Model = serde_json::from_value(serde_json::json!({"id":"gpt-5.6","name":"gpt-5.6","api":"openai-responses","provider":"custom","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).unwrap();
+ ctx.model = Some(model);
+ let mut api = ExtensionApi::new(LoadedExtension::new("preset", ctx.cwd.clone(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ maho_ext_prompt_preset::PromptPreset.register(&mut api);
+ let mut options = BuildSystemPromptOptions { cwd: "<root>".into(), tools: vec!["read".into()], prompt_guidelines: vec!["Fixture guideline".into()], ..Default::default() };
+ options.tool_snippets.insert("read".into(), "Fixture read snippet".into());
+ let mut event = ExtensionEvent::BeforeAgentStart(BeforeAgentStartEvent { prompt: String::new(), images: None, system_prompt: "base".into(), system_prompt_options: options });
+ let EventResult::BeforeAgentStart(result) = api.registered.handlers[&EventKind::BeforeAgentStart][0](&mut event, &ctx).await.unwrap() else { panic!("expected preset prompt") };
+ let prompt = result.system_prompt.unwrap();
+ assert!(prompt.contains("- read: Fixture read snippet"));
+ assert!(prompt.contains("- Fixture guideline"));
+}
