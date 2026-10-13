@@ -1,12 +1,15 @@
+#[cfg(any(target_os="linux",target_os="macos"))]
 use std::fs;
 #[derive(Debug,Clone,PartialEq)]
 pub struct ProcessTableRow { pub pid:u32,pub ppid:u32,pub state:String,pub rss_kb:f64 }
+#[cfg(target_os="linux")]
 pub fn parse_linux_stat(pid:u32,stat:&str) -> Option<ProcessTableRow> {
     let tail=stat.rsplit_once(") ")?.1.split(' ').collect::<Vec<_>>();
     let state=tail.first()?.to_string();let ppid=tail.get(1)?.parse().ok()?;
     let pages=tail.get(21).and_then(|v|v.parse::<f64>().ok()).filter(|v|v.is_finite()).unwrap_or(0.);
     Some(ProcessTableRow{pid,ppid,state,rss_kb:(pages*4.+0.5).floor()})
 }
+#[cfg(target_os="linux")]
 pub fn linux_reader() -> Option<Vec<ProcessTableRow>> {
     let entries=fs::read_dir("/proc").ok()?;
     Some(entries.filter_map(Result::ok).filter_map(|entry|{let pid=entry.file_name().to_str()?.parse::<u32>().ok()?;if pid==0{return None;}let stat=fs::read_to_string(entry.path().join("stat")).ok()?;parse_linux_stat(pid,&stat)}).collect())
@@ -27,9 +30,12 @@ pub fn parse_kernel_process_table(table:&[u8],row_count:usize,self_pid:u32,self_
 pub type ProcessTableReader = fn() -> Option<Vec<ProcessTableRow>>;
 pub fn load_process_table_reader(platform:&str) -> Option<ProcessTableReader> {
     match platform {
+        #[cfg(target_os="linux")]
         "linux" => Some(linux_reader as ProcessTableReader),
         #[cfg(target_os="macos")]
         "darwin"|"macos" => Some(darwin_reader as ProcessTableReader),
+    #[cfg(not(unix))]
+    "linux"|"darwin"|"macos" => None,
         _ => None,
     }
 }
@@ -59,10 +65,17 @@ pub fn darwin_reader() -> Option<Vec<ProcessTableRow>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     fn kernel_platform()->&'static str{if cfg!(target_os="macos"){"darwin"}else{"linux"}}
-    #[test] fn only_kernel_platforms_have_a_reader_and_it_sees_this_process(){assert!(load_process_table_reader("win32").is_none());assert!(load_process_table_reader("freebsd").is_none());assert!(std::ptr::fn_addr_eq(load_process_table_reader("linux").expect("linux reader"),linux_reader as ProcessTableReader),"linux selects the /proc reader");#[cfg(target_os="macos")]{assert!(std::ptr::fn_addr_eq(load_process_table_reader("darwin").expect("darwin reader"),darwin_reader as ProcessTableReader),"darwin selects the libproc reader");}#[cfg(not(target_os="macos"))]{assert!(load_process_table_reader("darwin").is_none());}let reader=load_process_table_reader(kernel_platform()).expect("own platform reader");assert!(reader().unwrap().iter().any(|row|row.pid==std::process::id()));}
+    #[cfg(unix)]
+    #[test] fn only_kernel_platforms_have_a_reader_and_it_sees_this_process(){assert!(load_process_table_reader("win32").is_none());assert!(load_process_table_reader("freebsd").is_none());#[cfg(target_os="linux")]assert!(std::ptr::fn_addr_eq(load_process_table_reader("linux").expect("linux reader"),linux_reader as ProcessTableReader),"linux selects the /proc reader");#[cfg(target_os="macos")]{assert!(std::ptr::fn_addr_eq(load_process_table_reader("darwin").expect("darwin reader"),darwin_reader as ProcessTableReader),"darwin selects the libproc reader");}#[cfg(target_os="linux")]{assert!(load_process_table_reader("darwin").is_none());}let reader=load_process_table_reader(kernel_platform()).expect("own platform reader");assert!(reader().unwrap().iter().any(|row|row.pid==std::process::id()));}
+    #[cfg(target_os="linux")]
     #[test] fn linux_parent_and_rss_after_complex_name(){let mut fields=vec!["0";22];fields[0]="Z";fields[1]="17";fields[21]="1024";let row=parse_linux_stat(42,&format!("42 (name (complex)) {}",fields.join(" "))).unwrap();assert_eq!(row.ppid,17);assert_eq!(row.rss_kb,4096.);assert_eq!(row.state,"Z");}
+    #[cfg(target_os="macos")]
     #[test] fn darwin_self_check_fails_closed(){let mut table=vec![0u8;648];table[40..44].copy_from_slice(&42u32.to_le_bytes());table[560..564].copy_from_slice(&17u32.to_le_bytes());assert!(parse_kernel_process_table(&table,1,42,17,|_|100.).is_some());assert!(parse_kernel_process_table(&table,1,42,18,|_|100.).is_none());table[36]=5;assert!(parse_kernel_process_table(&table,1,42,17,|_|100.).is_none());assert!(parse_kernel_process_table(&table[..50],1,42,17,|_|100.).is_none());}
+    #[cfg(unix)]
     #[test] fn actual_kernel_reader_sees_current_process(){let rows=load_process_table_reader(kernel_platform()).expect("reader")().expect("table");let own=rows.iter().find(|row|row.pid==std::process::id()).expect("own row");assert_eq!(own.ppid,std::os::unix::process::parent_id());assert!(own.rss_kb>0.);assert!(!own.state.starts_with('Z'));}
+    #[cfg(unix)]
+    #[cfg(target_os="linux")]
     #[test] fn actual_kernel_reader_reports_an_unreaped_child_as_zombie(){let mut child=std::process::Command::new("/usr/bin/true").spawn().unwrap();rustix::process::waitid(rustix::process::WaitId::Pid(rustix::process::Pid::from_child(&child)),rustix::process::WaitIdOptions::EXITED|rustix::process::WaitIdOptions::NOWAIT).unwrap();let rows=load_process_table_reader(kernel_platform()).expect("reader")().expect("table");let row=rows.iter().find(|row|row.pid==child.id()).expect("zombie row");assert!(row.state.starts_with('Z'));assert_eq!(row.ppid,std::process::id());assert_eq!(row.rss_kb,0.);child.wait().unwrap();}
 }

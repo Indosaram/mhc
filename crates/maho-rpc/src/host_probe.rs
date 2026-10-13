@@ -32,6 +32,8 @@ pub async fn probe_session_count(socket_path:&str,timeout_ms:u64)->Option<usize>
 #[cfg(test)]mod tests{
     use super::*;
     #[test]fn reply_matches_id_and_success(){assert!(read_answer(r#"{"id":"other","success":true}"#).is_none());assert!(read_answer(r#"{"id":"ensure-host-probe","success":false}"#).is_none());assert_eq!(read_answer(r#"{"id":"ensure-host-probe","success":true,"data":null}"#),Some(serde_json::json!({})));}
+    #[cfg(unix)]
     #[tokio::test]async fn actual_socket_ignores_broadcast_and_unrelated_reply(){let temp=tempfile::tempdir().unwrap();let path=temp.path().join("probe.sock");let listener=tokio::net::UnixListener::bind(&path).unwrap();let serve=tokio::spawn(async move{let (mut socket,_)=listener.accept().await.unwrap();let mut byte=[0u8;1];let mut request=vec![];loop{socket.read_exact(&mut byte).await.unwrap();request.push(byte[0]);if byte[0]==b'\n'{break;}}let request:Value=serde_json::from_slice(&request).unwrap();assert_eq!(request["id"],PROBE_REQUEST_ID);socket.write_all(b"{\"type\":\"agent_start\"}\n{\"id\":\"other\",\"success\":true}\n{\"id\":\"ensure-host-probe\",\"success\":true,\"data\":{\"sessions\":[{},{}]}}\n").await.unwrap();});assert_eq!(probe_session_count(path.to_str().unwrap(),1000).await,Some(2));serve.await.unwrap();}
+    #[cfg(unix)]
     #[tokio::test]async fn absent_endpoint_is_not_reachable(){let temp=tempfile::tempdir().unwrap();assert!(!probe_socket_reachable(temp.path().join("missing").to_str().unwrap(),1000).await);}
 }
