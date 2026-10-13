@@ -288,6 +288,8 @@ impl AgentSessionRuntime {
         }
         let destination = destination.to_string_lossy().into_owned();
         if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(destination.clone())).await? { return Ok(false); }
+        // senpi takes the shared host's write grant for the destination before copying into it.
+        crate::session_write_reservation::reserve_session_write(&destination);
         if !stored {
             let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
