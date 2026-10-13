@@ -109,11 +109,11 @@ pub fn create_request_options(
     stream.request.signal = context.abort_signal();
     let _ = get_telemetry_context(context);
     if let Some(before_payload) = config.before_payload.clone() {
-        let model = config.model.clone();
         let context = context.clone();
-        stream.request.on_payload = Some(Arc::new(move |_payload, _, _| {
-            let _ = (&before_payload, &model, &context);
-            None
+        stream.request.async_on_payload = Some(Arc::new(move |payload, model, _metadata| {
+            let replacement = before_payload(payload, model, context.clone());
+            let future: BoxFuture<'static, Result<Option<Value>, String>> = Box::pin(async move { Ok(replacement.await) });
+            future
         }));
     }
     stream.request.on_response = Some(Arc::new(move |response, _| {
