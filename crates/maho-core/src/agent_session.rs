@@ -5106,6 +5106,54 @@ impl AgentSession {
         }
     }
 
+    /// Cursor states a model's real context ceiling on every conversation checkpoint. Once observed,
+    /// it replaces the catalog guess on the live model so context usage, compaction thresholds and
+    /// admission all size against the window the server will actually enforce.
+    fn apply_observed_cursor_context_window(&self, model: &mut Model) {
+        let Some(observed) = maho_ai::utils::cursor_context_limit::get_cursor_context_limit(&model.id) else { return };
+        if !observed.is_finite() || observed <= 0.0 || observed == model.context_window as f64 { return; }
+        let previous = model.context_window;
+        model.context_window = observed as u64;
+        self.agent.set_model(model.clone());
+        let mut data = Map::new();
+        data.insert("modelId".to_owned(), Value::String(model.id.clone()));
+        data.insert("previous".to_owned(), serde_json::json!(previous));
+        data.insert("observed".to_owned(), serde_json::json!(observed));
+        self.session_logger.info("cursor_context_window_observed", Some(&data));
+    }
+
+    /// Cursor request admission (upstream `_installAgentNextTurnRefresh` transformContext): per-result
+    /// caps, then blanking the oldest tool result bodies while the history exceeds the window.
+    fn admit_cursor_context(&self, transformed: Vec<AgentMessage>) -> Vec<AgentMessage> {
+        let mut model = self.model();
+        if model.provider != "cursor" && model.provider != "cursor-cli-oauth" { return transformed; }
+        self.apply_observed_cursor_context_window(&mut model);
+        let budget_bytes = crate::cursor_history_admission::cursor_admission_budget_bytes(model.context_window as f64);
+        let Ok(values) = transformed.iter().map(serde_json::to_value).collect::<Result<Vec<Value>, _>>() else { return transformed; };
+        let admission = crate::cursor_history_admission::admit_cursor_history(Some(&values), budget_bytes, None);
+        if admission.blanked_tool_results > 0 {
+            let mut data = Map::new();
+            data.insert("blankedToolResults".to_owned(), serde_json::json!(admission.blanked_tool_results));
+            data.insert("bytesBefore".to_owned(), serde_json::json!(admission.bytes_before));
+            data.insert("bytesAfter".to_owned(), serde_json::json!(admission.bytes_after));
+            data.insert("budgetBytes".to_owned(), serde_json::json!(budget_bytes));
+            self.session_logger.info("cursor_admission_truncated", Some(&data));
+        }
+        if admission.over_budget {
+            // The request is still admitted: Cursor answers an oversized history with a 0-token
+            // resource_exhausted, which the session layer compacts.
+            let mut data = Map::new();
+            data.insert("bytes".to_owned(), serde_json::json!(admission.bytes_after));
+            data.insert("budgetBytes".to_owned(), serde_json::json!(budget_bytes));
+            self.session_logger.warn("cursor_admission_over_budget", Some(&data));
+        }
+        if !admission.changed { return transformed; }
+        match admission.messages.map(|messages| messages.into_iter().map(serde_json::from_value).collect::<Result<Vec<AgentMessage>, _>>()) {
+            Some(Ok(messages)) => messages,
+            _ => transformed,
+        }
+    }
+
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
         let weak = Arc::downgrade(&self.inner);
@@ -5299,11 +5347,12 @@ impl AgentSession {
                 session.state().extension_event_signal = Some(extension_signal.clone());
                 let _bridge = signal.map(|signal| AbortSignalBridge(tokio::spawn(async move { signal.cancelled().await; extension_signal.abort(); })));
                 let mut runner = session.extension_runner.lock().await.clone();
-                match runner.as_mut() {
+                let transformed = match runner.as_mut() {
                     Some(runner) => match runner.emit_context(&messages, None).await {
                         Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
                     }, None => messages,
-                }
+                };
+                session.admit_cursor_context(transformed)
             })
         })));
     }
@@ -9930,6 +9979,26 @@ mod tests {
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }))
         .expect("model")
+    }
+
+    #[test]
+    fn cursor_admission_caps_tool_results_only_for_cursor_providers() {
+        let session = test_session();
+        let long = "a".repeat(5000);
+        let message: AgentMessage = serde_json::from_value(serde_json::json!({
+            "role": "toolResult", "toolCallId": "1", "toolName": "read", "isError": false, "timestamp": 0,
+            "content": [{ "type": "text", "text": long }]
+        })).expect("message");
+        session.agent.set_model(test_model());
+        assert_eq!(session.admit_cursor_context(vec![message.clone()]), vec![message.clone()]);
+        let mut cursor = test_model();
+        cursor.provider = "cursor".to_owned();
+        cursor.id = "maho-test-cursor-admission-unobserved".to_owned();
+        session.agent.set_model(cursor);
+        let admitted = serde_json::to_value(session.admit_cursor_context(vec![message])).expect("json");
+        let text = admitted[0]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+        assert!(text.ends_with("...[truncated]"));
+        assert!(text.chars().count() <= crate::cursor_history_admission::CURSOR_TOOL_RESULT_MAX_CHARS);
     }
 
     #[test]
