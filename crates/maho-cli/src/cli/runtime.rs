@@ -68,6 +68,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
     )).await;
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
+    // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
+    // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
+    {
+        let current = maho_core::config::current_env();
+        let mut next = current.clone();
+        let proxy = settings.get_global().get("httpProxy").and_then(serde_json::Value::as_str).map(str::to_owned);
+        maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), parsed.multi_session, &mut next)?;
+        maho_process_env::apply(&current, &next);
+    }
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
