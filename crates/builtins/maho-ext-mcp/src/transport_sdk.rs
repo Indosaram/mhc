@@ -298,7 +298,7 @@ impl McpClient {
                 let result=crate::elicitation::handle_mcp_elicitation(ui.as_deref(),value.get("params").unwrap_or(&Value::Null),Duration::from_millis(crate::elicitation::MCP_ELICITATION_TIMEOUT_MS)).await;
                 json!({"jsonrpc":"2.0","id":id,"result":result})
             }else{json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Method not found"}})};
-            if let Err(error)=client.send(&response).await {eprintln!("MCP server request response failed: {error}");}
+            if let Err(error)=client.send(&response).await {maho_ext_api::diagnostic(&format!("MCP server request response failed: {error}"));}
         }})
     }
     pub async fn close(&self)->Result<(),McpError> {

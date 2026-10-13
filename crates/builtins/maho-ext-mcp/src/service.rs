@@ -208,7 +208,7 @@ impl McpService {
     }
     fn report_registration_error(&self,message:&str) {
         if let Some(agent_dir)=&self.agent_dir && let Ok(mut logger)=crate::log::McpLogger::new("service",agent_dir,None) {let _=logger.log("error",message,None,None);}
-        eprintln!("MCP registration: {message}");
+        maho_ext_api::diagnostic(&format!("MCP registration: {message}"));
     }
     pub fn registration(&self)->Option<&crate::expose::session::McpSessionRegistration> {self.registration.as_ref()}
     /// Resolved `settings.nativeToolSearch` (`auto | true | false | undefined`), the port of
