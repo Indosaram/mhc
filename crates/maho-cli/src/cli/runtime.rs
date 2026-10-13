@@ -152,6 +152,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         session_profile, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
+    let model_fallback_message = created.model_fallback_message;
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     session.set_context_files_enabled(!parsed.no_context_files);
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, mode);
@@ -192,7 +193,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
-            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests).await
+            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests, migrations.migrated_auth_providers.clone(), model_fallback_message.clone()).await
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } }.await;
