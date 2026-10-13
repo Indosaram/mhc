@@ -115,7 +115,7 @@ fn unreadable_rules_record_error_without_injection() {
     assert_eq!(result.errors.len(), 1);
     assert_eq!(result.errors[0].0, rules);
     assert_eq!(result.injected_files.len(), 1);
-    assert_eq!(result.injected_files[0].absolute_path, tree.path().join("src/deep/AGENTS.md"));
+    assert_eq!(result.injected_files[0].absolute_path, root.join("src/deep/AGENTS.md"));
 }
 
 #[test]
