@@ -381,6 +381,24 @@ impl InteractiveMode {
     pub fn initialize_startup_header(&mut self) {
         self.load_startup_changelog();
         self.mount_startup_header();
+        self.show_model_runtime_diagnostics(true);
+    }
+
+    /// senpi `initialize`'s startup warnings (`interactive-mode.ts:1809-1816`) and the `/reload`
+    /// re-check (`:9014`): a models.json load error, then (at startup) its non-fatal warnings.
+    fn show_model_runtime_diagnostics(&mut self, include_warnings: bool) {
+        let runtime = &self.session.model_registry().model_runtime;
+        let error = runtime.get_error();
+        let warnings = if include_warnings { runtime.get_warnings() } else { Vec::new() };
+        if let Some(error) = error { self.show_error(&format!("models.json error: {error}")); }
+        for warning in warnings { self.show_warning(&warning); }
+    }
+
+    /// senpi `showWarning`.
+    fn show_warning(&mut self, message: &str) {
+        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}"));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
     }
 
     /// Production `mount_startup_header`, using the wall clock for the tip schedule (senpi `Date.now()`).
@@ -1328,6 +1346,7 @@ impl InteractiveMode {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                 Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
+                self.show_model_runtime_diagnostics(false);
             }
             return Ok(PromptDisposition::Handled);
         }

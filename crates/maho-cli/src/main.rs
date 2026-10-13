@@ -184,7 +184,7 @@ fn run() -> Result<(), String> {
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
         let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
         for error in &loaded.errors { eprintln!("{}: {}", error.extension_path, error.error); }
-        if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
+        if let Some(error) = runtime.get_error() { eprintln!("Warning: errors loading models.json:\n{error}"); }
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
