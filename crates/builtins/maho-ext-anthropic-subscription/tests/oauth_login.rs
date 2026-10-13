@@ -4,6 +4,7 @@ use maho_ext_anthropic_subscription::{accounts::*, availability::AmbientAuthStat
 
 struct Flow;
 #[tokio::test]
+#[cfg(unix)]
 async fn native_oauth_constructor_probes_configured_executable() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().expect("dir"); let executable = directory.path().join("claude");

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
 use maho_ext_anthropic_subscription::session_stream::{SessionRegistry, ResidentInput};
 use serde_json::json;
