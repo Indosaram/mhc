@@ -250,7 +250,7 @@ pub struct Lane {
     pub(crate) drive_config: Arc<Mutex<Config<()>>>,
     /// The typed built-in tools + `toolContext` for this lane (pinned `Config<TContext>`), kept as
     /// a trait object so `Lane` stays non-generic while the tools keep their real context type.
-    pub tool_runner: Arc<dyn super::tools::ToolBatchRunner>,
+    pub tool_runner: Arc<Mutex<Arc<dyn super::tools::ToolBatchRunner>>>,
     /// Weak self, installed by `drive`/the harness so `RuntimeDriveLane` can hand out `Arc<Lane>`.
     self_ref: Mutex<Weak<Lane>>,
     /// The single installed drive pass for this lane (pinned `activeDrive`).
@@ -277,7 +277,7 @@ impl Lane {
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
             drive_config: Arc::new(Mutex::new(super::harness::default_drive_config())),
-            tool_runner: Arc::new(super::tools::EmptyToolRunner),
+            tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::EmptyToolRunner) as Arc<dyn super::tools::ToolBatchRunner>)),
             self_ref: Mutex::new(Weak::new()),
             active_drive: Mutex::new(None),
         }
@@ -678,7 +678,10 @@ impl Lane {
                             match outcome {
                                 Ok(outcome) => running.settle(outcome),
                                 // Pinned drive rejection: `closedError ?? onFault(error, drive.context)`.
-                                Err(error) => running.fail(lane.fault(error, &running.context).message),
+                                Err(error) => {
+                                    let failure = if lane.on_fault.is_some() { lane.fault(error, &running.context) } else { error };
+                                    running.fail(failure.message)
+                                }
                             }
                         });
                     }
@@ -1519,7 +1522,8 @@ impl RuntimeDriveLane for Lane {
     fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
             let lane = self.arc()?;
-            self.tool_runner.run(&lane, drive, state).await
+            let runner = self.tool_runner.lock().unwrap_or_else(|error| error.into_inner()).clone();
+            runner.run(&lane, drive, state).await
         })
     }
 

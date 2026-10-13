@@ -226,6 +226,80 @@ async fn throwing_hook_handler_emits_hook_handler_error_event() {
     assert_eq!(payload.error, "hook broke");
 }
 
+fn named_tool(name: &str) -> Arc<maho_agent::harness::types::AgentHarnessTool<()>> {
+    Arc::new(maho_agent::harness::types::AgentHarnessTool {
+        label: name.into(),
+        prepare_arguments: None,
+        replay: None,
+        tool: maho_ai::types::Tool { name: name.into(), description: String::new(), parameters: serde_json::json!({"type":"object"}), freeform: None, constrained_sampling: None },
+        execute: Arc::new(|_, _, _, _, _, _| Box::pin(async { Err("unused".to_owned()) })),
+    })
+}
+
+#[tokio::test]
+async fn set_tools_replaces_lane_tools_and_emits_config_update() {
+    let harness = fixture().await;
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events = seen.clone();
+    let _subscription = harness.events.on("config_update", Arc::new(move |event, _| {
+        let events = events.clone();
+        Box::pin(async move { events.lock().unwrap().push(event.payload); })
+    }));
+    assert!(harness.set_tools(vec![named_tool("read"), named_tool("read")], &BACKGROUND_CONTEXT).await.is_err());
+    harness.set_tools(vec![named_tool("read")], &BACKGROUND_CONTEXT).await.unwrap();
+    assert_eq!(harness.get_tools().unwrap().iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>(), vec!["read".to_owned()]);
+    assert_eq!(lane.read_config().tools.iter().map(|tool| tool.name().to_owned()).collect::<Vec<_>>(), vec!["read".to_owned()]);
+    let events = seen.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    let maho_agent::harness::events::HarnessEventPayload::ConfigUpdate { property, .. } = &events[0] else { panic!("config update"); };
+    assert_eq!(property, "tools");
+}
+
+#[tokio::test]
+async fn options_constructor_installs_custom_provider_messages_and_projectors() {
+    use maho_agent::harness::agent_harness::AgentHarnessOptions;
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "projectors".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions::default())),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let projector: maho_agent::harness::session::types::EntryProjector = Arc::new(|_, _| Box::pin(async { None }));
+    let to_provider_messages: maho_agent::harness::runtime::types::ToProviderMessagesFn =
+        Arc::new(|_messages, _context| Box::pin(async { Vec::new() }));
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<()> {
+            session,
+            models: maho_ai::models::create_models(None),
+            model: faux_model(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools: Vec::new(),
+            tool_context: None,
+            system_prompt: None,
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+            to_provider_messages: Some(to_provider_messages),
+            entry_projectors: Some(std::collections::BTreeMap::from([("note".to_owned(), projector)])),
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("options constructor attaches");
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let config = lane.read_config();
+    assert!(config.entry_projectors.contains_key("note"));
+    let messages = vec![maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Blocks(vec![maho_ai::types::ContentBlock::text("hi")]), timestamp: 1 }))];
+    assert!((config.to_provider_messages)(messages, &BACKGROUND_CONTEXT).await.is_empty());
+}
+
 #[tokio::test]
 async fn drive_completion_preserves_first_settlement_and_wakes_all_observers() {
     use maho_agent::harness::runtime::lane::Drive;
@@ -446,6 +520,8 @@ async fn options_constructor_seeds_lane_configuration_and_drive_config() {
             steering_mode: Some(maho_agent::types::QueueMode::OneAtATime),
             follow_up_mode: None,
             tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -985,6 +1061,8 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
             steering_mode: None,
             follow_up_mode: None,
             tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
         },
         &BACKGROUND_CONTEXT,
     )
@@ -1157,6 +1235,8 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
             steering_mode: None,
             follow_up_mode: None,
             tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
         },
         &BACKGROUND_CONTEXT,
     )

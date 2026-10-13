@@ -97,6 +97,10 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     pub steering_mode: Option<QueueMode>,
     pub follow_up_mode: Option<QueueMode>,
     pub tool_execution: Option<ToolExecutionMode>,
+    /// Pinned `toProviderMessages`; defaults to `convertToLlm`.
+    pub to_provider_messages: Option<super::runtime::types::ToProviderMessagesFn>,
+    /// Pinned `entryProjectors`, keyed by custom entry type; defaults to none.
+    pub entry_projectors: Option<std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>>,
 }
 
 /// Failure of one `Lane::drive` call: the pinned `Result<DriveOutcome, OperationMismatch | Closed>`.

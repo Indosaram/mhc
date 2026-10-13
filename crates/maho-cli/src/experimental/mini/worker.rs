@@ -304,6 +304,8 @@ async fn open_harness(
         steering_mode: None,
         follow_up_mode: None,
         tool_execution: None,
+        to_provider_messages: None,
+        entry_projectors: None,
     };
     create_agent_harness_with_options(options, context).await.map(|(harness, _open)| harness).map_err(|error| error.message)
 }
