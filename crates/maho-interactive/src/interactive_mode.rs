@@ -3869,6 +3869,10 @@ impl InteractiveMode {
                     }
                     "outputPad" => { for component in &self.assistant_cards { component.borrow_mut().set_output_pad(value.as_u64().expect("output padding") as usize); } if self.agent_idle { self.rebuild_history(); } },
                     "showCacheMissNotices" if self.agent_idle => self.rebuild_history(),
+                    "fullscreenCopyOnSelect" => {
+                        let enabled = value.as_bool().unwrap_or(true);
+                        if let Some(renderer) = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade) { renderer.borrow_mut().set_copy_on_select(enabled); }
+                    }
                     _ => self.chat.invalidate(),
                 }
             }
