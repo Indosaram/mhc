@@ -120,7 +120,9 @@ async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink
     let command:RpcCommand=match serde_json::from_value(value.clone()){
         Ok(command)=>command,
         Err(error) if error.to_string().starts_with(&format!("unknown variant `{}`,",value["type"].as_str().unwrap_or_default()))=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}}).map(Some);},
-        Err(error)=>return Err(error),
+        // Upstream answers any command failure with an error response (connection-handler.ts
+        // `handleInputLine` catch); a malformed field must not end the command loop.
+        Err(error)=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:error.to_string(),error_code:None,error_data:None}}).map(Some);},
     };
     handle_session_command_with_sink(session,&command,sink,active_logins,ui).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
 }
@@ -737,6 +739,13 @@ mod new_session_tests{
         assert_eq!(response["command"],"clone");
         assert_eq!(response["success"],false);
         assert_eq!(response["error"],"Cannot clone session: no current entry selected");
+    }
+
+    #[tokio::test]
+    async fn malformed_command_fields_return_error_response(){
+        let response=handle_input_line(&session(),r#"{"id":"m","type":"set_model"}"#).await.expect("dispatch").expect("response");
+        let response:serde_json::Value=serde_json::from_str(&response).expect("wire");
+        assert_eq!(response["id"],"m"); assert_eq!(response["command"],"set_model"); assert_eq!(response["success"],false); assert!(response["error"].is_string());
     }
 
     #[tokio::test]
