@@ -174,6 +174,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         AppMode::Print | AppMode::Json => {
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
                 mode: Some(if mode == AppMode::Json { maho_ext_api::ExtensionMode::Json } else { maho_ext_api::ExtensionMode::Print }),
+                // senpi print-mode.ts:123-125.
+                on_error: Some(Arc::new(|error: &maho_ext_api::ExtensionError| {
+                    maho_core::output_guard::maho_write_stderr(&format!("Extension error ({}): {}\n", error.extension_path, error.error));
+                })),
                 ..Default::default()
             }).await;
             use tokio::io::AsyncReadExt;

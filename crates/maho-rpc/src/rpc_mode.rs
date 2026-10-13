@@ -74,6 +74,12 @@ pub async fn run_command_stream(session:&maho_core::agent_session::AgentSession,
     let(events_tx,mut events)=tokio::sync::mpsc::unbounded_channel();
     let sender=events_tx.clone();
     let subscription=session.subscribe(std::sync::Arc::new(move|event|{let _=sender.send(crate::session_binding::session_event_record(event));}));
+    // senpi connection-handler.ts:937-945: extension errors after startup reach the client as
+    // `extension_error` records on the same ordered stream as events and responses.
+    if session.has_started_extension_lifecycle(){
+        let sender=events_tx.clone();
+        session.rebind_extension_context(maho_core::agent_session::ExtensionBindings{on_error:Some(std::sync::Arc::new(move|error:&maho_ext_api::ExtensionError|{let _=sender.send(Ok(serde_json::json!({"type":"extension_error","extensionPath":error.extension_path,"event":error.event,"error":error.error})));})),..Default::default()}).await;
+    }
     let result=pump(session,input,&mut output,&events_tx,&mut events).await;
     drop(subscription);
     match result{Ok(())=>output.flush().await,Err(error)=>Err(error)}
