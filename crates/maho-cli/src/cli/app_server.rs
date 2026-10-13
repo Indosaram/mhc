@@ -77,6 +77,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
         let config = config.clone();
         Box::pin(async move {
             let maho_core::sdk::CreateAgentSessionOptions {
+                cwd,
                 session_manager,
                 model_runtime,
                 settings_manager,
@@ -91,9 +92,11 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 custom_tools,
                 session_start_event,
                 auto_title_sessions,
+                extension_bindings,
                 ..
             } = options;
             let request = CliRuntimeRequest {
+                cwd,
                 session_manager,
                 session_start_event,
                 model,
@@ -107,6 +110,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 custom_tools,
                 auto_title_sessions,
                 extension_flag_values: config.extension_flag_values.clone(),
+                extension_bindings,
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, model_runtime, settings_manager).await?;

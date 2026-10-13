@@ -40,6 +40,13 @@ impl InitializedConnection {
             && !self.opt_out_notification_methods.contains(method)
             && (!EXPERIMENTAL_SERVER_NOTIFICATION_METHODS.contains(&method) || self.registry_connection().experimental_api)
     }
+    /// senpi `NotificationRouter.toThread` filtering: thread-routed messages bypass the server
+    /// notification allowlist and honour only opt-outs and the experimental capability.
+    pub fn can_route_thread_notification(&self, method: &str) -> bool {
+        use super::methods::EXPERIMENTAL_SERVER_NOTIFICATION_METHODS;
+        !self.opt_out_notification_methods.contains(method)
+            && (!EXPERIMENTAL_SERVER_NOTIFICATION_METHODS.contains(&method) || self.registry_connection().experimental_api)
+    }
     pub fn initialize_response(&self, agent_home: &str, platform: &str) -> Result<Value, super::errors::JsonRpcError> {
         let state = self.state.as_ref().ok_or_else(|| super::errors::JsonRpcError::new(-32600, "Connection is not initialized"))?;
         let (family, os) = match platform {
