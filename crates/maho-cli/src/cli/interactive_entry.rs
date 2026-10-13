@@ -334,7 +334,7 @@ fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho
                     .enable_all()
                     .build()
                     .is_ok_and(|runtime| runtime.block_on(crate::utils::clipboard::copy_to_clipboard(&text)).is_ok());
-                drop(sender.send(copied));
+                let _ = sender.send(copied);
             });
             receiver
         })));

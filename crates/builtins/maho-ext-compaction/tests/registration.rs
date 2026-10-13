@@ -862,6 +862,7 @@ fn disabled_restoration_and_rejected_compaction_never_read_unbound_context() {
 }
 
 
+#[allow(dead_code)] // shared with examples/resume_compaction_native.rs, which includes this file
 fn lane_context(global_settings: Option<&str>) -> (tempfile::TempDir, ExtensionContext) {
     let temp = tempfile::tempdir().expect("lane temp dir");
     let agent = temp.path().join("agent");

@@ -191,25 +191,25 @@ async fn native_server_aggregates_owned_listeners_and_reports_errors_to_the_obse
 struct RecordingConnection {frames:std::sync::Mutex<Vec<serde_json::Value>>,decoder:std::sync::Mutex<maho_server::protocol::codec::MessageDecoder>,changed:tokio::sync::watch::Sender<usize>}
 impl RecordingConnection {
     fn new()->Self {Self {frames:std::sync::Mutex::new(Vec::new()),decoder:std::sync::Mutex::new(maho_server::protocol::codec::MessageDecoder::server()),changed:tokio::sync::watch::channel(0).0}}
-    fn frames(&self)->Vec<serde_json::Value> {self.frames.lock().unwrap().clone()}
+    fn frames(&self)->Vec<serde_json::Value> {self.frames.lock().expect("test fixture").clone()}
     async fn wait_for(&self,predicate:impl Fn(&serde_json::Value)->bool) {
         let mut changed=self.changed.subscribe();
         tokio::time::timeout(Duration::from_secs(2),async {loop {
             if self.frames().iter().any(&predicate) {return;}
-            changed.changed().await.unwrap();
+            changed.changed().await.expect("test fixture");
         }}).await.expect("expected server frame");
     }
 }
 impl ByteConnection for RecordingConnection {
     fn closed(&self)->bool {false}
     fn send<'a>(&'a self,chunk:&'a [u8])->ServerFuture<'a,()> {Box::pin(async move {
-        let messages=self.decoder.lock().unwrap().push(chunk).unwrap();
-        let count={let mut frames=self.frames.lock().unwrap();frames.extend(messages);frames.len()};
+        let messages=self.decoder.lock().expect("test fixture").push(chunk).expect("test fixture");
+        let count={let mut frames=self.frames.lock().expect("test fixture");frames.extend(messages);frames.len()};
         self.changed.send_replace(count);Ok(())
     })}
     fn close<'a>(&'a self,_:Option<&'a [u8]>)->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
 }
-fn client_frame(message:serde_json::Value)->Vec<u8> {maho_server::protocol::codec::encode_client_message(&message,maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap()}
+fn client_frame(message:serde_json::Value)->Vec<u8> {maho_server::protocol::codec::encode_client_message(&message,maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).expect("test fixture")}
 
 #[tokio::test]
 async fn disconnect_releases_the_attachment_without_publishing_a_detach() {
