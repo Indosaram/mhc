@@ -1,4 +1,4 @@
-#[cfg(any(target_os="linux",target_os="macos"))]
+#[cfg(target_os="linux")]
 use std::fs;
 #[derive(Debug,Clone,PartialEq)]
 pub struct ProcessTableRow { pub pid:u32,pub ppid:u32,pub state:String,pub rss_kb:f64 }
