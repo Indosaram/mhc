@@ -26,12 +26,14 @@ fn write_executable_script(path: &std::path::Path, contents: &str) {
 
     let temp_path = path.with_extension("tmp");
     {
-        let mut file = File::create(&temp_path).unwrap();
-        file.write_all(contents.as_bytes()).unwrap();
-        file.sync_all().unwrap();
+        let mut file = File::create(&temp_path).expect("create engine fixture temp file");
+        file.write_all(contents.as_bytes())
+            .expect("write engine fixture");
+        file.sync_all().expect("sync engine fixture");
     }
-    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::rename(temp_path, path).unwrap();
+    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755))
+        .expect("mark engine fixture executable");
+    fs::rename(temp_path, path).expect("publish engine fixture");
 }
 
 #[test]
@@ -164,7 +166,7 @@ for i in $(seq 1 2000); do
 done
 exit 1
 "#;
-    write_executable_script(&engine_script, &script_content);
+    write_executable_script(&engine_script, script_content);
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
