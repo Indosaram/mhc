@@ -29,10 +29,10 @@ pub struct AstGrepComponent {
 impl Extension for AstGrepComponent {
     fn register(&self, api: &mut ExtensionApi) {
         if !self.options.entry.is_file() {
-            eprintln!(
+            maho_ext_api::diagnostic(&format!(
                 "omo-senpi ast-grep skipped: staged MCP runtime is missing ({})",
                 self.options.entry.display()
-            );
+            ));
             return;
         }
         let cwd = self
