@@ -196,6 +196,31 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                     mode.handle_runtime_input(&data, now).await?;
                 }
             }
+            if let Some(request) = mode.take_terminal_request() {
+                // senpi `handleCtrlZ` / `handleOpenExternalEditor`: release the terminal (and the
+                // stderr takeover), run the step, then restart and force a full redraw.
+                mode.pause_question_mouse_capture(&mut screen, &mut terminal);
+                screen.base_mut().begin_stop(&mut terminal);
+                screen.before_terminal_stop(&mut terminal, mouse_enabled);
+                screen.base_mut().finish_stop_output(&mut terminal, fullscreen);
+                terminal.stop().map_err(|error| error.to_string())?;
+                screen.after_terminal_stop(&mut terminal, false);
+                maho_interactive::interactive_stderr_guard::restore_interactive_stderr();
+                match request {
+                    maho_interactive::interactive_mode::TerminalRequest::ExternalEditor => mode.open_external_editor().await,
+                    maho_interactive::interactive_mode::TerminalRequest::Suspend => suspend_process()?,
+                }
+                maho_interactive::interactive_stderr_guard::take_over_interactive_stderr();
+                screen.base_mut().reset_for_stop();
+                screen.base_mut().prepare_start();
+                screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
+                let captured = input.clone();
+                terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+                screen.base_mut().after_terminal_start(&mut terminal);
+                mode.resume_question_mouse_capture(&mut screen, &mut terminal);
+                screen.base_mut().invalidate();
+                screen.base_mut().request_render(true, now);
+            }
             mode.sync_question_mouse_capture(&mut screen, &mut terminal);
             mode.poll_terminal_theme(&mut screen, &mut terminal);
             mode.pump_turn().await;
@@ -266,6 +291,16 @@ fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::Interactive
     screen.base_mut().handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
     None
 }
+
+/// senpi `handleCtrlZ`: stop the whole process group with `SIGTSTP`. The kernel stops this process
+/// before `kill` returns, so returning here means `SIGCONT` (`fg`) resumed it.
+#[cfg(unix)]
+fn suspend_process() -> Result<(), String> {
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(0), nix::sys::signal::Signal::SIGTSTP).map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn suspend_process() -> Result<(), String> { Ok(()) }
 
 /// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
 /// package/CLI-resolved theme resources before the first frame, then resolve the configured name.
