@@ -16,14 +16,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
-    if mode == AppMode::Rpc && parsed.multi_session {
-        // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
-        // built from the CLI configuration, instead of the single-session command stream. It never
-        // returns until its watchdog or empty-exit policy ends it.
-        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
-        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
-        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
-    }
     if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
     struct InteractiveStderr;
     impl Drop for InteractiveStderr {
@@ -49,6 +41,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if facts_bootstrap && !parsed.no_session { return Err("facts read-only bootstrap requires --no-session".into()); }
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
+    if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
+        // built from the CLI configuration, instead of the single-session command stream. Like
+        // upstream it starts only after the stdout takeover and the migrations above, and never
+        // returns until its watchdog or empty-exit policy ends it.
+        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
+        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
+    }
     // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
     // `trust.json`, `defaultProjectTrust`, then the interactive startup prompt) before project
     // settings and resources load.
