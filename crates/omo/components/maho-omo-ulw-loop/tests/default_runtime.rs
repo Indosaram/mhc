@@ -6,7 +6,7 @@ use maho_omo_ulw_loop::index::UlwLoopComponent;
 #[tokio::test]
 async fn default_registration_executes_status_in_process() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let plan_dir = root.path().join(".omo/ulw-loop");
+    let plan_dir = root.path().join(".omo/ulw-loop/session");
     std::fs::create_dir_all(&plan_dir)?;
     std::fs::write(
         plan_dir.join("goals.json"),
