@@ -3,7 +3,7 @@ use crate::{bash::{BashOperations, BashExecOptions, BashDataCallback}, definitio
 pub type BashChunkCallback = Arc<dyn Fn(&str) -> Result<(), ToolError> + Send + Sync>;
 pub type BashAsyncChunkCallback = Arc<dyn Fn(String) -> ToolFuture<'static, ()> + Send + Sync>;
 #[derive(Default)]
-pub struct BashExecutorOptions { pub on_chunk: Option<BashChunkCallback>, pub on_chunk_async: Option<BashAsyncChunkCallback>, pub signal: AbortSignal }
+pub struct BashExecutorOptions { pub on_chunk: Option<BashChunkCallback>, pub on_chunk_async: Option<BashAsyncChunkCallback>, pub signal: AbortSignal, pub env: Option<BTreeMap<String, String>> }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BashResult { pub output: String, pub exit_code: Option<i32>, pub cancelled: bool, pub truncated: bool, pub full_output_path: Option<PathBuf> }
@@ -45,7 +45,7 @@ pub async fn execute_bash_with_operations(command: &str, cwd: &Path, operations:
         }
         Ok(())
     });
-    let execution = operations.exec(command, cwd, BashExecOptions { on_data: Arc::clone(&on_data), signal: options.signal.clone(), timeout: None, env: std::env::vars().collect::<BTreeMap<_,_>>() }).await;
+    let execution = operations.exec(command, cwd, BashExecOptions { on_data: Arc::clone(&on_data), signal: options.signal.clone(), timeout: None, env: options.env.unwrap_or_else(|| std::env::vars().collect()) }).await;
     let tail = {
         let mut pending = pending.lock().map_err(|_| ToolError::Message("Bash decoder lock poisoned".into()))?;
         let tail = String::from_utf8_lossy(&pending).into_owned();

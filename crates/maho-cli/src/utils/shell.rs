@@ -18,15 +18,7 @@ pub fn shell_config_for_path(path: &str) -> ShellConfig {
 pub fn sanitize_binary_output(value: &str) -> String {
     value.chars().filter(|character| matches!(character, '\t' | '\n' | '\r') || (*character > '\u{1f}' && !('\u{fff9}'..='\u{fffb}').contains(character))).collect()
 }
-pub fn get_shell_env() -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = std::env::vars().collect();
-    let key = env.keys().find(|key| key.eq_ignore_ascii_case("path")).cloned().unwrap_or_else(|| "PATH".to_owned());
-    let current = env.get(&key).cloned().unwrap_or_default();
-    let bin = crate::config::get_bin_dir();
-    let delimiter = if cfg!(windows) { ';' } else { ':' };
-    if !current.split(delimiter).any(|entry| entry == bin) { env.insert(key, if current.is_empty() { bin } else { format!("{bin}{delimiter}{current}") }); }
-    env
-}
+pub use maho_core::utils::shell::get_shell_env;
 async fn find_executable_on_path(executable: &str) -> Option<String> {
     let bytes = super::clipboard_command::run_clipboard_command(if cfg!(windows) { "where" } else { "which" }, &[executable], super::clipboard_command::ClipboardCommandOptions { timeout_ms: Some(5000), ..Default::default() }).await?;
     let text = String::from_utf8_lossy(&bytes);
