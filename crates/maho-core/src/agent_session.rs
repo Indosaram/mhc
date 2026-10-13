@@ -5044,6 +5044,15 @@ impl AgentSession {
         self.extension_runner.lock().await.is_some()
     }
 
+    /// The filesystem policies the bound extensions registered, in extension order (live
+    /// bind-time registrations win over load-time ones, as in `get_filesystem_policy_denied_roots`).
+    pub async fn filesystem_policies(&self) -> Vec<maho_tools::FilesystemPolicy> {
+        let guard = self.extension_runner.lock().await;
+        let Some(runner) = guard.as_ref() else { return Vec::new() };
+        runner.extensions.iter().flat_map(|extension| runner.runtime.live_filesystem_policies(&extension.identity.path)
+            .unwrap_or_else(|| extension.filesystem_policies.clone())).collect()
+    }
+
     pub fn extension_context_actions(&self) -> Arc<dyn maho_ext_api::ExtensionContextActions> {
         Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)))
     }
