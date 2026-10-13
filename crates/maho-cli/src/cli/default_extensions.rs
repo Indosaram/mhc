@@ -10,6 +10,7 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
     let themes_dir = agent_dir.join("themes");
     let config_theme = session.with_settings_manager(|manager| manager.get_string("theme")).unwrap_or_else(|| "dark".into());
     let colorfgbg = std::env::var("COLORFGBG").ok();
+    let session_ref = session.weak_accessor();
     session.set_html_theme_resolver(Arc::new(move |requested| {
         let setting = requested.unwrap_or(&config_theme);
         let terminal_theme = maho_interactive::theme::detection::detect_terminal_background_from_env(colorfgbg.as_deref()).theme;
@@ -18,7 +19,12 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
         let mut registry = maho_interactive::theme::registry::ThemeRegistry::new(
             themes_dir.clone(), "dark", maho_interactive::theme::ColorMode::Truecolor,
         ).map_err(|error|error.to_string())?;
-        registry.set_registered_themes(registered.clone()).map_err(|error|error.to_string())?;
+        // senpi `extendResources`: themes an extension discovered join the registered set.
+        let discovered = session_ref().map(|session| session.discovered_theme_paths()).unwrap_or_default();
+        let (discovered, _) = super::startup_ui::load_theme_resources(discovered.into_iter().map(std::path::PathBuf::from), maho_interactive::theme::ColorMode::Truecolor);
+        let mut themes = registered.clone();
+        for theme in discovered { if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme); } }
+        registry.set_registered_themes(themes).map_err(|error|error.to_string())?;
         let theme = registry.load_theme(name).map_err(|error|error.to_string())?;
         let api_theme = maho_interactive::interactive_extension_ui::extension_theme(&theme);
         Ok((api_theme, Some((theme.resolved_colors(), theme.export_colors().clone()))))

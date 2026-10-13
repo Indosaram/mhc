@@ -3873,6 +3873,12 @@ impl AgentSession {
         self.state().resource_loader_inputs.clone()
     }
 
+    /// Theme files contributed by extension `resources_discover` handlers (senpi `extendResources`
+    /// theme paths), resolved against the session cwd.
+    pub fn discovered_theme_paths(&self) -> Vec<String> {
+        self.state().discovered_resources.theme_paths.iter().map(|entry| entry.path.clone()).collect()
+    }
+
     /// Prompt-template load diagnostics, including name collisions (pinned `getPrompts().diagnostics`).
     pub fn prompt_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
         self.state().prompt_diagnostics.clone()
