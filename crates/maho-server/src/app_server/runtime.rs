@@ -83,7 +83,11 @@ impl AppServerRuntime {
                         let model = params["model"].as_str().and_then(|model| super::start_options::parse_model_reference(model,params["modelProvider"].as_str())).and_then(|(provider,id)| maho_ai::providers::all::get_builtin_models(provider).into_iter().find(|model|model.id == id));
                         let cwd = maho_core::paths::resolve_path(params["cwd"].as_str().unwrap_or(&cwd),&cwd,&Default::default());
                         threads.create_thread(cwd, model).await
-                    } else { threads.resume_thread(required_string(params, "threadId")?).await }.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    } else {
+                        let id = required_string(params, "threadId")?;
+                        // Pinned `resume`: `ThreadNotFoundError` surfaces as `no rollout found for thread id`.
+                        threads.resume_thread(id).await.map_err(|error| if method == "thread/resume" && error == format!("Thread not found: {id}") {format!("no rollout found for thread id {id}")} else {error})
+                    }.map_err(|error| JsonRpcError::new(-32603, error))?;
                     let mut entry = entry.lock().await;
                     if let Some(name) = requested_name {
                         entry.session.set_session_name(&name);

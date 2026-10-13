@@ -123,6 +123,15 @@ async fn goal_set_updates_status_and_budget_and_rejects_unknown_thread_without_s
 }
 
 #[tokio::test]
+async fn thread_resume_of_unknown_id_reports_no_rollout_found() {
+    let mut harness = harness().await;
+    let resumed = harness.call(json!({"id":2,"method":"thread/resume","params":{"threadId":"missing"}})).await;
+    assert_eq!(resumed["error"]["code"],-32603);
+    assert_eq!(resumed["error"]["message"],"no rollout found for thread id missing");
+    harness.runtime.dispose().await;
+}
+
+#[tokio::test]
 async fn invalid_status_transition_leaves_persisted_goal_unchanged() {
     let mut harness = harness().await;
     let thread = harness.start_thread().await;
