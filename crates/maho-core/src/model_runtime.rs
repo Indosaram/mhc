@@ -266,6 +266,10 @@ pub struct ModelRuntime {
     pub credentials: Arc<crate::auth_storage::AuthStorage>,
     /// senpi `credentialOperations`: login/logout/runtime-key changes run one at a time per provider.
     credential_operations: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// senpi `providerSemaphores`, limited by the bound settings' `providers.<id>.maxConcurrency`.
+    provider_semaphores: Arc<crate::provider_concurrency::ProviderSemaphores>,
+    provider_settings: Arc<RwLock<Option<serde_json::Value>>>,
+    provider_settings_subscription: Arc<std::sync::Mutex<Option<crate::settings_manager::ProviderSettingsSubscription>>>,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -283,15 +287,34 @@ impl ModelRuntime {
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
         let store: Arc<dyn CredentialStore> = Arc::new(AuthStorageCredentialStore {credentials:credentials.clone(),auth_path:options.auth_path});
         let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),store};
+        let provider_settings: Arc<RwLock<Option<serde_json::Value>>> = Arc::new(RwLock::new(None));
+        let limits = provider_settings.clone();
+        let provider_semaphores = Arc::new(crate::provider_concurrency::ProviderSemaphores::new(move |id| {
+            crate::settings_manager::provider_concurrency_limit(limits.read().unwrap_or_else(|p| p.into_inner()).as_ref(), id).unwrap_or(0)
+        }));
         let runtime = Self {
             models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
             config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),
             native:IndexMap::new(), extensions, errors:Arc::new(RwLock::new(IndexMap::new())),models_path:options.models_path,credentials,
             credential_operations:Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            provider_semaphores, provider_settings, provider_settings_subscription:Arc::new(std::sync::Mutex::new(None)),
         };
         runtime.rebuild_providers(); runtime
     }
     pub async fn create(options: CreateModelRuntimeOptions) -> Self { Self::create_sync(options) }
+    /// senpi `setSettingsManager`: provider concurrency limits follow the settings, resizing live
+    /// semaphores whenever the merged settings change.
+    pub fn set_settings_manager(&self, settings: &crate::settings_manager::SettingsManager) {
+        let snapshot = self.provider_settings.clone();
+        let semaphores = self.provider_semaphores.clone();
+        let resize = move |settings: &crate::settings_manager::SettingsManager| {
+            *snapshot.write().unwrap_or_else(|p| p.into_inner()) = settings.get_provider_settings();
+            semaphores.resize_all();
+        };
+        resize(settings);
+        let subscription = settings.subscribe_to_provider_settings(Arc::new(resize));
+        *self.provider_settings_subscription.lock().unwrap_or_else(|p| p.into_inner()) = Some(subscription);
+    }
     /// The provider/auth registry this runtime resolves against (pinned `models`). Exposed so a
     /// caller (e.g. the harness constructor) can hand the same registry to a `Models` consumer
     /// without rebuilding it through `create_models`.
@@ -544,18 +567,20 @@ impl ModelRuntime {
     }
     pub fn stream(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let semaphores=self.provider_semaphores.clone();
         Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options).await?;
-            Ok(models.stream(&request_model,&context,Some(options),Default::default()))
+            let signal=options.request.signal.clone();
+            semaphores.bracket(&request_model.provider,signal.as_ref(),|| models.stream(&request_model,&context,Some(options),Default::default())).await.map_err(|reason| reason.message)
         })
     }
     pub fn stream_simple(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let semaphores=self.provider_semaphores.clone();
         Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
-            Ok(models.stream_simple(&request_model,&context,Some(options),Default::default()))
+            let signal=options.stream.request.signal.clone();
+            semaphores.bracket(&request_model.provider,signal.as_ref(),|| models.stream_simple(&request_model,&context,Some(options),Default::default())).await.map_err(|reason| reason.message)
         })
     }
     async fn apply_configured_headers(model:&Model,config:Option<&crate::model_config_schema::ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,options:&mut StreamOptions)->Result<(),String> {
@@ -567,10 +592,11 @@ impl ModelRuntime {
         if let Some(mut headers)=headers{headers.extend(options.request.headers.take().unwrap_or_default());options.request.headers=Some(headers);}
         Ok(())
     }
-    fn lazy_request(model:&Model,setup:impl std::future::Future<Output=Result<AssistantMessageEventStream,String>>+Send+'static)->AssistantMessageEventStream {
+    /// The provider permit (if any) is held until the forwarded stream settles.
+    fn lazy_request(model:&Model,setup:impl std::future::Future<Output=Result<(AssistantMessageEventStream,Option<crate::provider_concurrency::ProviderPermit>),String>>+Send+'static)->AssistantMessageEventStream {
         let stream=AssistantMessageEventStream::assistant();let target=stream.clone();let model=model.clone();
         tokio::spawn(async move {
-            let source=match setup.await {Ok(stream)=>stream,Err(error)=>maho_ai::utils::lazy::error_stream(&model,&error)};
+            let (source,_permit)=match setup.await {Ok(setup)=>setup,Err(error)=>(maho_ai::utils::lazy::error_stream(&model,&error),None)};
             loop {match source.next().await {Ok(Some(event))=>target.push(event),Ok(None)=>{target.end(None);break;},Err(error)=>{target.fail(error);break;}}}
         });stream
     }
