@@ -324,6 +324,7 @@ async fn rejects_missing_and_duplicate_targets() {
     }
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn serializes_canonical_and_symlink_edits() {
     let f = Fixture::new();
     f.put("target.txt", "alpha\nbeta\ngamma\n");
@@ -343,6 +344,7 @@ async fn serializes_canonical_and_symlink_edits() {
     assert_eq!(f.get("target.txt"), "ALPHA\nBETA\ngamma\n");
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn edits_regular_files_through_symlinks() {
     let f = Fixture::new();
     f.put("target.txt", "before\n");
@@ -436,7 +438,7 @@ async fn supports_shell_command_prefixes() {
 async fn prepares_command_cwd_and_explicit_environment() {
     let f = Fixture::new();
     std::fs::create_dir(f.dir.join("workspace")).expect("tool test operation must succeed");
-    let expected = f.dir.join("workspace").to_string_lossy().into_owned();
+    let expected = std::fs::canonicalize(&f.dir).expect("canonical temp dir").join("workspace").to_string_lossy().into_owned();
     let target = expected.clone();
     let prepare: BashPrepare<ExecutionToolContext> = Arc::new(move |execution, _, _| {
         execution.cwd = target.clone();
@@ -715,15 +717,18 @@ async fn resolves_at_prefix_and_unicode_spaces() {
     );
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn resolves_decomposed_read_filename() {
+    use std::os::unix::fs::MetadataExt;
+
     let f = Fixture::new();
     f.put("e\u{301}.txt", "x");
-    assert!(
-        resolve_read_tool_path(f.context.env.as_ref(), "é.txt", &background_context())
-            .await
-            .expect("tool test operation must succeed")
-            .ends_with("e\u{301}.txt")
-    );
+    let created = std::fs::metadata(f.dir.join("e\u{301}.txt")).expect("tool test operation must succeed");
+    let resolved = resolve_read_tool_path(f.context.env.as_ref(), "é.txt", &background_context())
+        .await
+        .expect("tool test operation must succeed");
+    let resolved = std::fs::metadata(resolved).expect("tool test operation must succeed");
+    assert_eq!((created.dev(), created.ino()), (resolved.dev(), resolved.ino()));
 }
 #[tokio::test]
 async fn resolves_smart_quote_read_filename() {

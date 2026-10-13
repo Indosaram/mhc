@@ -13,6 +13,27 @@ fn fixtures() -> Value {
     serde_json::from_str(include_str!("golden/components32-support.json")).expect("pinned fixture")
 }
 
+fn expected_key_text(output: &str) -> String {
+    if !cfg!(target_os = "macos") {
+        return output.to_owned();
+    }
+    output
+        .split('/')
+        .map(|combination| {
+            combination
+                .split('+')
+                .map(|part| match part {
+                    "alt" => "option",
+                    "Alt" => "Option",
+                    _ => part,
+                })
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[test]
 fn todo_strike_reveal_counts_match_pinned_senpi() {
     for case in fixtures()["strike"].as_array().expect("strike") {
@@ -55,7 +76,7 @@ fn key_text_formatting_matches_pinned_senpi() {
         let capitalize = case["capitalize"].as_bool().expect("capitalize");
         assert_eq!(
             format_key_text(key, capitalize),
-            case["output"].as_str().expect("output"),
+            expected_key_text(case["output"].as_str().expect("output")),
             "formatKeyText({key:?}, capitalize={capitalize})"
         );
     }

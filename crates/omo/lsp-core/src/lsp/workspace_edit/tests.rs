@@ -280,6 +280,7 @@ fn adversarial_outside_target_touches_nothing() {
 }
 
 #[test]
+#[cfg(unix)]
 fn adversarial_symlink_to_outside_file_is_rejected() {
     let (_dir, workspace) = tmp();
     let (_outside_dir, outside) = tmp();

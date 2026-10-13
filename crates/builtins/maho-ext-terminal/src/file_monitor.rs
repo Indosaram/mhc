@@ -13,8 +13,9 @@ const MAX_SYMLINK_HOPS:usize=40;
 /// trigger). Not opening is not the same as never mounting; the walker only avoids the open-based
 /// resolution path. A component that cannot be lstat'd (or a hop overflow) is kept verbatim from
 /// that point on, so a not-yet-created tail still lands where its symlinked parent points.
-#[cfg(unix)]
 pub fn realpath_without_open(input:&Path)->PathBuf {
+    #[cfg(unix)]
+    {
     use std::path::Component;
     fn join(base:&Path,parts:impl Iterator<Item=std::ffi::OsString>)->PathBuf {let mut path=base.to_path_buf();for part in parts {path.push(part);}path}
     let absolute=if input.is_absolute() {input.to_path_buf()} else {std::env::current_dir().unwrap_or_default().join(input)};
@@ -51,6 +52,24 @@ pub fn realpath_without_open(input:&Path)->PathBuf {
         }
     }
     join(&root,resolved.into_iter())
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-Unix platforms lack the lstat/readlink walker used above; canonicalize performs
+        // platform-native resolution, and a not-yet-created tail is retained lexically.
+        let absolute=if input.is_absolute() {input.to_path_buf()} else {std::env::current_dir().unwrap_or_default().join(input)};
+        let mut existing=absolute.as_path();
+        let mut tail=Vec::new();
+        while !existing.exists() {
+            let Some(name)=existing.file_name() else {break;};
+            tail.push(name.to_os_string());
+            let Some(parent)=existing.parent() else {break;};
+            existing=parent;
+        }
+        let mut resolved=std::fs::canonicalize(existing).unwrap_or_else(|_|existing.to_path_buf());
+        for part in tail.into_iter().rev() {resolved.push(part);}
+        resolved
+    }
 }
 
 pub struct FileMonitor {
@@ -65,7 +84,6 @@ pub struct FileMonitor {
     pub settled:bool,
     reservation:Option<crate::manager::CapacityReservation>,
 }
-#[cfg(unix)]
 impl FileMonitor {
     pub fn register(id:String,description:String,path:&Path,event:FileEvent,approved_parent:Option<&Path>)->std::io::Result<Self> {
         let path=if path.is_absolute() {path.to_path_buf()} else {std::env::current_dir()?.join(path)};
@@ -108,7 +126,7 @@ mod tests {
     use super::*;
     #[test]
     fn parent_symlink_retargeting_is_rejected_before_reading_target()->std::io::Result<()> {
-        let dir=tempfile::tempdir()?;let first=dir.path().join("first");let second=dir.path().join("second");std::fs::create_dir(&first)?;std::fs::create_dir(&second)?;std::fs::write(first.join("file"),b"first")?;std::fs::write(second.join("file"),b"second")?;
+        let dir=tempfile::tempdir()?;let first=std::fs::canonicalize(dir.path())?.join("first");let second=std::fs::canonicalize(dir.path())?.join("second");std::fs::create_dir(&first)?;std::fs::create_dir(&second)?;std::fs::write(first.join("file"),b"first")?;std::fs::write(second.join("file"),b"second")?;
         let parent=dir.path().join("parent");std::os::unix::fs::symlink(&first,&parent)?;let mut monitor=FileMonitor::register("watch_1".to_owned(),"watch".to_owned(),&parent.join("file"),FileEvent::Modify,Some(&first))?;let saved=monitor.checkpoint.clone();
         std::fs::remove_file(&parent)?;std::os::unix::fs::symlink(&second,&parent)?;assert!(monitor.check().unwrap_err().to_string().contains("monitored parent changed"));assert_eq!(monitor.checkpoint,saved);assert!(!monitor.settled);Ok(())
     }
@@ -156,17 +174,17 @@ mod tests {
     #[test]
     fn dot_dot_is_applied_after_the_queued_parts_that_precede_it() {
         let dir=tempfile::tempdir().unwrap();let a=dir.path().join("a");std::fs::create_dir(&a).unwrap();
-        let expected=dir.path().join("b");
+        let expected=std::fs::canonicalize(dir.path()).unwrap().join("b");
         assert_eq!(realpath_without_open(&a.join("..").join("b")),expected,"a/../b must resolve to b, not a/b");
         // `..` pops the already-resolved prefix, so `a/../../a` escapes the temp dir into its parent
         // (upstream `resolveWithoutOpen` applies each `..` to the resolved stack, never lexically).
-        assert_eq!(realpath_without_open(&a.join("..").join("..").join(a.file_name().unwrap())),dir.path().parent().unwrap().join("a"));
+        assert_eq!(realpath_without_open(&a.join("..").join("..").join(a.file_name().unwrap())),std::fs::canonicalize(dir.path()).unwrap().parent().unwrap().join("a"));
     }
     #[test]
     fn a_relative_symlink_target_is_spliced_before_its_own_dot_dot() {
         let dir=tempfile::tempdir().unwrap();let foo=dir.path().join("foo");std::fs::create_dir(&foo).unwrap();
         let link=dir.path().join("link");std::os::unix::fs::symlink("foo/../bar",&link).unwrap();
-        assert_eq!(realpath_without_open(&link),dir.path().join("bar"));
+        assert_eq!(realpath_without_open(&link),std::fs::canonicalize(dir.path()).unwrap().join("bar"));
     }
     #[test]
     fn a_parent_retargeted_after_approval_is_refused_with_the_approval_reason()->std::io::Result<()> {

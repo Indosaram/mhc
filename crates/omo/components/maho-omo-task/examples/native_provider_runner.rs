@@ -1,7 +1,11 @@
+#[cfg(unix)]
 use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex, mpsc}, time::Duration};
+#[cfg(unix)]
 use senpi_task::{manager::{ManagedChildHandle, types::{ManagedRunners, ManagerStartSpec, StartResult}}, runners::{rpc::{process::{RpcChildProcess, RpcSpawnDescriptor}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
 
+#[cfg(unix)]
 struct Actions;
+#[cfg(unix)]
 impl maho_ext_api::ExtensionActions for Actions {
     fn send_message(&self,message:maho_ext_api::CustomMessage,_:maho_ext_api::SendMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { println!("MESSAGE {}",serde_json::to_string(&serde_json::json!({"customType":message.custom_type,"content":message.content,"display":message.display,"details":message.details})).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?); Ok(()) }
     fn send_user_message(&self,_:maho_ext_api::UserMessageContent,_:maho_ext_api::SendUserMessageOptions)->Result<(),maho_ext_api::ExtensionFailure> { Err(maho_ext_api::ExtensionFailure::new("unexpected user message")) }
@@ -9,8 +13,11 @@ impl maho_ext_api::ExtensionActions for Actions {
     fn get_all_tools(&self)->Result<Vec<maho_ext_api::ToolInfo>,maho_ext_api::ExtensionFailure> { Ok(vec![]) }
 }
 
+#[cfg(unix)]
 struct Processes(Arc<Mutex<Vec<Arc<RpcChildProcess>>>>);
+#[cfg(unix)]
 struct ManagerCleanup(Arc<senpi_task::manager::TaskManager>);
+#[cfg(unix)]
 impl Drop for ManagerCleanup {
     fn drop(&mut self) {
         for entry in self.0.list(&senpi_task::manager::types::ListScope::All) {
@@ -19,12 +26,15 @@ impl Drop for ManagerCleanup {
         }
     }
 }
+#[cfg(unix)]
 struct HandleCleanup(Arc<dyn ManagedChildHandle>);
+#[cfg(unix)]
 impl Drop for HandleCleanup {
     fn drop(&mut self) {
         if let Err(error)=senpi_task::manager::child_handle::discard_managed_handle(self.0.as_ref()) { eprintln!("native handle cleanup failed: {error}"); }
     }
 }
+#[cfg(unix)]
 impl Drop for Processes {
     fn drop(&mut self) {
         for child in self.0.lock().expect("processes").iter() {
@@ -32,6 +42,7 @@ impl Drop for Processes {
         }
     }
 }
+#[cfg(unix)]
 fn command<T:Send+'static>(handle:Arc<dyn ManagedChildHandle>, operation:impl FnOnce(Arc<dyn ManagedChildHandle>)->Result<T,String>+Send+'static)->Result<T,Box<dyn std::error::Error>> {
     let (sender,receiver)=mpsc::channel(); let active=handle.clone();
     let worker=std::thread::spawn(move || { let _=sender.send(operation(active)); });
@@ -41,6 +52,7 @@ fn command<T:Send+'static>(handle:Arc<dyn ManagedChildHandle>, operation:impl Fn
     cleanup?;
     Ok(result?.map_err(std::io::Error::other)?)
 }
+#[cfg(unix)]
 fn main()->Result<(),Box<dyn std::error::Error>> {
     let mut args=std::env::args().skip(1);
     let executable=args.next().ok_or("native mhc path required")?;
@@ -142,3 +154,6 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     println!("RECEIPT cancellation outcome, native process exit and worker joins observed");
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}

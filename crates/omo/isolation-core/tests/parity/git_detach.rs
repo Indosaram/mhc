@@ -87,6 +87,7 @@ fn directory_metadata_removes_nested_locks_and_worktree_bare_configuration_and_a
 }
 
 #[test]
+#[cfg(unix)]
 fn copied_linked_metadata_never_deletes_the_source_worktree_admin() {
     let f = repo();
     let linked = f.root.join("linked");
@@ -190,6 +191,7 @@ fn ensure_retries_one_inconsistent_clone_detaches_before_publication_then_refuse
 }
 
 #[test]
+#[cfg(unix)]
 fn directory_metadata_rejects_external_symlinks_beneath_mutation_targets() {
     let f = repo();
     std::fs::remove_dir_all(f.repo_root.join(".git/objects")).expect("remove objects");

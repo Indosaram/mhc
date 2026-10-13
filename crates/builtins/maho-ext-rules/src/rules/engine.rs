@@ -8,8 +8,15 @@ pub trait EngineDeps: Send + Sync {
     fn find_project_root(&self, path: &Path) -> Option<PathBuf> { find_project_root(path, None) }
     fn match_rule(&self, cache: &mut MatcherCache, input: MatcherInput<'_>) -> Result<super::matcher::MatchResult, super::matcher::MatcherError> { cache.match_rule(input) }
     fn file_fingerprint(&self, path: &Path) -> String {
+        #[cfg(unix)]
+        {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}:{}", i128::from(stat.mtime()) * 1_000_000_000 + i128::from(stat.mtime_nsec()), i128::from(stat.ctime()) * 1_000_000_000 + i128::from(stat.ctime_nsec()), stat.len()))
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::metadata(path).map_or_else(|_| "missing".into(), |stat| format!("{}:{}", stat.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |time| time.as_nanos()), stat.len()))
+        }
     }
 }
 struct NativeEngineDeps;

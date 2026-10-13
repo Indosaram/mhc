@@ -112,7 +112,7 @@ fn run_kills_the_child_when_the_timeout_elapses() {
         bash_path,
         command: "sleep".to_owned(),
         cwd: None,
-        timeout_ms: 500,
+        timeout_ms: 2_000,
         env: None,
     };
 

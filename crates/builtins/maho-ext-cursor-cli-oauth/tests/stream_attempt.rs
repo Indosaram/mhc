@@ -8,7 +8,7 @@ fn input(root:&std::path::Path,body:&str)->SpawnAttemptInput {
 async fn delivers_output_before_process_exit_and_prepares_deny_config() {
     let root=tempfile::tempdir().expect("root");let controller=maho_ai::utils::abort::AbortController::new();
     let mut invocation=input(root.path(),r#"printf '%s\n' '{"type":"thinking","subtype":"delta","text":"ready"}'
-exec /usr/bin/sleep 300"#);invocation.signal=Some(controller.signal());
+exec /bin/sleep 300"#);invocation.signal=Some(controller.signal());
     let mut events=spawn_attempt(invocation);
     let event=tokio::time::timeout(Duration::from_secs(10),events.recv()).await.expect("live output").expect("event").expect("ready");assert_eq!(event["text"],"ready");
     let config=std::fs::read_to_string(root.path().join("agent/cursor-cli-oauth/accounts/a/home/.cursor/cli-config.json")).expect("deny config");let config:serde_json::Value=serde_json::from_str(&config).expect("json");assert_eq!(config["permissions"]["deny"][0],"Shell(rm test)");

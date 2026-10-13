@@ -20,4 +20,5 @@ fn dir() -> io::Result<tempfile::TempDir> { tempfile::tempdir() }
 #[test] fn corrupt_cooldown() -> io::Result<()> { let d=dir()?; write_cooldown(d.path(),"hash",1.0)?; std::fs::write(d.path().join("onboarding-cooldowns/hash"),"not json{{{")?; assert!(!is_cooling_down(d.path(),"hash",2.0)); Ok(()) }
 #[test] fn nonnumeric_until() -> io::Result<()> { let d=dir()?; write_cooldown(d.path(),"hash",1.0)?; std::fs::write(d.path().join("onboarding-cooldowns/hash"),r#"{"until":"not-a-number"}"#)?; assert!(!is_cooling_down(d.path(),"hash",2.0)); Ok(()) }
 #[test] fn extra_fields_accepted() -> io::Result<()> { let d=dir()?; write_cooldown(d.path(),"hash",1.0)?; std::fs::write(d.path().join("onboarding-cooldowns/hash"),r#"{"until":100000,"extra":"ignored"}"#)?; assert!(is_cooling_down(d.path(),"hash",2.0)); Ok(()) }
+#[cfg(unix)]
 #[test] fn marker_private_permissions() -> io::Result<()> { use std::os::unix::fs::PermissionsExt; let d=dir()?; assert!(claim_onboarding(d.path())); assert_eq!(std::fs::metadata(d.path().join("onboarding-completed"))?.permissions().mode()&0o777,0o600); Ok(()) }

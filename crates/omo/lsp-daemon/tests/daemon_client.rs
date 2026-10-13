@@ -1,4 +1,5 @@
 //! Ports of daemon-client-retry.test.ts, daemon-client.test.ts and client-surface.test.ts.
+#![cfg(unix)]
 
 mod common;
 

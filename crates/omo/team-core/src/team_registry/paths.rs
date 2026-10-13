@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -36,10 +37,14 @@ pub struct PathDeps {
 impl Default for PathDeps {
     fn default() -> Self {
         Self {
+            #[cfg(unix)]
             chmod: Box::new(|path, mode| {
                 fs::set_permissions(path, fs::Permissions::from_mode(mode))
             }),
+            #[cfg(not(unix))]
+            chmod: Box::new(|_, _| Ok(())),
             log: logger::log_fn(),
+            #[cfg(unix)]
             mkdir: Box::new(|path, mode| {
                 use std::os::unix::fs::DirBuilderExt;
                 fs::DirBuilder::new()
@@ -47,9 +52,14 @@ impl Default for PathDeps {
                     .mode(mode)
                     .create(path)
             }),
+            #[cfg(not(unix))]
+            mkdir: Box::new(|path, _| fs::create_dir_all(path)),
+            #[cfg(unix)]
             stat_mode: Box::new(|path| {
                 fs::metadata(path).map(|metadata| metadata.permissions().mode())
             }),
+            #[cfg(not(unix))]
+            stat_mode: Box::new(|_| Ok(0)),
         }
     }
 }

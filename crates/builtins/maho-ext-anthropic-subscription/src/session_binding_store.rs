@@ -46,7 +46,7 @@ mod tests {
     fn record(path:&Path)->StoredBinding {StoredBinding {schema_version:1,session_path:path.to_string_lossy().into_owned(),session_id:"session".into(),marker_entry_id:"marker".into(),sdk_session_id:"sdk".into(),sent_count:1,sent_prefix_hash:"1".repeat(64),assistant_content_hash:"2".repeat(64),last_assistant_uuid:Some("assistant".into()),account_name:"default".into(),model_id:"model".into(),system_prompt_hash:"3".repeat(64),toolset_hash:"4".repeat(64)}}
     #[test]
     fn roundtrip_replace_delete_private_mode() {
-        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");std::fs::write(&session,"{}").expect("session");
+        let directory=tempfile::tempdir().expect("directory");let directory=directory.path().canonicalize().expect("canonical directory");let session=directory.join("session.json");std::fs::write(&session,"{}").expect("session");
         let mut binding=record(&session);write_binding(&session,&binding).expect("write");assert_eq!(read_binding(&session).expect("read"),Some(binding.clone()));
         assert_eq!(std::fs::metadata(sidecar_path(&session).expect("path")).expect("metadata").permissions().mode()&0o777,0o600);
         binding.session_id="second".into();write_binding(&session,&binding).expect("replace");assert_eq!(read_binding(&session).expect("read").expect("binding").session_id,"second");delete_binding(&session).expect("delete");assert!(read_binding(&session).expect("missing").is_none());
@@ -81,8 +81,8 @@ mod tests {
     }
     #[test]
     fn symlinked_directory_uses_the_same_canonical_sidecar() {
-        let directory=tempfile::tempdir().expect("directory");let real=directory.path().join("real");std::fs::create_dir(&real).expect("real");
-        let alias=directory.path().join("alias");std::os::unix::fs::symlink(&real,&alias).expect("alias");
+        let directory=tempfile::tempdir().expect("directory");let directory=directory.path().canonicalize().expect("canonical directory");let real=directory.join("real");std::fs::create_dir(&real).expect("real");
+        let alias=directory.join("alias");std::os::unix::fs::symlink(&real,&alias).expect("alias");
         let session=real.join("session.json");let spelling=alias.join("session.json");
         write_binding(&spelling,&record(&spelling)).expect("write");
         assert_eq!(sidecar_path(&session).expect("real path"),sidecar_path(&spelling).expect("alias path"));
@@ -90,8 +90,8 @@ mod tests {
     }
     #[test]
     fn path_mismatch_never_replaces_existing_binding() {
-        let directory=tempfile::tempdir().expect("directory");let session=directory.path().join("session.json");let binding=record(&session);
-        write_binding(&session,&binding).expect("write");let mut other=binding.clone();other.session_path=directory.path().join("other.json").to_string_lossy().into_owned();
+        let directory=tempfile::tempdir().expect("directory");let directory=directory.path().canonicalize().expect("canonical directory");let session=directory.join("session.json");let binding=record(&session);
+        write_binding(&session,&binding).expect("write");let mut other=binding.clone();other.session_path=directory.join("other.json").to_string_lossy().into_owned();
         assert!(write_binding(&session,&other).is_err());assert_eq!(read_binding(&session).expect("read"),Some(binding));
     }
 }

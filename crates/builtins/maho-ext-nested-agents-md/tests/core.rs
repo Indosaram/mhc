@@ -45,9 +45,9 @@ fn cache_preserves_insertion_order_without_duplicates() {
 }
 #[test]
 fn injection_excludes_root_and_orders_parent_first() {
- let root = tempfile::tempdir().unwrap(); let child = root.path().join("child"); let leaf = child.join("leaf");
+ let root = tempfile::tempdir().unwrap(); let root_path = root.path().canonicalize().unwrap(); let child = root_path.join("child"); let leaf = child.join("leaf");
  std::fs::create_dir_all(&leaf).unwrap(); std::fs::write(root.path().join("AGENTS.md"), "root").unwrap(); std::fs::write(child.join("AGENTS.md"), "parent").unwrap(); std::fs::write(leaf.join("AGENTS.md"), "leaf").unwrap(); std::fs::write(leaf.join("file.rs"), "target").unwrap();
- let result = inject_directory_context(&leaf.join("file.rs"), root.path(), &mut InjectionCache::default(), "s", &InjectionConfig::default());
+ let result = inject_directory_context(&leaf.join("file.rs"), &root_path, &mut InjectionCache::default(), "s", &InjectionConfig::default());
  assert_eq!(result.injected_files.iter().map(|file| file.absolute_path.clone()).collect::<Vec<_>>(), vec![child.join("AGENTS.md"), leaf.join("AGENTS.md")]);
 }
 #[test]

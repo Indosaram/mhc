@@ -2,10 +2,11 @@ use std::{sync::{Arc,Mutex},time::Duration};
 use maho_ext_api::{ToolCall,AbortSignal,ToolContent};
 use maho_ext_mcp::{config_schema::*,transport::*,catalog::collect_tool_catalog,log::McpLogger,guard::output_guard::McpOutputArtifacts,expose::register::*};
 use serde_json::json;
+mod support;
 #[tokio::test]
 async fn native_tool_registration_calls_the_real_fixture_and_rejects_errors_before_spill() {
     let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into(),"--slow-tool-call".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into(),"--slow-tool-call".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let transport=create_mcp_transport("fixture",&config,None,Arc::new(Mutex::new(McpLogger::new("fixture",root.path(),None).unwrap()))).unwrap();
     let client=connect_mcp_transport(&transport).await.unwrap();
     let catalog=collect_tool_catalog("fixture",client,Duration::from_secs(3)).await.unwrap();
@@ -31,7 +32,7 @@ async fn native_tool_registration_calls_the_real_fixture_and_rejects_errors_befo
 #[tokio::test]
 async fn native_tool_runtime_reconnects_after_idle_generation_change() {
     let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=maho_ext_mcp::connection::ServerConnection::new("runtime",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("runtime",root.path(),None).unwrap())));
     let client=connection.connect().await.unwrap();
     let mut catalog=collect_tool_catalog("runtime",client,Duration::from_secs(3)).await.unwrap();
@@ -47,7 +48,7 @@ async fn native_tool_runtime_reconnects_after_idle_generation_change() {
 #[tokio::test]
 async fn real_error_tool_execution_never_spills_output() {
     let root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--iserror-tool".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--iserror-tool".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let transport=create_mcp_transport("errors",&config,None,Arc::new(Mutex::new(McpLogger::new("errors",root.path(),None).unwrap()))).unwrap();
     let client=connect_mcp_transport(&transport).await.unwrap();let catalog=collect_tool_catalog("errors",client,Duration::from_secs(3)).await.unwrap();
     let artifacts=Arc::new(McpOutputArtifacts::default());
@@ -60,7 +61,7 @@ async fn real_error_tool_execution_never_spills_output() {
 #[tokio::test]
 async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again() {
     use tokio::io::{AsyncBufReadExt,BufReader};
-    let mut fixture=tokio::process::Command::new("/usr/bin/node").args(["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/http-server.ts","--tools","1","--always-expire-tool-calls"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
+    let mut fixture=tokio::process::Command::new(support::node()).args([support::senpi("packages/coding-agent/test/mcp/fixtures/http-server.ts"),"--tools".into(),"1".into(),"--always-expire-tool-calls".into()]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
     let mut lines=BufReader::new(fixture.stdout.take().unwrap()).lines();
     let ready=tokio::time::timeout(Duration::from_secs(5),lines.next_line()).await.unwrap().unwrap().unwrap();let ready:serde_json::Value=serde_json::from_str(&ready).unwrap();
     let root=tempfile::tempdir().unwrap();
@@ -77,7 +78,7 @@ async fn native_tool_runtime_suspends_when_reinitialized_session_expires_again()
 #[tokio::test]
 async fn cached_native_tool_connects_only_on_execute_and_uses_entry_artifacts() {
     let root=tempfile::tempdir().unwrap();let artifact_root=tempfile::tempdir().unwrap();
-    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
+    let config=McpServerConfig {enabled:Some(true),transport:Some(Transport::Stdio),command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),connect_timeout_ms:Some(5000.0),..Default::default()};
     let connection=maho_ext_mcp::connection::ServerConnection::new("cached",config.clone(),None,Arc::new(Mutex::new(McpLogger::new("cached",root.path(),None).unwrap())));let lifecycle=maho_ext_mcp::idle::McpConnectionLifecycle::configure(connection.clone(),config);
     let catalog=maho_ext_mcp::catalog_cache::McpCachedServerCatalog {config_hash:"hash".into(),fetched_at:0.0,tools:vec![json!({"name":"tool_1","inputSchema":{"type":"object"}})],resources:vec![],prompts:vec![],instructions:None};
     let runtime=Arc::new(maho_ext_mcp::catalog::McpCatalogRuntime {connection:connection.clone(),lifecycle:lifecycle.clone(),health:Default::default()});let connect=connection.clone();

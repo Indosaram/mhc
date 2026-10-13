@@ -1,4 +1,4 @@
-pub fn signal_generation(pid:u32,signal:rustix::process::Signal)->Result<bool,rustix::io::Errno>{
+#[cfg(unix)] pub fn signal_generation(pid:u32,signal:rustix::process::Signal)->Result<bool,rustix::io::Errno>{
     let Some(pid)=i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw)else{return Ok(false);};
     match rustix::process::kill_process(pid,signal){Ok(())=>Ok(true),Err(error)if error==rustix::io::Errno::SRCH=>Ok(false),Err(error)=>Err(error)}
 }
@@ -13,8 +13,16 @@ pub async fn stop_host(socket:&str,agent_dir:&std::path::Path,drain:bool,force:b
     let sessions=if drain{None}else{crate::host_probe::probe_session_count(socket,timeout_ms).await};
     match stop_decision(true,drain,force,false,handoff,host.is_some(),sessions){
         StopDecision::Refuse(reason)=>Ok(StopHostResult::Refuse{reason}),
-        StopDecision::Drain=>{signal_generation(owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;Ok(StopHostResult::Drained{pid:owner.pid})},
-        StopDecision::Stop=>{signal_generation(owner.pid,rustix::process::Signal::TERM).map_err(std::io::Error::from)?;crate::host_daemon_registration::release_generation(&paths,&owner.instance_id,owner.pid)?;Ok(StopHostResult::Stopped{pid:owner.pid})},
+        StopDecision::Drain=>{
+            #[cfg(unix)] signal_generation(owner.pid,rustix::process::Signal::USR1).map_err(std::io::Error::from)?;
+            #[cfg(not(unix))] return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"draining hosts is unsupported on this platform"));
+            Ok(StopHostResult::Drained{pid:owner.pid})
+        },
+        StopDecision::Stop=>{
+            #[cfg(unix)] signal_generation(owner.pid,rustix::process::Signal::TERM).map_err(std::io::Error::from)?;
+            #[cfg(not(unix))] return Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"stopping hosts is unsupported on this platform"));
+            crate::host_daemon_registration::release_generation(&paths,&owner.instance_id,owner.pid)?;Ok(StopHostResult::Stopped{pid:owner.pid})
+        },
     }
 }
 pub fn stop_decision(owner_proven:bool,drain:bool,force:bool,windows:bool,handoff_capable:bool,host_answered:bool,sessions:Option<usize>)->StopDecision{
@@ -23,4 +31,4 @@ pub fn stop_decision(owner_proven:bool,drain:bool,force:bool,windows:bool,handof
     if !force&&host_answered&&sessions.is_some_and(|sessions|sessions>0){return StopDecision::Refuse("sessions_live");}
     StopDecision::Stop
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn guards_owner_before_signal_and_live_sessions_before_hard_stop(){assert_eq!(stop_decision(false,true,true,false,true,true,Some(1)),StopDecision::Refuse("unknown_owner"));assert_eq!(stop_decision(true,true,false,false,false,true,Some(0)),StopDecision::Refuse("drain_unsupported"));assert_eq!(stop_decision(true,false,false,false,true,true,Some(1)),StopDecision::Refuse("sessions_live"));assert_eq!(stop_decision(true,true,false,false,true,true,Some(1)),StopDecision::Drain);assert_eq!(stop_decision(true,false,true,false,true,true,Some(1)),StopDecision::Stop);}#[test]fn process_gone_is_already_stopped(){assert!(!signal_generation(0,rustix::process::Signal::TERM).unwrap());}}
+#[cfg(test)]mod tests{use super::*;#[test]fn guards_owner_before_signal_and_live_sessions_before_hard_stop(){assert_eq!(stop_decision(false,true,true,false,true,true,Some(1)),StopDecision::Refuse("unknown_owner"));assert_eq!(stop_decision(true,true,false,false,false,true,Some(0)),StopDecision::Refuse("drain_unsupported"));assert_eq!(stop_decision(true,false,false,false,true,true,Some(1)),StopDecision::Refuse("sessions_live"));assert_eq!(stop_decision(true,true,false,false,true,true,Some(1)),StopDecision::Drain);assert_eq!(stop_decision(true,false,true,false,true,true,Some(1)),StopDecision::Stop);}#[cfg(unix)] #[test]fn process_gone_is_already_stopped(){assert!(!signal_generation(0,rustix::process::Signal::TERM).unwrap());}}

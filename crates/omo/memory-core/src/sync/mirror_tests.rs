@@ -172,6 +172,7 @@ mod serialization {
     }
 }
 
+#[cfg(unix)]
 mod bounded_exec {
     use super::*;
     use pretty_assertions::assert_eq;

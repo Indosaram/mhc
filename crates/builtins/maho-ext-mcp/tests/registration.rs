@@ -8,6 +8,7 @@ use maho_ext_mcp::guard::output_guard::McpOutputArtifacts;
 use maho_ext_mcp::tool_registrar::McpToolRegistrar;
 use maho_ext_tool_search::service::ToolSearchService;
 use serde_json::json;
+mod support;
 use maho_ext_api::{ExtensionSessionActions,ExecuteToolOptions,ExecuteToolFuture,LazyToolActivator,SlashCommandInfo,Model,ExtensionFuture,ThinkingLevel,ExecOptions,ExecResult};
 
 struct SessionActions(Arc<RecordingRegistrar>);
@@ -204,7 +205,7 @@ fn cloned_native_gate_observes_settings_changes_and_reset() {
 async fn cached_service_registration_connects_on_first_call_and_reads_current_client() {
     use maho_ext_mcp::{service::McpService,host_registry::HostMcpRegistry,catalog_cache::McpCachedServerCatalog};
     let root=tempfile::tempdir().unwrap();let registry=Arc::new(HostMcpRegistry::default());let mut service=McpService::new(registry.clone(),1);
-    let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(),config:maho_ext_api::McpServerDeclaration {command:Some("/usr/bin/node".into()),args:Some(vec!["/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/stdio-server.ts".into(),"--tools".into(),"1".into()]),exposure:Some(maho_ext_api::McpExposure::Direct),..Default::default()},extension_path:"fixture".into(),registration_cwd:root.path().into()};
+    let declaration=maho_ext_api::RegisteredMcpServerDeclaration {name:"fx".into(),config:maho_ext_api::McpServerDeclaration {command:Some(support::node()),args:Some(vec![support::senpi("packages/coding-agent/test/mcp/fixtures/stdio-server.ts"),"--tools".into(),"1".into()]),exposure:Some(maho_ext_api::McpExposure::Direct),..Default::default()},extension_path:"fixture".into(),registration_cwd:root.path().into()};
     seed_cache(root.path(),"fx",&declaration);
     service.attach_session(root.path(),root.path(),&Default::default(),true,&[declaration]).await.unwrap();
     let connection_entry=service.connections["fx"].entry.clone();let connection=connection_entry.lock().await.connection.clone();

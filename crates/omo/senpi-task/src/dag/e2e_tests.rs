@@ -440,6 +440,7 @@ fn fsync_mutation_child_process() {
 }
 
 #[test]
+#[cfg(unix)]
 fn sigkill_after_fsynced_wal_leaves_whole_checkpoint_and_replays_every_event() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::ExitStatusExt;

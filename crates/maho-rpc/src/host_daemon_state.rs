@@ -17,8 +17,8 @@ pub fn read_host_settings(paths:&HostDaemonPaths) -> io::Result<Option<Map<Strin
     Ok(Some(fields))
 }
 pub fn write_state_file(path:&Path,content:&impl Serialize) -> Result<(),HostDaemonStateError> {
-    use std::{io::Write,os::unix::fs::OpenOptionsExt};
-    let result=(|| -> io::Result<()> { let mut file=fs::OpenOptions::new().write(true).create(true).truncate(true).mode(HOST_STATE_FILE_MODE).open(path)?;serde_json::to_writer(&mut file,content).map_err(io::Error::other)?;file.write_all(b"\n") })();
+    use std::io::Write;
+    let result=(|| -> io::Result<()> { let mut options=fs::OpenOptions::new();options.write(true).create(true).truncate(true);#[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.mode(HOST_STATE_FILE_MODE);}let mut file=options.open(path)?;serde_json::to_writer(&mut file,content).map_err(io::Error::other)?;file.write_all(b"\n") })();
     result.map_err(|source|HostDaemonStateError {path:path.into(),source})
 }
 pub fn read_file_or_undefined(path:&Path) -> io::Result<Option<String>> {

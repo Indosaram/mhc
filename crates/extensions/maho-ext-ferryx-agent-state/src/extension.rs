@@ -170,6 +170,11 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind Unix fixture");
         let peer = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept Unix payload");
+            #[cfg(target_os = "macos")]
+            if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(2))) {
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "bound payload read");
+            }
+            #[cfg(not(target_os = "macos"))]
             stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bound payload read");
             let mut text = String::new();
             std::io::BufReader::new(stream).read_line(&mut text).expect("read Unix frame");

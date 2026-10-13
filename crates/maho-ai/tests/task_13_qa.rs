@@ -17,7 +17,6 @@ use maho_ai::auth::types::{
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,9 +33,11 @@ const SENPI_OAUTH_CREDENTIAL_KEYS: [&str; 5] = ["access", "accountId", "expires"
 
 /// senpi's `AUTH_FILE_WRITE_OPTIONS` staging from `packages/coding-agent/src/core/auth-storage.ts`:
 /// write a fresh 0o600 file and rename it over the store.
+#[cfg(unix)]
 fn write_auth_file(path: &Path, content: &str) {
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     std::fs::write(&temporary, content).expect("stage the auth file");
+    use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600)).expect("restrict the mode");
     std::fs::rename(&temporary, path).expect("rename the auth file into place");
 }
@@ -195,6 +196,7 @@ async fn wait_for_authorize_url(url: &Arc<Mutex<Option<String>>>) -> String {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn pkce_login_against_a_mock_authorization_server_writes_senpis_auth_json_fields() {
     let state = Arc::new(MockState::default());
     let (base, server) = start_mock_authorization_server(state.clone()).await;

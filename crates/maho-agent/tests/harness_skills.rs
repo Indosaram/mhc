@@ -49,6 +49,7 @@ async fn loads_skill_through_execution_environment() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn loads_symlinked_directories() {
     let f = Fixture::new("symlink");
     f.write(

@@ -107,14 +107,15 @@ fn bounded_when_read_budget_exhausted() {
 fn unreadable_rules_record_error_without_injection() {
     use std::os::unix::fs::PermissionsExt;
     let tree = tree();
-    let rules = tree.path().join("src/AGENTS.md");
+    let root = tree.path().canonicalize().expect("canonical fixture directory");
+    let rules = root.join("src/AGENTS.md");
     std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o000)).expect("make rules unreadable");
-    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut InjectionCache::default(), "a", &InjectionConfig::default());
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), &root, &mut InjectionCache::default(), "a", &InjectionConfig::default());
     std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o644)).expect("restore fixture permissions");
     assert_eq!(result.errors.len(), 1);
     assert_eq!(result.errors[0].0, rules);
     assert_eq!(result.injected_files.len(), 1);
-    assert_eq!(result.injected_files[0].absolute_path, tree.path().join("src/deep/AGENTS.md"));
+    assert_eq!(result.injected_files[0].absolute_path, root.join("src/deep/AGENTS.md"));
 }
 
 #[test]
@@ -129,8 +130,9 @@ fn root_rules_alone_are_excluded() {
 #[test]
 fn injected_metadata_and_text_follow_outermost_order() {
     let tree = tree();
-    let result = inject_directory_context(Path::new("src/deep/file.ts"), tree.path(), &mut InjectionCache::default(), "a", &InjectionConfig::default());
-    assert_eq!(result.injected_files.iter().map(|file| &file.absolute_path).collect::<Vec<_>>(), [&tree.path().join("src/AGENTS.md"), &tree.path().join("src/deep/AGENTS.md")]);
+    let root = tree.path().canonicalize().expect("canonical fixture directory");
+    let result = inject_directory_context(Path::new("src/deep/file.ts"), &root, &mut InjectionCache::default(), "a", &InjectionConfig::default());
+    assert_eq!(result.injected_files.iter().map(|file| &file.absolute_path).collect::<Vec<_>>(), [&root.join("src/AGENTS.md"), &root.join("src/deep/AGENTS.md")]);
     assert!(result.injected_text.find("outer").expect("outer rules") < result.injected_text.find("inner").expect("inner rules"));
 }
 

@@ -1,5 +1,6 @@
+#![cfg(unix)]
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 use comment_checker_core::{CheckFailure, CheckResult, HookInput, HookToolInput, RunCommentCheckerInput};
@@ -302,8 +303,10 @@ async fn given_checker_following_protocol_when_two_edits_finish_then_keeps_runni
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn given_checker_without_execute_permission_when_real_runner_spawns_it_then_start_failure_exposed()
 {
+    use std::os::unix::fs::PermissionsExt;
     let temp = tempdir().expect("test assertion");
     let binary_path = temp.path().join("comment-checker");
     fs::write(&binary_path, "#!/bin/sh

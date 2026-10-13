@@ -140,6 +140,7 @@ pub fn assert_retryable_lock_open_error_with(
     Err(error)
 }
 
+#[cfg(unix)]
 fn is_pid_alive(pid: i64) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
@@ -147,6 +148,13 @@ fn is_pid_alive(pid: i64) -> bool {
     // SAFETY: kill with signal 0 only probes for process existence.
     let result = unsafe { libc::kill(pid, 0) };
     result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: i64) -> bool {
+    // Without a process probe the safe answer is "still running": a lock is then only reclaimed
+    // through its staleness deadline, never because a live owner was mistaken for a dead one.
+    true
 }
 
 fn acquire_lock(lock_path: &Path, owner_tag: &str, stale_after_ms: i64) -> Result<()> {

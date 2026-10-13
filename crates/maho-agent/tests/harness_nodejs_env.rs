@@ -89,6 +89,7 @@ async fn expands_home_relative_paths_and_file_urls() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn returns_file_info_for_files_directories_and_symlinks_without_following_symlinks() {
     let dir = unique_dir("info");
     let env = env_for(&dir);
@@ -109,11 +110,12 @@ async fn returns_file_info_for_files_directories_and_symlinks_without_following_
     assert_eq!(link.kind, FileKind::Symlink);
 
     let canonical = env.canonical_path("link.txt", &context).await.expect("canonical");
-    assert_eq!(canonical, dir.join("file.txt").to_string_lossy());
+    assert_eq!(canonical, std::fs::canonicalize(&dir).expect("canonical temp dir").join("file.txt").to_string_lossy());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn lists_symlinks_as_symlinks() {
     let dir = unique_dir("listsym");
     let env = env_for(&dir);
