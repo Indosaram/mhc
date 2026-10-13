@@ -201,6 +201,10 @@ impl maho_ai::auth::types::OAuthAuth for ComposedOAuthAuth {
     async fn check(&self, ctx: &dyn maho_ai::auth::types::AuthContext, credential: Option<&maho_ai::auth::types::OAuthCredential>, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthCheck>> {
         self.oauth.check(ctx, credential, signal).await
     }
+    fn has_resolve_ambient(&self) -> bool { self.oauth.has_resolve_ambient() }
+    async fn resolve_ambient(&self, ctx: &dyn maho_ai::auth::types::AuthContext, env: Option<&maho_ai::types::ProviderEnv>, signal: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthResult>> {
+        self.oauth.resolve_ambient(ctx, env, signal).await
+    }
     async fn to_auth(&self, credential: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> {
         let auth = self.oauth.to_auth(credential).await?;
         let env: Option<std::collections::HashMap<String, String>> = credential.get_extra("env").and_then(Value::as_object)

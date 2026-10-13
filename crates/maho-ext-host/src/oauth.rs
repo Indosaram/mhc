@@ -53,6 +53,10 @@ impl OAuthLoginCallbacks for LoginCallbacks<'_> {
 impl OAuthAuth for ExtensionOAuthAdapter {
     fn name(&self) -> &str { self.config.name() }
     fn is_subscription(&self) -> bool { self.config.is_subscription() }
+    fn has_resolve_ambient(&self) -> bool { self.config.has_resolve_ambient() }
+    async fn resolve_ambient(&self, ctx: &dyn AuthContext, _env: Option<&maho_ai::types::ProviderEnv>, signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        self.config.resolve_ambient(ctx, signal).await.map_err(|error| anyhow::anyhow!(error.message))
+    }
     async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let callbacks = LoginCallbacks { interaction, error: Mutex::new(Some(sender)) };
