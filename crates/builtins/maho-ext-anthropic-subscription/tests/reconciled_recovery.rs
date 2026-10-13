@@ -1,7 +1,6 @@
 use maho_ext_anthropic_subscription::{
     availability::{probe_ambient_claude_auth_status, AMBIENT_PROBE_TIMEOUT_MS, AMBIENT_STATUS_TTL_MS},
     custom_tools::deny_custom_tool_execution,
-    errors::SdkErrorKind,
     executable::{candidates, find_on_path, find_on_posix_path, ExecutableSource, ResolveInput},
     options::{build_query_configuration, QueryOptionsInput},
     prompt_append::{agents, skills},
@@ -21,9 +20,15 @@ use maho_ext_anthropic_subscription::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use serde_json::json;
-use maho_ai::auth::types::{AuthCheck, AuthContext, AuthPrompt, AuthPromptKind, AuthResult, AuthType, Credential, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
+use maho_ai::auth::types::{AuthContext, AuthPrompt, AuthPromptKind, AuthType, Credential, ModelAuth, OAuthAuth, OAuthCredential, ProviderAuthInteraction};
 use maho_ext_anthropic_subscription::{accounts::{add_account, empty_credential, list_accounts, AccountSlot, AccountSource, SENTINEL_TOKEN}, oauth_login::AnthropicSubscriptionOAuth};
 use maho_ext_anthropic_subscription::extension::AnthropicSubscriptionExtension;
+use maho_ai::auth::types::CredentialStore;
+use maho_ext_api::Extension;
+use maho_ext_anthropic_subscription::guidance::version_floor_guidance;
+
+/// Ties the returned input to the borrowed snapshot and hashes (closure lifetime elision cannot).
+fn continuity_input_fn<F>(f: F) -> F where F: for<'a> Fn(&'a Snapshot, &'a [String]) -> ContinuityInput<'a> { f }
 
 struct TestEnvironment(BTreeMap<String, String>);
 
@@ -257,7 +262,7 @@ fn directive_payload_fixture_collapses_to_latest_and_reduces_size() {
 fn continuity_divergence_matrix_keeps_live_sessions_resumable() {
     let hashes=vec!["h1".into(),"h2".into(),"h3".into(),"h4".into()];
     let entry=Snapshot {sdk_session_id:"sdk".into(),sent_count:3,sent_hashes:hashes[..3].to_vec(),last_assistant_uuid:Some("a3".into()),assistant_uuid_by_index:BTreeMap::from([(1,"a1".into()),(2,"a2".into()),(3,"a3".into())]),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),..Default::default()};
-    let request=|entry:&Snapshot,current:&[String]|ContinuityInput {entry:Some(entry),binding:None,current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None};
+    let request=continuity_input_fn(|entry:&Snapshot,current:&[String]|ContinuityInput {entry:Some(entry),binding:None,current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
     for decision in [
         decide(&request(&entry,&hashes)),
         decide(&{let mut r=request(&entry,&hashes);r.account_name="other";r}),
@@ -502,7 +507,7 @@ fn continuity_retry_checkpoint_requires_matching_prefix_and_fingerprint_drift_re
 fn retry_checkpoint_shadowing_cold_replays_only_on_matching_prefix() {
     let hashes=vec!["h1".to_owned(),"h2".to_owned(),"h3".to_owned()];
     let mut binding=Snapshot {sdk_session_id:"sdk".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],last_assistant_uuid:Some("a2".into()),account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),unanswered_turn_digest:Some(prefix_digest(&hashes,3)),..Default::default()};
-    let input=|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None};
+    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"prompt",toolset_hash:"tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
     let with_prefix=Snapshot {sent_prefix_hash:Some(prefix_digest(&hashes,2)),..binding.clone()};
     assert!(matches!(decide(&input(&with_prefix,&hashes)),Decision::Fork {reason,..} if reason=="timeout_retry"));
     binding.sent_prefix_hash=Some(prefix_digest(&["h1".into(),"other".into()],2));
@@ -513,7 +518,7 @@ fn retry_checkpoint_shadowing_cold_replays_only_on_matching_prefix() {
 fn restart_binding_rejects_unconfirmed_session_and_reattaches_on_fingerprint_drift() {
     let hashes=vec!["h1".to_owned(),"h2".to_owned(),"h3".to_owned()];
     let mut binding=Snapshot {sdk_session_id:"sdk".into(),sent_count:2,sent_hashes:vec!["h1".into(),"h2".into()],account_name:"primary".into(),model_id:"model".into(),system_prompt_hash:"prompt".into(),toolset_hash:"tools".into(),..Default::default()};
-    let input=|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"changed-prompt",toolset_hash:"changed-tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None};
+    let input=continuity_input_fn(|binding:&Snapshot,current:&[String]|ContinuityInput {entry:None,binding:Some(binding),current_hashes:current,account_name:"primary",model_id:"model",system_prompt_hash:"changed-prompt",toolset_hash:"changed-tools",transcript_available:true,cross_account_resume_supported:true,idle_expired:false,invalidation_reason:None});
     assert_eq!(decide(&input(&binding,&hashes)),Decision::Reattach {sdk_session_id:"sdk".into(),from:2,reason:"system_prompt_changed".into()});
     binding.sdk_session_id_confirmed=Some(false);
     assert_eq!(decide(&input(&binding,&hashes)),Decision::Flatten {reason:"session_unconfirmed".into()});
@@ -609,7 +614,7 @@ fn batch_without_readable_native_shim_is_never_returned() {
 
 #[test]
 fn tool_mapping_covers_edit_arguments_and_write_glob_matrix() {
-    assert_eq!(map_tool_args("Edit",json!({"file_path":"src","old_string":"before","new_string":"after","replace_all":true}).as_object()),json!({"path":"src","edits":[{"oldText":"before","newText":"after"}]}).as_object().expect("expected"));
+    assert_eq!(map_tool_args("Edit",json!({"file_path":"src","old_string":"before","new_string":"after","replace_all":true}).as_object()),json!({"path":"src","edits":[{"oldText":"before","newText":"after"}]}).as_object().expect("expected").clone());
     assert_eq!(map_tool_args("Bash",json!({"command":"npm test","timeout":30000}).as_object())["timeout"].as_f64(),Some(30.0));
     let mapped=resolve_tools(Some(&[json!({"name":"repoSearch"})]));
     assert_eq!(mapped.to_pi.get("mcp__custom-tools__repoSearch").map(String::as_str),Some("repoSearch"));
@@ -632,8 +637,8 @@ fn telemetry_is_omitted_for_resume_and_delta_observations() {
     assert_eq!(delta.kind,"delta");assert_eq!(delta.payload_bytes,None);assert_eq!(delta.collapsed_directives,None);
 }
 
-#[test]
-fn oauth_ambient_resolution_accepts_explicit_token_without_host_probe() {
+#[tokio::test]
+async fn oauth_ambient_resolution_accepts_explicit_token_without_host_probe() {
     let store=Arc::new(maho_ai::auth::credential_store::InMemoryCredentialStore::new());
     let (oauth,_,probes)=oauth_adapter(json!({"tokenInjection":"ambient"}),false,store);
     let controller=maho_ai::utils::abort::AbortController::new();
