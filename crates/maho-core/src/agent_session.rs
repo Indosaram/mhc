@@ -2164,6 +2164,7 @@ impl AgentSession {
         drop(readiness.take());
         if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Started); }
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -3140,6 +3141,21 @@ impl AgentSession {
         self.with_settings_manager(|manager| manager.resolve_retry_profile(provider.as_deref()))
     }
 
+    /// senpi: `settingsManager.getAbortServerSideFallback() && _retryFallback.hasConfiguredChain()`.
+    /// Resolved without the controller lock because fallback switches call
+    /// `switch_model_with_thinking` while the controller is held.
+    fn abort_server_side_fallback_enabled(&self) -> bool {
+        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        if !crate::retry_fallback::settings::resolve_abort_server_side_fallback(settings.as_ref()) { return false; }
+        let chains = crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref()).chains;
+        let models = self.model_registry.get_all();
+        let oauth = |model: &Model| self.model_registry.is_using_oauth(model);
+        let eligible = |model: &Model| self.model_registry.is_fallback_eligible(model);
+        let canonical = crate::retry_fallback::chains::canonicalize_fallback_chains(&chains, &models,
+            &crate::retry_fallback::expansion::FallbackAuthTiers { is_using_oauth: &oauth, has_configured_auth: None, is_fallback_eligible: Some(&eligible) });
+        crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.thinking_level()), &canonical).is_some()
+    }
+
     fn cancel_probe_back(&self) {
         lock(&self.probe_scheduler).cancel();
         if let Some(task) = lock(&self.probe_task).take() { task.abort(); }
@@ -3377,7 +3393,9 @@ impl AgentSession {
         let old_prompt = self.system_prompt();
         let old_thinking = self.thinking_level();
         let old_tier = self.service_tier();
+        let previous_abort_server_side_fallback = self.agent.abort_server_side_fallback();
         self.agent.set_model(model.clone());
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.set_thinking_level(self.get_thinking_for_model_switch(&model, thinking));
         let result = {
             let runner = self.extension_runner.lock().await.clone();
@@ -3410,6 +3428,7 @@ impl AgentSession {
                     self.agent.set_model(previous);
                     self.agent.set_system_prompt(old_prompt);
                     self.agent.set_thinking_level(old_thinking);
+                    self.agent.set_abort_server_side_fallback(previous_abort_server_side_fallback);
                     let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, post_hook_budget.shortfall_tokens);
                     self.state().pending_model_switch = Some(PendingModelSwitch {
                         model: model.clone(), budget: post_hook_budget.clone(), persist_default, notice: notice.clone(),
@@ -3423,6 +3442,7 @@ impl AgentSession {
                 let admission = self.assert_model_usable(&model, admitted_live);
                 if let Err(error) = admission {
                     self.agent.set_model(previous); self.agent.set_system_prompt(old_prompt); self.agent.set_thinking_level(old_thinking);
+                    self.agent.set_abort_server_side_fallback(previous_abort_server_side_fallback);
                     return Err(error);
                 }
                 (prompt != old_prompt).then(|| SystemPromptChangeEvent {
@@ -3432,6 +3452,7 @@ impl AgentSession {
             }
             Err(error) => {
                 self.agent.set_model(previous); self.agent.set_thinking_level(old_thinking); self.agent.set_system_prompt(old_prompt);
+                self.agent.set_abort_server_side_fallback(previous_abort_server_side_fallback);
                 return Err(error);
             }
         };
@@ -5381,6 +5402,7 @@ impl AgentSession {
             }
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -11369,6 +11391,35 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), idle_rx).await.expect("bounded idle").expect("idle");
         assert_eq!(session.messages().len(), 4);
         assert_eq!(session.get_last_assistant_text().as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn model_switch_engages_server_side_fallback_abort_only_with_configured_chain() {
+        let session = retry_session(Vec::new(), 1);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).provider.clone());
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            provider: Some("anthropic-subscription".to_owned()), ..Default::default()
+        }).provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("fallback provider");
+        let mut model = test_model();
+        model.provider = "anthropic-subscription".to_owned();
+        session.set_session_model(test_model()).await.expect("unchained switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(false));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"fallbackChains":{"anthropic-subscription/faux-1":["faux/faux-1"]}})),
+        ])));
+        session.set_session_model(model.clone()).await.expect("chained switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(true));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"abortServerSideFallback":false,
+                "fallbackChains":{"anthropic-subscription/faux-1":["faux/faux-1"]}})),
+        ])));
+        session.set_session_model(model).await.expect("disabled switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(false));
     }
 
     #[tokio::test]
