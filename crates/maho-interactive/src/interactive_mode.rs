@@ -444,6 +444,11 @@ pub struct InteractiveMode {
     pending_theme_setting: Option<Option<String>>,
     /// senpi `autoSyncEnabled` with its parsed `light/dark` pair from `currentThemeSetting`.
     theme_auto_sync: Option<(String, String)>,
+    /// senpi's module-level theme registry with its `themeWatcher`: one long-lived registry that
+    /// watches the active custom theme file; bound lazily on the first host frame (after the
+    /// registered themes are installed) and rebound by every `applyThemeName`.
+    theme_registry: Option<crate::theme::registry::ThemeRegistry>,
+    theme_registry_bound: bool,
     /// senpi `InteractiveThemeController.currentThemeSetting`: the user's selection (an auto
     /// `light/dark` pair or a name), not the resolved theme name.
     current_theme_setting: Option<String>,
@@ -652,6 +657,10 @@ impl InteractiveMode {
             let auto = crate::theme::parse_auto_theme_setting(setting.as_deref()).map(|(light, dark)| (light.to_owned(), dark.to_owned()));
             self.theme_auto_sync = auto.clone();
             ui.base_mut().set_terminal_color_scheme_notifications(auto.is_some(), terminal);
+            // senpi `applyFromSettings`: apply the remembered terminal theme (cache hint, else
+            // COLORFGBG) at once, then refine it when the terminal answers.
+            let immediate = match &auto { Some((light, dark)) => Some(if self.terminal_theme == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }), None => setting.is_none().then(|| self.terminal_theme.name().to_owned()) };
+            if let Some(name) = immediate && name != self.theme.name { self.apply_theme_name(&name, true); }
             if auto.is_some() || setting.is_none() {
                 let color_scheme = auto.is_some().then(|| ui.base_mut().query_terminal_color_scheme(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms));
                 let background = ui.base_mut().query_terminal_background_color(terminal, THEME_DETECTION_TIMEOUT_MS, now_ms);
@@ -668,15 +677,36 @@ impl InteractiveMode {
         }
         let reports = std::mem::take(&mut *self.terminal_color_scheme_reports.borrow_mut());
         for scheme in reports { self.apply_terminal_theme(terminal_theme_for_scheme(scheme)); }
+        self.poll_theme_watcher(ui, now_ms);
+    }
+
+    /// senpi `startThemeWatcher` + `onThemeChange`: bind the watched registry once, then reload the
+    /// active custom theme 100ms after its file changes and re-render.
+    fn poll_theme_watcher(&mut self, ui: &mut crate::tui_renderer::InteractiveTui, now_ms: u64) {
+        if !self.theme_registry_bound {
+            self.theme_registry_bound = true;
+            let name = self.theme.name.clone();
+            self.bind_theme_registry(&name);
+        }
+        let Some(registry) = self.theme_registry.as_mut() else { return; };
+        if registry.poll_theme_watcher(now_ms) {
+            let theme = registry.current.clone();
+            self.install_theme(theme);
+            ui.base_mut().invalidate();
+            ui.base_mut().request_render(false, now_ms);
+        }
+    }
+
+    /// The registry for `name` with its file watcher started (senpi `setTheme(name, true)`).
+    fn bind_theme_registry(&mut self, name: &str) {
+        self.theme_registry = self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).ok();
+        if let Some(registry) = self.theme_registry.as_mut() { registry.start_theme_watcher(); }
     }
 
     /// senpi `resolveAutoTheme` / `resolveBackgroundTheme` once the terminal answered or timed out.
     fn finish_terminal_theme_detection(&mut self, detection: ThemeDetection, scheme: Option<maho_tui::terminal_colors::TerminalColorScheme>, background: Option<maho_tui::terminal_colors::RgbColor>) {
         let colorfgbg = std::env::var("COLORFGBG").ok();
-        let background_detection = match background {
-            Some(rgb) => crate::theme::detection::TerminalThemeDetection { theme: crate::theme::theme::get_theme_for_rgb_color([rgb.r, rgb.g, rgb.b]), source: "terminal background", detail: format!("OSC 11 background rgb({}, {}, {})", rgb.r, rgb.g, rgb.b), confidence: "high" },
-            None => crate::theme::detection::detect_terminal_background_from_env(colorfgbg.as_deref()),
-        };
+        let background_detection = crate::theme::theme::detect_terminal_background_theme(background.map(|rgb| [rgb.r, rgb.g, rgb.b]), colorfgbg.as_deref());
         let detected = scheme.map_or(background_detection.theme, terminal_theme_for_scheme);
         self.terminal_theme = detected;
         // A cache that cannot be written must never break a launch.
@@ -685,7 +715,7 @@ impl InteractiveMode {
             Some((light, dark)) => { let name = if detected == crate::theme::TerminalTheme::Light { light.clone() } else { dark.clone() }; self.apply_theme_name(&name, true); }
             None => {
                 if !self.apply_theme_name(detected.name(), false) { return; }
-                if background_detection.confidence == "high" {
+                if background_detection.high_confidence {
                     let values: maho_core::settings_manager::Settings = [("theme".to_owned(), serde_json::json!(detected.name()))].into_iter().collect();
                     if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_status(error); }
                 }
@@ -713,7 +743,7 @@ impl InteractiveMode {
     /// back to dark and, when `show_error`, is reported through `showError`.
     fn apply_theme_name(&mut self, name: &str, show_error: bool) -> bool {
         match self.load_theme(name) {
-            Ok(theme) => { self.install_theme(theme); true },
+            Ok(theme) => { self.install_theme(theme); self.theme_registry_bound = true; self.bind_theme_registry(name); true },
             Err(error) => {
                 if let Ok(theme) = self.load_theme("dark") { self.install_theme(theme); }
                 if show_error { self.show_error(&format!("Failed to load theme \"{name}\": {error}\nFell back to dark theme.")); }
@@ -1057,7 +1087,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, theme_registry:None, theme_registry_bound:false, terminal_theme:crate::theme::terminal_theme_cache::read_terminal_theme_hint(std::path::Path::new(&session.agent_dir())).unwrap_or_else(|| crate::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme), current_theme_setting:None, pending_terminal_setting:None, settings_selector:None, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement

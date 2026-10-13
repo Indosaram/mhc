@@ -257,6 +257,15 @@ pub enum ColorMode {
     Truecolor,
     Color256,
 }
+/// senpi `createTheme`'s default mode: `getCapabilities().trueColor ? "truecolor" : "256color"`
+/// (the capabilities honour `COLORTERM` and the `PI_TRUE_COLOR` override).
+pub fn detect_color_mode() -> ColorMode {
+    if maho_tui::terminal_image::get_capabilities().true_color {
+        ColorMode::Truecolor
+    } else {
+        ColorMode::Color256
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalTheme {

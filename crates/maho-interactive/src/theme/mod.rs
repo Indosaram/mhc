@@ -9,6 +9,6 @@ pub use palette as theme;
 pub mod theme_controller;
 pub mod theme_json;
 pub use theme::{
-    ColorMode, TerminalTheme, Theme, ThemeBg, ThemeColor, parse_auto_theme_setting,
-    resolve_theme_setting,
+    ColorMode, TerminalTheme, Theme, ThemeBg, ThemeColor, detect_color_mode,
+    parse_auto_theme_setting, resolve_theme_setting,
 };
