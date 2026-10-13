@@ -686,6 +686,41 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
 }
 
 #[tokio::test]
+async fn new_command_confirms_with_the_accent_started_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/new", Default::default()).await.expect("new");
+    assert!(mode.render(80).join("\n").contains("✓ New session started"));
+}
+
+#[tokio::test]
+async fn copy_without_agent_messages_renders_an_error_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/copy", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Error: No agent messages to copy yet."));
+}
+
+#[tokio::test]
+async fn session_info_does_not_replace_the_previous_status_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.set_tools_expanded(true);
+    mode.submit("/session", Default::default()).await.expect("session info");
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Tool output: expanded"), "the previous status survives: {rendered}");
+    assert!(rendered.contains("Session Info"));
+}
+
+#[tokio::test]
+async fn reload_reports_the_upstream_resource_message() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/reload", Default::default()).await.expect("reload"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Reloaded keybindings, extensions, skills, prompts, themes, and context files"));
+}
+
+#[tokio::test]
 async fn empty_compact_shows_the_pinned_no_messages_warning() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
@@ -709,6 +744,26 @@ async fn bare_model_selector_cancels_and_releases_native_composer() {
     let (mut mode, _directory) = native_mode();
     mode.submit("/model", Default::default()).await.expect("selector");
     mode.render(80); mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
+async fn model_command_switches_on_a_bare_exact_id() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model faux-1", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Model: faux-1"));
+}
+
+#[tokio::test]
+async fn model_command_miss_refreshes_then_opens_a_prefiltered_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model no-such-model", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Refreshing model catalogs…"), "the catalog refresh precedes the selector: {rendered}");
+    assert!(rendered.contains("no-such-model"), "the selector opens with the term as its search: {rendered}");
+    mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
     assert_eq!(mode.editor.editor.get_text(), "draft");
 }
 
@@ -1103,6 +1158,21 @@ async fn model_management_commands_cancel_without_consuming_provider_turn() {
     }
     mode.submit("hi", Default::default()).await.expect("turn");
     assert!(mode.render(80).join("\n").contains("hello"));
+}
+
+#[tokio::test]
+async fn scoped_models_selector_refreshes_catalogs_while_open() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/scoped-models", Default::default()).await.expect("selector");
+    assert!(mode.render(80).join("\n").contains("Refreshing model catalogs…"));
+    let mut refreshed = false;
+    for _ in 0..100_000 {
+        if mode.render(80).join("\n").contains("Model catalogs refreshed.") { refreshed = true; break; }
+        tokio::task::yield_now().await;
+    }
+    assert!(refreshed, "the refresh outcome replaces the refreshing line");
+    mode.handle_input_at("\x1b", 0);
 }
 
 #[tokio::test]

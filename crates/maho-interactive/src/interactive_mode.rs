@@ -831,8 +831,57 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_set_model(&self, provider: &str, id: &str) -> Result<(), String> {
-        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await, None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|_| ()) } }
+    async fn host_set_model(&self, provider: &str, id: &str) -> Result<Option<String>, String> {
+        match self.session_host.clone() { Some(host) => host.set_model(provider.to_owned(), id.to_owned()).await.map(|()| None), None => { let model = self.session.model_registry().find(provider, id).ok_or_else(|| format!("Model not found: {provider}/{id}"))?; self.session.set_model(model).await.map(|change| change.and_then(|change| change.system_prompt_name)) } }
+    }
+
+    /// senpi `findExactModelMatch`: the scoped (else available) snapshot first; with no scope and
+    /// no cached hit, refresh the catalogs under a 15s timeout and search the refreshed snapshot.
+    async fn find_exact_model_match(&mut self, search_term: &str) -> Option<maho_ai::model::Model> {
+        let scoped = self.host_scoped_models();
+        let narrowed = !scoped.is_empty();
+        let cached: Vec<_> = if narrowed { scoped.into_iter().map(|entry| entry.model).collect() } else { self.host_available_models() };
+        let cached_match = maho_core::model_resolver::find_exact_model_reference_match(search_term, &cached).cloned();
+        if cached_match.is_some() || narrowed { return cached_match; }
+        // A mounted host owns its catalog; only the local runtime is refreshed here.
+        if self.session_host.is_none() {
+            self.show_status("Refreshing model catalogs…".into());
+            let runtime = self.session.model_registry().model_runtime.clone();
+            let controller = maho_ai::utils::abort::AbortController::new();
+            let signal = controller.signal();
+            let start = move |signal: maho_ai::utils::abort::AbortSignal| async move {
+                let mut runtime = runtime;
+                runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await
+            };
+            let timer = tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; controller.abort(None); });
+            let outcome = crate::model_catalog_refresh::refresh_model_catalogs(Arc::as_ptr(&self.session) as usize as u64, &signal, start).await;
+            timer.abort();
+            let timed_out = signal.aborted();
+            match outcome {
+                Ok(result) if result.aborted && timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+                Ok(result) if !result.errors.is_empty() => self.show_warning(&format!("Could not refresh {}; searching cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", "))),
+                Ok(_) => {}
+                Err(_) if timed_out => self.show_warning("Model refresh timed out; searching cached models."),
+                Err(error) => self.show_warning(&format!("Could not refresh model catalogs: {error}")),
+            }
+        }
+        maho_core::model_resolver::find_exact_model_reference_match(search_term, &self.host_available_models()).cloned()
+    }
+
+    /// senpi `selectModelFromUi`: switch, then report `Model: <id>` with the optimized-prompt suffix.
+    async fn select_model_from_ui(&mut self, model: maho_ai::model::Model) {
+        match self.host_set_model(&model.provider, &model.id).await {
+            Ok(system_prompt_name) => {
+                if let Some(footer) = &mut self.footer { footer.invalidate(); }
+                self.update_editor_border_color();
+                let suffix = system_prompt_name.map(|name| format!(" (optimized system prompt applied: {name})")).unwrap_or_default();
+                self.show_status(format!("Model: {}{suffix}", model.id));
+                if crate::risky_main_model_warning::is_risky_main_model(&model) {
+                    self.show_notice_box(crate::components::earendil_announcement::NoticeSpec { title: "Risky model warning".into(), tone: Some(crate::theme::ThemeColor::Error), why: crate::risky_main_model_warning::RISKY_MAIN_MODEL_WARNING.into(), extra: Vec::new(), expanded_line: None });
+                }
+            }
+            Err(error) => self.show_error(&error),
+        }
     }
 
     fn complete_provider_authentication(&mut self, provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, immediate_selection_error: Option<String>) {
@@ -1321,7 +1370,7 @@ impl InteractiveMode {
     /// `pump_turn` with an explicit waker so an event-driven caller can re-poll exactly when the
     /// in-flight turn (or abort future) wakes, instead of on a fixed cadence.
     pub async fn pump_turn_with(&mut self, waker: &std::task::Waker) {
-        if let Err(error) = self.dispatch_submission().await { self.show_status(error); }
+        if let Err(error) = self.dispatch_submission().await { self.show_error(&error); }
         self.poll_turn_with(waker);
     }
 
@@ -1351,9 +1400,9 @@ impl InteractiveMode {
                         if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
                         self.show_status("Copied last agent message to clipboard".into());
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => { self.show_error(&error); return Ok(PromptDisposition::Handled); }
                 }
-            } else { return Err("No agent messages to copy yet.".into()); }
+            } else { self.show_error("No agent messages to copy yet."); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/keybindings" {
@@ -1432,6 +1481,32 @@ impl InteractiveMode {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                 Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true); self.show_status("Reloaded session resources".into());
+            // senpi `handleReloadCommand`: never reload under a live response or compaction.
+            if self.host_is_streaming() { self.show_warning("Wait for the current response to finish before reloading."); return Ok(PromptDisposition::Handled); }
+            if self.host_is_compacting() { self.show_warning("Wait for compaction to finish before reloading."); return Ok(PromptDisposition::Handled); }
+            // Pre-check the extension veto so a blocked reload warns before anything is torn down;
+            // `reload` re-checks internally. A mounted host answers the veto inside its own reload.
+            if self.session_host.is_none() {
+                match self.session.check_reload_veto().await {
+                    Ok(true) => { self.show_warning("Reload blocked by an extension."); return Ok(PromptDisposition::Handled); }
+                    Ok(false) => {}
+                    Err(error) => { self.show_error(&format!("Reload failed: {error}")); return Ok(PromptDisposition::Handled); }
+                }
+            }
+            match self.host_reload().await {
+                Ok(true) => {
+                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+                    self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
+                    self.rebuild_history();
+                    // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
+                    self.editor.set_keybindings(Arc::new(self.keybindings()));
+                    if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
+                    Self::setup_autocomplete(&self.session, &mut self.editor); self.refresh_tool_renderer_snapshots().await;
+                    if let Some(error) = self.session.model_registry().get_error() { self.show_error(&format!("models.json error: {error}")); }
+                    self.show_status("Reloaded keybindings, extensions, skills, prompts, themes, and context files".into());
+                }
+                Ok(false) => self.show_warning("Reload blocked by an extension."),
+                Err(error) => self.show_error(&format!("Reload failed: {error}")),
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -1459,7 +1534,12 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
-            if self.host_new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
+            if self.host_new_session(None).await? {
+                self.rebuild_history();
+                // senpi `handleClearCommand`: the accent confirmation, not a dim status.
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+                self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "✓ New session started"), 1, 1))));
+            }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/clone" {
@@ -1522,6 +1602,22 @@ impl InteractiveMode {
                 self.maybe_warn_about_anthropic_subscription_auth(requested);
             }
             else { self.show_status(format!("Model switch pending: {reference}")); }
+        if let Some(reference) = text.trim().strip_prefix("/model-select ") {
+            // The selectors' `onSelect`: senpi calls `selectModelFromUi` with the chosen model directly.
+            let Some((provider, id)) = reference.trim().split_once('/') else { return Ok(PromptDisposition::Handled); };
+            match self.host_find_model(provider, id) {
+                Some(model) => self.select_model_from_ui(model).await,
+                None => self.show_error(&format!("Model not found: {provider}/{id}")),
+            }
+            return Ok(PromptDisposition::Handled);
+        }
+        if let Some(search_term) = text.trim().strip_prefix("/model ") {
+            // senpi `handleModelCommand`: an exact match switches, a miss opens the pre-filtered selector.
+            let search_term = search_term.trim().to_owned();
+            match self.find_exact_model_match(&search_term).await {
+                Some(model) => self.select_model_from_ui(model).await,
+                None => { self.dispatch_command(&format!("/model-search {search_term}"))?; }
+            }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/export" || text.trim().starts_with("/export ") {
@@ -1542,7 +1638,7 @@ impl InteractiveMode {
         }
         if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
             let name = name.trim();
-            if name.is_empty() { return Err("Session name cannot be empty".into()); }
+            if name.is_empty() { self.show_warning("Session name cannot be empty"); return Ok(PromptDisposition::Handled); }
             self.apply_session_name(name).await;
             return Ok(PromptDisposition::Handled);
         }
@@ -1969,19 +2065,29 @@ impl InteractiveMode {
             let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
                 else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
                 else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
-            let session = self.session.clone(); let available = models.clone();
-            let on_change = Box::new(move |ids: Option<Vec<String>>| {
+            let session = self.session.clone(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
+            // senpi `updateSessionModels`: applies the scope over the (refreshable) available snapshot
+            // and recomputes the footer's provider count.
+            let update_session_models: Rc<dyn Fn(Option<Vec<String>>)> = { let available = available.clone(); Rc::new(move |ids: Option<Vec<String>>| {
+                let available = available.borrow();
                 let all_ids: Vec<_> = available.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(ids.as_deref().unwrap_or(&all_ids), &available);
                 let entries = resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.map(|level| serde_json::from_value(serde_json::json!(level.as_str())).expect("resolved thinking level")), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect();
-                if favorites { session.set_favorite_models(entries); }
+                if favorites { session.set_favorite_models(entries); return; }
                 else if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { session.set_scoped_models(Vec::new()); }
                 else { session.set_scoped_models(entries); }
-            });
-            let session = self.session.clone(); let ui = self.extension_ui.clone();
+                // senpi `updateAvailableProviderCount`: the scoped models when narrowed, else the snapshot.
+                let scoped = session.scoped_models();
+                let providers: std::collections::BTreeSet<_> = if scoped.is_empty() { available.iter().map(|model| model.provider.clone()).collect() } else { scoped.into_iter().map(|entry| entry.model.provider).collect() };
+                footer_data.set_available_provider_count(providers.len());
+            }) };
+            let selection_changed = Rc::new(std::cell::Cell::new(false)); let current_enabled = Rc::new(RefCell::new(enabled.clone()));
+            let on_change = { let update = update_session_models.clone(); let changed = selection_changed.clone(); let current = current_enabled.clone(); Box::new(move |ids: Option<Vec<String>>| { changed.set(true); *current.borrow_mut() = ids.clone(); update(ids); }) };
+            let refresh_stored = stored.clone(); let refresh_configured = configured.is_some(); let scoped_at_open = !entries.is_empty();
+            let session = self.session.clone(); let ui = self.extension_ui.clone(); let persist_available = available.clone();
             let on_persist = Box::new(move |ids: Option<Vec<String>>| {
                 let patterns = if favorites { crate::components::model_favorites::merge_favorite_patterns_for_persist(crate::components::model_favorites::FavoritePatternsForPersist { stored_patterns:&stored, pattern_resolutions:&resolution.pattern_resolutions, selected_ids:&ids, candidate_ids:&candidate_ids }) }
-                    else { ids.filter(|ids| !candidate_ids.iter().all(|id| ids.contains(id))) };
+                    else { let candidate_ids: Vec<_> = persist_available.borrow().iter().map(|model| format!("{}/{}", model.provider, model.id)).collect(); ids.filter(|ids| !candidate_ids.iter().all(|id| ids.contains(id))) };
                 let values = [(key.into(), serde_json::json!(patterns))].into_iter().collect();
                 match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
                     Ok(()) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), if favorites { "Favorite models saved to settings" } else { "Model selection saved to settings" }, maho_ext_api::NotificationType::Info),
@@ -1996,12 +2102,52 @@ impl InteractiveMode {
                 let selected = self.ui_reply.clone(); let submissions = self.submissions.clone(); let current = self.host_model();
                 self.ui_dialog = Some(Box::new(FavoriteModelsSelectorComponent::new(&self.theme, keys,
                     FavoriteModelsConfig { all_models:models.into_iter().map(|model| crate::components::model_selector::ModelEntry { provider:model.provider, id:model.id, name:model.name }).collect(), favorite_model_ids:enabled, current_model:Some(crate::components::model_selector::ModelEntry { provider:current.provider, id:current.id, name:current.name }) },
-                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                    FavoriteModelsCallbacks { on_change, on_persist, on_select:Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }), on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
             } else {
                 use crate::components::scoped_models_selector::{ScopedModelsSelectorComponent, ModelsConfig, ModelsCallbacks};
-                self.ui_dialog = Some(Box::new(ScopedModelsSelectorComponent::new(&self.theme, keys,
-                    ModelsConfig { all_models:models, enabled_model_ids:enabled, refresh_status:None },
-                    ModelsCallbacks { on_change, on_persist, on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) })));
+                use crate::theme::ThemeColor;
+                // senpi `showScopedModelsSelector`: refresh the catalogs under a 15s abort while the
+                // selector is open. A mounted host owns its catalog, so only the local runtime refreshes.
+                let local = self.session_host.is_none();
+                let selector = ScopedModelsSelectorComponent::new(&self.theme, keys,
+                    ModelsConfig { all_models:models, enabled_model_ids:enabled, refresh_status:local.then(|| "Refreshing model catalogs…".to_owned()) },
+                    ModelsCallbacks { on_change, on_persist, on_cancel:Box::new(move || { cancelled.borrow_mut().take(); }) });
+                let controller = maho_ai::utils::abort::AbortController::new();
+                let refresh = local.then(|| {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    let runtime = self.session.model_registry().model_runtime.clone(); let session = self.session.clone(); let task_controller = controller.clone(); let runtime_key = Arc::as_ptr(&self.session) as usize as u64;
+                    tokio::spawn(async move {
+                        let signal = task_controller.signal();
+                        let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let timer = { let timed_out = timed_out.clone(); tokio::spawn(async move { tokio::time::sleep(std::time::Duration::from_secs(15)).await; timed_out.store(true, std::sync::atomic::Ordering::SeqCst); task_controller.abort(None); }) };
+                        let start = move |signal: maho_ai::utils::abort::AbortSignal| async move { let mut runtime = runtime; runtime.refresh(maho_ai::models::ModelsRefreshOptions { signal: Some(signal), ..Default::default() }).await };
+                        let outcome = crate::model_catalog_refresh::refresh_model_catalogs(runtime_key, &signal, start).await;
+                        timer.abort();
+                        let _ = sender.send((outcome, timed_out.load(std::sync::atomic::Ordering::SeqCst), session.model_registry().get_available()));
+                    });
+                    receiver
+                });
+                let on_refreshed = Box::new(move |selector: &mut ScopedModelsSelectorComponent, (outcome, timed_out, models): ScopedModelsRefreshOutcome| {
+                    if outcome.is_ok() {
+                        *available.borrow_mut() = models.clone();
+                        if !selection_changed.get() && !scoped_at_open {
+                            let ids: Option<Vec<String>> = if refresh_stored.is_empty() { refresh_configured.then(Vec::new) } else { Some(maho_core::model_resolver::resolve_model_scope_from_models(&refresh_stored, &models).pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
+                            *current_enabled.borrow_mut() = ids.clone();
+                            selector.update_models(&models, Some(ids));
+                        } else { selector.update_models(&models, None); }
+                        let ids = current_enabled.borrow().clone();
+                        if ids.is_some() { update_session_models(ids); }
+                    }
+                    let (message, color) = match outcome {
+                        Ok(result) if result.aborted && timed_out => ("Model refresh timed out; showing cached models.".to_owned(), ThemeColor::Warning),
+                        Ok(result) if !result.errors.is_empty() => (format!("Could not refresh {}; showing cached models.", result.errors.keys().cloned().collect::<Vec<_>>().join(", ")), ThemeColor::Warning),
+                        Ok(_) => ("Model catalogs refreshed.".to_owned(), ThemeColor::Success),
+                        Err(_) if timed_out => ("Model refresh timed out; showing cached models.".to_owned(), ThemeColor::Warning),
+                        Err(error) => (format!("Could not refresh model catalogs: {error}"), ThemeColor::Warning),
+                    };
+                    selector.set_refresh_status(&message, color);
+                });
+                self.ui_dialog = Some(Box::new(ScopedModelsRefreshDialog { selector, refresh, controller, on_refreshed }));
             }
             return Ok(true);
         }
@@ -2047,7 +2193,8 @@ impl InteractiveMode {
             if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.local_dialog_reply = None; }
             return Ok(true);
         }
-        if text == "/model" {
+        let model_search = if text == "/model" { Some(None) } else { text.strip_prefix("/model-search ").map(|term| Some(term.trim().to_owned())) };
+        if let Some(initial_search) = model_search {
             use crate::components::model_selector::{ModelSelectorComponent, ModelEntry, ModelSelectorFavoriteOptions};
             let current = self.host_model();
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
@@ -2073,8 +2220,8 @@ impl InteractiveMode {
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
                 Some(ModelEntry { provider:current.provider, id:current.id, name:current.name }),
                 scoped,
-                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None,
+                Box::new(move |model| { submissions.borrow_mut().push_back(format!("/model-select {}/{}", model.provider, model.id)); selected.borrow_mut().take(); }),
+                Box::new(move || { cancelled.borrow_mut().take(); }), initial_search.as_deref(),
                 ModelSelectorFavoriteOptions { favorite_model_ids:favorite_ids, on_favorite_change:Some(favorite_callback) }, None);
             let session = self.session.clone(); let ui = self.extension_ui.clone();
             selector.set_default_model_change_handler(Box::new(move |model| {
@@ -2126,9 +2273,15 @@ impl InteractiveMode {
             if stats.cost > 0.0 || waste.missed_tokens > 0.0 {
                 info += &format!("\n{}\n{} ${:.3}", theme.bold("Cost"), label("Total:"), stats.cost);
                 if breakdown.len() > 1 { for entry in breakdown { info += &format!("\n  {} ${:.3} {}", label(&format!("{}:", entry.key)), entry.cost, label(&format!("({} tokens)", crate::components::footer::format_tokens(entry.tokens as f64)))); } }
-                if waste.missed_tokens > 0.0 { info += &format!("\n{} {}{}", label("Cache Re-billed:"), if waste.missed_cost >= 0.0001 { format!("${:.3} ", waste.missed_cost) } else { String::new() }, label(&format!("({} tokens, {} miss{})", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" }))); }
+                if waste.missed_tokens > 0.0 {
+                    let detail = format!("{} tokens, {} miss{}", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" });
+                    info += &if waste.missed_cost >= 0.0001 { format!("\n{} ${:.3} {}", label("Cache Re-billed:"), waste.missed_cost, label(&format!("({detail})"))) } else { format!("\n{} {detail}", label("Cache Re-billed:")) };
+                }
             }
-            self.show_status(info); return Ok(true);
+            // senpi `handleSessionCommand`: a plain Text block, never the dim merging status line.
+            self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(info, 1, 0))));
+            return Ok(true);
         }
         if matches!(text, "/rename" | "/name") {
             let accepted = self.rename_result.clone();
@@ -2283,7 +2436,7 @@ impl InteractiveMode {
         let data = format_debug_log(&timestamp, width, usize::from(rows), &lines, &messages);
         if let Some(parent) = std::path::Path::new(&path).parent() { let _ = std::fs::create_dir_all(parent); }
         match std::fs::write(&path, data) {
-            Ok(()) => self.show_status(format!("✓ Debug log written: {path}")),
+            Ok(()) => self.show_notice_box(crate::components::earendil_announcement::NoticeSpec { title: "✓ Debug log written".into(), tone: Some(crate::theme::ThemeColor::Success), why: path, extra: Vec::new(), expanded_line: None }),
             Err(error) => self.show_status(format!("Failed to write debug log: {error}")),
         }
     }
@@ -2487,6 +2640,25 @@ impl InteractiveMode {
         let text = self.theme.fg(crate::theme::ThemeColor::Error, &format!("Error: {}", crate::extension_error_format::sanitize_tui_error_message(message)));
         self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
         self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0)))));
+    }
+
+    /// senpi `showNoticeBox`: sanitize every visible line, then append the notice box.
+    fn show_notice_box(&mut self, spec: crate::components::earendil_announcement::NoticeSpec) {
+        use crate::extension_error_format::sanitize_tui_error_message as sanitize;
+        let spec = crate::components::earendil_announcement::NoticeSpec {
+            title: sanitize(&spec.title), tone: spec.tone, why: sanitize(&spec.why),
+            extra: spec.extra.into_iter().map(|line| crate::components::earendil_announcement::NoticeLine { text: sanitize(&line.text), tone: line.tone }).collect(),
+            expanded_line: spec.expanded_line.as_deref().map(sanitize),
+        };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
+    }
+
+    /// senpi `showWarning`.
+    fn show_warning(&mut self, message: &str) {
+        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}"));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
     }
 
     /// Bridge the running login/logout tasks into the UI: mount prompts, forward answers, report outcomes.
@@ -3520,7 +3692,7 @@ impl InteractiveMode {
                 self.rename_input = None;
                 if let Some(name) = result {
                     let name = name.trim();
-                    if name.is_empty() { self.show_status("Session name cannot be empty".into()); }
+                    if name.is_empty() { self.show_warning("Session name cannot be empty"); }
                     else { self.fire_set_session_name(name); self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into()))); }
                 }
             }
@@ -3533,6 +3705,40 @@ impl InteractiveMode {
         let text = self.custom_editor.as_ref().map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = text;
     }
+}
+
+/// senpi `showScopedModelsSelector`'s refresh outcome: the shared refresh result, whether the 15s
+/// timeout fired, and the available snapshot read after the refresh.
+type ScopedModelsRefreshOutcome = (Result<maho_ai::models::ModelsRefreshResult, maho_ai::utils::abort::AbortReason>, bool, Vec<maho_ai::model::Model>);
+
+/// The scoped-models selector plus its in-flight catalog refresh. The refresh result is applied on
+/// the next frame; closing the dialog drops the receiver and aborts the refresh (senpi `dispose`).
+struct ScopedModelsRefreshDialog {
+    selector: crate::components::scoped_models_selector::ScopedModelsSelectorComponent,
+    refresh: Option<tokio::sync::oneshot::Receiver<ScopedModelsRefreshOutcome>>,
+    controller: maho_ai::utils::abort::AbortController,
+    on_refreshed: Box<dyn FnMut(&mut crate::components::scoped_models_selector::ScopedModelsSelectorComponent, ScopedModelsRefreshOutcome)>,
+}
+
+impl ScopedModelsRefreshDialog {
+    fn apply_refresh(&mut self) {
+        let outcome = self.refresh.as_mut().and_then(|receiver| receiver.try_recv().ok());
+        if let Some(outcome) = outcome { self.refresh = None; (self.on_refreshed)(&mut self.selector, outcome); }
+    }
+}
+
+impl Component for ScopedModelsRefreshDialog {
+    fn render(&mut self, width: usize) -> Vec<String> { self.apply_refresh(); self.selector.render(width) }
+    fn handle_input(&mut self, data: &str) { self.apply_refresh(); self.selector.handle_input(data); }
+    fn has_input_handler(&self) -> bool { true }
+    fn invalidate(&mut self) { self.selector.invalidate(); }
+    fn dispose(&mut self) { self.refresh = None; self.controller.abort(None); self.selector.dispose(); }
+    fn focusable_get(&self) -> Option<bool> { self.selector.focusable_get() }
+    fn focusable_set(&mut self, focused: bool) { self.selector.focusable_set(focused); }
+}
+
+impl Drop for ScopedModelsRefreshDialog {
+    fn drop(&mut self) { self.controller.abort(None); }
 }
 
 /// senpi `handleDebugCommand`'s report body: the terminal size, every rendered
