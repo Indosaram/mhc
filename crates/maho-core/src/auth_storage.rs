@@ -512,6 +512,11 @@ impl AuthStorage {
         self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
+    /// Take every recorded load/refresh error, leaving none behind (senpi `drainErrors`).
+    pub fn drain_errors(&self) -> Vec<String> {
+        std::mem::take(&mut *self.errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
     fn parse_storage_content(content: Option<&str>) -> Result<(AuthStorageData, bool, bool), String> {
         let Some(content) = content else { return Ok((AuthStorageData::new(), false, false)) };
         let parsed = parse_auth_json(content)?;
@@ -1133,6 +1138,17 @@ mod tests {
         assert!(storage.get("anthropic").is_none());
         assert_eq!(storage.errors().len(), 1);
         assert!(storage.errors()[0].contains("Invalid auth.json credential for provider"));
+    }
+
+    #[test]
+    fn drain_errors_returns_recorded_errors_once() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
+        std::fs::write(&path, "{\"anthropic\":{\"type\":\"bogus\"}}").expect("write");
+        let storage = AuthStorage::create(&path);
+        assert_eq!(storage.drain_errors().len(), 1);
+        assert!(storage.drain_errors().is_empty());
+        assert!(storage.errors().is_empty());
     }
 
     struct FauxOAuth {
