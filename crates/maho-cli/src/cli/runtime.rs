@@ -75,6 +75,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
     )).await;
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
+    // senpi main.ts `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
+    let mut runtime_diagnostics = maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation");
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
@@ -90,9 +92,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
     if !parsed.no_extensions {
         let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
-        if !discovery.errors.is_empty() {
-            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-        }
+        // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning;
+        // startup continues without it.
+        runtime_diagnostics.extend(discovery.errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.path, error.message))));
         base_factories.extend(discovery.factories);
     }
     let environment = super::oauth_providers::environment_from_process();
@@ -118,7 +120,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
     let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
-    indicator.during_surface_write(|| { for error in &extensions.errors { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", error.extension_path, error.error)); } });
+    runtime_diagnostics.extend(extensions.errors.iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.extension_path, error.error))));
+    if mode != AppMode::Interactive {
+        runtime_diagnostics.extend(models.credentials.errors().into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("(runtime creation, auth storage) {error}"))));
+    }
+    indicator.during_surface_write(|| { for diagnostic in &runtime_diagnostics { maho_core::output_guard::maho_write_stderr(&format!("Warning: {}\n", diagnostic.message)); } });
+    let extension_load_failed = runtime_diagnostics.iter().any(|diagnostic| diagnostic.message.contains("Failed to load extension"));
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
     extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
     for (name, value) in &parsed.unknown_flags {
@@ -134,7 +141,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
     let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
-    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
+    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) {
+        // senpi main.ts EXTENSION_LOAD_FAILURE_HINT: an error exit after an extension failed to load
+        // points at the extension-free launch.
+        if extension_load_failed || options.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("Failed to load extension")) {
+            maho_core::output_guard::maho_write_stderr(&format!("Hint: Start without extensions using \"{} -ne\".\n", maho_core::config::app_command()));
+        }
+        return Err("Invalid model selection".into());
+    }
     let host_factory = maho_core::sdk::HostRuntimeFactory {
         model_registry: maho_core::model_registry::ModelRegistry::new(models.clone()),
         model_runtime: models, extension_factories: base_factories,
