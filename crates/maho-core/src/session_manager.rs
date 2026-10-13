@@ -1929,4 +1929,16 @@ mod tests {
         assert_eq!(manager.entries().len(), 1);
         assert_eq!(std::fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
     }
+
+    #[test]
+    fn has_context_messages_tracks_context_entries_on_the_current_branch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::in_memory(&dir, None, None);
+        assert!(!manager.has_context_messages());
+        manager.append_thinking_level_change("high", None);
+        assert!(!manager.has_context_messages());
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        assert!(manager.has_context_messages());
+    }
 }
