@@ -85,13 +85,13 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
     let parent_state: Arc<dyn Fn() -> senpi_task::completion::ParentState + Send + Sync> = Arc::new(move || runtime.lock().unwrap_or_else(std::sync::PoisonError::into_inner).parent_state());
     let listing = service.clone(); let dirs = ownership.state_dir.clone(); let store = component.engine.store.clone();
     let timers = Arc::new(maho_omo_task::timers::HostTimers::default());
-    let sink = Arc::new(LeadMessageSink { actions: actions.clone(), coordinator: Some(coordinator.clone()), parent_state: parent_state.clone(), on_error: Arc::new(|error| maho_core::output_guard::maho_write_stderr(&format!("Team message delivery failed: {error}\n"))) });
+    let sink = Arc::new(LeadMessageSink { actions: actions.clone(), coordinator: Some(coordinator.clone()), parent_state: parent_state.clone(), on_error: Arc::new(|error| { maho_core::output_guard::maho_write_stderr(&format!("Team message delivery failed: {error}\n")); }) });
     let pollers = create_lead_poller_lifecycle(LeadPollerLifecycleDeps {
         list_teams: Arc::new(move || listing.list_teams().map_err(|error| error.to_string())), session_id: session, session_file: file,
         parent_state: parent_state.clone(), config, runtime_dir: Arc::new(move |id| senpi_task::team::storage::team_storage_base_dir(&dirs).join("runtime").join(id)),
         delivery_journal: Some(Arc::new(senpi_task::team::messaging::delivery_journal::create_lead_delivery_journal(Default::default()))), append_event: Arc::new(move |id, event| {
             if let Err(error) = store.append_event(id, &senpi_task::store::PersistedTaskEvent { event_type: event.event_type, payload: event.payload }) { maho_core::output_guard::maho_write_stderr(&format!("Team event persistence failed: {error}\n")); }
-        }), sink, factory: None, timers: timers.clone(), on_error: Arc::new(|error| maho_core::output_guard::maho_write_stderr(&format!("Team poll failed: {error}\n"))),
+        }), sink, factory: None, timers: timers.clone(), on_error: Arc::new(|error| { maho_core::output_guard::maho_write_stderr(&format!("Team poll failed: {error}\n")); }),
     });
     let read_store = component.engine.store.clone(); let write_store = read_store.clone();
     let liveness = create_team_member_liveness_notifier(TeamMemberLivenessDeps {
@@ -114,7 +114,7 @@ pub fn mount_team_runtime(api: &mut maho_ext_api::ExtensionApi, component: &Arc<
                 if fresh.status == record.status && fresh.notification.run_epoch == record.notification.run_epoch { updated.notification.liveness_notified_epoch = Some(record.notification.run_epoch); }
                 updated
             }) { maho_core::output_guard::maho_write_stderr(&format!("Team liveness persistence failed: {error}\n")); }
-        }), on_error: Arc::new(|error| maho_core::output_guard::maho_write_stderr(&format!("Team liveness delivery failed: {error}\n"))), timers, max_delivery_retries: None, max_persistence_retries: None,
+        }), on_error: Arc::new(|error| { maho_core::output_guard::maho_write_stderr(&format!("Team liveness delivery failed: {error}\n")); }), timers, max_delivery_retries: None, max_persistence_retries: None,
     });
     component.register_team_runtime(api, service, pollers, liveness, ownership);
     Ok(())

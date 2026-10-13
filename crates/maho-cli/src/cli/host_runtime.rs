@@ -280,7 +280,7 @@ pub async fn mount_agent_session_runtime(
     let packages = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut theme_settings });
     match packages.resolve(None).await {
         Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource|resource.enabled).map(|resource|PathBuf::from(resource.path))),
-        Err(error) => maho_core::output_guard::maho_write_stderr(&format!("package themes: {error}\n")),
+        Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("package themes: {error}\n")); }
     }
     theme_paths.extend(config.resolved_theme_paths().into_iter().map(PathBuf::from));
     super::default_extensions::configure_rpc_html_theme_with_paths(&created.session, theme_paths);
