@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/google.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
 use crate::types::{AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StreamOptions};
@@ -23,6 +25,7 @@ pub fn google_provider() -> Arc<dyn Provider> {
         name: Some("Google".into()),
         base_url: Some("https://generativelanguage.googleapis.com/v1beta".into()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("Gemini API key", &["GEMINI_API_KEY"]))), oauth: None }),
         models: super::google_models::google_models(),
         fetch_models: None,
         restore_models: None,

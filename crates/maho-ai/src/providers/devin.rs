@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/devin.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::lazy_oauth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, RestoreModels, create_provider};
 use crate::providers::builtin_api_streams;
 use crate::types::Model;
@@ -17,6 +19,7 @@ pub fn devin_provider() -> Arc<dyn Provider> {
         name: Some("Devin".into()),
         base_url: Some("https://server.codeium.com".into()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: None, oauth: Some(Arc::new(lazy_oauth("Devin", false, Some("Sign in with Devin".into()), || Box::pin(crate::auth::oauth::load::load_devin_oauth())))) }),
         models: super::devin_models::devin_models(),
         fetch_models: None,
         restore_models: Some(restore),

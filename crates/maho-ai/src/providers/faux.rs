@@ -1170,6 +1170,7 @@ pub fn faux_provider(options: RegisterFauxProviderOptions) -> FauxProviderHandle
         name: None,
         base_url: None,
         headers: None,
+        auth: None,
         models: core.models.clone(),
         fetch_models: None,
         restore_models: None,

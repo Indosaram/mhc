@@ -1421,13 +1421,16 @@ mod pool_resolution_tests {
 
     async fn resolve(provider_id: &str, provider_auth: &ProviderAuth, store: &Arc<dyn CredentialStore>, slot_name: Option<&str>) -> Option<crate::auth::types::AuthResult> {
         let ctx = EmptyCtx;
+        let overrides = crate::auth::resolve::AuthResolutionOverrides {
+            slot_name: slot_name.map(str::to_owned),
+            ..Default::default()
+        };
         resolve_provider_auth(
             provider_id,
             provider_auth,
             store,
             &ctx,
-            slot_name,
-            None,
+            Some(&overrides),
             &AbortController::new().signal(),
         )
         .await

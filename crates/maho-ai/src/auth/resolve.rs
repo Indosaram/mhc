@@ -1,13 +1,19 @@
 //! Port of senpi packages/ai/src/auth/resolve.ts.
 
-use crate::auth::oauth_refresh::{refresh_oauth_credential, OAuthRefreshRequest, RefreshError};
+use crate::auth::oauth_refresh::{project_oauth_slot, refresh_oauth_credential, OAuthRefreshRequest, RefreshError};
 use crate::auth::pool::slots::{project_slot, PooledCredential};
 use crate::auth::types::{
-    ApiKeyAuth, AuthContext, AuthResult, Credential, CredentialStore, ModelAuth, OAuthAuth, ProviderAuth,
+    ApiKeyAuth, ApiKeyCredential, AuthContext, AuthResult, Credential, CredentialStore, OAuthAuth, OAuthCredential,
+    ProviderAuth,
 };
 use crate::types::ProviderEnv;
-use crate::utils::abort::AbortSignal;
+use crate::utils::abort::{race_with_abort_signal, AbortSignal};
+use async_trait::async_trait;
 use std::sync::Arc;
+
+/// senpi's `AuthResolutionOverrides` (`apiKey`/`env`/`minOAuthValidityMs`/`slotName`/`signal`); one
+/// type shared with the `Models` collection.
+pub use crate::models::AuthResolutionOverrides;
 
 pub type ModelsErrorCode = &'static str;
 
@@ -15,13 +21,6 @@ pub const PROVIDER_NOT_CONFIGURED_PREFIX: &str = "Provider is not configured: ";
 
 pub fn provider_not_configured_message(provider_id: &str) -> String {
     format!("{PROVIDER_NOT_CONFIGURED_PREFIX}{provider_id}")
-}
-
-#[derive(Debug, Clone)]
-pub struct AuthResolutionOverrides {
-    pub api_key: Option<String>,
-    pub base_url: Option<String>,
-    pub headers: Option<crate::types::ProviderHeaders>,
 }
 
 /// The auth-layer public error, matching senpi's `ModelsError`: a stable `code` for programmatic
@@ -56,8 +55,164 @@ pub fn with_cause_detail(message: &str, cause: Option<&str>) -> String {
     }
 }
 
+/// Auth resolution shared by the `Models` and `ImagesModels` collections.
+/// A stored credential owns the provider: ambient/env is consulted only when
+/// nothing is stored. No silent env fallback after a failed refresh or for a
+/// credential type without a matching handler.
+pub async fn resolve_provider_auth(
+    provider_id: &str,
+    provider_auth: &ProviderAuth,
+    credentials: &Arc<dyn CredentialStore>,
+    ctx: &dyn AuthContext,
+    overrides: Option<&AuthResolutionOverrides>,
+    signal: &AbortSignal,
+) -> Result<Option<AuthResult>, ModelsError> {
+    race_with_abort_signal(
+        resolve_provider_auth_with_signal(provider_id, provider_auth, credentials, ctx, overrides, signal),
+        signal,
+    )
+    .await
+    .map_err(|reason| ModelsError::new("auth", reason.message))?
+}
+
+pub async fn resolve_provider_auth_with_signal(
+    provider_id: &str,
+    provider_auth: &ProviderAuth,
+    credentials: &Arc<dyn CredentialStore>,
+    ctx: &dyn AuthContext,
+    overrides: Option<&AuthResolutionOverrides>,
+    signal: &AbortSignal,
+) -> Result<Option<AuthResult>, ModelsError> {
+    signal.throw_if_aborted().map_err(|reason| ModelsError::new("auth", reason.message))?;
+    let request_env = overrides.and_then(|overrides| overrides.env.as_ref());
+    let overlay;
+    let request_ctx: &dyn AuthContext = match request_env {
+        Some(env) => {
+            overlay = overlay_env_auth_context(ctx, env);
+            &overlay
+        }
+        None => ctx,
+    };
+    let api_key = provider_auth.api_key.as_ref();
+    let override_key = overrides.and_then(|overrides| overrides.api_key.as_ref());
+    let min_oauth_validity_ms = overrides.and_then(|overrides| overrides.min_oauth_validity_ms).map(|ms| ms as f64);
+
+    if let (Some(key), Some(api_key)) = (override_key, api_key)
+        && !api_key.ambient_only()
+    {
+        let credential = ApiKeyCredential { key: Some(key.clone()), env: request_env.cloned() };
+        return resolve_api_key(request_ctx, api_key, provider_id, Some(&credential), signal).await;
+    }
+
+    let stored = read_credential(credentials, provider_id, signal).await?;
+    if let Some(slot_name) = overrides.and_then(|overrides| overrides.slot_name.as_deref()) {
+        let projected = stored.map(PooledCredential::from).and_then(|pooled| project_slot(Some(&pooled), slot_name));
+        return match projected {
+            Some(Credential::OAuth(projected)) => match &provider_auth.oauth {
+                Some(oauth) => {
+                    resolve_stored_oauth(
+                        credentials,
+                        provider_id,
+                        oauth,
+                        projected,
+                        request_ctx,
+                        request_env,
+                        signal,
+                        min_oauth_validity_ms,
+                        Some(slot_name),
+                    )
+                    .await
+                }
+                None => Ok(None),
+            },
+            Some(Credential::ApiKey(projected)) => match api_key {
+                Some(api_key) => {
+                    let credential = with_request_env(projected, request_env);
+                    resolve_api_key(request_ctx, api_key, provider_id, Some(&credential), signal).await
+                }
+                None => Ok(None),
+            },
+            None => Ok(None),
+        };
+    }
+    if let Some(stored) = stored {
+        return match stored {
+            Credential::OAuth(stored) => match &provider_auth.oauth {
+                Some(oauth) => {
+                    resolve_stored_oauth(
+                        credentials,
+                        provider_id,
+                        oauth,
+                        stored,
+                        request_ctx,
+                        request_env,
+                        signal,
+                        min_oauth_validity_ms,
+                        None,
+                    )
+                    .await
+                }
+                None => Ok(None),
+            },
+            Credential::ApiKey(stored) => match api_key {
+                Some(api_key) => {
+                    let credential = with_request_env(stored, request_env);
+                    resolve_api_key(request_ctx, api_key, provider_id, Some(&credential), signal).await
+                }
+                None => Ok(None),
+            },
+        };
+    }
+
+    if let (Some(key), Some(api_key)) = (override_key, api_key) {
+        let credential = ApiKeyCredential { key: Some(key.clone()), env: request_env.cloned() };
+        return resolve_api_key(request_ctx, api_key, provider_id, Some(&credential), signal).await;
+    }
+
+    // Ambient (env vars, AWS profiles, ADC files).
+    let Some(api_key) = api_key else { return Ok(None) };
+    let ambient_credential = match request_env {
+        Some(env) if api_key.ambient_only() => Some(ApiKeyCredential { key: Some(String::new()), env: Some(env.clone()) }),
+        _ => None,
+    };
+    resolve_api_key(request_ctx, api_key, provider_id, ambient_credential.as_ref(), signal).await
+}
+
+/// `{ ...credential, env: { ...credential.env, ...overrides.env } }`.
+fn with_request_env(credential: ApiKeyCredential, request_env: Option<&ProviderEnv>) -> ApiKeyCredential {
+    let Some(request_env) = request_env else { return credential };
+    let mut env = credential.env.unwrap_or_default();
+    env.extend(request_env.iter().map(|(name, value)| (name.clone(), value.clone())));
+    ApiKeyCredential { env: Some(env), ..credential }
+}
+
+/// `overlayEnvAuthContext`: request env values shadow the base context; everything else defers.
+pub struct OverlayEnvAuthContext<'a> {
+    base: &'a dyn AuthContext,
+    env: &'a ProviderEnv,
+}
+
+#[async_trait]
+impl AuthContext for OverlayEnvAuthContext<'_> {
+    async fn env(&self, name: &str) -> Option<String> {
+        match self.env.get(name) {
+            Some(value) => Some(value.clone()),
+            None => self.base.env(name).await,
+        }
+    }
+
+    async fn file_exists(&self, path: &str) -> bool {
+        self.base.file_exists(path).await
+    }
+}
+
+pub fn overlay_env_auth_context<'a>(base: &'a dyn AuthContext, env: &'a ProviderEnv) -> OverlayEnvAuthContext<'a> {
+    OverlayEnvAuthContext { base, env }
+}
+
 pub const DEFAULT_OAUTH_MINIMUM_VALIDITY_MS: f64 = 5.0 * 60.0 * 1_000.0;
 
+/// Maps a shared-refresh failure onto the `ModelsError` codes callers match on.
 pub fn oauth_refresh_models_error(error: &RefreshError, provider_id: &str) -> ModelsError {
     match error {
         RefreshError::Exchange(detail) => ModelsError::new(
@@ -71,79 +226,117 @@ pub fn oauth_refresh_models_error(error: &RefreshError, provider_id: &str) -> Mo
     }
 }
 
-fn is_oauth_expiring(credential: &crate::auth::types::OAuthCredential, now: f64, minimum_validity_ms: f64) -> bool {
-    credential.expires - now < minimum_validity_ms
-}
-
-/// Refreshes a stored OAuth credential when it (or its projected slot) is within
-/// `minimum_validity_ms` of expiring, then re-derives request auth via `oauth.to_auth`.
+/// OAuth resolution: a token with less than five minutes remaining (or the caller's larger
+/// minimum) is refreshed through `refresh_oauth_credential`, which re-checks the stored value, runs
+/// the exchange outside the store lock, and compare-and-swaps the rotated slot.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_stored_oauth(
     credentials: &Arc<dyn CredentialStore>,
     provider_id: &str,
     oauth: &Arc<dyn OAuthAuth>,
-    stored: &Credential,
-    slot_name: Option<&str>,
-    now: f64,
-    minimum_validity_ms: f64,
+    stored: OAuthCredential,
+    ctx: &dyn AuthContext,
+    request_env: Option<&ProviderEnv>,
     signal: &AbortSignal,
+    min_oauth_validity_ms: Option<f64>,
+    slot_name: Option<&str>,
 ) -> Result<Option<AuthResult>, ModelsError> {
-    let pooled: PooledCredential = stored.clone().into();
-    let current = match slot_name {
-        None => stored.as_oauth().cloned(),
-        Some(name) => project_slot(Some(&pooled), name).and_then(|c| c.into_oauth()),
+    let minimum_validity_ms = DEFAULT_OAUTH_MINIMUM_VALIDITY_MS.max(min_oauth_validity_ms.unwrap_or(0.0));
+    let expires_soon = move |credential: &OAuthCredential| {
+        crate::utils::diagnostics::now_ms() as f64 + minimum_validity_ms >= credential.expires
     };
-    let Some(current) = current else { return Ok(None) };
+    let mut credential = stored;
 
-    let credential = if is_oauth_expiring(&current, now, minimum_validity_ms) {
-        let refreshed = refresh_oauth_credential(OAuthRefreshRequest {
+    if expires_soon(&credential) {
+        let post = refresh_oauth_credential(OAuthRefreshRequest {
             credentials: credentials.clone(),
-            provider_id: provider_id.to_string(),
+            provider_id: provider_id.to_owned(),
             oauth: oauth.clone(),
-            stale: current.clone(),
+            stale: credential.clone(),
             slot_name: slot_name.map(str::to_owned),
-            is_stale: Arc::new(move |c| is_oauth_expiring(c, now, minimum_validity_ms)),
+            is_stale: Arc::new(expires_soon),
             signal: signal.clone(),
             owning: true,
         })
         .await
-        .map_err(|e| oauth_refresh_models_error(&e, provider_id))?;
-        match refreshed {
-            Some(stored) => {
-                let pooled: PooledCredential = stored.clone().into();
-                match slot_name {
-                    None => stored.as_oauth().cloned(),
-                    Some(name) => project_slot(Some(&pooled), name).and_then(|c| c.into_oauth()),
-                }
-            }
-            None => return Ok(None),
+        .map_err(|error| oauth_refresh_models_error(&error, provider_id))?;
+        // Logged out meanwhile.
+        let Some(post @ Credential::OAuth(_)) = post else { return Ok(None) };
+        let post_view = match slot_name {
+            None => post.into_oauth(),
+            Some(name) => project_oauth_slot(&PooledCredential::from(post), name),
+        };
+        // Slot removed meanwhile.
+        let Some(post_view) = post_view else { return Ok(None) };
+        credential = post_view;
+        // The normal five-minute window triggers a refresh but does not impose a provider
+        // contract. Explicit callers (such as bearer-token export) do require the requested
+        // minimum after the refresh.
+        if min_oauth_validity_ms.is_some() && expires_soon(&credential) {
+            return Err(ModelsError::new(
+                "oauth",
+                format!("OAuth refresh returned a token that expires too soon for {provider_id}"),
+            ));
         }
-    } else {
-        Some(current)
-    };
-    let Some(credential) = credential else { return Ok(None) };
+    }
 
-    let auth = oauth
-        .to_auth(&credential)
-        .await
-        .map_err(|e| ModelsError::new("oauth", with_cause_detail(&format!("OAuth auth derivation failed for {provider_id}"), Some(&e.to_string()))))?;
-    Ok(Some(AuthResult { auth, env: None, source: Some("OAuth".into()) }))
+    let stored_env = oauth_credential_environment(&credential);
+    let effective_env = match request_env {
+        Some(request_env) => {
+            let mut env = stored_env.unwrap_or_default();
+            env.extend(request_env.iter().map(|(name, value)| (name.clone(), value.clone())));
+            Some(env)
+        }
+        None => stored_env,
+    };
+    let effective_credential = match &effective_env {
+        Some(env) => credential.with_extra("env", serde_json::to_value(env).unwrap_or_default()),
+        None => credential,
+    };
+
+    match oauth.check(ctx, Some(&effective_credential), signal).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            return Err(ModelsError::new(
+                "auth",
+                with_cause_detail(&format!("OAuth auth check failed for provider {provider_id}"), Some(&error.to_string())),
+            ));
+        }
+    }
+
+    let auth = oauth.to_auth(&effective_credential).await.map_err(|e| {
+        ModelsError::new(
+            "oauth",
+            with_cause_detail(&format!("OAuth auth derivation failed for {provider_id}"), Some(&e.to_string())),
+        )
+    })?;
+    Ok(Some(AuthResult { auth, env: effective_env, source: Some("OAuth".into()) }))
 }
 
-/// Ambient environment values applied over resolved auth, matching senpi's `overlayEnvAuthContext`:
-/// stored/oauth-resolved env wins, ambient fills gaps.
-pub fn overlay_env_auth_context(resolved: Option<ProviderEnv>, ambient: Option<&ProviderEnv>) -> Option<ProviderEnv> {
-    match (resolved, ambient) {
-        (Some(mut resolved), Some(ambient)) => {
-            for (key, value) in ambient {
-                resolved.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-            Some(resolved)
-        }
-        (Some(resolved), None) => Some(resolved),
-        (None, Some(ambient)) => Some(ambient.clone()),
-        (None, None) => None,
+/// `credentialEnvironment`: the OAuth credential's `env` object when every entry is a string.
+fn oauth_credential_environment(credential: &OAuthCredential) -> Option<ProviderEnv> {
+    let value = credential.extra.get("env")?.as_object()?;
+    let mut environment = ProviderEnv::new();
+    for (name, entry) in value {
+        environment.insert(name.clone(), entry.as_str()?.to_owned());
     }
+    Some(environment)
+}
+
+pub async fn resolve_api_key(
+    ctx: &dyn AuthContext,
+    api_key: &Arc<dyn ApiKeyAuth>,
+    provider_id: &str,
+    credential: Option<&ApiKeyCredential>,
+    signal: &AbortSignal,
+) -> Result<Option<AuthResult>, ModelsError> {
+    api_key.resolve(ctx, credential, signal).await.map_err(|e| {
+        ModelsError::new(
+            "auth",
+            with_cause_detail(&format!("API key auth failed for provider {provider_id}"), Some(&e.to_string())),
+        )
+    })
 }
 
 async fn read_credential(
@@ -157,129 +350,11 @@ async fn read_credential(
         .map_err(|e| ModelsError::new("auth", with_cause_detail(&format!("Credential store read failed for {provider_id}"), Some(&e.to_string()))))
 }
 
-/// Cross-provider auth resolution choke point, matching senpi's `resolveProviderAuth`.
-///
-/// Order: an explicit `overrides.apiKey` always wins. Otherwise a stored credential is read; an
-/// `oauth` credential resolves through `resolveStoredOAuth`, an `api_key` credential (or slot
-/// projection) is handed to `apiKeyAuth.resolve` alongside ambient context, so a provider can
-/// still fall back to environment variables when nothing is stored. `overrides.baseUrl`/`headers`
-/// are applied last, layered onto whichever result was produced.
-#[allow(clippy::too_many_arguments)]
-pub async fn resolve_provider_auth(
-    provider_id: &str,
-    provider_auth: &ProviderAuth,
-    credentials: &Arc<dyn CredentialStore>,
-    ctx: &dyn AuthContext,
-    slot_name: Option<&str>,
-    overrides: Option<&AuthResolutionOverrides>,
-    signal: &AbortSignal,
-) -> Result<Option<AuthResult>, ModelsError> {
-    resolve_provider_auth_with_signal(provider_id, provider_auth, credentials, ctx, slot_name, overrides, signal).await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn resolve_provider_auth_with_signal(
-    provider_id: &str,
-    provider_auth: &ProviderAuth,
-    credentials: &Arc<dyn CredentialStore>,
-    ctx: &dyn AuthContext,
-    slot_name: Option<&str>,
-    overrides: Option<&AuthResolutionOverrides>,
-    signal: &AbortSignal,
-) -> Result<Option<AuthResult>, ModelsError> {
-    signal.throw_if_aborted().map_err(|reason| ModelsError::new("auth", reason.to_string()))?;
-
-    if let Some(overrides) = overrides
-        && let Some(api_key) = &overrides.api_key {
-            let mut result = AuthResult {
-                auth: ModelAuth { api_key: Some(api_key.clone()), ..Default::default() },
-                env: None,
-                source: Some("override".into()),
-            };
-            apply_overrides(&mut result, overrides);
-            return Ok(Some(result));
-        }
-
-    let stored = read_credential(credentials, provider_id, signal).await?;
-    let mut result = match &stored {
-        Some(Credential::OAuth(_)) => {
-            let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
-            let stored = stored.clone().expect("checked Some above");
-            resolve_stored_oauth(
-                credentials,
-                provider_id,
-                oauth,
-                &stored,
-                slot_name,
-                crate::utils::diagnostics::now_ms() as f64,
-                DEFAULT_OAUTH_MINIMUM_VALIDITY_MS,
-                signal,
-            )
-            .await?
-        }
-        Some(Credential::ApiKey(api_key_credential)) => {
-            let Some(api_key_auth) = &provider_auth.api_key else { return Ok(None) };
-            let projected = match slot_name {
-                None => Some(api_key_credential.clone()),
-                Some(name) => {
-                    let pooled: PooledCredential = stored.clone().expect("checked Some above").into();
-                    project_slot(Some(&pooled), name).and_then(|c| c.as_api_key().cloned())
-                }
-            };
-            api_key_auth
-                .resolve(ctx, projected.as_ref(), signal)
-                .await
-                .map_err(|e| ModelsError::new("auth", with_cause_detail(&format!("API key auth failed for provider {provider_id}"), Some(&e.to_string()))))?
-        }
-        None => match &provider_auth.api_key {
-            Some(api_key_auth) => api_key_auth
-                .resolve(ctx, None, signal)
-                .await
-                .map_err(|e| ModelsError::new("auth", with_cause_detail(&format!("API key auth failed for provider {provider_id}"), Some(&e.to_string()))))?,
-            None => None,
-        },
-    };
-
-    if let Some(result) = &mut result
-        && let Some(overrides) = overrides {
-            apply_overrides(result, overrides);
-        }
-    Ok(result)
-}
-
-fn apply_overrides(result: &mut AuthResult, overrides: &AuthResolutionOverrides) {
-    if let Some(base_url) = &overrides.base_url {
-        result.auth.base_url = Some(base_url.clone());
-    }
-    if let Some(headers) = &overrides.headers {
-        result.auth.headers = Some(headers.clone());
-    }
-}
-
-/// Resolves an api-key credential ambiently, without a stored credential slot.
-pub async fn resolve_api_key(
-    api_key_auth: &Arc<dyn ApiKeyAuth>,
-    ctx: &dyn AuthContext,
-    signal: &AbortSignal,
-) -> Result<Option<AuthResult>, ModelsError> {
-    api_key_auth.resolve(ctx, None, signal).await.map_err(|e| ModelsError::new("auth", e.to_string()))
-}
-
-/// Provider-scoped environment values from a stored credential (any type) plus ambient context.
+/// Provider-scoped environment values from a stored credential (any type).
 pub fn credential_environment(credential: Option<&Credential>) -> Option<ProviderEnv> {
     match credential {
         Some(Credential::ApiKey(c)) => c.env.clone(),
-        Some(Credential::OAuth(c)) => {
-            c.extra.get("env").and_then(|v| v.as_object()).map(|obj| {
-                let mut env = ProviderEnv::new();
-                for (k, v) in obj {
-                    if let Some(v) = v.as_str() {
-                        env.insert(k.clone(), v.to_string());
-                    }
-                }
-                env
-            })
-        }
+        Some(Credential::OAuth(c)) => oauth_credential_environment(c),
         None => None,
     }
 }
@@ -288,8 +363,7 @@ pub fn credential_environment(credential: Option<&Credential>) -> Option<Provide
 mod tests {
     use super::*;
     use crate::auth::credential_store::InMemoryCredentialStore;
-    use crate::auth::types::{ApiKeyCredential, OAuthCredential, ProviderAuthInteraction};
-    use async_trait::async_trait;
+    use crate::auth::types::{ModelAuth, ProviderAuthInteraction};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -341,6 +415,7 @@ mod tests {
 
     struct FauxOAuthAuth {
         refresh_calls: Arc<AtomicUsize>,
+        refreshed_ttl_ms: f64,
     }
     #[async_trait]
     impl OAuthAuth for FauxOAuthAuth {
@@ -348,15 +423,43 @@ mod tests {
             "faux-oauth"
         }
         async fn login(&self, _interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
-            unimplemented!()
+            anyhow::bail!("login is not exercised")
         }
         async fn refresh(&self, _credential: &OAuthCredential, _signal: &AbortSignal) -> anyhow::Result<OAuthCredential> {
             self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(OAuthCredential::new("refreshed-access", "refreshed-refresh", crate::utils::diagnostics::now_ms() as f64 + 3_600_000.0))
+            Ok(OAuthCredential::new("refreshed-access", "refreshed-refresh", now() + self.refreshed_ttl_ms))
         }
         async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth> {
             Ok(ModelAuth { api_key: Some(credential.access.clone()), ..Default::default() })
         }
+    }
+
+    fn now() -> f64 {
+        crate::utils::diagnostics::now_ms() as f64
+    }
+
+    fn signal() -> AbortSignal {
+        crate::utils::abort::AbortController::new().signal()
+    }
+
+    fn oauth_provider(refresh_calls: &Arc<AtomicUsize>, refreshed_ttl_ms: f64) -> ProviderAuth {
+        ProviderAuth {
+            api_key: None,
+            oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone(), refreshed_ttl_ms })),
+        }
+    }
+
+    fn api_key_provider(env_var: &str) -> ProviderAuth {
+        ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth { env_var: env_var.into() })), oauth: None }
+    }
+
+    async fn seeded(credential: Credential) -> Arc<dyn CredentialStore> {
+        let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
+        credentials
+            .modify("p", Box::new(move |_| Box::pin(async move { Ok(Some(credential)) })), None)
+            .await
+            .unwrap();
+        credentials
     }
 
     #[test]
@@ -372,110 +475,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_api_key_override_wins_over_everything() {
+    async fn explicit_api_key_override_resolves_through_api_key_auth() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let provider_auth = ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth { env_var: "X".into() })), oauth: None };
         let ctx = FauxCtx { env: HashMap::new() };
-        let overrides = AuthResolutionOverrides { api_key: Some("override-key".into()), base_url: None, headers: None };
-        let result = resolve_provider_auth(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            Some(&overrides),
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let overrides = AuthResolutionOverrides { api_key: Some("override-key".into()), ..Default::default() };
+        let result = resolve_provider_auth("p", &api_key_provider("X"), &credentials, &ctx, Some(&overrides), &signal())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.auth.api_key, Some("override-key".into()));
+        assert_eq!(result.source.as_deref(), Some("stored"));
     }
 
     #[tokio::test]
     async fn falls_back_to_ambient_env_when_nothing_stored() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let provider_auth = ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth { env_var: "MY_KEY".into() })), oauth: None };
         let ctx = FauxCtx { env: [("MY_KEY".to_string(), "env-key".to_string())].into() };
-        let result = resolve_provider_auth(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let result = resolve_provider_auth("p", &api_key_provider("MY_KEY"), &credentials, &ctx, None, &signal())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.auth.api_key, Some("env-key".into()));
     }
 
     #[tokio::test]
-    async fn stored_oauth_within_validity_window_skips_refresh() {
+    async fn request_env_overlays_the_auth_context() {
         let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        credentials
-            .modify(
-                "p",
-                Box::new(|_| {
-                    Box::pin(async {
-                        Ok(Some(Credential::OAuth(OAuthCredential::new(
-                            "access",
-                            "refresh",
-                            crate::utils::diagnostics::now_ms() as f64 + 3_600_000.0,
-                        ))))
-                    })
-                }),
-                None,
-            )
+        let ctx = FauxCtx { env: [("MY_KEY".to_string(), "ambient".to_string())].into() };
+        let overrides = AuthResolutionOverrides {
+            env: Some([("MY_KEY".to_string(), "request".to_string())].into()),
+            ..Default::default()
+        };
+        let result = resolve_provider_auth("p", &api_key_provider("MY_KEY"), &credentials, &ctx, Some(&overrides), &signal())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.auth.api_key, Some("request".into()));
+    }
+
+    #[tokio::test]
+    async fn stored_api_key_env_merges_request_env_into_the_result() {
+        let credentials = seeded(Credential::ApiKey(ApiKeyCredential {
+            key: Some("stored-key".into()),
+            env: Some([("ACCOUNT".to_string(), "stored".to_string())].into()),
+        }))
+        .await;
+        let ctx = FauxCtx { env: HashMap::new() };
+        let overrides = AuthResolutionOverrides {
+            env: Some([("GATEWAY".to_string(), "request".to_string())].into()),
+            ..Default::default()
+        };
+        let result = resolve_provider_auth("p", &api_key_provider("X"), &credentials, &ctx, Some(&overrides), &signal())
+            .await
+            .unwrap()
+            .unwrap();
+        let env = result.env.expect("credential env");
+        assert_eq!(env.get("ACCOUNT").map(String::as_str), Some("stored"));
+        assert_eq!(env.get("GATEWAY").map(String::as_str), Some("request"));
+    }
+
+    #[tokio::test]
+    async fn missing_slot_resolves_none_without_ambient_fallback() {
+        let credentials = seeded(Credential::ApiKey(ApiKeyCredential { key: Some("flat".into()), env: None })).await;
+        let ctx = FauxCtx { env: [("MY_KEY".to_string(), "env-key".to_string())].into() };
+        let overrides = AuthResolutionOverrides { slot_name: Some("work".into()), ..Default::default() };
+        let result = resolve_provider_auth("p", &api_key_provider("MY_KEY"), &credentials, &ctx, Some(&overrides), &signal())
             .await
             .unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn stored_oauth_within_validity_window_skips_refresh() {
+        let credentials = seeded(Credential::OAuth(OAuthCredential::new("access", "refresh", now() + 3_600_000.0))).await;
         let refresh_calls = Arc::new(AtomicUsize::new(0));
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
         let ctx = FauxCtx { env: HashMap::new() };
-        let result = resolve_provider_auth(
-            "p",
-            &provider_auth,
-            &credentials,
-            &ctx,
-            None,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let result = resolve_provider_auth("p", &oauth_provider(&refresh_calls, 3_600_000.0), &credentials, &ctx, None, &signal())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.auth.api_key, Some("access".into()));
         assert_eq!(refresh_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn stored_oauth_near_expiry_refreshes_before_resolving() {
-        let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        credentials
-            .modify(
-                "p",
-                Box::new(|_| {
-                    Box::pin(async {
-                        Ok(Some(Credential::OAuth(OAuthCredential::new("stale-access", "stale-refresh", 1.0))))
-                    })
-                }),
-                None,
-            )
-            .await
-            .unwrap();
+    async fn oauth_refreshes_inside_the_five_minute_floor_despite_a_shorter_override() {
+        let credentials = seeded(Credential::OAuth(OAuthCredential::new("stale-access", "stale-refresh", now() + 120_000.0))).await;
         let refresh_calls = Arc::new(AtomicUsize::new(0));
-        let provider_auth = ProviderAuth { api_key: None, oauth: Some(Arc::new(FauxOAuthAuth { refresh_calls: refresh_calls.clone() })) };
         let ctx = FauxCtx { env: HashMap::new() };
+        let overrides = AuthResolutionOverrides { min_oauth_validity_ms: Some(60_000), ..Default::default() };
         let result = resolve_provider_auth(
             "p",
-            &provider_auth,
+            &oauth_provider(&refresh_calls, 3_600_000.0),
             &credentials,
             &ctx,
-            None,
-            None,
-            &crate::utils::abort::AbortController::new().signal(),
+            Some(&overrides),
+            &signal(),
         )
         .await
         .unwrap()
@@ -485,39 +580,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overrides_apply_base_url_and_headers_on_top_of_resolved_result() {
-        let credentials: Arc<dyn CredentialStore> = Arc::new(InMemoryCredentialStore::new());
-        let provider_auth = ProviderAuth { api_key: Some(Arc::new(FauxApiKeyAuth { env_var: "MY_KEY".into() })), oauth: None };
-        let ctx = FauxCtx { env: [("MY_KEY".to_string(), "env-key".to_string())].into() };
-        let mut headers = crate::types::ProviderHeaders::new();
-        headers.insert("x-custom".into(), Some("1".into()));
-        let overrides = AuthResolutionOverrides { api_key: None, base_url: Some("https://example.test".into()), headers: Some(headers) };
-        let result = resolve_provider_auth(
+    async fn explicit_minimum_rejects_a_refreshed_token_that_expires_too_soon() {
+        let credentials = seeded(Credential::OAuth(OAuthCredential::new("stale-access", "stale-refresh", 1.0))).await;
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let ctx = FauxCtx { env: HashMap::new() };
+        let overrides = AuthResolutionOverrides { min_oauth_validity_ms: Some(1_800_000), ..Default::default() };
+        let error = resolve_provider_auth(
             "p",
-            &provider_auth,
+            &oauth_provider(&refresh_calls, 600_000.0),
             &credentials,
             &ctx,
-            None,
             Some(&overrides),
-            &crate::utils::abort::AbortController::new().signal(),
+            &signal(),
         )
         .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(result.auth.base_url, Some("https://example.test".into()));
-        assert!(result.auth.headers.is_some());
+        .expect_err("token shorter than the requested minimum");
+        assert_eq!(error.code, "oauth");
+        assert_eq!(error.message, "OAuth refresh returned a token that expires too soon for p");
     }
 
-    #[test]
-    fn overlay_env_auth_context_fills_gaps_without_overwriting() {
-        let mut resolved = ProviderEnv::new();
-        resolved.insert("A".into(), "resolved".into());
-        let mut ambient = ProviderEnv::new();
-        ambient.insert("A".into(), "ambient".into());
-        ambient.insert("B".into(), "ambient-b".into());
-        let merged = overlay_env_auth_context(Some(resolved), Some(&ambient)).unwrap();
-        assert_eq!(merged.get("A").map(String::as_str), Some("resolved"));
-        assert_eq!(merged.get("B").map(String::as_str), Some("ambient-b"));
+    #[tokio::test]
+    async fn stored_oauth_env_rides_along_in_the_result() {
+        let stored = OAuthCredential::new("access", "refresh", now() + 3_600_000.0)
+            .with_extra("env", serde_json::json!({"REGION": "global"}));
+        let credentials = seeded(Credential::OAuth(stored)).await;
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let ctx = FauxCtx { env: HashMap::new() };
+        let result = resolve_provider_auth("p", &oauth_provider(&refresh_calls, 3_600_000.0), &credentials, &ctx, None, &signal())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.env.expect("oauth env").get("REGION").map(String::as_str), Some("global"));
     }
 
     #[test]

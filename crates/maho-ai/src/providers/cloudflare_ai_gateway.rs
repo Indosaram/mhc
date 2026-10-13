@@ -1,5 +1,6 @@
 //! Port of senpi packages/ai/src/providers/cloudflare-ai-gateway.ts.
 
+use crate::auth::types::ProviderAuth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::{builtin_api_streams, cloudflare_stream::cloudflare_streams};
 use crate::types::Model;
@@ -30,6 +31,7 @@ pub fn cloudflare_ai_gateway_provider() -> Arc<dyn Provider> {
         name: Some("Cloudflare AI Gateway".into()),
         base_url: None,
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(super::cloudflare_auth::cloudflare_ai_gateway_auth())), oauth: None }),
         models: gateway_models(),
         fetch_models: None,
         restore_models: None,
