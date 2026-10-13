@@ -46,6 +46,13 @@ fn footer_matches_pinned_output_at_all_widths_and_themes() {
     }
 }
 #[test]
+fn text_styles_leave_empty_text_unchanged() {
+    let t = theme();
+    for styled in [t.bold(""), t.italic(""), t.underline(""), t.inverse(""), t.strikethrough("")] {
+        assert_eq!(styled, "");
+    }
+}
+#[test]
 fn highlight_matches_pinned_token_colors() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("golden/highlight.json")).expect("valid test fixture and successful operation");
     for case in cases {
