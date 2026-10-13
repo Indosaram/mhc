@@ -129,30 +129,24 @@ impl MonitorRegistry {
     pub fn subscribe_state(&self)->tokio::sync::watch::Receiver<Vec<MonitorSnapshotEntry>> {self.transitions.subscribe()}
     pub fn muted_dropped(&self,id:&str)->usize {self.records.lock().expect("monitor records").get(id).map_or(0,|record|record.muted_dropped)}
     fn publish_state(&self) {publish_snapshot(&self.records,&self.file_snapshots,&self.transitions);}
-    #[cfg(unix)]
     pub fn register_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64)->std::io::Result<(String,String)> {
         self.register_file_with_identity(description,path,event,timeout_ms,None,None)
     }
-    #[cfg(unix)]
     pub fn register_file_with_identity(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,timeout_ms:u64,monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
         self.register_file_lifetime(description,path,event,(timeout_ms,false),monitor_id,approved_parent)
     }
-    #[cfg(unix)]
     pub fn register_persistent_file(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent)->std::io::Result<(String,String)> {
         self.register_persistent_file_with_identity(description,path,event,None)
     }
-    #[cfg(unix)]
     pub fn register_persistent_file_with_identity(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
         self.register_file_lifetime(description,path,event,(crate::shared::DURABLE_MONITOR_EXPIRY_MS,true),None,approved_parent)
     }
-    #[cfg(unix)]
     pub fn restore_persistent_file(&mut self,monitor:&crate::terminal_manifest_model::ManifestMonitor,path:&std::path::Path,now:f64)->std::io::Result<(String,String)> {
         let registered=self.register_file_lifetime(&monitor.description,path,monitor.event.unwrap_or(crate::terminal_manifest_model::FileEvent::Create),(crate::durable_file::remaining_ms(monitor,now) as u64,true),Some(&monitor.monitor_id),monitor.approved_parent.as_deref().map(std::path::Path::new))?;
         if let Some(snapshot)=self.file_snapshots.lock().expect("file snapshots").get_mut(&registered.0) {snapshot.expires_at=monitor.expires_at;}
         self.publish_state();
         Ok(registered)
     }
-    #[cfg(unix)]
     fn register_file_lifetime(&mut self,description:&str,path:&std::path::Path,event:crate::terminal_manifest_model::FileEvent,lifetime:(u64,bool),monitor_id:Option<&str>,approved_parent:Option<&std::path::Path>)->std::io::Result<(String,String)> {
         if self.disposed {return Err(std::io::Error::other("Cannot create file monitor: monitor registry is disposed."));}
         let (timeout_ms,persistent)=lifetime;
@@ -188,7 +182,6 @@ impl MonitorRegistry {
         self.files.retain(|_,(_,task)|!task.is_finished());
         self.next_file_id+=1;self.files.insert(id.clone(),(file,watch));Ok((id,monitor_id))
     }
-    #[cfg(unix)]
     pub fn stop_file(&mut self,id:&str)->bool {
         let Some((file,watch))=self.files.shift_remove(id) else {return false;};watch.abort();let snapshot=self.file_snapshots.lock().expect("file snapshots").shift_remove(id);
         let event=file.lock().expect("file monitor").stop("watcher killed");self.publish_state();
