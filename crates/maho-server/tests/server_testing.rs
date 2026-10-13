@@ -1,5 +1,5 @@
 #![cfg(unix)]
-use maho_server::server::{testing::*,types::*,unix::UnixServer,errors::ServerError};
+use maho_server::server::{testing::*,types::*,unix::{UnixListenerOptions,create_unix_listener},errors::ServerError};
 use serde_json::json;
 use std::{sync::Arc,time::Duration};
 
@@ -72,8 +72,9 @@ async fn testing_facades_drive_real_socket_attach_fragmentation_and_session_call
     tokio::time::timeout(Duration::from_secs(10),async {
         let directory=tempfile::tempdir().unwrap();let path=directory.path().join("test.sock");
         let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
-        let test=create_test_server(TestServerOptions {host:Some(host.clone()),..Default::default()}).unwrap();
-        let id=test.server.server_id.clone();let mut listener=UnixServer::start(test.server.clone(),path.clone()).await.unwrap();
+        let listener=create_unix_listener(UnixListenerOptions {path:path.clone(),..Default::default()}).unwrap();
+        let test=create_test_server(TestServerOptions {host:Some(host.clone()),listeners:vec![listener],..Default::default()}).unwrap();
+        let id=test.server.server_id.clone();test.server.start().await.unwrap();
         let client=connect_unix_test_client(&path).await.unwrap();assert_eq!(client.hello(None).await.unwrap()["serverId"],id);
         assert_eq!(client.attach(&id,"session-1").await.unwrap()["result"],json!(null));
         let harness=host.latest_harness("session-1").await.unwrap();assert_eq!(harness.state.lock().await.attached_clients,1);
@@ -85,7 +86,7 @@ async fn testing_facades_drive_real_socket_attach_fragmentation_and_session_call
         assert_eq!(client.next_from(index,|message|message["type"]=="response" && message["id"]=="fragmented").await.unwrap()["result"],json!(null));
         assert_eq!(harness.state.lock().await.attachment_release_count,1);
         assert_eq!(harness.state.lock().await.service_calls,vec![call]);
-        client.close().await.unwrap();client.wait_for_close().await;assert!(client.closed());listener.close().await.unwrap();assert!(!path.exists());
+        client.close().await.unwrap();client.wait_for_close().await;assert!(client.closed());test.server.close().await.unwrap();assert!(!path.exists());
         assert_eq!(harness.state.lock().await.close_count,1);
     }).await.unwrap();
 }

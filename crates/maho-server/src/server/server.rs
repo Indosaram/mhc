@@ -34,7 +34,7 @@ pub type ServerErrorObserver = Arc<dyn Fn(ServerError) + Send + Sync>;
 pub type ConnectionCountObserver = Arc<dyn Fn(usize) + Send + Sync>;
 
 /// Pinned `reportError`: deliver to the observer, swallowing observer panics.
-fn report_to(observer: Option<&ServerErrorObserver>, error: ServerError) {
+pub(crate) fn report_to(observer: Option<&ServerErrorObserver>, error: ServerError) {
     if let Some(observer) = observer {
         let observer = Arc::clone(observer);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(error)));
@@ -577,7 +577,7 @@ impl RoutedServerPresentation for Presentation {
                         Some(presentation) => presentation.publish_detached(&detached).await,
                         None => Ok(()),
                     }
-                })
+                }) as ServerFuture<'static, ()>
             }));
             if let Some(previous) = current.take() {
                 previous.release().await?;
