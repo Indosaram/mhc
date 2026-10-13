@@ -295,7 +295,7 @@ impl ComputerUseComponent {
                 let status_msg = format!("{text}\nengine: {engine_str}\nprelude: {prelude}{sk_line}\nengine source: {source}{permissions}");
                 ui.notify(&status_msg, NotificationType::Info);
                 if !has_ui {
-                    eprintln!("{status_msg}");
+                    maho_ext_api::diagnostic(&status_msg);
                 }
                 Ok(())
             })
