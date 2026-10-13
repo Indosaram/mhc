@@ -37,6 +37,7 @@ impl AppServerRuntime {
         super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone(), threads.clone());
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let lifecycle_slot=Arc::new(std::sync::OnceLock::<Arc<super::handlers::ThreadLifecycleController>>::new());
+        let turn_engine_slot=Arc::new(std::sync::OnceLock::<super::turns::TurnEngine>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
         let send_recipients = recipients.clone();
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
@@ -56,14 +57,14 @@ impl AppServerRuntime {
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
-            let lifecycle_slot=lifecycle_slot.clone();
+            let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register(method.into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
-                let lifecycle_slot=lifecycle_slot.clone();
+                let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
                 let ui_agent_dir = ui_agent_dir.clone();
@@ -84,6 +85,7 @@ impl AppServerRuntime {
                         let cwd = maho_core::paths::resolve_path(params["cwd"].as_str().unwrap_or(&cwd),&cwd,&Default::default());
                         threads.create_thread(cwd, model).await
                     } else { threads.resume_thread(required_string(params, "threadId")?).await }.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    if requested_name.is_none() && let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(name) = requested_name {
                         entry.session.set_session_name(&name);
@@ -142,14 +144,14 @@ impl AppServerRuntime {
         {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
-            let lifecycle_slot=lifecycle_slot.clone();
+            let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
-                let lifecycle_slot=lifecycle_slot.clone();
+                let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
                 let ui_agent_dir = ui_agent_dir.clone();
@@ -158,6 +160,7 @@ impl AppServerRuntime {
                     let source = required_string(params,"threadId")?.to_owned();
                     let requested_cwd = params["cwd"].as_str().map(str::to_owned);
                     let entry = threads.fork_thread(&source,requested_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    if let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
                     entry.subscribers.insert(context.connection.id.clone());
@@ -215,7 +218,8 @@ impl AppServerRuntime {
         if notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("notification core is initialized once");}
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
-        super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        let turn_engine = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        if turn_engine_slot.set(turn_engine).is_err() {unreachable!("turn engine initialized once");}
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));

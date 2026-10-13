@@ -50,6 +50,17 @@ pub struct ThreadEntry {
     pub created_at: String,
     pub updated_at: String,
     pub tasks: Arc<Mutex<()>>,
+    /// senpi `pendingByThreadId`: the open turn awaiting `completeTurn`.
+    pub pending_turn: Option<super::turns::PendingTurn>,
+    /// senpi `projectorByThreadId`: the active turn's projector, keyed by its turn id.
+    pub projection: Option<(String, super::projection::EventProjector)>,
+    /// senpi `subscribedThreadIds`: the one session subscription feeding the turn engine.
+    pub observer: Option<maho_core::agent_session::AgentSessionSubscription>,
+    /// Ordered input of the observer task: session events plus completions queued behind them.
+    pub observer_events: Option<tokio::sync::mpsc::UnboundedSender<super::turns::ObservedEvent>>,
+    /// Held by `turn/start` until its initial notifications are out, so projected session events
+    /// never reach the wire before `turn/started`; the observer takes it per event.
+    pub emit_gate: Arc<Mutex<()>>,
 }
 impl ThreadEntry {
     pub fn wire(&self) -> Value {
@@ -78,7 +89,7 @@ impl ThreadRegistry {
         }
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (created_at, updated_at) = timestamps.unwrap_or_else(|| (now.clone(), now));
-        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: Vec::new(), created_at, updated_at, tasks: Arc::new(Mutex::new(())) }));
+        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: Vec::new(), created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())) }));
         entries.insert(id, entry.clone());
         entry
     }
