@@ -654,7 +654,7 @@ impl ModelRuntime {
     }
     pub fn stream(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default()let signal=options.request.signal.clone();
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();let signal=options.request.signal.clone();
         let inner=self.lazy_request(model,signal,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options).await?;
             Ok(models.stream(&request_model,&context,Some(options),Default::default()))
@@ -668,7 +668,7 @@ impl ModelRuntime {
     /// (`transformHeaders` runs on the assembled request headers after auth resolution).
     pub fn stream_simple_with_transforms(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>,transforms:ModelsRequestTransforms) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
-        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default()let signal=options.stream.request.signal.clone();
+        let models=self.models.clone();let context=context.clone();let original=model.clone();let tools=context.tools.clone().unwrap_or_default();let signal=options.stream.request.signal.clone();
         let inner=self.lazy_request(model,signal,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
             Ok(models.stream_simple(&request_model,&context,Some(options),transforms))
