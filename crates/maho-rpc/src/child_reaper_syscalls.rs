@@ -1,5 +1,5 @@
 use std::fs;
-use rustix::process::{Pid,WaitId,WaitIdOptions,WaitOptions,waitid,waitpid};
+#[cfg(target_os="linux")] use rustix::process::{Pid,WaitId,WaitIdOptions,WaitOptions,waitid,waitpid};
 
 pub trait ChildReaperSyscalls {
     fn list_direct_children(&mut self) -> Vec<i32>;
@@ -7,13 +7,15 @@ pub trait ChildReaperSyscalls {
     fn reap_exited(&mut self,pid:i32) -> bool;
     fn describe(&mut self,pid:i32) -> String;
 }
-pub struct LinuxChildReaperSyscalls;
-fn linux_stat(pid:i32) -> Option<String> { fs::read_to_string(format!("/proc/{pid}/stat")).ok() }
+#[cfg(target_os="linux")] pub struct LinuxChildReaperSyscalls;
+#[cfg(not(target_os="linux"))] pub struct LinuxChildReaperSyscalls;
+#[cfg(target_os="linux")] fn linux_stat(pid:i32) -> Option<String> { fs::read_to_string(format!("/proc/{pid}/stat")).ok() }
+#[cfg(not(target_os="linux"))] fn linux_stat(_:i32)->Option<String>{None}
 pub fn parent_of_stat(stat:&str) -> Option<i32> { stat.rsplit_once(") ")?.1.split_whitespace().nth(1)?.parse().ok() }
 pub fn name_of_stat(stat:&str) -> &str {
     match (stat.find('('),stat.rfind(')')) { (Some(open),Some(close)) if close>open => &stat[open+1..close],_ => "" }
 }
-impl ChildReaperSyscalls for LinuxChildReaperSyscalls {
+#[cfg(target_os="linux")] impl ChildReaperSyscalls for LinuxChildReaperSyscalls {
     fn list_direct_children(&mut self) -> Vec<i32> {
         let Ok(entries)=fs::read_dir("/proc") else { return Vec::new(); };
         let own=i32::try_from(std::process::id()).unwrap_or(i32::MAX);
@@ -29,6 +31,12 @@ impl ChildReaperSyscalls for LinuxChildReaperSyscalls {
         matches!(waitpid(Some(pid),WaitOptions::NOHANG),Ok(Some((found,_))) if found==pid)
     }
     fn describe(&mut self,pid:i32) -> String { linux_stat(pid).as_deref().map(name_of_stat).unwrap_or("").into() }
+}
+#[cfg(not(target_os="linux"))] impl ChildReaperSyscalls for LinuxChildReaperSyscalls {
+    fn list_direct_children(&mut self)->Vec<i32>{Vec::new()}
+    fn is_waitable(&mut self,_:i32)->bool{false}
+    fn reap_exited(&mut self,_:i32)->bool{false}
+    fn describe(&mut self,_:i32)->String{String::new()}
 }
 pub fn load_child_reaper_syscalls(platform:&str) -> Option<LinuxChildReaperSyscalls> {
     (platform=="linux").then_some(LinuxChildReaperSyscalls)
