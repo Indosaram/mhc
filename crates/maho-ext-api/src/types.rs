@@ -1140,7 +1140,10 @@ pub enum ExtensionEvent {
     SessionExtensionsRemoved { reason: SessionReason, removed: Vec<ExtensionIdentity> },
     SessionBeforeTree { preparation: TreePreparation, signal: AbortSignal },
     SessionTree { new_leaf_id: Option<String>, old_leaf_id: Option<String>, summary_entry: Option<SessionEntry>, from_extension: Option<bool> },
-    Context { messages: Vec<AgentMessage> }, BeforeProviderRequest { payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>> },
+    /// `entry_ids` is senpi's request-local `SESSION_CONTEXT_ENTRY_ID` stamp as a typed side
+    /// channel: index-aligned with `messages`, `Some(id)` for a message projected from that session
+    /// entry. It is never written into message JSON.
+    Context { messages: Vec<AgentMessage>, entry_ids: Vec<Option<String>> }, BeforeProviderRequest { payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>> },
     BeforeProviderHeaders { headers: BTreeMap<String, Option<String>> }, AfterProviderResponse { status: u16, headers: BTreeMap<String, String> },
     BeforeAgentStart(BeforeAgentStartEvent), AgentStart,
     AgentEnd { messages: Vec<AgentMessage>, aborted: Option<bool>, will_retry: Option<bool>, abort_source: Option<AbortSource> }, AgentSettled,

@@ -403,7 +403,7 @@ impl ExtensionRunner {
     pub async fn prepare_provider_request(&self, messages: Vec<AgentMessage>, exclude_path: Option<String>) -> Result<ProviderRequestPreparation, ExtensionFailure> {
         self.runtime.assert_active()?;
         let mut context_runner = self.clone();
-        let messages = context_runner.emit_context(&messages, exclude_path.as_deref()).await?;
+        let messages = context_runner.emit_context(&messages, &[], exclude_path.as_deref()).await?;
         let payload_runner = self.clone();
         let header_runner = self.clone();
         Ok(ProviderRequestPreparation {
@@ -821,19 +821,26 @@ impl ExtensionRunner {
         }
         Ok(modified.then_some(current_message))
     }
-    pub async fn emit_context(&mut self, messages: &[AgentMessage], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
+    /// `entry_ids` stamps each message with its session entry (senpi `emitContext` copying
+    /// `getSessionContextEntryId` onto the cloned messages); missing positions are unstamped.
+    pub async fn emit_context(&mut self, messages: &[AgentMessage], entry_ids: &[Option<String>], exclude_path: Option<&str>) -> Result<Vec<AgentMessage>, ExtensionFailure> {
         self.runtime.assert_active()?;
-        let mut event = ExtensionEvent::Context { messages: messages.to_vec() };
+        let entry_ids = (0..messages.len()).map(|index| entry_ids.get(index).cloned().flatten()).collect();
+        let mut event = ExtensionEvent::Context { messages: messages.to_vec(), entry_ids };
         for (path, handler) in self.handlers(EventKind::Context) {
             if exclude_path == Some(path.as_str()) { continue; }
             let context = self.create_context_for_extension(Some(&path))?;
             match handler(&mut event, &context).await {
-                Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages } = &mut event { *messages = next; },
+                Ok(EventResult::Context { messages: Some(next) }) => if let ExtensionEvent::Context { messages, entry_ids } = &mut event {
+                    // A stamp rides on its message: it survives only where the handler kept that exact message in place.
+                    *entry_ids = next.iter().enumerate().map(|(index, message)| entry_ids.get(index).cloned().flatten().filter(|_| messages.get(index) == Some(message))).collect();
+                    *messages = next;
+                },
                 Ok(_) => {}, Err(error) => self.report(&path, EventKind::Context, error),
             }
             self.runtime.assert_active()?;
         }
-        if let ExtensionEvent::Context { messages } = event { return Ok(messages); }
+        if let ExtensionEvent::Context { messages, .. } = event { return Ok(messages); }
         Err(ExtensionFailure::new("context handler replaced event kind"))
     }
     pub async fn emit_before_provider_request(&mut self, payload: JsonValue, exclude_path: Option<&str>) -> Result<JsonValue, ExtensionFailure> {
