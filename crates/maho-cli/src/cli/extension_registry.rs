@@ -297,7 +297,9 @@ fn orca_prefill() -> Box<dyn Extension> {
     struct Environment;
     impl maho_ext_orca_prefill::PrefillEnvironment for Environment {
         fn pane_key(&self) -> Option<String> { std::env::var("ORCA_PANE_KEY").ok() }
-        fn take_prefill(&self) -> Option<String> { std::env::var("ORCA_PREFILL").ok() }
+        fn take_prefill(&self) -> Option<String> {
+            maho_ext_orca_prefill::take_process_prefill(|| std::env::var(maho_ext_orca_prefill::PREFILL_ENV).ok())
+        }
     }
     Box::new(maho_ext_orca_prefill::OrcaPrefill { environment: Arc::new(Environment) })
 }
