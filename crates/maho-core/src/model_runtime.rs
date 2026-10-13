@@ -80,7 +80,9 @@ fn builtin_oauth(id:&str)->Option<Arc<dyn maho_ai::auth::types::OAuthAuth>> {
         "openrouter"=>Some(oauth::openrouter::open_router_oauth()),
         "kimi-coding"=>Some(oauth::kimi_coding::kimi_coding_oauth()),
         "xai"=>Some(oauth::xai::xai_oauth()),"cursor"=>Some(Arc::new(oauth::cursor::CursorOAuth::new())),
-        "devin"=>Some(oauth::devin::devin_oauth()),_=>None,
+        "devin"=>Some(oauth::devin::devin_oauth()),
+        "radius"=>Some(oauth::radius::radius_oauth("Radius",&maho_ai::providers::radius_config::normalize_radius_gateway_url(maho_ai::providers::radius_config::DEFAULT_RADIUS_GATEWAY))),
+        _=>None,
     }
 }
 
