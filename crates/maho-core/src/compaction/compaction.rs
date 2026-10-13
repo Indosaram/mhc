@@ -1,14 +1,25 @@
 //! Port of senpi packages/coding-agent/src/core/compaction/compaction.ts.
 //!
-//! The pure core is ported whole: token accounting, cut-point selection, the summarization
-//! prompts and prepareCompaction. The provider-calling functions (createSummarizationOptions,
-//! completeSummarization, generateSummary, generateSummaryWithUsage, transformSummarySource,
-//! cacheFriendlyContextFits) and the compact() driver in compaction-execution.ts stay with the
-//! AgentSession wiring (todo 21) and are recorded as partial in the parity ledger.
+//! Ported whole: token accounting, cut-point selection, the summarization prompts, the
+//! provider-calling summarization functions and prepareCompaction.
+//!
+//! Adaptation: senpi's long positional parameter lists (model, apiKey, headers, signal, extraBody,
+//! thinkingLevel, streamFn, env, transformContext, retry, callbacks, sessionId,
+//! summarizationMaxDurationMs) travel together in [`SummarizationRequest`]; message transforms
+//! operate on the session's JSON message values.
 
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
-use maho_ai::types::{AssistantMessage, StopReason, Usage, UsageCost};
+use maho_ai::model::Model;
+use maho_ai::types::{
+    AllowedFallbackModel, AnthropicRefusalFallback, AssistantMessage, AssistantMessageEventStream, BoxFuture,
+    CacheRetention, ContentBlock, Context, Message, ModelThinkingLevel, OnPayload, OnResponse, ProviderEnv,
+    RefusalFallbackModel, SimpleStreamOptions, StopReason, TextContent, ThinkingBudgets, ThinkingLevel, Transport,
+    Usage, UsageCost, UserContent, UserMessage,
+};
+use maho_ai::utils::abort::{AbortController, AbortSignal};
+use maho_ai::utils::retry::{RetryCallbacks, RetryPolicy, retry_assistant_call};
 use regex::Regex;
 use serde_json::Value;
 
@@ -614,6 +625,461 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.";
 
+/// senpi SummarizationStreamFn (the agent StreamFn shape).
+pub type SummarizationStreamFn<'a> =
+    dyn Fn(&Model, &Context, SimpleStreamOptions) -> AssistantMessageEventStream + Send + Sync + 'a;
+
+/// senpi `transformContext` over session message values.
+pub type SummaryTransformContext =
+    Arc<dyn Fn(Vec<Value>, Option<AbortSignal>) -> BoxFuture<'static, Result<Vec<Value>, String>> + Send + Sync>;
+
+/// senpi CacheFriendlySummaryOptions.requestOptions: request settings copied from the active agent
+/// request path.
+#[derive(Clone, Default)]
+pub struct SummaryRequestOptions {
+    pub session_id: Option<String>,
+    pub on_payload: Option<OnPayload>,
+    pub on_response: Option<OnResponse>,
+    pub transport: Option<Transport>,
+    pub thinking_budgets: Option<ThinkingBudgets>,
+    pub max_retry_delay_ms: Option<u64>,
+}
+
+/// senpi CacheFriendlySummaryOptions.
+#[derive(Clone, Default)]
+pub struct CacheFriendlySummaryOptions {
+    /// Exact provider context prefix containing the history to summarize.
+    pub source_context: Option<Context>,
+    /// Exact provider context prefix containing a split turn's prefix.
+    pub turn_prefix_source_context: Option<Context>,
+    pub request_options: Option<SummaryRequestOptions>,
+}
+
+/// The shared summarization request parameters senpi passes positionally.
+#[derive(Clone)]
+pub struct SummarizationRequest<'a> {
+    pub model: &'a Model,
+    pub api_key: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub env: Option<ProviderEnv>,
+    pub signal: Option<AbortSignal>,
+    pub extra_body: Option<serde_json::Map<String, Value>>,
+    pub thinking_level: Option<ModelThinkingLevel>,
+    pub stream_fn: Option<&'a SummarizationStreamFn<'a>>,
+    pub transform_context: Option<SummaryTransformContext>,
+    pub retry: Option<&'a RetryPolicy>,
+    pub callbacks: Option<&'a RetryCallbacks<'a>>,
+    pub session_id: Option<String>,
+    pub summarization_max_duration_ms: Option<f64>,
+}
+
+/// A generated summary and its provider usage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SummaryWithUsage {
+    pub text: String,
+    pub usage: Usage,
+}
+
+/// senpi getAnthropicSummarizationFallback.
+fn get_anthropic_summarization_fallback(model: &Model) -> Option<AnthropicRefusalFallback> {
+    if model.provider != "anthropic" || model.api != "anthropic-messages" {
+        return None;
+    }
+    let first = model.compat.as_ref()?.anthropic_messages().allowed_fallback_models?.into_iter().next()?;
+    let model = match first {
+        AllowedFallbackModel::Id(id) => id,
+        AllowedFallbackModel::Model(model) => model.model,
+    };
+    Some(AnthropicRefusalFallback::Models(vec![RefusalFallbackModel { model }]))
+}
+
+/// senpi createSummarizationOptions.
+pub fn create_summarization_options(
+    model: &Model,
+    max_tokens: u64,
+    request: &SummarizationRequest<'_>,
+    request_options: Option<&SummaryRequestOptions>,
+    cache_retention: Option<CacheRetention>,
+) -> SimpleStreamOptions {
+    let mut options = SimpleStreamOptions::default();
+    if let Some(request_options) = request_options {
+        options.stream.session_id = request_options.session_id.clone();
+        options.stream.request.on_payload = request_options.on_payload.clone();
+        options.stream.request.on_response = request_options.on_response.clone();
+        options.stream.transport = request_options.transport;
+        options.thinking_budgets = request_options.thinking_budgets.clone();
+        options.stream.request.max_retry_delay_ms = request_options.max_retry_delay_ms;
+    }
+    options.stream.max_tokens = Some(max_tokens);
+    options.stream.request.signal = request.signal.clone();
+    options.stream.request.api_key = request.api_key.clone();
+    options.stream.request.headers = request.headers.clone()
+        .map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect());
+    options.stream.request.env = request.env.clone();
+    options.stream.extra_body = request.extra_body.clone();
+    options.stream.cache_retention = cache_retention;
+    if let Some(session_id) = request.session_id.as_ref().filter(|session_id| !session_id.is_empty()) {
+        options.stream.request.affinity_session_id = Some(session_id.clone());
+    }
+    if let Some(refusal_fallbacks) = get_anthropic_summarization_fallback(model) {
+        options.refusal_fallbacks = Some(refusal_fallbacks);
+    }
+    if model.reasoning {
+        // ThinkingLevel has no "off", so an off level leaves reasoning unset.
+        options.reasoning = request.thinking_level
+            .and_then(|level| ThinkingLevel::ALL.into_iter().find(|candidate| candidate.as_str() == level.as_str()));
+    }
+    options
+}
+
+/// senpi completeSummarization: one summarization call under the idle/duration watchdogs, retried
+/// through retryAssistantCall. A watchdog failure ends the call with its error, as the thrown
+/// error does upstream.
+pub async fn complete_summarization(
+    model: &Model,
+    context: &Context,
+    options: SimpleStreamOptions,
+    request: &SummarizationRequest<'_>,
+) -> Result<AssistantMessage, String> {
+    use super::stream_watchdog::{
+        DEFAULT_SUMMARIZATION_IDLE_TIMEOUT_MS, consume_stream_with_idle_timeout, summarization_max_duration_ms,
+    };
+    let mut isolated = options;
+    isolated.stream.cache_retention.get_or_insert(CacheRetention::None);
+    if isolated.stream.request.affinity_session_id.is_none() {
+        isolated.stream.request.affinity_session_id = isolated.stream.session_id.clone();
+    }
+    isolated.stream.session_id = Some(uuid::Uuid::now_v7().to_string());
+    let caller = isolated.stream.request.signal.clone();
+    let max_duration_ms = summarization_max_duration_ms(
+        maho_ai::utils::estimate::estimate_context_tokens(context).tokens as f64,
+        request.summarization_max_duration_ms,
+    ) as u64;
+    let idle_timeout_ms = u64::try_from(DEFAULT_SUMMARIZATION_IDLE_TIMEOUT_MS).unwrap_or_default();
+    let failure: Mutex<Option<String>> = Mutex::new(None);
+    let failure_slot = &failure;
+    let produce = || {
+        let mut options = isolated.clone();
+        let caller = caller.clone();
+        async move {
+            // Request-local controller: the watchdog tears down a stalled request without aborting
+            // the caller's own signal.
+            let controller = AbortController::new();
+            let listener = caller.as_ref().map(|signal| {
+                let request_controller = controller.clone();
+                let listener = signal.add_abort_listener(move |reason| request_controller.abort(Some(reason.clone())));
+                if signal.aborted() { controller.abort(signal.reason()); }
+                listener
+            });
+            options.stream.request.signal = Some(controller.signal());
+            let stream = match request.stream_fn {
+                Some(stream_fn) => stream_fn(model, context, options),
+                None => maho_ai::stream::stream_simple(model, context, Some(options)),
+            };
+            let result = consume_stream_with_idle_timeout(&stream, idle_timeout_ms, Some(max_duration_ms),
+                caller.as_ref(), || controller.abort(None)).await;
+            if let (Some(signal), Some(listener)) = (caller, listener) { signal.remove_abort_listener(listener); }
+            match result {
+                Ok(message) => message,
+                Err(error) => {
+                    let error = error.to_string();
+                    let mut message = maho_ai::utils::lazy::setup_error_message(model, &error);
+                    // Aborted stops the retry loop; the recorded failure is returned below.
+                    message.stop_reason = StopReason::Aborted;
+                    *failure_slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                    message
+                }
+            }
+        }
+    };
+    let response = retry_assistant_call(produce, request.retry, caller.as_ref(), request.callbacks).await;
+    if let Some(error) = failure.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        return Err(error);
+    }
+    Ok(response)
+}
+
+/// senpi transformSummarySource: the previous summary rides through transformContext as a user
+/// message with a unique negative timestamp and is split back out afterwards.
+async fn transform_summary_source(
+    current_messages: &[Value],
+    previous_summary: Option<&str>,
+    transform_context: Option<&SummaryTransformContext>,
+    signal: Option<&AbortSignal>,
+) -> Result<(Vec<Value>, Option<String>), String> {
+    let Some(transform_context) = transform_context else {
+        return Ok((current_messages.to_vec(), previous_summary.map(str::to_owned)));
+    };
+    let Some(previous_summary) = previous_summary else {
+        return Ok((transform_context(current_messages.to_vec(), signal.cloned()).await?, None));
+    };
+    let timestamps = current_messages.iter()
+        .filter_map(|message| message.get("timestamp").and_then(Value::as_i64))
+        .collect::<std::collections::HashSet<_>>();
+    let mut summary_timestamp = -1_i64;
+    while timestamps.contains(&summary_timestamp) {
+        summary_timestamp -= 1;
+    }
+    let mut messages = vec![serde_json::json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": previous_summary }],
+        "timestamp": summary_timestamp,
+    })];
+    messages.extend(current_messages.iter().cloned());
+    let transformed = transform_context(messages, signal.cloned()).await?;
+    let is_summary = |message: &Value| message.get("timestamp").and_then(Value::as_i64) == Some(summary_timestamp);
+    let transformed_summary = transformed.iter().filter(|message| is_summary(*message)).cloned().collect::<Vec<_>>();
+    let messages = transformed.into_iter().filter(|message| !is_summary(message)).collect();
+    let previous_summary = (!transformed_summary.is_empty())
+        .then(|| super::utils::serialize_conversation(&crate::messages::convert_to_llm(&transformed_summary)));
+    Ok((messages, previous_summary))
+}
+
+/// senpi generateSummary.
+pub async fn generate_summary(
+    current_messages: &[Value],
+    reserve_tokens: i64,
+    custom_instructions: Option<&str>,
+    previous_summary: Option<&str>,
+    cache_friendly: Option<&CacheFriendlySummaryOptions>,
+    request: &SummarizationRequest<'_>,
+) -> Result<String, String> {
+    Ok(generate_summary_with_usage(
+        current_messages,
+        reserve_tokens,
+        custom_instructions,
+        previous_summary,
+        cache_friendly.and_then(|options| options.source_context.as_ref()),
+        cache_friendly.and_then(|options| options.request_options.as_ref()),
+        request,
+    ).await?.text)
+}
+
+/// senpi buildSummarizationContext.
+pub fn build_summarization_context(prompt_text: &str, source_context: Option<&Context>) -> Context {
+    let instruction_message = Message::User(UserMessage {
+        content: UserContent::Blocks(vec![ContentBlock::Text(TextContent { text: prompt_text.to_owned(), ..Default::default() })]),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    });
+    match source_context {
+        Some(source_context) => {
+            let mut context = source_context.clone();
+            context.messages.push(instruction_message);
+            context
+        }
+        None => Context {
+            system_prompt: Some(super::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
+            messages: vec![instruction_message],
+            tools: None,
+        },
+    }
+}
+
+/// senpi CACHE_FRIENDLY_CONTEXT_SAFETY_TOKENS.
+const CACHE_FRIENDLY_CONTEXT_SAFETY_TOKENS: u64 = 4096;
+
+/// senpi cacheFriendlyContextFits.
+pub fn cache_friendly_context_fits(model: &Model, context: &Context, max_tokens: u64) -> bool {
+    model.context_window == 0
+        || maho_ai::utils::estimate::estimate_context_tokens(context).tokens
+            .saturating_add(max_tokens)
+            .saturating_add(CACHE_FRIENDLY_CONTEXT_SAFETY_TOKENS)
+            <= model.context_window
+}
+
+/// `min(floor(fraction * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Infinity)`.
+pub(crate) fn summary_max_tokens(model: &Model, reserve_tokens: i64, fraction: f64) -> u64 {
+    ((fraction * reserve_tokens as f64).floor().max(0.0) as u64)
+        .min(if model.max_tokens > 0 { model.max_tokens } else { u64::MAX })
+}
+
+/// senpi generateSummaryWithUsage.
+pub async fn generate_summary_with_usage(
+    current_messages: &[Value],
+    reserve_tokens: i64,
+    custom_instructions: Option<&str>,
+    previous_summary: Option<&str>,
+    source_context: Option<&Context>,
+    request_options: Option<&SummaryRequestOptions>,
+    request: &SummarizationRequest<'_>,
+) -> Result<SummaryWithUsage, String> {
+    let model = request.model;
+    let max_tokens = summary_max_tokens(model, reserve_tokens, 0.8);
+    let mut source_context = source_context;
+    let mut transformed = (current_messages.to_vec(), previous_summary.map(str::to_owned));
+    if source_context.is_none() {
+        transformed = transform_summary_source(current_messages, previous_summary, request.transform_context.as_ref(),
+            request.signal.as_ref()).await?;
+    }
+    let with_focus = |base: String| match custom_instructions.filter(|instructions| !instructions.is_empty()) {
+        Some(instructions) => format!("{base}\n\nAdditional focus: {instructions}"),
+        None => base,
+    };
+    let mut base_prompt = with_focus(match (&transformed.1, source_context) {
+        (Some(_), Some(_)) => SOURCE_CONTEXT_UPDATE_SUMMARIZATION_PROMPT.to_owned(),
+        (Some(_), None) => update_summarization_prompt(),
+        (None, _) => SUMMARIZATION_PROMPT.to_owned(),
+    });
+    if let Some(source) = source_context
+        && !cache_friendly_context_fits(model, &build_summarization_context(&base_prompt, Some(source)), max_tokens)
+    {
+        source_context = None;
+        transformed = transform_summary_source(current_messages, previous_summary, request.transform_context.as_ref(),
+            request.signal.as_ref()).await?;
+        base_prompt = with_focus(if transformed.1.is_some() { update_summarization_prompt() } else { SUMMARIZATION_PROMPT.to_owned() });
+    }
+
+    let mut prompt_text = String::new();
+    if source_context.is_none() {
+        let conversation_text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&transformed.0));
+        prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
+        if let Some(previous_summary) = &transformed.1 {
+            prompt_text.push_str(&format!("<previous-summary>\n{previous_summary}\n</previous-summary>\n\n"));
+        }
+    }
+    prompt_text.push_str(&base_prompt);
+
+    let cached = source_context.is_some();
+    let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached),
+        cached.then_some(CacheRetention::Short));
+    let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
+
+    if let Some(failure) = get_summarization_failure(&response, "Summarization") {
+        return Err(failure);
+    }
+    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+        return Err("Summarization attempted to call a tool".to_owned());
+    }
+    let content = serde_json::to_value(&response.content).map_err(|error| error.to_string())?;
+    Ok(SummaryWithUsage { text: super::utils::content_text_for_summary(&content, "\n"), usage: response.usage })
+}
+
+/// senpi TURN_PREFIX_SUMMARIZATION_PROMPT (compaction-execution.ts).
+pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix.";
+
+/// senpi SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT (compaction-execution.ts).
+pub const SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "The final turn in the source conversation was too large to keep in full. Its SUFFIX (recent work) is retained.
+
+The source conversation may also contain complete earlier turns for background. Summarize only the final, incomplete turn. It begins with the last user-role request before this instruction. Do not summarize earlier turns except for details needed to understand this final turn's prefix.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix.";
+
+/// senpi compact (compaction-execution.ts): generate the history (and split-turn prefix) summary
+/// for a prepared compaction.
+pub async fn compact(
+    preparation: &CompactionPreparation,
+    custom_instructions: Option<&str>,
+    cache_friendly: Option<&CacheFriendlySummaryOptions>,
+    request: &SummarizationRequest<'_>,
+) -> Result<CompactionResult, String> {
+    let mut request = request.clone();
+    request.summarization_max_duration_ms = preparation.settings.summarization_max_duration_ms;
+    let request = &request;
+    let reserve_tokens = preparation.settings.reserve_tokens;
+    let request_options = cache_friendly.and_then(|options| options.request_options.as_ref());
+    let source_context = cache_friendly.and_then(|options| options.source_context.as_ref());
+    let (mut summary, summary_usage) = if preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty() {
+        let mut history_text = "No prior history.".to_owned();
+        let mut history_usage = None;
+        if !preparation.messages_to_summarize.is_empty() {
+            let history = generate_summary_with_usage(&preparation.messages_to_summarize, reserve_tokens, custom_instructions,
+                preparation.previous_summary.as_deref(), source_context, request_options, request).await?;
+            history_text = history.text;
+            history_usage = Some(history.usage);
+        }
+        let turn_prefix = generate_turn_prefix_summary(&preparation.turn_prefix_messages, reserve_tokens,
+            cache_friendly.and_then(|options| options.turn_prefix_source_context.as_ref()), request_options, request).await?;
+        let summary = format!("{history_text}\n\n---\n\n**Turn Context (split turn):**\n\n{}", turn_prefix.text);
+        let usage = match history_usage {
+            Some(history_usage) => combine_usage(&history_usage, &turn_prefix.usage),
+            None => turn_prefix.usage,
+        };
+        (summary, usage)
+    } else {
+        let result = generate_summary_with_usage(&preparation.messages_to_summarize, reserve_tokens, custom_instructions,
+            preparation.previous_summary.as_deref(), source_context, request_options, request).await?;
+        (result.text, result.usage)
+    };
+
+    let (read_files, modified_files) = super::utils::compute_file_lists(&preparation.file_ops);
+    summary.push_str(&super::utils::format_file_operations(&read_files, &modified_files));
+
+    if preparation.first_kept_entry_id.is_empty() {
+        return Err("First kept entry has no UUID - session may need migration".to_owned());
+    }
+
+    Ok(CompactionResult {
+        summary,
+        first_kept_entry_id: preparation.first_kept_entry_id.clone(),
+        tokens_before: preparation.tokens_before,
+        estimated_tokens_after: None,
+        usage: Some(summary_usage),
+        details: Some(serde_json::json!({ "readFiles": read_files, "modifiedFiles": modified_files })),
+    })
+}
+
+/// senpi generateTurnPrefixSummary (compaction-execution.ts).
+async fn generate_turn_prefix_summary(
+    messages: &[Value],
+    reserve_tokens: i64,
+    source_context: Option<&Context>,
+    request_options: Option<&SummaryRequestOptions>,
+    request: &SummarizationRequest<'_>,
+) -> Result<SummaryWithUsage, String> {
+    let model = request.model;
+    let max_tokens = summary_max_tokens(model, reserve_tokens, 0.5);
+    let source_context = source_context.filter(|source| cache_friendly_context_fits(model,
+        &build_summarization_context(SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT, Some(*source)), max_tokens));
+    let prompt_text = if source_context.is_some() {
+        SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT.to_owned()
+    } else {
+        let provider_messages = match &request.transform_context {
+            Some(transform_context) => transform_context(messages.to_vec(), request.signal.clone()).await?,
+            None => messages.to_vec(),
+        };
+        let conversation_text = super::utils::serialize_conversation(&crate::messages::convert_to_llm(&provider_messages));
+        format!("<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}")
+    };
+
+    let cached = source_context.is_some();
+    let options = create_summarization_options(model, max_tokens, request, request_options.filter(|_| cached),
+        cached.then_some(CacheRetention::Short));
+    let response = complete_summarization(model, &build_summarization_context(&prompt_text, source_context), options, request).await?;
+
+    if let Some(failure) = get_summarization_failure(&response, "Turn prefix summarization") {
+        return Err(failure);
+    }
+    if response.content.iter().any(|block| matches!(block, ContentBlock::ToolCall(_))) {
+        return Err("Turn prefix summarization attempted to call a tool".to_owned());
+    }
+    let content = serde_json::to_value(&response.content).map_err(|error| error.to_string())?;
+    Ok(SummaryWithUsage { text: super::utils::content_text_for_summary(&content, "\n"), usage: response.usage })
+}
+
 fn extract_file_operations(messages: &[Value], entries: &[Value], previous_compaction_index: Option<usize>) -> FileOperations {
     let mut file_ops = create_file_ops();
 
@@ -1131,5 +1597,118 @@ mod tests {
         ];
         let settings = crate::compaction::settings::default_compaction_settings();
         assert!(prepare_compaction(&entries, &settings, false, false).is_none());
+    }
+
+    fn summary_model() -> Model {
+        serde_json::from_value(json!({
+            "id": "claude", "name": "claude", "api": "anthropic-messages", "provider": "anthropic",
+            "baseUrl": "", "reasoning": true, "input": [], "contextWindow": 200000, "maxTokens": 4096,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "compat": { "allowedFallbackModels": ["claude-fallback"] }
+        })).expect("model")
+    }
+
+    type Captured = Mutex<Vec<(Context, SimpleStreamOptions)>>;
+
+    fn canned_stream(captured: &Captured, texts: &Mutex<Vec<&'static str>>, context: &Context, options: SimpleStreamOptions)
+        -> AssistantMessageEventStream
+    {
+        captured.lock().expect("captured").push((context.clone(), options));
+        let mut message = assistant_response("stop", None);
+        message.content = vec![ContentBlock::Text(TextContent { text: texts.lock().expect("texts").remove(0).to_owned(), ..Default::default() })];
+        let stream = AssistantMessageEventStream::assistant();
+        stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message });
+        stream.end(None);
+        stream
+    }
+
+    fn last_prompt(context: &Context) -> String {
+        match context.messages.last() {
+            Some(Message::User(UserMessage { content: UserContent::Blocks(blocks), .. })) => match blocks.first() {
+                Some(ContentBlock::Text(text)) => text.text.clone(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn summarization_options_carry_reasoning_fallback_and_affinity() {
+        let model = summary_model();
+        let mut request = SummarizationRequest {
+            model: &model, api_key: Some("key".into()), headers: None, env: None, signal: None, extra_body: None,
+            thinking_level: Some(ModelThinkingLevel::High), stream_fn: None, transform_context: None, retry: None,
+            callbacks: None, session_id: Some("session".into()), summarization_max_duration_ms: None,
+        };
+        let options = create_summarization_options(&model, 100, &request, None, None);
+        assert_eq!(options.reasoning, Some(ThinkingLevel::High));
+        assert_eq!(options.refusal_fallbacks, Some(AnthropicRefusalFallback::Models(vec![
+            RefusalFallbackModel { model: "claude-fallback".into() },
+        ])));
+        assert_eq!(options.stream.request.affinity_session_id.as_deref(), Some("session"));
+        assert_eq!(options.stream.max_tokens, Some(100));
+        request.thinking_level = Some(ModelThinkingLevel::Off);
+        assert_eq!(create_summarization_options(&model, 100, &request, None, None).reasoning, None);
+    }
+
+    #[tokio::test]
+    async fn split_turn_compaction_merges_history_and_cache_friendly_prefix_summaries() {
+        let model = summary_model();
+        let captured: Captured = Mutex::new(Vec::new());
+        let texts = Mutex::new(vec!["history digest", "prefix digest"]);
+        let stream_fn = |_: &Model, context: &Context, options: SimpleStreamOptions| canned_stream(&captured, &texts, context, options);
+        let request = SummarizationRequest {
+            model: &model, api_key: None, headers: None, env: None, signal: None, extra_body: None, thinking_level: None,
+            stream_fn: Some(&stream_fn as &SummarizationStreamFn<'_>), transform_context: None, retry: None, callbacks: None,
+            session_id: None, summarization_max_duration_ms: None,
+        };
+        let preparation = CompactionPreparation {
+            first_kept_entry_id: "kept".into(), messages_to_summarize: vec![user("old task")], source_messages: Vec::new(),
+            turn_prefix_messages: vec![user("turn start")], turn_prefix_source_messages: Vec::new(), is_split_turn: true,
+            tokens_before: 10, previous_summary: None, file_ops: create_file_ops(),
+            settings: crate::compaction::settings::default_compaction_settings(),
+        };
+        let prefix_source = Context { system_prompt: Some("system".into()), messages: Vec::new(), tools: None };
+        let cache_friendly = CacheFriendlySummaryOptions {
+            source_context: None, turn_prefix_source_context: Some(prefix_source),
+            request_options: Some(SummaryRequestOptions { session_id: Some("agent-session".into()), ..Default::default() }),
+        };
+        let result = compact(&preparation, None, Some(&cache_friendly), &request).await.expect("compaction");
+        assert!(result.summary.starts_with("history digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest"));
+        let calls = captured.lock().expect("captured");
+        assert_eq!(calls.len(), 2);
+        assert!(last_prompt(&calls[0].0).starts_with("<conversation>"));
+        assert_eq!(calls[0].1.stream.cache_retention, Some(CacheRetention::None));
+        assert_eq!(calls[1].0.system_prompt.as_deref(), Some("system"));
+        assert_eq!(last_prompt(&calls[1].0), SOURCE_CONTEXT_TURN_PREFIX_SUMMARIZATION_PROMPT);
+        assert_eq!(calls[1].1.stream.cache_retention, Some(CacheRetention::Short));
+        assert_eq!(calls[1].1.stream.request.affinity_session_id.as_deref(), Some("agent-session"));
+    }
+
+    #[tokio::test]
+    async fn transformed_previous_summary_reaches_the_update_prompt() {
+        let model = summary_model();
+        let captured: Captured = Mutex::new(Vec::new());
+        let texts = Mutex::new(vec!["updated digest"]);
+        let stream_fn = |_: &Model, context: &Context, options: SimpleStreamOptions| canned_stream(&captured, &texts, context, options);
+        let transform: SummaryTransformContext = Arc::new(|messages: Vec<Value>, _: Option<AbortSignal>| -> BoxFuture<'static, Result<Vec<Value>, String>> {
+            Box::pin(async move {
+                Ok(messages.into_iter().map(|mut message| {
+                    if let Some(text) = message.pointer_mut("/content/0/text") { *text = json!("redacted summary"); }
+                    message
+                }).collect())
+            })
+        });
+        let request = SummarizationRequest {
+            model: &model, api_key: None, headers: None, env: None, signal: None, extra_body: None, thinking_level: None,
+            stream_fn: Some(&stream_fn as &SummarizationStreamFn<'_>), transform_context: Some(transform), retry: None,
+            callbacks: None, session_id: None, summarization_max_duration_ms: None,
+        };
+        let summary = generate_summary(&[user("new work")], 1000, None, Some("secret summary"), None, &request).await.expect("summary");
+        assert_eq!(summary, "updated digest");
+        let prompt = last_prompt(&captured.lock().expect("captured")[0].0);
+        assert!(prompt.contains("<previous-summary>\n[User]: redacted summary\n</previous-summary>"), "{prompt}");
+        assert!(!prompt.contains("secret summary"));
+        assert!(prompt.contains("NEW conversation messages"));
     }
 }
