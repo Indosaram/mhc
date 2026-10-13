@@ -152,13 +152,21 @@ fn run() -> Result<(), String> {
         });
     }
     if let Some(command) = maho_cli::package_manager_cli::parse_package_command(&argv) {
+        use maho_cli::package_manager_cli::{package_command_name, package_command_usage, PackageCommand};
         if command.help { return output(&maho_cli::package_manager_cli::package_command_help(command.command)); }
-        if let Some(option) = command.invalid_option { return Err(format!("Unknown package option: {option}")); }
-        if let Some(argument) = command.invalid_argument { return Err(format!("Unexpected package argument: {argument}")); }
-        if let Some(option) = command.missing_option_value { return Err(format!("{option} requires a value")); }
-        if let Some(conflict) = command.conflicting_options { return Err(conflict); }
+        // senpi package-manager-cli.ts `handlePackageCommand`: each argument error names its problem on
+        // one line and a usage hint on the next, then exits 1.
+        fn usage_error(message: String, hint: String) -> ! { eprintln!("{message}"); eprintln!("{hint}"); std::process::exit(1) }
+        let usage = package_command_usage(command.command);
+        if let Some(option) = command.invalid_option { usage_error(format!("Unknown option {option} for \"{}\".", package_command_name(command.command)), format!("Use \"{} --help\" or \"{usage}\".", maho_core::config::app_command())); }
+        if let Some(option) = command.missing_option_value { usage_error(format!("Missing value for {option}."), format!("Usage: {usage}")); }
+        if let Some(argument) = command.invalid_argument { usage_error(format!("Unexpected argument {argument}."), format!("Usage: {usage}")); }
+        if let Some(conflict) = command.conflicting_options { usage_error(conflict, format!("Usage: {usage}")); }
+        if matches!(command.command, PackageCommand::Install | PackageCommand::Remove) && command.source.as_deref().is_none_or(str::is_empty) {
+            usage_error(format!("Missing {} source.", package_command_name(command.command)), format!("Usage: {usage}"));
+        }
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command));
+        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command)).map_err(|error| format!("Error: {error}"));
     }
     match argv.first().map(String::as_str) {
         Some("doctor") => {
