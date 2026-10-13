@@ -164,6 +164,48 @@ async fn reads_offsets_limits_and_continuation() {
     assert!(!output.contains("Line 61"));
     assert!(output.ends_with("[40 more lines in file. Use offset=61 to continue.]"));
 }
+fn large_json() -> String {
+    serde_json::to_string_pretty(
+        &(0..25)
+            .map(|n| json!({"n":n,"a":[1,2,3,4,5],"s":"escaped \" } {"}))
+            .collect::<Vec<_>>(),
+    )
+    .expect("fixture invariant")
+}
+#[tokio::test]
+async fn default_read_folds_large_structured_file() {
+    let f = Fixture::new();
+    let source = large_json();
+    f.put("data.json", &source);
+    let result = f
+        .run(
+            create_read_tool(ReadToolOptions::default()),
+            json!({"path":"data.json"}),
+        )
+        .await
+        .expect("tool test operation must succeed");
+    let output = text(&result);
+    assert!(output.split('\n').any(|line| line == "\u{2026}"));
+    assert!(output.contains("Reread source before editing; markers are not source."));
+    assert!(output.len() < source.len());
+}
+#[tokio::test]
+async fn read_without_folder_stays_verbatim() {
+    let f = Fixture::new();
+    let source = large_json();
+    f.put("data.json", &source);
+    let result = f
+        .run(
+            create_read_tool(ReadToolOptions {
+                folder: None,
+                ..ReadToolOptions::default()
+            }),
+            json!({"path":"data.json"}),
+        )
+        .await
+        .expect("tool test operation must succeed");
+    assert_eq!(text(&result), source);
+}
 #[tokio::test]
 async fn truncates_large_text_by_lines() {
     let f = Fixture::new();
@@ -254,6 +296,7 @@ async fn delegates_image_conversion_and_resize_options() {
             create_read_tool(ReadToolOptions {
                 auto_resize_images: Some(false),
                 image_processor: Some(processor),
+                folder: None,
             }),
             json!({"path":"image.bmp"}),
         )
@@ -841,6 +884,7 @@ async fn preserves_image_processor_error_as_text() {
                     })
                 })),
                 auto_resize_images: None,
+                folder: None,
             }),
             json!({"path":"x.bmp"}),
         )
