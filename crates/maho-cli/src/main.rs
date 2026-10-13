@@ -163,6 +163,20 @@ fn run() -> Result<(), String> {
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
+    if let Some(input) = parsed.export.as_deref() {
+        // senpi main.ts `parsed.export`: export the session file before any session startup.
+        // `exportFromFile` resolves the default (terminal-detected) theme's colors.
+        let terminal = maho_interactive::theme::detection::detect_terminal_background_from_env(std::env::var("COLORFGBG").ok().as_deref()).theme;
+        let colors = maho_interactive::theme::Theme::builtin(terminal.name(), maho_interactive::theme::ColorMode::Truecolor)
+            .ok().map(|theme| (theme.resolved_colors(), theme.export_colors().clone()));
+        match maho_core::export_html::index::export_from_file(input, parsed.messages.first().map(String::as_str), None, colors) {
+            Ok(path) => return output(&format!("Exported to: {path}\n")),
+            Err(error) => {
+                eprintln!("\x1b[31mError: {error}\x1b[39m");
+                std::process::exit(1);
+            }
+        }
+    }
     if parsed.mode == Some(maho_cli::cli::args::Mode::Rpc) && !parsed.file_args.is_empty() { return Err("Error: @file arguments are not supported in RPC mode".to_owned()); }
     maho_cli::cli::startup::validate_fork_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
     maho_cli::cli::startup::validate_session_id_flags(&parsed).map_err(|error| format!("Error: {error}"))?;
