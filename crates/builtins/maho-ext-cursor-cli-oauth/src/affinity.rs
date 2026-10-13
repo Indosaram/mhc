@@ -138,4 +138,13 @@ mod tests {
         let options = CursorAffinityOptions { affinity_key: Some("explicit"), session_id: Some("session"), pinned_account: None };
         assert_eq!(get_affinity_key(&options), "explicit");
     }
+    #[test]
+    fn winner_matrix_matches_the_shared_hrw_implementation() {
+        let winners: Vec<_> = (1..=6).map(|i| {
+            let key = format!("session-{i:02}");
+            select_account(&accounts(), &CursorAffinityOptions { session_id: Some(&key), ..Default::default() }, 0.0).unwrap().name
+        }).collect();
+        assert_eq!(winners, ["alpha", "alpha", "alpha", "alpha", "bravo", "bravo"]);
+        assert_eq!(rendezvous_order("session-01", &accounts()).iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["alpha", "charlie", "bravo"]);
+    }
 }

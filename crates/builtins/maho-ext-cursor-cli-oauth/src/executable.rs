@@ -82,4 +82,9 @@ mod tests {
     }
     #[test]
     fn missing_binary_typed() { assert_eq!(resolve(&[],Some("/not-executable"),&[]).unwrap_err(),CursorAgentNotInstalledError); }
+    #[test]
+    fn install_guidance_names_the_remedies() {
+        let message=resolve(&[],Some("/not-executable"),&[]).unwrap_err().to_string();
+        assert!(message.contains("is not installed"));assert!(message.contains("~/.local/bin"));
+    }
 }

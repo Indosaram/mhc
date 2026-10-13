@@ -27,9 +27,12 @@ pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, ve
         Err(error) => return Err(error),
     };
     if listen["kind"] == "ws" { return Ok(probe_websocket(listen["url"].as_str().unwrap_or_default(), token.as_deref(), timeout_ms, version).await); }
-    if listen["kind"] == "unix" && let Some(path) = listen["path"].as_str() {
+    if listen["kind"] == "unix" {
+        // Pinned probe.ts: `listen.path ?? join(dirname(paths.tokenFile), "app-server.sock")`.
+        let path = listen["path"].as_str().map(std::path::PathBuf::from)
+            .unwrap_or_else(|| token_file.parent().unwrap_or_else(|| Path::new(".")).join("app-server.sock"));
         let operation = async {
-            let stream = tokio::net::UnixStream::connect(path).await.ok()?;
+            let stream = tokio::net::UnixStream::connect(&path).await.ok()?;
             let mut request = "ws://localhost/".into_client_request().ok()?;
             if let Some(token) = token.as_deref().filter(|token| !token.is_empty()) { request.headers_mut().insert("authorization", format!("Bearer {token}").parse().ok()?); }
             let (mut socket, _) = client_async(request, stream).await.ok()?;

@@ -443,6 +443,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_factory_constructs_a_runtime_from_the_session_factory() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
+            });
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let manager = crate::session_manager::SessionManager::create(&cwd, None, None);
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: provider.get_model(Some("faux-1")),
+            session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
+        assert_eq!(runtime.cwd(), cwd);
+    }
+
+    #[tokio::test]
     async fn unsaved_persisted_fork_rejects_without_replacing_session() {
         let dir = tempfile::tempdir().expect("directory");
         let cwd = dir.path().to_string_lossy().into_owned();

@@ -1,6 +1,39 @@
 use maho_ext_api::{EventBus, EventKind, Extension, ExtensionApi, ExtensionRuntime, ExtensionSessionProfile, LoadedExtension, SourceInfo};
 use maho_ext_api::*;
 use std::{path::Path, sync::Arc};
+use futures::future::BoxFuture;
+use maho_ext_config_reload::watch_engine::WatchClock;
+
+struct RetryClock {
+    now: Arc<std::sync::Mutex<tokio::time::Instant>>,
+    armed: tokio::sync::mpsc::UnboundedSender<tokio::time::Instant>,
+    advanced: Arc<tokio::sync::Notify>,
+}
+impl RetryClock {
+    fn advance_to(&self, deadline: tokio::time::Instant) {
+        let mut now = self.now.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if deadline > *now { *now = deadline; }
+        self.advanced.notify_waiters();
+    }
+}
+impl WatchClock for RetryClock {
+    fn now(&self) -> tokio::time::Instant { *self.now.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
+    fn sleep_until(&self, deadline: tokio::time::Instant) -> BoxFuture<'static, ()> {
+        let now = Arc::clone(&self.now);
+        let armed = self.armed.clone();
+        let advanced = Arc::clone(&self.advanced);
+        Box::pin(async move {
+            armed.send(deadline).expect("clock deadline receiver remains active");
+            loop {
+                let notified = advanced.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if *now.lock().unwrap_or_else(std::sync::PoisonError::into_inner) >= deadline { return; }
+                notified.await;
+            }
+        })
+    }
+}
 struct FixtureSession;
 impl ToolSessionManager for FixtureSession { fn session_id(&self) -> &str { "fixture" } fn session_file(&self) -> Option<&Path> { None } }
 impl SessionManager for FixtureSession {
@@ -9,6 +42,16 @@ impl SessionManager for FixtureSession {
 }
 struct FixtureRegistry;
 struct BoundSession(Arc<dyn ExtensionContextActions>);
+/// A bound session manager that reports the real session's id, so a reload can be checked for identity.
+struct IdentifiedSession(Arc<dyn ExtensionContextActions>, String);
+impl ToolSessionManager for IdentifiedSession { fn session_id(&self) -> &str { &self.1 } fn session_file(&self) -> Option<&Path> { None } }
+impl SessionManager for IdentifiedSession {
+    fn get_entries(&self) -> Vec<SessionEntry> { vec![] }
+    fn get_branch(&self) -> Vec<SessionEntry> { vec![] }
+    fn get_leaf_id(&self) -> Option<String> { None }
+    fn get_session_name(&self) -> Option<String> { None }
+    fn extension_context_actions(&self) -> Option<&dyn ExtensionContextActions> { Some(self.0.as_ref()) }
+}
 impl ToolSessionManager for BoundSession { fn session_id(&self) -> &str { "reload-fixture" } fn session_file(&self) -> Option<&Path> { None } }
 impl SessionManager for BoundSession {
     fn get_entries(&self) -> Vec<SessionEntry> { vec![] }
@@ -85,6 +128,11 @@ async fn idle_change_reloads_real_session_and_consumes_handoff() {
 #[tokio::test]
 async fn vetoed_change_retries_and_completes_real_session_reload() {
     real_reload(true).await;
+}
+
+#[tokio::test]
+async fn compacting_change_retries_and_completes_real_session_reload() {
+    real_reload_with_options(false, true).await;
 }
 
 #[tokio::test]
@@ -187,6 +235,10 @@ async fn external_handoff_change_is_rejected_under_its_registration_id() {
 }
 
 async fn real_reload(veto_once: bool) {
+    real_reload_with_options(veto_once, false).await;
+}
+
+async fn real_reload_with_options(veto_once: bool, compact_once: bool) {
     use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
     use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
     use maho_ext_config_reload::protocol::*;
@@ -208,6 +260,23 @@ async fn real_reload(veto_once: bool) {
     ctx.session_manager = Arc::new(BoundSession(session.extension_context_actions()));
     let (sender, mut reloaded) = tokio::sync::mpsc::unbounded_channel();
     let (veto_sender, mut vetoed) = tokio::sync::mpsc::unbounded_channel();
+    let (clock_sender, mut clock_armed) = tokio::sync::mpsc::unbounded_channel::<tokio::time::Instant>();
+    let clock_now = tokio::time::Instant::now();
+    let retry_clock = Arc::new(RetryClock { now: Arc::new(std::sync::Mutex::new(clock_now)), armed: clock_sender, advanced: Arc::new(tokio::sync::Notify::new()) });
+    // The injected clock also drives the watcher debounce (default 200ms). Release each debounce
+    // deadline as soon as it is armed and hand only the reload rechecks to the test, together with
+    // the clock time at which they were armed.
+    let (recheck_sender, mut rechecks) = tokio::sync::mpsc::unbounded_channel();
+    let driver_clock = Arc::clone(&retry_clock);
+    let driver = tokio::spawn(async move {
+        while let Some(deadline) = clock_armed.recv().await {
+            let armed_at = driver_clock.now();
+            if deadline.saturating_duration_since(armed_at) == std::time::Duration::from_millis(200) { driver_clock.advance_to(deadline); }
+            else if recheck_sender.send((armed_at, deadline)).is_err() { break; }
+        }
+    });
+    let compacting = Arc::new(std::sync::atomic::AtomicBool::new(compact_once));
+    ctx.is_compacting_fn = { let compacting = Arc::clone(&compacting); Arc::new(move || compacting.load(std::sync::atomic::Ordering::SeqCst)) };
     struct Veto { reject: Arc<std::sync::atomic::AtomicBool>, sender: tokio::sync::mpsc::UnboundedSender<()> }
     impl Extension for Veto {
         fn register(&self, api: &mut ExtensionApi) {
@@ -227,14 +296,16 @@ async fn real_reload(veto_once: bool) {
     let reject = Arc::new(std::sync::atomic::AtomicBool::new(veto_once));
     let subscriptions = Arc::new(std::sync::Mutex::new(Vec::new()));
     let retained = Arc::clone(&subscriptions);
+    let factory_clock = Arc::clone(&retry_clock);
     let factory: maho_ext_host::runner::RuntimeFactory = Arc::new(move |ctx| {
         let sender = sender.clone();
         let retained = Arc::clone(&retained);
         let reject = Arc::clone(&reject);
         let veto_sender = veto_sender.clone();
+        let retry_clock = Arc::clone(&factory_clock);
         Box::pin(async move {
             let loaded = load_extensions(vec![
-                NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) },
+                NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload::with_clock(retry_clock)) },
                 NativeExtensionFactory { path: "fixture-veto".into(), source_info: Default::default(), extension: Box::new(Veto { reject, sender: veto_sender }) },
             ], &ctx.cwd, Default::default());
             assert!(loaded.errors.is_empty());
@@ -255,8 +326,15 @@ async fn real_reload(veto_once: bool) {
         tokio::time::timeout(std::time::Duration::from_secs(5), vetoed.recv()).await.expect("reload fixture operation must succeed").expect("reload fixture operation must succeed");
         assert!(reloaded.try_recv().is_err());
     }
+    if compact_once || veto_once {
+        let (armed_at, deadline) = tokio::time::timeout(std::time::Duration::from_secs(5), rechecks.recv()).await.expect("scheduled recheck clock armed").expect("clock waiter remains active");
+        assert_eq!(deadline - armed_at, if compact_once { std::time::Duration::from_millis(250) } else { std::time::Duration::from_millis(1000) });
+        compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+        retry_clock.advance_to(deadline);
+    }
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.expect("reload fixture operation must succeed").expect("reload fixture operation must succeed");
     assert_eq!(result, serde_json::json!({"registrationId":"builtin","paths":[path]}));
+    driver.abort();
     session.dispose().await;
 }
 
@@ -359,6 +437,53 @@ async fn active_session_delivers_validated_change_and_joins_shutdown() {
     let entries: Vec<serde_json::Value> = std::fs::read_to_string(root.path().join("logs/config-reload.log")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
     assert!(entries.iter().any(|entry| entry["event"] == "watcher_started"));
     assert!(entries.iter().any(|entry| entry["event"] == "change_detected" && entry["deferred"] == true));
+}
+
+#[tokio::test]
+async fn scoped_real_reload_preserves_session_identity_and_provider_scope() {
+    use maho_core::{sdk::{create_agent_session, CreateAgentSessionOptions}, model_runtime::{ModelRuntime, CreateModelRuntimeOptions}};
+    use maho_ext_host::{ExtensionRunner, loader::{load_extensions, NativeExtensionFactory}};
+    use maho_ext_config_reload::protocol::CONFIG_WATCH_RELOADED;
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().to_string_lossy().into_owned();
+    let provider = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = provider.get_model(Some("faux-1")).unwrap();
+    let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { models_path: Some(root.path().join("models.json")), auth_path: Some(root.path().join("auth.json")), providers: Some(vec![provider.provider.clone()]), ..Default::default() });
+    let session = create_agent_session(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model: Some(model), model_runtime: Some(runtime), session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&cwd, None, None)), settings_manager: Some(maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()), false)), auto_title_sessions: Some(false), ..Default::default() }).await.unwrap().session;
+    let expected_id = session.session_id();
+    let scope = maho_ai::node::provider_scope::ProviderScope::new();
+    let expected_scope = scope.clone();
+    let (sender, mut reloaded) = tokio::sync::mpsc::unbounded_channel();
+    let retained = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let keep = Arc::clone(&retained);
+    let factory: maho_ext_host::runner::RuntimeFactory = Arc::new(move |ctx| {
+        let keep = Arc::clone(&keep);
+        let scope = expected_scope.clone();
+        let sender = sender.clone();
+        let identity = expected_id.clone();
+        Box::pin(async move {
+            assert_eq!(ctx.session_manager.session_id(), identity);
+            assert!(maho_ai::node::provider_scope::active_provider_scope().is_some_and(|active| active.ptr_eq(&scope)));
+            let loaded = load_extensions(vec![NativeExtensionFactory { path: "config-reload".into(), source_info: Default::default(), extension: Box::new(maho_ext_config_reload::ConfigReload) }], &ctx.cwd, Default::default());
+            let subscription = loaded.events.on(CONFIG_WATCH_RELOADED, Arc::new(move |value| { sender.send(value.clone()).expect("receiver active"); }));
+            keep.lock().unwrap().push(subscription);
+            Ok(ExtensionRunner::new(loaded.extensions, loaded.runtime, loaded.events, ctx))
+        })
+    });
+    let mut ctx = context(root.path());
+    ctx.mode = ExtensionMode::Tui;
+    ctx.session_manager = Arc::new(IdentifiedSession(session.extension_context_actions(), session.session_id()));
+    let mut runner = maho_ai::node::provider_scope::run_with_provider_scope_async(&scope, factory(ctx)).await.unwrap().unwrap();
+    runner.set_runtime_factory(factory);
+    session.set_extension_runner(runner).await;
+    session.bind_extensions(maho_core::agent_session::ExtensionBindings { mode: Some(ExtensionMode::Tui), ..Default::default() }).await;
+    let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+    std::fs::write(staged.path(), "{\"fixture\":\"ctrl+x\"}").unwrap();
+    let path = root.path().join("keybindings.json");
+    std::fs::rename(staged.path(), &path).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), reloaded.recv()).await.unwrap().unwrap();
+    assert_eq!(result, serde_json::json!({"registrationId":"builtin","paths":[path]}));
+    session.dispose().await;
 }
 #[test]
 fn registers_native_start_idle_and_shutdown_hooks() {

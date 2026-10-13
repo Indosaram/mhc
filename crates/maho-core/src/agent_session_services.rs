@@ -252,4 +252,23 @@ mod tests {
             .expect("write through service");
         assert_eq!(credentials.get("fixture"), services.model_runtime().credentials.get("fixture"));
     }
+
+    #[tokio::test]
+    async fn create_agent_session_from_services_shares_the_settings_manager() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut settings = SettingsManager::from_storage(Box::new(crate::settings_manager::InMemorySettingsStorage::default()), false);
+        settings.set(crate::settings_manager::SettingsScope::Global,
+            &serde_json::from_value(serde_json::json!({"defaultThinkingLevel":"high"})).expect("settings"))
+            .expect("save");
+        let services = create_agent_session_services(CreateAgentSessionServicesOptions {
+            cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            settings_manager: Some(settings), ..Default::default()
+        });
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let created = create_agent_session_from_services(services, CreateAgentSessionFromServicesOptions {
+            model: provider.get_model(Some("faux-1")), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        assert_eq!(created.session.with_settings_manager(|manager| manager.get_string("defaultThinkingLevel")), Some("high".to_owned()));
+    }
 }

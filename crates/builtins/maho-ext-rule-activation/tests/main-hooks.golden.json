@@ -1,0 +1,30 @@
+[
+  [
+    "                                                                                ",
+    " \u001b[1m● Project rules · src/a.rs\u001b[22m                                                     ",
+    " 1 instruction matched and injected for this tool result.                       ",
+    "                                                                                "
+  ],
+  [
+    "                                                                                ",
+    " \u001b[1m● Project rules · src/a.rs\u001b[22m                                                     ",
+    " 1 instruction matched and injected for this tool result.                       ",
+    " rule .omo/rules/r.md                                                           ",
+    "                                                                                "
+  ],
+  null,
+  [
+    "                                                                                ",
+    " \u001b[1m⚠ Stream rule · fixture\u001b[22m                                                        ",
+    " Output interrupted; a corrective nudge was queued.                             ",
+    " remediation nudge · observed rule-1                                            ",
+    "                                                                                "
+  ],
+  [
+    "                                                                                ",
+    " \u001b[1m⚠ Stream rule · fixture\u001b[22m                                                        ",
+    " Corrupted generation discarded; bounded provider retry started.                ",
+    " remediation provider-error · observed rule-1                                   ",
+    "                                                                                "
+  ]
+]

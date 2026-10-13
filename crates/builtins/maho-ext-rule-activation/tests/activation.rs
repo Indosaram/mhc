@@ -48,3 +48,24 @@ fn collapsed_render_hides_rule_paths() {
  let mut result = render_rule_activation_entry(&data, &EntryRenderOptions { expanded: false }, &Theme::default()).unwrap();
  assert!(!result.render(80).join("\n").contains(".omo/rules/r.md"));
 }
+#[test]
+fn registered_renderer_matches_pinned_plain_theme_reference() {
+ let mut api = maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("activation", "/tmp".into(), maho_ext_api::SourceInfo::default()), maho_ext_api::ExtensionSessionProfile::default(), maho_ext_api::EventBus::default(), maho_ext_api::ExtensionRuntime::default());
+ maho_ext_rule_activation::index::register_rule_activation_renderer(&mut api);
+ let data = entry(json!({"kind":"project-rules","targetPath":"src/a.rs","rules":[".omo/rules/r.md"]}));
+ let mut actual = Vec::new();
+ for expanded in [false, true] {
+  let mut result = render_rule_activation_entry(&data, &EntryRenderOptions { expanded }, &Theme::default()).unwrap();
+  actual.push(json!(result.render(80)));
+ }
+ let invalid = entry(json!({"kind":"project-rules","targetPath":42,"rules":[".omo/rules/r.md"]}));
+ assert!(render_rule_activation_entry(&invalid, &EntryRenderOptions::default(), &Theme::default()).is_none());
+ actual.push(serde_json::Value::Null);
+ for remediation in ["nudge", "provider-error"] {
+  let data = entry(json!({"kind":"ttsr","owner":"fixture","rules":["rule-1"],"remediation":remediation}));
+  let mut rendered = render_rule_activation_entry(&data, &EntryRenderOptions { expanded: true }, &Theme::default()).unwrap();
+  actual.push(json!(rendered.render(80)));
+ }
+ let expected: serde_json::Value = serde_json::from_str(include_str!("main-hooks.golden.json")).unwrap();
+ assert_eq!(json!(actual), expected);
+}

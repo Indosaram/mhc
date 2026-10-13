@@ -8115,6 +8115,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_renderers_are_absent_without_a_registered_extension_renderer() {
+        let session = retry_session(vec![], 0);
+        session.set_extension_runner(ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), test_extension_context(&session))).await;
+        assert!(!session.tool_renderers_snapshot().await.contains_key("echo"));
+        assert!(session.tool_renderers_snapshot().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn live_mcp_wire_status_is_delivered_natively_to_the_session_subscriber() {
         let session = test_session();
         let extension = maho_ext_api::LoadedExtension::new("<inline:mcp>", session.cwd().into(), Default::default());
