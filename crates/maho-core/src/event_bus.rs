@@ -48,8 +48,8 @@ impl EventBus {
             }));
             match outcome {
                 Ok(Ok(())) => {}
-                Ok(Err(error)) => crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error}\n")),
-                Err(error) => crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n")),
+                Ok(Err(error)) => { crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error}\n")); }
+                Err(error) => { crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n")); }
             }
         }
     }

@@ -154,19 +154,8 @@ impl ImagesModels {
                 Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
             };
         }
-        let resolution = resolve_provider_auth(
-            provider.id(),
-            provider.auth(),
-            &self.credentials,
-            ctx,
-            overrides.slot_name.as_deref(),
-            None,
-            &signal,
-        );
-        match race_with_abort_signal(resolution, &signal).await {
-            Ok(result) => result.map(|result| result.map(auth_resolution)).map_err(models_error),
-            Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
-        }
+        let resolution = resolve_provider_auth(provider.id(), provider.auth(), &self.credentials, ctx, Some(overrides), &signal).await.map_err(models_error)?;
+        Ok(resolution.map(auth_resolution))
     }
 
     /// Never fails: setup errors become an `AssistantImages` with `stopReason: "error"`.

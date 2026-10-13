@@ -462,7 +462,6 @@ struct AgentSessionState {
     extension_abort_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     extension_error_listener: Option<ExtensionErrorListener>,
-    extension_shutdown_handler: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Tracks startup dispatch so RPC attach can install UI without repeating the lifecycle.
     extension_lifecycle_started: bool,
     message_revision: u64,
@@ -1697,7 +1696,6 @@ impl AgentSession {
             extension_abort_handler: None,
             extension_shutdown_handler: None,
             extension_error_listener: None,
-            extension_shutdown_handler: None,
             extension_lifecycle_started: false,
             message_revision: 0,
             assistant_generation: 0,

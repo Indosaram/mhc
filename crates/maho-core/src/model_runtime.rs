@@ -886,8 +886,9 @@ impl ModelRuntime {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
             let request=options.stream.request.clone();let affinity=options.stream.session_id.clone();
             let call:ProviderCall=Arc::new(move |target:CallTarget,model:&Model,request:maho_ai::types::ProviderRequestOptions| {
+                let transforms=transforms.clone();
                 let mut options=options.clone();options.stream.request=request;
-                match target {CallTarget::Provider(provider)=>provider.stream_simple(model,&context,Some(options)),CallTarget::Models(models)=>models.stream_simple(model,&context,Some(options),Default::default())}
+                match target {CallTarget::Provider(provider)=>provider.stream_simple(model,&context,Some(options)),CallTarget::Models(models)=>models.stream_simple(model,&context,Some(options),transforms)}
             });
             Self::rotating_stream(&request_model,rotation,affinity,models,semaphores,request,call).await
         });
