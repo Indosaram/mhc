@@ -116,7 +116,7 @@ async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink
     if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:None,record_type:ResponseRecordType::Response,command:"parse".into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
     let value=parsed?;
     let error=crate::rpc_input_validation::rpc_command_payload_error(&value).map(str::to_owned).or_else(||crate::rpc_input_validation::rpc_message_length_error(&value));
-    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:None}}).map(Some);}
+    if let Some(error)=error{return crate::jsonl::serialize_json_line(&RpcResponse{id:value["id"].as_str().map(str::to_owned),record_type:ResponseRecordType::Response,command:value["type"].as_str().unwrap_or_default().into(),session_id:None,result:RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,value["type"].as_str().unwrap_or_default())}}).map(Some);}
     let command:RpcCommand=match serde_json::from_value(value.clone()){
         Ok(command)=>command,
         Err(error) if error.to_string().starts_with(&format!("unknown variant `{}`,",value["type"].as_str().unwrap_or_default()))=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:format!("Unknown command: {kind}"),error_code:None,error_data:None}}).map(Some);},
@@ -198,6 +198,19 @@ fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::A
     if let Some(summary)=result.summary_entry.and_then(|entry|entry["id"].as_str().map(str::to_owned)){value["summaryEntryId"]=summary.into();}
     Ok(Some(value))
 }
+/// senpi's `error()` default: `edit_user_message`/`navigate_tree` failures carry `errorData: { leafId }`.
+fn default_error_data(session:&AgentSession,command:&str)->Option<serde_json::Value>{
+    matches!(command,"edit_user_message"|"navigate_tree").then(||serde_json::json!({"leafId":session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned))}))
+}
+/// A typed session-replacement failure as a response: a missing stored cwd answers
+/// `errorCode: "missing_session_cwd"` with the issue as `errorData` (connection-handler.ts catch).
+fn replacement_failure_response(command:&RpcCommand,kind:&str,failure:maho_core::agent_session::SessionReplacementFailure)->RpcResponse{
+    let (error_code,error_data)=match failure.missing_cwd{
+        Some(issue)=>{let mut data=serde_json::json!({"sessionCwd":issue.session_cwd,"fallbackCwd":issue.fallback_cwd});if let Some(file)=issue.session_file{data["sessionFile"]=file.into();}(Some(crate::rpc_types::RPC_ERROR_MISSING_SESSION_CWD.to_owned()),Some(data))},
+        None=>(None,None),
+    };
+    RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:failure.message,error_code,error_data}}
+}
 /// The `{ cancelled, reason? }` wire shape of `reload` and `check_reload_veto` (rpc-types.ts).
 fn reload_veto_json(decision:&maho_ext_api::ReloadVetoDecision)->serde_json::Value{
     let mut value=serde_json::json!({"cancelled":decision.cancelled});
@@ -232,8 +245,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
             ("prompt",result)
         },
-        RpcCommandBody::SwitchSession{session_path,cwd_override}=>
-            ("switch_session",session.switch_session_with_cwd(session_path,cwd_override.as_deref()).await.map(|switched|Some(serde_json::json!({"cancelled":!switched})))),
+        RpcCommandBody::SwitchSession{session_path,cwd_override}=>match session.switch_session_with_cwd_coded(session_path,cwd_override.as_deref()).await{
+            Ok(switched)=>("switch_session",Ok(Some(serde_json::json!({"cancelled":!switched})))),
+            Err(failure)=>return Some(replacement_failure_response(command,"switch_session",failure)),
+        },
         RpcCommandBody::Fork{entry_id,position}=>{
             let include_entry=matches!(position,Some(crate::rpc_types::ForkPosition::At));
             ("fork",session.fork(entry_id,include_entry).await.map(|result|Some(serde_json::json!({"text":result.editor_text,"cancelled":result.cancelled}))))
@@ -361,10 +376,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::GetEntries{since}=>{let since=since.clone();("get_entries",session.with_session_manager(|manager|{let mut entries=manager.entries();if let Some(since)=since.as_deref(){let index=entries.iter().position(|entry|entry["id"].as_str()==Some(since)).ok_or_else(||format!("Entry not found: {since}"))?;entries.drain(..=index);}Ok(Some(serde_json::json!({"entries":entries,"leafId":manager.leaf_id()})))}))},
         RpcCommandBody::NavigateTree{entry_id,target_id,intent,expected_leaf_id,summarize,custom_instructions,replace_instructions,label}=>{
-            if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None,error_data:None}});}
-            if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires entryId or targetId".into(),error_code:None,error_data:None}});}
+            if entry_id.is_some()&&target_id.is_some(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree takes either entryId or targetId, not both".into(),error_code:None}});}
+            if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires entryId or targetId".into(),error_code:None}});}
             let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
-            if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None,error_data:None}});}
+            if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None}});}
             let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
             let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}
                 if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}
@@ -474,7 +489,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             });
             ("get_tree", Ok(Some(serde_json::json!({"tree":tree,"leafId":leaf_id}))))
         },
-        RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
+        RpcCommandBody::ImportJsonl{input_path,cwd_override}=>match session.import_from_jsonl_coded(input_path,cwd_override.as_deref()).await{
+            Ok(imported)=>("import_jsonl",Ok(Some(serde_json::json!({"cancelled":!imported})))),
+            Err(failure)=>return Some(replacement_failure_response(command,"import_jsonl",failure)),
+        },
         RpcCommandBody::EditAssistantMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
             if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_assistant_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_assistant_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
             let result=session.edit_assistant_message_coded(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
@@ -482,9 +500,9 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("edit_assistant_message",edit_response(session,result,"Edited assistant entry was not persisted"))
         },
         RpcCommandBody::EditUserMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
-            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
+            if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_user_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:default_error_data(session,"edit_user_message")}});}
             let result=session.edit_user_message_coded(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
-            let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:None}})};
+            let result=match result{Ok(result)=>Ok(result),Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_user_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:default_error_data(session,"edit_user_message")}})};
             ("edit_user_message",edit_response(session,result,"Edited user entry was not persisted"))
         },
         RpcCommandBody::GetMedia{tool_call_id,content_index}=>{
@@ -538,7 +556,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
         RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
-    Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
+    Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:default_error_data(session,kind)}}})
 }
 /// The RPC-side extension UI: dialogs become `extension_ui_request` frames answered by a
 /// client's `extension_ui_response`; fire-and-forget methods only emit (senpi's
@@ -870,7 +888,16 @@ mod new_session_tests{
     #[tokio::test]
     async fn edit_user_message_reports_exact_missing_entry_error(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"edit_user_message","entryId":"missing","text":"hello"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found");
+        assert_eq!(response["success"],false); assert_eq!(response["error"],"Entry missing not found"); assert_eq!(response["errorData"],serde_json::json!({"leafId":null}));
+    }
+    #[tokio::test]
+    async fn switch_session_to_missing_cwd_reports_missing_session_cwd(){
+        let directory=tempfile::tempdir().expect("tempdir");
+        let path=directory.path().join("stale.jsonl");
+        let missing=directory.path().join("gone").to_string_lossy().into_owned();
+        std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"session","version":3,"id":"stale","timestamp":"2026-10-13T00:00:00.000Z","cwd":missing}))).expect("session file");
+        let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"switch_session","sessionPath":path})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],false); assert_eq!(response["errorCode"],"missing_session_cwd"); assert_eq!(response["errorData"]["sessionCwd"],missing.as_str()); assert_eq!(response["errorData"]["fallbackCwd"],"/tmp");
     }
     #[tokio::test]
     async fn edit_assistant_message_reports_exact_missing_entry_error(){

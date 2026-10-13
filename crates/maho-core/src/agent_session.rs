@@ -176,6 +176,17 @@ impl From<String> for MessageEditFailure {
     fn from(message: String) -> Self { Self { message, code: None } }
 }
 
+/// A session replacement failure that keeps senpi's `MissingSessionCwdError.issue` so the RPC
+/// layer can answer `errorCode: "missing_session_cwd"` with the issue as `errorData`.
+#[derive(Debug, Clone)]
+pub struct SessionReplacementFailure { pub message: String, pub missing_cwd: Option<crate::session_cwd::SessionCwdIssue> }
+impl From<String> for SessionReplacementFailure {
+    fn from(message: String) -> Self { Self { message, missing_cwd: None } }
+}
+impl From<crate::session_cwd::MissingSessionCwdError> for SessionReplacementFailure {
+    fn from(error: crate::session_cwd::MissingSessionCwdError) -> Self { Self { message: error.to_string(), missing_cwd: Some(error.issue) } }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptDisposition {
     Handled,
@@ -3577,13 +3588,26 @@ impl AgentSession {
     }
 
     pub async fn switch_session_with_cwd(&self, path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        self.switch_session_with_cwd_coded(path, cwd_override).await.map_err(|error| error.message)
+    }
+
+    /// `switch_session_with_cwd`, keeping a missing stored cwd as a typed issue (senpi
+    /// `assertSessionCwdExists` after `session_before_switch`, before teardown).
+    pub async fn switch_session_with_cwd_coded(&self, path: &str, cwd_override: Option<&str>) -> Result<bool, SessionReplacementFailure> {
+        struct Target<'a> { cwd: String, file: &'a str }
+        impl crate::session_cwd::SessionCwdSource for Target<'_> {
+            fn get_cwd(&self) -> &str { &self.cwd }
+            fn get_session_file(&self) -> Option<&str> { Some(self.file) }
+        }
         let entries = crate::session_manager::load_entries_from_file(path);
         if entries.first().and_then(|entry| entry.get("type")).and_then(Value::as_str) != Some("session") {
-            return Err(format!("Invalid session file: {path}"));
+            return Err(format!("Invalid session file: {path}").into());
         }
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
             reason: maho_ext_api::SessionReason::Resume, target_session_file: Some(path.to_owned()),
         }).await?.cancel == Some(true) { return Ok(false); }
+        let target_cwd = cwd_override.map(str::to_owned).or_else(|| entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
+        crate::session_cwd::assert_session_cwd_exists(&Target { cwd: target_cwd, file: path }, &self.cwd())?;
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous = self.session_file();
@@ -3602,14 +3626,19 @@ impl AgentSession {
     }
 
     pub async fn import_from_jsonl(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        self.import_from_jsonl_coded(input_path, cwd_override).await.map_err(|error| error.message)
+    }
+
+    /// `import_from_jsonl`, keeping a missing stored cwd of the imported session as a typed issue.
+    pub async fn import_from_jsonl_coded(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, SessionReplacementFailure> {
         let base = std::env::current_dir().map_err(|error| error.to_string())?;
         let resolved = crate::paths::resolve_path(input_path, &base.to_string_lossy(),
             &crate::paths::PathInputOptions::expanding_tilde(crate::config::home_dir()));
         let source = std::path::Path::new(&resolved);
-        if !source.exists() { return Err(format!("File not found: {resolved}")); }
+        if !source.exists() { return Err(format!("File not found: {resolved}").into()); }
         let directory = self.with_session_manager(|manager| manager.session_dir().to_owned());
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-        let filename = source.file_name().ok_or("Invalid import filename")?;
+        let filename = source.file_name().ok_or_else(|| "Invalid import filename".to_owned())?;
         let mut destination = std::path::Path::new(&directory).join(filename);
         let stored = crate::paths::resolve_path(&destination.to_string_lossy(), &base.to_string_lossy(),
             &crate::paths::PathInputOptions::default()) == resolved;
@@ -3628,7 +3657,7 @@ impl AgentSession {
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
             std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         }
-        self.switch_session_with_cwd(&destination, cwd_override).await
+        self.switch_session_with_cwd_coded(&destination, cwd_override).await
     }
 
     pub async fn fork(&self, entry_id: &str, include_entry: bool) -> Result<AssistantEditResult, String> {
