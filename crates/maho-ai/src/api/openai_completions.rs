@@ -358,6 +358,19 @@ fn sse_chunks(response: reqwest::Response) -> futures::stream::BoxStream<'static
     )
     .boxed()
 }
+/// openai-node `Stream` throws `APIError(undefined, data.error)` for an SSE frame carrying
+/// `error`; gateways relay an upstream rejection this way inside a 200 stream.
+fn stream_error_chunk(error: &Value) -> OpenAiCompletionsError {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| error.as_str().map_or_else(|| error.to_string(), str::to_owned));
+    let mut failure = OpenAiCompletionsError::protocol(message);
+    failure.body = Some(error.clone());
+    failure
+}
+
 fn parse_chunk(data: &str) -> Result<Value, OpenAiCompletionsError> {
     match serde_json::from_str::<Value>(data) {
         Ok(value) => Ok(value),
@@ -2021,6 +2034,9 @@ async fn run_stream_inner(
         let chunk = chunk?;
         if !chunk.is_object() {
             continue;
+        }
+        if let Some(error) = chunk.get("error").filter(|error| !error.is_null()) {
+            return Err(stream_error_chunk(error));
         }
 
         if output.response_id.as_deref().unwrap_or_default().is_empty()
