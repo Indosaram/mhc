@@ -18,7 +18,12 @@ fn run() -> Result<(), String> {
     // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
     // statically embedded OAuth flows once per process before any login/auth resolution.
     maho_ai::bun_oauth::register_bun_oauth_flows();
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
+    // binary answers it when invoked through an argv0 ending in `-rpc` (a symlink or copy).
+    if std::env::args_os().next().and_then(|argv0| std::path::Path::new(&argv0).file_stem().map(|stem| stem.to_string_lossy().ends_with("-rpc"))).unwrap_or(false) {
+        argv.splice(0..0, ["--mode".to_owned(), "rpc".to_owned()]);
+    }
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(&argv);
         if code != 0 { std::process::exit(code); }
