@@ -1287,7 +1287,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
     fn set_session_name(&self, name: &str) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_name(name); Ok(()) }
     fn get_session_name(&self) -> Result<Option<String>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.session_name()) }
     fn set_label(&self, id: &str, label: Option<&str>) -> Result<(), maho_ext_api::ExtensionFailure> {
-        self.session()?.with_session_manager_mut(|manager| manager.append_label(id, label)); Ok(())
+        self.session()?.with_session_manager_mut(|manager| manager.append_label(id, label))?; Ok(())
     }
     fn execute_tool<'a>(&'a self, name: &'a str, params: Value, options: maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
         Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
@@ -2769,9 +2769,17 @@ impl AgentSession {
             return Err("Compaction rejected: summary-would-overflow".to_owned());
         }
         let usage = result.usage.as_ref().map(serde_json::to_value).transpose().map_err(|error| error.to_string())?;
+        let latest_configuration_effort = branch.iter().rev()
+            .find(|entry| entry.get("type").and_then(Value::as_str) == Some("configuration_update"))
+            .and_then(|entry| entry.get("reasoning")?.get("effort")?.as_str().map(str::to_owned));
         let entry = self.with_session_manager_mut(|manager| manager.append_compaction(
             &result.summary, &result.first_kept_entry_id, result.tokens_before, result.details.clone(), usage, from_hook,
         ));
+        if let Some(effort) = latest_configuration_effort
+            && is_reasoning_configuration_model(&self.model())
+        {
+            self.with_session_manager_mut(|manager| manager.append_configuration_update(&effort));
+        }
         let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
         let mut messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
@@ -2852,9 +2860,10 @@ impl AgentSession {
         self.with_session_manager_mut(|manager| {
             let branch = manager.branch(manager.leaf_id().or(Some("")));
             if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
-                manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
+                return manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
             }
-        });
+            Ok(())
+        })?;
         messages.pop();
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -3385,6 +3394,24 @@ impl AgentSession {
         Ok(live)
     }
 
+    /// senpi `_recordRejectedModelChange` (#1526): persist the refusal, then emit it.
+    fn record_rejected_model_change(&self, model: Model, detail: String, budget: Option<maho_ext_api::ModelBudget>) {
+        let reason = if budget.is_some() { "context-budget" } else { "auth" };
+        let numbers = budget.as_ref().map(|budget| {
+            let mut numbers = Map::new();
+            numbers.insert("contextWindow".to_owned(), Value::from(budget.context_window));
+            numbers.insert("liveContextTokens".to_owned(), Value::from(budget.live_context_tokens));
+            numbers.insert("requiredTokens".to_owned(), Value::from(budget.required_tokens));
+            numbers.insert("shortfallTokens".to_owned(), Value::from(budget.shortfall_tokens));
+            if let Some(profile) = &budget.safety_margin_profile {
+                numbers.insert("safetyMarginProfile".to_owned(), Value::from(profile.clone()));
+            }
+            numbers
+        });
+        self.with_session_manager_mut(|manager| manager.append_model_change_rejected(&model.provider, &model.id, reason, &detail, numbers));
+        self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: reason.to_owned(), detail, budget });
+    }
+
     async fn set_model_internal(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
         allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
     {
@@ -3415,10 +3442,15 @@ impl AgentSession {
             self.assert_model_usable(&model, live)
         } else { Ok(()) };
         if let Err(detail) = admission {
-            self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: "context-budget".to_owned(), detail: detail.clone(), budget: Some(budget) });
+            self.record_rejected_model_change(model, detail.clone(), Some(budget));
             return Err(detail);
         }
-        if self.state().uses_default_stream_function { self.get_required_request_auth(&model).await?; }
+        if self.state().uses_default_stream_function
+            && let Err(detail) = self.get_required_request_auth(&model).await
+        {
+            self.record_rejected_model_change(model, detail.clone(), None);
+            return Err(detail);
+        }
         if allow_deferral && budget.shortfall_tokens > 0 && repairable {
             let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, budget.shortfall_tokens);
             self.state().pending_model_switch = Some(PendingModelSwitch { model: model.clone(), budget: budget.clone(), persist_default, notice: notice.clone() });
@@ -3935,19 +3967,21 @@ impl AgentSession {
                 editor_text = Some(user_message_text(&session_message_from_value(entry["message"].clone()).map_err(|error| error.to_string())?));
                 entry.get("parentId").and_then(Value::as_str).map(str::to_owned)
             } else { Some(target_id.to_owned()) };
-        self.with_session_manager_mut(|manager| manager.set_leaf(leaf.as_deref()));
-        let summary_entry = summary.as_ref().and_then(|summary| summary.get("summary").and_then(Value::as_str))
-            .map(|text| self.with_session_manager_mut(|manager| manager.append_branch_summary(old_leaf.as_deref().unwrap_or_default(), text,
+        let summary_text = summary.as_ref().and_then(|summary| summary.get("summary").and_then(Value::as_str)).filter(|text| !text.is_empty());
+        let summary_entry = match summary_text {
+            Some(text) => Some(self.with_session_manager_mut(|manager| manager.branch_with_summary(leaf.as_deref(), text,
                 summary.as_ref().and_then(|summary| summary.get("details")).cloned(),
-                summary.as_ref().and_then(|summary| summary.get("usage")).cloned(), Some(from_extension))));
+                summary.as_ref().and_then(|summary| summary.get("usage")).cloned(), Some(from_extension)))?),
+            None => { self.with_session_manager_mut(|manager| manager.set_leaf(leaf.as_deref()))?; None }
+        };
         let replacement_entry = replacement.map(|message| serde_json::to_value(message).map(|message|
             self.with_session_manager_mut(|manager| manager.append_message(message)))).transpose().map_err(|error| error.to_string())?;
         if let Some(label) = options.label.as_deref() {
             let labelled = summary_entry.as_ref().or(replacement_entry.as_ref()).and_then(|entry| entry.get("id")).and_then(Value::as_str).unwrap_or(target_id);
-            self.with_session_manager_mut(|manager| manager.append_label(labelled, Some(label)));
+            self.with_session_manager_mut(|manager| manager.append_label(labelled, Some(label)))?;
         }
         if options.intent == Some(TreeNavigationIntent::Resume) && replacement_entry.is_none() && (summary_entry.is_some() || options.label.is_some()) {
-            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
+            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)))?;
         }
         self.rebuild_session_context()?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
@@ -3955,7 +3989,7 @@ impl AgentSession {
         if options.intent == Some(TreeNavigationIntent::Resume)
             && self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)).as_deref() != Some(target_id)
         {
-            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
+            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)))?;
             self.rebuild_session_context()?;
         }
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
@@ -7541,6 +7575,11 @@ pub fn session_message_to_value(message: &AgentMessage) -> Result<Value, serde_j
     }
 }
 
+/// senpi gates `configuration_update` entries on gpt-6-astra over the OpenAI Responses providers.
+fn is_reasoning_configuration_model(model: &Model) -> bool {
+    model.id == "gpt-6-astra" && matches!(model.provider.as_str(), "openai" | "chatgpt-subscription")
+}
+
 pub(crate) fn session_message_from_value(mut message: Value) -> Result<AgentMessage, serde_json::Error> {
     if let Some(timestamp) = message.get("timestamp").and_then(Value::as_str) {
         let millis = chrono::DateTime::parse_from_rfc3339(timestamp).map(|time| time.timestamp_millis()).unwrap_or(0);
@@ -9650,7 +9689,7 @@ mod tests {
             selected["id"].as_str().expect("id").to_owned()
         });
         for leaf in [Some(selected.as_str()), None] {
-            session.with_session_manager_mut(|manager| manager.set_leaf(leaf));
+            session.with_session_manager_mut(|manager| manager.set_leaf(leaf)).expect("leaf");
             let path = dir.path().join("selected.jsonl");
             session.export_to_jsonl(Some(path.to_str().expect("path"))).expect("export");
             let entries = crate::session_manager::load_entries_from_file(path.to_str().expect("path"));
@@ -11801,7 +11840,7 @@ mod tests {
             manager.append_compaction("abandoned digest", root["id"].as_str().expect("root"), 1000, None, None, None);
             selected
         });
-        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str())).expect("leaf");
         session.rebuild_session_context().expect("selected context");
         assert_eq!(session.get_context_usage().expect("usage").tokens, Some(1000));
     }
@@ -12951,18 +12990,18 @@ mod tests {
                 manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"selected".repeat(5000)}],"timestamp":0}));
             }
             let selected = manager.leaf_id().expect("selected leaf").to_owned();
-            manager.set_leaf(root["id"].as_str());
+            manager.set_leaf(root["id"].as_str()).expect("leaf");
             manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1}));
             selected
         });
-        session.with_session_manager_mut(|manager| manager.set_leaf(Some(&selected)));
+        session.with_session_manager_mut(|manager| manager.set_leaf(Some(&selected))).expect("leaf");
         session.rebuild_session_context().expect("selected context");
         session.with_session_manager_mut(|manager| {
             let root = manager.entries().into_iter().find(|entry| entry["type"] == "message").expect("root");
             let selected = manager.leaf_id().expect("selected context leaf").to_owned();
-            manager.set_leaf(root["id"].as_str());
+            manager.set_leaf(root["id"].as_str()).expect("leaf");
             manager.append_custom("abandoned-metadata", None);
-            manager.set_leaf(Some(&selected));
+            manager.set_leaf(Some(&selected)).expect("leaf");
         });
         let mut target = test_model();
         target.id = "fallback-small".to_owned();
@@ -13130,7 +13169,7 @@ mod tests {
         session.agent.set_model(test_model());
         let selected = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"selected","timestamp":0})));
         let abandoned = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1})));
-        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str())).expect("leaf");
         let result = crate::compaction::compaction::CompactionResult { summary: "summary".to_owned(),
             first_kept_entry_id: abandoned["id"].as_str().expect("abandoned").to_owned(), tokens_before: 100,
             estimated_tokens_after: None, usage: None, details: None };

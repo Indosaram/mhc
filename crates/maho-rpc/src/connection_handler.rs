@@ -377,7 +377,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}
                 if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
         },
-        RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
+        RpcCommandBody::SetLabel{entry_id,label}=>{let result=session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref())).map(|_|None);("set_label",result)},
         RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
             let result=session.execute_user_bash(command,None,exclude_from_context.unwrap_or(false),execution_id.clone()).await;
             ("bash",result.map(|result|Some(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))))
@@ -470,11 +470,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 value
             }
             let (tree, leaf_id) = session.with_session_manager(|manager| {
-                let entries = manager.entries();
-                let ids = entries.iter().filter_map(|entry| entry["id"].as_str()).collect::<std::collections::HashSet<_>>();
-                let tree = entries.iter().filter(|entry| entry["parentId"].as_str().is_none_or(|parent| !ids.contains(parent)))
-                    .filter_map(|entry| entry["id"].as_str().and_then(|id| manager.get_tree(Some(id))))
-                    .map(tree_node).collect::<Vec<_>>();
+                let tree = manager.get_tree().into_iter().map(tree_node).collect::<Vec<_>>();
                 (tree, manager.leaf_id().map(str::to_owned))
             });
             ("get_tree", Ok(Some(serde_json::json!({"tree":tree,"leafId":leaf_id}))))
