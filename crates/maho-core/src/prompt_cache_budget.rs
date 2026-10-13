@@ -7,7 +7,7 @@ use maho_ai::types::ProviderEnv;
 use maho_ai::utils::prompt_cache_ttl::resolve_prompt_cache_ttl_seconds;
 
 pub const DEFAULT_PROMPT_CACHE_SAFETY_BUFFER_SECONDS: i64 = 30;
-pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "MAHO_PROMPT_CACHE_SAFE_WAIT_SECONDS";
+pub const PROMPT_CACHE_SAFE_WAIT_ENV: &str = "PI_PROMPT_CACHE_SAFE_WAIT_SECONDS";
 
 fn to_provider_env(env: &HashMap<String, String>) -> ProviderEnv {
     env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()
