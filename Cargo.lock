@@ -4323,6 +4323,7 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5214,6 +5215,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
