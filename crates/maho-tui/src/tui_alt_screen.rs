@@ -18,14 +18,18 @@ use crate::components::scroll_view::{ScrollToOptions, ScrollView, ScrollViewFoll
 use crate::image_stub::{self, ImageProtocol};
 use crate::keybindings::get_keybindings;
 use crate::layout::{
-    get_scroll_view_box, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame,
+    get_layout_boxes_at, get_scroll_view_box, get_scroll_views_at, get_scrollbar_geometry, render_layout_frame,
     strip_osc133_zone_prefix, LayoutFrame,
 };
-use crate::mouse_input::{is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, MouseTracking, SgrMouseEvent};
+use crate::mouse_input::{
+    decode_mouse_button, is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, to_tui_mouse_event, MouseTracking,
+    SgrMouseEvent, ToTuiMouseEventExtra, WheelEvent,
+};
 use crate::terminal::Terminal;
 use crate::tui::{
-    can_receive_keys, composite_tui_line, Component, Container, MouseBlocker, OverlayAnchor, OverlayHandle, OverlayMargin,
-    OverlayOptions, SizeValue, TuiBase, CURSOR_MARKER,
+    can_receive_keys, composite_tui_line, dispatch_mouse_event, retarget_mouse_event, Component, Container, MouseBlocker,
+    OverlayAnchor, OverlayHandle, OverlayMargin, OverlayOptions, SizeValue, TuiBase, TuiMouseButton, TuiMouseDispatchResult,
+    TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventType, CURSOR_MARKER,
 };
 use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width, visible_width, word_segments};
 
@@ -82,6 +86,17 @@ struct ScrollbarDrag {
     scroll_view: Rc<RefCell<ScrollView>>,
     grab_offset: i64,
 }
+
+/// senpi's `lastComponentClick`.
+struct LastComponentClick {
+    timestamp_ms: i64,
+    count: u32,
+    component: Rc<RefCell<dyn Component>>,
+    x: i64,
+    y: i64,
+}
+
+const ALT_WHEEL_SCROLL_MULTIPLIER: i64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchSelectionMode {
@@ -149,6 +164,13 @@ pub struct TuiAltScreen {
     active_search: Option<ActiveSearch>,
     /// senpi's `searchNavigationButtonStyle` option.
     search_navigation_button_style: NavigationButtonStyle,
+    /// senpi's `wheelScrollLines` option (default 1).
+    wheel_scroll_lines: i64,
+    mouse_capture: Option<TuiMouseDispatchTarget>,
+    mouse_press_target: Option<TuiMouseDispatchTarget>,
+    mouse_press_point: Option<(i64, i64)>,
+    mouse_press_moved: bool,
+    last_component_click: Option<LastComponentClick>,
     /// senpi's `uploadedKittyImages` `Map`: insertion order is the eviction order, and a
     /// re-rendered image moves to the end.
     uploaded_kitty_images: Vec<(u32, CachedKittyImage)>,
@@ -201,6 +223,12 @@ impl TuiAltScreen {
             scrollbar_hover: None,
             active_search: None,
             search_navigation_button_style: Rc::new(|text: &str, _hovered: bool| text.to_string()),
+            wheel_scroll_lines: 1,
+            mouse_capture: None,
+            mouse_press_target: None,
+            mouse_press_point: None,
+            mouse_press_moved: false,
+            last_component_click: None,
             uploaded_kitty_images: Vec::new(),
             saved_capabilities: None,
             alt_screen_active: false,
@@ -265,6 +293,7 @@ impl TuiAltScreen {
     pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool) {
         self.close_search();
         self.clear_text_selection();
+        self.clear_component_mouse_gesture();
         self.stop_scrollbar_hover();
         self.stop_scrollbar_drag();
         self.flashes.dispose();
@@ -467,6 +496,8 @@ impl TuiAltScreen {
     /// reporting, clear, and reset the diff state.
     pub fn before_terminal_start(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool, multiplexer: bool) {
         self.clear_text_selection();
+        self.clear_component_mouse_gesture();
+        self.last_component_click = None;
         self.stop_scrollbar_hover();
         self.stop_scrollbar_drag();
         self.flashes.dispose();
@@ -1003,7 +1034,29 @@ impl TuiAltScreen {
             return false;
         }
         if let Some(wheel) = parse_wheel_event(data) {
-            self.route_wheel(wheel.direction, wheel.x, wheel.y);
+            let wheel_delta = wheel.direction * self.get_wheel_scroll_lines(wheel.button);
+            let event = self.create_mouse_event(
+                TuiMouseEventType::Wheel,
+                wheel.button,
+                wheel.x,
+                wheel.y,
+                ToTuiMouseEventExtra { wheel_delta: Some(wheel_delta), click_count: None },
+                terminal,
+            );
+            let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&event);
+            let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&event) });
+            if let Some(result) = result {
+                if self.apply_mouse_dispatch_result(&event, &result, true) {
+                    self.base.request_render(false, 0);
+                }
+                return true;
+            }
+            if self.should_defer_viewport_input_to_overlay() {
+                // senpi returns `undefined` so the focused overlay receives the raw sequence.
+                self.base.handle_terminal_input(data, false);
+                return true;
+            }
+            self.route_wheel(wheel);
             return true;
         }
         let Some(raw) = parse_sgr_mouse_event(data) else {
@@ -1013,13 +1066,141 @@ impl TuiAltScreen {
         true
     }
 
-    fn route_wheel(&mut self, direction: i64, x: i64, y: i64) {
-        let Some(frame) = self.current_layout.as_ref() else {
-            return;
+    /// Sets senpi's `wheelScrollLines` option (logical lines per wheel event, at least 1).
+    pub fn set_wheel_scroll_lines(&mut self, lines: i64) {
+        self.wheel_scroll_lines = lines.max(1);
+    }
+
+    /// senpi's `getWheelScrollLines`: SGR button bit 3 (value 8) is the Alt modifier.
+    fn get_wheel_scroll_lines(&self, button: i64) -> i64 {
+        if (button & 8) != 0 {
+            self.wheel_scroll_lines * ALT_WHEEL_SCROLL_MULTIPLIER
+        } else {
+            self.wheel_scroll_lines
+        }
+    }
+
+    /// senpi's `createMouseEvent`.
+    fn create_mouse_event(
+        &self,
+        event_type: TuiMouseEventType,
+        button: i64,
+        x: i64,
+        y: i64,
+        extra: ToTuiMouseEventExtra,
+        terminal: &dyn Terminal,
+    ) -> TuiMouseEvent {
+        to_tui_mouse_event(
+            event_type,
+            SgrMouseEvent { button, x, y, release: event_type == TuiMouseEventType::Release },
+            terminal.columns() as usize,
+            terminal.rows() as usize,
+            extra,
+        )
+    }
+
+    /// senpi's `dispatchMouseToLayout`: offer the event to every component on the visual hit
+    /// path, deepest first. Layout containers that only forward to `Container::handle_mouse`
+    /// (stacks and scroll views, i.e. layout components that are containers) are skipped because
+    /// their children are visited through their own layout boxes.
+    fn dispatch_mouse_to_layout(&self, event: &TuiMouseEvent) -> Option<TuiMouseDispatchResult> {
+        let frame = self.current_layout.as_ref()?;
+        let targets: Vec<(Rc<RefCell<dyn Component>>, crate::layout::LayoutRect)> = get_layout_boxes_at(frame, event.screen_x, event.screen_y)
+            .into_iter()
+            .map(|boxed| (Rc::clone(&boxed.component), boxed.rect))
+            .collect();
+        let mut visited: Vec<*const ()> = Vec::new();
+        for (component, rect) in targets {
+            let key = Rc::as_ptr(&component) as *const ();
+            if visited.contains(&key) {
+                continue;
+            }
+            let forwards_to_container = {
+                let borrowed = component.borrow();
+                borrowed.as_layout_component().is_some() && borrowed.as_container().is_some()
+            };
+            if forwards_to_container {
+                continue;
+            }
+            visited.push(key);
+            let local = TuiMouseEvent {
+                x: event.screen_x - rect.x,
+                y: event.screen_y - rect.y,
+                width: rect.width,
+                height: rect.height,
+                ..*event
+            };
+            if let Some(result) = dispatch_mouse_event(&component, &local) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// senpi's `applyMouseDispatchResult`: apply focus and capture, and report whether to render.
+    fn apply_mouse_dispatch_result(&mut self, event: &TuiMouseEvent, result: &TuiMouseDispatchResult, apply_focus: bool) -> bool {
+        let focus_target = if apply_focus && result.result.focus {
+            self.base
+                .resolve_mouse_focus_target(result.focus_target.as_ref().unwrap_or(&result.target.component))
+        } else {
+            None
         };
-        let mut remaining = direction * 3;
-        let scroll_views = get_scroll_views_at(frame, x, y);
-        let primary_scroll_view = frame.primary_scroll_view.clone();
+        let focus_changed = focus_target.as_ref().is_some_and(|target| {
+            !self.base.get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, target))
+        });
+        if let Some(target) = focus_target {
+            self.base.set_focus(Some(target));
+        }
+        if result.result.capture {
+            self.mouse_capture = Some(result.target.clone());
+        }
+        result.result.render.unwrap_or(
+            focus_changed
+                || matches!(
+                    event.event_type,
+                    TuiMouseEventType::Press | TuiMouseEventType::Click | TuiMouseEventType::Drag | TuiMouseEventType::Wheel
+                ),
+        )
+    }
+
+    /// senpi's `getComponentClickCount`: double/triple clicks on the same component cell.
+    fn get_component_click_count(&mut self, target: &TuiMouseDispatchTarget, x: i64, y: i64, now_ms: i64) -> u32 {
+        let count = match &self.last_component_click {
+            Some(previous)
+                if now_ms - previous.timestamp_ms <= DOUBLE_CLICK_INTERVAL_MS
+                    && Rc::ptr_eq(&previous.component, &target.component)
+                    && previous.x == x
+                    && previous.y == y =>
+            {
+                (previous.count % 3) + 1
+            }
+            _ => 1,
+        };
+        self.last_component_click = Some(LastComponentClick {
+            timestamp_ms: now_ms,
+            count,
+            component: Rc::clone(&target.component),
+            x,
+            y,
+        });
+        count
+    }
+
+    /// senpi's `clearComponentMouseGesture`.
+    fn clear_component_mouse_gesture(&mut self) {
+        self.mouse_capture = None;
+        self.mouse_press_target = None;
+        self.mouse_press_point = None;
+        self.mouse_press_moved = false;
+    }
+
+    fn route_wheel(&mut self, wheel: WheelEvent) {
+        let mut remaining = wheel.direction * self.get_wheel_scroll_lines(wheel.button);
+        let scroll_views = self
+            .current_layout
+            .as_ref()
+            .map(|frame| get_scroll_views_at(frame, wheel.x, wheel.y))
+            .unwrap_or_default();
         let mut seen: Vec<*const RefCell<ScrollView>> = Vec::new();
         for scroll_view in &scroll_views {
             seen.push(Rc::as_ptr(scroll_view));
@@ -1029,26 +1210,106 @@ impl TuiAltScreen {
                 break;
             }
         }
-        if let Some(primary) = &primary_scroll_view
-            && remaining != 0
-            && !seen.contains(&Rc::as_ptr(primary))
-        {
+        let primary = self.get_primary_scroll_view();
+        if remaining != 0 && !seen.contains(&Rc::as_ptr(&primary)) {
             primary.borrow_mut().scroll_by(remaining, 0);
         }
-        // clippy-collapsible-if-guard: primary lookup stays a nested condition on purpose since
-        // the outer `if let` binds `primary` and clippy's own suggested collapse is unavailable
-        // when the inner condition references the outer binding across an `&&`; left as-is.
-        self.set_scrollbar_hover(self.get_scrollbar_target_at(x, y).map(|(sv, _)| sv), 0);
+        self.update_scrollbar_hover(wheel.x, wheel.y);
         self.base.request_render(false, 0);
     }
 
+    fn update_scrollbar_hover(&mut self, x: i64, y: i64) {
+        self.set_scrollbar_hover(self.get_scrollbar_target_at(x, y).map(|(scroll_view, _)| scroll_view), 0);
+    }
+
+    /// senpi's `handleMouseEvent`: captured/pressed component gestures (with click synthesis)
+    /// first, then the find bar, overlays, scrollbars, layout components, and finally text
+    /// selection.
     fn handle_mouse_event(&mut self, raw: SgrMouseEvent, now_ms: i64, terminal: &mut dyn Terminal) {
+        let is_motion = (raw.button & 32) != 0;
+        let event_type = if raw.release {
+            TuiMouseEventType::Release
+        } else if is_motion {
+            if decode_mouse_button(raw.button) == TuiMouseButton::None { TuiMouseEventType::Move } else { TuiMouseEventType::Drag }
+        } else {
+            TuiMouseEventType::Press
+        };
+        let event = self.create_mouse_event(event_type, raw.button, raw.x, raw.y, ToTuiMouseEventExtra::default(), terminal);
+
+        if let Some(target) = self.mouse_capture.clone().or_else(|| self.mouse_press_target.clone()) {
+            if self.mouse_press_point.is_some_and(|point| point != (raw.x, raw.y)) {
+                self.mouse_press_moved = true;
+                self.last_component_click = None;
+            }
+            let mut render = false;
+            if let Some(target_result) = dispatch_mouse_event(&target.component, &retarget_mouse_event(&event, &target)) {
+                render = self.apply_mouse_dispatch_result(&event, &target_result, true);
+            }
+            if raw.release {
+                if !self.mouse_press_moved && self.mouse_press_point == Some((raw.x, raw.y)) {
+                    let click_count = self.get_component_click_count(&target, raw.x, raw.y, now_ms);
+                    let click_event = self.create_mouse_event(
+                        TuiMouseEventType::Click,
+                        raw.button,
+                        raw.x,
+                        raw.y,
+                        ToTuiMouseEventExtra { wheel_delta: None, click_count: Some(click_count) },
+                        terminal,
+                    );
+                    // A click handler that moves focus owns the outcome; only re-apply the click
+                    // target's focus when the handler left focus untouched.
+                    let focus_before_click = self.base.get_focused_component();
+                    let click_result = dispatch_mouse_event(&target.component, &retarget_mouse_event(&click_event, &target));
+                    if let Some(click_result) = click_result {
+                        let focus_after_click = self.base.get_focused_component();
+                        let keep_handler_focus = match (&focus_before_click, &focus_after_click) {
+                            (Some(before), Some(after)) => !Rc::ptr_eq(before, after),
+                            (None, None) => false,
+                            _ => true,
+                        };
+                        render = self.apply_mouse_dispatch_result(&click_event, &click_result, !keep_handler_focus) || render;
+                    }
+                }
+                self.clear_component_mouse_gesture();
+            }
+            if render {
+                self.base.request_render(false, 0);
+            }
+            return;
+        }
+
         if self.handle_search_mouse_event(&raw) {
             return;
         }
-        if self.handle_scrollbar_mouse_event(&raw) {
+
+        let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&event);
+        if !hit {
+            let scrollbar_handled = self.handle_scrollbar_mouse_event(&raw);
+            if self.scrollbar_drag.is_none() {
+                self.update_scrollbar_hover(raw.x, raw.y);
+            }
+            if scrollbar_handled {
+                return;
+            }
+        } else {
+            self.stop_scrollbar_hover();
+        }
+
+        let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&event) });
+        if let Some(result) = result {
+            let render = self.apply_mouse_dispatch_result(&event, &result, true);
+            if event_type == TuiMouseEventType::Press {
+                self.clear_text_selection();
+                self.mouse_press_target = Some(result.target.clone());
+                self.mouse_press_point = Some((raw.x, raw.y));
+                self.mouse_press_moved = false;
+            }
+            if render {
+                self.base.request_render(false, 0);
+            }
             return;
         }
+
         self.handle_selection_mouse_event(raw, now_ms, terminal);
     }
 
