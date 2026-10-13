@@ -115,10 +115,11 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let agent_dir = options.agent_dir.take().unwrap_or_else(crate::config::get_agent_dir);
     let runtime = options.model_runtime.take().or_else(|| options.model_registry.as_ref().map(|registry| registry.model_runtime.clone())).unwrap_or_else(|| ModelRuntime::create_sync(crate::model_runtime::CreateModelRuntimeOptions {
         credentials: options.auth_storage.take(), models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None,
+        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), providers: None, ..Default::default()
     }));
     let registry = options.model_registry.take().unwrap_or_else(|| ModelRegistry::new(runtime.clone()));
     let settings = options.settings_manager.take().unwrap_or_else(|| SettingsManager::create(&cwd, &agent_dir, &crate::config::home_dir(), false));
+    runtime.set_settings_manager(&settings);
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
     let context = manager.build_context(manager.leaf_id());

@@ -77,6 +77,27 @@ impl Drop for SettingsSourceSubscription {
     }
 }
 
+/// senpi `getProviderConcurrencyLimit` over a `providers` settings block.
+pub fn provider_concurrency_limit(providers: Option<&Value>, provider_id: &str) -> Option<i64> {
+    let providers: Option<std::collections::BTreeMap<String, Value>> = providers
+        .and_then(Value::as_object).map(|providers| providers.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    maho_ai::legacy_provider_ids::read_by_provider_id(providers.as_ref(), provider_id)
+        .and_then(|settings| settings.get("maxConcurrency")).and_then(Value::as_i64).filter(|value| *value > 0)
+}
+
+/// senpi `subscribeToProviderSettings` listener: called after every settings recomputation.
+pub type ProviderSettingsListener = Arc<dyn Fn(&SettingsManager) + Send + Sync>;
+pub struct ProviderSettingsSubscription {
+    listeners: Arc<Mutex<Vec<ProviderSettingsListener>>>,
+    listener: ProviderSettingsListener,
+}
+impl Drop for ProviderSettingsSubscription {
+    fn drop(&mut self) {
+        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|listener| !Arc::ptr_eq(listener, &self.listener));
+    }
+}
+
 /// Parse JSON or JSONC without changing comment-like text inside strings.
 pub fn parse_settings_json(content: &str) -> Result<Settings, String> {
     let content: Vec<char> = strip_bom(content).chars().collect();
@@ -497,6 +518,7 @@ pub struct SettingsManager {
     selected_sources: HashMap<SettingsScope, SettingsSourceSelection>,
     overrides: Settings,
     source_listeners: Arc<Mutex<Vec<SettingsSourceListener>>>,
+    provider_settings_listeners: Arc<Mutex<Vec<ProviderSettingsListener>>>,
 }
 
 impl SettingsManager {
@@ -545,6 +567,7 @@ impl SettingsManager {
             selected_sources,
             overrides: Settings::new(),
             source_listeners: Arc::default(),
+            provider_settings_listeners: Arc::default(),
         }
     }
 
@@ -673,6 +696,28 @@ impl SettingsManager {
     pub fn subscribe_to_source_selection(&self, listener: SettingsSourceListener) -> SettingsSourceSubscription {
         self.source_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
         SettingsSourceSubscription { listeners: self.source_listeners.clone(), listener }
+    }
+
+    /// senpi `getProviderConcurrencyLimit`: `providers.<id>.maxConcurrency` (canonical id first,
+    /// then legacy spellings); `None` = unlimited.
+    pub fn get_provider_concurrency_limit(&self, provider_id: &str) -> Option<i64> {
+        provider_concurrency_limit(self.settings.get("providers"), provider_id)
+    }
+
+    /// The raw `providers` settings block, for callers that snapshot it (`ModelRuntime`).
+    pub fn get_provider_settings(&self) -> Option<Value> {
+        self.settings.get("providers").cloned()
+    }
+
+    pub fn subscribe_to_provider_settings(&self, listener: ProviderSettingsListener) -> ProviderSettingsSubscription {
+        self.provider_settings_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
+        ProviderSettingsSubscription { listeners: self.provider_settings_listeners.clone(), listener }
+    }
+
+    /// senpi `updateSettings`: the merged settings changed, so provider-settings listeners re-read.
+    fn notify_provider_settings(&self) {
+        let listeners = self.provider_settings_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for listener in listeners { listener(self); }
     }
 
     fn select_and_publish_source(&mut self, scope: SettingsScope) {
@@ -809,6 +854,7 @@ impl SettingsManager {
     pub fn apply_overrides(&mut self, overrides: &Settings) {
         self.overrides = deep_merge_settings(&self.overrides, overrides);
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
     }
 
     /// `getSteeringMode`: defaults to `all`.
@@ -977,10 +1023,12 @@ impl SettingsManager {
             SettingsScope::Global => {
                 self.global_settings = values_into(&self.global_settings, &values);
                 self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+                self.notify_provider_settings();
             }
             SettingsScope::Project => {
                 self.project_settings = values_into(&self.project_settings, &values);
                 self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+                self.notify_provider_settings();
             }
         }
         Ok(())
@@ -1005,6 +1053,7 @@ impl SettingsManager {
         self.global_settings_load_error = global_load.1;
         self.project_settings_load_error = project_load.1;
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
     }
 }
 
@@ -1456,6 +1505,19 @@ mod tests {
         assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":3}}"#), false).get_max_historical_images(), Some(3));
         assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":-1}}"#), false).get_max_historical_images(), None);
         assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":1.5}}"#), false).get_max_historical_images(), None);
+    }
+
+    #[test]
+    fn provider_concurrency_limit_reads_positive_values_and_notifies_on_change() {
+        let mut manager = SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), true);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let _subscription = manager.subscribe_to_provider_settings(Arc::new(move |_| { counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+        manager.apply_overrides(&settings(r#"{"providers":{"p":{"maxConcurrency":3},"z":{"maxConcurrency":0}}}"#));
+        assert_eq!(manager.get_provider_concurrency_limit("p"), Some(3));
+        assert_eq!(manager.get_provider_concurrency_limit("z"), None);
+        assert_eq!(manager.get_provider_concurrency_limit("missing"), None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -63,23 +63,18 @@ pub fn soonest_retry_at(slots: &[RunSlot], now: u64) -> Option<u64> {
     slots.iter().filter_map(|slot| slot.blocked_until).filter(|until| *until > now).min()
 }
 
-/// The outcome of one attempt: what it emitted, and how it failed when it did.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AttemptOutcome<Event> {
-    pub events: Vec<Event>,
-    /// The provider's own terminal event, forwarded when the failure ends the request.
-    pub terminal_event: Option<Event>,
-    pub failure: Option<Value>,
-}
-
 pub trait FailoverHost {
     type Event: Clone;
+    /// One running attempt; dropping it settles (releases) the attempt's transport.
+    type Attempt;
 
     /// Re-read before every distinct-credential attempt so a newly added slot participates.
     async fn list_slots(&mut self) -> Vec<RunSlot>;
     fn select(&self, candidates: &[RunSlot]) -> Option<RunSlot>;
-    /// Runs one attempt. Events are delivered to the caller as they arrive.
-    async fn run_attempt(&mut self, slot: &RunSlot) -> AttemptOutcome<Self::Event>;
+    /// Starts one attempt; an `Err` is the attempt failing by throwing before any event.
+    async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value>;
+    /// The attempt's next event: `None` once it ended, `Err` once it failed by throwing.
+    async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>>;
     /// REQUIRED and default-DENY by contract: false only for pre-commit bookkeeping.
     fn is_committed_output(&self, event: &Self::Event) -> bool;
     /// Identifies the stream-start announcement.
@@ -94,9 +89,11 @@ pub trait FailoverHost {
         classify_credential_failure(error, &ClassifyContext { failure_count: Some(failure_count), ..ClassifyContext::default() })
     }
     /// Persisted BEFORE a replacement slot is selected so a crash never forgets a block.
-    async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock);
+    async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String>;
     async fn on_rotate(&mut self, _event: CredentialFailoverEvent) {}
-    async fn on_success(&mut self, _slot: &RunSlot) {}
+    async fn on_success(&mut self, _slot: &RunSlot) -> Result<(), String> {
+        Ok(())
+    }
     fn now(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis() as u64).unwrap_or(0)
     }
@@ -146,37 +143,35 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
 
         let mut committed_output = false;
         let mut terminal_event: Option<H::Event> = None;
-        let mut attempt_stream_start = false;
-        let mut forwarded_start = false;
-        let outcome = host.run_attempt(&slot).await;
-        for event in &outcome.events {
-            if let Some(failure) = host.error_from_event(event) {
-                terminal_event = Some(event.clone());
-                last_original = Some(failure.clone());
-                break;
-            }
-            if host.is_stream_start(event) {
-                attempt_stream_start = true;
-                if start_announced {
-                    continue;
+        // Events reach the caller as they arrive; the attempt is dropped (settled) before any
+        // replacement starts so two live streams never interleave.
+        let failure = match host.run_attempt(&slot).await {
+            Err(failure) => Some(failure),
+            Ok(mut attempt) => loop {
+                match host.next_event(&mut attempt).await {
+                    None => break None,
+                    Some(Err(failure)) => break Some(failure),
+                    Some(Ok(event)) => {
+                        if let Some(failure) = host.error_from_event(&event) {
+                            terminal_event = Some(event);
+                            break Some(failure);
+                        }
+                        if host.is_stream_start(&event) {
+                            if start_announced {
+                                continue;
+                            }
+                            start_announced = true;
+                        }
+                        committed_output = committed_output || host.is_committed_output(&event);
+                        host.emit(event);
+                    }
                 }
-                start_announced = true;
-                forwarded_start = true;
-            }
-            committed_output = committed_output || host.is_committed_output(event);
-            host.emit(event.clone());
-        }
-        let _ = (attempt_stream_start, forwarded_start);
-
-        let failure = match (outcome.failure, terminal_event.as_ref()) {
-            (Some(failure), _) => Some(failure),
-            (None, Some(event)) => host.error_from_event(event),
-            (None, None) => None,
+            },
         };
         let Some(failure) = failure else {
-            host.on_success(&slot).await;
-            return Ok(());
+            return host.on_success(&slot).await.map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None });
         };
+        last_original = Some(failure.clone());
         last_terminal_event = terminal_event.clone();
 
         let failure_count = slot.failure_count.unwrap_or(0) + retries_by_slot.get(&slot.name).copied().unwrap_or(0);
@@ -202,7 +197,8 @@ pub async fn run_credential_failover<H: FailoverHost>(host: &mut H) -> Result<()
             return Err(CredentialFailoverError { action, detail: failure.to_string(), retry_at: None });
         };
 
-        host.persist_block(&slot, &block).await;
+        host.persist_block(&slot, &block).await
+            .map_err(|detail| CredentialFailoverError { action: CredentialAction::FailRequest, detail, retry_at: None })?;
         attempted.push(slot.name.clone());
         let error = CredentialFailoverError { action, detail: failure.to_string(), retry_at: None };
         last_error = Some(error.clone());
@@ -243,6 +239,7 @@ mod tests {
 
     impl FailoverHost for FakeHost {
         type Event = &'static str;
+        type Attempt = std::collections::VecDeque<Result<&'static str, Value>>;
 
         async fn list_slots(&mut self) -> Vec<RunSlot> {
             self.slots.clone()
@@ -252,36 +249,42 @@ mod tests {
             candidates.first().cloned()
         }
 
-        async fn run_attempt(&mut self, _slot: &RunSlot) -> AttemptOutcome<Self::Event> {
+        async fn run_attempt(&mut self, _slot: &RunSlot) -> Result<Self::Attempt, Value> {
             let scripted = self.attempts.get(self.attempt_index).cloned().unwrap_or_default();
             self.attempt_index += 1;
-            let mut outcome = AttemptOutcome { events: Vec::new(), terminal_event: None, failure: None };
+            let mut attempt = std::collections::VecDeque::new();
             for step in scripted {
                 match step {
-                    Ok(events) => outcome.events.extend(events),
+                    Ok(events) => attempt.extend(events.into_iter().map(Ok)),
                     Err(failure) => {
-                        outcome.failure = Some(failure);
+                        attempt.push_back(Err(failure));
                         break;
                     }
                 }
             }
-            outcome
+            Ok(attempt)
+        }
+
+        async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>> {
+            attempt.pop_front()
         }
 
         fn is_committed_output(&self, event: &Self::Event) -> bool {
             *event == "delta"
         }
 
-        async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) {
+        async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String> {
             self.blocked.push((slot.name.clone(), block.clone()));
+            Ok(())
         }
 
         async fn on_rotate(&mut self, _event: CredentialFailoverEvent) {
             self.rotations += 1;
         }
 
-        async fn on_success(&mut self, slot: &RunSlot) {
+        async fn on_success(&mut self, slot: &RunSlot) -> Result<(), String> {
             self.successes.push(slot.name.clone());
+            Ok(())
         }
 
         fn now(&self) -> u64 {
