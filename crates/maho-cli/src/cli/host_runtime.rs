@@ -51,6 +51,10 @@ pub struct CliRuntimeConfiguration {
     pub themes: Vec<String>,
     pub hooks: Vec<String>,
     pub additional_hook_paths: Vec<PathBuf>,
+    /// senpi `parsed.projectTrustOverride` (`--approve` / `--no-approve`).
+    pub project_trust_override: Option<bool>,
+    /// senpi `projectTrustByCwd`: one decision per cwd for every runtime this factory creates.
+    pub project_trust_by_cwd: Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
 }
 
 impl Default for CliRuntimeConfiguration {
@@ -75,6 +79,8 @@ impl Default for CliRuntimeConfiguration {
             themes: Vec::new(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            project_trust_override: None,
+            project_trust_by_cwd: Arc::default(),
         }
     }
 }
@@ -101,12 +107,14 @@ impl CliRuntimeConfiguration {
             themes: parsed.themes.clone(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            project_trust_override: parsed.project_trust_override,
+            project_trust_by_cwd: Arc::default(),
         }
     }
 
     /// senpi `trustPromptMode`: metadata-only launches resolve trust as a print run.
     pub fn trust_prompt_mode(&self) -> AppMode {
-        if self.help || self.list_models || self.list_tips { AppMode::Print } else { self.app_mode }
+        if self.help || self.list_models || self.list_tips { AppMode::Print } else { to_project_trust_mode(self.app_mode) }
     }
 
     /// senpi `resolveCliPaths`.
@@ -153,6 +161,42 @@ impl CliRuntimeConfiguration {
             auto_title: self.auto_title_sessions,
         }
     }
+}
+
+/// senpi `toProjectTrustMode`.
+pub fn to_project_trust_mode(mode: AppMode) -> AppMode {
+    if mode == AppMode::AppServer { AppMode::Print } else { mode }
+}
+
+/// senpi `createCliRuntimeFactory`'s project-trust decision for one runtime cwd: a cached decision
+/// wins, then `resolveProjectTrusted` (override, no trust-requiring resources, saved `trust.json`,
+/// global `defaultProjectTrust`, then the prompt when `has_ui`). A decision reached through the
+/// resolver is cached per cwd. Extension `project_trust` handlers are not consulted here: the native
+/// runner exists only after the session is built.
+pub async fn resolve_runtime_project_trust(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+) -> bool {
+    let cached = config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(cwd).copied();
+    if let Some(trusted) = cached { return trusted; }
+    let should_resolve = config.project_trust_override.is_none()
+        && maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
+    let default_project_trust = SettingsManager::create(cwd, &config.agent_dir, &maho_core::config::home_dir(), false)
+        .get_global().get("defaultProjectTrust").and_then(serde_json::Value::as_str)
+        .and_then(maho_core::project_trust::DefaultProjectTrust::parse);
+    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
+    let context = super::project_trust::CliProjectTrustContext { cwd: cwd.to_owned(), mode, ui_available: has_ui, selector };
+    let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
+        cwd, trust_store: &trust_store, trust_override: config.project_trust_override, default_project_trust,
+        emit_project_trust: None, project_trust_context: &context, on_extension_error: None,
+    }).await;
+    if should_resolve {
+        config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(cwd.to_owned(), trusted);
+    }
+    trusted
 }
 
 /// senpi `resolvePath`/`normalizePath` for a CLI path: absolute paths are returned as given and
@@ -232,6 +276,14 @@ pub async fn mount_agent_session_runtime(
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
     launch_config.cwd = cwd.clone();
+    let settings_manager = match settings_manager {
+        Some(settings_manager) => settings_manager,
+        None => {
+            let trusted = resolve_runtime_project_trust(config, &cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            SettingsManager::create(&cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted)
+        }
+    };
+    let settings_manager = Some(settings_manager);
     let mut services = create_agent_session_services(CreateAgentSessionServicesOptions {
         cwd: cwd.clone(),
         agent_dir: Some(config.agent_dir.clone()),
@@ -426,7 +478,8 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
                 .and_then(|level| maho_ai::types::ThinkingLevel::parse(&level));
             let creation_model = profile.runtime.creation_model.clone().or_else(|| config.provider.clone().zip(config.model.clone()));
             let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &model_runtime.get_models(None));
-            let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), false);
+            let trusted = resolve_runtime_project_trust(&config, &profile.runtime.cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted);
             let is_continuing = !session_manager.build_context(session_manager.leaf_id()).messages.is_empty();
             let initial = resolve_cli_initial_model(creation_model, thinking, is_continuing, &settings, &model_runtime, &scoped.scoped_models).await;
             let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
@@ -450,7 +503,7 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
                 },
                 ..Default::default()
             };
-            let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), None).await?;
+            let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), Some(settings)).await?;
             Ok(mounted.runtime)
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<AgentSessionRuntime, String>> + Send>>
     })
