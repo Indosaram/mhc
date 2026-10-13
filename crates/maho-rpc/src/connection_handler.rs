@@ -514,10 +514,23 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             else {("extension_request",session.extension_runner_request(name,data.clone().unwrap_or(serde_json::Value::Null)).await.map(Some))}
         },
         RpcCommandBody::SetClientInfo{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"set_client_info".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Success{data:None}}),
-        RpcCommandBody::GetProtocolInfo=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Error{error:"get_protocol_info requires the RPC host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:"open_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"close_session requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
-        RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:None,result:RpcResponseResult::Error{error:"list_sessions requires the multi-session host runtime".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::GetProtocolInfo=>{
+            // Classic connection-handler `get_protocol_info`: the same identity as the multi host, `mode:"classic"`.
+            let env=maho_core::config::current_env();
+            let argv=std::env::args().skip(1).collect::<Vec<_>>();
+            let cwd=std::env::current_dir().map(|cwd|cwd.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut data=crate::protocol_identity::host_launch_profile(&argv,&cwd).ok().map_or_else(||serde_json::json!({}),|profile|crate::protocol_identity::protocol_identity(profile,&env));
+            let mut capabilities=vec!["multi_session".to_owned(),crate::custom_capability::AUTO_TITLE_SESSIONS_CAPABILITY.to_owned(),crate::custom_capability::MEDIA_PLACEHOLDERS_CAPABILITY.to_owned()];
+            for capability in crate::custom_capability::parse_client_capabilities(maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES",&env).as_deref()){if !capabilities.contains(&capability){capabilities.push(capability);}}
+            data["protocolVersion"]=crate::host_decision::HOST_PROTOCOL_VERSION.into();
+            data["serverVersion"]=maho_core::engine_build_identity::engine_build_identity().text.clone().into();
+            data["capabilities"]=serde_json::json!(capabilities);
+            data["mode"]="classic".into();
+            return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"get_protocol_info".into(),session_id:None,result:RpcResponseResult::Success{data:Some(data)}});
+        },
+        RpcCommandBody::OpenSession{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"open_session".into(),session_id:None,result:RpcResponseResult::Error{error:crate::rpc_types::RPC_ERROR_MULTI_SESSION_DISABLED.into(),error_code:None,error_data:None}}),
+        RpcCommandBody::CloseSession=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"close_session".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: close_session".into(),error_code:None,error_data:None}}),
+        RpcCommandBody::ListSessions{..}=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"list_sessions".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"Unknown command: list_sessions".into(),error_code:None,error_data:None}}),
     };
     Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:match result{Ok(data)=>RpcResponseResult::Success{data},Err(error)=>RpcResponseResult::Error{error,error_code:None,error_data:None}}})
 }
@@ -746,6 +759,17 @@ mod new_session_tests{
         let response=handle_input_line(&session(),r#"{"id":"m","type":"set_model"}"#).await.expect("dispatch").expect("response");
         let response:serde_json::Value=serde_json::from_str(&response).expect("wire");
         assert_eq!(response["id"],"m"); assert_eq!(response["command"],"set_model"); assert_eq!(response["success"],false); assert!(response["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn classic_protocol_info_and_multi_session_commands(){
+        let session=session();
+        let info=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"id":"p","type":"get_protocol_info"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(info["success"],true); assert_eq!(info["data"]["mode"],"classic"); assert_eq!(info["data"]["protocolVersion"],1); assert!(info["data"]["capabilities"].as_array().unwrap().iter().any(|capability|capability=="multi_session"));
+        let open=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"open_session"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(open["success"],false); assert_eq!(open["error"],"multi_session_disabled");
+        let close=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"close_session"})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(close["error"],"Unknown command: close_session");
     }
 
     #[tokio::test]
