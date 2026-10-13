@@ -11,6 +11,14 @@ fn tool_result(result:AgentToolResult)->ToolResult {
     }).collect(),details:Some(result.details)}
 }
 
+fn language_name(language:super::types::EvalLanguage) -> &'static str {
+    match language {super::types::EvalLanguage::Js=>"js",super::types::EvalLanguage::Py=>"py",super::types::EvalLanguage::Rb=>"rb",super::types::EvalLanguage::Jl=>"jl"}
+}
+
+fn enabled_language_list(enabled:&crate::config::settings::Languages) -> Vec<&'static str> {
+    super::types::EVAL_LANGUAGE_ORDER.iter().copied().filter(|language|match language {super::types::EvalLanguage::Js=>enabled.js,super::types::EvalLanguage::Py=>enabled.py,super::types::EvalLanguage::Rb=>enabled.rb,super::types::EvalLanguage::Jl=>enabled.jl}).map(language_name).collect()
+}
+
 pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefinition,String> {
     let settings=&options.settings;
     let deadlines=EvalDeadlineSeconds {run_budget_seconds:settings.run_budget_seconds,detach_after_seconds:settings.cell_timeout_seconds.min(settings.foreground_window_seconds),foreground_window_seconds:settings.foreground_window_seconds,hard_limit_seconds:settings.hard_limit_seconds};
@@ -32,7 +40,7 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
                 EvalToolRequest::Stop {cell_id}=>EvalDetachedCellManager::stop(&options.cell_manager,&cell_id,"Stopped detached eval cell").await.map(|snapshot|create_detached_control_result(&snapshot)),
                 EvalToolRequest::Run(input)=>{
                     let enabled=match input.language {super::types::EvalLanguage::Js=>options.settings.languages.js,super::types::EvalLanguage::Py=>options.settings.languages.py,super::types::EvalLanguage::Rb=>options.settings.languages.rb,super::types::EvalLanguage::Jl=>options.settings.languages.jl};
-                    if !enabled {return Err(ToolError::Message(format!("Unsupported eval language {:?}",input.language)));}
+                    if !enabled {return Err(ToolError::Message(format!("Unsupported eval language \"{}\". Enabled languages: {}",language_name(input.language),enabled_language_list(&options.settings.languages).join(", "))));}
                     let kernel_manager=options.kernel_manager.clone();
                     let tracker=kernel_manager.execution_tracker();
                     if let Some(tracker)=tracker {tracker.assert_eval_execution_allowed().map_err(|error|ToolError::Message(error.to_string()))?;}
