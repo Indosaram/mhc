@@ -109,6 +109,8 @@ fn main() {
         for token in tokenize_input(&chunk) {
             editor.handle_editor_input(&token);
         }
+        // Resolve elapsed debounces and finished asynchronous suggestion requests.
+        editor.poll_autocomplete();
 
         let frame: Vec<String> = editor
             .render_editor(width)
