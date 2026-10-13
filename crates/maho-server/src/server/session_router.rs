@@ -15,7 +15,9 @@ use tokio::sync::{Mutex, RwLock, watch};
 pub struct Attachment {
     pub target: Value,
     pub lease: Arc<dyn RoutedSessionAttachment>,
-    client_lock: Mutex<()>,
+    /// Pinned `trackOperation`/`allSettled(operations)`: calls share the read side so they run
+    /// concurrently on one attachment, and release takes the write side to wait for them.
+    client_lock: RwLock<()>,
     released: AtomicBool,
     release_result: tokio::sync::OnceCell<Result<(),ServerError>>,
 }
@@ -26,7 +28,7 @@ impl Attachment {
         publish: Publisher,
         context: Context,
     ) -> Result<Option<Value>, ServerError> {
-        let _client = self.client_lock.lock().await;
+        let _client = self.client_lock.read().await;
         if self.released.load(Ordering::SeqCst) {
             return Err(ServerError::not_attached());
         }
@@ -34,7 +36,7 @@ impl Attachment {
     }
     pub async fn release(&self) -> Result<(), ServerError> {
         self.release_result.get_or_init(||async {
-            let _client = self.client_lock.lock().await;
+            let _client = self.client_lock.write().await;
             self.released.store(true, Ordering::SeqCst);
             self.lease.release().await
         }).await.clone()
@@ -87,7 +89,7 @@ impl SessionRouter {
         let attachment = Arc::new(Attachment {
             target: json!({"serverId":self.server_id,"sessionId":session_id,"attachmentId":uuid::Uuid::new_v4().to_string()}),
             lease,
-            client_lock: Mutex::new(()),
+            client_lock: RwLock::new(()),
             released: AtomicBool::new(false),
             release_result: tokio::sync::OnceCell::new(),
         });
