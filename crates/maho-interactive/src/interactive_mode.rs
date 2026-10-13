@@ -2911,13 +2911,6 @@ impl InteractiveMode {
         self.editor_host.request_render();
     }
 
-    /// senpi `showWarning`.
-    fn show_warning(&mut self, warning_message: &str) {
-        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {warning_message}"));
-        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
-        self.editor_host.request_render();
-    }
 
     /// senpi `showRiskyMainModelWarning`.
     fn show_risky_main_model_warning(&mut self, model: &maho_ai::model::Model) {
@@ -2955,6 +2948,7 @@ impl InteractiveMode {
     pub fn show_warning(&mut self, message: &str) {
         self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
         self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}")), 1, 0))));
+        self.editor_host.request_render();
     }
 
     /// senpi `showNewVersionNotification`: the "Update Available" notice box.
