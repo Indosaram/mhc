@@ -204,7 +204,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                 }.await;
                 if let Err(error)=posted {
                     runs.settle_all(&error.to_string());
-                    if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}
+                    if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}
                     deadline=None;
                 }
             }
@@ -219,7 +219,7 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     tokio::spawn(async move {let outcome=result.wait_for(Option::is_some).await.map(|value|value.as_ref().expect("run outcome").clone()).unwrap_or_else(|_|Err("JavaScript kernel is closed".into()));let _=response.send(outcome);});
                 }
                 Some(Command::Cancel(id,reason,response))=>{let _=response.send(runs.remove(&id,&reason));}
-                Some(Command::Reply(message))=>{if let Err(error)=slot.post_message(&message).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}deadline=None;}}
+                Some(Command::Reply(message))=>{if let Err(error)=slot.post_message(&message).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}deadline=None;}}
                 Some(Command::Pull(response))=>{let _=response.send(calls.next_tool_call());}
                 Some(Command::Interrupt(reason,id,response))=>{
                     let result=if id.as_ref().is_some_and(|id|runs.active().is_none_or(|run|&run.input.cell_id!=id)) {if let Some(id)=id {runs.remove(&id,&reason);}Ok(true)} else {
@@ -241,18 +241,18 @@ async fn run_actor(options:WorkerOptions,mut slot:WorkerSlot,mut commands:mpsc::
                     let result=slot.retire().await.map(|_|()).map_err(|error|error.to_string());
                     let _=response.send(result);break;
                 }
-                None=>{runs.settle_all("JS kernel closed");if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}break;}
+                None=>{runs.settle_all("JS kernel closed");if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}break;}
             },
             message=slot.next_message(),if slot.present()=>match message {
                 Ok(message)=>{
                     if tools.consume(message.clone()) {continue;}
                     if route(message,&mut runs,&mut calls) {deadline=None;}
                 }
-                Err(error)=>{if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
+                Err(error)=>{if let Some(mut run)=runs.release_active() {let result=stopped_result(&run.input.cell_id,&error.to_string());JavaScriptRunQueue::settle(&mut run,result);}calls.clear_tool_calls();deadline=None;if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
             },
             ()=async {match deadline {Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}},if deadline.is_some()=>{
                 let duration=runs.active().and_then(|run|run.input.timeout_ms).unwrap_or(0);
-                if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&tools,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {eprintln!("JS retirement failed: {error}");}}
+                if let Err(error)=stop_active(&mut slot,&mut runs,&mut calls,&tools,&format!("timed out after {duration}ms"),&format!("JS cell timed out after {duration}ms"),duration).await {runs.settle_all(&error.to_string());if let Err(error)=slot.retire().await {maho_ext_api::diagnostic(&format!("JS retirement failed: {error}"));}}
                 deadline=None;
             }
         }

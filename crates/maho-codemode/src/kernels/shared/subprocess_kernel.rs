@@ -172,7 +172,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
         if let Some(error) = &failure {
             runs.clear_tool_calls();
             deadline = None;
-            if !process.is_retiring() && let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); }
+            if !process.is_retiring() && let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}")); }
             runs.settle_all(error, now());
         }
         tokio::select! {
@@ -213,7 +213,7 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     *pid.lock().expect("kernel pid lock") = None;
                     let _ = response.send(result); break;
                 }
-                None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { eprintln!("kernel close failed: {error}"); } break; }
+                None => { runs.settle_all("Kernel is closing", now()); if let Err(error) = process.shutdown(Some(&json!({"type":"close"}))).await { maho_ext_api::diagnostic(&format!("kernel close failed: {error}")); } break; }
             },
             message = process.next_message(), if failure.is_none() => match message {
                 Ok(message) => {
@@ -224,10 +224,10 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                         runs.clear_tool_calls();
                         runs.settle_all(failure.as_deref().expect("startup failure"), now());
                         deadline = None;
-                        if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); }
+                        if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}")); }
                     }
                 }
-                Err(error) => { failure = Some(error.to_string()); runs.clear_tool_calls(); if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { eprintln!("kernel retirement failed: {error}"); } }
+                Err(error) => { failure = Some(error.to_string()); runs.clear_tool_calls(); if let Err(error) = process.terminate("TERM", Duration::from_millis(1500)).await { maho_ext_api::diagnostic(&format!("kernel retirement failed: {error}")); } }
             },
             () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending::<()>().await } }, if deadline.is_some() => {
                 if let Some(mut run) = runs.release_active() {
