@@ -49,7 +49,7 @@ pub fn load_context_file_from_dir(dir: &str) -> Option<ContextFile> {
         }
         match std::fs::read_to_string(&file_path) {
             Ok(content) => return Some(ContextFile { path: file_path, content: strip_bom(&content).to_string() }),
-            Err(error) => crate::output_guard::maho_write_stderr(&format!("Warning: Could not read {file_path}: {error}\n")),
+            Err(error) => { crate::output_guard::maho_write_stderr(&format!("Warning: Could not read {file_path}: {error}\n")); }
         }
     }
     None
