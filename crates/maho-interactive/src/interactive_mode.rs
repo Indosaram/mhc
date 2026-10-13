@@ -2561,6 +2561,26 @@ impl InteractiveMode {
                     (None, Some(target)) => { crate::editor_paste_transfer::transfer_editor_content(&self.editor, target.as_mut()); }
                     (None, None) => {}
                 }
+                // senpi `setCustomEditor`: route the new editor's image-marker changes and undo
+                // payload snapshots into the pending images, and copy the default border color.
+                if let Some(target) = &mut replacement {
+                    if target.get_image_marker_state().is_some() {
+                        let images = self.pending_images.clone();
+                        target.set_on_image_markers_changed(Some(Box::new(move |order| {
+                            let previous = std::mem::take(&mut *images.borrow_mut());
+                            images.borrow_mut().extend(order.iter().enumerate().filter_map(|(index, id)| {
+                                previous.get(id).cloned().map(|image| (u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1), image))
+                            }));
+                        })));
+                        let images = self.pending_images.clone();
+                        target.set_snapshot_attachment_state(Some(Box::new(move || Some(Rc::new(images.borrow().clone())))));
+                        let images = self.pending_images.clone();
+                        target.set_restore_attachment_state(Some(Box::new(move |snapshot| {
+                            if let Some(snapshot) = snapshot.downcast_ref::<BTreeMap<u64, maho_ai::types::ImageContent>>() { *images.borrow_mut() = snapshot.clone(); }
+                        })));
+                    }
+                    if target.border_color().is_some() { target.set_border_color(self.editor.editor.border_color.clone()); }
+                }
                 if let Some(mut editor) = self.custom_editor.take() { editor.dispose(); }
                 self.custom_editor = replacement;
             }
