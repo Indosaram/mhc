@@ -46,6 +46,12 @@ pub fn stale_goal_todo_reminder(goal:Option<&Goal>)->Option<String> {
         details["op"]="init".into(); details["phases"][0]["tasks"][0]["status"]="completed".into(); assert!(!todo_result_adds_open_tasks(Some(&details)));
         assert!(!todo_result_adds_open_tasks(None));
     }
+    #[test] fn malformed_details_never_qualify() {
+        assert!(!todo_result_adds_open_tasks(Some(&serde_json::Value::Null)));
+        assert!(!todo_result_adds_open_tasks(Some(&serde_json::json!({"op":"init"}))));
+        assert!(!todo_result_adds_open_tasks(Some(&serde_json::json!({"op":"init","phases":"nope"}))));
+        assert!(!todo_result_adds_open_tasks(Some(&serde_json::json!({"op":"view","phases":[]}))));
+    }
     fn goal(status:GoalStatus)->Goal { serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":status,"tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap() }
     #[test] fn unfinished_goals_do_not_emit_stale_reminders() {
         for status in [GoalStatus::Active,GoalStatus::Paused,GoalStatus::Blocked] { assert!(stale_goal_todo_reminder(Some(&goal(status))).is_none()); }

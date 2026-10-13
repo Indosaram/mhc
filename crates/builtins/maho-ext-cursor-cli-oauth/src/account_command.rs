@@ -242,4 +242,27 @@ mod tests {
     fn arguments_route_actions() {
         assert_eq!(parse_action(""),AccountAction::List);assert_eq!(parse_action(" pin work "),AccountAction::Pin("work".into()));assert_eq!(parse_action("import native"),AccountAction::ImportNative);assert_eq!(parse_action("import invalid"),AccountAction::Usage);assert_eq!(parse_action("remove"),AccountAction::Usage);
     }
+    #[test]
+    fn arguments_route_every_remaining_action() {
+        assert_eq!(parse_action("list"),AccountAction::List);assert_eq!(parse_action("add"),AccountAction::Add);assert_eq!(parse_action("unpin"),AccountAction::Unpin);
+        assert_eq!(parse_action("remove alpha"),AccountAction::Remove("alpha".into()));assert_eq!(parse_action("import"),AccountAction::ImportLocal);assert_eq!(parse_action("import local"),AccountAction::ImportLocal);
+        assert_eq!(parse_action("acknowledge"),AccountAction::Acknowledge);assert_eq!(parse_action("status"),AccountAction::Status);assert_eq!(parse_action("wat"),AccountAction::Usage);
+    }
+    #[tokio::test]
+    async fn mutations_pin_unpin_remove_and_reject_missing() {
+        use maho_ai::auth::credential_store::InMemoryCredentialStore;
+        let store=InMemoryCredentialStore::new();
+        let credential=crate::accounts::add_account(&crate::accounts::empty_credential(),crate::accounts::CursorCliAccountSlot {name:"alpha".into(),display_name:None,access:"a".into(),refresh:"r".into(),expires:1.0,source:crate::accounts::AccountSource::Login,blocked_until:None,block_reason:None}).expect("slot");
+        store.modify(crate::oauth_login::PROVIDER_ID,Box::new(move |_|Box::pin(async move {Ok(Some(Credential::OAuth(credential)))})),None).await.expect("seed");
+        assert!(mutate_account(&store,AccountAction::Pin("missing".into())).await.is_err());
+        assert!(mutate_account(&store,AccountAction::Remove("missing".into())).await.is_err());
+        mutate_account(&store,AccountAction::Pin("alpha".into())).await.expect("pin");
+        let pinned=store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth");
+        assert_eq!(pinned.get_extra_str("pinned"),Some("alpha"));
+        assert!(mutate_account(&store,AccountAction::Unpin).await.expect("unpin").is_some());
+        let unpinned=store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth");
+        assert_eq!(unpinned.get_extra_str("pinned"),None);
+        mutate_account(&store,AccountAction::Remove("alpha".into())).await.expect("remove");
+        assert!(crate::accounts::list_accounts(&store.read(crate::oauth_login::PROVIDER_ID,None).await.expect("read").expect("credential").into_oauth().expect("oauth")).expect("list").is_empty());
+    }
 }

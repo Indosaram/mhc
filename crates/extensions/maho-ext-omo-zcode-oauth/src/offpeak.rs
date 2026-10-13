@@ -164,4 +164,39 @@ mod tests {
         headers.insert("X-ZCode-Route".into(),Some("off-peak".into())); assert!(!install_auth(&mut headers,0.0,Some(("key","jwt")),|_,_|async { None }).await); assert_eq!(headers,original);
         headers.insert("X-ZCode-Route".into(),Some("off-peak".into())); assert!(!install_auth(&mut headers,0.0,Some(("key","jwt")),|_,_|async { Some(String::new()) }).await); assert_eq!(headers,original);
     }
+    #[tokio::test]
+    async fn availability_reads_false_for_refusal_http_failure_and_bad_shape() {
+        use std::io::{BufRead,Write};
+        for (status,payload) in [(200,json!({"data":{"can_take_number":false}})),(500,json!({})),(200,json!({"data":{"can_take_number":"yes"}}))] {
+            let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || {
+                let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with("GET /availability "),"{line}");
+                loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } }
+                let body = payload.to_string(); write!(stream,"HTTP/1.1 {status} fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            });
+            let client = TicketClient { base, ..TicketClient::new(BTreeMap::new()) };
+            assert!(!client.availability("jwt","key").await); peer.join().unwrap();
+        }
+        let client = TicketClient { base: "http://127.0.0.1:1".into(), ..TicketClient::new(BTreeMap::new()) };
+        assert!(!client.availability("jwt","key").await);
+    }
+    #[tokio::test]
+    async fn queued_ticket_gives_up_when_the_status_poll_fails() {
+        use std::io::{BufRead,Read,Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1",0)).unwrap(); let base = format!("http://{}",listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            for step in 0..=1 {
+                let (mut stream,_) = listener.accept().unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap()); let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert!(line.starts_with(if step == 0 { "POST / " } else { "POST /status " }),"{line}");
+                let mut length = 0; loop { line.clear(); reader.read_line(&mut line).unwrap(); if line == "\r\n" { break; } else if let Some(value) = line.to_lowercase().strip_prefix("content-length:") { length = value.trim().parse().unwrap(); } }
+                let mut body = vec![0;length]; reader.read_exact(&mut body).unwrap();
+                if step == 0 { let payload = json!({"ticket_id":"fixture","state":"queued","next_poll_after":1}).to_string(); write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len()).unwrap(); }
+                else { write!(stream,"HTTP/1.1 503 fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap(); }
+            }
+        });
+        let client = TicketClient { base, ..TicketClient::new(BTreeMap::new()) }; let clock = std::cell::Cell::new(0.0);
+        let result = client.ensure_with("jwt","key","task",||clock.get(),|ms| { clock.set(clock.get()+ms); std::future::ready(()) }).await;
+        assert!(result.is_none()); assert!((clock.get()-2_000.0).abs() < f64::EPSILON); peer.join().unwrap();
+    }
 }

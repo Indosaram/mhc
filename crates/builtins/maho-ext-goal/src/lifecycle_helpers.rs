@@ -160,4 +160,28 @@ pub fn report_denied_continuation(api:&maho_ext_api::ExtensionApi,ctx:&Extension
         for reason in [DenyReason::NotEligible,DenyReason::SingleFlight,DenyReason::Stale] { assert_eq!(blocked_reason_for_continuation_guard(reason),None); }
     }
     #[test] fn absent_assistant_has_no_text() { assert!(last_assistant_text(&[]).is_empty()); }
+    fn stopped_goal(status:GoalStatus)->Goal { serde_json::from_value(serde_json::json!({"id":"g","threadId":"s","objective":"work","status":status,"tokensUsed":0,"timeUsedSeconds":0,"createdAt":0,"updatedAt":0})).unwrap() }
+    // The predicate reads idle/pending state from the bound session (pinned ctx.isIdle() and
+    // !ctx.hasPendingMessages()), so every case binds a real session.
+    #[tokio::test] async fn resume_prompt_fires_only_for_stopped_unfinished_statuses() {
+        let mut ctx=crate::test_context::context(); let session=crate::test_context::bind_session(&mut ctx);
+        for status in [GoalStatus::Paused,GoalStatus::Blocked] { assert!(is_resume_of_stopped_goal(&ctx,"resume",Some(&stopped_goal(status))).unwrap(),"{status:?}"); }
+        for status in [GoalStatus::Active,GoalStatus::Complete] { assert!(!is_resume_of_stopped_goal(&ctx,"resume",Some(&stopped_goal(status))).unwrap(),"{status:?}"); }
+        assert!(!is_resume_of_stopped_goal(&ctx,"resume",None).unwrap());
+        session.dispose().await;
+    }
+    #[tokio::test] async fn resume_prompt_requires_the_resume_reason() {
+        let mut ctx=crate::test_context::context(); let session=crate::test_context::bind_session(&mut ctx); let goal=stopped_goal(GoalStatus::Paused);
+        for reason in ["startup","reload","new"] { assert!(!is_resume_of_stopped_goal(&ctx,reason,Some(&goal)).unwrap(),"{reason}"); }
+        assert!(is_resume_of_stopped_goal(&ctx,"resume",Some(&goal)).unwrap());
+        session.dispose().await;
+    }
+    #[tokio::test] async fn resume_prompt_requires_ui() {
+        let goal=stopped_goal(GoalStatus::Paused);
+        let mut bound=crate::test_context::context(); let session=crate::test_context::bind_session(&mut bound);
+        assert!(is_resume_of_stopped_goal(&bound,"resume",Some(&goal)).unwrap());
+        bound.has_ui=false;
+        assert!(!is_resume_of_stopped_goal(&bound,"resume",Some(&goal)).unwrap());
+        session.dispose().await;
+    }
 }
