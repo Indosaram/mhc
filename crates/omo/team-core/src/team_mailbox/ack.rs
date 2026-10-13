@@ -6,11 +6,18 @@ use crate::error::Result;
 use crate::team_registry::paths::{get_inbox_dir, resolve_base_dir};
 
 pub(crate) fn create_private_dir_all(path: &std::path::Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+    }
 }
 
 /// `ackMessages`: move each message (unread or reserved) into `processed/`.
