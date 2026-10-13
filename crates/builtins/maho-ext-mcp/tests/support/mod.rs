@@ -11,7 +11,6 @@ pub fn node() -> String {
 }
 
 #[allow(dead_code)]
-#[allow(dead_code)]
 pub fn senpi(rel: &str) -> String {
     let root = env::var_os("SENPI_SRC")
         .map(PathBuf::from)
