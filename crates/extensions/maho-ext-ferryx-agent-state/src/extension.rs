@@ -75,7 +75,7 @@ impl Drop for Delivery {
     fn drop(&mut self) {
         self.sender.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(thread) = self.thread.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take()
-            && thread.join().is_err() { maho_ext_api::diagnostic(&format!("Ferryx delivery thread panicked")); }
+            && thread.join().is_err() { maho_ext_api::diagnostic("Ferryx delivery thread panicked"); }
     }
 }
 

@@ -42,25 +42,25 @@ impl PermissionService {
         match input.reply {
             Reply::Reject => {
                 let error=match input.message.filter(|message| !message.is_empty()) {Some(message)=>PermissionError::Corrected(message),None=>PermissionError::Rejected};
-                if entry.sender.send(Err(error)).is_err() { maho_ext_api::diagnostic(&format!("Permission requester dropped before rejection")); }
+                if entry.sender.send(Err(error)).is_err() { maho_ext_api::diagnostic("Permission requester dropped before rejection"); }
                 let mut index=0;
                 while index<self.pending.len() {
                     if self.pending[index].info.session_id == entry.info.session_id {
                         let other=self.pending.remove(index); self.emit_replied(&other.info,PermissionDecision::Reject);
-                        if other.sender.send(Err(PermissionError::Rejected)).is_err() { maho_ext_api::diagnostic(&format!("Permission requester dropped before rejection")); }
+                        if other.sender.send(Err(PermissionError::Rejected)).is_err() { maho_ext_api::diagnostic("Permission requester dropped before rejection"); }
                     } else { index+=1; }
                 }
             }
-            Reply::Once => { if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic(&format!("Permission requester dropped before approval")); } }
+            Reply::Once => { if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic("Permission requester dropped before approval"); } }
             Reply::Always => {
                 for pattern in &entry.info.always { self.approved.push(Rule {permission:entry.info.permission.clone(),pattern:pattern.clone(),action:Action::Allow}); }
-                if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic(&format!("Permission requester dropped before approval")); }
+                if entry.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic("Permission requester dropped before approval"); }
                 let mut index=0;
                 while index<self.pending.len() {
                     let other=&self.pending[index];
                     if other.info.session_id == entry.info.session_id && other.info.patterns.iter().all(|pattern| evaluate(&other.info.permission,pattern,&[&self.static_ruleset,&self.approved]).action == Action::Allow) {
                         let other=self.pending.remove(index); self.emit_replied(&other.info,PermissionDecision::Always);
-                        if other.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic(&format!("Permission requester dropped before approval")); }
+                        if other.sender.send(Ok(())).is_err() { maho_ext_api::diagnostic("Permission requester dropped before approval"); }
                     } else { index+=1; }
                 }
             }

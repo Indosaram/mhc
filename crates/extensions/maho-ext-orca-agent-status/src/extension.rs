@@ -107,7 +107,7 @@ impl Drop for Delivery {
         lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shutdown = true;
         signal.notify_one();
         if let Some(thread) = self.thread.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take()
-            && thread.join().is_err() { maho_ext_api::diagnostic(&format!("Orca hook thread panicked")); }
+            && thread.join().is_err() { maho_ext_api::diagnostic("Orca hook thread panicked"); }
     }
 }
 

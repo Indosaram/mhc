@@ -20,7 +20,7 @@ impl Drop for Animation {
         if let Err(error) = self.stop.send(()) { maho_ext_api::diagnostic(&format!("orca spinner stop: {error}")); }
         if let Some(thread) = self.thread.take()
             && thread.join().is_err() {
-            maho_ext_api::diagnostic(&format!("orca spinner thread panicked"));
+            maho_ext_api::diagnostic("orca spinner thread panicked");
         }
     }
 }
