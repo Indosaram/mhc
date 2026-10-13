@@ -44,6 +44,10 @@ pub trait RuntimeLane: Send + Sync {
     fn state(&self) -> LaneState;
     fn publish_state(&self, state: LaneState);
     fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> BoxFuture<'a, ()>;
+    /// Pinned `closedError instanceof HarnessFault` for `LaneSnapshot.faulted`.
+    fn faulted(&self) -> bool {
+        false
+    }
 }
 
 pub struct StructuralPreparation {

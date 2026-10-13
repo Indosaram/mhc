@@ -116,6 +116,38 @@ async fn sealing_rejects_new_work_but_admitted_configuration_finishes() {
 }
 
 #[tokio::test]
+async fn failed_lane_command_faults_harness_and_every_lane() {
+    let storage = Arc::new(maho_agent::harness::session::testing::GatingStorage::new(Arc::new(MemoryStorage::new(MemoryStorageOptions::default()))));
+    let session = Arc::new(StorageBackedSession::new(SessionMetadata { id: "faulting-lane".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None }, storage.clone(), StorageBackedSessionOptions::default()));
+    session.attach();
+    let harness = create_agent_harness(session, seed(), &BACKGROUND_CONTEXT).await.unwrap();
+    let main = harness.lane("main", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let other = harness.lane("other", None, &BACKGROUND_CONTEXT).await.unwrap();
+    let faulted = Arc::new(tokio::sync::Notify::new());
+    let codes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (notify, sink) = (faulted.clone(), codes.clone());
+    let _subscription = harness.events.on("fault", Arc::new(move |event, _| {
+        if let maho_agent::harness::events::HarnessEventPayload::Fault { code, .. } = &event.payload { sink.lock().unwrap().push(code.clone()); }
+        let notify = notify.clone();
+        Box::pin(async move { notify.notify_one(); })
+    }));
+    storage.arm();
+    let writer = main.clone();
+    let command = tokio::spawn(async move { writer.set_thinking_level(ModelThinkingLevel::High, &BACKGROUND_CONTEXT).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), storage.wait_pending(1)).await.unwrap().unwrap();
+    storage.discard();
+    let error = command.await.unwrap().unwrap_err();
+    assert!(error.message.starts_with("AgentHarness storage or invariant fault"), "unexpected error: {error:?}");
+    tokio::time::timeout(std::time::Duration::from_secs(2), faulted.notified()).await.unwrap();
+    assert_eq!(*codes.lock().unwrap(), vec!["harness_fault".to_owned()]);
+    assert!(main.faulted());
+    assert!(other.faulted());
+    assert_eq!(other.get_tip_id().unwrap_err(), error);
+    assert_eq!(harness.get_stream_options().unwrap_err(), error);
+    assert_eq!(harness.lane("late", None, &BACKGROUND_CONTEXT).await.unwrap_err(), error);
+}
+
+#[tokio::test]
 async fn queued_commands_plan_from_latest_committed_memory() {
     let (lane, storage) = gated_lane().await.unwrap();
     let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
