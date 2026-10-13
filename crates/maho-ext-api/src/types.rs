@@ -171,6 +171,12 @@ impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
 pub trait ErasedToolRenderers: Send + Sync {
     fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>>;
     fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>>;
+    /// senpi export `renderResult` with explicit `{ expanded, isPartial }` options and the
+    /// context's `isError`; implementors without context state render as `render_result`.
+    fn render_result_with(&self, args: &JsonValue, result: &AgentToolResult, options: ToolRenderResultOptions, is_error: bool, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let _ = (options, is_error);
+        self.render_result(args, result, theme, width)
+    }
 }
 struct TypedErasedToolRenderers<TState, TArgs> {
     renderers: Arc<ToolRenderers<TState, TArgs>>,
@@ -195,11 +201,16 @@ where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwn
         Some(lines)
     }
     fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.render_result_with(args, result, ToolRenderResultOptions::default(), false, theme, width)
+    }
+    fn render_result_with(&self, args: &JsonValue, result: &AgentToolResult, options: ToolRenderResultOptions, is_error: bool, theme: &Theme, width: usize) -> Option<Vec<String>> {
         let renderer = self.renderers.render_result.as_ref()?;
         let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
-        let options = ToolRenderResultOptions { expanded: context.expanded, is_partial: context.is_partial };
+        context.expanded = options.expanded;
+        context.is_partial = options.is_partial;
+        context.is_error = is_error;
         let mut component = renderer(result, options, theme, &mut context);
         let lines = component.render(width);
         *state = Some(context.state);
