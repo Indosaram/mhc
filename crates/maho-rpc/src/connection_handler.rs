@@ -388,8 +388,13 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 if let Some(summary_entry)=result.summary_entry&&let Some(id)=summary_entry["id"].as_str(){value["summaryEntryId"]=id.into();}value}}).map(Some);("navigate_tree",result)
         },
         RpcCommandBody::SetLabel{entry_id,label}=>{session.with_session_manager_mut(|manager|manager.append_label(entry_id,label.as_deref()));("set_label",Ok(None))},
-        RpcCommandBody::Bash{command,exclude_from_context,execution_id,..}=>{
-            let result=session.execute_user_bash(command,None,exclude_from_context.unwrap_or(false),execution_id.clone()).await;
+        RpcCommandBody::Bash{command:bash_command,exclude_from_context,execution_id,..}=>{
+            // senpi brackets a routed (multi-session) bash with `bash_start`/`bash_end`; the routing
+            // id reaches this handler as the command's `sessionId`.
+            let routed=sink.as_ref().filter(|_|command.session_id.is_some());
+            if let Some(sink)=routed{sink(serde_json::json!({"type":"bash_start"}));}
+            let result=session.execute_user_bash(bash_command,None,exclude_from_context.unwrap_or(false),execution_id.clone()).await;
+            if let Some(sink)=routed{sink(serde_json::json!({"type":"bash_end"}));}
             ("bash",result.map(|result|Some(serde_json::to_value(result).unwrap_or(serde_json::Value::Null))))
         },
         RpcCommandBody::RecordBashResult{command,result,exclude_from_context}=>{
@@ -507,12 +512,18 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
         },
         RpcCommandBody::GetMedia{tool_call_id,content_index}=>{
             let index=if content_index.is_finite()&&content_index.fract()==0.0&&*content_index>=0.0{*content_index as usize}else{usize::MAX};
-            let content=session.messages().into_iter().find_map(|message|{
+            // Durable session entries first (they survive compaction of the live window), then live messages.
+            let durable=session.with_session_manager(|manager|manager.entries()).into_iter().find_map(|entry|{
+                let message=(entry["type"]=="message").then_some(&entry["message"])?;
+                (message["role"]=="toolResult"&&message["toolCallId"].as_str()==Some(tool_call_id.as_str())).then_some(())?;
+                message["content"].get(index).filter(|block|block["type"]=="image").cloned()
+            });
+            let content=durable.or_else(||session.messages().into_iter().find_map(|message|{
                 let result=message.as_tool_result()?;
                 (result.tool_call_id==*tool_call_id).then_some(result.content.get(index)).flatten().and_then(|block|{
                     matches!(block,maho_ai::types::ContentBlock::Image(_)).then_some(serde_json::to_value(block).ok()).flatten()
                 })
-            });
+            }));
             let result=content.map(|content|Some(serde_json::json!({"toolCallId":tool_call_id,"contentIndex":content_index,"content":content}))).ok_or_else(||crate::rpc_types::RPC_ERROR_MEDIA_NOT_FOUND.to_owned());
             ("get_media",result)
         },
@@ -832,6 +843,23 @@ mod new_session_tests{
     async fn get_media_reports_missing_media(){
         let response=serde_json::to_value(handle_session_command(&session(),&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"missing","contentIndex":0})).unwrap()).await.unwrap()).unwrap();
         assert_eq!(response["command"],"get_media"); assert_eq!(response["success"],false); assert_eq!(response["error"],"media_not_found");
+    }
+    #[tokio::test]
+    async fn get_media_reads_durable_session_entries(){
+        let session=session();
+        session.with_session_manager_mut(|manager|{manager.append_message(serde_json::json!({"role":"toolResult","toolCallId":"durable","toolName":"read","content":[{"type":"text","text":"x"},{"type":"image","data":"AAAA","mimeType":"image/png"}],"isError":false,"timestamp":0}));});
+        let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"get_media","toolCallId":"durable","contentIndex":1})).unwrap()).await.unwrap()).unwrap();
+        assert_eq!(response["success"],true); assert_eq!(response["data"]["content"]["data"],"AAAA");
+    }
+    #[tokio::test]
+    async fn routed_bash_brackets_with_start_and_end_events(){
+        let records=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=records.clone();
+        let sink:RpcRecordSink=std::sync::Arc::new(move|record|observed.lock().unwrap().push(record));
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc","sessionId":"route"})).unwrap();
+        let response=serde_json::to_value(handle_session_command_with_sink(&session(),&command,Some(sink),None,None).await.unwrap()).unwrap();
+        assert_eq!(response["success"],true);
+        let kinds=records.lock().unwrap().iter().filter_map(|record|record["type"].as_str().map(str::to_owned)).filter(|kind|kind.starts_with("bash_")&&kind!="bash_execution_update").collect::<Vec<_>>();
+        assert_eq!(kinds,["bash_start","bash_end"]);
     }
     #[tokio::test]
     async fn get_loaded_surfaces_dispatches_inventory(){
