@@ -954,6 +954,12 @@ impl InteractiveMode {
             }
         } else {
             for message in self.session.messages() { self.add_history_message(&message); }
+            // senpi `renderInitialMessages`: show compaction info if the session was compacted.
+            let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
+            if compaction_count > 0 {
+                let times = if compaction_count == 1 { "1 time".to_owned() } else { format!("{compaction_count} times") };
+                self.show_status(format!("Session compacted {times}"));
+            }
         }
     }
 
