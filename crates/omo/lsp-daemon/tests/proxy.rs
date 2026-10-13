@@ -1,5 +1,6 @@
 //! Ports of proxy.test.ts, proxy-protocol-pin.test.ts, proxy-lifecycle.test.ts and
 //! proxy-startup-watchdog.test.ts.
+#![cfg(unix)]
 
 mod common;
 

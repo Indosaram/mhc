@@ -172,8 +172,11 @@ impl ReflinkBackend {
         let outcome = (|| -> Result<ProbeResult> {
             std::fs::write(base.join("source"), "x")?;
             match &ffi {
+                #[cfg(unix)]
                 Some(ffi) => self.clone_file(ffi, &base.join("source"), &base.join("clone"))?,
                 None => self.cp(&base.join("source"), &base.join("clone"))?,
+                #[cfg(not(unix))]
+                Some(_) => self.cp(&base.join("source"), &base.join("clone"))?,
             }
             Ok(ProbeResult::available())
         })();
@@ -262,6 +265,9 @@ impl IsolationBackend for ReflinkBackend {
                         &mut |size| budget.consume(size),
                     )?;
                 }
+                #[cfg(unix)]
+                None => self.cp(lower, merged)?,
+                #[cfg(not(unix))]
                 _ => self.cp(lower, merged)?,
             }
             Ok(())
