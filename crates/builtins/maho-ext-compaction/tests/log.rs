@@ -1,4 +1,6 @@
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use maho_ext_compaction::log::{CompactionLogger, format_line};
 use serde_json::{Value, json};
 
@@ -26,6 +28,7 @@ fn allowlist_removes_nested_sensitive_fields() {
 }
 
 #[test]
+#[cfg(unix)]
 fn logger_writes_jsonl_with_restricted_permissions() {
     let dir = tempfile::tempdir().unwrap();
     let mut logger = CompactionLogger::new(Some(dir.path()), None, Some(false));

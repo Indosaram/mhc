@@ -160,6 +160,7 @@ mod tests {
         next.observe_monitor_state(&[],40.0).await.unwrap();assert_eq!(next.durable_count(),0);
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn configured_store_restore_delivers_real_shell_geometry() {
         let dir=tempfile::tempdir().unwrap();let mut writer=TerminalManifestWriter::new(dir.path(),"s");
         writer.record_register(MonitorRegistration {monitor_id:"mon_geometry".to_owned(),spec:MonitorSpec::Command {description:"geometry".to_owned(),command:"stty -echo; stty size; printf 'shell:%s\\n' \"${BASH_VERSION:+bash}\"".to_owned(),filter:None,cwd:Some(dir.path().to_string_lossy().into_owned()),persistent:true}},1.0).await;
