@@ -34,6 +34,7 @@ fn settings_listen_does_not_apply_cli_port_validation() {
     assert_eq!(running_output("running", Some(7), &input, "1")["pid"], 7);
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn settings_and_cleanup_use_real_files_and_propagate_io_failures() {
     let dir = tempfile::tempdir().unwrap();
     let settings = dir.path().join("settings.json");

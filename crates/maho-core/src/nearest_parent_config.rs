@@ -78,6 +78,7 @@ mod tests {
         assert!(find_nearest_parent_config_dir(&nested.to_string_lossy(), &home.to_string_lossy(), ".maho", Some("agent"), None).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_config_dir_is_not_a_match() {
         let tmp = crate::test_support::isolated_tempdir();

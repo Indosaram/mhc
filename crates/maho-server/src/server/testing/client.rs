@@ -1,7 +1,11 @@
 use crate::{protocol::{codec::{MessageDecoder,encode_client_message},framing::DEFAULT_MAX_FRAME_LENGTH,messages::PROTOCOL_VERSION},server::{errors::ServerError,types::ServerFuture}};
 use serde_json::{Value,json};
-use std::{path::Path,sync::{Arc,Mutex}};
-use tokio::{io::{AsyncReadExt,AsyncWriteExt},net::{UnixStream,unix::OwnedWriteHalf},sync::{Mutex as AsyncMutex,watch}};
+use std::sync::{Arc,Mutex};
+#[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
+use tokio::{io::{AsyncReadExt,AsyncWriteExt},net::{UnixStream,unix::OwnedWriteHalf},sync::Mutex as AsyncMutex};
+use tokio::sync::watch;
 
 pub trait WireChannel:Send+Sync {
     fn send<'a>(&'a self,chunk:&'a [u8])->ServerFuture<'a,()>;
@@ -66,7 +70,9 @@ impl ProtocolTestClient {
     pub fn mark_closed(&self) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);if state.closed {return;}state.closed=true;for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(ServerError::new("internal_error","Wire connection closed")));}drop(state);self.changed.send_modify(|sequence|*sequence+=1);}
     pub fn fail(&self,error:ServerError) {let mut state=self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);for waiter in state.waiters.drain(..) {let _delivery=waiter.resolve.send(Err(error.clone()));}}
 }
+#[cfg(unix)]
 struct UnixChannel {writer:AsyncMutex<OwnedWriteHalf>,close:watch::Sender<bool>,closed:super::host::Deferred<()>}
+#[cfg(unix)]
 impl WireChannel for UnixChannel {
     fn send<'a>(&'a self,chunk:&'a [u8])->ServerFuture<'a,()> {Box::pin(async move {self.writer.lock().await.write_all(chunk).await?;Ok(())})}
     fn send_fragmented<'a>(&'a self,chunk:&'a [u8],split_at:usize)->ServerFuture<'a,()> {Box::pin(async move {
@@ -77,6 +83,7 @@ impl WireChannel for UnixChannel {
         self.closed.wait().await;Ok(())
     })}
 }
+#[cfg(unix)]
 pub async fn connect_unix_test_client(path:&Path)->Result<Arc<ProtocolTestClient>,ServerError> {
     let stream=UnixStream::connect(path).await?;let (mut reader,writer)=stream.into_split();let (close,mut closing)=watch::channel(false);
     let closed=super::host::Deferred::default();let channel=Arc::new(UnixChannel {writer:AsyncMutex::new(writer),close,closed:closed.clone()});

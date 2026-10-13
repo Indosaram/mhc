@@ -20,6 +20,7 @@ fn hash_gate_tracks_creation_edit_deletion_and_close() {
     assert!(engine.evaluate().unwrap().changed_paths.is_empty());
 }
 #[test]
+#[cfg(unix)]
 fn scan_omits_symlinks_dependencies_and_unallowed_dot_directories() {
     let root = tempfile::tempdir().unwrap();
     for dir in ["node_modules", ".git", ".hidden", "nested"] { fs::create_dir(root.path().join(dir)).unwrap(); fs::write(root.path().join(dir).join("file"), "fixture").unwrap(); }

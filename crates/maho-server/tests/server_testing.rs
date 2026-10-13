@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_server::server::{testing::*,types::*,unix::UnixServer,errors::ServerError};
 use serde_json::json;
 use std::{sync::Arc,time::Duration};

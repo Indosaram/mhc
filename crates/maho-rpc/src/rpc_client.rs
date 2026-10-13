@@ -106,6 +106,12 @@ impl RpcSocketClient{
 impl RpcSocketClient{
     pub async fn connect(_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
     pub async fn connect_authenticated(_path:&std::path::Path,_secret_path:&std::path::Path)->std::io::Result<Self>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn send(&mut self,_command:Value,_route:bool,_expect_response:bool)->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn request(&mut self,_command:Value,_route:bool,_on_event:impl FnMut(Value),_on_response:impl FnOnce(&Value))->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn open_session(&mut self,_options:Value,_on_event:impl FnMut(Value))->std::io::Result<Value>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn close_session(&mut self,_session_id:Option<&str>,_on_event:impl FnMut(Value))->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn prompt(&mut self,_message:&str,_options:Value,_on_event:impl FnMut(Value),_disposition:impl FnMut(&str),_preflight:impl FnMut(bool))->std::io::Result<()>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
+    pub async fn receive(&mut self)->std::io::Result<Option<ClientFrame>>{Err(std::io::Error::other("rpc host sockets are not supported on this platform yet"))}
 }
 #[derive(Debug,PartialEq)]pub enum ClientFrame{Response(Value),Event(Value),Ignored}
 
@@ -415,6 +421,7 @@ impl RpcClientFrames{
         assert_eq!(default_rpc_socket_path(std::path::Path::new("/agent")),std::path::Path::new("/agent/rpc/rpc.sock"));
         assert!(RpcClientError::Transport(std::io::Error::other("x")).is_transport_gone());
     }
+    #[cfg(unix)]
     #[tokio::test]async fn request_value_returns_data_and_dispatches_events_to_listeners(){
         use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
         let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
@@ -434,6 +441,7 @@ impl RpcClientFrames{
         assert_eq!(seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(),1);
         assert_eq!(classify_rpc_client_event(&seen.lock().unwrap()[0]),Some(RpcClientEventKind::AgentStart));
     }
+    #[cfg(unix)]
     #[tokio::test]async fn unsubscribe_stops_delivery_and_stopped_client_reports_transport_gone(){
         let (client_stream,_host)=tokio::net::UnixStream::pair().unwrap();
         let mut client=RpcClient::from_stream(client_stream,RpcClientOptions::default());
@@ -445,6 +453,7 @@ impl RpcClientFrames{
         assert_eq!(*seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner),0);
         assert!(client.get_state().await.unwrap_err().is_transport_gone());
     }
+    #[cfg(unix)]
     #[tokio::test]async fn prompt_and_wait_propagates_a_refused_prompt_as_a_command_error(){
         use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
         let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
@@ -464,6 +473,7 @@ impl RpcClientFrames{
         tokio::time::timeout(std::time::Duration::from_secs(5),serve).await.expect("the peer task is released and joined").unwrap();
         assert!(matches!(&error,RpcClientError::Command(command) if command.message=="prompt refused"&&command.error_code.as_deref()==Some("busy")),"unexpected error: {error:?}");
     }
+    #[cfg(unix)]
     #[tokio::test]async fn prompt_and_wait_returns_the_events_up_to_settle_after_a_successful_response(){
         use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
         let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
@@ -484,6 +494,7 @@ impl RpcClientFrames{
         let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
         assert_eq!(kinds,vec!["agent_start","agent_settled"]);
     }
+    #[cfg(unix)]
     #[tokio::test]async fn prompt_and_wait_retains_events_that_arrive_before_a_settling_response(){
         use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
         let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();
@@ -505,6 +516,7 @@ impl RpcClientFrames{
         let kinds:Vec<&str>=events.iter().map(|event|event["type"].as_str().unwrap_or_default()).collect();
         assert_eq!(kinds,vec!["agent_start","agent_settled"],"pre-response events are retained and post-settle events are excluded");
     }
+    #[cfg(unix)]
     #[tokio::test]async fn prompt_and_wait_delivers_classified_events_after_settlement_without_collecting_them(){
         use tokio::io::{AsyncBufReadExt,AsyncWriteExt,BufReader};
         let (client_stream,host)=tokio::net::UnixStream::pair().unwrap();

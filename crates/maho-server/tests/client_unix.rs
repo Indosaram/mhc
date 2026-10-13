@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_server::{
     client::{
         Client,

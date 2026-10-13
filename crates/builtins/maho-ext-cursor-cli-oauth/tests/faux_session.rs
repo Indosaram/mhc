@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::sync::Arc;
 use maho_ai::auth::{credential_store::InMemoryCredentialStore, types::{Credential, CredentialStore}};
 use maho_ext_cursor_cli_oauth::{accounts::{CursorCliAccountSlot, AccountSource, add_account, empty_credential}, extension::CursorCliExtension, oauth_login::CursorCliOAuth, settings::CursorCliOauthProviderSettings};

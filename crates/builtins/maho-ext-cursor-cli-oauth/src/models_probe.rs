@@ -1,5 +1,4 @@
 use std::{path::Path,time::Duration,collections::BTreeMap};
-use std::os::unix::process::ExitStatusExt;
 
 #[derive(Debug)]
 pub enum ModelProbeError {
@@ -24,7 +23,16 @@ pub async fn run_models_probe(executable:&Path,stdout_path:&Path,timeout_ms:u64,
     match tokio::time::timeout(Duration::from_millis(timeout_ms),child.wait()).await {
         Ok(status) => {
             let status = status.map_err(ModelProbeError::Io)?;
-            if status.success() { Ok(()) } else { Err(ModelProbeError::Exit { exit_code:status.code(),signal:status.signal() }) }
+            if status.success() { Ok(()) } else {
+                #[cfg(unix)]
+                let signal = {
+                    use std::os::unix::process::ExitStatusExt;
+                    status.signal()
+                };
+                #[cfg(not(unix))]
+                let signal = None;
+                Err(ModelProbeError::Exit { exit_code:status.code(),signal })
+            }
         }
         Err(_) => {
             child.kill().await.map_err(ModelProbeError::Io)?;

@@ -1,4 +1,6 @@
-use super::{cli_args::{Listen, WsAuth}, runtime::AppServerRuntime, unix_socket::start_unix_socket_listener, websocket::start_websocket_listener, websocket_auth::{WebSocketListenerAuth, resolve_websocket_listener_auth}};
+use super::{cli_args::{Listen, WsAuth}, runtime::AppServerRuntime, websocket::start_websocket_listener, websocket_auth::{WebSocketListenerAuth, resolve_websocket_listener_auth}};
+#[cfg(unix)]
+use super::unix_socket::start_unix_socket_listener;
 use std::{future::Future, path::Path};
 
 pub async fn run_app_server_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAuth>, shutdown: impl Future<Output = ()>) -> Result<(), String> {
@@ -22,11 +24,16 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
     let auth = resolve_websocket_listener_auth(auth,Some(&token_path)).await.map_err(|error|error.to_string())?;
     match listen {
         Listen::Unix {path,..} => {
+            #[cfg(unix)]
+            {
             let path = path.map(Into::into).unwrap_or_else(||Path::new(&agent_dir).join("app-server/app-server.sock"));
             let listener = start_unix_socket_listener(path,true,auth,runtime.core.clone(),None).await.map_err(|error|error.message)?;
             shutdown.await;
             shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
             shutdown_deadline(async {listener.close().await.map_err(|error|error.message)}).await?;
+            }
+            #[cfg(not(unix))]
+            { let _ = (path, auth, shutdown); return Err("unix-socket transport is not supported on this platform yet".into()); }
         },
         Listen::Ws {host,port,..} => {
             let listener = start_websocket_listener(&host,port,auth,runtime.core.clone(),None).await.map_err(|error|error.message)?;

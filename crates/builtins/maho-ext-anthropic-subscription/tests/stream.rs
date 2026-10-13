@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, sync::Arc};
 use maho_ai::{auth::types::*, types::{Context, Message, UserMessage, UserContent, StopReason, ContentBlock}};
 use maho_ext_anthropic_subscription::{extension::AnthropicSubscriptionExtension, oauth_login::AnthropicSubscriptionOAuth};

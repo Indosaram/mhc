@@ -27,6 +27,7 @@ pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, ve
         Err(error) => return Err(error),
     };
     if listen["kind"] == "ws" { return Ok(probe_websocket(listen["url"].as_str().unwrap_or_default(), token.as_deref(), timeout_ms, version).await); }
+    #[cfg(unix)]
     if listen["kind"] == "unix" {
         // Pinned probe.ts: `listen.path ?? join(dirname(paths.tokenFile), "app-server.sock")`.
         let path = listen["path"].as_str().map(std::path::PathBuf::from)
@@ -40,6 +41,10 @@ pub async fn probe_listen(token_file: &Path, listen: &Value, timeout_ms: u64, ve
             match socket.next().await?.ok()? { Message::Text(text) => read_initialize_probe(&text), _ => None }
         };
         return Ok(tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), operation).await.ok().flatten());
+    }
+    #[cfg(not(unix))]
+    if listen["kind"] == "unix" {
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "unix-socket transport is not supported on this platform yet"));
     }
     Ok(None)
 }

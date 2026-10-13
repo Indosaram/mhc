@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_herdr::client::*;
 use std::sync::Arc;
 use tokio::{net::UnixListener,io::{AsyncReadExt,AsyncWriteExt}};

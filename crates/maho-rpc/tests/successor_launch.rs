@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[tokio::test]
 async fn failed_successor_preserves_predecessor_registration_and_socket(){
     let temp=tempfile::tempdir().unwrap();let path=temp.path().join("host.sock");let socket=path.to_str().unwrap();let listener=tokio::net::UnixListener::bind(&path).unwrap();

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_cursor_cli_oauth::{models::{resolve_catalog,parse_models_listing},models_probe::{run_models_probe,ModelProbeError}};
 use std::{collections::BTreeMap,os::unix::fs::PermissionsExt};
 #[tokio::test]

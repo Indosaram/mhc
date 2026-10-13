@@ -6,10 +6,12 @@ fn marker_case(marker:&str){let d=tempfile::tempdir().unwrap_or_else(|error|pani
 #[test] fn package_marker(){marker_case("package.json");}
 #[test] fn go_marker(){marker_case("go.mod");}
 #[test] fn file_start(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");let p=write(d.path(),"repo/src/index.ts");let r=find_project_root(&p,None);assert_eq!(r,Some(d.path().join("repo").canonicalize().unwrap()));}
+#[cfg(unix)]
 #[test] fn symlink_resolves_project(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");write(d.path(),"repo/src/index.ts");std::fs::create_dir_all(d.path().join("outside")).unwrap();std::os::unix::fs::symlink(d.path().join("repo/src"),d.path().join("outside/linked-src")).unwrap();let r=find_project_root(&d.path().join("outside/linked-src/index.ts"),None);assert_eq!(r,Some(d.path().join("repo").canonicalize().unwrap()));}
 #[test] fn nearest_nested_marker(){let d=tempfile::tempdir().unwrap();write(d.path(),"outer/.git");write(d.path(),"outer/packages/inner/.git");let start=d.path().join("outer/packages/inner/src/features");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,None);assert_eq!(r,Some(d.path().join("outer/packages/inner").canonicalize().unwrap()));}
 #[test] fn no_markers(){let d=tempfile::tempdir().unwrap();let start=d.path().join("plain/nested");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,Some(&["maho-unique-nonexistent-marker"]));assert_eq!(r,None);}
 #[test] fn missing_path(){let d=tempfile::tempdir().unwrap();let r=find_project_root(&d.path().join("missing"),None);assert_eq!(r,None);}
+#[cfg(unix)]
 #[test] fn dangling_path(){let d=tempfile::tempdir().unwrap();std::os::unix::fs::symlink(d.path().join("missing"),d.path().join("dangling")).unwrap();let r=find_project_root(&d.path().join("dangling"),None);assert_eq!(r,None);}
 #[test] fn custom_marker(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/package.json");write(d.path(),"repo/packages/app/custom.marker");let start=d.path().join("repo/packages/app/src");std::fs::create_dir_all(&start).unwrap();let r=find_project_root(&start,Some(&["custom.marker"]));assert_eq!(r,Some(d.path().join("repo/packages/app").canonicalize().unwrap()));}
 #[test] fn multiple_markers_same_root(){let d=tempfile::tempdir().unwrap();write(d.path(),"repo/.git");write(d.path(),"repo/package.json");let root=d.path().join("repo");let r=find_project_root(&root,None);assert_eq!(r,Some(root.canonicalize().unwrap()));}

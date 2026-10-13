@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use std::sync::Arc;
 use maho_core::{agent_session::{AgentSession,AgentSessionConfig},model_runtime::{ModelRuntime,CreateModelRuntimeOptions},session_manager::SessionManager,settings_manager::{SettingsManager,InMemorySettingsStorage}};
 use maho_rpc::{connection_handler::handle_session_command,rpc_types::RpcCommand};

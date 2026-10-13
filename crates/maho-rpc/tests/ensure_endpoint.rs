@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[tokio::test]
 async fn endpoint_ownership_depends_on_acceptance_not_a_protocol_response(){
     let temp=tempfile::tempdir().unwrap();let path=temp.path().join("host.sock");

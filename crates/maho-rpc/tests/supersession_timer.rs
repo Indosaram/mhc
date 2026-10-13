@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_rpc::{host_supersession::*, socket_ownership::stat_socket_identity};
 
 #[tokio::test(start_paused = true)]
