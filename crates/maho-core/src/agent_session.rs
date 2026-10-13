@@ -176,6 +176,20 @@ impl From<String> for MessageEditFailure {
     fn from(message: String) -> Self { Self { message, code: None } }
 }
 
+/// A failed session switch or import; `missing_cwd` carries senpi's `MissingSessionCwdError` so a
+/// host can offer the continue-in-current-cwd prompt (RPC `errorData`).
+#[derive(Debug, Clone)]
+pub struct SessionSwitchFailure { pub message: String, pub missing_cwd: Option<crate::session_cwd::MissingSessionCwdError> }
+impl From<String> for SessionSwitchFailure {
+    fn from(message: String) -> Self { Self { message, missing_cwd: None } }
+}
+impl From<&str> for SessionSwitchFailure {
+    fn from(message: &str) -> Self { message.to_owned().into() }
+}
+impl From<crate::session_cwd::MissingSessionCwdError> for SessionSwitchFailure {
+    fn from(error: crate::session_cwd::MissingSessionCwdError) -> Self { Self { message: error.to_string(), missing_cwd: Some(error) } }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptDisposition {
     Handled,
@@ -3571,6 +3585,12 @@ impl AgentSession {
         })).await;
     }
 
+    /// senpi `AgentSessionRuntime.emitAttachmentEvent`: `session_parked` / `session_resumed` reach
+    /// only the extensions that registered for them.
+    pub(crate) async fn runtime_emit_attachment(&self, event: maho_ext_api::ExtensionEvent) {
+        if self.has_extension_handlers(event.kind()).await { self.dispatch_extension_event(event).await; }
+    }
+
     pub(crate) async fn runtime_before_fork(&self, entry_id: &str, include_entry: bool) -> Result<bool, String> {
         Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeFork {
             entry_id: entry_id.to_owned(), position: if include_entry { maho_ext_api::ForkPosition::At } else { maho_ext_api::ForkPosition::Before },
@@ -3647,36 +3667,95 @@ impl AgentSession {
     }
 
     pub async fn switch_session_with_cwd(&self, path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        self.switch_session_with_cwd_coded(path, cwd_override).await.map_err(|error| error.message)
+    }
+
+    /// `switch_session_with_cwd` keeping senpi's typed `MissingSessionCwdError`.
+    pub async fn switch_session_with_cwd_coded(&self, path: &str, cwd_override: Option<&str>) -> Result<bool, SessionSwitchFailure> {
         let entries = crate::session_manager::load_entries_from_file(path);
         if entries.first().and_then(|entry| entry.get("type")).and_then(Value::as_str) != Some("session") {
-            return Err(format!("Invalid session file: {path}"));
+            return Err(format!("Invalid session file: {path}").into());
         }
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeSwitch {
             reason: maho_ext_api::SessionReason::Resume, target_session_file: Some(path.to_owned()),
         }).await?.cancel == Some(true) { return Ok(false); }
+        // senpi opens the target for its stored (or overridden) cwd and refuses one that is gone
+        // before tearing anything down.
+        let session_dir = Path::new(path).parent().map(|parent| parent.to_string_lossy().into_owned());
+        let target = crate::session_manager::SessionManager::open(path, session_dir.as_deref(), cwd_override, None);
+        crate::session_cwd::assert_session_cwd_exists(&target, &self.cwd())?;
         self.ensure_extension_recreation().await?;
         self.abort().await;
         let previous = self.session_file();
+        let previous_cwd = self.cwd();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Resume).await;
         self.invalidate_extension_runtime().await;
-        self.with_session_manager_mut(|manager| {
-            if cwd_override.is_some() {
-                *manager = crate::session_manager::SessionManager::open(path, None, cwd_override, None);
-            } else {
-                manager.set_session_file(path, None);
-            }
-        });
+        // Nothing writes to the replaced manager any more, so it releases its writer claim.
+        self.with_session_manager_mut(|manager| std::mem::replace(manager, target).dispose());
         self.state().cwd = self.with_session_manager(|manager| manager.cwd().to_owned());
+        let cwd_changed = self.cwd() != previous_cwd;
+        if cwd_changed { self.rebind_cwd_services(); }
         self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
+        if cwd_changed { self.extend_resources_from_extensions(maho_ext_api::SessionReason::Resume).await; }
         Ok(true)
     }
 
+    /// senpi recreates the cwd-bound services for the target cwd on a switch (agent-session-runtime.ts
+    /// `createRuntime({ cwd: sessionManager.getCwd() })`): settings, built-in tools, and the prompt and
+    /// skill resources follow the resumed session's cwd. Extension discovery follows through the
+    /// runner renewal, whose context reads the new cwd.
+    fn rebind_cwd_services(&self) {
+        let cwd = self.cwd();
+        self.with_settings_manager_mut(|manager| manager.rebind_cwd(&cwd));
+        let weak = self.weak_accessor();
+        let context: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
+            let session = weak().expect("Session retained during tool execution");
+            Arc::new(crate::sdk::extension_context::create(&session))
+        });
+        for (name, definition) in maho_tools::index::create_all_tool_definitions(Path::new(&cwd), Default::default()) {
+            let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition.clone(), Some(context.clone()));
+            let mut state = self.state();
+            if state.custom_tools.iter().any(|custom| custom.name == name) { continue; }
+            // A built-in an extension currently shadows is restored from its backup on renewal.
+            if let Some(Some((entry, backup))) = state.extension_tool_backups.get_mut(&name) {
+                entry.definition = definition;
+                *backup = tool;
+                continue;
+            }
+            let Some(source_info) = state.tool_definitions.get(&name).filter(|_| state.base_tool_definitions.contains_key(&name))
+                .map(|entry| entry.source_info.clone()) else { continue; };
+            drop(state);
+            self.register_tool_definition(definition, source_info, tool);
+        }
+        if self.state().skills_loaded {
+            let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
+                let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
+                    values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
+                (paths("prompts"), paths("skills"))
+            });
+            let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
+                cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths, include_defaults: true,
+            });
+            let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
+                cwd, agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
+            });
+            self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
+            self.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
+        }
+        self.set_active_tools_by_name(self.get_active_tool_names());
+    }
+
     pub async fn import_from_jsonl(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
+        self.import_from_jsonl_coded(input_path, cwd_override).await.map_err(|error| error.message)
+    }
+
+    /// `import_from_jsonl` keeping senpi's typed `MissingSessionCwdError`.
+    pub async fn import_from_jsonl_coded(&self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, SessionSwitchFailure> {
         let base = std::env::current_dir().map_err(|error| error.to_string())?;
         let resolved = crate::paths::resolve_path(input_path, &base.to_string_lossy(),
             &crate::paths::PathInputOptions::expanding_tilde(crate::config::home_dir()));
         let source = std::path::Path::new(&resolved);
-        if !source.exists() { return Err(format!("File not found: {resolved}")); }
+        if !source.exists() { return Err(format!("File not found: {resolved}").into()); }
         let directory = self.with_session_manager(|manager| manager.session_dir().to_owned());
         std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
         let filename = source.file_name().ok_or("Invalid import filename")?;
@@ -3698,7 +3777,7 @@ impl AgentSession {
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
             std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
         }
-        self.switch_session_with_cwd(&destination, cwd_override).await
+        self.switch_session_with_cwd_coded(&destination, cwd_override).await
     }
 
     pub async fn fork(&self, entry_id: &str, include_entry: bool) -> Result<AssistantEditResult, String> {
@@ -4012,6 +4091,16 @@ impl AgentSession {
                 .map(Some).map_err(|error| error.message),
             None => Ok(None),
         }
+    }
+
+    /// senpi `AgentSessionRuntime.reportRemovedExtensions`: the outgoing runner reports, as
+    /// `session_extensions_removed`, every extension the replacement runner no longer loads.
+    pub(crate) async fn report_removed_extensions(&self, replacement: &maho_ext_host::runner::ExtensionRunner, reason: maho_ext_api::SessionReason) {
+        let Some(mut old) = self.extension_runner.lock().await.clone() else { return; };
+        let paths: BTreeSet<_> = replacement.extensions.iter().map(|extension| extension.identity.resolved_path.clone()).collect();
+        let removed: Vec<_> = old.extensions.iter().filter(|extension| !paths.contains(&extension.identity.resolved_path))
+            .map(|extension| extension.identity.clone()).collect();
+        if !removed.is_empty() { old.emit_removed_extensions(reason, removed).await; }
     }
 
     pub async fn execute_user_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
@@ -8009,6 +8098,42 @@ mod tests {
             (maho_ext_api::EventKind::SessionStart, maho_ext_api::SessionReason::Reload),
             (maho_ext_api::EventKind::ResourcesDiscover, maho_ext_api::SessionReason::Reload),
         ]);
+    }
+
+    #[tokio::test]
+    async fn switch_rebinds_cwd_resources_and_refuses_a_missing_cwd() {
+        let dir = crate::test_support::isolated_tempdir();
+        let mut cwds = Vec::new();
+        for name in ["first", "second"] {
+            let skill = dir.path().join(name).join(crate::config::config_dir_name()).join("skills").join(format!("{name}-skill"));
+            std::fs::create_dir_all(&skill).expect("skill dir");
+            std::fs::write(skill.join("SKILL.md"), format!("---\nname: {name}-skill\ndescription: {name}\n---\nbody")).expect("skill");
+            cwds.push(dir.path().join(name).to_string_lossy().into_owned());
+        }
+        let model = serde_json::from_value(serde_json::json!({
+            "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
+            "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
+            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
+        })).expect("model");
+        let session = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwds[0].clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), model: Some(model),
+            session_manager: Some(SessionManager::in_memory(&cwds[0], None, None)), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session").session;
+        let skill_names = |session: &AgentSession| session.loaded_skills().expect("skills").skills.into_iter().map(|skill| skill.name).collect::<Vec<_>>();
+        assert_eq!(skill_names(&session), ["first-skill"]);
+        let header = |id: &str, cwd: &str| format!("{}\n", serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00Z","cwd":cwd}));
+        let gone = dir.path().join("gone").to_string_lossy().into_owned();
+        let missing = dir.path().join("missing.jsonl");
+        std::fs::write(&missing, header("missing-cwd", &gone)).expect("missing header");
+        let failure = session.switch_session_with_cwd_coded(&missing.to_string_lossy(), None).await.expect_err("missing cwd");
+        assert_eq!(failure.missing_cwd.expect("typed error").issue.session_cwd, gone);
+        assert_eq!(session.cwd(), cwds[0]);
+        let target = dir.path().join("second.jsonl");
+        std::fs::write(&target, header("second-cwd", &cwds[1])).expect("second header");
+        assert!(session.switch_session(&target.to_string_lossy()).await.expect("switch"));
+        assert_eq!(session.cwd(), cwds[1]);
+        assert_eq!(skill_names(&session), ["second-skill"]);
+        session.dispose().await;
     }
 
     #[tokio::test]

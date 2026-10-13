@@ -88,6 +88,13 @@ pub struct CreateAgentSessionRuntimeResult {
     pub model_fallback_message: Option<String>,
 }
 
+/// The attachment transitions a shared host reports to a live session's extensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentEvent {
+    SessionParked,
+    SessionResumed,
+}
+
 pub type RebindSession = Box<dyn Fn(&AgentSession) + Send + Sync>;
 pub type SessionInvalidateHook = Box<dyn Fn() + Send + Sync>;
 
@@ -153,6 +160,14 @@ impl AgentSessionRuntime {
 
     pub fn set_before_session_invalidate(&mut self, callback: Option<SessionInvalidateHook>) {
         self.before_session_invalidate = callback;
+    }
+
+    /// Attachment transitions are ordered by the RPC entry's lifecycle owner.
+    pub async fn emit_attachment_event(&self, event: AttachmentEvent) {
+        self.session.runtime_emit_attachment(match event {
+            AttachmentEvent::SessionParked => maho_ext_api::ExtensionEvent::SessionParked,
+            AttachmentEvent::SessionResumed => maho_ext_api::ExtensionEvent::SessionResumed,
+        }).await;
     }
 
     pub async fn switch_session(&mut self, session_path: &str) -> Result<bool, String> {
@@ -273,6 +288,8 @@ impl AgentSessionRuntime {
         }
         let destination = destination.to_string_lossy().into_owned();
         if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(destination.clone())).await? { return Ok(false); }
+        // senpi takes the shared host's write grant for the destination before copying into it.
+        crate::session_write_reservation::reserve_session_write(&destination);
         if !stored {
             let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
@@ -327,6 +344,7 @@ impl AgentSessionRuntime {
             Err(error) => { created.session.dispose().await; return Err(error); }
         };
         if let Some(runner) = replacement {
+            self.session.report_removed_extensions(&runner, reason).await;
             created.session.set_extension_runner(runner).await;
             created.session.bind_extensions(Default::default()).await;
         }
@@ -609,6 +627,64 @@ mod tests {
         assert_eq!(runtime.session().messages().len(), 2);
         assert!(runtime.import_from_jsonl(source.to_str().unwrap(), None).await.expect("collision import"));
         assert!(runtime.session().session_file().unwrap().ends_with("import-fixture-1.jsonl"));
+    }
+
+    fn recording_extension(session: &AgentSession, path: &str, kinds: &[maho_ext_api::EventKind],
+        seen: std::sync::Arc<std::sync::Mutex<Vec<maho_ext_api::EventKind>>>) -> maho_ext_api::LoadedExtension {
+        let mut extension = maho_ext_api::LoadedExtension::new(path, session.cwd().into(), Default::default());
+        for kind in kinds {
+            let seen = seen.clone();
+            let kind = *kind;
+            extension.handlers.insert(kind, vec![std::sync::Arc::new(move |_, _| {
+                seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(kind);
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })]);
+        }
+        extension
+    }
+
+    async fn runtime_fixture() -> (tempfile::TempDir, AgentSessionRuntime) {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
+            });
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
+            session_manager: Some(crate::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        (dir, AgentSessionRuntime::new(created.session, services, Vec::new(), None, None))
+    }
+
+    #[tokio::test]
+    async fn attachment_events_reach_registered_extensions() {
+        let (_dir, runtime) = runtime_fixture().await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let extension = recording_extension(runtime.session(), "<inline:attachment>",
+            &[maho_ext_api::EventKind::SessionParked, maho_ext_api::EventKind::SessionResumed], seen.clone());
+        let context = crate::sdk::extension_context::create(runtime.session());
+        runtime.session().set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)).await;
+        runtime.emit_attachment_event(AttachmentEvent::SessionParked).await;
+        runtime.emit_attachment_event(AttachmentEvent::SessionResumed).await;
+        assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionParked, maho_ext_api::EventKind::SessionResumed]);
+    }
+
+    #[tokio::test]
+    async fn replacement_reports_extensions_the_new_runner_no_longer_loads() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let extension = recording_extension(runtime.session(), "<inline:removed>", &[maho_ext_api::EventKind::SessionExtensionsRemoved], seen.clone());
+        let context = crate::sdk::extension_context::create(runtime.session());
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context);
+        runner.set_runtime_factory(std::sync::Arc::new(|context| {
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context)) })
+        }));
+        runtime.session().set_extension_runner(runner).await;
+        assert!(runtime.new_session(None, None).await.expect("replacement"));
+        assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionExtensionsRemoved]);
     }
 
     #[test]

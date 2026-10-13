@@ -185,6 +185,17 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
     handle_session_command_with_sink(session,command,None,None,None).await
 }
+/// senpi connection-handler.ts: a `MissingSessionCwdError` is answered with
+/// `errorCode: "missing_session_cwd"` and the issue as `errorData`, so the client can offer to
+/// continue in its current cwd.
+fn session_switch_failure(command:&RpcCommand,kind:&str,error:maho_core::agent_session::SessionSwitchFailure)->RpcResponse{
+    let error_data=error.missing_cwd.map(|missing|{
+        let mut data=serde_json::json!({"sessionCwd":missing.issue.session_cwd,"fallbackCwd":missing.issue.fallback_cwd});
+        if let Some(file)=missing.issue.session_file{data["sessionFile"]=file.into();}
+        data
+    });
+    RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:kind.into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error_data.is_some().then(||"missing_session_cwd".to_owned()),error_data}}
+}
 fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
     let result=result?;
     let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));
@@ -224,8 +235,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if admitted.load(std::sync::atomic::Ordering::SeqCst){return None;}
             ("prompt",result)
         },
-        RpcCommandBody::SwitchSession{session_path,cwd_override}=>
-            ("switch_session",session.switch_session_with_cwd(session_path,cwd_override.as_deref()).await.map(|switched|Some(serde_json::json!({"cancelled":!switched})))),
+        RpcCommandBody::SwitchSession{session_path,cwd_override}=>match session.switch_session_with_cwd_coded(session_path,cwd_override.as_deref()).await{
+            Ok(switched)=>("switch_session",Ok(Some(serde_json::json!({"cancelled":!switched})))),
+            Err(error)=>return Some(session_switch_failure(command,"switch_session",error)),
+        },
         RpcCommandBody::Fork{entry_id,position}=>{
             let include_entry=matches!(position,Some(crate::rpc_types::ForkPosition::At));
             ("fork",session.fork(entry_id,include_entry).await.map(|result|Some(serde_json::json!({"text":result.editor_text,"cancelled":result.cancelled}))))
@@ -466,7 +479,10 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             });
             ("get_tree", Ok(Some(serde_json::json!({"tree":tree,"leafId":leaf_id}))))
         },
-        RpcCommandBody::ImportJsonl{input_path,cwd_override}=>("import_jsonl",session.import_from_jsonl(input_path,cwd_override.as_deref()).await.map(|cancelled|Some(serde_json::json!({"cancelled":!cancelled})))),
+        RpcCommandBody::ImportJsonl{input_path,cwd_override}=>match session.import_from_jsonl_coded(input_path,cwd_override.as_deref()).await{
+            Ok(imported)=>("import_jsonl",Ok(Some(serde_json::json!({"cancelled":!imported})))),
+            Err(error)=>return Some(session_switch_failure(command,"import_jsonl",error)),
+        },
         RpcCommandBody::EditAssistantMessage{entry_id,text,expected_leaf_id,summarize,custom_instructions}=>{
             if entry_id.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"edit_assistant_message".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:"edit_assistant_message requires a non-empty entryId and a text string".into(),error_code:None,error_data:None}});}
             let result=session.edit_assistant_message_coded(entry_id,text,maho_core::agent_session::TreeNavigationOptions{expected_leaf_id:expected_leaf_id.clone(),summarize:*summarize,custom_instructions:custom_instructions.clone(),..Default::default()}).await;
@@ -697,6 +713,22 @@ mod new_session_tests{
             settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
             cwd:"/tmp".into(),agent_dir:Some("/tmp/maho-agent".into()),fallback_now:None,retry_random:None,scoped_models:vec![],favorite_models:vec![],flag_values:Default::default(),custom_tools:vec![],model_runtime:Some(runtime),model_registry:None,uses_default_stream_function:Some(false),initial_active_tool_names:None,default_tool_names:None,eval_only_tool_names:None,allowed_tool_names:None,excluded_tool_names:None,base_tools_override:None,session_start_event:None,auto_title_sessions:Some(false),
         }).expect("session")
+    }
+
+    #[tokio::test]
+    async fn switch_to_a_session_whose_cwd_is_gone_carries_the_missing_cwd_error_data(){
+        let session=session();
+        let dir=tempfile::tempdir().expect("directory");
+        let gone=dir.path().join("gone").to_string_lossy().into_owned();
+        let path=dir.path().join("stored.jsonl");
+        std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"session","version":3,"id":"missing-cwd","timestamp":"2026-01-01T00:00:00Z","cwd":gone}))).expect("session header");
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"id":"switch","type":"switch_session","sessionPath":path.to_string_lossy()})).expect("command");
+        let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
+        assert_eq!(response["success"],false);
+        assert_eq!(response["errorCode"],"missing_session_cwd");
+        assert_eq!(response["errorData"]["sessionCwd"],gone);
+        assert_eq!(response["errorData"]["fallbackCwd"],"/tmp");
+        assert_eq!(session.cwd(),"/tmp");
     }
 
     #[tokio::test]
