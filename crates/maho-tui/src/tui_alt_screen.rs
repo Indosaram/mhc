@@ -31,7 +31,10 @@ use crate::tui::{
     OverlayAnchor, OverlayHandle, OverlayMargin, OverlayOptions, SizeValue, TuiBase, TuiMouseButton, TuiMouseDispatchResult,
     TuiMouseDispatchTarget, TuiMouseEvent, TuiMouseEventType, CURSOR_MARKER,
 };
-use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width, visible_width, word_segments};
+use crate::utils::{
+    extract_ansi_code, get_grapheme_cell_range, get_osc8_link_at_column, slice_by_column, strip_terminal_sequences,
+    truncate_to_width, visible_width, word_segments,
+};
 
 /// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
 /// mirrors common terminal word-selection behavior by keeping paths and kebab-case tokens
@@ -45,26 +48,49 @@ fn is_osc133_prompt_start(line: &str) -> bool {
     line.starts_with("\x1b]133;A\x07") || line.starts_with("\x1b]133;A\x1b\\")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// senpi's `SelectionPoint`: a row/column in either the screen or (with `scroll_view`) that
+/// view's scroll content; `boundary` marks a point between cells rather than on one.
+#[derive(Clone)]
 struct SelectionPoint {
     row: usize,
     col: usize,
+    scroll_view: Option<Rc<RefCell<ScrollView>>>,
+    boundary: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Selection {
-    anchor: SelectionPoint,
-    focus: SelectionPoint,
+/// A selection endpoint mapped to screen coordinates for column resolution.
+struct ScreenPoint {
+    row: i64,
+    col: i64,
+    boundary: bool,
 }
 
-impl Selection {
-    fn ordered(&self) -> (SelectionPoint, SelectionPoint) {
-        if self.anchor <= self.focus {
-            (self.anchor, self.focus)
-        } else {
-            (self.focus, self.anchor)
-        }
+impl From<&SelectionPoint> for ScreenPoint {
+    fn from(point: &SelectionPoint) -> Self {
+        Self { row: point.row as i64, col: point.col as i64, boundary: point.boundary }
     }
+}
+
+fn same_scroll_view(a: &Option<Rc<RefCell<ScrollView>>>, b: &Option<Rc<RefCell<ScrollView>>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// senpi's `copySelection` option: copy text to the system clipboard and report success
+/// through the returned channel (senpi's `Promise<boolean>`).
+pub type CopySelectionHook = Rc<dyn Fn(String) -> std::sync::mpsc::Receiver<bool>>;
+
+const SELECTION_AUTO_SCROLL_INTERVAL_MS: u64 = 50;
+
+fn default_search_match_style(text: &str) -> String {
+    format!("\x1b[4m{text}\x1b[24m")
+}
+
+fn default_search_current_match_style(text: &str) -> String {
+    format!("\x1b[1;7m{text}\x1b[22;27m")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -78,6 +104,7 @@ struct LastClick {
     timestamp_ms: i64,
     count: u32,
     row: usize,
+    scroll_view: Option<Rc<RefCell<ScrollView>>>,
     word_start: usize,
     word_end: usize,
 }
@@ -157,13 +184,29 @@ pub struct TuiAltScreen {
     selection_anchor: Option<SelectionPoint>,
     selection_focus: Option<SelectionPoint>,
     selection_granularity: SelectionGranularity,
+    selection_initial_range: Option<(SelectionPoint, SelectionPoint)>,
     selection_press_active: bool,
+    selection_dragged: bool,
+    selection_drag_pointer: Option<(i64, i64)>,
+    selection_auto_scroll_direction: i64,
+    selection_auto_scroll_due_ms: Option<u64>,
+    pressed_url: Option<String>,
+    /// Last host clock reading passed to [`TuiAltScreen::tick`].
+    now_ms: u64,
+    copy_on_select: bool,
+    open_url: Option<Rc<dyn Fn(&str)>>,
+    copy_selection: Option<CopySelectionHook>,
+    pending_copy_results: Vec<std::sync::mpsc::Receiver<bool>>,
     last_click: Option<LastClick>,
     scrollbar_drag: Option<ScrollbarDrag>,
     scrollbar_hover: Option<Rc<RefCell<ScrollView>>>,
     active_search: Option<ActiveSearch>,
     /// senpi's `searchNavigationButtonStyle` option.
     search_navigation_button_style: NavigationButtonStyle,
+    /// senpi's `searchMatchStyle` option.
+    search_match_style: Rc<dyn Fn(&str) -> String>,
+    /// senpi's `searchCurrentMatchStyle` option.
+    search_current_match_style: Rc<dyn Fn(&str) -> String>,
     /// senpi's `wheelScrollLines` option (default 1).
     wheel_scroll_lines: i64,
     mouse_capture: Option<TuiMouseDispatchTarget>,
@@ -219,12 +262,25 @@ impl TuiAltScreen {
             selection_anchor: None,
             selection_focus: None,
             selection_granularity: SelectionGranularity::Character,
+            selection_initial_range: None,
             selection_press_active: false,
+            selection_dragged: false,
+            selection_drag_pointer: None,
+            selection_auto_scroll_direction: 0,
+            selection_auto_scroll_due_ms: None,
+            pressed_url: None,
+            now_ms: 0,
+            copy_on_select: true,
+            open_url: None,
+            copy_selection: None,
+            pending_copy_results: Vec::new(),
             last_click: None,
             scrollbar_drag: None,
             scrollbar_hover: None,
             active_search: None,
             search_navigation_button_style: Rc::new(|text: &str, _hovered: bool| text.to_string()),
+            search_match_style: Rc::new(default_search_match_style),
+            search_current_match_style: Rc::new(default_search_current_match_style),
             wheel_scroll_lines: 1,
             mouse_capture: None,
             mouse_press_target: None,
@@ -296,6 +352,7 @@ impl TuiAltScreen {
     pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool) {
         self.close_search();
         self.clear_text_selection();
+        self.last_click = None;
         self.clear_component_mouse_gesture();
         self.stop_scrollbar_hover();
         self.stop_scrollbar_drag();
@@ -337,12 +394,16 @@ impl TuiAltScreen {
         }
     }
 
+    /// senpi's `clearTextSelection` (also used where senpi resets the same fields inline).
     fn clear_text_selection(&mut self) {
+        self.stop_selection_auto_scroll();
         self.selection_press_active = false;
         self.selection_anchor = None;
         self.selection_focus = None;
         self.selection_granularity = SelectionGranularity::Character;
-        self.last_click = None;
+        self.selection_initial_range = None;
+        self.pressed_url = None;
+        self.selection_dragged = false;
     }
 
     fn stop_scrollbar_drag(&mut self) {
@@ -499,6 +560,7 @@ impl TuiAltScreen {
     /// reporting, clear, and reset the diff state.
     pub fn before_terminal_start(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool, multiplexer: bool) {
         self.clear_text_selection();
+        self.last_click = None;
         self.clear_component_mouse_gesture();
         self.last_component_click = None;
         self.stop_scrollbar_hover();
@@ -660,11 +722,40 @@ impl TuiAltScreen {
     }
 
     fn apply_search_text_highlight(&self, text: &str, current: bool) -> String {
-        if current {
-            format!("\x1b[1;7m{text}\x1b[22;27m")
-        } else {
-            format!("\x1b[4m{text}\x1b[24m")
+        let style = if current { &self.search_current_match_style } else { &self.search_match_style };
+        let mut result = String::new();
+        let mut plain_start = 0;
+        let mut index = 0;
+        while index < text.len() {
+            let Some(code) = extract_ansi_code(text, index) else {
+                index += text[index..].chars().next().map_or(1, char::len_utf8);
+                continue;
+            };
+            if index > plain_start {
+                result.push_str(&style(&text[plain_start..index]));
+            }
+            result.push_str(code);
+            index += code.len();
+            plain_start = index;
         }
+        if plain_start < text.len() {
+            result.push_str(&style(&text[plain_start..]));
+        }
+        result
+    }
+
+    /// senpi's `searchMatchStyle`, `searchCurrentMatchStyle` and `searchNavigationButtonStyle`
+    /// options; `None` keeps the default underline / bold-inverse / plain styles.
+    pub fn set_search_styles(
+        &mut self,
+        match_style: Option<Rc<dyn Fn(&str) -> String>>,
+        current_match_style: Option<Rc<dyn Fn(&str) -> String>>,
+        navigation_button_style: Option<NavigationButtonStyle>,
+    ) {
+        self.search_match_style = match_style.unwrap_or_else(|| Rc::new(default_search_match_style));
+        self.search_current_match_style = current_match_style.unwrap_or_else(|| Rc::new(default_search_current_match_style));
+        self.search_navigation_button_style =
+            navigation_button_style.unwrap_or_else(|| Rc::new(|text: &str, _hovered: bool| text.to_string()));
     }
 
     /// senpi's `applySearchHighlights`: underline every visible match and reverse the current one.
@@ -824,17 +915,56 @@ impl TuiAltScreen {
         result
     }
 
-    /// senpi's `applySelection`. The scroll-view-anchored mapping senpi performs when the
-    /// selection started inside a scroll view is not representable in this port's `Selection`
-    /// type (it carries no scroll-view reference); see `parity.d/7.md`.
-    fn apply_selection(&mut self, screen: Vec<String>, _layout: &LayoutFrame) -> Vec<String> {
-        let (Some(anchor), Some(focus)) = (self.selection_anchor, self.selection_focus) else {
+    /// senpi's `applySelection`: highlight the selection, mapping scroll-view-anchored points
+    /// through the view's current scroll offset and clipping to its visible box.
+    fn apply_selection(&mut self, screen: Vec<String>, layout: &LayoutFrame) -> Vec<String> {
+        let Some((start, end)) = self.get_selection_bounds() else {
             return screen;
         };
-        let mut lines = screen;
-        let width = self.current_layout.as_ref().map(|layout| layout.width).unwrap_or(0);
-        apply_selection_highlight(&mut lines, Selection { anchor, focus }, width);
-        lines
+        let columns = layout.width as i64;
+        let mut min_row = 0i64;
+        let mut max_row = screen.len() as i64 - 1;
+        let mut min_column = 0i64;
+        let mut max_column = columns;
+        let mut screen_start = ScreenPoint::from(&start);
+        let mut screen_end = ScreenPoint::from(&end);
+        if let Some(scroll_view) = &start.scroll_view {
+            let Some(boxed) = get_scroll_view_box(layout, scroll_view) else {
+                return screen;
+            };
+            min_row = boxed.rect.y.max(boxed.clip.y).max(0);
+            max_row = (screen.len() as i64 - 1)
+                .min(boxed.rect.y + boxed.rect.height as i64 - 1)
+                .min(boxed.clip.y + boxed.clip.height as i64 - 1);
+            min_column = boxed.rect.x.max(boxed.clip.x).max(0);
+            max_column = columns.min(boxed.rect.x + boxed.rect.width as i64).min(boxed.clip.x + boxed.clip.width as i64);
+            let scroll_top = scroll_view.borrow().scroll_top() as i64;
+            screen_start.row = boxed.rect.y + start.row as i64 - scroll_top;
+            screen_start.col += boxed.rect.x;
+            screen_end.row = boxed.rect.y + end.row as i64 - scroll_top;
+            screen_end.col += boxed.rect.x;
+        }
+        screen
+            .into_iter()
+            .enumerate()
+            .map(|(row, line)| {
+                let row = row as i64;
+                if row < min_row || row > max_row || row < screen_start.row || row > screen_end.row || image_stub::is_image_line(&line) {
+                    return line;
+                }
+                let line_width = visible_width(&line);
+                let (start_col, end_col) =
+                    get_selection_columns(&line, row, &screen_start, &screen_end, min_column, max_column);
+                if end_col <= start_col {
+                    return line;
+                }
+                let (start_col, end_col) = (start_col as usize, end_col as usize);
+                let before = slice_by_column(&line, 0, start_col, true);
+                let selected = slice_by_column(&line, start_col, end_col - start_col, true);
+                let after = slice_by_column(&line, end_col, line_width.saturating_sub(end_col), true);
+                format!("{before}{}{after}", apply_selection_highlight(&selected))
+            })
+            .collect()
     }
 
     /// senpi's `toggleSearch`: open the find bar as a focused top-right overlay, or close it.
@@ -1362,6 +1492,7 @@ impl TuiAltScreen {
             return false;
         };
         self.clear_text_selection();
+        self.last_click = None;
         self.set_scrollbar_hover(Some(Rc::clone(&scroll_view)), 0);
         let on_thumb = event.y >= geometry.thumb_top && event.y < geometry.thumb_top + geometry.thumb_height as i64;
         let grab_offset = if on_thumb { event.y - geometry.thumb_top } else { (geometry.thumb_height / 2) as i64 };
@@ -1373,22 +1504,53 @@ impl TuiAltScreen {
         true
     }
 
-    fn get_selection_point(&self, event: &SgrMouseEvent, terminal: &dyn Terminal) -> SelectionPoint {
+    /// senpi's `getScrollSelectionPoint`: a content-row point inside `scroll_view`, with the
+    /// pointer clamped to the view's visible rows.
+    fn get_scroll_selection_point(&self, scroll_view: &Rc<RefCell<ScrollView>>, x: i64, y: i64) -> Option<SelectionPoint> {
+        let frame = self.current_layout.as_ref()?;
+        let boxed = get_scroll_view_box(frame, scroll_view)?;
+        if boxed.rect.height == 0 || boxed.clip.height == 0 {
+            return None;
+        }
+        let rows = self.previous_screen_height as i64;
+        let visible_top = boxed.rect.y.max(boxed.clip.y).max(0);
+        let visible_bottom = (rows - 1)
+            .min(boxed.rect.y + boxed.rect.height as i64 - 1)
+            .min(boxed.clip.y + boxed.clip.height as i64 - 1);
+        if visible_bottom < visible_top {
+            return None;
+        }
+        let pointer_row = y.min(visible_bottom).max(visible_top);
+        let max_content_row = (boxed.scroll_content_lines.as_ref().map_or(1, Vec::len) as i64 - 1).max(0);
+        let row = (scroll_view.borrow().scroll_top() as i64 + pointer_row - boxed.rect.y).min(max_content_row).max(0);
+        let col = (x - boxed.rect.x).min(boxed.rect.width as i64 - 1).max(0);
+        Some(SelectionPoint { row: row as usize, col: col as usize, scroll_view: Some(Rc::clone(scroll_view)), boundary: false })
+    }
+
+    /// senpi's `getSelectionPoint`.
+    fn get_selection_point(&self, event: &SgrMouseEvent, scroll_view: Option<&Rc<RefCell<ScrollView>>>) -> SelectionPoint {
+        if let Some(point) = scroll_view.and_then(|scroll_view| self.get_scroll_selection_point(scroll_view, event.x, event.y)) {
+            return point;
+        }
         SelectionPoint {
-            row: (event.y.max(0) as usize).min((terminal.rows() as usize).saturating_sub(1)),
-            col: (event.x.max(0) as usize).min((terminal.columns() as usize).saturating_sub(1)),
+            row: event.y.min(self.previous_screen_height as i64 - 1).max(0) as usize,
+            col: event.x.min(self.previous_screen_width as i64 - 1).max(0) as usize,
+            scroll_view: None,
+            boundary: false,
         }
     }
 
-    fn get_selection_source_line(&self, point: SelectionPoint) -> String {
-        self.current_layout
-            .as_ref()
-            .and_then(|frame| frame.lines.get(point.row))
-            .cloned()
-            .unwrap_or_default()
+    /// senpi's `getSelectionSourceLine`: scroll content for scroll-view points, else the screen.
+    fn get_selection_source_line(&self, point: &SelectionPoint) -> String {
+        if let (Some(scroll_view), Some(frame)) = (&point.scroll_view, &self.current_layout)
+            && let Some(lines) = get_scroll_view_box(frame, scroll_view).and_then(|boxed| boxed.scroll_content_lines.as_ref())
+        {
+            return lines.get(point.row).cloned().unwrap_or_default();
+        }
+        self.previous_screen.get(point.row).cloned().unwrap_or_default()
     }
 
-    fn get_word_selection(&self, point: SelectionPoint) -> Option<(SelectionPoint, SelectionPoint)> {
+    fn get_word_selection(&self, point: &SelectionPoint) -> Option<(SelectionPoint, SelectionPoint)> {
         let line = strip_terminal_sequences(&self.get_selection_source_line(point));
         let segments = word_segments(&line);
         struct Seg {
@@ -1415,40 +1577,44 @@ impl TuiAltScreen {
             selection_start = cols[index].start;
         }
         let mut index = clicked_index;
-        while index < cols.len() - 1 && can_join(&cols[index], &cols[index + 1]) {
+        while index + 1 < cols.len() && can_join(&cols[index], &cols[index + 1]) {
             index += 1;
             selection_end = cols[index].end;
         }
-        Some((SelectionPoint { row: point.row, col: selection_start }, SelectionPoint { row: point.row, col: selection_end }))
+        Some((
+            SelectionPoint { col: selection_start, boundary: false, ..point.clone() },
+            SelectionPoint { col: selection_end, boundary: true, ..point.clone() },
+        ))
     }
 
-    fn get_line_selection(&self, point: SelectionPoint) -> (SelectionPoint, SelectionPoint) {
+    fn get_line_selection(&self, point: &SelectionPoint) -> (SelectionPoint, SelectionPoint) {
         let width = visible_width(&self.get_selection_source_line(point));
-        (SelectionPoint { row: point.row, col: 0 }, SelectionPoint { row: point.row, col: width })
+        (
+            SelectionPoint { col: 0, boundary: false, ..point.clone() },
+            SelectionPoint { col: width, boundary: true, ..point.clone() },
+        )
     }
 
+    /// senpi's `updateSelectionFocus`: word/line granularity extends from the initial range.
     fn update_selection_focus(&mut self, point: SelectionPoint) {
-        if self.selection_granularity == SelectionGranularity::Character {
+        let Some((initial_start, initial_end)) = self.selection_initial_range.clone() else {
             self.selection_focus = Some(point);
             return;
-        }
-        let range = if self.selection_granularity == SelectionGranularity::Word {
-            self.get_word_selection(point)
-        } else {
-            Some(self.get_line_selection(point))
+        };
+        let range = match self.selection_granularity {
+            SelectionGranularity::Character => {
+                self.selection_focus = Some(point);
+                return;
+            }
+            SelectionGranularity::Word => self.get_word_selection(&point),
+            SelectionGranularity::Line => Some(self.get_line_selection(&point)),
         };
         let Some((range_start, range_end)) = range else {
             return;
         };
-        let Some(anchor) = self.selection_anchor else {
-            return;
-        };
-        let Some(focus) = self.selection_focus else {
-            return;
-        };
-        let initial_start = anchor.min(focus);
-        let initial_end = anchor.max(focus);
-        if range_start < initial_start {
+        let target_before_initial = range_start.row < initial_start.row
+            || (range_start.row == initial_start.row && range_start.col < initial_start.col);
+        if target_before_initial {
             self.selection_anchor = Some(initial_end);
             self.selection_focus = Some(range_start);
         } else {
@@ -1457,11 +1623,12 @@ impl TuiAltScreen {
         }
     }
 
-    fn get_click_count(&mut self, point: SelectionPoint, word: Option<(SelectionPoint, SelectionPoint)>, now_ms: i64) -> u32 {
+    fn get_click_count(&mut self, point: &SelectionPoint, word: Option<&(SelectionPoint, SelectionPoint)>, now_ms: i64) -> u32 {
         let count = match (&self.last_click, word) {
             (Some(previous), Some((word_start, word_end)))
                 if now_ms - previous.timestamp_ms <= DOUBLE_CLICK_INTERVAL_MS
                     && previous.row == point.row
+                    && same_scroll_view(&previous.scroll_view, &point.scroll_view)
                     && previous.word_start == word_start.col
                     && previous.word_end == word_end.col =>
             {
@@ -1473,10 +1640,121 @@ impl TuiAltScreen {
             timestamp_ms: now_ms,
             count,
             row: point.row,
+            scroll_view: point.scroll_view.clone(),
             word_start: word_start.col,
             word_end: word_end.col,
         });
         count
+    }
+
+    /// senpi's `updateSelectionAutoScroll`: start (or stop) the drag auto-scroll when the
+    /// pointer sits on the anchor scroll view's top or bottom visible row. senpi's 50ms
+    /// `setInterval` becomes a deadline fired by [`TuiAltScreen::tick`].
+    fn update_selection_auto_scroll(&mut self, event: &SgrMouseEvent) {
+        let Some(scroll_view) = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone()) else {
+            self.stop_selection_auto_scroll();
+            return;
+        };
+        let bounds = self.current_layout.as_ref().and_then(|frame| get_scroll_view_box(frame, &scroll_view)).and_then(|boxed| {
+            if boxed.rect.height == 0 || boxed.clip.height == 0 {
+                return None;
+            }
+            let visible_top = boxed.rect.y.max(boxed.clip.y).max(0);
+            let visible_bottom = (self.previous_screen_height as i64 - 1)
+                .min(boxed.rect.y + boxed.rect.height as i64 - 1)
+                .min(boxed.clip.y + boxed.clip.height as i64 - 1);
+            Some((visible_top, visible_bottom))
+        });
+        let Some((visible_top, visible_bottom)) = bounds else {
+            self.stop_selection_auto_scroll();
+            return;
+        };
+        self.selection_drag_pointer = Some((event.x, event.y));
+        self.selection_auto_scroll_direction = if event.y <= visible_top {
+            -1
+        } else if event.y >= visible_bottom {
+            1
+        } else {
+            0
+        };
+        if self.selection_auto_scroll_direction == 0 {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        if self.selection_auto_scroll_due_ms.is_none() {
+            self.selection_auto_scroll_due_ms = Some(self.now_ms + SELECTION_AUTO_SCROLL_INTERVAL_MS);
+        }
+    }
+
+    /// senpi's `autoScrollSelection`: one auto-scroll step while dragging past an edge.
+    fn auto_scroll_selection(&mut self) {
+        let scroll_view = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone());
+        let direction = self.selection_auto_scroll_direction;
+        let (Some(scroll_view), Some((x, y))) = (scroll_view, self.selection_drag_pointer) else {
+            self.stop_selection_auto_scroll();
+            return;
+        };
+        if direction == 0 {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        let remaining = scroll_view.borrow_mut().scroll_by(direction, self.now_ms);
+        if remaining == direction {
+            self.stop_selection_auto_scroll();
+            return;
+        }
+        if let Some(point) = self.get_scroll_selection_point(&scroll_view, x, y) {
+            self.update_selection_focus(point);
+        }
+        self.base.request_render(false, 0);
+    }
+
+    fn stop_selection_auto_scroll(&mut self) {
+        self.selection_auto_scroll_due_ms = None;
+        self.selection_auto_scroll_direction = 0;
+        self.selection_drag_pointer = None;
+    }
+
+    /// Drives senpi's timer-based work from the host loop: settles finished clipboard copies
+    /// (flashing "Copied!" / "Copy failed"), expires flashes, and steps the drag auto-scroll.
+    /// Returns whether a render was requested.
+    pub fn tick(&mut self, now_ms: u64) -> bool {
+        self.now_ms = now_ms;
+        let mut render = false;
+        let mut finished = Vec::new();
+        self.pending_copy_results.retain(|receiver| match receiver.try_recv() {
+            Ok(ok) => {
+                finished.push(ok);
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                finished.push(false);
+                false
+            }
+        });
+        for ok in finished {
+            self.flash(if ok { "Copied!" } else { "Copy failed" }, None);
+            render = true;
+        }
+        if self.flashes.tick(now_ms) {
+            render = true;
+        }
+        if self.selection_auto_scroll_due_ms.is_some_and(|due| due <= now_ms) {
+            self.selection_auto_scroll_due_ms = Some(now_ms + SELECTION_AUTO_SCROLL_INTERVAL_MS);
+            self.auto_scroll_selection();
+            render = true;
+        }
+        if render {
+            self.base.request_render(false, now_ms);
+        }
+        render
+    }
+
+    /// Show a transient message in the alternate-screen flash stack (senpi's `flash`).
+    pub fn flash(&mut self, message: &str, duration_ms: Option<u64>) {
+        self.flashes.flash(message, duration_ms, self.now_ms);
+        self.base.request_render(false, 0);
     }
 
     fn handle_selection_mouse_event(&mut self, event: SgrMouseEvent, now_ms: i64, terminal: &mut dyn Terminal) {
@@ -1484,17 +1762,56 @@ impl TuiAltScreen {
         if button != 0 && !(event.release && button == 3) {
             return;
         }
-        let point = self.get_selection_point(&event, terminal);
+        let anchor_scroll_view = self.selection_anchor.as_ref().and_then(|anchor| anchor.scroll_view.clone());
+        let point = self.get_selection_point(&event, anchor_scroll_view.as_ref());
 
         if event.release {
             if !self.selection_press_active {
                 return;
             }
             self.selection_press_active = false;
-            if self.selection_anchor.is_none() {
+            self.stop_selection_auto_scroll();
+            let Some(anchor) = self.selection_anchor.clone() else {
+                return;
+            };
+            self.update_selection_focus(point.clone());
+            let is_click = !self.selection_dragged
+                && same_scroll_view(&anchor.scroll_view, &point.scroll_view)
+                && anchor.row == point.row
+                && anchor.col == point.col;
+            let pressed_url = self.pressed_url.take();
+            let clicked_url = if is_click { pressed_url } else { None };
+            if let (Some(url), Some(open_url)) = (clicked_url, self.open_url.clone()) {
+                self.selection_anchor = None;
+                self.selection_focus = None;
+                open_url(url.as_str());
+                self.base.request_render(false, 0);
                 return;
             }
-            self.update_selection_focus(point);
+            if is_click {
+                let click_count = self.last_click.as_ref().map_or(1, |click| click.count);
+                let click_event = self.create_mouse_event(
+                    TuiMouseEventType::Click,
+                    event.button,
+                    event.x,
+                    event.y,
+                    ToTuiMouseEventExtra { wheel_delta: None, click_count: Some(click_count) },
+                    terminal,
+                );
+                let (hit, overlay_result) = self.base.dispatch_mouse_to_overlay(&click_event);
+                let result = overlay_result.or_else(|| if hit { None } else { self.dispatch_mouse_to_layout(&click_event) });
+                if let Some(result) = result {
+                    let render = self.apply_mouse_dispatch_result(&click_event, &result, true);
+                    self.clear_text_selection();
+                    if render {
+                        self.base.request_render(false, 0);
+                    }
+                    return;
+                }
+            }
+            if self.copy_on_select {
+                self.copy_selection_to_clipboard(terminal);
+            }
             self.base.request_render(false, 0);
             return;
         }
@@ -1503,34 +1820,50 @@ impl TuiAltScreen {
             if !self.selection_press_active || self.selection_anchor.is_none() {
                 return;
             }
+            self.selection_dragged = true;
+            self.last_click = None;
+            self.pressed_url = None;
             self.update_selection_focus(point);
+            self.update_selection_auto_scroll(&event);
             self.base.request_render(false, 0);
             return;
         }
 
+        self.stop_selection_auto_scroll();
         self.selection_press_active = true;
-        let anchor = point;
-        let word = self.get_word_selection(anchor);
-        let click_count = self.get_click_count(anchor, word, now_ms);
-        let range = if click_count == 2 {
-            word
-        } else if click_count == 3 {
-            Some(self.get_line_selection(anchor))
-        } else {
+        let scroll_view = if self.base.has_overlay() {
             None
-        };
-        self.selection_granularity = if range.is_some() {
-            if click_count == 2 {
-                SelectionGranularity::Word
-            } else {
-                SelectionGranularity::Line
-            }
         } else {
-            SelectionGranularity::Character
+            self.current_layout
+                .as_ref()
+                .and_then(|frame| get_scroll_views_at(frame, event.x, event.y).into_iter().next())
         };
-        let (range_start, range_end) = range.unwrap_or((anchor, anchor));
+        let anchor = self.get_selection_point(&event, scroll_view.as_ref());
+        let word = self.get_word_selection(&anchor);
+        let click_count = self.get_click_count(&anchor, word.as_ref(), now_ms);
+        let range = match click_count {
+            2 => word,
+            3 => Some(self.get_line_selection(&anchor)),
+            _ => None,
+        };
+        self.selection_granularity = match (&range, click_count) {
+            (Some(_), 2) => SelectionGranularity::Word,
+            (Some(_), _) => SelectionGranularity::Line,
+            (None, _) => SelectionGranularity::Character,
+        };
+        let has_range = range.is_some();
+        self.selection_initial_range = range.clone();
+        let (range_start, range_end) = range.unwrap_or_else(|| (anchor.clone(), anchor.clone()));
         self.selection_anchor = Some(range_start);
         self.selection_focus = Some(range_end);
+        self.selection_dragged = false;
+        self.pressed_url = if has_range {
+            None
+        } else {
+            let row = event.y.min(self.previous_screen_height as i64 - 1).max(0) as usize;
+            let column = event.x.min(self.previous_screen_width as i64 - 1).max(0) as usize;
+            get_osc8_link_at_column(self.previous_screen.get(row).map_or("", String::as_str), column)
+        };
         self.base.request_render(false, 0);
 
         if let Some(root) = &self.layout_root
@@ -1540,49 +1873,89 @@ impl TuiAltScreen {
         }
     }
 
+    /// senpi's `getSelectionBounds`: ordered points of a non-empty selection within one source.
     fn get_selection_bounds(&self) -> Option<(SelectionPoint, SelectionPoint)> {
-        let anchor = self.selection_anchor?;
-        let focus = self.selection_focus?;
-        if anchor == focus {
+        let anchor = self.selection_anchor.as_ref()?;
+        let focus = self.selection_focus.as_ref()?;
+        if !same_scroll_view(&anchor.scroll_view, &focus.scroll_view) {
             return None;
         }
-        Some(if anchor < focus { (anchor, focus) } else { (focus, anchor) })
+        if anchor.row == focus.row && anchor.col == focus.col {
+            return None;
+        }
+        let anchor_before_focus = anchor.row < focus.row || (anchor.row == focus.row && anchor.col < focus.col);
+        Some(if anchor_before_focus { (anchor.clone(), focus.clone()) } else { (focus.clone(), anchor.clone()) })
     }
 
     pub fn has_active_selection(&self) -> bool {
-        self.get_selection_bounds().is_some()
+        self.get_active_selection_text().is_some()
     }
 
     fn get_active_selection_text(&self) -> Option<String> {
         let (start, end) = self.get_selection_bounds()?;
-        let frame = self.current_layout.as_ref()?;
+        let source_lines: &[String] = match &start.scroll_view {
+            Some(scroll_view) => get_scroll_view_box(self.current_layout.as_ref()?, scroll_view)?.scroll_content_lines.as_deref()?,
+            None => self.previous_screen.as_slice(),
+        };
+        let start_point = ScreenPoint::from(&start);
+        let end_point = ScreenPoint::from(&end);
         let mut lines = Vec::new();
-        for row in start.row..=end.row.min(frame.lines.len().saturating_sub(1)) {
-            let line = frame.lines.get(row).cloned().unwrap_or_default();
-            let plain = strip_terminal_sequences(&line);
-            let row_start_col = if row == start.row { start.col } else { 0 };
-            let row_end_col = if row == end.row { end.col } else { visible_width(&plain) };
-            if row_end_col <= row_start_col {
-                lines.push(String::new());
-                continue;
-            }
-            lines.push(slice_plain(&plain, row_start_col, row_end_col).trim_end().to_string());
+        for row in start.row..=end.row {
+            let line = source_lines.get(row).map_or("", String::as_str);
+            let (start_col, end_col) =
+                get_selection_columns(line, row as i64, &start_point, &end_point, 0, visible_width(line) as i64);
+            let length = (end_col - start_col).max(0) as usize;
+            let selected = slice_by_column(line, start_col.max(0) as usize, length, true);
+            lines.push(strip_terminal_sequences(&selected).trim_end().to_string());
         }
         let text = lines.join("\n");
         if text.is_empty() { None } else { Some(text) }
     }
 
+    /// senpi's `getCopyOnSelect`.
+    pub fn get_copy_on_select(&self) -> bool {
+        self.copy_on_select
+    }
+
+    /// senpi's `setCopyOnSelect` (the `fullscreenCopyOnSelect` setting).
+    pub fn set_copy_on_select(&mut self, enabled: bool) {
+        self.copy_on_select = enabled;
+    }
+
+    /// senpi's `openUrl` option: activated by a primary click on an OSC 8 hyperlink.
+    pub fn set_open_url(&mut self, open_url: Option<Rc<dyn Fn(&str)>>) {
+        self.open_url = open_url;
+    }
+
+    /// senpi's `copySelection` option. Without it the selection is copied via OSC 52.
+    pub fn set_copy_selection(&mut self, copy_selection: Option<CopySelectionHook>) {
+        self.copy_selection = copy_selection;
+    }
+
+    /// Copy the active selection; returns whether a copy was started. With a
+    /// [`CopySelectionHook`] the outcome is flashed by [`TuiAltScreen::tick`] once it settles.
     pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn Terminal) -> bool {
+        self.copy_selection_to_clipboard(terminal)
+    }
+
+    fn copy_selection_to_clipboard(&mut self, terminal: &mut dyn Terminal) -> bool {
         let Some(text) = self.get_active_selection_text() else {
             return false;
         };
-        self.copy_text_to_clipboard(&text, terminal);
-        true
+        self.copy_text_to_clipboard(text, terminal)
     }
 
-    fn copy_text_to_clipboard(&mut self, text: &str, terminal: &mut dyn Terminal) {
+    /// senpi's `copyTextToClipboard`: prefer the injected clipboard (which reports real
+    /// success), else write OSC 52 and flash "Copied!".
+    fn copy_text_to_clipboard(&mut self, text: String, terminal: &mut dyn Terminal) -> bool {
+        if let Some(copy_selection) = self.copy_selection.clone() {
+            self.pending_copy_results.push(copy_selection(text));
+            return true;
+        }
         let encoded = base64_encode::encode_base64(text.as_bytes());
         terminal.write(&format!("\x1b]52;c;{encoded}\x07"));
+        self.flash("Copied!", None);
+        true
     }
 
     pub fn current_search_match_key(&self) -> Option<String> {
@@ -1779,35 +2152,49 @@ fn scroll_scrollbar_to_pointer(scroll_view: &Rc<RefCell<ScrollView>>, geometry: 
     scroll_view.borrow_mut().scroll_to(scroll_top, Default::default(), 0);
 }
 
-fn apply_selection_highlight(lines: &mut [String], selection: Selection, width: usize) {
-    let (start, end) = selection.ordered();
-    for row in start.row..=end.row.min(lines.len().saturating_sub(1)) {
-        let Some(line) = lines.get(row) else {
-            continue;
-        };
-        let plain = strip_terminal_sequences(line);
-        let line_width = visible_width(&plain);
-        let row_start_col = if row == start.row { start.col } else { 0 };
-        let row_end_col = (if row == end.row { end.col } else { width }).min(line_width);
-        if row_start_col >= row_end_col {
+/// senpi's `applySelectionHighlight`: reverse-video the selected span while keeping its own
+/// SGR styling, re-asserting reverse after every SGR sequence inside it.
+fn apply_selection_highlight(text: &str) -> String {
+    let mut result = String::from("\x1b[7m");
+    let mut index = 0;
+    while index < text.len() {
+        if let Some(code) = extract_ansi_code(text, index) {
+            result.push_str(code);
+            if code.ends_with('m') {
+                result.push_str("\x1b[7m");
+            }
+            index += code.len();
             continue;
         }
-        lines[row] = highlight_range(&plain, row_start_col, row_end_col);
+        let Some(character) = text[index..].chars().next() else {
+            break;
+        };
+        result.push(character);
+        index += character.len_utf8();
     }
+    result.push_str("\x1b[27m");
+    result
 }
 
-fn highlight_range(plain: &str, start_col: usize, end_col: usize) -> String {
-    let width = visible_width(plain);
-    let before = slice_plain(plain, 0, start_col);
-    let middle = slice_plain(plain, start_col, end_col);
-    let after = slice_plain(plain, end_col, width);
-    format!("{before}\x1b[7m{middle}\x1b[27m{after}")
+/// senpi's `getSelectionColumns`: the selected cell range on `row`, widened to whole graphemes
+/// at the selection's start and (non-boundary) end.
+fn get_selection_columns(line: &str, row: i64, start: &ScreenPoint, end: &ScreenPoint, min_column: i64, max_column: i64) -> (i64, i64) {
+    let line_width = visible_width(line) as i64;
+    let mut start_col = min_column.max(0);
+    let mut end_col = line_width.min(max_column);
+    if row == start.row {
+        start_col = get_grapheme_cell_range(line, start.col.max(0) as usize)
+            .map_or(start.col.min(line_width), |range| range.start as i64);
+    }
+    if row == end.row {
+        end_col = if end.boundary {
+            end.col.min(line_width)
+        } else {
+            get_grapheme_cell_range(line, end.col.max(0) as usize).map_or((end.col + 1).min(line_width), |range| range.end as i64)
+        };
+    }
+    (start_col.max(min_column), end_col.min(max_column))
 }
-
-fn slice_plain(plain: &str, start_col: usize, end_col: usize) -> String {
-    crate::utils::slice_by_column(plain, start_col, end_col.saturating_sub(start_col), true)
-}
-
 /// Minimal RFC 4648 base64 encoder for OSC 52 clipboard payloads; no external crate is pulled
 /// in for one small, dependency-free encode.
 mod base64_encode {
