@@ -22,6 +22,24 @@ async fn read_line_cap_and_model_only_notice() {
     assert!(text(&result).contains("Line 2000")); assert!(!text(&result).contains("Line 2001"));
     assert!(maho_tools::model_only_text::is_model_only_text(&result.content[1]));
 }
+fn large_json() -> String {
+    serde_json::to_string_pretty(&(0..25).map(|n| json!({"n":n,"a":[1,2,3,4,5],"s":"escaped \" } {"})).collect::<Vec<_>>()).unwrap()
+}
+#[tokio::test]
+async fn read_default_folds_large_structured_file() {
+    let dir = tempfile::tempdir().unwrap(); let source = large_json(); std::fs::write(dir.path().join("data.json"),&source).unwrap();
+    let tool = create_read_tool_definition(dir.path().into(),ReadToolOptions::default());
+    let output = text(&execute(&tool,json!({"path":"data.json"})).await.unwrap());
+    assert!(output.split('\n').any(|line| line == "\u{2026}"));
+    assert!(output.contains("Reread source before editing; markers are not source."));
+    assert!(output.len() < source.len());
+}
+#[tokio::test]
+async fn read_without_folder_stays_verbatim() {
+    let dir = tempfile::tempdir().unwrap(); let source = large_json(); std::fs::write(dir.path().join("data.json"),&source).unwrap();
+    let tool = create_read_tool_definition(dir.path().into(),ReadToolOptions { folder: None, ..Default::default() });
+    assert_eq!(text(&execute(&tool,json!({"path":"data.json"})).await.unwrap()),source);
+}
 #[tokio::test]
 async fn write_creates_parents_and_reports_update() {
     let dir = tempfile::tempdir().unwrap(); let tool = create_write_tool_definition(dir.path().into(),WriteToolOptions::default());
