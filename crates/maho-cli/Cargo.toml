@@ -73,6 +73,7 @@ ulw-loop-core = { path = "../omo/ulw-loop-core" }
 maho-omo-config-resolution = { path = "../omo/components/maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../omo/omo-config-core" }
 maho-omo-memory = { path = "../omo/components/maho-omo-memory" }
+maho-omo-telemetry = { path = "../omo/components/maho-omo-telemetry" }
 memory-core = { package = "maho-memory-core", path = "../omo/memory-core" }
 maho-omo-lsp = { path = "../omo/components/maho-omo-lsp" }
 lsp-daemon = { package = "maho-lsp-daemon", path = "../omo/lsp-daemon" }

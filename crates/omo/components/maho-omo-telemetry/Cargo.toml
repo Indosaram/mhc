@@ -15,12 +15,14 @@ maho-ext-api = { path = "../../../maho-ext-api" }
 maho-telemetry-core = { path = "../../telemetry-core" }
 maho-senpi-task = { path = "../../senpi-task" }
 maho-omo-ultrawork = { path = "../maho-omo-ultrawork" }
+maho-omo-agent-home = { path = "../maho-omo-agent-home" }
 maho-omo-config-resolution = { path = "../maho-omo-config-resolution" }
 maho-omo-config-core = { path = "../../omo-config-core" }
 chrono = { workspace = true, features = ["clock", "std"] }
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures.workspace = true
 sha2.workspace = true
+getrandom = "=0.4.2"
 
 [dev-dependencies]
 tempfile.workspace = true
