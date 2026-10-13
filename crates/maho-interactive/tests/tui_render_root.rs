@@ -1,10 +1,9 @@
 //! Pins the fullscreen render-root mount contract.
 //!
-//! The alternate screen paints only its own `layoutRoot` (senpi `TuiAltScreen` `setLayoutRoot`); a
-//! root mounted as a plain base child is never read there. [`InteractiveTui::set_render_root`]
-//! dispatches to `addChild` for the main screen and `setLayoutRoot` for the alt screen, so
-//! `--tui-mode fullscreen` cannot silently go blank the way it did when the entry called
-//! `base.add_child` for every mode.
+//! The alternate screen paints its `layoutRoot` (senpi `TuiAltScreen` `setLayoutRoot`) and, when
+//! none is set, the base children through an implicit follow-end scroll view.
+//! [`InteractiveTui::set_render_root`] dispatches to `addChild` for the main screen and
+//! `setLayoutRoot` for the alt screen.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -106,12 +105,12 @@ fn set_render_root_paints_the_fullscreen_alt_screen() {
 }
 
 #[test]
-fn child_only_mount_leaves_the_fullscreen_alt_screen_blank() {
-    // Guards the exact defect: `base.add_child` fills the base container the alt screen never
-    // reads, leaving `layoutRoot` unset so `do_render` paints nothing.
+fn child_only_mount_paints_through_the_implicit_scroll_view() {
+    // senpi `TuiAltScreen.doRender` renders `layoutRoot ?? implicitScrollView`, and the implicit
+    // scroll view wraps the base children, so a child-only mount still paints in fullscreen.
     let out = painted(|tui, root| tui.base_mut().add_child(root));
     assert!(
-        !out.contains("mounted-root"),
-        "a child-only mount must not paint in fullscreen"
+        out.contains("mounted-root"),
+        "a child-only mount must paint through the implicit scroll view"
     );
 }
