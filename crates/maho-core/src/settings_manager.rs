@@ -321,6 +321,8 @@ pub trait SettingsStorage: Send + Sync {
     fn select_source(&self, _scope: SettingsScope) -> Option<SettingsSourceSelection> {
         None
     }
+    /// Point a cwd-bound storage at another project directory; storage without a cwd ignores it.
+    fn rebind_cwd(&mut self, _cwd: &str) {}
 }
 
 pub struct FileSettingsStorage {
@@ -354,6 +356,10 @@ impl FileSettingsStorage {
 }
 
 impl SettingsStorage for FileSettingsStorage {
+    fn rebind_cwd(&mut self, cwd: &str) {
+        *self = Self::new(cwd, &self.agent_dir, &self.home_dir);
+    }
+
     fn select_source(&self, scope: SettingsScope) -> Option<SettingsSourceSelection> {
         let source = resolve_settings_source(&self.cwd, &self.agent_dir, scope, &self.home_dir);
         let path = source.as_ref().map(|source| source.path.clone()).unwrap_or_else(|| {
@@ -811,6 +817,15 @@ impl SettingsManager {
         Ok(())
     }
 
+    /// senpi recreates settings for a switched session's cwd; the native manager keeps its
+    /// identity (listeners, overrides) and re-reads the project scope from the new cwd.
+    pub fn rebind_cwd(&mut self, cwd: &str) {
+        self.storage.rebind_cwd(cwd);
+        self.settings_paths.remove(&SettingsScope::Project);
+        self.selected_sources.remove(&SettingsScope::Project);
+        self.reload();
+    }
+
     pub fn reload(&mut self) {
         self.select_and_publish_source(SettingsScope::Global);
         let global_load = Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Global, true);
@@ -923,6 +938,25 @@ mod tests {
         assert_eq!(source.format, SettingsFormat::Jsonc);
         assert_eq!(source.reason, SettingsSourceReason::ExplicitJsonc);
         assert_eq!(get_settings_path(&project, &agent, SettingsScope::Global, &home), format!("{agent}/settings.jsonc"));
+    }
+
+    #[test]
+    fn rebinding_the_cwd_reads_the_new_project_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = tmp.path().join("agent");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let mut projects = Vec::new();
+        for name in ["first", "second"] {
+            let project = tmp.path().join(name);
+            std::fs::create_dir_all(project.join(config_dir_name())).expect("mkdir");
+            std::fs::write(project.join(config_dir_name()).join("settings.json"), format!("{{\"marker\":\"{name}\"}}")).expect("settings");
+            projects.push(project.to_string_lossy().into_owned());
+        }
+        let mut manager = SettingsManager::create(&projects[0], &agent.to_string_lossy(), &home.to_string_lossy(), true);
+        assert_eq!(manager.get_string("marker").as_deref(), Some("first"));
+        manager.rebind_cwd(&projects[1]);
+        assert_eq!(manager.get_string("marker").as_deref(), Some("second"));
     }
 
     #[test]
