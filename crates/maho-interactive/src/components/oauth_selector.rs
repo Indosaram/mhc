@@ -50,6 +50,10 @@ pub struct AuthSelectorProvider {
     pub auth_type: AuthSelectorAuthType,
     /// senpi's `method?.name` — the credential method's display name.
     pub method_name: Option<String>,
+    /// senpi's OAuth `method.loginLabel` — the provider-specific subscription sign-in label.
+    pub login_label: Option<String>,
+    /// senpi's `method?.login !== undefined`; an api-key method without it is configured ambiently.
+    pub method_has_login: bool,
     pub status: Option<AuthCheck>,
 }
 
