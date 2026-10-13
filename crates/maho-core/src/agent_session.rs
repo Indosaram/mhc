@@ -564,6 +564,8 @@ pub struct AgentSessionInner {
     settlement_epoch: AtomicU64,
     probe_scheduler: Mutex<crate::retry_fallback::probe_scheduler::ProbeBackScheduler>,
     probe_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// senpi `_userAbortPromise`: the in-flight user abort every concurrent abort joins.
+    user_abort_wait: Mutex<Option<futures::future::Shared<futures::future::BoxFuture<'static, ()>>>>,
     /// Serializes MCP wire-status publish against bind so a subscriber never misses or
     /// double-receives an update (pinned subscribe-before-read ordering).
     mcp_wire_status_order: tokio::sync::Mutex<()>,
@@ -1725,6 +1727,7 @@ impl AgentSession {
             settlement_epoch: AtomicU64::new(0),
             probe_scheduler: Mutex::new(crate::retry_fallback::probe_scheduler::ProbeBackScheduler::default()),
             probe_task: Mutex::new(None),
+            user_abort_wait: Mutex::new(None),
             mcp_wire_status_order: tokio::sync::Mutex::new(()),
             mcp_wire_status_retention: Mutex::new(None),
             tool_context_disposers: Mutex::new(Vec::new()),
@@ -2181,9 +2184,7 @@ impl AgentSession {
         self.agent_run_active.store(true, Ordering::SeqCst);
         // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
         // allows it and a configured fallback chain can take over.
-        let abort_server_side_fallback = self.with_settings_manager(SettingsManager::get_abort_server_side_fallback)
-            && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.has_configured_chain());
-        self.agent.set_abort_server_side_fallback(Some(abort_server_side_fallback));
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -2320,27 +2321,50 @@ impl AgentSession {
     }
 
     fn begin_user_abort(&self) -> Option<bool> {
+        // senpi abort(): streaming aborts are carried by agent_end provenance; only gaps need session_abort.
+        let streaming = self.is_streaming();
+        let had_retry_backoff = self.state().retry_abort_controller.is_some();
+        let was_mid_run = streaming && !had_retry_backoff;
+        let had_compaction_or_pending = !streaming && (self.is_compacting() || self.pending_message_count() > 0);
+        let had_cleared_queues = std::mem::take(&mut self.state().had_cleared_queued_messages);
+        let joined_agent_end_boundary = self.state().abort_provenance.has_open_agent_end_boundary();
+        let should_emit_abort = !joined_agent_end_boundary && !was_mid_run
+            && (had_retry_backoff || had_compaction_or_pending || had_cleared_queues);
         self.user_abort_generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.settled_delivery).cancel();
         self.state().user_aborted = true;
         self.state().abort_source = Some(maho_ext_api::AbortSource::User);
         if let Some(signal) = self.state().extension_event_signal.as_ref() { signal.abort(); }
-        self.abort_retry();
         self.abort_compaction();
+        // senpi _abortActiveAgentAndRetry("user").
+        self.abort_retry();
         self.abort_branch_summary();
-        let streaming = self.is_streaming();
-        let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
-        if !joined.abort_current_agent && joined.user_owned { return None; }
-        let pending = !self.is_streaming() && (self.pending_message_count() > 0 || self.state().had_cleared_queued_messages);
-        self.state().had_cleared_queued_messages = false;
+        let mut in_flight = lock(&self.user_abort_wait);
+        if in_flight.is_none() && self.state().abort_provenance.join_open_boundary(maho_ext_api::AbortSource::User).is_some() {
+            return None;
+        }
+        if in_flight.is_some() {
+            let joined = self.state().abort_provenance.join(maho_ext_api::AbortSource::User, streaming);
+            if joined.abort_current_agent { self.agent.abort(None); }
+            return Some(should_emit_abort);
+        }
+        if streaming { self.state().abort_provenance.begin(maho_ext_api::AbortSource::User); }
         self.agent.suppress_queued_message_drain();
         self.agent.abort(None);
-        Some(pending)
+        let agent = self.agent.clone();
+        let wait: futures::future::BoxFuture<'static, ()> = Box::pin(async move { agent.wait_for_idle().await; });
+        *in_flight = Some(futures::FutureExt::shared(wait));
+        Some(should_emit_abort)
     }
 
-    async fn finish_user_abort(&self, pending: bool) {
-        self.agent.wait_for_idle().await;
-        if pending {
+    async fn finish_user_abort(&self, should_emit_abort: bool) {
+        let wait = lock(&self.user_abort_wait).clone();
+        if let Some(wait) = wait {
+            wait.clone().await;
+            let mut in_flight = lock(&self.user_abort_wait);
+            if in_flight.as_ref().is_some_and(|current| current.ptr_eq(&wait)) { *in_flight = None; }
+        }
+        if should_emit_abort {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
             self.emit(AgentSessionEvent::SessionAbort);
         }
@@ -3112,6 +3136,8 @@ impl AgentSession {
                     self.state().retry_abort_controller = None;
                     self.state().retry_attempt = 0;
                     self.reset_hint_tier_state();
+                    // senpi: abort during the retry sleep settles the run before auto_retry_end.
+                    self.emit_agent_settled().await;
                     self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some("Retry cancelled".to_owned()) });
                     return Ok(());
                 }
@@ -3158,6 +3184,21 @@ impl AgentSession {
     fn resolve_retry_profile(&self) -> maho_ai::utils::retry_profile::types::RetryPolicyProfile {
         let provider = self.model_runtime().get_provider(&self.model().provider);
         self.with_settings_manager(|manager| manager.resolve_retry_profile(provider.as_deref()))
+    }
+
+    /// senpi: `settingsManager.getAbortServerSideFallback() && _retryFallback.hasConfiguredChain()`.
+    /// Resolved without the controller lock because fallback switches call
+    /// `switch_model_with_thinking` while the controller is held.
+    fn abort_server_side_fallback_enabled(&self) -> bool {
+        let settings = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        if !crate::retry_fallback::settings::resolve_abort_server_side_fallback(settings.as_ref()) { return false; }
+        let chains = crate::retry_fallback::settings::resolve_retry_fallback_settings(settings.as_ref()).chains;
+        let models = self.model_registry.get_all();
+        let oauth = |model: &Model| self.model_registry.is_using_oauth(model);
+        let eligible = |model: &Model| self.model_registry.is_fallback_eligible(model);
+        let canonical = crate::retry_fallback::chains::canonicalize_fallback_chains(&chains, &models,
+            &crate::retry_fallback::expansion::FallbackAuthTiers { is_using_oauth: &oauth, has_configured_auth: None, is_fallback_eligible: Some(&eligible) });
+        crate::retry_fallback::chains::resolve_chain_key(&self.model(), Some(self.thinking_level()), &canonical).is_some()
     }
 
     fn cancel_probe_back(&self) {
@@ -3404,7 +3445,9 @@ impl AgentSession {
         let old_tier = self.service_tier();
         let (explicit_level, explicit_selection) = favorite_thinking.unwrap_or((thinking, None));
         let (next_level, next_selection) = self.get_thinking_for_model_switch(&model, explicit_level, explicit_selection);
+        let previous_abort_server_side_fallback = self.agent.abort_server_side_fallback();
         self.agent.set_model(model.clone());
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         if !(model.id == "gpt-6-astra" && matches!(model.provider.as_str(), "openai" | "chatgpt-subscription")) {
             self.agent.set_reasoning_baseline(None);
         }
@@ -3422,6 +3465,7 @@ impl AgentSession {
             session.agent.set_model(previous); session.agent.set_system_prompt(old_prompt);
             session.agent.set_thinking_level(old_thinking); session.agent.set_thinking_selection(old_selection.clone());
             session.agent.set_reasoning_baseline(old_baseline.clone());
+            session.agent.set_abort_server_side_fallback(previous_abort_server_side_fallback);
         };
         let result = {
             let runner = self.extension_runner.lock().await.clone();
@@ -5723,6 +5767,7 @@ impl AgentSession {
             }
         }
         self.agent_run_active.store(true, Ordering::SeqCst);
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.agent.continue_with_queued_messages(Default::default()).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -5780,6 +5825,11 @@ impl AgentSession {
     }
 
     async fn emit_agent_settled(&self) {
+        if self.is_streaming() { self.agent.wait_for_idle().await; }
+        if !self.agent_run_active.load(Ordering::SeqCst) {
+            self.state().abort_provenance.close_agent_end_boundary();
+            return;
+        }
         self.agent_run_active.store(false, Ordering::SeqCst);
         let generation = self.user_abort_generation.load(Ordering::SeqCst);
         let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
@@ -5791,16 +5841,15 @@ impl AgentSession {
         self.settling_with_background_work.store(self.state().wake_sources.has_active(), Ordering::SeqCst);
         let settling = SettlingBackgroundWorkGuard(&self.settling_with_background_work);
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::AgentSettled).await;
-        // Atomically take a late User join AND close the boundary BEFORE the final settled emission, so
-        // a join arriving after this point is not swallowed (source cleared -> normal abort path) and
-        // the captured join is delivered once, before AgentSettled. `AgentSessionEvent::AgentSettled`
-        // is thus the cycle's last terminal for the captured join.
+        self.emit(AgentSessionEvent::AgentSettled);
+        // senpi emits agent_settled first, then delivers a late User join as session_abort. The take
+        // and the boundary close happen atomically so a join arriving after this point is not
+        // swallowed (source cleared -> normal abort path) and the captured join is delivered once.
         let late_user_abort = self.state().abort_provenance.take_late_join_and_close();
         if late_user_abort {
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionAbort).await;
             self.emit(AgentSessionEvent::SessionAbort);
         }
-        self.emit(AgentSessionEvent::AgentSettled);
         let batch = lock(&self.settled_delivery).finish(self.user_abort_generation.load(Ordering::SeqCst));
         drop(settling);
         for action in batch.actions { action(); }
@@ -9285,6 +9334,30 @@ mod tests {
         assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
     }
 
+    #[tokio::test]
+    async fn aborting_retry_backoff_emits_session_abort() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| { lock(&sink).push(event.clone()); }));
+        let backoff = maho_ai::utils::abort::AbortController::new();
+        session.state().retry_abort_controller = Some(backoff.clone());
+        session.abort().await;
+        assert!(backoff.signal().aborted());
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborting_idle_compaction_emits_session_abort() {
+        let session = test_session();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| { lock(&sink).push(event.clone()); }));
+        session.state().compaction_abort_controller = Some(crate::compaction::lifecycle::CompactionAbortController::new());
+        session.abort().await;
+        assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
+    }
+
     #[test]
     fn clamping_prefers_the_next_higher_available_level() {
         let available = [ModelThinkingLevel::Off, ModelThinkingLevel::Low, ModelThinkingLevel::Max];
@@ -12090,6 +12163,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_switch_engages_server_side_fallback_abort_only_with_configured_chain() {
+        let session = retry_session(Vec::new(), 1);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(Default::default()).provider.clone());
+        runtime.register_native_provider(maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            provider: Some("anthropic-subscription".to_owned()), ..Default::default()
+        }).provider.clone());
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
+            ..Default::default()
+        }).expect("fallback provider");
+        let mut model = test_model();
+        model.provider = "anthropic-subscription".to_owned();
+        session.set_session_model(test_model()).await.expect("unchained switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(false));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"fallbackChains":{"anthropic-subscription/faux-1":["faux/faux-1"]}})),
+        ])));
+        session.set_session_model(model.clone()).await.expect("chained switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(true));
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".to_owned(), serde_json::json!({"enabled":true,"abortServerSideFallback":false,
+                "fallbackChains":{"anthropic-subscription/faux-1":["faux/faux-1"]}})),
+        ])));
+        session.set_session_model(model).await.expect("disabled switch");
+        assert_eq!(session.agent.abort_server_side_fallback(), Some(false));
+    }
+
+    #[tokio::test]
     async fn subscription_auth_miss_does_not_admit_configured_provider_fallback() {
         let session = retry_session(Vec::new(), 1);
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
@@ -12765,13 +12867,20 @@ mod tests {
         });
         let session = retry_session(vec![failed], 2);
         let cancelling = session.clone();
+        let terminals = Arc::new(Mutex::new(Vec::new()));
+        let captured = terminals.clone();
         let _subscription = session.subscribe(Arc::new(move |event| {
             if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { cancelling.abort_retry(); }
+            if matches!(event, AgentSessionEvent::AgentSettled | AgentSessionEvent::AutoRetryEnd { .. }) { lock(&captured).push(event.clone()); }
         }));
         tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
             .await.expect("bounded prompt").expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+        let terminals = lock(&terminals);
+        assert_eq!(terminals.len(), 2);
+        assert!(matches!(terminals[0], AgentSessionEvent::AgentSettled));
+        assert!(matches!(terminals[1], AgentSessionEvent::AutoRetryEnd { success: false, .. }));
     }
 
     #[tokio::test]
@@ -12887,6 +12996,26 @@ mod tests {
         assert_eq!(lock(&events).iter().filter(|event| matches!(event, AgentSessionEvent::SessionAbort)).count(), 1);
         session.state().abort_provenance.close_agent_end_boundary();
         assert!(!session.state().abort_provenance.has_open_agent_end_boundary());
+    }
+
+    #[tokio::test]
+    async fn settled_precedes_late_user_join_abort_and_inactive_settle_is_noop() {
+        let session = test_session_with_stream_function(false);
+        let boundary = session.state().abort_provenance.begin_agent_end(Vec::new(), false, false);
+        session.state().abort_provenance.end_agent_end(&boundary);
+        assert!(session.state().abort_provenance.join(maho_ext_api::AbortSource::User, false).user_owned);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| {
+            if matches!(event, AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort) { lock(&captured).push(event.clone()); }
+        }));
+        session.agent_run_active.store(true, Ordering::SeqCst);
+        session.emit_agent_settled().await;
+        session.emit_agent_settled().await;
+        let events = lock(&events);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AgentSessionEvent::AgentSettled));
+        assert!(matches!(events[1], AgentSessionEvent::SessionAbort));
     }
 
     #[tokio::test]
