@@ -1,5 +1,6 @@
 pub mod image_convert;
 pub mod image_process;
+pub mod shell;
 pub mod tool_result_images;
 
 mod image_resize {

@@ -88,6 +88,9 @@ pub fn get_agent_dir() -> String {
     resolve_agent_dir(&cwd, &home, env.as_deref())
 }
 
+/// `getBinDir()`: managed helper binaries live under the agent dir.
+pub fn get_bin_dir() -> String { Path::new(&get_agent_dir()).join("bin").to_string_lossy().into_owned() }
+
 pub fn get_agent_dir_with(cwd: &str, home_dir: &str, env: &HashMap<String, String>) -> String {
     let env_dir = env_value("CODING_AGENT_DIR", env);
     resolve_agent_dir(cwd, home_dir, env_dir.as_deref())
