@@ -1,17 +1,22 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
 use maho_ext_api::{EventBus, EventKind, EventResult, Extension, ExtensionApi, ExtensionContext, ExtensionFailure, ExtensionMode, NotificationType};
-use crate::{index::*, log::{ConfigReloadLogger, LogEvent, LogLevel}, protocol::*, watch_engine::NativeWatchEngine};
+use crate::{index::*, log::{ConfigReloadLogger, LogEvent, LogLevel}, protocol::*, watch_engine::{NativeWatchEngine, WatchClock}};
 
+const COMPACTION_RECHECK: Duration = Duration::from_millis(250);
+const VETO_RECHECK: Duration = Duration::from_millis(1000);
 #[derive(Default)]
-pub struct ConfigReload;
+pub struct ConfigReload { clock: Option<Arc<dyn WatchClock>> }
+#[allow(non_upper_case_globals)]
+pub const ConfigReload: ConfigReload = ConfigReload { clock: None };
+impl ConfigReload { pub fn with_clock(clock: Arc<dyn WatchClock>) -> Self { Self { clock: Some(clock) } } }
 struct ReloadHandoff { hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String>, requested: std::time::Instant, changes: Vec<PendingChange> }
 static HANDOFFS: std::sync::OnceLock<Mutex<ConfigReloadHandoffRegistry<ReloadHandoff>>> = std::sync::OnceLock::new();
 struct WatchRun { cancel: tokio::sync::watch::Sender<bool>, task: tokio::task::JoinHandle<Result<(), String>> }
 #[derive(Default)]
-struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, unavailable_logged: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String>, registrations: WatchRegistrations, context: Option<ExtensionContext>, rebuild: Arc<tokio::sync::Notify>, subscriptions: Vec<maho_ext_api::BusSubscription>, session_owned: bool }
+struct State { generation: u64, run: Option<WatchRun>, pending: PendingChanges, in_flight: bool, deferred_notice: bool, unavailable_logged: bool, veto: crate::reload_deferral::ReloadVetoDeferral, flush_generation: Option<u64>, hashes: BTreeMap<PathBuf, String>, contents: BTreeMap<PathBuf, String>, registrations: WatchRegistrations, context: Option<ExtensionContext>, rebuild: Arc<tokio::sync::Notify>, subscriptions: Vec<maho_ext_api::BusSubscription>, session_owned: bool, clock: Option<Arc<dyn WatchClock>> }
 impl Extension for ConfigReload {
     fn register(&self, api: &mut ExtensionApi) {
-        let state = Arc::new(Mutex::new(State { session_owned: maho_ai::node::provider_scope::active_provider_scope().is_some(), ..Default::default() }));
+        let state = Arc::new(Mutex::new(State { session_owned: maho_ai::node::provider_scope::active_provider_scope().is_some(), clock: self.clock.clone(), ..Default::default() }));
         let owner = Arc::downgrade(&state);
         let events = api.events.clone();
         let cwd = api.cwd.clone();
@@ -68,7 +73,7 @@ impl Extension for ConfigReload {
                             paths.extend(change.paths.iter().cloned());
                             events.emit(CONFIG_WATCH_RELOADED, &serde_json::json!({"registrationId":change.registration_id,"paths":change.paths}));
                         }
-                        ctx.ui.notify(&format!("Hot-reloaded: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
+                        ctx.ui.notify(&format!("Hot-reloaded: {}", format_paths(paths.iter())), NotificationType::Info);
                         let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
                         logger.log(LogLevel::Info, LogEvent::ReloadCompleted { duration_ms: handoff.requested.elapsed().as_secs_f64() * 1000.0 });
                         let (changed, groups, ungrouped) = {
@@ -190,6 +195,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     });
     let debounce = Duration::from_secs_f64(resolved.debounce_ms / 1000.0);
     let mut engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce).map_err(ExtensionFailure::new)?;
+    if let Some(clock) = &state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.clock { engine.set_clock(Arc::clone(clock)); }
     let mut contents = BTreeMap::new();
     crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
     {
@@ -215,6 +221,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                     let mut watched = build_builtin_watch_targets(&ctx.cwd, &ctx.agent_dir, ctx.is_project_trusted(), &resolved, &skill_paths);
                     watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
                     engine = NativeWatchEngine::with_debounce(watched.into_iter().map(|active| active.target).collect(), Arc::clone(&on_error), debounce)?;
+                    if let Some(clock) = &shared.lock().map_err(|error| error.to_string())?.clock { engine.set_clock(Arc::clone(clock)); }
                     events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
                     continue;
                 },
@@ -259,6 +266,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
                 watched.extend(build_external_watch_targets(&ctx.cwd, &registrations));
                 let watched = watched.into_iter().map(|active| active.target).collect();
                 engine = NativeWatchEngine::with_debounce(watched, Arc::clone(&on_error), debounce)?;
+                if let Some(clock) = &shared.lock().map_err(|error| error.to_string())?.clock { engine.set_clock(Arc::clone(clock)); }
                 crate::routine_settings::refresh_settings_content_snapshots(&mut contents, &ctx.agent_dir, &ctx.cwd);
                 logger.lock().map_err(|error| error.to_string())?.log(LogLevel::Info, LogEvent::WatcherStarted { target_count: targets.len() as f64 });
                 events.emit(CONFIG_WATCH_READY, &serde_json::json!({"enabled":true}));
@@ -275,7 +283,7 @@ async fn start(state: Arc<Mutex<State>>, ctx: ExtensionContext, events: EventBus
     Ok(())
 }
 fn schedule_flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generation: Option<u64>) -> Result<(), ExtensionFailure> {
-    let (generation, mut cancelled) = {
+    let (generation, mut cancelled, clock) = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
         if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(()); }
         let Some(run) = &state.run else { return Ok(()); };
@@ -283,7 +291,7 @@ fn schedule_flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_gene
         let generation = state.generation;
         if state.flush_generation == Some(generation) { return Ok(()); }
         state.flush_generation = Some(generation);
-        (generation, cancelled)
+        (generation, cancelled, state.clock.clone())
     };
     let scope = maho_ai::node::provider_scope::active_provider_scope();
     tokio::spawn(async move {
@@ -296,7 +304,10 @@ fn schedule_flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_gene
                     Err(error) => { ctx.ui.notify(&error.to_string(), NotificationType::Error); break; },
                 };
                 tokio::select! {
-                    () = tokio::time::sleep(delay) => {},
+                    () = async {
+                        if let Some(clock) = &clock { clock.sleep_until(clock.now() + delay).await; }
+                        else { tokio::time::sleep(delay).await; }
+                    } => {},
                     _ = cancelled.changed() => break,
                 }
             }
@@ -312,7 +323,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
         if expected_generation.is_some_and(|generation| generation != state.generation) { return Ok(None); }
         match reload_admission(state.pending.is_empty(), state.in_flight, ctx.is_idle(), ctx.has_pending_messages()?, ctx.is_compacting(), ctx.actions().is_ok()) {
             ReloadAdmission::ProbeVeto => {},
-            ReloadAdmission::Compacting => return Ok(Some(Duration::from_millis(250))),
+            ReloadAdmission::Compacting => return Ok(Some(COMPACTION_RECHECK)),
             ReloadAdmission::Unavailable => {
                 if !state.unavailable_logged {
                     state.unavailable_logged = true;
@@ -335,7 +346,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
         if let Some(notice) = notice { ctx.ui.notify(&notice, NotificationType::Info); }
         let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
         logger.log(LogLevel::Info, LogEvent::ReloadDeferred { reason: veto.reason.as_deref().unwrap_or("extension veto") });
-        return Ok(Some(Duration::from_millis(1000)));
+        return Ok(Some(VETO_RECHECK));
     }
     let (paths, handoff) = {
         let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
@@ -353,7 +364,7 @@ async fn flush(state: Arc<Mutex<State>>, ctx: ExtensionContext, expected_generat
     let mut logger = ConfigReloadLogger::new(&ctx.agent_dir, None).map_err(|error| ExtensionFailure::new(error.to_string()))?;
     let logged_paths = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>();
     logger.log(LogLevel::Info, LogEvent::ReloadRequested { reason: "config changed", paths: &logged_paths });
-    ctx.ui.notify(&format!("Hot-reloading: {}", paths.iter().map(|path| path.to_string_lossy()).collect::<Vec<_>>().join(", ")), NotificationType::Info);
+    ctx.ui.notify(&format!("Hot-reloading: {}", format_paths(paths.iter())), NotificationType::Info);
     let result = ctx.request_reload().await;
     HANDOFFS.get_or_init(Mutex::default).lock().map_err(|error| ExtensionFailure::new(error.to_string()))?.delete(&key);
     let mut state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
@@ -384,3 +395,9 @@ fn handoff_key(state: &Arc<Mutex<State>>, ctx: &ExtensionContext) -> Result<Stri
     let state = state.lock().map_err(|error| ExtensionFailure::new(error.to_string()))?;
     Ok(if state.session_owned { ctx.session_manager.session_id().into() } else { "classic".into() })
 }
+
+fn format_paths<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> String {
+    let paths: Vec<_> = paths.into_iter().map(|path| path.to_string_lossy().into_owned()).collect();
+    if paths.is_empty() { "configuration".into() } else { paths.join(", ") }
+}
+

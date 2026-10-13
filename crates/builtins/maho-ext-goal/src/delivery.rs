@@ -163,4 +163,44 @@ fn failure(error:impl std::fmt::Display)->ExtensionFailure { ExtensionFailure::n
         assert!(!capture.0.lock().unwrap()[0].display);
         runtime.event(&ExtensionEvent::SessionShutdown(maho_ext_api::SessionShutdownEvent { reason:maho_ext_api::SessionReason::Quit,target_session_file:None,signal:None }),&ctx).await.unwrap(); session.dispose().await;
     }
+    #[tokio::test] async fn agent_settled_delivers_staged_provider_recovery() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let resolver:crate::accounting_hooks::GoalStoreReference=Arc::new(move |_|stored.clone());
+        let runtime=Arc::new(GoalRuntime::new(resolver.clone(),Arc::new(||2000.0)));
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let capture=Arc::new(Capture(Mutex::new(Vec::new()))); let transport=ExtensionRuntime::default(); transport.bind(capture.clone());
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),transport);
+        let owner=Arc::new(GoalDelivery::new(runtime.clone(),resolver,Arc::new(||2000.0),&api));
+        let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context); context.has_ui=false;
+        let mut assistant=maho_ai::providers::faux::faux_assistant_message("",Default::default()); assistant.stop_reason=maho_ai::types::StopReason::Error; assistant.error_message=Some("provider transport unavailable".into());
+        let message=maho_agent::types::AgentMessage::Llm(maho_ai::types::Message::Assistant(Box::new(assistant)));
+        runtime.event(&ExtensionEvent::AgentEnd { messages:vec![message],aborted:Some(false),abort_source:None,will_retry:Some(false) },&context).await.unwrap();
+        owner.event(&ExtensionEvent::AgentSettled,&context,Some(&goal)).await.unwrap();
+        assert_eq!(capture.0.lock().unwrap().len(),1);
+        assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().consecutive_continuations,Some(1));
+        runtime.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap(); session.dispose().await;
+    }
+    #[tokio::test] async fn session_start_queues_active_goal_and_suppresses_continuation_flood() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let resolver:crate::accounting_hooks::GoalStoreReference=Arc::new(move |_|stored.clone());
+        let runtime=Arc::new(GoalRuntime::new(resolver.clone(),Arc::new(||0.0)));
+        let goal=crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let capture=Arc::new(Capture(Mutex::new(Vec::new()))); let transport=ExtensionRuntime::default(); transport.bind(capture.clone());
+        let api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),transport);
+        let owner=Arc::new(GoalDelivery::new(runtime.clone(),resolver,Arc::new(||0.0),&api));
+        let mut context=crate::test_context::context(); let session=crate::test_context::bind_session(&mut context); context.has_ui=false;
+        runtime.event(&ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None }),&context).await.unwrap();
+        owner.event(&ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None }),&context,Some(&goal)).await.unwrap();
+        assert_eq!(capture.0.lock().unwrap().len(),1);
+        let flood=vec![SessionEntry { id:"c".into(),parent_id:None,timestamp:String::new(),kind:"custom_message".into(),data:serde_json::json!({"customType":"goal-continuation"}) };usize::try_from(crate::continuation::GOAL_CONTINUATION_CAP).unwrap()];
+        struct Flood(Vec<SessionEntry>);
+        impl ToolSessionManager for Flood { fn session_id(&self)->&str { "s" } fn session_file(&self)->Option<&std::path::Path> { None } }
+        impl SessionManager for Flood { fn get_entries(&self)->Vec<SessionEntry> { self.0.clone() } fn get_branch(&self)->Vec<SessionEntry> { self.0.clone() } fn get_leaf_id(&self)->Option<String> { None } fn get_session_name(&self)->Option<String> { None } }
+        context.session_manager=Arc::new(Flood(flood));
+        owner.event(&ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Startup,initial_model_provenance:None,previous_session_file:None }),&context,Some(&goal)).await.unwrap();
+        assert_eq!(capture.0.lock().unwrap().len(),1);
+        runtime.event(&ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap(); session.dispose().await;
+    }
 }

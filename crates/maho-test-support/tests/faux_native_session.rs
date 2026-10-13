@@ -143,3 +143,108 @@ async fn aborting_an_unpolled_prompt_does_not_leak_the_inflight_count() {
         .await.expect("close does not hang after an unpolled abort");
     assert!(!cwd.exists());
 }
+
+#[tokio::test]
+async fn native_session_runs_a_real_refusal_then_fallback_chain() {
+    use std::sync::{Arc, Mutex};
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, FauxModelDefinition, FauxResponseFactory, faux_assistant_message};
+    use maho_ai::types::StopReason;
+
+    // The factory is model-aware: the primary model fails with a retryable transient error, the
+    // fallback model answers. A single shared response queue cannot distinguish them, so this proves
+    // the harness seam serves one factory step per provider call (primary + fallback).
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let factory: FauxResponseFactory = Arc::new(move |_context, _options, _state, model| {
+        recorder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(model.id.clone());
+        let message = if model.id == "faux-1" {
+            faux_assistant_message("", FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Error), error_message: Some("overloaded".to_owned()),
+                timestamp: Some(0), ..Default::default()
+            })
+        } else {
+            faux_assistant_message("fallback answered", FauxAssistantMessageOptions {
+                stop_reason: Some(StopReason::Stop), timestamp: Some(0), ..Default::default()
+            })
+        };
+        Box::pin(async move { message })
+    });
+    // `maxRetries: 0` keeps the pure fallback path: the primary fails once, then the fallback rung.
+    let session = FauxSession::new(FauxScript { name: "fallback".to_owned(), prompt: "hi".to_owned(), responses: Vec::new() })
+        .with_settings(serde_json::json!({"retry": {"enabled": true, "maxRetries": 0, "modelFallback": true, "baseDelayMs": 0,
+            "fallbackChains": {"faux/faux-1": ["faux/faux-2"]}}}))
+        .with_faux_models(vec![
+            FauxModelDefinition { id: "faux-1".to_owned(), name: Some("Faux 1".to_owned()), ..Default::default() },
+            FauxModelDefinition { id: "faux-2".to_owned(), name: Some("Faux 2".to_owned()), ..Default::default() },
+        ])
+        .with_native_response_factory(factory);
+    // The primary failure is a retryable transient error, so the core retry/fallback contract (not
+    // the refusal path) is what routes it to the chain.
+    assert!(maho_ai::utils::retry::is_retryable_error_message("overloaded"), "primary failure must be retryable");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
+        .await.expect("native turn must settle").expect("native session");
+    // Both models were actually requested: the primary, then the fallback rung.
+    let models = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(models.contains(&"faux-1".to_owned()), "primary was not requested: {models:?}");
+    assert!(models.contains(&"faux-2".to_owned()), "fallback was not requested: {models:?}");
+    // The final assistant message is the fallback model's, from the faux provider.
+    let messages = result["messages"].as_array().expect("messages");
+    let last = messages.last().expect("last message");
+    assert_eq!(last["role"], "assistant");
+    assert_eq!(last["content"][0]["text"], "fallback answered");
+    assert_eq!(last["model"], "faux-2");
+    assert_eq!(last["provider"], "faux");
+}
+
+#[tokio::test]
+async fn native_session_combines_a_native_extension_with_settings_fallback() {
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use maho_ai::providers::faux::{FauxAssistantMessageOptions, FauxModelDefinition, FauxResponseFactory, faux_assistant_message};
+    use maho_ai::types::StopReason;
+
+    struct FlagExtension(Arc<AtomicBool>);
+    impl maho_ext_api::Extension for FlagExtension {
+        fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+            let flag = Arc::clone(&self.0);
+            api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_event, _context| {
+                flag.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok::<maho_ext_api::EventResult, maho_ext_api::ExtensionFailure>(maho_ext_api::EventResult::None) })
+            }));
+        }
+    }
+
+    let extension_ran = Arc::new(AtomicBool::new(false));
+    let native = maho_ext_host::loader::NativeExtensionFactory {
+        path: "<test:flag>".to_owned(), source_info: Default::default(),
+        extension: Box::new(FlagExtension(Arc::clone(&extension_ran))),
+    };
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let factory: FauxResponseFactory = Arc::new(move |_context, _options, _state, model| {
+        recorder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(model.id.clone());
+        let message = if model.id == "faux-1" {
+            faux_assistant_message("", FauxAssistantMessageOptions { stop_reason: Some(StopReason::Error),
+                error_message: Some("overloaded".to_owned()), timestamp: Some(0), ..Default::default() })
+        } else {
+            faux_assistant_message("fallback answered", FauxAssistantMessageOptions { stop_reason: Some(StopReason::Stop), timestamp: Some(0), ..Default::default() })
+        };
+        Box::pin(async move { message })
+    });
+    let session = FauxSession::new(FauxScript { name: "ext-fallback".to_owned(), prompt: "hi".to_owned(), responses: Vec::new() })
+        .with_native_extension(native)
+        .with_settings(serde_json::json!({"retry": {"enabled": true, "maxRetries": 0, "modelFallback": true, "baseDelayMs": 0,
+            "fallbackChains": {"faux/faux-1": ["faux/faux-2"]}}}))
+        .with_faux_models(vec![
+            FauxModelDefinition { id: "faux-1".to_owned(), name: Some("Faux 1".to_owned()), ..Default::default() },
+            FauxModelDefinition { id: "faux-2".to_owned(), name: Some("Faux 2".to_owned()), ..Default::default() },
+        ])
+        .with_native_response_factory(factory);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native())
+        .await.expect("native turn must settle").expect("native session");
+    assert!(extension_ran.load(Ordering::SeqCst), "native extension session_start must run");
+    let models = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert!(models.contains(&"faux-1".to_owned()) && models.contains(&"faux-2".to_owned()), "both models requested: {models:?}");
+    let messages = result["messages"].as_array().expect("messages");
+    assert_eq!(messages.last().and_then(|message| message["model"].as_str()), Some("faux-2"));
+}

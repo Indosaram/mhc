@@ -26,3 +26,20 @@ async fn canonical_public_store_preserves_budget_tristate_and_seconds() {
     let envelope:serde_json::Value=serde_json::from_str(&std::fs::read_to_string(maho_ext_goal::goal_file_path(&reference)).unwrap()).unwrap();
     assert_eq!(envelope,serde_json::json!({"version":1,"goal":null}));
 }
+
+#[test]
+fn public_store_changed_event_contract_is_stable() {
+    // The surface maho-server's goal handlers consume: the active-goal channel constant and the
+    // JSON payload adapter. The native ExtensionContext is never serialized, so a rebuilt event
+    // always re-resolves the owning runtime's active context.
+    assert_eq!(maho_ext_goal::GOAL_STORE_CHANGED_EVENT, "goal_store_changed");
+    let parsed = maho_ext_goal::GoalStoreChangedEvent::from_json(&serde_json::json!({"threadId":"thread-1"})).unwrap();
+    assert_eq!(parsed.thread_id, "thread-1");
+    assert!(parsed.ctx.is_none());
+    assert_eq!(parsed.to_json(), serde_json::json!({"threadId":"thread-1"}));
+    assert!(maho_ext_goal::store_changed_event::is_goal_store_changed_event(&serde_json::json!({"threadId":"thread-1"})));
+    for invalid in [serde_json::json!({"threadId":""}), serde_json::json!({}), serde_json::Value::Null] {
+        assert!(!maho_ext_goal::store_changed_event::is_goal_store_changed_event(&invalid));
+        assert!(maho_ext_goal::GoalStoreChangedEvent::from_json(&invalid).is_none());
+    }
+}

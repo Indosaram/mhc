@@ -148,4 +148,45 @@ impl GoalExtension {
         let mut shutdown=ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None });
         api.registered.handlers[&EventKind::SessionShutdown][0](&mut shutdown,&context).await.unwrap();
     }
+    #[tokio::test] async fn factory_goal_command_shares_store_and_clears_owner_accounting() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let extension=GoalExtension { reference:Arc::new(move |_|stored.clone()),now:Arc::new(||0.0) };
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default()); extension.register(&mut api);
+        let command=api.registered.commands.iter().find(|command|command.name=="goal").unwrap().handler.clone();
+        let context=crate::test_context::context(); crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        command("pause",&context).await.unwrap(); assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().status,crate::types::GoalStatus::Paused);
+        command("clear",&context).await.unwrap(); assert!(crate::store::read_goal(&reference).unwrap().is_none());
+        api.registered.handlers[&EventKind::SessionShutdown][0](&mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap();
+    }
+    #[tokio::test] async fn factory_tool_update_uses_canonical_todos_and_rejects_false_completion() {
+        use maho_ext_api::*;
+        struct Branch(std::sync::Mutex<Vec<SessionEntry>>);
+        impl ToolSessionManager for Branch { fn session_id(&self)->&str { "s" } fn session_file(&self)->Option<&std::path::Path> { None } }
+        impl SessionManager for Branch { fn get_entries(&self)->Vec<SessionEntry> { self.get_branch() } fn get_branch(&self)->Vec<SessionEntry> { self.0.lock().unwrap().clone() } fn get_leaf_id(&self)->Option<String> { None } fn get_session_name(&self)->Option<String> { None } }
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let extension=GoalExtension { reference:Arc::new(move |_|stored.clone()),now:Arc::new(||0.0) };
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default()); extension.register(&mut api);
+        let mut context=crate::test_context::context(); context.session_manager=Arc::new(Branch(std::sync::Mutex::new(vec![SessionEntry { id:"todo".into(),parent_id:None,timestamp:String::new(),kind:"custom".into(),data:serde_json::json!({"customType":maho_ext_todotools::todo_types::TODO_STATE_ENTRY_TYPE,"data":{"schema":"v2","phases":[{"name":"Work","tasks":[{"content":"unfinished","status":"pending"}]}]}}) }])));
+        crate::store::create_goal(&reference,"work",None,0).await.unwrap();
+        let update=api.runtime.extension_tool_executor("goal","update_goal").unwrap();
+        assert!(update("complete",serde_json::json!({"status":"complete"}),None,None,&context).await.is_err());
+        assert_eq!(crate::store::read_goal(&reference).unwrap().unwrap().status,crate::types::GoalStatus::Active);
+        api.registered.handlers[&EventKind::SessionShutdown][0](&mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit,target_session_file:None,signal:None }),&context).await.unwrap();
+    }
+    #[tokio::test] async fn todo_result_appends_stale_goal_reminder_once_per_turn() {
+        use maho_ext_api::*;
+        let dir=tempfile::tempdir().unwrap(); let reference=crate::types::GoalStoreRef { base_dir:dir.path().into(),thread_id:"s".into() }; let stored=reference.clone();
+        let extension=GoalExtension { reference:Arc::new(move |_|stored.clone()),now:Arc::new(||0.0) };
+        let mut api=ExtensionApi::new(LoadedExtension::new("goal","/tmp".into(),Default::default()),Default::default(),Default::default(),Default::default()); extension.register(&mut api);
+        let handler=api.registered.handlers[&EventKind::ToolResult][0].clone(); let context=crate::test_context::context();
+        let details=serde_json::json!({"op":"init","phases":[{"name":"Work","tasks":[{"content":"task","status":"pending"}]}]});
+        let event=||ExtensionEvent::ToolResult(ToolResultEvent { tool_call_id:"c".into(),tool_name:"todo".into(),input:serde_json::Value::Null,content:vec![ToolContent::text("updated")],details:Some(details.clone()),is_error:false,usage:None });
+        let mut first=event();
+        let result=handler(&mut first,&context).await.unwrap();
+        assert!(matches!(result,EventResult::ToolResult(ref result) if result.content.as_ref().unwrap().iter().any(|item|matches!(item,ToolContent::Text { text,.. } if text.contains("no goal registered")))));
+        let mut duplicate=event(); assert!(matches!(handler(&mut duplicate,&context).await.unwrap(),EventResult::None));
+        let mut turn=ExtensionEvent::TurnStart { turn_index:1,timestamp:0 }; api.registered.handlers[&EventKind::TurnStart][0](&mut turn,&context).await.unwrap();
+        let mut next=event(); assert!(matches!(handler(&mut next,&context).await.unwrap(),EventResult::ToolResult(_)));
+    }
 }
