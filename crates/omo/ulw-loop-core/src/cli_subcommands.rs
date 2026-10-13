@@ -17,6 +17,7 @@ use crate::domain_types::{UlwLoopItem, UlwLoopPlan, UlwLoopSuccessCriterion};
 use crate::goal_status::is_essential_criterion;
 use crate::paths::UlwLoopScope;
 use crate::plan_crud::{summarize_ulw_loop_plan, StartNextResult};
+use crate::plan_io::read_ulw_loop_plan;
 use crate::runtime::UlwLoopError;
 use crate::sdk::factory::{AgentToolkit, AgentToolkitDependencies};
 use crate::sdk::types::ToolkitContext;
@@ -115,26 +116,25 @@ pub fn create_goals(
 }
 
 pub fn status(repo_root: &Path, json: bool, scope: Option<&UlwLoopScope>) -> Result<i32, UlwLoopError> {
-    let session_id = scope.and_then(|s| s.session_id.as_deref()).ok_or_else(|| {
-        UlwLoopError::new("Missing --session-id.", "ULW_LOOP_SESSION_ID_REQUIRED")
-    })?;
-    let plan_path = repo_root.join(".omo/ulw-loop").join(session_id).join("goals.json");
-    if !plan_path.is_file() {
-        return Err(UlwLoopError::new("No ulw-loop plan exists for this session.", "ULW_LOOP_PLAN_MISSING"));
+    if scope.and_then(|s| s.session_id.as_deref()).is_none() {
+        return Err(UlwLoopError::new("Missing --session-id.", "ULW_LOOP_SESSION_ID_REQUIRED"));
     }
+    read_ulw_loop_plan(repo_root, scope)?;
     let toolkit = toolkit_for(repo_root, scope)?;
     let resp = toolkit.status();
     match resp {
         crate::sdk::types::ToolkitResponse::Success { result, .. } => {
             if json {
-                let out = serde_json::json!({
+                let mut out = serde_json::json!({
                     "ok": true,
                     "plan": result.plan,
                     "summary": result.summary,
                     "nextActions": result.next_actions,
                     "evidenceRoot": result.evidence_root,
-                    "currentAttemptDir": result.current_attempt_dir,
                 });
+                if let (Some(dir), Some(obj)) = (result.current_attempt_dir, out.as_object_mut()) {
+                    obj.insert("currentAttemptDir".to_string(), Value::String(dir));
+                }
                 print_json(&out);
             } else {
                 print_status(&result.plan);
