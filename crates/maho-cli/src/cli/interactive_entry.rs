@@ -1,5 +1,5 @@
 use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc, sync::Arc};
-use maho_tui::{components::editor::EditorTuiHost, terminal::{ProcessTerminal, Terminal}, tui::Component};
+use maho_tui::{components::editor::EditorTuiHost, terminal::Terminal, tui::Component};
 
 use super::shared_host::{is_truthy_env_flag, join_shared_host, should_join_shared_host, shared_host_setting_enabled, SharedHostMount, SHARED_HOST_ENABLE_ENV_SUFFIX};
 
@@ -55,7 +55,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
     let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {

@@ -231,7 +231,7 @@ pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), Str
 fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: String, agent_dir: String, local: bool, global: maho_core::package_manager::ResolvedPaths, project: maho_core::package_manager::ResolvedPaths) -> Result<(), String> {
     use std::{cell::{Cell, RefCell}, rc::Rc};
     use maho_interactive::{components::config_selector::{ConfigSelectorComponent, ConfigWriteScope}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions}};
-    use maho_tui::{terminal::{ProcessTerminal, Terminal}, tui::Component};
+    use maho_tui::{terminal::Terminal, tui::Component};
     let theme = crate::cli::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
     let show_hardware_cursor = settings.get_bool("showHardwareCursor").unwrap_or(false);
     let clear_on_shrink = settings.get_bool("clearOnShrink").unwrap_or(false);
@@ -239,7 +239,7 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
     let closed = Rc::new(Cell::new(false)); let close = closed.clone(); let exit = closed.clone();
     let switch = Rc::new(Cell::new(false)); let toggle = switch.clone();
     let host = ConfigSettings { settings, error: Rc::new(RefCell::new(None)) }; let write_error = host.error.clone();
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let selector = Rc::new(RefCell::new(ConfigSelectorComponent::new(&theme,
         std::collections::BTreeMap::from([(ConfigWriteScope::Global, global), (ConfigWriteScope::Project, project)]),
         Box::new(host), &cwd, &agent_dir, &maho_core::config::config_dir_name(),
