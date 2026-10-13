@@ -104,7 +104,7 @@ impl EvalKernel for crate::kernels::js::context_manager::JavaScriptKernel {
     }
     fn cancel_queued<'a>(&'a self,id:&'a str,reason:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async move {Ok(self.cancel_queued(id,reason).await)})}
     fn interrupt<'a>(&'a self,reason:&'a str,id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {
-        Box::pin(async move {let retained=self.interrupt(reason,id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note:None})})
+        Box::pin(async move {let (retained,note)=self.interrupt(reason,id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note})})
     }
     fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.queue_snapshot()}
     fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {self.deliver_tool_reply(message)}
