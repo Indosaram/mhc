@@ -2,7 +2,7 @@ use maho_interactive::{
     components::footer::{FooterComponent, FooterSnapshot},
     streaming_reveal::StreamingRevealController,
     streaming_reveal_content::{BlockUnitCounter, build_display_message, visible_units},
-    theme::{ColorMode, Theme},
+    theme::{ColorMode, Theme, ThemeColor},
     tool_args_reveal::ToolArgsRevealController,
     tool_result_reveal::ToolResultRevealController,
 };
@@ -51,6 +51,16 @@ fn text_styles_leave_empty_text_unchanged() {
     for styled in [t.bold(""), t.italic(""), t.underline(""), t.inverse(""), t.strikethrough("")] {
         assert_eq!(styled, "");
     }
+}
+#[test]
+fn highlight_colors_operator_punctuation_and_type_classes() {
+    let t = theme();
+    let swift = maho_interactive::theme::highlight_code(&t, "let x = a + 1", Some("swift")).join("\n");
+    assert!(swift.contains(&t.fg(ThemeColor::SyntaxOperator, "+")), "{swift:?}");
+    let rust = maho_interactive::theme::highlight_code(&t, "fn main() -> i32 { 0 }", Some("rust")).join("\n");
+    assert!(rust.contains(&t.fg(ThemeColor::SyntaxPunctuation, "->")), "{rust:?}");
+    let ts = maho_interactive::theme::highlight_code(&t, "let n: number = 1;", Some("ts")).join("\n");
+    assert!(ts.contains(&t.fg(ThemeColor::SyntaxType, "number")), "{ts:?}");
 }
 #[test]
 fn highlight_matches_pinned_token_colors() {
