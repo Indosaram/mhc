@@ -61,7 +61,8 @@ async fn fresh_home_bootstrap_runs_through_native_session() {
         models_path:Some(root.path().join("models.json")),auth_path:Some(root.path().join("auth.json")),
         credentials:Some(Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),serde_json::json!({"type":"api_key","key":"fixture"}))].into_iter().collect()))),
         providers:Some(vec![provider.provider.clone()]),
-    });
+            ..Default::default()
+        });
     let loaded=maho_ext_host::loader::load_extensions(vec![NativeExtensionFactory {
         path:"<onboarding>".into(),source_info:Default::default(),extension:Box::new(maho_omo_onboarding::OnboardingComponent {state_dir:root.path().into(),skills_root:"<skills>".into()}),
     }],root.path(),Default::default());

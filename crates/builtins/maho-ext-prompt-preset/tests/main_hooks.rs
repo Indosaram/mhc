@@ -118,7 +118,7 @@ impl ExtensionUi for HeaderUi {
     fn notify(&self, _: &str, _: NotificationType) {}
     fn set_status(&self, _: &str, _: Option<&str>) {}
     fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
-    fn set_header(&self, factory: Option<ComponentFactory>) { *self.0.lock().unwrap() = Some(factory); }
+    fn set_header(&self, factory: Option<ComponentFactory>) { *self.0.lock().expect("header slot") = Some(factory); }
     fn set_footer(&self, _: Option<ComponentFactory>) {}
     fn set_title(&self, _: &str) {}
     fn paste_to_editor(&self, _: &str) {}
