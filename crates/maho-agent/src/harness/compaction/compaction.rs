@@ -207,7 +207,7 @@ where
 pub fn create_summary_request_options(options: SimpleStreamOptions, context: &Context) -> SimpleStreamOptions {
     let mut options = options;
     options.stream.request.signal = context.abort_signal();
-    options.stream.request.telemetry_context = None;
+    options.stream.request.telemetry_context = crate::harness::context::provider_telemetry_context(context);
     options.stream.cache_retention = Some(CacheRetention::None);
     if options.stream.session_id.is_none() {
         options.stream.session_id = uuidv7(None).ok();
