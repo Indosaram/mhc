@@ -865,6 +865,10 @@ impl SessionManager {
         self.usage_totals.cache_read += usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
         self.usage_totals.cache_write += usage.get("cacheWrite").and_then(Value::as_i64).unwrap_or(0);
         self.usage_totals.cost += usage.get("cost").and_then(|cost| cost.get("total")).and_then(Value::as_f64).unwrap_or(0.0);
+        let cache_read = usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
+        let latest_prompt_tokens = usage.get("input").and_then(Value::as_i64).unwrap_or(0) + cache_read + usage.get("cacheWrite").and_then(Value::as_i64).unwrap_or(0);
+        self.usage_totals.latest_cache_hit_rate =
+            (latest_prompt_tokens > 0).then(|| cache_read as f64 / latest_prompt_tokens as f64 * 100.0);
     }
 
     fn rewrite_file(&mut self) {
@@ -1553,6 +1557,16 @@ mod tests {
         std::fs::write(&path, format!("{}\n", serialize_entry(&json!({ "type": "message", "id": "a" })))).expect("write");
         assert!(load_entries_from_file(&path.to_string_lossy()).is_empty());
         assert!(load_entries_from_file("/definitely/not/here.jsonl").is_empty());
+    }
+
+    #[test]
+    fn usage_totals_track_the_latest_cache_hit_rate() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
+        manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 10, "output": 1, "cacheRead": 30, "cacheWrite": 0 } }));
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, Some(75.0));
+        manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 0, "output": 1, "cacheRead": 0, "cacheWrite": 0 } }));
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
     }
 
     #[test]
