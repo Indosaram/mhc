@@ -1,6 +1,7 @@
 use regex::Regex;
 use serde_json::{Map,Value};
 use std::{fs::{self,OpenOptions},io::Write,path::{Path,PathBuf}};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt,PermissionsExt};
 
 fn safe_text(value:&str)->Result<String,regex::Error> {
@@ -44,16 +45,16 @@ impl FallbackLogger {
     }
     fn write(&self,timestamp:&str,level:&str,event:&str,data:Option<&Map<String,Value>>)->Result<(),Box<dyn std::error::Error+Send+Sync>> {
         let text=format!("{}\n",format_line(timestamp,level,event,data)?);
-        if let Some(parent)=self.path.parent(){fs::create_dir_all(parent)?;fs::set_permissions(parent,fs::Permissions::from_mode(0o700))?;}
+        if let Some(parent)=self.path.parent(){fs::create_dir_all(parent)?;#[cfg(unix)]fs::set_permissions(parent,fs::Permissions::from_mode(0o700))?;}
         match fs::metadata(&self.path) {
             Ok(meta) if meta.len()+text.len() as u64>self.max_bytes => {
                 let rotated=self.path.with_extension("log.1");
                 match fs::remove_file(&rotated){Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(error.into())}
-                fs::rename(&self.path,&rotated)?;fs::set_permissions(rotated,fs::Permissions::from_mode(0o600))?;
+                fs::rename(&self.path,&rotated)?;#[cfg(unix)]fs::set_permissions(rotated,fs::Permissions::from_mode(0o600))?;
             },
             Ok(_)=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(error.into()),
         }
-        let mut file=OpenOptions::new().create(true).append(true).mode(0o600).open(&self.path)?;file.write_all(text.as_bytes())?;file.set_permissions(fs::Permissions::from_mode(0o600))?;Ok(())
+        let mut options=OpenOptions::new();options.create(true).append(true);#[cfg(unix)]options.mode(0o600);let mut file=options.open(&self.path)?;file.write_all(text.as_bytes())?;#[cfg(unix)]file.set_permissions(fs::Permissions::from_mode(0o600))?;Ok(())
     }
 }
 

@@ -175,6 +175,7 @@ pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
         return Err(error.to_string());
     }
     set_mode(&temporary, AUTH_FILE_MODE);
+    #[cfg(unix)]
     if Path::new(path).exists()
         && let Ok(metadata) = std::fs::metadata(path) {
             use std::os::unix::fs::PermissionsExt;
@@ -189,8 +190,13 @@ pub fn write_auth_file(path: &str, content: &str) -> Result<(), String> {
 }
 
 fn set_mode(path: &str, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
 }
 
 pub struct FileAuthStorageBackend {
@@ -930,6 +936,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn writes_the_store_with_mode_600_and_preserves_a_wider_existing_mode() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().expect("tempdir");
