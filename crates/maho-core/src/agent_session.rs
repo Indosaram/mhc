@@ -4074,9 +4074,14 @@ impl AgentSession {
         if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
         self.ensure_extension_recreation().await?;
         self.abort().await;
+        let previous_flag_values = self.extension_runner.lock().await.as_ref().map(|runner| runner.runtime.flag_values()).unwrap_or_default();
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
         self.invalidate_extension_runtime().await;
         self.with_settings_manager_mut(|manager| manager.reload());
+        self.sync_queue_modes_from_settings();
+        // `modelRuntime.reloadConfig()`: the registry's runtime shares its config/provider state, so
+        // reloading a clone re-reads models.json for the session's live catalog.
+        self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
             let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
@@ -4093,10 +4098,42 @@ impl AgentSession {
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;
-        self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
-            reason: maho_ext_api::SessionReason::Reload, initial_model_provenance: None, previous_session_file: self.session_file(),
-        })).await;
-        self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
+        if let Some(runner) = self.extension_runner.lock().await.as_ref() {
+            for (name, value) in previous_flag_values { runner.runtime.set_flag(&name, value); }
+        }
+        // Scopes resolve after the runner renewal re-registered extension-native providers.
+        let available = self.model_runtime().get_available(None).await;
+        let resolve_scope = |patterns: Vec<String>| crate::model_resolver::resolve_model_scope_from_models(&patterns, &available)
+            .scoped_models.into_iter().map(|entry| SessionModelEntry {
+                model: entry.model,
+                thinking_level: entry.thinking_level.filter(|level| *level != maho_ai::types::ModelThinkingLevel::Off)
+                    .and_then(|level| ThinkingLevel::parse(level.as_str())),
+                thinking_selection: entry.thinking_selection,
+                service_tier: match entry.service_tier.as_deref() {
+                    Some("auto") => Some(ServiceTier::Auto), Some("flex") => Some(ServiceTier::Flex),
+                    Some("priority") => Some(ServiceTier::Priority), _ => None,
+                },
+            }).collect::<Vec<_>>();
+        let (enabled_patterns, favorite_patterns) = self.with_settings_manager(|manager| {
+            let patterns = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
+                values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>());
+            (patterns("enabledModels"), patterns("favoriteModels").unwrap_or_default())
+        });
+        self.set_scoped_models(resolve_scope(crate::model_resolver::get_model_narrowing_patterns(None, enabled_patterns.as_deref()).to_vec()));
+        self.set_favorite_models(resolve_scope(favorite_patterns));
+        // senpi emits the reload `session_start` only once a host bound the extensions (UI,
+        // command actions, shutdown or error handlers); an unbound session stays silent.
+        let has_bindings = {
+            let state = self.state();
+            state.extension_lifecycle_started || state.extension_ui_context.is_some()
+                || state.extension_abort_handler.is_some() || state.extension_error_listener.is_some()
+        };
+        if has_bindings {
+            self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionStart(maho_ext_api::SessionStartEvent {
+                reason: maho_ext_api::SessionReason::Reload, initial_model_provenance: None, previous_session_file: self.session_file(),
+            })).await;
+            self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
+        }
         Ok(true)
     }
 
@@ -9245,6 +9282,32 @@ mod tests {
             assert!(second.await.expect("second reload"));
         }).await.expect("bounded reloads");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+        session.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn unbound_reload_keeps_flag_values_and_skips_session_start() {
+        let session = test_session();
+        let starts = Arc::new(Mutex::new(0_usize));
+        let mut extension = maho_ext_api::LoadedExtension::new("<inline:reload-flags>", session.cwd().into(), Default::default());
+        let counted = starts.clone();
+        extension.handlers.insert(maho_ext_api::EventKind::SessionStart, vec![Arc::new(move |_, _| {
+            *lock(&counted) += 1;
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        })]);
+        let retained = extension.clone();
+        let runtime = maho_ext_api::ExtensionRuntime::default();
+        runtime.set_flag("no-ask-user", FlagValue::Boolean(true));
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], runtime, Default::default(), test_extension_context(&session));
+        runner.set_runtime_factory(Arc::new(move |context| {
+            let extension = retained.clone();
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)) })
+        }));
+        session.set_extension_runner(runner).await;
+        assert!(session.reload().await.expect("reload"));
+        let flag = session.extension_runner.lock().await.as_ref().and_then(|runner| runner.runtime.get_flag("no-ask-user"));
+        assert_eq!(flag, Some(FlagValue::Boolean(true)));
+        assert_eq!(*lock(&starts), 0);
         session.dispose().await;
     }
 
