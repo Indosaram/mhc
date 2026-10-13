@@ -114,9 +114,9 @@ async fn toggle_command_emits_widget_and_machine_debug_fields() {
   fn append_entry(&self, kind: &str, data: Option<JsonValue>) -> Result<(), ExtensionFailure> { self.0.lock().unwrap().push(serde_json::json!({"type":kind,"data":data})); Ok(()) }
   fn get_all_tools(&self) -> Result<Vec<ToolInfo>, ExtensionFailure> { Ok(vec![]) }
  }
- let root = tempfile::tempdir().unwrap(); let child = root.path().join("nested"); std::fs::create_dir(&child).unwrap();
+ let root = tempfile::tempdir().unwrap(); let root_path = root.path().canonicalize().unwrap(); let child = root_path.join("nested"); std::fs::create_dir(&child).unwrap();
  let instruction = child.join("AGENTS.md"); std::fs::write(&instruction, "fixture rule").unwrap(); let target = child.join("file.rs"); std::fs::write(&target, "target").unwrap();
- let captured = Arc::new(std::sync::Mutex::new(Vec::new())); let mut ctx = context(); ctx.cwd = root.path().into();
+ let captured = Arc::new(std::sync::Mutex::new(Vec::new())); let mut ctx = context(); ctx.cwd = root_path.clone();
  ctx.ui = Arc::new(CapturingUi { capture: Arc::clone(&captured) });
  let mut api = api(); api.runtime.bind(Arc::new(Actions(Arc::clone(&captured)))); maho_ext_nested_agents_md::NestedAgentsMd.register(&mut api);
  let mut event = read_event(&target, false); api.registered.handlers[&EventKind::ToolResult][0](&mut event, &ctx).await.unwrap(); ctx.has_ui = true;
@@ -128,7 +128,7 @@ async fn toggle_command_emits_widget_and_machine_debug_fields() {
  let data = &output[1]["data"];
  assert_eq!(data["sessionKey"], "__pi_nested_agents_md_singleton__");
  assert_eq!(data["cacheSize"], 1);
- assert_eq!(data["injectedDirectories"][0], root.path().join("nested").to_string_lossy().as_ref());
+ assert_eq!(data["injectedDirectories"][0], root_path.join("nested").to_string_lossy().as_ref());
  assert_eq!(data["injectedFiles"][0]["path"], instruction.to_string_lossy().as_ref());
  assert_eq!(data["injectedFiles"][0]["truncated"], false);
  assert_eq!(output[3], serde_json::json!({"widget":null}));
