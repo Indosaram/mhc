@@ -132,6 +132,14 @@ impl TaskComponent {
                         component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
                     }
                     ExtensionEvent::AgentEnd { .. } => {
+                        // Upstream `queueMicrotask(() => coordinator.flushOnIdle())`: drain completions, team
+                        // mail and DAG summaries that arrived mid-turn on the idle edge, after this handler.
+                        if let Some(coordinator) = context.idle_coordinator.clone() {
+                            match &context.defer_macrotask {
+                                Some(defer) => defer(Box::new(move || { coordinator.flush_on_idle(); })),
+                                None => { coordinator.flush_on_idle(); }
+                            }
+                        }
                         let team=component.team.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         if let Some(team)=team { let runtime=component.engine.runtime.clone(); team.liveness.acknowledge_persisted(Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_file().map(ToOwned::to_owned))); }
                         component.sync();
