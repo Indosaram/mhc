@@ -19,7 +19,7 @@ pub fn status_next_actions(plan: &UlwLoopPlan, surface: Option<UlwLoopToolkitSur
     for goal in plan.goals.iter().filter(|g| g.status == "review_blocked") {
         let msg = if s == UlwLoopToolkitSurface::OmoSenpi {
             format!(
-                "{} is review_blocked: capture the reviewer verdict with `agentToolkit.recordReviewBlockers({{ goalId: \"{}\", title: \"<title>\", objective: \"<objective>\", evidence: \"<verdict>\" }})`.",
+                "{} is review_blocked: capture the reviewer verdict with `mhc ulw-loop record-review-blockers --goal-id {} --title \"<title>\" --objective \"<objective>\" --evidence \"<verdict>\" --codex-goal-json '<get_goal json>'`.",
                 goal.id, goal.id
             )
         } else {
@@ -44,7 +44,7 @@ fn active_goal_actions(plan: &UlwLoopPlan, active: &UlwLoopItem, surface: UlwLoo
         let unresolved_ids: Vec<_> = unresolved.iter().map(|c| c.id.as_str()).collect();
         let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
             format!(
-                "{} has {} unresolved criterion(s) ({}): record proof with `agentToolkit.recordEvidence({{ goalId: \"{}\", criterionId: \"<id>\", status: \"pass\", evidence: \"<observable proof>\" }})`.",
+                "{} has {} unresolved criterion(s) ({}): record proof with `mhc ulw-loop record-evidence --goal-id {} --criterion-id <id> --status pass --evidence \"<observable proof>\"`.",
                 active.id, unresolved.len(), unresolved_ids.join(", "), active.id
             )
         } else {
@@ -59,7 +59,7 @@ fn active_goal_actions(plan: &UlwLoopPlan, active: &UlwLoopItem, surface: UlwLoo
     if has_all_criteria_pass(active) && is_final_run_completion_candidate(plan, active) {
         let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
             format!(
-                "{} passes every criterion and is the final story: complete the driver goal, then call `agentToolkit.checkpoint({{ goalId: \"{}\", printTemplate: true }})` to build the final quality gate. Use status().result.currentAttemptDir for all quality-gate artifacts.",
+                "{} passes every criterion and is the final story: complete the driver goal, then run `mhc ulw-loop checkpoint --goal-id {} --print-template --json` to build the final quality gate. Use the currentAttemptDir shown by `mhc ulw-loop status --json` for all quality-gate artifacts.",
                 active.id, active.id
             )
         } else {
@@ -73,7 +73,7 @@ fn active_goal_actions(plan: &UlwLoopPlan, active: &UlwLoopItem, surface: UlwLoo
 
     let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
         format!(
-            "{} passes every criterion: close it with `agentToolkit.checkpoint({{ goalId: \"{}\", status: \"complete\", evidence: \"<proof>\" }})`. Put quality-gate artifacts under status().result.currentAttemptDir.",
+            "{} passes every criterion: close it with `mhc ulw-loop checkpoint --goal-id {} --status complete --evidence \"<proof>\"`. Put quality-gate artifacts under the currentAttemptDir shown by `mhc ulw-loop status --json`.",
             active.id, active.id
         )
     } else {
