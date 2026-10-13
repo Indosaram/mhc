@@ -120,6 +120,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
     let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
+    // senpi main.ts:1262-1268: every full launch refreshes what `--help` reads.
+    super::help_flags_cache::write_help_flags_cache(
+        &super::help_fast_path::help_flags_scope(&parsed, &cwd, std::path::Path::new(&agent_dir), settings.is_project_trusted()),
+        &extensions.extensions.iter().flat_map(|extension| extension.flags.iter().map(super::help_extension_flags::help_flag_value)).collect::<Vec<_>>(),
+        &extensions.extensions.iter().map(|extension| std::path::PathBuf::from(&extension.identity.resolved_path)).collect::<Vec<_>>(),
+        env!("CARGO_PKG_VERSION"),
+    );
     runtime_diagnostics.extend(extensions.errors.iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.extension_path, error.error))));
     if mode != AppMode::Interactive {
         runtime_diagnostics.extend(models.credentials.errors().into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("(runtime creation, auth storage) {error}"))));
