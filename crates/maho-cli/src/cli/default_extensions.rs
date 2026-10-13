@@ -457,7 +457,7 @@ impl Extension for Codemode {
         if let Err(error) = maho_codemode::register(api, maho_codemode::CodemodeExtensionOptions {
             image_sdk: Arc::new(Images), complete: Arc::new(|request, context| Box::pin(super::codemode_services::complete(request, context))),
             home_dir: maho_core::config::home_dir().into(), environment: std::env::vars().collect(),
-            js_runtime: maho_codemode::tool::types::EvalRuntimeInfo { name: "Bun".into(), version: "1.4".into(), path: Some("bun".into()) },
+            js_runtime: maho_codemode::extension::runtime_info::probe_js_runtime_info(&std::env::vars().collect()),
         }) {
             std::panic::panic_any(error);
         }
