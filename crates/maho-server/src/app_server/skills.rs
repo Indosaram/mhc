@@ -79,10 +79,13 @@ pub fn register_skill_methods_with_loader(registry: &mut MethodRegistry, agent_d
                     let loaded = if params["forceReload"] == true || !cache.contains_key(&cwd) {
                         match loaded_thread_skills(&threads,&cwd,params["forceReload"] == true).await {
                             Some(loaded)=>loaded,
-                            None=>match {let loader = loader.clone();let cwd = cwd.clone();let agent_dir = agent_dir.clone();tokio::task::spawn_blocking(move || loader(&cwd,&agent_dir)).await.unwrap_or_else(|error| Err(error.to_string()))} {
+                            None=>{
+                                let loader = loader.clone();let load_cwd = cwd.clone();let agent_dir = agent_dir.clone();
+                                let res = tokio::task::spawn_blocking(move || loader(&load_cwd,&agent_dir)).await.unwrap_or_else(|error| Err(error.to_string()));
+                                match res {
                                 Ok(loaded)=>{cache.insert(cwd.clone(),loaded.clone());loaded},
                                 Err(message)=>{cache.remove(&cwd);data.push(json!({"cwd":cwd,"skills":[],"errors":[{"path":cwd,"message":message}]}));continue;},
-                            },
+                            }},
                         }
                     } else {cache[&cwd].clone()};
                     let skills = loaded.skills.iter().map(|skill| {
