@@ -2,7 +2,9 @@ use crate::{binary_path::{find_sg_cli_path, BinaryResolver}, downloader::{cache_
 use maho_ext_api::{Extension, ExtensionApi, NotificationType};
 use std::{path::PathBuf, sync::Arc};
 
-pub struct AstGrep;
+/// `package_entry` stands in for the TS module's `import.meta.url`: `@ast-grep/cli` and the
+/// platform package are resolved from its ancestors' `node_modules`. `None` keeps the cwd fallback.
+pub struct AstGrep { pub package_entry: Option<PathBuf> }
 impl Extension for AstGrep {
     fn register(&self, api: &mut ExtensionApi) {
         let platform = if cfg!(windows) { "win32" } else if cfg!(target_os = "macos") { "darwin" } else { "linux" };
@@ -11,7 +13,7 @@ impl Extension for AstGrep {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_default();
         let override_path = if cfg!(windows) { std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA")) } else { std::env::var_os("XDG_CACHE_HOME") }.map(PathBuf::from);
         let cache = cache_dir(&home, platform, override_path.as_deref());
-        let source = api.cwd.join("extension.rs");
+        let source = self.package_entry.clone().unwrap_or_else(|| api.cwd.join("extension.rs"));
         let path = std::env::var_os("PATH");
         let offline = matches!(std::env::var("PI_OFFLINE").ok().as_deref(), Some("1" | "true"));
         let resolver = Arc::new(BinaryResolver::new(source.clone(), cache.clone(), path.clone(), platform_key.clone(), offline));
