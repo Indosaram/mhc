@@ -51,6 +51,8 @@ pub struct CliRuntimeConfiguration {
     pub themes: Vec<String>,
     pub hooks: Vec<String>,
     pub additional_hook_paths: Vec<PathBuf>,
+    /// senpi `parsed.unknownFlags`: extension flag values every mounted session applies.
+    pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
 }
 
 impl Default for CliRuntimeConfiguration {
@@ -75,6 +77,7 @@ impl Default for CliRuntimeConfiguration {
             themes: Vec::new(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            extension_flag_values: None,
         }
     }
 }
@@ -101,6 +104,10 @@ impl CliRuntimeConfiguration {
             themes: parsed.themes.clone(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            extension_flag_values: (!parsed.unknown_flags.is_empty()).then(|| parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+                super::args::FlagValue::Boolean(value) => FlagValue::Boolean(*value),
+                super::args::FlagValue::String(value) => FlagValue::String(value.clone()),
+            })).collect()),
         }
     }
 
@@ -237,8 +244,7 @@ pub async fn mount_agent_session_runtime(
         agent_dir: Some(config.agent_dir.clone()),
         settings_manager,
         model_runtime,
-        extension_flag_values,
-    });
+    }).await;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let mut extension_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
@@ -268,6 +274,7 @@ pub async fn mount_agent_session_runtime(
             auto_title_sessions,
             extension_factories,
             session_profile,
+            extension_flag_values,
             defer_extension_start: true,
             ..Default::default()
         },
@@ -351,6 +358,7 @@ pub fn create_cli_runtime_factory(config: CliRuntimeConfiguration) -> CliSession
                 session_manager: request.session_manager,
                 session_start_event: request.session_start_event,
                 auto_title_sessions: config.auto_title_sessions,
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             mount_agent_session_runtime(&config, mount_request, model_runtime, settings_manager).await
@@ -448,6 +456,7 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
                     session_kind: profile.session_kind.unwrap_or_default(),
                     session_context: profile.session_context.clone().unwrap_or_default(),
                 },
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), None).await?;
