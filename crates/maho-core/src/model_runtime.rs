@@ -2,7 +2,7 @@
 use crate::model_config::ModelConfig;
 use crate::provider_composer::{AuthStatus, ProviderConfigInput, compose_model_provider};
 use maho_ai::legacy_provider_ids::normalize_provider_id;
-use maho_ai::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, Models, ModelsAuth, ModelsError, ModelsErrorCode, ModelsRefreshOptions, ModelsRefreshResult, Provider, create_models};
+use maho_ai::models::{AuthResolution, AuthResolutionOverrides, CreateModelsOptions, Models, ModelsAuth, ModelsError, ModelsErrorCode, ModelsRefreshOptions, ModelsRefreshResult, ModelsRequestTransforms, Provider, create_models};
 use maho_ai::types::{AssistantMessage, AssistantMessageEventStream, BoxFuture, Context, Model, SimpleStreamOptions, StreamOptions};
 use indexmap::IndexMap;
 use std::{path::PathBuf, sync::{Arc, RwLock}};
@@ -298,11 +298,16 @@ impl ModelRuntime {
         })
     }
     pub fn stream_simple(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+        self.stream_simple_with_transforms(model,context,options,ModelsRequestTransforms::default())
+    }
+    /// `streamSimple` with the `ModelsRequestTransforms` senpi passes inside the options object
+    /// (`transformHeaders` runs on the assembled request headers after auth resolution).
+    pub fn stream_simple_with_transforms(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>,transforms:ModelsRequestTransforms) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
         let models=self.models.clone();let context=context.clone();let original=model.clone();
         Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
-            Ok(models.stream_simple(&request_model,&context,Some(options),Default::default()))
+            Ok(models.stream_simple(&request_model,&context,Some(options),transforms))
         })
     }
     async fn apply_configured_headers(model:&Model,config:Option<&crate::model_config_schema::ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,options:&mut StreamOptions)->Result<(),String> {

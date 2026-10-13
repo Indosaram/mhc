@@ -184,6 +184,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     let resumed = !context.messages.is_empty();
     let messages = context.messages.into_iter().map(crate::agent_session::session_message_from_value)
         .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    let provider_retry_settings = settings.get_provider_retry_settings();
     let agent = maho_agent::agent::Agent::new(maho_agent::agent::AgentOptions {
         initial_state: Some(maho_agent::agent::PartialAgentState { model: Some(model), thinking_level: Some(thinking_level),
             thinking_selection, messages: Some(messages), tools: Some(active_tools), ..Default::default() }),
@@ -195,6 +196,13 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         // summary messages become user turns. The agent-core default drops them, so a hidden
         // extension wake after an assistant reply left the provider request ending on that reply.
         convert_to_llm: Some(Arc::new(|messages| Box::pin(async move { maho_agent::harness::messages::convert_to_llm(messages) }))),
+        steering_mode: Some(settings.get_steering_mode()),
+        follow_up_mode: Some(settings.get_follow_up_mode()),
+        transport: Some(settings.get_transport()),
+        thinking_budgets: settings.get_thinking_budgets(),
+        timeout_ms: settings.get_agent_stream_idle_timeout_ms(),
+        stream_start_timeout_ms: settings.get_agent_stream_start_timeout_ms(),
+        max_retry_delay_ms: Some(provider_retry_settings.max_retry_delay_ms),
         ..Default::default()
     });
     let session_start_event = match options.initial_model_provenance.take() {
@@ -219,6 +227,9 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     if options.minimal_resources {
         session.set_context_files_enabled(false);
     }
+    // senpi sdk.ts hands the Agent its settings-aware `streamFn` up front, so attribution headers,
+    // provider timeouts and the request service tier apply with or without an extension runner.
+    session.install_default_stream_function();
     assert!(session_accessor.set(session.weak_accessor()).is_ok(), "SDK context initialized once");
     for (name, definition) in registered_definitions {
         if let Some(tool) = base_tools.get(&name) {
@@ -560,6 +571,28 @@ mod tests {
         let Some(Message::User(last)) = context.messages.last() else { panic!("custom message must reach the provider as a user turn") };
         let UserContent::Blocks(blocks) = &last.content else { panic!("custom text projects to content blocks") };
         assert_eq!(maho_ai::utils::text::content_text(blocks, ""), "Continue");
+    }
+
+    #[tokio::test]
+    async fn sdk_agent_receives_settings_driven_stream_options() {
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let mut global = crate::settings_manager::Settings::new();
+        global.insert("httpIdleTimeoutMs".to_owned(), serde_json::json!(60_000));
+        global.insert("followUpMode".to_owned(), serde_json::json!("all"));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
+            settings_manager: Some(SettingsManager::in_memory(global, false)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let agent = created.session.agent().clone();
+        created.session.dispose().await;
+        assert_eq!((agent.timeout_ms(), agent.stream_start_timeout_ms()), (Some(60_000), Some(60_000)));
+        assert_eq!(agent.max_retry_delay_ms(), Some(60_000));
+        assert_eq!(agent.transport(), Some(maho_ai::types::Transport::Auto));
+        assert_eq!(agent.steering_mode(), maho_agent::types::QueueMode::All);
+        assert_eq!(agent.follow_up_mode(), maho_agent::types::QueueMode::All);
     }
 
     fn test_model() -> Model {
