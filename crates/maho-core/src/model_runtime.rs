@@ -261,9 +261,17 @@ pub struct ModelRuntime {
     builtins: IndexMap<String,Arc<dyn Provider>>,
     native: IndexMap<String,Arc<dyn Provider>>,
     extensions: Arc<RwLock<IndexMap<String,ProviderConfigInput>>>,
-    errors: IndexMap<String,String>,
+    errors: Arc<RwLock<IndexMap<String,String>>>,
     models_path: Option<PathBuf>,
     pub credentials: Arc<crate::auth_storage::AuthStorage>,
+    /// senpi `credentialOperations`: login/logout/runtime-key changes run one at a time per provider.
+    credential_operations: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+}
+
+/// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
+/// refreshing the provider afterwards failed.
+pub fn is_credential_synchronization_error(error: &ModelsError) -> bool {
+    error.message.starts_with("Credential ") && error.message.contains(", but local synchronization failed")
 }
 
 impl ModelRuntime {
@@ -275,10 +283,11 @@ impl ModelRuntime {
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
         let store: Arc<dyn CredentialStore> = Arc::new(AuthStorageCredentialStore {credentials:credentials.clone(),auth_path:options.auth_path});
         let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),store};
-        let mut runtime = Self {
+        let runtime = Self {
             models:create_models(Some(CreateModelsOptions {auth:Some(Arc::new(auth)),..Default::default()})),
             config, builtins: options.providers.unwrap_or_else(maho_ai::providers::all::builtin_providers).into_iter().map(|p| (p.id().to_owned(),p)).collect(),
-            native:IndexMap::new(), extensions, errors:IndexMap::new(),models_path:options.models_path,credentials,
+            native:IndexMap::new(), extensions, errors:Arc::new(RwLock::new(IndexMap::new())),models_path:options.models_path,credentials,
+            credential_operations:Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         };
         runtime.rebuild_providers(); runtime
     }
@@ -287,10 +296,10 @@ impl ModelRuntime {
     /// caller (e.g. the harness constructor) can hand the same registry to a `Models` consumer
     /// without rebuilding it through `create_models`.
     pub fn models(&self) -> &Models { &self.models }
-    fn recompose_provider(&mut self, id: &str) {
+    fn recompose_provider(&self, id: &str) {
         let id = normalize_provider_id(id);
         let config = self.config.read().unwrap_or_else(|p| p.into_inner()).clone();
-        self.errors.shift_remove(&id);
+        self.errors.write().unwrap_or_else(|p| p.into_inner()).shift_remove(&id);
         if config.is_provider_disabled(&id) { self.models.delete_provider(&id); return; }
         let base = self.native.get(&id).or_else(|| self.builtins.get(&id)).cloned();
         let extension = self.extensions.read().unwrap_or_else(|p| p.into_inner()).get(&id).cloned();
@@ -300,11 +309,11 @@ impl ModelRuntime {
         }
         match compose_model_provider(&id,base.clone(),&config,extension.as_ref()) {
             Ok(provider) => self.models.set_provider(provider),
-            Err(error) => {self.errors.insert(id.clone(),error);match base {Some(base) => self.models.set_provider(base),None => self.models.delete_provider(&id)}}
+            Err(error) => {self.errors.write().unwrap_or_else(|p| p.into_inner()).insert(id.clone(),error);match base {Some(base) => self.models.set_provider(base),None => self.models.delete_provider(&id)}}
         }
     }
-    fn rebuild_providers(&mut self) {
-        self.models.clear_providers(); self.errors.clear();
+    fn rebuild_providers(&self) {
+        self.models.clear_providers(); self.errors.write().unwrap_or_else(|p| p.into_inner()).clear();
         let mut ids: indexmap::IndexSet<String> = self.builtins.keys().chain(self.native.keys()).cloned().collect();
         ids.extend(self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider_ids().into_iter().map(str::to_owned));
         ids.extend(self.extensions.read().unwrap_or_else(|p|p.into_inner()).keys().cloned());
@@ -312,7 +321,7 @@ impl ModelRuntime {
     }
     pub fn get_error(&self) -> Option<String> {
         let mut errors:Vec<String> = self.config.read().unwrap_or_else(|p|p.into_inner()).get_error().map(str::to_owned).into_iter().collect();
-        errors.extend(self.errors.iter().map(|(id,error)|format!("Provider \"{id}\": {error}")));
+        errors.extend(self.errors.read().unwrap_or_else(|p|p.into_inner()).iter().map(|(id,error)|format!("Provider \"{id}\": {error}")));
         if errors.is_empty() {None} else {Some(errors.join("\n\n"))}
     }
     pub fn get_warnings(&self) -> Vec<String> {self.config.read().unwrap_or_else(|p|p.into_inner()).get_warnings().to_vec()}
@@ -359,6 +368,16 @@ impl ModelRuntime {
     /// composed OAuth or api-key login flow, append the credential as a login slot
     /// (`appendLoginSlot`) and report the committed account through `on_account_committed`.
     pub async fn login(&self, provider_id: &str, auth_type: maho_ai::auth::types::AuthType, interaction: std::sync::Arc<dyn maho_ai::auth::types::AuthInteraction>) -> Result<maho_ai::auth::types::Credential, ModelsError> {
+        let id = normalize_provider_id(provider_id);
+        let signal = maho_ai::utils::abort::operation_signal(interaction.signal());
+        self.enqueue_credential_operation(&id, &signal, async {
+            let credential = self.login_unsynchronized(&id, auth_type, interaction.clone()).await?;
+            self.synchronize_credential_state(&id, "login", &signal).await?;
+            Ok(credential)
+        }).await
+    }
+
+    async fn login_unsynchronized(&self, provider_id: &str, auth_type: maho_ai::auth::types::AuthType, interaction: std::sync::Arc<dyn maho_ai::auth::types::AuthInteraction>) -> Result<maho_ai::auth::types::Credential, ModelsError> {
         use maho_ai::auth::types::{AuthType, Credential, ProviderAuthInteraction};
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(interaction.signal());
@@ -394,6 +413,62 @@ impl ModelRuntime {
     /// remove only that account slot (deleting the entry when it was the last); otherwise remove
     /// the provider's stored credential.
     pub async fn logout(&self, provider_id: &str, slot_id: Option<&str>, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
+        let id = normalize_provider_id(provider_id);
+        let signal = maho_ai::utils::abort::operation_signal(options.signal);
+        self.enqueue_credential_operation(&id, &signal, async {
+            self.logout_unsynchronized(&id, slot_id, maho_ai::auth::types::AuthOperationOptions { signal: Some(signal.clone()) }).await?;
+            self.synchronize_credential_state(&id, "logout", &signal).await
+        }).await
+    }
+
+    /// senpi `setRuntimeApiKey`: a non-persistent key for this process (`--api-key`), then recompose
+    /// and refresh the provider so availability reflects it.
+    pub async fn set_runtime_api_key(&self, provider_id: &str, api_key: &str, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
+        let signal = maho_ai::utils::abort::operation_signal(options.signal);
+        self.enqueue_credential_operation(provider_id, &signal, async {
+            self.credentials.set_runtime_api_key(provider_id, api_key);
+            self.synchronize_credential_state(provider_id, "setRuntimeApiKey", &signal).await
+        }).await
+    }
+
+    /// senpi `removeRuntimeApiKey`.
+    pub async fn remove_runtime_api_key(&self, provider_id: &str, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
+        let signal = maho_ai::utils::abort::operation_signal(options.signal);
+        self.enqueue_credential_operation(provider_id, &signal, async {
+            self.credentials.remove_runtime_api_key(provider_id);
+            self.synchronize_credential_state(provider_id, "removeRuntimeApiKey", &signal).await
+        }).await
+    }
+
+    /// senpi `enqueueCredentialOperation`: wait (abortably) for the provider's previous credential
+    /// operation, then run this one to completion; once started it is not raced with the signal.
+    async fn enqueue_credential_operation<T>(&self, provider_id: &str, signal: &maho_ai::utils::abort::AbortSignal, task: impl std::future::Future<Output = Result<T, ModelsError>>) -> Result<T, ModelsError> {
+        let aborted = |reason: maho_ai::utils::abort::AbortReason| ModelsError::new(ModelsErrorCode::Auth, reason.message);
+        let queue = self.credential_operations.lock().unwrap_or_else(|p| p.into_inner())
+            .entry(provider_id.to_owned()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone();
+        let _turn = maho_ai::utils::abort::race_with_abort_signal(queue.lock_owned(), signal).await.map_err(aborted)?;
+        signal.throw_if_aborted().map_err(aborted)?;
+        task.await
+    }
+
+    /// senpi `synchronizeCredentialState`: recompose the provider and refresh its catalog offline;
+    /// any failure is reported as a committed-but-unsynchronized credential change.
+    async fn synchronize_credential_state(&self, provider_id: &str, operation: &str, signal: &maho_ai::utils::abort::AbortSignal) -> Result<(), ModelsError> {
+        let id = normalize_provider_id(provider_id);
+        let synchronize = async {
+            signal.throw_if_aborted().map_err(|reason| reason.message)?;
+            self.recompose_provider(&id);
+            let composition_error = self.errors.read().unwrap_or_else(|p| p.into_inner()).get(&id).cloned();
+            if let Some(error) = composition_error { return Err(error); }
+            let result = self.models.refresh(ModelsRefreshOptions { allow_network: Some(false), providers: Some(vec![id.clone()]), force: None, signal: Some(signal.clone()) }).await;
+            if result.aborted { signal.throw_if_aborted().map_err(|reason| reason.message)?; }
+            if let Some(error) = result.errors.get(&id) { return Err(error.message.clone()); }
+            Ok(())
+        };
+        synchronize.await.map_err(|cause| ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential {operation} committed for {provider_id}, but local synchronization failed"), &cause))
+    }
+
+    async fn logout_unsynchronized(&self, provider_id: &str, slot_id: Option<&str>, options: maho_ai::auth::types::AuthOperationOptions) -> Result<(), ModelsError> {
         use maho_ai::auth::pool::slots::{PooledCredentialType, remove_slot};
         let id = normalize_provider_id(provider_id);
         let signal = maho_ai::utils::abort::operation_signal(options.signal);
@@ -669,6 +744,25 @@ mod tests {
         assert!(runtime.credentials.get_oauth_providers().iter().any(|p| p.id == "p" && p.name == "test-oauth"));
         runtime.unregister_provider("p");
         assert!(!runtime.credentials.get_oauth_providers().iter().any(|p| p.id == "p"));
+    }
+
+    #[tokio::test]
+    async fn runtime_api_key_resolves_and_reports_runtime_status_until_removed() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.set_runtime_api_key("p", "runtime-fixture", Default::default()).await.expect("set runtime key");
+        assert_eq!(runtime.get_auth("p").await.expect("resolve").expect("auth").auth.api_key.as_deref(), Some("runtime-fixture"));
+        assert_eq!(runtime.get_provider_auth_status("p").source.as_deref(), Some("runtime"));
+        runtime.remove_runtime_api_key("p", Default::default()).await.expect("remove runtime key");
+        assert!(runtime.get_auth("p").await.expect("resolve").is_none());
+    }
+
+    #[tokio::test]
+    async fn preaborted_credential_operation_does_not_run() {
+        let (_dir, runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        let controller = maho_ai::utils::abort::AbortController::new(); controller.abort(None);
+        let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) };
+        assert!(runtime.set_runtime_api_key("p", "k", options).await.is_err());
+        assert!(!runtime.credentials.has_runtime_api_key("p"));
     }
 
     #[tokio::test]

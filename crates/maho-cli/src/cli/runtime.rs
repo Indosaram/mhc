@@ -107,7 +107,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     }
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(parsed.models.as_deref().unwrap_or_default(), &models.get_models(None));
-    let options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
+    let mut options = startup::build_session_options(&parsed, &scope.scoped_models, parsed.session.is_some() || parsed.continue_session, &models, &settings);
+    // senpi `main.ts`: `--api-key` is a runtime key for the selected model's provider.
+    if let Some(api_key) = &parsed.api_key {
+        match &options.options.model {
+            None => options.diagnostics.push(super::args::Diagnostic { error: true, message: "--api-key requires a model to be specified via --model, --provider/--model, or --models".into() }),
+            Some(model) => models.set_runtime_api_key(&model.provider, api_key, Default::default()).await.map_err(|error| error.to_string())?,
+        }
+    }
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
     let host_factory = maho_core::sdk::HostRuntimeFactory {
