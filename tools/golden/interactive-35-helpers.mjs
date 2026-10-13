@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 const root = process.env.SENPI_SRC ?? '/home/indo/code/senpi';
 if (execFileSync('git', ['--no-pager', '-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== 'fe8c564bf33a2cbbdbbba99c9bd8b45b21e37407') throw new Error('senpi pin mismatch');
+if (process.env.GOLDEN_PLATFORM === 'darwin') Object.defineProperty(process, 'platform', { value: 'darwin' });
 process.env.COLORTERM = 'truecolor';
 process.env.FORCE_COLOR = '3';
 delete process.env.NO_COLOR;
@@ -31,5 +34,9 @@ for (const width of [40, 80, 120]) {
   const models = ['a', 'b'].map(id => ({ id, name: `Model ${id}`, provider: 'test', api: 'anthropic-messages', baseUrl: 'https://example.test', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 }));
   cases.push({ kind: 'scoped', width, expected: new ScopedModelsSelectorComponent({ allModels: models, enabledModelIds: ['test/b', 'missing/model'] }, { onChange() {}, onPersist() {}, onCancel() {} }).render(width) });
 }
-writeFileSync(new URL('../../crates/maho-interactive/tests/golden/task35-helpers.json', import.meta.url), JSON.stringify(cases, null, 2) + '\n');
+const fixturePath = new URL('../../crates/maho-interactive/tests/golden/task35-helpers.json', import.meta.url);
+const outputPath = process.env.GOLDEN_SUFFIX
+  ? join(dirname(fileURLToPath(fixturePath)), `${basename(fileURLToPath(fixturePath), '.json')}${process.env.GOLDEN_SUFFIX}.json`)
+  : fixturePath;
+writeFileSync(outputPath, JSON.stringify(cases, null, 2) + '\n');
 console.log(`Generated ${cases.length} pinned helper renders`);
