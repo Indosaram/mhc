@@ -1720,7 +1720,7 @@ impl InteractiveMode {
                 // senpi bounds logout with `AbortSignal.timeout(15_000)`.
                 let abort = maho_ai::utils::abort::AbortController::new();
                 let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
+                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, None, options)).await {
                     Ok(result) => result.map_err(|error| error.to_string()),
                     Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
                 };
