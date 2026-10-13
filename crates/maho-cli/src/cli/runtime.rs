@@ -164,12 +164,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(name) = &parsed.name { session.set_session_name(name); }
     indicator.stop();
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
+    let mut rpc_exit_code = 0;
     let result = async { match mode {
         AppMode::Rpc => {
-            session.bind_extensions(maho_core::agent_session::ExtensionBindings {
-                mode: Some(maho_ext_api::ExtensionMode::Rpc), ..Default::default()
-            }).await;
-            maho_rpc::rpc_mode::run_command_stream(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())
+            // The connection handler performs the first extension bind with the RPC UI context
+            // (senpi `createRpcConnectionHandler` -> `rebindSession`), so extensions see `hasUI`.
+            let code = maho_rpc::rpc_mode::run_rpc_mode(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())?;
+            rpc_exit_code = code;
+            Ok(())
         },
         AppMode::Print | AppMode::Json => {
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
@@ -189,6 +191,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     } }.await;
     session.emit_session_shutdown(maho_ext_api::SessionReason::Quit).await;
     session.dispose().await;
+    // senpi `createRpcShutdown`: SIGTERM/SIGHUP exit 143/129 once the session is disposed.
+    if rpc_exit_code != 0 {
+        #[cfg(unix)]
+        crate::utils::shell::kill_tracked_detached_children();
+        std::process::exit(rpc_exit_code);
+    }
     result
 }
 
