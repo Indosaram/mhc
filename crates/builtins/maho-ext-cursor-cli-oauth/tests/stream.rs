@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ai::{auth::types::*,types::{Context,Message,UserMessage,UserContent},model::Model};
 use maho_ext_cursor_cli_oauth::{stream::{stream_cursor_cli,StreamDeps},accounts::{add_account,empty_credential,CursorCliAccountSlot,AccountSource},settings::CursorCliOauthProviderSettings};
 use std::{sync::Arc,collections::BTreeMap,os::unix::fs::PermissionsExt};

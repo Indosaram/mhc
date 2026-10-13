@@ -40,6 +40,7 @@ mod tests {
         assert!(!directory.path().join("cursor-cli-oauth/models.json").exists());
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn unknown_pin_falls_back_to_first_account_home() {
         use std::os::unix::fs::PermissionsExt;
         let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
@@ -52,6 +53,7 @@ mod tests {
         assert_eq!(models[0].id,"model-a");
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn probes_in_pinned_account_home() {
         use std::os::unix::fs::PermissionsExt;
         let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
