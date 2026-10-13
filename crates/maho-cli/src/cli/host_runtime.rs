@@ -141,6 +141,17 @@ impl CliRuntimeConfiguration {
         self.resolve_cli_paths(&self.themes)
     }
 
+    /// senpi `DefaultResourceLoader` CLI inputs: `-e` sources, `--skill`, `--prompt-template` and hook
+    /// paths, resolved against the launch cwd.
+    pub fn resource_loader_inputs(&self) -> maho_core::resource_loader::ResourceLoaderInputs {
+        maho_core::resource_loader::ResourceLoaderInputs {
+            additional_extension_paths: self.resolved_extension_paths(),
+            additional_skill_paths: self.resolved_skill_paths(),
+            additional_prompt_template_paths: self.resolved_prompt_template_paths(),
+            ..Default::default()
+        }
+    }
+
     /// senpi `cliExtensionPaths.hooks` resolved against the launch cwd.
     pub fn resolved_hook_paths(&self) -> Vec<PathBuf> {
         self.resolve_cli_paths(&self.hooks).into_iter().map(PathBuf::from).collect()
@@ -321,6 +332,7 @@ pub async fn mount_agent_session_runtime(
             extension_factories,
             session_profile,
             defer_extension_start: true,
+            resource_inputs: launch_config.resource_loader_inputs(),
             ..Default::default()
         },
     )

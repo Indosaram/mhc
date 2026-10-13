@@ -312,7 +312,7 @@ impl AgentSessionRuntime {
             }).or(thinking_selection),
             scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
             session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
-            custom_tools: self.session.replacement_custom_tools(),
+            custom_tools: self.session.replacement_custom_tools(), resource_inputs: self.session.resource_loader_inputs(),
             auto_title_sessions: self.launch_profile.as_ref().and_then(|profile| profile.auto_title).or(Some(self.session.replacement_auto_title())),
             session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
                 previous_session_file: self.session.session_file() }), ..Default::default()

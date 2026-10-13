@@ -140,7 +140,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         thinking_selection: options.options.thinking_selection,
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
         scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true,
-        session_profile, ..Default::default()
+        session_profile, resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
+            additional_extension_paths: parsed.extensions.clone(), additional_skill_paths: parsed.skills.clone(),
+            additional_prompt_template_paths: parsed.prompt_templates.clone(), no_skills: parsed.no_skills,
+            no_prompt_templates: parsed.no_prompt_templates, ..Default::default()
+        }, ..Default::default()
     }).await?;
     let session = Arc::new(created.session);
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
@@ -149,16 +153,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let hook_sources = session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&runtime_config, settings));
     session.set_hook_sources(Some(hook_sources));
     if parsed.no_skills || parsed.no_prompt_templates || !parsed.skills.is_empty() || !parsed.prompt_templates.is_empty() {
-        let templates = maho_core::prompt_templates::load_prompt_templates(&maho_core::prompt_templates::LoadPromptTemplatesOptions {
-            cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), prompt_paths: parsed.prompt_templates.clone(),
-            include_defaults: !parsed.no_prompt_templates,
-        });
-        let skills = maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
-            cwd: cwd_text.to_string(), agent_dir: agent_dir.clone(), skill_paths: parsed.skills.clone(), include_defaults: !parsed.no_skills,
-        });
-        indicator.during_surface_write(|| { for diagnostic in &skills.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}\n", diagnostic.message)); } });
-        session.set_prompt_resources(templates, skills.skills);
-        session.rebuild_system_prompt();
+        let skill_diagnostics = session.loaded_skills().unwrap_or_default().diagnostics;
+        let prompt_diagnostics = session.prompt_diagnostics();
+        indicator.during_surface_write(|| { for diagnostic in skill_diagnostics.iter().chain(&prompt_diagnostics) { maho_core::output_guard::maho_write_stderr(&format!("{}\n", diagnostic.message)); } });
     }
     if let Some(level) = options.options.thinking_level { session.set_session_thinking_level(level); }
     if let Some(name) = &parsed.name { session.set_session_name(name); }
