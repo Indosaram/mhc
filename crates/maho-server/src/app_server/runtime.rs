@@ -34,7 +34,8 @@ impl AppServerRuntime {
         let mcp_inventory = Arc::new(Mutex::new(super::mcp_wire_status::McpWireStatusRegistry::new(Some(process_inventory))));
         super::catalogs::register_catalog_methods(&mut core.registry,threads.clone(),mcp_inventory.clone(),agent_dir.clone(),cwd.clone());
         let ui_agent_dir = agent_dir.clone();
-        super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone(), threads.clone());
+        // Pinned runtime `resourceLoaderFactory`: a reloaded `DefaultResourceLoader` per cwd.
+        super::skills::register_skill_methods_with_loader(&mut core.registry, agent_dir, cwd.clone(), threads.clone(), super::skills::resource_skill_loader(Vec::new()));
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let lifecycle_slot=Arc::new(std::sync::OnceLock::<Arc<super::handlers::ThreadLifecycleController>>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
