@@ -288,6 +288,7 @@ impl InteractiveMode {
         Ok(())
     }
 
+    pub(crate) fn clock_ms(&self) -> u64 { u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX) }
     pub(crate) fn tick_now(&mut self) { self.tick(self.clock.elapsed().as_secs_f64()*1000.0); }
     pub fn install_native_tool_renderers<S: Default + 'static>(&mut self, name: String, renderers: Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>) {
         self.native_tool_renderer_snapshots.insert(name, Rc::new(RefCell::new(crate::tools::renderers::native::NativeToolRenderers::new(renderers))));
@@ -298,7 +299,16 @@ impl InteractiveMode {
         for (name, renderers) in snapshot { self.install_native_tool_renderers(name, renderers); }
     }
     pub(crate) fn set_terminal_dimensions(&self, columns:usize, rows:usize) { self.terminal_dimensions.set((u16::try_from(columns).unwrap_or(u16::MAX),u16::try_from(rows).unwrap_or(u16::MAX))); }
-    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); }
+    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); self.apply_smooth_streaming_render_fps(); }
+    /// senpi `applySmoothStreamingRenderFps`: the render cap follows the smooth-streaming FPS while
+    /// smooth streaming is on, and the default 60fps otherwise.
+    pub fn smooth_streaming_render_fps(&self) -> f64 {
+        if self.reveal.smooth { self.reveal.fps } else { crate::streaming_reveal_pacing::DEFAULT_SMOOTH_FPS }
+    }
+    fn apply_smooth_streaming_render_fps(&self) {
+        let fps = self.smooth_streaming_render_fps();
+        if let Some(renderer) = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade) { renderer.borrow_mut().base_mut().set_max_render_fps(fps); }
+    }
     /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
     pub fn set_debug_log_path(&mut self, path: Option<String>) { self.debug_log_path = path; }
     /// The pending startup changelog markdown (senpi `changelogMarkdown`), once loaded.
@@ -1205,7 +1215,18 @@ impl InteractiveMode {
             else { self.show_status("No other models available for cycling".into()); }
             return Ok(());
         }
-        if keys.matches(data,"app.message.copy") { self.submit("/copy",Default::default()).await?;return Ok(()); }
+        if keys.matches(data,"app.message.copy") {
+            // senpi `handleCopyCommand({ flashConfirmation: true })`: the fullscreen UI confirms with
+            // `ui.flash("Copied!")` instead of a status line.
+            let renderer = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade).filter(|renderer| matches!(&*renderer.borrow(), crate::tui_renderer::InteractiveTui::Fullscreen(_)));
+            if let Some(renderer) = renderer && let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
+                let sequence = crate::interactive_clipboard::copy(&text).await?;
+                if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
+                renderer.borrow_mut().flash("Copied!", now_ms);
+                return Ok(());
+            }
+            self.submit("/copy",Default::default()).await?;return Ok(());
+        }
         if keys.matches(data,"app.clipboard.pasteImage") {
             if let Some(text)=crate::interactive_clipboard::read_text().await {
                 if let Some(editor)=&mut self.custom_editor {editor.insert_text_at_cursor(&text);}else{self.editor.editor.insert_text_at_cursor(&text);}
@@ -2656,6 +2677,26 @@ impl InteractiveMode {
                     (None, Some(target)) => { crate::editor_paste_transfer::transfer_editor_content(&self.editor, target.as_mut()); }
                     (None, None) => {}
                 }
+                // senpi `setCustomEditor`: route the new editor's image-marker changes and undo
+                // payload snapshots into the pending images, and copy the default border color.
+                if let Some(target) = &mut replacement {
+                    if target.get_image_marker_state().is_some() {
+                        let images = self.pending_images.clone();
+                        target.set_on_image_markers_changed(Some(Box::new(move |order| {
+                            let previous = std::mem::take(&mut *images.borrow_mut());
+                            images.borrow_mut().extend(order.iter().enumerate().filter_map(|(index, id)| {
+                                previous.get(id).cloned().map(|image| (u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1), image))
+                            }));
+                        })));
+                        let images = self.pending_images.clone();
+                        target.set_snapshot_attachment_state(Some(Box::new(move || Some(Rc::new(images.borrow().clone())))));
+                        let images = self.pending_images.clone();
+                        target.set_restore_attachment_state(Some(Box::new(move |snapshot| {
+                            if let Some(snapshot) = snapshot.downcast_ref::<BTreeMap<u64, maho_ai::types::ImageContent>>() { *images.borrow_mut() = snapshot.clone(); }
+                        })));
+                    }
+                    if target.border_color().is_some() { target.set_border_color(self.editor.editor.border_color.clone()); }
+                }
                 if let Some(mut editor) = self.custom_editor.take() { editor.dispose(); }
                 self.custom_editor = replacement;
             }
@@ -2667,8 +2708,8 @@ impl InteractiveMode {
                     "showImages" => { for component in &self.tool_cards { component.borrow_mut().set_show_images(value.as_bool().expect("show images")); } },
                     "imageWidthCells" => { for component in &self.tool_cards { component.borrow_mut().set_image_width_cells(u32::try_from(value.as_u64().expect("image width")).expect("selector image width")); } },
                     "hideThinkingBlock" => { self.reveal.hide_thinking = value.as_bool().expect("thinking visibility"); for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); } if let Some(component) = &self.streaming { let content = self.reveal.resync_visibility(self.clock.elapsed().as_secs_f64() * 1000.0); component.borrow_mut().update_content(&content, Some(true)); } },
-                    "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
-                    "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; },
+                    "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.apply_smooth_streaming_render_fps(); self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
+                    "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; self.apply_smooth_streaming_render_fps(); },
                     "theme" => {
                         let setting = value.as_str().expect("theme setting");
                         let terminal_theme = if self.theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark };
