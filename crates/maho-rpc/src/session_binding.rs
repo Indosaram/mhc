@@ -91,7 +91,11 @@ pub async fn create_rpc_session_binding(session_id:String,session:maho_core::age
     let sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>=std::sync::Arc::new(move|value:serde_json::Value|{let _=sink_writer.enqueue(&tag,value);});
     let event_sink=sink.clone();
     let subscription=session.subscribe(std::sync::Arc::new(move|event|{match session_event_record(event){Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}}));
-    let handler=crate::connection_handler::RpcConnectionHandler::create(session,sink,capabilities).await;
+    // A hosted session keeps the native `ctx.shutdown()` effect (dispose this session); it never
+    // ends the multi-session host process.
+    let shutdown_session=session.weak_accessor();
+    let shutdown:std::sync::Arc<dyn Fn()+Send+Sync>=std::sync::Arc::new(move||{if let Some(session)=shutdown_session(){tokio::spawn(async move{session.dispose().await;});}});
+    let handler=crate::connection_handler::RpcConnectionHandler::create_with_shutdown_handler(session,sink,capabilities,Some(shutdown)).await;
     RpcSessionBinding{session_id,handler,writer,subscription:std::sync::Mutex::new(Some(subscription))}
 }
 impl RpcSessionBinding{
