@@ -23,7 +23,7 @@ pub fn from_extension_message_renderer(renderer: maho_ext_api::MessageRenderer) 
         };
         let options = maho_ext_api::MessageRenderOptions { expanded, output_pad };
         let theme = crate::interactive_extension_ui::extension_theme(theme);
-        Ok(renderer(&message, &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
+        Ok::<_, String>(renderer(&message, &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
     })
 }
 pub struct CustomMessageComponent {
