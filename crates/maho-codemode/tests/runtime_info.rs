@@ -43,3 +43,10 @@ fn availability_falls_back_to_probe_command() {
     assert_eq!(runtimes[1].1.name, "ruby");
     assert_eq!(runtimes.len(), 2);
 }
+
+#[test]
+fn probe_without_runtime_on_path_falls_back_to_node_identity() {
+    let runtime = probe_js_runtime_info(&std::collections::HashMap::from([("PATH".to_owned(), String::new())]));
+    assert_eq!(runtime.name, "node");
+    assert_eq!(runtime.version, "");
+}
