@@ -50,6 +50,8 @@ pub struct CreateAgentSessionOptions {
     pub minimal_resources: bool,
     pub defer_extension_start: bool,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
+    pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// `noTools` suppression mode.
@@ -262,7 +264,7 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
                 }
             } };
         session.set_extension_runner(runner).await;
-        if !options.defer_extension_start { session.bind_extensions(Default::default()).await; }
+        if !options.defer_extension_start { session.bind_extensions(crate::agent_session::ExtensionBindings { ui_context: options.extension_ui.clone(), ..Default::default() }).await; }
         drop(construction.session.take());
     }
     session.set_cursor_exec_bridge_factory(Arc::new({
