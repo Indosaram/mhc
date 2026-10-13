@@ -32,6 +32,7 @@ async fn remote_clients_validate_before_reporting_unavailability() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn remote_status_persists_private_uuid_and_recovers_dead_owner_lock() {
     use maho_server::app_server::{models::register_remote_status_method,installation_id::ensure_installation_id};
     use std::os::unix::fs::PermissionsExt;

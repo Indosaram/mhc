@@ -14,7 +14,9 @@ async fn read_id(path:&Path)->io::Result<Option<String>> {
     }
 }
 async fn write_private(path:&Path,text:&str,exclusive:bool)->io::Result<()> {
-    let mut options=tokio::fs::OpenOptions::new();options.write(true).mode(0o600);
+    let mut options=tokio::fs::OpenOptions::new();options.write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
     if exclusive {options.create_new(true);} else {options.create(true).truncate(true);}
     let mut file=options.open(path).await?;file.write_all(text.as_bytes()).await?;file.flush().await
 }
@@ -64,7 +66,9 @@ pub async fn ensure_installation_id(agent_dir:&Path)->io::Result<String> {
     for _ in 0..100 {
         if let Some(id)=read_id(&path).await? {return Ok(id);}
         tokio::fs::create_dir_all(agent_dir.join("app-server")).await?;
-        let mut directory=tokio::fs::DirBuilder::new();directory.mode(0o700);
+        let mut directory=tokio::fs::DirBuilder::new();
+        #[cfg(unix)]
+        directory.mode(0o700);
         match directory.create(&lock).await {
             Ok(())=>{
                 let owner=uuid::Uuid::new_v4().to_string();let marker=lock.join(format!("owner-{owner}.json"));
