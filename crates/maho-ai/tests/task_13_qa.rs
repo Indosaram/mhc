@@ -259,6 +259,7 @@ async fn pkce_login_against_a_mock_authorization_server_writes_senpis_auth_json_
     assert_eq!(entry["accountId"], ACCOUNT_ID);
     assert!(entry["expires"].as_f64().is_some_and(|expires| expires > 0.0));
 
+    use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(&auth_path).expect("stat").permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 
