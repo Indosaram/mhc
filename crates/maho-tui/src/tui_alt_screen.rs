@@ -80,8 +80,10 @@ const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
 const DISABLE_AUTOWRAP: &str = "\x1b[?7l";
 const ENABLE_AUTOWRAP: &str = "\x1b[?7h";
 const ENABLE_ALL_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
-const ENABLE_BUTTON_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const ENABLE_BUTTON_MOTION_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
 const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+const FOCUS_IN: &str = "\x1b[I";
+const FOCUS_OUT: &str = "\x1b[O";
 const BEGIN_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026h";
 const END_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026l";
 const DELETE_ALL_KITTY_IMAGES: &str = "\x1b_Ga=d,d=A,q=2\x1b\\";
@@ -686,8 +688,36 @@ impl TuiAltScreen {
         changed
     }
 
-    /// Registered via `TuiBase::add_input_listener` (senpi's `handleMouseInput`).
+    /// The focus-report head of senpi's `handleViewportInput`: focus reports (`?1004h` is part of
+    /// both mouse-tracking sequences) are consumed so they never reach the editor, and focus-out
+    /// drops an in-progress drag selection along with scrollbar hover/drag gesture state.
+    fn handle_focus_input(&mut self, data: &str) -> bool {
+        if data == FOCUS_OUT {
+            let had_active_selection = self.selection_press_active;
+            let had_non_empty_active_selection = had_active_selection && self.get_selection_bounds().is_some();
+            self.selection_press_active = false;
+            self.stop_scrollbar_hover();
+            self.stop_scrollbar_drag();
+            if had_active_selection {
+                self.selection_anchor = None;
+                self.selection_focus = None;
+                self.selection_granularity = SelectionGranularity::Character;
+                if had_non_empty_active_selection {
+                    self.base.request_render(false, 0);
+                }
+            }
+            self.last_click = None;
+            return true;
+        }
+        data == FOCUS_IN
+    }
+
+    /// Registered via `TuiBase::add_input_listener` (senpi's `handleViewportInput` mouse half,
+    /// preceded by its focus-report branch).
     pub fn handle_mouse_input(&mut self, data: &str, now_ms: i64, terminal: &mut dyn Terminal) -> bool {
+        if self.handle_focus_input(data) {
+            return true;
+        }
         if !is_mouse_sequence(data) {
             return false;
         }
@@ -1068,6 +1098,9 @@ impl TuiAltScreen {
     }
 
     pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
+        if self.handle_focus_input(data) {
+            return;
+        }
         let kb = get_keybindings();
         if kb.matches(data, "tui.altScreen.search") {
             if !is_key_release {
