@@ -2,7 +2,7 @@
 //! `api/openai-completions.ts` (todo 10), which owns the wire implementation.
 //!
 //! senpi re-exports the api instance's `stream`/`streamSimple` under the provider-facing names
-//! `stream[OI]Completions`/`streamSimple[OI]Completions`. The instance is resolved through the
+//! `streamOpenAICompletions`/`streamSimpleOpenAICompletions`. The instance is resolved through the
 //! builtin api registry on every call (the `api_registry` seam todo 5 installed) so this module
 //! links without the wire module being ported yet; an unregistered api id yields the same
 //! setup-error stream the lazy boundary produces.
