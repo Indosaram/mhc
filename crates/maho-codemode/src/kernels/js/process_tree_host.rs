@@ -25,12 +25,12 @@ async fn bounded_process_output(command: &mut tokio::process::Command, max_bytes
     let Ok(mut child)=command.stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn() else {return String::new();};
     let Some(stdout)=child.stdout.take() else {return String::new();};
     let mut output=Vec::new();
-    if let Err(error)=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output).await {eprintln!("process table output read failed: {error}");}
+    if let Err(error)=AsyncReadExt::take(stdout,max_bytes+1).read_to_end(&mut output).await {maho_ext_api::diagnostic(&format!("process table output read failed: {error}"));}
     if output.len() as u64>max_bytes {
         output.truncate(max_bytes as usize);
-        if let Err(error)=child.start_kill() {eprintln!("process table capture retirement failed: {error}");}
+        if let Err(error)=child.start_kill() {maho_ext_api::diagnostic(&format!("process table capture retirement failed: {error}"));}
     }
-    if let Err(error)=child.wait().await {eprintln!("process table capture wait failed: {error}");}
+    if let Err(error)=child.wait().await {maho_ext_api::diagnostic(&format!("process table capture wait failed: {error}"));}
     String::from_utf8_lossy(&output).into_owned()
 }
 
