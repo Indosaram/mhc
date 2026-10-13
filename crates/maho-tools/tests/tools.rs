@@ -23,7 +23,7 @@ async fn read_line_cap_and_model_only_notice() {
     assert!(maho_tools::model_only_text::is_model_only_text(&result.content[1]));
 }
 fn large_json() -> String {
-    serde_json::to_string_pretty(&(0..25).map(|n| json!({"n":n,"a":[1,2,3,4,5],"s":"escaped \" } {"})).collect::<Vec<_>>()).unwrap()
+    serde_json::to_string_pretty(&(0..25).map(|n| json!({"n":n,"a":[1,2,3,4,5],"s":"escaped \" } {"})).collect::<Vec<_>>()).expect("serialize json fixture")
 }
 #[tokio::test]
 async fn read_default_folds_large_structured_file() {

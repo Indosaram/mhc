@@ -39,6 +39,11 @@ use crate::utils::{
 /// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
 /// mirrors common terminal word-selection behavior by keeping paths and kebab-case tokens
 /// whole (senpi's `TERMINAL_WORD_SELECTION_JOINERS`).
+/// Opens a URL from the transcript (Ctrl+click).
+pub type OpenUrlFn = Rc<dyn Fn(&str)>;
+/// Styles search-match text.
+pub type MatchStyleFn = Rc<dyn Fn(&str) -> String>;
+
 const WORD_SELECTION_JOINERS: [&str; 2] = ["/", "-"];
 const DOUBLE_CLICK_INTERVAL_MS: i64 = 500;
 const PAGE_SCROLL_OVERLAP: i64 = 4;
@@ -196,7 +201,7 @@ pub struct TuiAltScreen {
     /// Last host clock reading passed to [`TuiAltScreen::tick`].
     now_ms: u64,
     copy_on_select: bool,
-    open_url: Option<Rc<dyn Fn(&str)>>,
+    open_url: Option<OpenUrlFn>,
     copy_selection: Option<CopySelectionHook>,
     pending_copy_results: Vec<std::sync::mpsc::Receiver<bool>>,
     last_click: Option<LastClick>,
@@ -794,8 +799,8 @@ impl TuiAltScreen {
     /// options; `None` keeps the default underline / bold-inverse / plain styles.
     pub fn set_search_styles(
         &mut self,
-        match_style: Option<Rc<dyn Fn(&str) -> String>>,
-        current_match_style: Option<Rc<dyn Fn(&str) -> String>>,
+        match_style: Option<MatchStyleFn>,
+        current_match_style: Option<MatchStyleFn>,
         navigation_button_style: Option<NavigationButtonStyle>,
     ) {
         self.search_match_style = match_style.unwrap_or_else(|| Rc::new(default_search_match_style));
@@ -1992,7 +1997,7 @@ impl TuiAltScreen {
     }
 
     /// senpi's `openUrl` option: activated by a primary click on an OSC 8 hyperlink.
-    pub fn set_open_url(&mut self, open_url: Option<Rc<dyn Fn(&str)>>) {
+    pub fn set_open_url(&mut self, open_url: Option<OpenUrlFn>) {
         self.open_url = open_url;
     }
 
