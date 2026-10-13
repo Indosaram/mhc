@@ -99,6 +99,7 @@ impl FauxSession {
         let _subscription = session.subscribe(Arc::new(move |event| {
             let value = match event {
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event).ok(),
+                maho_ext_api::AgentSessionEvent::AgentEnd { messages, .. } => serde_json::to_value(AgentEvent::AgentEnd { messages: messages.clone() }).ok(),
                 _ => None,
             };
             if let Some(value) = value {
