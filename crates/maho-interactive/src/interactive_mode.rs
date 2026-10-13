@@ -1095,7 +1095,51 @@ impl InteractiveMode {
                 for message in &messages { self.add_history_message(message); }
             }
         } else {
-            for message in self.session.messages() { self.add_history_message(&message); }
+            // senpi `renderSessionEntries`: custom entries render in their transcript position among
+            // the context messages; messages without a matching entry follow in order.
+            let entries = self.session.with_session_manager(|manager| maho_core::session_manager::build_context_entries(&manager.entries(), manager.leaf_id()));
+            let mut messages = self.session.messages().into_iter();
+            for entry in &entries {
+                if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
+                for message in messages.by_ref().take(maho_core::session_manager::session_entry_to_context_messages(entry).len()) { self.add_history_message(&message); }
+            }
+            for message in messages { self.add_history_message(&message); }
+        }
+    }
+
+    /// senpi `addCustomEntryToChat`: render a custom session entry through its registered entry
+    /// renderer, replacing the previous card in place when the renderer's `replaces` accepts the pair.
+    fn add_custom_entry_to_chat(&mut self, entry: &serde_json::Value) {
+        use crate::components::custom_entry::{CustomEntryComponent, EntryCard, from_extension_entry_renderer, from_extension_entry_replaces, replaced_entry_card_index};
+        use crate::components::exploration_transcript_container::TranscriptChild;
+        let Some((renderer, options)) = self.session.extension_entry_renderer(entry["customType"].as_str().unwrap_or_default()) else { return; };
+        let mut component = CustomEntryComponent::new(entry.clone(), from_extension_entry_renderer(renderer), self.theme.clone());
+        component.set_expanded(self.tools_expanded);
+        if !component.has_content() { return; }
+        let component = Rc::new(RefCell::new(component));
+        let streaming_index = self.streaming.as_ref().and_then(|streaming| self.chat.children().iter().position(|child| matches!(child, TranscriptChild::Assistant(card) if Rc::ptr_eq(card, streaming))));
+        let insert_index = streaming_index.unwrap_or(self.chat.children().len());
+        let replaces = options.and_then(|options| options.replaces).map(from_extension_entry_replaces);
+        // The status line and its spacer are transient: an entry replaces the card before them.
+        let transient: Vec<usize> = match &self.last_status {
+            Some((count, text)) if count.checked_sub(1).and_then(|index| self.chat.children().get(index)).is_some_and(|child| matches!(child, TranscriptChild::Other(other) if std::ptr::addr_eq(Rc::as_ptr(other), Rc::as_ptr(text)))) => vec![count - 1, count.saturating_sub(2)],
+            _ => Vec::new(),
+        };
+        let replaced_index = {
+            let borrowed: Vec<Option<std::cell::Ref<'_, CustomEntryComponent>>> = self.chat.children().iter().map(|child| match child { TranscriptChild::Entry(card) => Some(card.borrow()), _ => None }).collect();
+            let cards: Vec<EntryCard<'_>> = borrowed.iter().enumerate().map(|(index, card)| match card {
+                Some(card) => EntryCard::Entry(&**card),
+                None if transient.contains(&index) => EntryCard::Transient,
+                None => EntryCard::Other,
+            }).collect();
+            replaced_entry_card_index(&cards, insert_index, entry, replaces.as_ref())
+        };
+        let expandable = component.clone();
+        self.history_expansion.push(Box::new(move |expanded| expandable.borrow_mut().set_expanded(expanded)));
+        match (replaced_index, streaming_index) {
+            (Some(index), _) => self.chat.children_mut()[index] = TranscriptChild::Entry(component),
+            (None, Some(index)) => self.chat.children_mut().insert(index, TranscriptChild::Entry(component)),
+            (None, None) => self.chat.add_child(TranscriptChild::Entry(component)),
         }
     }
 
@@ -1116,7 +1160,7 @@ impl InteractiveMode {
                 self.editor.editor.add_to_history(&text);
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
-                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
+                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), self.session.extension_message_renderer(&message.custom_type).map(crate::components::custom_message::from_extension_message_renderer), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
@@ -2582,6 +2626,7 @@ impl InteractiveMode {
             AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
             AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
             AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
+            AgentSessionEvent::EntryAppended { entry } if entry.kind == "custom" => self.add_custom_entry_to_chat(&entry.data),
             _ => {}
         }
     }
