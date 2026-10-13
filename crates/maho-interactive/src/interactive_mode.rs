@@ -2290,6 +2290,7 @@ impl InteractiveMode {
         tokio::spawn(async move {
             let result = runtime.login(&provider_id, auth_type, interaction).await.map(|_| ()).map_err(|error| {
                 if error.message == crate::login_outcome::LOGIN_CANCELLED_NOTICE || error.message.contains("aborted") { crate::login_outcome::LoginFailure::Cancelled }
+                else if maho_core::model_runtime::is_credential_synchronization_error(&error) { crate::login_outcome::LoginFailure::CredentialSynchronization { message: error.message } }
                 else { crate::login_outcome::LoginFailure::Failed { message: error.message } }
             });
             let mut selection_error = None;

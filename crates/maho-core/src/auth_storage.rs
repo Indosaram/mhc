@@ -547,14 +547,14 @@ impl AuthStorage {
         }
     }
 
-    pub fn set_runtime_api_key(&mut self, provider: &str, api_key: &str) {
+    pub fn set_runtime_api_key(&self, provider: &str, api_key: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider.to_owned(), api_key.to_owned());
     }
 
-    pub fn remove_runtime_api_key(&mut self, provider: &str) {
+    pub fn remove_runtime_api_key(&self, provider: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1026,7 +1026,7 @@ mod tests {
     async fn the_auth_storage_sets_reads_and_deletes_credentials() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        let mut storage = AuthStorage::create(&path);
+        let storage = AuthStorage::create(&path);
         assert!(storage.get("anthropic").is_none());
         storage.set("anthropic", Some(api_key("stored"))).expect("set");
         assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
@@ -1293,7 +1293,7 @@ mod tests {
 
     #[tokio::test]
     async fn logout_removes_stored_credential_and_runtime_key() {
-        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.set("anthropic", Some(api_key("stored"))).unwrap();
         storage.set_runtime_api_key("anthropic", "runtime");
         assert!(storage.has("anthropic"));
