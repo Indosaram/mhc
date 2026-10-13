@@ -1,9 +1,11 @@
-use maho_ai::types::{InputModality, Model};
+use maho_ai::{context_provenance::{CONTEXT_PROVENANCE_FIELD, context_provenance_fingerprint, get_context_provenance}, types::{InputModality, Model}};
+use maho_core::{messages::convert_to_llm, session_manager::{build_context_entries, session_entry_to_context_messages}};
 use maho_ext_api::CompactionResult;
 use serde_json::{Value, json};
-use crate::{openai_remote_convert::{convert_branch_entries, convert_pending_messages}, openai_remote_model::{is_openai_remote_compaction_model, openai_remote_compaction_identity}, openai_remote_schema::{OPENAI_REMOTE_COMPACTION_SCHEMA, is_openai_remote_compaction_output_item, is_retained_remote_output_item}};
+use crate::{openai_remote_convert::{convert_branch_entries, convert_pending_messages}, openai_remote_model::{OpenAiRemoteCompactionIdentity, is_openai_remote_compaction_model, matches_openai_remote_compaction_identity, openai_remote_compaction_identity}, openai_remote_schema::{OPENAI_REMOTE_COMPACTION_SCHEMA, OpenAiRemoteCompactionDetails, get_openai_remote_compaction_details, is_openai_remote_compaction_output_item, is_retained_remote_output_item}};
 
 pub const SENPI_COMPACTION_EVENT: &str = "senpi:compaction";
+pub const OPENAI_REMOTE_REPLAY_BOUNDARY_SCOPE: &str = "openai-remote-replay";
 
 pub struct RemoteCompactionOptions<'a> {
     pub model: &'a Model,
@@ -201,4 +203,109 @@ pub fn build_openai_remote_compaction_result(model: &Model, first_kept_entry_id:
     if let Some(usage) = response.get("usage") { details["usage"] = usage.clone(); }
     let path = if model.api == "openai-codex-responses" { "/codex/responses/compact" } else { "/v1/responses/compact" };
     Ok(CompactionResult { summary: format!("OpenAI remote compaction checkpoint.\nNative {path} replay is active for {} retained item(s).\nOriginal OpenAI input items compacted: {}.", formatted_count(replacement.len()), formatted_count(request.input_item_count)), first_kept_entry_id: first_kept_entry_id.into(), tokens_before: request.tokens_before, details: Some(details) })
+}
+
+struct RemoteCompactionCheckpoint { entry_id: String, index: usize, details: OpenAiRemoteCompactionDetails }
+
+fn latest_remote_compaction(entries: &[Value]) -> Option<RemoteCompactionCheckpoint> {
+    let (index, entry) = entries.iter().enumerate().rev().find(|(_, entry)| entry.get("type").and_then(Value::as_str) == Some("compaction"))?;
+    let details = entry.get("details").and_then(get_openai_remote_compaction_details)?;
+    Some(RemoteCompactionCheckpoint { entry_id: entry.get("id")?.as_str()?.into(), index, details })
+}
+
+fn checkpoint_context_entries(entries: &[Value], remote: &RemoteCompactionCheckpoint) -> Vec<Value> {
+    let checkpoint_entry_ids: std::collections::HashSet<&str> = entries.iter().take(remote.index + 1).filter_map(|entry| entry.get("id").and_then(Value::as_str)).collect();
+    build_context_entries(entries, None).into_iter().filter(|entry| entry.get("id").and_then(Value::as_str).is_some_and(|id| checkpoint_entry_ids.contains(id))).collect()
+}
+
+/// The replay boundary [`mark_openai_remote_replay_boundary`] stamped onto the checkpoint-owned
+/// messages: the remote compaction entry and the ordinals of the stamped messages that survive
+/// the LLM projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenAiRemoteReplayBoundary { pub compaction_entry_id: String, pub expected_ordinals: Vec<usize> }
+
+/// senpi `markOpenAiRemoteReplayBoundary`: mark the exact checkpoint-owned messages before later
+/// context hooks run. `entry_ids` is the typed session-entry stamp aligned with `messages` (senpi's
+/// `SESSION_CONTEXT_ENTRY_ID`). The markers carry entry identity, not payload values. senpi seals
+/// them by converting to Responses input items; the native Responses converter cannot carry
+/// provenance per item, so the sealed baseline is the `convert_to_llm` projection, which does.
+pub fn mark_openai_remote_replay_boundary(messages: &[Value], entry_ids: &[Option<String>], model: Option<&Model>, branch_entries: &[Value]) -> (Vec<Value>, Option<OpenAiRemoteReplayBoundary>) {
+    let unmarked = || (messages.to_vec(), None);
+    let Some(model) = model.filter(|model| is_openai_remote_compaction_model(Some(*model))) else { return unmarked(); };
+    let Some(remote) = latest_remote_compaction(branch_entries) else { return unmarked(); };
+    let identity = OpenAiRemoteCompactionIdentity { provider: remote.details.provider.clone(), api: remote.details.api.clone() };
+    if remote.details.origin.is_none() || !matches_openai_remote_compaction_identity(model, &identity) { return unmarked(); }
+    let checkpoint_ids: Vec<String> = checkpoint_context_entries(branch_entries, &remote).iter()
+        .filter(|entry| !session_entry_to_context_messages(entry).is_empty())
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_owned)).collect();
+    if checkpoint_ids.is_empty() || messages.len() < checkpoint_ids.len()
+        || !checkpoint_ids.iter().enumerate().all(|(index, id)| entry_ids.get(index).and_then(Option::as_deref) == Some(id.as_str())) {
+        return unmarked();
+    }
+    let mark = |expected_ordinals: &[usize], integrity: &std::collections::BTreeMap<usize, String>| -> Vec<Value> {
+        messages.iter().enumerate().map(|(index, message)| {
+            let mut marked = message.clone();
+            if index < checkpoint_ids.len() && let Some(object) = marked.as_object_mut() {
+                let mut boundary = json!({"scope":OPENAI_REMOTE_REPLAY_BOUNDARY_SCOPE,"compactionEntryId":remote.entry_id,"ordinal":index,"expectedOrdinals":expected_ordinals});
+                if let Some(integrity) = integrity.get(&index) { boundary["integrity"] = json!(integrity); }
+                object.insert(CONTEXT_PROVENANCE_FIELD.into(), boundary);
+            }
+            marked
+        }).collect()
+    };
+    let mut expected_ordinals = Vec::new();
+    let mut integrity = std::collections::BTreeMap::new();
+    for item in convert_to_llm(&mark(&[], &integrity)) {
+        let Some(boundary) = get_context_provenance(&item) else { continue; };
+        if boundary.get("scope").and_then(Value::as_str) != Some(OPENAI_REMOTE_REPLAY_BOUNDARY_SCOPE) || boundary.get("compactionEntryId").and_then(Value::as_str) != Some(remote.entry_id.as_str()) { continue; }
+        let Some(ordinal) = boundary.get("ordinal").and_then(Value::as_u64).and_then(|ordinal| usize::try_from(ordinal).ok()) else { continue; };
+        if let Some(fingerprint) = context_provenance_fingerprint(&item) { integrity.insert(ordinal, fingerprint); }
+        expected_ordinals.push(ordinal);
+    }
+    if expected_ordinals.is_empty() { return unmarked(); }
+    let marked = mark(&expected_ordinals, &integrity);
+    (marked, Some(OpenAiRemoteReplayBoundary { compaction_entry_id: remote.entry_id, expected_ordinals }))
+}
+
+#[cfg(test)]
+mod replay_boundary_tests {
+    use super::*;
+
+    fn model() -> Model {
+        serde_json::from_value(json!({"id":"m","name":"m","provider":"openai","api":"openai-responses","baseUrl":"https://api.openai.com/v1","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":10000,"maxTokens":8000})).expect("model fixture")
+    }
+
+    fn branch() -> Vec<Value> {
+        let details = json!({"schema":OPENAI_REMOTE_COMPACTION_SCHEMA,"mode":"openai-remote","provider":"openai","api":"openai-responses","transport":"compact-endpoint","modelId":"m","responseId":"r","createdAt":1,"requestInputItemCount":2,"retainedInputItemCount":1,"replacementInput":[{"type":"compaction","encrypted_content":"x"}],"origin":{"endpoint":"https://api.openai.com/v1","trustDomain":"https://api.openai.com","authTenantFingerprint":"sha256:abc"}});
+        vec![
+            json!({"type":"message","id":"a","parentId":null,"timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"old","timestamp":0}}),
+            json!({"type":"message","id":"b","parentId":"a","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"kept","timestamp":0}}),
+            json!({"type":"compaction","id":"c","parentId":"b","timestamp":"1970-01-01T00:00:00.000Z","summary":"s","firstKeptEntryId":"b","tokensBefore":5,"details":details}),
+            json!({"type":"message","id":"d","parentId":"c","timestamp":"1970-01-01T00:00:00.000Z","message":{"role":"user","content":"new","timestamp":0}}),
+        ]
+    }
+
+    fn context(branch: &[Value]) -> (Vec<Value>, Vec<Option<String>>) {
+        build_context_entries(branch, None).iter().flat_map(|entry| session_entry_to_context_messages(entry).into_iter().map(|message| (message, entry["id"].as_str().map(str::to_owned)))).unzip()
+    }
+
+    #[test]
+    fn marks_checkpoint_owned_prefix_with_entry_identity() {
+        let branch = branch();
+        let (messages, entry_ids) = context(&branch);
+        let (marked, boundary) = mark_openai_remote_replay_boundary(&messages, &entry_ids, Some(&model()), &branch);
+        assert_eq!(boundary, Some(OpenAiRemoteReplayBoundary { compaction_entry_id: "c".into(), expected_ordinals: vec![0, 1] }));
+        assert_eq!(marked[0][CONTEXT_PROVENANCE_FIELD]["ordinal"], 0);
+        assert_eq!(marked[1][CONTEXT_PROVENANCE_FIELD]["expectedOrdinals"], json!([0, 1]));
+        assert!(marked[1][CONTEXT_PROVENANCE_FIELD]["integrity"].is_string());
+        assert!(marked[2].get(CONTEXT_PROVENANCE_FIELD).is_none());
+    }
+
+    #[test]
+    fn misaligned_entry_ids_leave_messages_unmarked() {
+        let branch = branch();
+        let (messages, mut entry_ids) = context(&branch);
+        entry_ids[1] = None;
+        assert_eq!(mark_openai_remote_replay_boundary(&messages, &entry_ids, Some(&model()), &branch), (messages, None));
+    }
 }
