@@ -261,6 +261,11 @@ pub struct InteractiveMode {
     startup_notices_shown: bool,
     /// senpi `updateEditorBorderColor` inputs (thinking level, bash mode) last applied to the editor.
     editor_border_key: Option<(maho_ai::types::ModelThinkingLevel, bool)>,
+    /// senpi `activeStatusIndicator` for the non-working kinds (retry, compaction, branch summary).
+    /// The working indicator is derived per frame by `working_frame`.
+    active_status_indicator: Option<Rc<RefCell<crate::components::status_indicator::StatusIndicator>>>,
+    /// senpi `idleStatus`: the placeholder that reserves the cleared status row's height.
+    idle_status: Option<crate::components::status_indicator::IdleStatus>,
 }
 type AuthPromptReply = (tokio::sync::oneshot::Receiver<String>, tokio::sync::oneshot::Sender<Result<String, String>>);
 
@@ -553,7 +558,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, active_status_indicator:None, idle_status:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1709,7 +1714,11 @@ impl InteractiveMode {
         if self.host_is_streaming() { self.restore_queued_messages(false); let _ = self.host_abort().await; }
         if self.host_is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
         let options = maho_core::agent_session::TreeNavigationOptions { summarize: Some(summarize), custom_instructions, ..Default::default() };
-        let result = self.host_navigate_tree(entry_id, options).await?;
+        // senpi shows `BranchSummaryStatusIndicator` while a summarizing navigation runs.
+        if summarize { self.show_branch_summary_status_indicator(); }
+        let result = self.host_navigate_tree(entry_id, options).await;
+        if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
+        let result = result?;
         if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree {entry_id}")); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
         self.rebuild_history();
@@ -2495,20 +2504,108 @@ impl InteractiveMode {
         }
     }
 
+    /// senpi `showStatusIndicator`: replace the active indicator. Retry and branch-summary embed in
+    /// the editor border at render time; compaction keeps its own status row.
+    fn show_status_indicator(&mut self, indicator: crate::components::status_indicator::StatusIndicator) {
+        if let Some(previous) = self.active_status_indicator.take() { previous.borrow_mut().dispose(); }
+        self.idle_status = None;
+        self.active_status_indicator = Some(Rc::new(RefCell::new(indicator)));
+    }
+
+    /// senpi `clearStatusIndicator(kind)`: clear only when the active indicator matches `kind`.
+    fn clear_status_indicator(&mut self, kind: Option<crate::components::status_indicator::StatusIndicatorKind>) {
+        use crate::components::status_indicator::{IdleStatus, StatusIndicatorKind};
+        let Some(active) = self.active_status_indicator.clone() else { return; };
+        let active_kind = active.borrow().kind;
+        if kind.is_some_and(|kind| kind != active_kind) { return; }
+        // senpi reserves the cleared row's height under `clearOnShrink` in regular mode; only the
+        // standalone compaction row occupies dock rows here (the others live in the editor border).
+        let (_, clear_on_shrink, _) = self.terminal_settings();
+        let reserved = (clear_on_shrink && active_kind == StatusIndicatorKind::Compaction).then(|| {
+            let (columns, rows) = self.terminal_dimensions.get();
+            let rendered = active.borrow_mut().render(usize::from(columns)).len();
+            IdleStatus { height: usize::from(rows).min(rendered.max(1)) }
+        });
+        active.borrow_mut().dispose();
+        self.active_status_indicator = None;
+        self.idle_status = reserved;
+    }
+
+    fn status_indicator_now(&self) -> u64 { self.clock.elapsed().as_millis() as u64 }
+
+    fn show_retry_status_indicator(&mut self, attempt: u32, max_attempts: u32, delay_ms: u64, error_message: &str) {
+        let trouble = crate::provider_error_presentation::is_network_provider_error(Some(error_message), false);
+        let indicator = crate::components::status_indicator::StatusIndicator::retry(attempt as usize, max_attempts as usize, delay_ms, trouble, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
+    fn show_compaction_status_indicator(&mut self, reason: maho_ext_api::CompactionReason) {
+        use crate::components::status_indicator::CompactionStatusReason;
+        let reason = match reason {
+            maho_ext_api::CompactionReason::Manual => CompactionStatusReason::Manual,
+            maho_ext_api::CompactionReason::Threshold => CompactionStatusReason::Threshold,
+            maho_ext_api::CompactionReason::Overflow => CompactionStatusReason::Overflow,
+            maho_ext_api::CompactionReason::PrePrompt => CompactionStatusReason::PrePrompt,
+            maho_ext_api::CompactionReason::Branch => CompactionStatusReason::Branch,
+            maho_ext_api::CompactionReason::Extension => CompactionStatusReason::Extension,
+        };
+        let indicator = crate::components::status_indicator::StatusIndicator::compaction(reason, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
+    fn show_branch_summary_status_indicator(&mut self) {
+        let indicator = crate::components::status_indicator::StatusIndicator::branch_summary(&crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
     pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
         use maho_ext_api::AgentSessionEvent;
+        use crate::components::status_indicator::StatusIndicatorKind;
         match event {
-            AgentSessionEvent::Agent(event) => self.handle_event(event),
+            AgentSessionEvent::Agent(event) => {
+                // senpi `message_update`: visible assistant text ends a pending retry indicator.
+                if let AgentEvent::MessageUpdate { message, .. } = event
+                    && message.as_assistant().is_some_and(|assistant| assistant.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::Text(text) if !text.text.trim().is_empty()))) {
+                    self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                }
+                self.handle_event(event);
+            }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             AgentSessionEvent::ThinkingLevelChanged { level } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
-            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, error_message, .. } => self.show_status(format!("Retrying ({attempt}/{max_attempts}): {error_message}")),
-            AgentSessionEvent::AutoRetryEnd { final_error:Some(error), .. } => self.show_status(error.clone()),
-            AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
-            AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
-            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
+            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
+            AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                if !*success && final_error.as_deref() != Some("Retry cancelled") {
+                    self.show_error(&format!("Retry failed after {attempt} attempts: {}", final_error.as_deref().filter(|error| !error.is_empty()).unwrap_or("Unknown error")));
+                }
+            }
+            AgentSessionEvent::SummarizationRetryScheduled { attempt, max_attempts, delay_ms, error_message } => { self.show_error(error_message); self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message); }
+            AgentSessionEvent::SummarizationRetryAttemptStart { source, reason } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                if source == "branchSummary" { self.show_branch_summary_status_indicator(); }
+                else { self.show_compaction_status_indicator(reason.unwrap_or(maho_ext_api::CompactionReason::Manual)); }
+            }
+            AgentSessionEvent::SummarizationRetryFinished => self.clear_status_indicator(Some(StatusIndicatorKind::Retry)),
+            AgentSessionEvent::CompactionStart { reason, .. } => self.show_compaction_status_indicator(*reason),
+            AgentSessionEvent::CompactionProgress { delta, text, .. } => {
+                if let Some(indicator) = self.active_status_indicator.clone().filter(|indicator| indicator.borrow().kind == StatusIndicatorKind::Compaction) {
+                    let next = text.clone().or_else(|| delta.clone()).unwrap_or_default();
+                    if !next.is_empty() {
+                        let tail = next.char_indices().rev().nth(3_999).map_or(next.as_str(), |(index, _)| &next[index..]);
+                        let preview = if tail.len() < next.len() { format!("...{tail}") } else { next.clone() };
+                        indicator.borrow_mut().set_progress_text(&maho_tui::terminal_text::sanitize_terminal_label(&preview), self.status_indicator_now());
+                    }
+                }
+            }
+            AgentSessionEvent::CompactionEnd { error_message, .. } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Compaction));
+                if let Some(error) = error_message { self.show_status(error.clone()); }
+            }
+            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; }
+            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
             _ => {}
         }
     }
@@ -3297,13 +3394,21 @@ impl InteractiveMode {
     pub(crate) fn render_dock(&mut self,width:usize)->Vec<String> {
         let mut lines=Vec::new();
         let now = self.clock.elapsed().as_secs_f64() * 1000.0;
-        let indicator = self.working_frame(now).map(|frame| {
+        // senpi `activeStatusIndicator`: a retry/branch-summary indicator owns the editor border;
+        // compaction keeps a standalone status row; otherwise the working frame is embedded.
+        let active = self.active_status_indicator.clone();
+        if let Some(active) = &active { active.borrow_mut().tick(now.max(0.0) as u64); }
+        let compaction = active.clone().filter(|indicator| indicator.borrow().kind == crate::components::status_indicator::StatusIndicatorKind::Compaction);
+        let embedded = active.filter(|indicator| indicator.borrow().kind != crate::components::status_indicator::StatusIndicatorKind::Compaction);
+        let indicator = embedded.or_else(|| self.working_frame(now).map(|frame| {
             let mut indicator = crate::components::status_indicator::StatusIndicator::working(&frame, self.theme.clone(), self.working_started_ms.unwrap_or(now).max(0.0) as u64);
             indicator.tick(now.max(0.0) as u64);
             Rc::new(RefCell::new(indicator))
-        });
+        }));
         self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
+        if let Some(compaction) = compaction { lines.extend(compaction.borrow_mut().render(width)); }
+        else if let Some(idle) = &mut self.idle_status { lines.extend(idle.render(width)); }
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
