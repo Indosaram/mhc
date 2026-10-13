@@ -23,6 +23,13 @@ fn bearer_token_file(auth: &ResolvedWebSocketListenerAuth) -> Option<PathBuf> {
 }
 
 pub async fn run_app_server_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAuth>, shutdown: impl Future<Output = ()>) -> Result<(), String> {
+    // senpi `shutdownSignal`: process signals and extension `requestShutdown` both end the mode.
+    let shutdown = async {
+        tokio::select! {
+            () = shutdown => {},
+            reason = runtime.shutdown_request.requested() => eprintln!("app-server shutdown requested: {reason}"),
+        }
+    };
     let result=run_mode(runtime,listen,auth,shutdown).await;
     runtime.dispose().await;
     result
@@ -36,7 +43,9 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
     let app_name = maho_core::config::app_name();
     if matches!(listen,Listen::Stdio {..}) {
         eprint!("{}", listening_banner(&app_name, &BoundListen::Stdio));
-        super::stdio::run_shared_stdio_until(runtime.core.clone(),tokio::io::stdin(),tokio::io::stdout(),shutdown,None).await.map_err(|error|error.message)?;
+        // senpi `startStdioTransport`: take over stdout before the transport owns the NDJSON stream.
+        maho_core::output_guard::take_over_stdout();
+        super::stdio::run_shared_stdio_until(runtime.core.clone(),tokio::io::stdin(),super::stdio::RawStdoutWriter,shutdown,None).await.map_err(|error|error.message)?;
         shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
         return Ok(());
     }
