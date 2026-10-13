@@ -15,8 +15,8 @@ pub fn extension_theme(theme: &crate::theme::Theme) -> maho_ext_api::Theme {
 
 pub enum UiRequest {
     WidgetFrame,
-    Select { title: String, options: Vec<String>, reply: tokio::sync::oneshot::Sender<Option<String>> },
-    Input { title: String, reply: tokio::sync::oneshot::Sender<Option<String>> },
+    Select { title: String, options: Vec<String>, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
+    Input { title: String, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
     Notify(String, NotificationType),
     Widget(String, Option<WidgetContent>, ExtensionWidgetOptions),
     Header(Option<ComponentFactory>),
@@ -154,20 +154,20 @@ impl ExtensionUi for InteractiveExtensionUi {
     fn select<'a>(&'a self, title: &'a str, options: &'a [String], opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
         let blocked = self.block_host_dialog(title);
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        self.send(UiRequest::Select { title: title.into(), options: options.to_vec(), reply });
+        self.send(UiRequest::Select { title: title.into(), options: options.to_vec(), timeout_ms: opts.timeout_ms, reply });
         Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await })
     }
     fn confirm<'a>(&'a self, title: &'a str, message: &'a str, opts: ExtensionUiDialogOptions) -> UiFuture<'a, bool> {
         let blocked = self.block_host_dialog(title);
         let title = format!("{title}\n{message}");
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        self.send(UiRequest::Select { title, options: vec!["Yes".into(), "No".into()], reply });
+        self.send(UiRequest::Select { title, options: vec!["Yes".into(), "No".into()], timeout_ms: opts.timeout_ms, reply });
         Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await.as_deref() == Some("Yes") })
     }
     fn input<'a>(&'a self, title: &'a str, _placeholder: Option<&'a str>, opts: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> {
         let blocked = self.block_host_dialog(title);
         let (reply, receiver) = tokio::sync::oneshot::channel();
-        self.send(UiRequest::Input { title: title.into(), reply });
+        self.send(UiRequest::Input { title: title.into(), timeout_ms: opts.timeout_ms, reply });
         Box::pin(async move { let _blocked = blocked; Self::wait(receiver, opts).await })
     }
     fn request_render(&self) -> Result<(), ExtensionFailure> {

@@ -316,6 +316,8 @@ pub struct InteractiveMode {
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
     ui_requests: tokio::sync::mpsc::UnboundedReceiver<crate::interactive_extension_ui::UiRequest>,
     ui_dialog: Option<Box<dyn Component>>,
+    /// senpi `CountdownTimer` of the mounted extension dialog: the next 1 s deadline and its tick.
+    dialog_countdown: Option<(f64, Box<dyn FnMut() -> bool>)>,
     login_dialog: Option<crate::components::login_dialog::LoginDialogComponent>,
     /// senpi `handleShareCommand`: the in-flight gist upload whose loader replaces the editor.
     share: Option<ShareInFlight>,
@@ -749,7 +751,8 @@ impl InteractiveMode {
             prompts: self.session.prompt_templates().into_iter().map(|template| LoadedPrompt { name: template.name, file_path: template.file_path, source_info: Some(template.source_info) }).collect(),
             prompt_diagnostics: Vec::new(),
             extensions: self.loaded_extensions.clone(),
-            extension_diagnostics: Vec::new(),
+            // senpi: extension issues include built-in command conflicts.
+            extension_diagnostics: get_built_in_command_conflict_diagnostics(&self.session.extension_registered_commands()),
             themes,
             theme_diagnostics: Vec::new(),
         };
@@ -957,7 +960,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:if theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark }, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, dialog_countdown:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:if theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark }, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1460,16 +1463,49 @@ impl InteractiveMode {
         }).collect();
     }
 
-    fn create_base_autocomplete_provider(session: &AgentSession, cwd: &str, fd_path: Option<String>) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
-        use maho_tui::autocomplete::CommandSpec;
-        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions:None }).collect();
-        commands.push(CommandSpec::command("answer"));
+    fn create_base_autocomplete_provider(session: &Arc<AgentSession>, cwd: &str, fd_path: Option<String>) -> maho_tui::autocomplete::CombinedAutocompleteProvider {
+        use maho_tui::autocomplete::{ArgumentCompletions, AutocompleteItem, CommandSpec};
+        use maho_tui::fuzzy::fuzzy_filter;
+        let mut commands: Vec<_> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| {
+            // senpi: `/model` completes scoped (else available) models, `/login` provider options.
+            let get_argument_completions: Option<ArgumentCompletions> = match command.name {
+                "model" => {
+                    let session = Arc::clone(session);
+                    Some(Rc::new(move |prefix: &str| {
+                        let scoped = session.scoped_models();
+                        let models: Vec<_> = if scoped.is_empty() { session.model_registry().get_available() } else { scoped.into_iter().map(|entry| entry.model).collect() };
+                        if models.is_empty() { return None; }
+                        let items: Vec<_> = models.into_iter().map(|model| crate::model_search::ModelSearchItem { id: model.id, provider: model.provider, name: Some(model.name) }).collect();
+                        let filtered = fuzzy_filter(&items, prefix, crate::model_search::get_model_search_text);
+                        if filtered.is_empty() { return None; }
+                        Some(filtered.into_iter().map(|item| AutocompleteItem { value: format!("{}/{}", item.provider, item.id), label: item.id, description: Some(item.provider) }).collect())
+                    }) as ArgumentCompletions)
+                }
+                "login" => {
+                    let session = Arc::clone(session);
+                    Some(Rc::new(move |prefix: &str| {
+                        let providers = get_login_provider_completion_options(&Self::login_provider_options_for(&session, None));
+                        let filtered = fuzzy_filter(&providers, prefix, get_login_provider_search_text);
+                        if filtered.is_empty() { return None; }
+                        Some(filtered.iter().map(|provider| AutocompleteItem { value: provider.id.clone(), label: provider.id.clone(), description: Some(format_login_provider_completion_description(provider)) }).collect())
+                    }) as ArgumentCompletions)
+                }
+                _ => None,
+            };
+            CommandSpec::Command { name:command.name.into(), description:Some(command.description.into()), argument_hint:command.argument_hint.map(str::to_owned), get_argument_completions }
+        }).collect();
         let builtin_command_names: std::collections::BTreeSet<String> = commands.iter().map(|command| command.name().to_owned()).collect();
         commands.extend(session.prompt_templates().into_iter().map(|template| CommandSpec::Command { name:template.name, description:Some(template.description), argument_hint:template.argument_hint, get_argument_completions:None }));
-        // senpi: registered extension commands (by invocation name) that do not shadow a built-in,
-        // then `skill:<name>` entries when `enableSkillCommands` is on.
-        let (extension_commands, _, skills) = session.command_groups();
-        commands.extend(extension_commands.into_iter().filter(|command| !builtin_command_names.contains(&command.name)).map(|command| CommandSpec::Command { name:command.name, description:command.description, argument_hint:None, get_argument_completions:None }));
+        // senpi: the runner's registered extension commands whose name does not shadow a built-in,
+        // by invocation name with their argument completions, then `skill:<name>` entries when
+        // `enableSkillCommands` is on.
+        commands.extend(session.extension_registered_commands().into_iter().filter(|command| !builtin_command_names.contains(&command.command.name)).map(|command| {
+            let completion_session = Arc::clone(session);
+            let invocation_name = command.invocation_name.clone();
+            let get_argument_completions: ArgumentCompletions = Rc::new(move |prefix: &str| completion_session.extension_command_argument_completions(&invocation_name, prefix));
+            CommandSpec::Command { name:command.invocation_name, description:command.command.description, argument_hint:None, get_argument_completions:Some(get_argument_completions) }
+        }));
+        let (_, _, skills) = session.command_groups();
         if session.with_settings_manager(|settings| settings.get_bool("enableSkillCommands").unwrap_or(true)) {
             commands.extend(skills.into_iter().map(|skill| CommandSpec::Command { name:format!("skill:{}", skill.name), description:skill.description, argument_hint:None, get_argument_completions:None }));
         }
@@ -1524,13 +1560,57 @@ impl InteractiveMode {
                 for message in &messages { self.add_history_message(message); }
             }
         } else {
-            for message in self.session.messages() { self.add_history_message(&message); }
+            // senpi `renderSessionEntries`: custom entries render in their transcript position among
+            // the context messages; messages without a matching entry follow in order.
+            let entries = self.session.with_session_manager(|manager| maho_core::session_manager::build_context_entries(&manager.entries(), manager.leaf_id()));
+            let mut messages = self.session.messages().into_iter();
+            for entry in &entries {
+                if entry["type"] == "custom" { self.add_custom_entry_to_chat(entry); continue; }
+                for message in messages.by_ref().take(maho_core::session_manager::session_entry_to_context_messages(entry).len()) { self.add_history_message(&message); }
+            }
+            for message in messages { self.add_history_message(&message); }
             // senpi `renderInitialMessages`: show compaction info if the session was compacted.
             let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
             if compaction_count > 0 {
                 let times = if compaction_count == 1 { "1 time".to_owned() } else { format!("{compaction_count} times") };
                 self.show_status(format!("Session compacted {times}"));
             }
+        }
+    }
+
+    /// senpi `addCustomEntryToChat`: render a custom session entry through its registered entry
+    /// renderer, replacing the previous card in place when the renderer's `replaces` accepts the pair.
+    fn add_custom_entry_to_chat(&mut self, entry: &serde_json::Value) {
+        use crate::components::custom_entry::{CustomEntryComponent, EntryCard, from_extension_entry_renderer, from_extension_entry_replaces, replaced_entry_card_index};
+        use crate::components::exploration_transcript_container::TranscriptChild;
+        let Some((renderer, options)) = self.session.extension_entry_renderer(entry["customType"].as_str().unwrap_or_default()) else { return; };
+        let mut component = CustomEntryComponent::new(entry.clone(), from_extension_entry_renderer(renderer), self.theme.clone());
+        component.set_expanded(self.tools_expanded);
+        if !component.has_content() { return; }
+        let component = Rc::new(RefCell::new(component));
+        let streaming_index = self.streaming.as_ref().and_then(|streaming| self.chat.children().iter().position(|child| matches!(child, TranscriptChild::Assistant(card) if Rc::ptr_eq(card, streaming))));
+        let insert_index = streaming_index.unwrap_or(self.chat.children().len());
+        let replaces = options.and_then(|options| options.replaces).map(from_extension_entry_replaces);
+        // The status line and its spacer are transient: an entry replaces the card before them.
+        let transient: Vec<usize> = match &self.last_status {
+            Some((count, text)) if count.checked_sub(1).and_then(|index| self.chat.children().get(index)).is_some_and(|child| matches!(child, TranscriptChild::Other(other) if std::ptr::addr_eq(Rc::as_ptr(other), Rc::as_ptr(text)))) => vec![count - 1, count.saturating_sub(2)],
+            _ => Vec::new(),
+        };
+        let replaced_index = {
+            let borrowed: Vec<Option<std::cell::Ref<'_, CustomEntryComponent>>> = self.chat.children().iter().map(|child| match child { TranscriptChild::Entry(card) => Some(card.borrow()), _ => None }).collect();
+            let cards: Vec<EntryCard<'_>> = borrowed.iter().enumerate().map(|(index, card)| match card {
+                Some(card) => EntryCard::Entry(&**card),
+                None if transient.contains(&index) => EntryCard::Transient,
+                None => EntryCard::Other,
+            }).collect();
+            replaced_entry_card_index(&cards, insert_index, entry, replaces.as_ref())
+        };
+        let expandable = component.clone();
+        self.history_expansion.push(Box::new(move |expanded| expandable.borrow_mut().set_expanded(expanded)));
+        match (replaced_index, streaming_index) {
+            (Some(index), _) => self.chat.children_mut()[index] = TranscriptChild::Entry(component),
+            (None, Some(index)) => self.chat.children_mut().insert(index, TranscriptChild::Entry(component)),
+            (None, None) => self.chat.add_child(TranscriptChild::Entry(component)),
         }
     }
 
@@ -1551,7 +1631,7 @@ impl InteractiveMode {
                 self.editor.editor.add_to_history(&text);
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
-                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
+                let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), self.session.extension_message_renderer(&message.custom_type).map(crate::components::custom_message::from_extension_message_renderer), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
                 component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
@@ -2619,7 +2699,7 @@ impl InteractiveMode {
                 if choice == "Summarize with custom prompt" { select_submissions.borrow_mut().push_back(format!("/tree-summary-custom {custom_entry}")); }
                 else { *pending.borrow_mut() = Some((select_entry.clone(), choice == "Summarize", None)); select_submissions.borrow_mut().push_back("/tree-navigate".into()); }
             }),
-            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), Default::default());
+            Box::new(move || { cancelled.borrow_mut().take(); cancel_submissions.borrow_mut().push_back(format!("/tree {entry}")); }), self.extension_selector_options(None));
         self.ui_dialog = Some(Box::new(component));
     }
 
@@ -3213,7 +3293,7 @@ impl InteractiveMode {
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
                 Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() }); selected.borrow_mut().take(); }),
-                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), Default::default());
+                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), self.extension_selector_options(None));
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
         }
@@ -3345,8 +3425,12 @@ impl InteractiveMode {
 
     /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
     fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
+        Self::login_provider_options_for(&self.session, auth_type)
+    }
+
+    fn login_provider_options_for(session: &AgentSession, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
         use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
-        let runtime = &self.session.model_registry().model_runtime;
+        let runtime = &session.model_registry().model_runtime;
         let mut options = Vec::new();
         for provider in runtime.get_providers() {
             let id = provider.id().to_owned();
@@ -3785,6 +3869,27 @@ impl InteractiveMode {
         self.show_status_indicator(indicator);
     }
 
+    /// senpi's `{ tui, timeout, onToggleToolsExpanded }` for `showExtensionSelector`: half the
+    /// terminal rows for the option window, the countdown, and `ctrl+o` toggling tool expansion.
+    fn extension_selector_options(&self, timeout_ms: Option<u64>) -> crate::components::extension_selector::ExtensionSelectorOptions {
+        let ui = self.extension_ui.clone();
+        crate::components::extension_selector::ExtensionSelectorOptions {
+            terminal_rows: Some(usize::from(self.terminal_dimensions.get().1)),
+            timeout_ms,
+            on_toggle_tools_expanded: Some(Box::new(move || {
+                let expanded = !ui.tools_expanded.load(std::sync::atomic::Ordering::Relaxed);
+                // Queued as `UiRequest::ToolsExpanded`, applied by the next `drain_ui_requests`.
+                drop(maho_ext_api::ExtensionUi::set_tools_expanded(ui.as_ref(), expanded));
+            })),
+        }
+    }
+
+    /// Mount an extension dialog whose countdown `tick` the mode drives once per second.
+    fn mount_counting_dialog(&mut self, dialog: Box<dyn Component>, tick: Box<dyn FnMut() -> bool>) {
+        self.ui_dialog = Some(dialog);
+        self.dialog_countdown = Some((self.clock.elapsed().as_secs_f64() * 1000.0 + 1000.0, tick));
+    }
+
     pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
         use maho_ext_api::AgentSessionEvent;
         use crate::components::status_indicator::StatusIndicatorKind;
@@ -3851,6 +3956,7 @@ impl InteractiveMode {
             AgentSessionEvent::BashExecutionUpdate { delta, .. } => { if let Some((component, _)) = &self.pending_bash { component.borrow_mut().append_output(delta); } }
             AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; }
             AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
+            AgentSessionEvent::EntryAppended { entry } if entry.kind == "custom" => self.add_custom_entry_to_chat(&entry.data),
             _ => {}
         }
     }
@@ -4084,20 +4190,25 @@ impl InteractiveMode {
                     else { self.widgets.push((key, component, options.placement)); }
                 } else if let Some(index) = index { let (_, mut component, _) = self.widgets.remove(index); component.dispose(); }
             }
-            UiRequest::Select { title, options, reply } => {
+            UiRequest::Select { title, options, timeout_ms, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
                 let keys = Arc::new(self.keybindings());
-                self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
+                let component = Rc::new(RefCell::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, keys, &title, options,
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
-                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), self.extension_selector_options(timeout_ms))));
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(Box::new(SharedDialog(component)), Box::new(move || countdown.upgrade().map(|component| component.borrow_mut().tick()).is_some()));
             }
-            UiRequest::Input { title, reply } => {
+            UiRequest::Input { title, timeout_ms, reply } => {
                 *self.ui_reply.borrow_mut() = Some(reply);
                 let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone();
-                self.ui_dialog = Some(Box::new(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, &title,
+                let component = Rc::new(RefCell::new(crate::components::extension_input::ExtensionInputComponent::new(&self.theme, &title,
                     Box::new(move |text| { if let Some(reply) = selected.borrow_mut().take() { drop(reply.send(Some(text.into()))); } }),
-                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }), Default::default())));
+                    Box::new(move || { if let Some(reply) = cancelled.borrow_mut().take() { drop(reply.send(None)); } }),
+                    crate::components::extension_input::ExtensionInputOptions { has_tui: true, timeout_ms, ..Default::default() })));
+                let countdown = Rc::downgrade(&component);
+                self.mount_counting_dialog(Box::new(SharedDialog(component)), Box::new(move || countdown.upgrade().map(|component| component.borrow_mut().tick()).is_some()));
             }
         }
         *self.extension_ui.editor_text.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.editor.editor.get_text();
@@ -4434,6 +4545,13 @@ impl InteractiveMode {
         self.footer_data.refresh_branch();
         for (id, value) in self.tool_args_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_args(value); } }
         if let Some(share) = &mut self.share { share.loader.tick(now_ms.max(0.0) as u64); }
+        // senpi's dialog `CountdownTimer`: one tick per elapsed second; expiry cancels the dialog.
+        // The tick reports whether its dialog is still alive; a replaced dialog drops the countdown.
+        while let Some((deadline, tick)) = &mut self.dialog_countdown && now_ms >= *deadline {
+            *deadline += 1000.0;
+            if !tick() { self.dialog_countdown = None; break; }
+            if self.ui_reply.borrow().is_none() { self.ui_dialog = None; self.dialog_countdown = None; }
+        }
         if let Some(widget) = &mut self.async_question_widget { widget.tick(now_ms.max(0.0) as u64); }
         else if let Some(question) = &mut self.question { question.tick(now_ms.max(0.0) as u64); }
         self.settle_questions();
@@ -4607,6 +4725,79 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
         cost: value.get("cost").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
         context_usage: value.get("contextUsage").and_then(context_usage_from_wire),
     }
+}
+
+/// A dialog the mode both mounts (as `ui_dialog`) and ticks (through a weak handle).
+struct SharedDialog<T: Component>(Rc<RefCell<T>>);
+impl<T: Component> Component for SharedDialog<T> {
+    fn render(&mut self, width: usize) -> Vec<String> { self.0.borrow_mut().render(width) }
+    fn handle_input(&mut self, data: &str) { self.0.borrow_mut().handle_input(data); }
+    fn has_input_handler(&self) -> bool { self.0.borrow().has_input_handler() }
+    fn invalidate(&mut self) { self.0.borrow_mut().invalidate(); }
+    fn dispose(&mut self) { self.0.borrow_mut().dispose(); }
+    fn focusable_get(&self) -> Option<bool> { self.0.borrow().focusable_get() }
+    fn focusable_set(&mut self, focused: bool) { self.0.borrow_mut().focusable_set(focused); }
+    fn handle_mouse(&mut self, event: &maho_tui::tui::TuiMouseEvent) -> Option<maho_tui::tui::TuiMouseEventResult> { self.0.borrow_mut().handle_mouse(event) }
+}
+
+/// senpi `LoginProviderCompletionOption`: one row per provider with every auth type it supports.
+#[derive(Clone)]
+struct LoginProviderCompletionOption {
+    id: String,
+    name: String,
+    auth_types: Vec<crate::components::oauth_selector::AuthSelectorAuthType>,
+}
+
+/// senpi `AUTH_TYPE_ORDER`.
+fn auth_type_order(auth_type: crate::components::oauth_selector::AuthSelectorAuthType) -> u8 {
+    match auth_type { crate::components::oauth_selector::AuthSelectorAuthType::OAuth => 0, crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => 1 }
+}
+
+/// senpi `getLoginProviderCompletionOptions`.
+fn get_login_provider_completion_options(provider_options: &[crate::components::oauth_selector::AuthSelectorProvider]) -> Vec<LoginProviderCompletionOption> {
+    let mut by_id: Vec<LoginProviderCompletionOption> = Vec::new();
+    for provider in provider_options {
+        if let Some(existing) = by_id.iter_mut().find(|existing| existing.id == provider.id) {
+            if !existing.auth_types.contains(&provider.auth_type) {
+                existing.auth_types.push(provider.auth_type);
+                existing.auth_types.sort_by_key(|auth_type| auth_type_order(*auth_type));
+            }
+            continue;
+        }
+        by_id.push(LoginProviderCompletionOption { id: provider.id.clone(), name: provider.name.clone(), auth_types: vec![provider.auth_type] });
+    }
+    by_id.sort_by(|left, right| left.name.cmp(&right.name));
+    by_id
+}
+
+/// senpi `getLoginProviderSearchText`.
+fn get_login_provider_search_text(provider: &LoginProviderCompletionOption) -> String {
+    let auth_types = provider.auth_types.iter().map(|auth_type| {
+        let id = match auth_type { crate::components::oauth_selector::AuthSelectorAuthType::OAuth => "oauth", crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => "api_key" };
+        format!("{id} {}", crate::components::oauth_selector::format_auth_selector_provider_type(*auth_type))
+    }).collect::<Vec<_>>().join(" ");
+    format!("{} {} {auth_types}", provider.id, provider.name)
+}
+
+/// senpi `formatLoginProviderCompletionDescription`.
+fn format_login_provider_completion_description(provider: &LoginProviderCompletionOption) -> String {
+    let auth_types = provider.auth_types.iter().map(|auth_type| crate::components::oauth_selector::format_auth_selector_provider_type(*auth_type)).collect::<Vec<_>>().join("/");
+    if provider.name == provider.id { auth_types } else { format!("{} \u{b7} {auth_types}", provider.name) }
+}
+
+/// senpi `getBuiltInCommandConflictDiagnostics`: extension commands named like a built-in.
+fn get_built_in_command_conflict_diagnostics(commands: &[maho_ext_api::ResolvedCommand]) -> Vec<maho_core::diagnostics::ResourceDiagnostic> {
+    let builtin_names: std::collections::BTreeSet<&str> = maho_core::slash_commands::builtin_slash_commands().into_iter().map(|command| command.name).collect();
+    commands.iter().filter(|command| builtin_names.contains(command.command.name.as_str())).map(|command| maho_core::diagnostics::ResourceDiagnostic {
+        diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Warning,
+        message: if command.invocation_name == command.command.name {
+            format!("Extension command '/{}' conflicts with built-in interactive command. Skipping in autocomplete.", command.command.name)
+        } else {
+            format!("Extension command '/{}' conflicts with built-in interactive command. Available as '/{}'.", command.command.name, command.invocation_name)
+        },
+        path: Some(command.command.source_info.path.clone()),
+        collision: None,
+    }).collect()
 }
 
 pub fn get_path_command_argument(text: &str, command: &str) -> Option<String> {
@@ -4993,6 +5184,30 @@ mod tests {
         std::fs::write(&present, format!("{}\n", serde_json::json!({"type":"session","id":"s","cwd":fallback}))).expect("present-cwd session");
         assert_eq!(missing_session_cwd_issue(&present.to_string_lossy(), &fallback), None);
         assert_eq!(missing_session_cwd_issue(&directory.path().join("absent.jsonl").to_string_lossy(), &fallback), None);
+    }
+
+    #[test]
+    fn login_completion_options_merge_auth_types_per_provider_sorted_by_name() {
+        use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
+        let row = |id: &str, name: &str, auth_type| AuthSelectorProvider { id: id.into(), name: name.into(), auth_type, method_name: None, status: None };
+        let options = get_login_provider_completion_options(&[row("zed", "Zed", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::ApiKey), row("anthropic", "Anthropic", AuthSelectorAuthType::OAuth)]);
+        assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["anthropic", "zed"]);
+        assert_eq!(format_login_provider_completion_description(&options[0]), "Anthropic \u{b7} subscription/API key");
+        assert_eq!(get_login_provider_search_text(&options[1]), "zed Zed api_key API key");
+    }
+
+    #[test]
+    fn built_in_command_conflicts_name_the_skip_or_the_renamed_invocation() {
+        let command = |name: &str, invocation: &str| maho_ext_api::ResolvedCommand {
+            command: maho_ext_api::RegisteredCommand { name: name.into(), source_info: maho_ext_api::SourceInfo { path: "/ext/a".into(), ..Default::default() }, description: None, argument_hint: None, handler: Arc::new(|_, _| Box::pin(async { Ok(()) })) },
+            invocation_name: invocation.into(),
+        };
+        let diagnostics = get_built_in_command_conflict_diagnostics(&[command("model", "model"), command("model", "model:2"), command("custom", "custom")]);
+        assert_eq!(diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>(), [
+            "Extension command '/model' conflicts with built-in interactive command. Skipping in autocomplete.",
+            "Extension command '/model' conflicts with built-in interactive command. Available as '/model:2'.",
+        ]);
+        assert_eq!(diagnostics[0].path.as_deref(), Some("/ext/a"));
     }
 
     #[test]
