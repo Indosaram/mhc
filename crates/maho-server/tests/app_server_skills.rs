@@ -98,3 +98,20 @@ async fn loaded_thread_cwd_uses_its_live_session_skills_and_falls_back_only_when
     let fallback = registry.dispatch(connection, json!({"id":2,"method":"skills/list","params":{"cwds":[unloaded.display().to_string()]}})).await;
     assert_eq!(fallback["result"]["data"][0]["skills"], json!([]), "a cwd with no loaded thread falls back to the fresh disk loader");
 }
+
+#[tokio::test]
+async fn resource_skill_loader_includes_settings_skill_paths_for_unloaded_cwds() {
+    use maho_server::app_server::skills::{register_skill_methods_with_loader, resource_skill_loader};
+    let directory = tempfile::tempdir().unwrap();
+    let agent = directory.path().join("agent");
+    let skill_dir = agent.join("extra/settings-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: settings-skill\ndescription: From settings skill paths\n---\nBody\n").unwrap();
+    std::fs::write(agent.join("settings.json"), json!({"skills":["extra"]}).to_string()).unwrap();
+    let mut registry = MethodRegistry::default();
+    register_skill_methods_with_loader(&mut registry, agent.display().to_string(), directory.path().display().to_string(), empty_threads(directory.path()), resource_skill_loader(Vec::new()));
+    let response = registry.dispatch(RegistryConnection { initialized: true, ..Default::default() }, json!({"id":1,"method":"skills/list"})).await;
+    let skills = response["result"]["data"][0]["skills"].as_array().unwrap();
+    let skill = skills.iter().find(|skill| skill["name"] == "settings-skill").unwrap_or_else(|| panic!("settings.json skill path must be listed: {response}"));
+    assert_eq!(skill["scope"], "user");
+}
