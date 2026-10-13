@@ -436,7 +436,7 @@ async fn supports_shell_command_prefixes() {
 async fn prepares_command_cwd_and_explicit_environment() {
     let f = Fixture::new();
     std::fs::create_dir(f.dir.join("workspace")).expect("tool test operation must succeed");
-    let expected = f.dir.join("workspace").to_string_lossy().into_owned();
+    let expected = std::fs::canonicalize(&f.dir).expect("canonical temp dir").join("workspace").to_string_lossy().into_owned();
     let target = expected.clone();
     let prepare: BashPrepare<ExecutionToolContext> = Arc::new(move |execution, _, _| {
         execution.cwd = target.clone();

@@ -109,7 +109,7 @@ async fn returns_file_info_for_files_directories_and_symlinks_without_following_
     assert_eq!(link.kind, FileKind::Symlink);
 
     let canonical = env.canonical_path("link.txt", &context).await.expect("canonical");
-    assert_eq!(canonical, dir.join("file.txt").to_string_lossy());
+    assert_eq!(canonical, std::fs::canonicalize(&dir).expect("canonical temp dir").join("file.txt").to_string_lossy());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
