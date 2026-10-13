@@ -1271,7 +1271,7 @@ impl maho_ext_api::ExtensionSessionActions for SessionExtensionActions {
     fn set_session_name(&self, name: &str) -> Result<(), maho_ext_api::ExtensionFailure> { self.session()?.set_session_name(name); Ok(()) }
     fn get_session_name(&self) -> Result<Option<String>, maho_ext_api::ExtensionFailure> { Ok(self.session()?.session_name()) }
     fn set_label(&self, id: &str, label: Option<&str>) -> Result<(), maho_ext_api::ExtensionFailure> {
-        self.session()?.with_session_manager_mut(|manager| manager.append_label(id, label)); Ok(())
+        self.session()?.with_session_manager_mut(|manager| manager.append_label(id, label))?; Ok(())
     }
     fn execute_tool<'a>(&'a self, name: &'a str, params: Value, options: maho_ext_api::ExecuteToolOptions) -> maho_ext_api::ExecuteToolFuture<'a> {
         Box::pin(async move { let session = self.session().map_err(|error| maho_ext_api::ExecuteToolError {
@@ -3751,7 +3751,7 @@ impl AgentSession {
             self.with_session_manager_mut(|manager| manager.append_message(message)))).transpose().map_err(|error| error.to_string())?;
         if let Some(label) = options.label.as_deref() {
             let labelled = summary_entry.as_ref().or(replacement_entry.as_ref()).and_then(|entry| entry.get("id")).and_then(Value::as_str).unwrap_or(target_id);
-            self.with_session_manager_mut(|manager| manager.append_label(labelled, Some(label)));
+            self.with_session_manager_mut(|manager| manager.append_label(labelled, Some(label)))?;
         }
         if options.intent == Some(TreeNavigationIntent::Resume) && replacement_entry.is_none() && (summary_entry.is_some() || options.label.is_some()) {
             self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
