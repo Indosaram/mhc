@@ -4851,19 +4851,6 @@ fn session_stats_from_wire(value: &serde_json::Value) -> maho_core::agent_sessio
     }
 }
 
-/// A dialog the mode both mounts (as `ui_dialog`) and ticks (through a weak handle).
-struct SharedDialog<T: Component>(Rc<RefCell<T>>);
-impl<T: Component> Component for SharedDialog<T> {
-    fn render(&mut self, width: usize) -> Vec<String> { self.0.borrow_mut().render(width) }
-    fn handle_input(&mut self, data: &str) { self.0.borrow_mut().handle_input(data); }
-    fn has_input_handler(&self) -> bool { self.0.borrow().has_input_handler() }
-    fn invalidate(&mut self) { self.0.borrow_mut().invalidate(); }
-    fn dispose(&mut self) { self.0.borrow_mut().dispose(); }
-    fn focusable_get(&self) -> Option<bool> { self.0.borrow().focusable_get() }
-    fn focusable_set(&mut self, focused: bool) { self.0.borrow_mut().focusable_set(focused); }
-    fn handle_mouse(&mut self, event: &maho_tui::tui::TuiMouseEvent) -> Option<maho_tui::tui::TuiMouseEventResult> { self.0.borrow_mut().handle_mouse(event) }
-}
-
 /// senpi `LoginProviderCompletionOption`: one row per provider with every auth type it supports.
 #[derive(Clone)]
 struct LoginProviderCompletionOption {

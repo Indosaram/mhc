@@ -47,7 +47,8 @@ async fn gated_session(cwd: &std::path::Path, responses: Vec<String>) -> Gated {
         auth_path: Some(cwd.join("auth.json")),
         credentials: Some(Arc::new(credentials)),
         providers: Some(vec![provider.provider.clone()]),
-    });
+            ..Default::default()
+        });
     let cwd = cwd.to_string_lossy().into_owned();
     let session = create_agent_session(CreateAgentSessionOptions {
         cwd: Some(cwd.clone()), agent_dir: Some(cwd.clone()), model_runtime: Some(runtime), model: Some(model),

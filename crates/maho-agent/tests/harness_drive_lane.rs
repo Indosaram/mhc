@@ -144,7 +144,7 @@ async fn failed_lane_command_faults_harness_and_every_lane() {
     assert!(other.faulted());
     assert_eq!(other.get_tip_id().unwrap_err(), error);
     assert_eq!(harness.get_stream_options().unwrap_err(), error);
-    assert_eq!(harness.lane("late", None, &BACKGROUND_CONTEXT).await.unwrap_err(), error);
+    assert_eq!(harness.lane("late", None, &BACKGROUND_CONTEXT).await.err(), Some(error));
 }
 
 #[tokio::test]
