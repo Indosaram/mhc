@@ -51,8 +51,14 @@ pub fn default_drive_config() -> Config<()> {
     }
 }
 
-fn noop_hook_reporter() -> HookErrorReporter {
-    Arc::new(|_, _, _, _| Box::pin(async {}))
+/// Pinned `new HookRegistry((error, hook, lane, context) => this.events.emit({ type: "handler_error", kind: "hook", ... }))`.
+fn hook_error_reporter(events: HarnessEventBus) -> HookErrorReporter {
+    Arc::new(move |error, hook, lane, context| {
+        let events = events.clone();
+        Box::pin(async move {
+            events.emit(HarnessEvent::hook_handler_error(error, hook.as_str(), Some(lane)), context).await;
+        })
+    })
 }
 
 pub struct Harness<TContext = ()> {
@@ -463,11 +469,12 @@ pub async fn create_agent_harness(
     seed: LaneConfiguration,
     context: &Context,
 ) -> Result<Harness, SessionError> {
+    let events = HarnessEventBus::new();
     let harness = Harness {
         session,
-        events: HarnessEventBus::new(),
+        events: events.clone(),
         models: maho_ai::models::create_models(None),
-        hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
+        hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
         lanes_by_name: Mutex::new(BTreeMap::new()),
         tools: Vec::new(),
         tool_context: None,
@@ -541,11 +548,12 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         }),
         entry_projectors: Default::default(),
     };
+    let events = HarnessEventBus::new();
     let harness = Harness {
         session: options.session.clone(),
-        events: HarnessEventBus::new(),
+        events: events.clone(),
         models: options.models.clone(),
-        hooks: Arc::new(HookRegistry::new(noop_hook_reporter())),
+        hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
         lanes_by_name: Mutex::new(BTreeMap::new()),
         tools: options.tools.clone(),
         tool_context: options.tool_context.clone(),
