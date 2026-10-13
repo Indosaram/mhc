@@ -10,10 +10,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::alt_screen_search::{
-    find_alt_screen_search_matches, get_alt_screen_search_match_key, AltScreenSearchComponent, AltScreenSearchMatch,
+    get_alt_screen_search_match_key, AltScreenSearchComponent, AltScreenSearchIndex, AltScreenSearchMatch,
+    NavigationButtonStyle,
 };
 use crate::components::alt_screen_flash::AltScreenFlashContainer;
-use crate::components::scroll_view::{ScrollView, ScrollViewFollow, ScrollViewOptions};
+use crate::components::scroll_view::{ScrollToOptions, ScrollView, ScrollViewFollow, ScrollViewOptions};
 use crate::image_stub::{self, ImageProtocol};
 use crate::keybindings::get_keybindings;
 use crate::layout::{
@@ -22,7 +23,10 @@ use crate::layout::{
 };
 use crate::mouse_input::{is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, MouseTracking, SgrMouseEvent};
 use crate::terminal::Terminal;
-use crate::tui::{can_receive_keys, composite_tui_line, Component, Container, CURSOR_MARKER, Focusable, MouseBlocker, TuiBase};
+use crate::tui::{
+    can_receive_keys, composite_tui_line, Component, Container, MouseBlocker, OverlayAnchor, OverlayHandle, OverlayMargin,
+    OverlayOptions, SizeValue, TuiBase, CURSOR_MARKER,
+};
 use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width, visible_width, word_segments};
 
 /// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
@@ -79,6 +83,30 @@ struct ScrollbarDrag {
     grab_offset: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchSelectionMode {
+    Query,
+    Retain,
+    Next,
+    Previous,
+}
+
+/// senpi's `ActiveSearch`. The component's query callback cannot borrow the renderer, so it
+/// stores the new query in `pending_query`, which the renderer drains (senpi calls
+/// `updateSearchQuery` directly from the callback).
+struct ActiveSearch {
+    component: Rc<RefCell<AltScreenSearchComponent>>,
+    index: AltScreenSearchIndex,
+    overlay: OverlayHandle,
+    pending_query: Rc<RefCell<Option<String>>>,
+    query: String,
+    matches: Vec<AltScreenSearchMatch>,
+    selected_index: i64,
+    selected_key: Option<String>,
+    anchor_row: usize,
+    selection_mode: SearchSelectionMode,
+}
+
 const MAX_CACHED_OFFSCREEN_KITTY_IMAGES: usize = 16;
 const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES: u64 = 64 * 1024 * 1024;
@@ -118,11 +146,9 @@ pub struct TuiAltScreen {
     last_click: Option<LastClick>,
     scrollbar_drag: Option<ScrollbarDrag>,
     scrollbar_hover: Option<Rc<RefCell<ScrollView>>>,
-    search_component: Option<Rc<RefCell<AltScreenSearchComponent>>>,
-    search_query: String,
-    search_matches: Vec<AltScreenSearchMatch>,
-    search_selected_index: i64,
-    search_visible: bool,
+    active_search: Option<ActiveSearch>,
+    /// senpi's `searchNavigationButtonStyle` option.
+    search_navigation_button_style: NavigationButtonStyle,
     /// senpi's `uploadedKittyImages` `Map`: insertion order is the eviction order, and a
     /// re-rendered image moves to the end.
     uploaded_kitty_images: Vec<(u32, CachedKittyImage)>,
@@ -173,11 +199,8 @@ impl TuiAltScreen {
             last_click: None,
             scrollbar_drag: None,
             scrollbar_hover: None,
-            search_component: None,
-            search_query: String::new(),
-            search_matches: Vec::new(),
-            search_selected_index: -1,
-            search_visible: false,
+            active_search: None,
+            search_navigation_button_style: Rc::new(|text: &str, _hovered: bool| text.to_string()),
             uploaded_kitty_images: Vec::new(),
             saved_capabilities: None,
             alt_screen_active: false,
@@ -240,9 +263,7 @@ impl TuiAltScreen {
     /// senpi's `beforeTerminalStop`: close search, drop transient gesture state, and hand the
     /// mouse/autowrap modes back before the alt screen is left.
     pub fn before_terminal_stop(&mut self, terminal: &mut dyn Terminal, mouse_enabled: bool) {
-        if self.search_visible {
-            self.toggle_search(false);
-        }
+        self.close_search();
         self.clear_text_selection();
         self.stop_scrollbar_hover();
         self.stop_scrollbar_drag();
@@ -347,9 +368,10 @@ impl TuiAltScreen {
         let width = (terminal.columns() as usize).max(1);
         let height = (terminal.rows() as usize).max(1);
         let root = self.get_render_root();
+        self.apply_pending_search_query();
 
         let mut next_layout = render_layout_frame(&root, width, height);
-        if self.refresh_search(&next_layout.lines) {
+        if self.refresh_search(&next_layout) {
             next_layout = render_layout_frame(&root, width, height);
         }
 
@@ -366,7 +388,6 @@ impl TuiAltScreen {
             screen.drain(0..excess);
         }
         screen = self.apply_selection(screen, &next_layout);
-        screen = self.composite_search_overlay(screen, width);
         screen = self.composite_flashes(screen, width, height);
 
         let cursor_pos = self.base.extract_cursor_position(&mut screen, height);
@@ -614,17 +635,18 @@ impl TuiAltScreen {
 
     /// senpi's `applySearchHighlights`: underline every visible match and reverse the current one.
     fn apply_search_highlights(&mut self, screen: Vec<String>, layout: &LayoutFrame) -> Vec<String> {
-        if !self.search_visible || self.search_selected_index < 0 || self.search_matches.is_empty() {
-            return screen;
-        }
-        let Some(scroll_view) = layout.primary_scroll_view.clone() else {
+        let Some(search) = self.active_search.as_ref() else {
             return screen;
         };
+        if search.selected_index < 0 || search.matches.is_empty() {
+            return screen;
+        }
+        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
         let Some(boxed) = get_scroll_view_box(layout, &scroll_view) else {
             return screen;
         };
-        let scroll_top = scroll_view.borrow().scroll_top();
-        let scrollbar_column = get_scrollbar_geometry(boxed, true).map(|geometry| geometry.column);
+        let scroll_top = scroll_view.borrow().scroll_top() as i64;
+        let scrollbar_column = get_scrollbar_geometry(boxed, false).map(|geometry| geometry.column);
         let min_row = boxed.rect.y.max(boxed.clip.y).max(0);
         let max_row = (boxed.rect.y + boxed.rect.height as i64)
             .min(boxed.clip.y + boxed.clip.height as i64)
@@ -632,12 +654,21 @@ impl TuiAltScreen {
         let min_column = boxed.rect.x.max(boxed.clip.x).max(0);
         let max_column = (boxed.rect.x + boxed.rect.width as i64)
             .min(boxed.clip.x + boxed.clip.width as i64)
+            .min(layout.width as i64)
             .min(scrollbar_column.unwrap_or(i64::MAX));
+        let min_content_row = scroll_top + min_row - boxed.rect.y;
+        let max_content_row = scroll_top + max_row - boxed.rect.y - 1;
+        let first_visible = search.matches.partition_point(|search_match| {
+            search_match.segments.last().map(|segment| segment.row as i64).unwrap_or(-1) < min_content_row
+        });
 
         let mut ranges_by_row: Vec<SearchHighlightRanges> = Vec::new();
-        for (match_index, search_match) in self.search_matches.iter().enumerate() {
+        for (match_index, search_match) in search.matches.iter().enumerate().skip(first_visible) {
+            if search_match.segments.first().map(|segment| segment.row as i64).unwrap_or(0) > max_content_row {
+                break;
+            }
             for segment in &search_match.segments {
-                let row = boxed.rect.y + segment.row as i64 - scroll_top as i64;
+                let row = boxed.rect.y + segment.row as i64 - scroll_top;
                 if row < min_row || row >= max_row {
                     continue;
                 }
@@ -647,14 +678,11 @@ impl TuiAltScreen {
                     continue;
                 }
                 let row = row as usize;
-                let entry = match ranges_by_row.iter_mut().find(|(candidate, _)| *candidate == row) {
-                    Some((_, ranges)) => ranges,
-                    None => {
-                        ranges_by_row.push((row, Vec::new()));
-                        &mut ranges_by_row.last_mut().expect("just pushed").1
-                    }
-                };
-                entry.push((start_col as usize, end_col as usize, match_index == self.search_selected_index as usize));
+                let range = (start_col as usize, end_col as usize, match_index as i64 == search.selected_index);
+                match ranges_by_row.iter_mut().find(|(candidate, _)| *candidate == row) {
+                    Some((_, ranges)) => ranges.push(range),
+                    None => ranges_by_row.push((row, vec![range])),
+                }
             }
         }
 
@@ -760,48 +788,213 @@ impl TuiAltScreen {
         lines
     }
 
-    /// senpi shows the find bar through `showOverlay`; this port composites the injected
-    /// `AltScreenSearchComponent` into the top-right corner directly (documented deviation in
-    /// `parity.d/7.md`).
-    fn composite_search_overlay(&mut self, screen: Vec<String>, width: usize) -> Vec<String> {
-        if !self.search_visible {
-            return screen;
+    /// senpi's `toggleSearch`: open the find bar as a focused top-right overlay, or close it.
+    pub fn toggle_search(&mut self) {
+        if self.active_search.is_some() {
+            self.close_search();
+            return;
         }
-        let Some(search) = self.search_component.clone() else {
-            return screen;
-        };
-        let search_width = width.clamp(20, 60);
-        let search_lines = search.borrow_mut().render(search_width);
-        let start_col = width.saturating_sub(search_width).saturating_sub(1);
-        let mut lines = screen;
-        for (i, search_line) in search_lines.iter().enumerate() {
-            if let Some(line) = lines.get_mut(i) {
-                *line = overlay_line(line, search_line, start_col, width);
-            }
-        }
-        lines
+        let pending_query: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&pending_query);
+        let component = Rc::new(RefCell::new(AltScreenSearchComponent::new(
+            Box::new(move |query: &str| {
+                *sink.borrow_mut() = Some(query.to_string());
+            }),
+            Some(Rc::clone(&self.search_navigation_button_style)),
+            cfg!(target_os = "macos"),
+        )));
+        let anchor_row = self.get_primary_scroll_view().borrow().scroll_top();
+        let overlay = self.base.show_overlay(
+            Rc::clone(&component) as Rc<RefCell<dyn Component>>,
+            Some(OverlayOptions {
+                anchor: Some(OverlayAnchor::TopRight),
+                width: Some(SizeValue::Percent(40.0)),
+                min_width: Some(32),
+                margin: Some(OverlayMargin { top: Some(1), right: Some(1), bottom: Some(1), left: Some(1) }),
+                ..Default::default()
+            }),
+        );
+        self.active_search = Some(ActiveSearch {
+            component,
+            index: AltScreenSearchIndex::new(),
+            overlay,
+            pending_query,
+            query: String::new(),
+            matches: Vec::new(),
+            selected_index: -1,
+            selected_key: None,
+            anchor_row,
+            selection_mode: SearchSelectionMode::Query,
+        });
     }
 
-    fn refresh_search(&mut self, lines: &[String]) -> bool {
-        if !self.search_visible {
+    /// senpi's `closeSearch`.
+    fn close_search(&mut self) {
+        let Some(search) = self.active_search.take() else {
+            return;
+        };
+        search.overlay.hide();
+        self.base.request_render(false, 0);
+    }
+
+    /// Applies a query the search component reported through its callback.
+    fn apply_pending_search_query(&mut self) {
+        let pending = self.active_search.as_ref().and_then(|search| search.pending_query.borrow_mut().take());
+        if let Some(query) = pending {
+            self.update_search_query(query);
+        }
+    }
+
+    /// senpi's `updateSearchQuery`: re-anchor at the current match (or viewport top) so the
+    /// next refresh selects the first match at or below it.
+    fn update_search_query(&mut self, query: String) {
+        let primary_top = self.get_primary_scroll_view().borrow().scroll_top();
+        let Some(search) = self.active_search.as_mut() else {
+            return;
+        };
+        if query == search.query {
+            return;
+        }
+        let selected_row = usize::try_from(search.selected_index)
+            .ok()
+            .and_then(|index| search.matches.get(index))
+            .and_then(|selected| selected.segments.first())
+            .map(|segment| segment.row);
+        search.anchor_row = selected_row.unwrap_or(primary_top);
+        search.query = query;
+        search.selection_mode = SearchSelectionMode::Query;
+        search.component.borrow_mut().set_result(-1, 0);
+        self.base.request_render(false, 0);
+    }
+
+    /// senpi's `navigateSearch`: select the next/previous match on the next refresh.
+    pub fn navigate_search(&mut self, direction: i64) {
+        let Some(search) = self.active_search.as_mut() else {
+            return;
+        };
+        if search.query.is_empty() {
+            return;
+        }
+        search.selection_mode = if direction < 0 { SearchSelectionMode::Previous } else { SearchSelectionMode::Next };
+        self.base.request_render(false, 0);
+    }
+
+    /// senpi's `getSearchNavigationDirectionAt`.
+    fn get_search_navigation_direction_at(&self, x: i64, y: i64) -> Option<i64> {
+        let search = self.active_search.as_ref()?;
+        let bounds = search.overlay.get_bounds()?;
+        if x < bounds.col || x >= bounds.col + bounds.width as i64 || y < bounds.row || y >= bounds.row + bounds.height as i64 {
+            return None;
+        }
+        search.component.borrow().get_navigation_direction_at(y - bounds.row, x - bounds.col)
+    }
+
+    /// senpi's `handleSearchMouseEvent`: hover and click the find bar's prev/next buttons.
+    fn handle_search_mouse_event(&mut self, event: &SgrMouseEvent) -> bool {
+        let Some(search) = self.active_search.as_ref() else {
+            return false;
+        };
+        let component = Rc::clone(&search.component);
+        let direction = self.get_search_navigation_direction_at(event.x, event.y);
+        if component.borrow_mut().set_hovered_navigation_direction(direction) {
+            self.base.request_render(false, 0);
+        }
+        let Some(direction) = direction else {
+            return false;
+        };
+        if event.release || (event.button & 32) != 0 || (event.button & 3) != 0 {
             return false;
         }
-        let matches = find_alt_screen_search_matches(lines, &self.search_query);
-        let changed = matches.len() != self.search_matches.len()
-            || matches
-                .iter()
-                .zip(self.search_matches.iter())
-                .any(|(next, previous)| get_alt_screen_search_match_key(next) != get_alt_screen_search_match_key(previous));
-        self.search_matches = matches;
-        if self.search_matches.is_empty() {
-            self.search_selected_index = -1;
-        } else if self.search_selected_index < 0 || self.search_selected_index as usize >= self.search_matches.len() {
-            self.search_selected_index = 0;
+        self.navigate_search(direction);
+        true
+    }
+
+    /// senpi's `refreshSearch`: incrementally re-match the primary scroll view, resolve the
+    /// selection for the pending mode, and reveal it. Returns whether the viewport moved, in
+    /// which case the caller lays the frame out again.
+    fn refresh_search(&mut self, layout: &LayoutFrame) -> bool {
+        let scroll_view = layout.primary_scroll_view.clone().unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view));
+        let Some(search) = self.active_search.as_mut() else {
+            return false;
+        };
+        let boxed = get_scroll_view_box(layout, &scroll_view);
+        let lines = boxed.and_then(|boxed| boxed.scroll_content_lines.as_ref());
+        let Some(lines) = lines.filter(|_| !search.query.trim().is_empty()) else {
+            search.matches.clear();
+            search.selected_index = -1;
+            search.selected_key = None;
+            search.selection_mode = SearchSelectionMode::Retain;
+            search.component.borrow_mut().set_result(-1, 0);
+            return false;
+        };
+
+        let should_reveal_selection = search.selection_mode != SearchSelectionMode::Retain;
+        let result = search.index.search(lines, &search.query);
+        search.matches = result.matches;
+        if !result.changed && search.selection_mode == SearchSelectionMode::Retain {
+            return false;
         }
-        if let Some(search) = &self.search_component {
-            search.borrow_mut().set_result(self.search_selected_index, self.search_matches.len());
+
+        let matches = &search.matches;
+        let len = matches.len() as i64;
+        let exact_index: i64 = if result.changed {
+            search
+                .selected_key
+                .as_ref()
+                .and_then(|key| matches.iter().position(|candidate| &get_alt_screen_search_match_key(candidate) == key))
+                .map_or(-1, |index| index as i64)
+        } else {
+            search.selected_index
+        };
+        let mut selected_index = -1i64;
+        if len > 0 {
+            selected_index = match search.selection_mode {
+                SearchSelectionMode::Query => {
+                    let first_at_anchor = matches.partition_point(|candidate| {
+                        candidate.segments.first().map_or(0, |segment| segment.row) < search.anchor_row
+                    }) as i64;
+                    if first_at_anchor < len { first_at_anchor } else { 0 }
+                }
+                SearchSelectionMode::Next => {
+                    let base_index = if exact_index >= 0 { exact_index } else { search.selected_index.min(len - 1) };
+                    if base_index < 0 { 0 } else { (base_index + 1) % len }
+                }
+                SearchSelectionMode::Previous => {
+                    let base_index = if exact_index >= 0 { exact_index } else { search.selected_index.min(len - 1) };
+                    if base_index < 0 { len - 1 } else { (base_index - 1 + len) % len }
+                }
+                SearchSelectionMode::Retain => {
+                    if exact_index >= 0 { exact_index } else { search.selected_index.max(0).min(len - 1) }
+                }
+            };
         }
-        changed
+
+        search.selected_index = selected_index;
+        let selected = usize::try_from(selected_index).ok().and_then(|index| matches.get(index));
+        search.selected_key = selected.map(get_alt_screen_search_match_key);
+        search.selection_mode = SearchSelectionMode::Retain;
+        search.component.borrow_mut().set_result(selected_index, matches.len());
+        if !should_reveal_selection {
+            return false;
+        }
+
+        let first_segment = selected.and_then(|selected| selected.segments.first());
+        let last_segment = selected.and_then(|selected| selected.segments.last());
+        let (Some(first_segment), Some(last_segment)) = (first_segment, last_segment) else {
+            return false;
+        };
+        let viewport_height = scroll_view.borrow().viewport_height();
+        if viewport_height == 0 {
+            return false;
+        }
+        let before = scroll_view.borrow().scroll_top();
+        let visible_bottom = before + viewport_height - 1;
+        let mut target = before as i64;
+        if first_segment.row < before || last_segment.row > visible_bottom {
+            target = first_segment.row as i64 - (viewport_height / 3) as i64;
+        }
+        scroll_view.borrow_mut().scroll_to(target, ScrollToOptions { disable_follow: true }, 0);
+        scroll_view.borrow().scroll_top() != before
     }
 
     /// Registered via `TuiBase::add_input_listener` (senpi's `handleMouseInput`).
@@ -850,10 +1043,9 @@ impl TuiAltScreen {
     }
 
     fn handle_mouse_event(&mut self, raw: SgrMouseEvent, now_ms: i64, terminal: &mut dyn Terminal) {
-        // Handles left-button press/drag/release routing for scrollbar drag and text
-        // selection. Motion bit 32 marks drag/move; senpi decodes the low 3 button bits, but
-        // this port only supports button 0 (left) for selection/scrollbar as `Input`/`Text`
-        // consumers do not expose right/middle-button behavior in this crate.
+        if self.handle_search_mouse_event(&raw) {
+            return;
+        }
         if self.handle_scrollbar_mouse_event(&raw) {
             return;
         }
@@ -1111,43 +1303,10 @@ impl TuiAltScreen {
         terminal.write(&format!("\x1b]52;c;{encoded}\x07"));
     }
 
-    pub fn toggle_search(&mut self, visible: bool) {
-        self.search_visible = visible;
-        if let Some(search) = &self.search_component {
-            search.borrow_mut().set_focused(visible);
-        }
-        if !visible {
-            self.base.set_focus(None);
-        }
-        self.base.request_render(true, 0);
-    }
-
-    pub fn set_search_component(&mut self, search: Rc<RefCell<AltScreenSearchComponent>>) {
-        self.search_component = Some(search);
-    }
-
-    pub fn on_search_query_change(&mut self, query: String) {
-        self.search_query = query;
-        self.search_selected_index = -1;
-        self.base.request_render(false, 0);
-    }
-
-    pub fn navigate_search(&mut self, direction: i64) {
-        if self.search_matches.is_empty() {
-            return;
-        }
-        let len = self.search_matches.len() as i64;
-        self.search_selected_index = ((self.search_selected_index.max(0) + direction) % len + len) % len;
-        if let Some(search) = &self.search_component {
-            search.borrow_mut().set_result(self.search_selected_index, self.search_matches.len());
-        }
-        self.base.request_render(false, 0);
-    }
-
     pub fn current_search_match_key(&self) -> Option<String> {
-        self.search_matches
-            .get(self.search_selected_index.max(0) as usize)
-            .map(get_alt_screen_search_match_key)
+        let search = self.active_search.as_ref()?;
+        let index = usize::try_from(search.selected_index).ok()?;
+        search.matches.get(index).map(get_alt_screen_search_match_key)
     }
 
     /// senpi's `prepareKittyScreen`: swap an already-uploaded image's full transmission for its
@@ -1217,33 +1376,41 @@ impl TuiAltScreen {
         (lines, evicted_image_deletion)
     }
 
+    /// senpi's `shouldDeferViewportInputToOverlay`: a focused overlay other than the find bar
+    /// owns the keyboard.
+    fn should_defer_viewport_input_to_overlay(&self) -> bool {
+        self.base.is_overlay_focused() && !self.active_search.as_ref().is_some_and(|search| search.overlay.is_focused())
+    }
+
     pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
         let kb = get_keybindings();
         if kb.matches(data, "tui.altScreen.search") {
             if !is_key_release {
-                self.toggle_search(!self.search_visible);
+                self.toggle_search();
             }
             return;
         }
-        if self.search_visible && kb.matches(data, "tui.altScreen.searchNext") {
-            if !is_key_release {
-                self.navigate_search(1);
+        if self.active_search.as_ref().is_some_and(|search| search.overlay.is_focused()) {
+            if kb.matches(data, "tui.altScreen.searchNext") {
+                if !is_key_release {
+                    self.navigate_search(1);
+                }
+                return;
             }
-            return;
-        }
-        if self.search_visible && kb.matches(data, "tui.altScreen.searchPrevious") {
-            if !is_key_release {
-                self.navigate_search(-1);
+            if kb.matches(data, "tui.altScreen.searchPrevious") {
+                if !is_key_release {
+                    self.navigate_search(-1);
+                }
+                return;
             }
-            return;
-        }
-        if self.search_visible && kb.matches(data, "tui.altScreen.searchClose") {
-            if !is_key_release {
-                self.toggle_search(false);
+            if kb.matches(data, "tui.altScreen.searchClose") {
+                if !is_key_release {
+                    self.close_search();
+                }
+                return;
             }
-            return;
         }
-        if self.search_visible {
+        if self.should_defer_viewport_input_to_overlay() {
             self.base.handle_terminal_input(data, is_key_release);
             return;
         }
@@ -1309,6 +1476,7 @@ impl TuiAltScreen {
             return;
         }
         self.base.handle_terminal_input(data, is_key_release);
+        self.apply_pending_search_query();
     }
 }
 
@@ -1356,15 +1524,6 @@ fn highlight_range(plain: &str, start_col: usize, end_col: usize) -> String {
 
 fn slice_plain(plain: &str, start_col: usize, end_col: usize) -> String {
     crate::utils::slice_by_column(plain, start_col, end_col.saturating_sub(start_col), true)
-}
-
-fn overlay_line(base_line: &str, overlay: &str, start_col: usize, width: usize) -> String {
-    let plain_base = strip_terminal_sequences(base_line);
-    let before = slice_plain(&plain_base, 0, start_col);
-    let overlay_width = visible_width(overlay);
-    let after_col = (start_col + overlay_width).min(width);
-    let after = slice_plain(&plain_base, after_col, width);
-    format!("{before}{overlay}{after}")
 }
 
 /// Minimal RFC 4648 base64 encoder for OSC 52 clipboard payloads; no external crate is pulled
