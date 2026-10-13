@@ -24,12 +24,38 @@ pub async fn run_reflection_child(args:&super::spawn_types::ReflectionSpawnArgs,
     let kind=if metadata.kind=="dream"{RunKind::Dream}else{RunKind::Reflection};
     run_supervised_child(SupervisedChildInput {run_dir:&args.paths.session_dir,run_id:metadata.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid reflection ledger")?.clone()}).await
 }
-pub async fn run_facts_child(args:&super::spawn_types::FactsSpawnArgs,options:FactsChildOptions<'_>)->Result<ReflectionChildResult,String> {
+pub async fn run_facts_child(mut args:super::spawn_types::FactsSpawnArgs,sandbox:Option<&(dyn Fn(super::spawn_types::FactsSpawnArgs)->Result<super::spawn_types::FactsSpawnArgs,String>+Sync)>,options:FactsChildOptions<'_>)->Result<ReflectionChildResult,String> {
     if options.termination_grace_ms<0.0||options.max_output_bytes==0{return Err("facts spawn limits are invalid".into());}
     if !args.hard_deadline_at.is_finite()||args.hard_deadline_at<=0.0{return Err("facts deadline must be positive".into());}
     let started=chrono::DateTime::from_timestamp_millis(options.launched_at).ok_or("Invalid launch timestamp")?.to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
     let ledger=serde_json::json!({"version":1,"runId":args.run_id,"kind":"facts","startedAt":started,"attempt":args.attempt,"model":args.model,"hardDeadlineAt":args.hard_deadline_at,"terminationGraceMs":options.termination_grace_ms,"deadlineAt":args.hard_deadline_at+options.termination_grace_ms,"batchId":options.batch_id,"queued":options.queued});
-    run_supervised_child(SupervisedChildInput {run_dir:&args.paths.run_dir,run_id:&args.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind:RunKind::Facts,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid facts ledger")?.clone()}).await
+    let env=args.env.clone();
+    let env_map=env.iter().map(|(key,value)|(key.clone(),value.clone())).collect::<std::collections::HashMap<_,_>>();
+    let cwd=args.cwd.to_string_lossy();
+    let home=env.get("HOME").cloned().unwrap_or_else(maho_core::config::home_dir);
+    let agent_dir=maho_core::config::get_agent_dir_with(&cwd,&home,&env_map);
+    let auth_path=std::path::Path::new(&agent_dir).join("auth.json");
+    let settings_path=maho_core::settings_manager::resolve_settings_source(&cwd,&agent_dir,maho_core::settings_manager::SettingsScope::Global,&home).map(|source|source.path).unwrap_or_else(||maho_core::settings_manager::get_settings_path(&cwd,&agent_dir,maho_core::settings_manager::SettingsScope::Global,&home));
+    #[cfg(unix)]
+    let mut broker_task={
+        let broker=std::sync::Arc::new(crate::worker::facts_lock_broker::FactsLockBroker::bind(&auth_path,std::path::Path::new(&settings_path))?);
+        let endpoint=broker.endpoint().to_string_lossy().into_owned();
+        maho_core::auth_storage::AuthStorage::prepare_facts_auth_file(&auth_path.to_string_lossy())?;
+        args.env.extend([("MAHO_FACTS_LOCK_BROKER".into(),endpoint),("MAHO_FACTS_AUTH_LOCK_TARGET".into(),auth_path.to_string_lossy().into_owned()),("MAHO_FACTS_SETTINGS_LOCK_TARGET".into(),settings_path)]);
+        crate::worker::facts_lock_broker::FactsLockBrokerTask::start(broker)
+    };
+    #[cfg(unix)]
+    args.env.insert("MAHO_FACTS_READ_ONLY_BOOTSTRAP".into(),"1".into());
+    let args=match sandbox {Some(apply)=>apply(args),None=>Ok(args)};
+    let args=match args {Ok(args)=>args,Err(error)=>{
+        #[cfg(unix)]
+        broker_task.close().await?;
+        return Err(error);
+    }};
+    let result=run_supervised_child(SupervisedChildInput {run_dir:&args.paths.run_dir,run_id:&args.run_id,attempt:args.attempt,model:&args.model,thinking:args.thinking.as_deref(),next_attempt:args.next_attempt.clone(),kind:RunKind::Facts,command:&args.command,args:&args.args,cwd:&args.cwd,env:&args.env,hard_deadline_at:args.hard_deadline_at,termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,ledger:ledger.as_object().ok_or("Invalid facts ledger")?.clone()}).await;
+    #[cfg(unix)]
+    broker_task.close().await?;
+    result
 }
 pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<ReflectionChildResult,String> {
     if input.termination_grace_ms<0.0||input.max_output_bytes==0 {return Err("reflection spawn limits are invalid".into());}
@@ -59,7 +85,7 @@ pub async fn run_supervised_child(input:SupervisedChildInput<'_>)->Result<Reflec
             if !complete() {return Err(match result {Ok(status)=>format!("memory run supervisor exited with {}",status.code().map_or_else(||"unknown status".into(),|code|code.to_string())),Err(error)=>error.to_string()});}
         },
         result=&mut wait=>if result==SentinelWaitResult::Timeout {return Err("memory run supervisor did not publish an outcome before its deadline".into());},
-    }
+    };
     let outcome:RunOutcome=read_run_json(&outcome_path).map_err(|error|error.to_string())?;
     if !run_outcome_matches_ledger(Some(input.attempt),&outcome) {return Err(format!("memory run outcome attempt {} does not match attempt {}",outcome.attempt.map_or("legacy".into(),|attempt|attempt.to_string()),input.attempt));}
     Ok(ReflectionChildResult {code:outcome.child_exit.code,signal:outcome.child_exit.signal.filter(|signal|is_node_signal(Some(signal))),stdout:read_tail(&stdout,input.max_output_bytes),stderr:read_tail(&stderr,input.max_output_bytes),timed_out:outcome.timed_out})

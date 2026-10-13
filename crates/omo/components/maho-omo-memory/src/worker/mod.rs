@@ -54,6 +54,9 @@ pub mod run_reconciliation_sweep;
 pub mod run_temporaries;
 pub mod create_run_worktree;
 pub mod facts_child_launch;
+pub mod facts_lock_broker;
+#[cfg(test)]
+mod facts_lock_broker_tests;
 pub mod entry_renderers;
 pub mod completion_renderers;
 pub mod runner_execution;

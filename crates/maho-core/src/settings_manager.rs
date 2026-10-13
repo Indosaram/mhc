@@ -383,7 +383,7 @@ impl SettingsStorage for FileSettingsStorage {
         if !Path::new(&directory).exists() {
             std::fs::create_dir_all(&directory).map_err(|error| format!("Failed to write settings {path}: {error}"))?;
         }
-        let _guard = acquire_lock_sync(&path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+        let mut guard = acquire_lock_sync(&path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let under_lock = std::fs::read_to_string(&path).ok();
         if under_lock != current {
@@ -391,6 +391,10 @@ impl SettingsStorage for FileSettingsStorage {
             next = update(under_lock.as_deref());
         }
         if let Some(next) = next {
+            if guard.broker_write(&next)? {
+                record_self_write(&path, &next);
+                return Ok(());
+            }
             let temp_path = format!("{path}.{}.{}.tmp", std::process::id(), uuid::Uuid::new_v4());
             std::fs::write(&temp_path, &next).map_err(|error| {
                 let _ = std::fs::remove_file(&temp_path);
@@ -626,6 +630,10 @@ impl SettingsManager {
 
     pub fn get_selected_settings_sources(&self) -> Vec<SettingsSourceSelection> {
         self.selected_sources.values().cloned().collect()
+    }
+
+    pub fn canonical_global_settings_path(&self) -> Option<&str> {
+        self.settings_paths.get(&SettingsScope::Global).map(String::as_str)
     }
 
     pub fn subscribe_to_source_selection(&self, listener: SettingsSourceListener) -> SettingsSourceSubscription {

@@ -44,7 +44,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         indicator.start();
         indicator.set_phase(Some("loading settings".into()));
     }
-    let migrations = indicator.during_surface_write(|| crate::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir))).map_err(|error| error.to_string())?;
+    let facts_bootstrap = std::env::var_os("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some()
+        && maho_core::lockfile_policy::facts_lock_broker_enabled();
+    if facts_bootstrap && !parsed.no_session { return Err("facts read-only bootstrap requires --no-session".into()); }
+    let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
+    else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),

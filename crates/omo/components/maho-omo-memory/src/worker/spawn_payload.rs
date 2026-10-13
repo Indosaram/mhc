@@ -178,7 +178,7 @@ pub fn prepare_facts_spawn(input:PrepareFactsSpawnInput<'_>)->Result<FactsSpawnA
     #[cfg(unix)]{use std::os::unix::fs::PermissionsExt;std::fs::set_permissions(&payload,std::fs::Permissions::from_mode(0o400))?;}
     let mut env=input.env;env.insert("FACTS_PAYLOAD_PATH".into(),payload.to_string_lossy().into_owned());env.insert("FACTS_EXTRACTION_PATH".into(),extraction.to_string_lossy().into_owned());env.insert("SENPI_MEMORY_FACTS".into(),"1".into());env.insert("SENPI_PTY_FORCE_PIPE".into(),"1".into());
     if input.load_extensions == Some(true) { env.insert("OMO_SENPI_DISABLED".into(), "1".into()); }
-    let mut args=input.launch.prefix_args;args.extend(["-p".into(),"--system-prompt".into(),load_facts_persona().into(),"--tools".into(),"record_fact".into(),"--no-extensions".into(),"--no-skills".into(),"--no-prompt-templates".into(),"--no-context-files".into(),"--session-dir".into(),input.run_dir.to_string_lossy().into_owned(),"--model".into(),input.model.into()]);
+    let mut args=input.launch.prefix_args;args.extend(["-p".into(),"--no-session".into(),"--system-prompt".into(),load_facts_persona().into(),"--tools".into(),"record_fact".into(),"--no-extensions".into(),"--no-skills".into(),"--no-prompt-templates".into(),"--no-context-files".into(),"--session-dir".into(),input.run_dir.to_string_lossy().into_owned(),"--model".into(),input.model.into()]);
     if input.load_extensions == Some(true) { args.retain(|arg| arg != "--no-extensions"); }
     if let Some(thinking)=input.thinking{args.extend(["--thinking".into(),thinking.into()]);}
     args.push(format!("Extract durable facts from this payload and record each accepted fact with record_fact.\n\n{}", serialize_facts_payload(input.payload)));

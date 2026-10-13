@@ -50,8 +50,9 @@ impl FactsExtractorRunner{
                         let run_id=dir.file_name().ok_or("Facts run directory has no name")?.to_string_lossy().into_owned();
                         let ledger:crate::facts_runner_types::FactsRunLedger=crate::worker::run_artifacts::read_run_json(&dir.join("ledger.json")).map_err(|error|error.to_string())?;
                         let mut cache=cache.lock().await;
+                        let sandbox=options.sandbox.as_deref().map(|sandbox|sandbox as &(dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Sync));
                         runner.execute_child(&mut cache,crate::worker::facts_child_launch::FactsChildLaunchInput{
-                            sandbox:options.sandbox.as_deref().map(|sandbox|sandbox as &(dyn Fn(crate::worker::spawn_types::FactsSpawnArgs)->Result<crate::worker::spawn_types::FactsSpawnArgs,String>+Sync)),
+                            sandbox,
                             run_id:&run_id,run_dir:&dir,payload:&payload,resolution:&resolution,env:&options.env,config_sources:&options.config_sources,launch:&options.launch,hard_deadline_at:chrono::Utc::now().timestamp_millis() as f64+options.deadline_ms as f64,
                             options:crate::worker::spawn_supervisor::FactsChildOptions{termination_grace_ms:options.termination_grace_ms as f64,max_output_bytes:options.max_output_bytes,supervisor_command:&options.supervisor_command,supervisor_args:&options.supervisor_args,batch_id:&batch,queued:&ledger.queued,launched_at:chrono::DateTime::parse_from_rfc3339(&ledger.started_at).map_err(|error|error.to_string())?.timestamp_millis()},
                         },&options.people,&mut |message|(options.warn)(message)).await
