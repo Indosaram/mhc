@@ -741,6 +741,21 @@ impl SettingsManager {
         self.set(SettingsScope::Global, &Settings::from_iter([("markdown".into(), Value::Object(markdown))]))
     }
 
+    pub fn get_block_images(&self) -> bool {
+        self.settings
+            .get("images")
+            .and_then(|images| images.get("blockImages"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// senpi accepts only a non-negative integer (`Number.isInteger(value) && value >= 0`).
+    pub fn get_max_historical_images(&self) -> Option<usize> {
+        let value = self.settings.get("images")?.get("maxHistoricalImages")?;
+        value.as_u64().or_else(|| value.as_f64().filter(|number| *number >= 0.0 && number.fract() == 0.0).map(|number| number as u64))
+            .and_then(|number| usize::try_from(number).ok())
+    }
+
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.settings.get(key).and_then(Value::as_f64)
     }
@@ -1365,6 +1380,20 @@ mod tests {
 
         let configured = SettingsManager::in_memory(settings(r#"{"images":{"autoResize":false}}"#), false);
         assert!(!configured.get_image_auto_resize());
+    }
+
+    #[test]
+    fn block_images_defaults_to_false_and_reads_true() {
+        assert!(!SettingsManager::in_memory(Settings::new(), false).get_block_images());
+        assert!(SettingsManager::in_memory(settings(r#"{"images":{"blockImages":true}}"#), false).get_block_images());
+    }
+
+    #[test]
+    fn max_historical_images_accepts_only_non_negative_integers() {
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_max_historical_images(), None);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":3}}"#), false).get_max_historical_images(), Some(3));
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":-1}}"#), false).get_max_historical_images(), None);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":1.5}}"#), false).get_max_historical_images(), None);
     }
 
     #[test]
