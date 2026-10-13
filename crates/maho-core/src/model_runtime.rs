@@ -443,10 +443,16 @@ impl ModelRuntime {
     pub fn register_provider(&mut self,id:&str,config:ProviderConfigInput) -> Result<(),String> {
         let id = normalize_provider_id(id);
         compose_model_provider(&id,self.native.get(&id).or_else(||self.builtins.get(&id)).cloned(),&self.config.read().unwrap_or_else(|p|p.into_inner()),Some(&config))?;
-        self.extensions.write().unwrap_or_else(|p|p.into_inner()).insert(id.clone(),config);self.recompose_provider(&id);Ok(())
+        self.extensions.write().unwrap_or_else(|p|p.into_inner()).insert(id.clone(),config);self.recompose_provider(&id);self.sync_registered_oauth(&id);Ok(())
     }
-    pub fn register_native_provider(&mut self,provider:Arc<dyn Provider>) {let id=normalize_provider_id(provider.id());self.native.insert(id.clone(),provider);self.recompose_provider(&id);}
-    pub fn unregister_provider(&mut self,id:&str) {let id=normalize_provider_id(id);self.native.shift_remove(&id);self.extensions.write().unwrap_or_else(|p|p.into_inner()).shift_remove(&id);self.recompose_provider(&id);}
+    pub fn register_native_provider(&mut self,provider:Arc<dyn Provider>) {let id=normalize_provider_id(provider.id());self.native.insert(id.clone(),provider);self.recompose_provider(&id);self.sync_registered_oauth(&id);}
+    pub fn unregister_provider(&mut self,id:&str) {let id=normalize_provider_id(id);self.native.shift_remove(&id);self.extensions.write().unwrap_or_else(|p|p.into_inner()).shift_remove(&id);self.recompose_provider(&id);self.credentials.unregister_oauth_provider(&id);}
+    /// senpi `registerProvider`/`registerNativeProvider`: the composed OAuth method joins the
+    /// credential store's OAuth provider list (`/login`, RPC), or leaves it when the provider has none.
+    fn sync_registered_oauth(&self,id:&str) {
+        let oauth=self.get_provider(id).and_then(|provider|compose_provider_auth(&self.config,&self.extensions,provider.as_ref()).oauth);
+        match oauth {Some(oauth)=>self.credentials.register_oauth_provider(id,oauth),None=>self.credentials.unregister_oauth_provider(id)}
+    }
     pub fn get_registered_provider_ids(&self) -> Vec<String> {self.extensions.read().unwrap_or_else(|p|p.into_inner()).keys().chain(self.native.keys()).cloned().collect()}
     pub fn get_registered_provider_config(&self,id:&str) -> Option<ProviderConfigInput> {self.extensions.read().unwrap_or_else(|p|p.into_inner()).get(id).cloned()}
     pub fn get_registered_native_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.native.get(id).cloned()}
@@ -654,6 +660,15 @@ mod tests {
         assert!(runtime.credentials.get("p").is_some());
         runtime.logout("p", None, Default::default()).await.expect("logout");
         assert!(runtime.credentials.get("p").is_none());
+    }
+
+    #[test]
+    fn registered_oauth_provider_joins_and_leaves_the_oauth_provider_list() {
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(TestOAuth)), ..Default::default() }).expect("register oauth");
+        assert!(runtime.credentials.get_oauth_providers().iter().any(|p| p.id == "p" && p.name == "test-oauth"));
+        runtime.unregister_provider("p");
+        assert!(!runtime.credentials.get_oauth_providers().iter().any(|p| p.id == "p"));
     }
 
     #[tokio::test]

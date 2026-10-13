@@ -780,11 +780,14 @@ impl AuthStorage {
                 name: oauth.name().to_string(),
             })
             .collect();
-        for &(id, name) in &maho_ai::auth::oauth::load::BUILTIN_OAUTH_PROVIDERS {
-            if !dynamic.contains_key(id) {
+        // senpi `getOAuthProviders`: builtins are every builtin provider that declares OAuth, named
+        // by that OAuth method (so Radius is included and names match the login flow).
+        for provider in maho_ai::providers::all::builtin_providers() {
+            let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else { continue };
+            if !dynamic.contains_key(provider.id()) {
                 results.push(OAuthProviderInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
+                    id: provider.id().to_owned(),
+                    name: oauth.name().to_owned(),
                 });
             }
         }
@@ -1267,6 +1270,13 @@ mod tests {
         storage.unregister_oauth_provider("anthropic-subscription");
         let ids: Vec<String> = storage.get_oauth_providers().into_iter().map(|p| p.id).collect();
         assert!(!ids.contains(&"anthropic-subscription".to_string()));
+    }
+
+    #[test]
+    fn builtin_oauth_providers_come_from_provider_auth_declarations() {
+        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers();
+        assert!(providers.iter().any(|p| p.id == "anthropic" && p.name == "Anthropic (Claude Pro/Max)"));
+        assert!(providers.iter().any(|p| p.id == "radius"));
     }
 
     #[test]
