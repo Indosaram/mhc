@@ -191,10 +191,34 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
         get_api_key: Some(Arc::new(move |provider| { let runtime = runtime_for_auth.clone(); Box::pin(async move {
             runtime.get_auth(&provider).await.ok().flatten().and_then(|auth| auth.auth.api_key)
         }) })),
-        // senpi sdk.ts hands the Agent the coding-agent convertToLlm: custom, bash-execution and
-        // summary messages become user turns. The agent-core default drops them, so a hidden
-        // extension wake after an assistant reply left the provider request ending on that reply.
-        convert_to_llm: Some(Arc::new(|messages| Box::pin(async move { maho_agent::harness::messages::convert_to_llm(messages) }))),
+        // senpi sdk.ts hands the Agent convertToLlmForTransport: custom, bash-execution and
+        // summary messages become user turns (the agent-core default drops them, so a hidden
+        // extension wake after an assistant reply left the provider request ending on that reply),
+        // and the transport image policy applies. blockImages and maxHistoricalImages are read per
+        // request so a mid-session settings change takes effect.
+        convert_to_llm: Some({
+            let settings_accessor = session_accessor.clone();
+            Arc::new(move |messages: Vec<maho_agent::types::AgentMessage>| {
+                let (block_images, max_historical_images) = settings_accessor.get().and_then(|accessor| accessor())
+                    .map(|session| session.with_settings_manager(|manager| (manager.get_block_images(), manager.get_max_historical_images())))
+                    .unwrap_or((false, None));
+                Box::pin(async move {
+                    let options = crate::messages::TransportConvertOptions {
+                        elide: crate::messages::ElideOldImagesOptions {
+                            budget_bytes: Some(crate::messages::TRANSPORT_IMAGE_BUDGET_BYTES), always_keep_newest: Some(1), max_historical_images,
+                        },
+                        block_images,
+                    };
+                    // The typed agent messages and the JSON session messages share one serde shape;
+                    // a message that cannot cross it keeps the typed conversion (without the image policy)
+                    // rather than losing conversation content.
+                    let values = messages.iter().map(crate::agent_session::session_message_to_value).collect::<Result<Vec<_>, _>>();
+                    let converted = values.and_then(|values| crate::messages::convert_to_llm_for_transport(&values, &options)
+                        .into_iter().map(serde_json::from_value::<maho_ai::types::Message>).collect::<Result<Vec<_>, _>>());
+                    converted.unwrap_or_else(|_| maho_agent::harness::messages::convert_to_llm(messages))
+                })
+            })
+        }),
         ..Default::default()
     });
     let session_start_event = match options.initial_model_provenance.take() {
@@ -560,6 +584,32 @@ mod tests {
         let Some(Message::User(last)) = context.messages.last() else { panic!("custom message must reach the provider as a user turn") };
         let UserContent::Blocks(blocks) = &last.content else { panic!("custom text projects to content blocks") };
         assert_eq!(maho_ai::utils::text::content_text(blocks, ""), "Continue");
+    }
+
+    #[tokio::test]
+    async fn sdk_agent_applies_the_block_images_setting_at_the_transport_boundary() {
+        use maho_agent::types::{AgentContext, AgentMessage};
+        use maho_ai::types::{ContentBlock, ImageContent, Message, UserContent, UserMessage};
+        let dir = tempfile::tempdir().expect("directory");
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let agent_dir = dir.path().join("agent").to_string_lossy().into_owned();
+        let mut settings = SettingsManager::create(&cwd, &agent_dir, &cwd, false);
+        settings.apply_overrides(&serde_json::Map::from_iter([("images".to_owned(), serde_json::json!({"blockImages":true}))]));
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(agent_dir), model: Some(test_model()), settings_manager: Some(settings),
+            session_manager: Some(SessionManager::in_memory(&cwd, None, None)), tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        let messages = vec![AgentMessage::Llm(Message::User(UserMessage {
+            content: UserContent::Blocks(vec![ContentBlock::Image(ImageContent { data: "aGk=".into(), mime_type: "image/png".into() })]),
+            timestamp: 1,
+        }))];
+        let context = created.session.agent()
+            .build_provider_context(&AgentContext { system_prompt: String::new(), messages, tools: None }, None).await;
+        created.session.dispose().await;
+        let Some(Message::User(user)) = context.messages.first() else { panic!("user turn reaches the provider") };
+        let UserContent::Blocks(blocks) = &user.content else { panic!("blocks content") };
+        assert!(!blocks.iter().any(|block| matches!(block, ContentBlock::Image(_))), "blockImages strips every image");
+        assert_eq!(maho_ai::utils::text::content_text(blocks, ""), crate::messages::BLOCKED_IMAGE_PLACEHOLDER);
     }
 
     fn test_model() -> Model {
