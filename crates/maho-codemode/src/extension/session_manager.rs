@@ -16,6 +16,7 @@ pub struct CreateCodemodeSessionManagerOptions {
     pub executor: Arc<dyn OutputExecuteTool>,
     pub list_tools: Option<crate::bridges::schema_bridge::EvalToolCatalog>,
     pub complete: BridgeCompletionHandler,
+    pub python_startup_timeout: Option<std::time::Duration>,
 }
 
 pub struct CodemodeSessionManager {
@@ -92,7 +93,7 @@ impl CodemodeSessionManager {
         let kernel = Arc::new(PythonKernel::start_with_signal(PythonKernelStartOptions {
             interpreter_path:interpreter_path.into(), session_id:self.options.session_id.clone(), cwd:self.options.cwd.clone(),
             connection:BridgeConnectionConfig { port:self.bridge.port, token:self.bridge.token.clone(), local_roots:roots, artifacts_dir:self.options.artifacts_dir.as_ref().map(|path|path.to_string_lossy().into_owned()), parallel_pool_width:Some(if width.is_finite() {width.trunc().max(1.0) as u64} else {1}) },
-            env:None, session_env:self.options.session_env.clone(), startup_timeout:None, on_message:None,
+            env:None, session_env:self.options.session_env.clone(), startup_timeout:self.options.python_startup_timeout, on_message:None,
         },&self.javascript_shutdown.signal()).await?);
         if self.disposed.load(Ordering::SeqCst) { kernel.close().await?; return Err("codemode session manager is disposed".into()); }
         *python = Some(kernel.clone());

@@ -30,6 +30,7 @@ async fn persistent_python_calls_native_host_over_owned_bridge() {
         executor:Arc::new(Fixture),
         list_tools:Some(Arc::new(move || {catalog_count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);if !available.load(std::sync::atomic::Ordering::SeqCst) {return Err("catalog unavailable".into());}Ok(vec![EvalSchemaToolInfo { name:"echo".into(), description:None, parameters:Some(json!({"type":"object"})), kernel_prelude:None }])})),
         complete:Arc::new(|request|Box::pin(async move { Ok(json!({"text":request.prompt,"details":{"model":"fixture/model","structured":false}})) })),
+        python_startup_timeout: None,
     }).await.unwrap());
     let port = session.bridge_endpoint().unwrap().0;
     let kernel = session.get_python_kernel("python3").await.unwrap();
@@ -98,7 +99,7 @@ async fn cancelled_invocation_cleanup_preserves_readmitted_same_id_http_context(
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
     let root=tempfile::tempdir().unwrap();
     let seen=Arc::new(Mutex::new(Vec::new()));let observed=seen.clone();
-    let session=CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {session_id:"ownership".into(),cwd:root.path().into(),settings:Default::default(),availability:[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled:false,detected:maho_codemode::interpreters::detect::InterpreterDetection::Unavailable})),local_roots:None,artifacts_dir:None,session_env:None,executor:Arc::new(Fixture),list_tools:None,complete:Arc::new(move |request| {observed.lock().unwrap().push(request.context.map(|ctx|ctx.cwd));Box::pin(async {Ok(json!({}))})})}).await.unwrap();
+    let session=CodemodeSessionManager::start(CreateCodemodeSessionManagerOptions {session_id:"ownership".into(),cwd:root.path().into(),settings:Default::default(),availability:[EvalLanguage::Py,EvalLanguage::Js,EvalLanguage::Rb,EvalLanguage::Jl].map(|language|(language,maho_codemode::interpreters::detect::LanguageAvailability {enabled:false,detected:maho_codemode::interpreters::detect::InterpreterDetection::Unavailable})),local_roots:None,artifacts_dir:None,session_env:None,executor:Arc::new(Fixture),list_tools:None,complete:Arc::new(move |request| {observed.lock().unwrap().push(request.context.map(|ctx|ctx.cwd));Box::pin(async {Ok(json!({}))})}),python_startup_timeout:None}).await.unwrap();
     let mut cells=EvalDetachedCellManager::new(DetachedCellManagerOptions::default());
     let input=||EvalToolInput {language:EvalLanguage::Py,code:String::new(),summary:"ownership".into(),action:None,timeout:None,on_timeout:None,reset:None};
     let old=cells.create("same-id".into(),input()).unwrap();

@@ -111,6 +111,7 @@ where
         session_id: prepared.session_id.clone(), cwd: prepared.cwd.clone(), settings: prepared.settings.clone(),
         availability: prepared.availability, local_roots: None, artifacts_dir: Some(prepared.artifacts.dir.clone()),
         session_env: Some(host.session_env), executor: host.executor.clone(), list_tools: host.list_tools, complete: host.complete,
+        python_startup_timeout: None,
     }).await?;
     Ok(SessionRuntime {session_id: prepared.session_id, cwd: prepared.cwd, parallel_pool_width: prepared.parallel_pool_width,
         manager: std::sync::Arc::new(manager), enabled_languages: prepared.enabled_languages, runtimes: prepared.runtimes,
