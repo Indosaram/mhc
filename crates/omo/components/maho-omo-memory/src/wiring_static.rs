@@ -11,6 +11,7 @@ pub struct MemoryStaticOptions{
     pub resolve_context:crate::prompt::PromptContextResolver,
     pub resolve_tool_context:crate::tools::MemoryContextResolver,
     pub write_notice:Option<crate::tools::WriteNoticeGate>,
+    pub tool_exposure:Option<maho_ext_api::ToolExposure>,
     pub resolve_cwd:Arc<dyn Fn()->PathBuf+Send+Sync>,
     pub captured_tools:Arc<dyn Fn()->Vec<String>+Send+Sync>,
     pub warn:crate::guard::GuardWarning,
@@ -31,7 +32,7 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
     crate::nudge_wiring::MemoryNudgeWiring::register(options.nudge,api,options.resolve_context.clone());
     crate::soul_notice::register_soul_notice(api,options.resolve_context.clone(),options.edit_notice);
     match options.prompt_handler{Some(handler)=>crate::prompt::register_memory_prompt_handler_with_cache(api,options.prompt,handler),None=>crate::prompt::register_memory_prompt_handler(api,options.prompt)}
-    crate::tools::register_memory_tools_with_options(api,options.resolve_tool_context,crate::tools::MemoryToolsOptions{write_notice:options.write_notice,..Default::default()});
+    crate::tools::register_memory_tools_with_options(api,options.resolve_tool_context,crate::tools::MemoryToolsOptions{write_notice:options.write_notice,exposure:options.tool_exposure,..Default::default()});
     crate::guard::register_memory_guard(api,options.resolve_context.clone(),options.resolve_cwd,options.captured_tools,options.warn);
     crate::skills_scope::register_memory_skills_scope(api,options.resolve_context);
     let skills_usage=match options.skills_trackers{Some(trackers)=>{crate::skills_usage_wiring::register_skills_usage_with_trackers(api,options.skills_usage,trackers.clone());trackers},None=>crate::skills_usage_wiring::register_skills_usage(api,options.skills_usage)};
@@ -48,7 +49,7 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
             register_host:None,
             skills_trackers:None,
             prompt_handler:None,
-            prompt:crate::prompt::MemoryPromptInjectionOptions{resolve_context:resolve.clone(),create_repo:None,search_exposure:None,resolve_nudge_turns:None,resolve_soul_notice:None},nudge:Arc::new(Mutex::new(Default::default())),resolve_context:resolve,resolve_tool_context:Arc::new(||None),write_notice:None,resolve_cwd:Arc::new(PathBuf::new),captured_tools:Arc::new(Vec::new),warn:Arc::new(|_|{}),edit_notice:Arc::new(|_|true),theme:Arc::new(|_|Arc::new(Theme)),
+            prompt:crate::prompt::MemoryPromptInjectionOptions{resolve_context:resolve.clone(),create_repo:None,search_exposure:None,resolve_nudge_turns:None,resolve_soul_notice:None},nudge:Arc::new(Mutex::new(Default::default())),resolve_context:resolve,resolve_tool_context:Arc::new(||None),write_notice:None,tool_exposure:None,resolve_cwd:Arc::new(PathBuf::new),captured_tools:Arc::new(Vec::new),warn:Arc::new(|_|{}),edit_notice:Arc::new(|_|true),theme:Arc::new(|_|Arc::new(Theme)),
             memory_write:crate::wiring_memory_write::MemoryWriteOptions{resolve_session:Arc::new(|_|None),on_memory_write:Arc::new(|_|Ok(())),refresh_status:Arc::new(|_,_|panic!("unbound"))},
             skills_usage:crate::skills_usage_wiring::SkillsUsageOptions{resolve_context:Arc::new(|_|None),resolve_cwd:Arc::new(PathBuf::new),now_ms:Arc::new(||0)},
             triggers:crate::trigger_wiring::ReflectionTriggerWiringOptions{resolve_session:Arc::new(|_|None),on_launch:Arc::new(|_|Ok(())),warn:Arc::new(|_|{})},
@@ -76,7 +77,7 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
             register_host: None, skills_trackers: None, prompt_handler: None,
             prompt: crate::prompt::MemoryPromptInjectionOptions { resolve_context: resolve.clone(), create_repo: None, search_exposure: None, resolve_nudge_turns: None, resolve_soul_notice: None },
             nudge: Arc::new(Mutex::new(Default::default())), resolve_context: resolve, resolve_tool_context: Arc::new(move || tool_context.clone()),
-            write_notice: Some(gate), resolve_cwd: Arc::new(PathBuf::new), captured_tools: Arc::new(Vec::new), warn: Arc::new(|_| {}), edit_notice: Arc::new(|_| true), theme: Arc::new(|_| Arc::new(Theme)),
+            write_notice: Some(gate), tool_exposure: None, resolve_cwd: Arc::new(PathBuf::new), captured_tools: Arc::new(Vec::new), warn: Arc::new(|_| {}), edit_notice: Arc::new(|_| true), theme: Arc::new(|_| Arc::new(Theme)),
             memory_write: crate::wiring_memory_write::MemoryWriteOptions { resolve_session: Arc::new(|_| None), on_memory_write: Arc::new(|_| Ok(())), refresh_status: Arc::new(|_, _| panic!("unbound")) },
             skills_usage: crate::skills_usage_wiring::SkillsUsageOptions { resolve_context: Arc::new(|_| None), resolve_cwd: Arc::new(PathBuf::new), now_ms: Arc::new(|| 0) },
             triggers: crate::trigger_wiring::ReflectionTriggerWiringOptions { resolve_session: Arc::new(|_| None), on_launch: Arc::new(|_| Ok(())), warn: Arc::new(|_| {}) },

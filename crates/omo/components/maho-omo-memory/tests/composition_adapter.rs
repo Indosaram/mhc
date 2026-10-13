@@ -40,6 +40,7 @@ fn static_options() -> MemoryStaticOptions {
         skills_trackers: None,
         prompt_handler: None,
         write_notice: None,
+        tool_exposure: None,
         prompt: MemoryPromptInjectionOptions { resolve_context: resolve.clone(), create_repo: None, search_exposure: None, resolve_nudge_turns: None, resolve_soul_notice: None },
         nudge: Arc::new(Mutex::new(Default::default())),
         resolve_context: resolve,
