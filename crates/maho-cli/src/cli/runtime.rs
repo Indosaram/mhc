@@ -80,34 +80,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         else { SessionManager::create(&cwd_text, parsed.session_dir.as_deref(), identity) };
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
-    if !parsed.no_extensions {
-        let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
-        if !discovery.errors.is_empty() {
-            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-        }
-        base_factories.extend(discovery.factories);
-    }
-    let environment = super::oauth_providers::environment_from_process();
-    let store = super::credentials::AuthStorageCredentialStore::create(
-        &std::path::Path::new(&agent_dir).join("auth.json").to_string_lossy(),
-    ).into_shared();
-    let oauth = super::oauth_providers::oauth_extension_factories(
-        super::oauth_providers::OAuthExtensionRequest {
-            cwd: cwd.clone(), agent_dir: agent_dir.clone().into(), environment: environment.clone(),
-            settings: super::oauth_providers::anthropic_subscription_settings(&settings, &environment),
-            store: Arc::clone(&store),
-        },
-        super::oauth_providers::CursorAssembly {
-            cwd: cwd.clone(), agent_dir: agent_dir.clone().into(), home: maho_core::config::home_dir().into(),
-            environment, store,
-            storage: Arc::new(maho_core::settings_manager::FileSettingsStorage::new(
-                &cwd_text, &agent_dir, &maho_core::config::home_dir(),
-            )),
-        },
-    );
-    base_factories.extend(super::default_extensions::async_factories(oauth.factories));
-    if parsed.no_extensions { base_factories.retain(|factory| factory.source_info.source != "user"); }
+    let base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone(), &settings, &cwd, &agent_dir));
+    let base_factories = super::default_extensions::with_user_extensions(base_factories, &mut settings, &cwd_text, &agent_dir, &parsed.extensions, parsed.no_extensions).await?;
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
     let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
