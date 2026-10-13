@@ -1147,6 +1147,23 @@ impl SessionManager {
         build_session_context(&self.entries(), leaf_id)
     }
 
+    pub fn has_context_messages(&self) -> bool {
+        self.has_branch_entry(|entry| match entry_type(entry) {
+            "message" | "custom_message" | "compaction" => true,
+            "branch_summary" => entry.get("summary").and_then(Value::as_str).is_some_and(|summary| !summary.is_empty()),
+            _ => false,
+        })
+    }
+
+    fn has_branch_entry(&self, predicate: impl Fn(&Value) -> bool) -> bool {
+        let mut current = self.leaf_id.as_deref().and_then(|id| self.by_id.get(id)).and_then(|order| self.file_entries.get(*order));
+        while let Some(entry) = current {
+            if predicate(entry) { return true; }
+            current = entry.get("parentId").and_then(Value::as_str).and_then(|id| self.by_id.get(id)).and_then(|order| self.file_entries.get(*order));
+        }
+        false
+    }
+
     pub fn set_leaf(&mut self, leaf_id: Option<&str>) {
         match leaf_id {
             Some(id) => {
@@ -1564,5 +1581,17 @@ mod tests {
         assert!(manager.session_file().is_none());
         assert_eq!(manager.entries().len(), 1);
         assert_eq!(std::fs::read_dir(tmp.path()).expect("read_dir").count(), 0);
+    }
+
+    #[test]
+    fn has_context_messages_tracks_context_entries_on_the_current_branch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::in_memory(&dir, None, None);
+        assert!(!manager.has_context_messages());
+        manager.append_thinking_level_change("high", None);
+        assert!(!manager.has_context_messages());
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        assert!(manager.has_context_messages());
     }
 }
