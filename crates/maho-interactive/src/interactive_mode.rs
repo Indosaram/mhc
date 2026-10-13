@@ -2292,16 +2292,16 @@ impl InteractiveMode {
     fn handle_armin_says_hi(&mut self) {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |elapsed| u64::from(elapsed.subsec_nanos()) ^ elapsed.as_secs());
         let component = Rc::new(RefCell::new(crate::components::armin::ArminComponent::new(crate::components::armin::effect_for_index(seed as usize), seed, self.theme.clone())));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(component.clone());
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(component.clone());
         self.armin_animations.push((component, self.clock.elapsed().as_secs_f64() * 1000.0));
         self.editor_host.request_render();
     }
 
     /// senpi `handleDementedDelves`.
     fn handle_demented_delves(&mut self) {
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(Rc::new(RefCell::new(crate::components::earendil_announcement::EarendilAnnouncementComponent::new(&self.theme))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(crate::components::earendil_announcement::EarendilAnnouncementComponent::new(&self.theme))));
         self.editor_host.request_render();
     }
 
@@ -2425,8 +2425,8 @@ impl InteractiveMode {
     fn add_continuity_notice(&mut self, message: &maho_ai::types::AssistantMessage) {
         let Ok(value) = serde_json::to_value(message) else { return; };
         let Some(notice) = self.continuity_notices.notice_for(&value, &self.theme) else { return; };
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(notice, 1, 0))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(notice, 1, 0))));
     }
 
     /// senpi `showNoticeBox`.
@@ -2436,16 +2436,16 @@ impl InteractiveMode {
         spec.why = sanitize_tui_error_message(&spec.why);
         for line in &mut spec.extra { line.text = sanitize_tui_error_message(&line.text); }
         spec.expanded_line = spec.expanded_line.as_deref().map(sanitize_tui_error_message);
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
         self.editor_host.request_render();
     }
 
     /// senpi `showWarning`.
     fn show_warning(&mut self, warning_message: &str) {
         let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {warning_message}"));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
         self.editor_host.request_render();
     }
 
