@@ -9,6 +9,7 @@ license = "MIT"
 maho-ai = { path = "../maho-ai" }
 maho-agent = { path = "../maho-agent" }
 maho-core = { path = "../maho-core" }
+maho-process-env = { path = "../maho-process-env" }
 maho-tui = { path = "../maho-tui" }
 maho-tools = { path = "../maho-tools" }
 maho-interactive = { path = "../maho-interactive" }

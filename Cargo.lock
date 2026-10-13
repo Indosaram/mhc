@@ -3144,6 +3144,7 @@ dependencies = [
  "maho-omo-lsp",
  "maho-omo-memory",
  "maho-omo-task",
+ "maho-process-env",
  "maho-rpc",
  "maho-senpi-task",
  "maho-server",
@@ -4858,6 +4859,10 @@ dependencies = [
  "tempfile",
  "tokio",
 ]
+
+[[package]]
+name = "maho-process-env"
+version = "0.0.0"
 
 [[package]]
 name = "maho-pty"
