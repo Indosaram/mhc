@@ -163,6 +163,12 @@ pub fn current_env() -> HashMap<String, String> {
     std::env::vars().collect()
 }
 
+/// senpi `getShareViewerUrl`: the share viewer URL for a gist id.
+pub fn get_share_viewer_url(gist_id: &str) -> String {
+    let base = env_value("SHARE_VIEWER_URL", &current_env()).filter(|value| !value.is_empty()).unwrap_or_else(|| "https://pi.dev/session/".to_owned());
+    format!("{base}#{gist_id}")
+}
+
 /// A brand profile's display version, else the engine version.
 pub fn display_version(engine_version: &str) -> String {
     brand_profile().display_version.unwrap_or_else(|| engine_version.to_owned())
