@@ -62,8 +62,14 @@ impl HostCore{
     /// `runSocketHost`): the capability IS the proof a handler exists, and a host without it is
     /// never signalled - SIGUSR1 would simply terminate it, sessions and all.
     pub fn enable_handoff(&self){self.handoff_enabled.store(true,std::sync::atomic::Ordering::SeqCst);}
+    /// Host capabilities first, then the launch's client capabilities, deduplicated in order
+    /// (senpi `SessionCommandRouter.dispatch` `get_protocol_info`).
     fn advertised_capabilities(&self)->Vec<String>{
-        let mut capabilities=self.options.capabilities.clone();
+        use crate::custom_capability::*;
+        let mut capabilities=Vec::<String>::new();
+        for capability in ["multi_session",AUTO_TITLE_SESSIONS_CAPABILITY,MEDIA_PLACEHOLDERS_CAPABILITY,RETAIN_ON_DISCONNECT_CAPABILITY,SESSION_CONTEXT_CAPABILITY,SESSION_KIND_CAPABILITY,AUTO_TITLE_PER_SESSION_CAPABILITY,DURABLE_SESSION_ID_CAPABILITY].into_iter().chain(self.options.capabilities.iter().map(String::as_str)){
+            if !capabilities.iter().any(|existing|existing==capability){capabilities.push(capability.to_owned());}
+        }
         if self.handoff_enabled.load(std::sync::atomic::Ordering::SeqCst)&&!capabilities.iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY){capabilities.push(crate::host_decision::GENERATION_HANDOFF_CAPABILITY.into());}
         capabilities
     }
@@ -232,6 +238,7 @@ impl HostCore{
         std::sync::Arc::new(HostCore::new(HostCoreOptions{agent_dir:std::path::PathBuf::from("/tmp"),cwd:"/tmp".to_owned(),create_runtime,capabilities:vec![crate::custom_capability::EXTENSION_EVENTS_CAPABILITY.to_owned()],close_grace_ms:10_000},writer))
     }
     #[tokio::test]async fn handoff_is_advertised_only_after_its_handler_is_installed(){let core=idle_core();assert!(!core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));core.enable_handoff();assert!(core.advertised_capabilities().iter().any(|capability|capability==crate::host_decision::GENERATION_HANDOFF_CAPABILITY));}
+    #[tokio::test]async fn protocol_info_advertises_host_capabilities_the_decision_requires(){let capabilities=idle_core().advertised_capabilities();for required in crate::host_decision::REQUIRED_HOST_CAPABILITIES{assert!(capabilities.iter().any(|capability|capability==required),"{required}");}assert_eq!(capabilities.iter().filter(|capability|*capability=="multi_session").count(),1);}
     #[tokio::test]async fn an_empty_host_drains_to_exit_once(){let core=idle_core();assert!(!core.drain_sweep().await);core.begin_drain().await;assert!(core.drain_sweep().await);}
 }
 /// The supervisor-lifetime and empty-exit triggers one shared host reacts to (senpi
