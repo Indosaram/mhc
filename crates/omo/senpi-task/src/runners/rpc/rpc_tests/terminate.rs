@@ -42,6 +42,7 @@ fn spawn_mode(mode: &str, own_group: bool) -> Arc<RpcChildProcess> {
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_cooperating_child_when_terminating_then_sigterm_ends_it_without_escalation() {
     let child = spawn_fake_child(&[]);
     let _guard = ChildGuard(Arc::clone(&child));
@@ -51,6 +52,7 @@ fn given_a_cooperating_child_when_terminating_then_sigterm_ends_it_without_escal
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_term_ignoring_child_when_terminating_then_it_escalates_to_sigkill_within_the_budget() {
     let child = spawn_fake_child(&[("FAKE_IGNORE_TERM", "1")]);
     let _guard = ChildGuard(Arc::clone(&child));
@@ -60,6 +62,7 @@ fn given_a_term_ignoring_child_when_terminating_then_it_escalates_to_sigkill_wit
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_non_group_leader_child_when_terminating_then_direct_escalation_remains_available() {
     let child = spawn_mode("descendant", false);
     read_line_ending_with(&child, "READY");
@@ -76,6 +79,7 @@ fn given_an_already_exited_child_when_terminating_then_it_resolves_without_throw
 }
 
 #[test]
+#[cfg(unix)]
 fn given_a_child_with_a_term_ignoring_descendant_when_terminating_then_the_whole_process_tree_exits()
  {
     let child = spawn_mode("tree", true);

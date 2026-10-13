@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +35,7 @@ fn loader(ioctl: Arc<dyn Fn(i32, u64, i32) -> i32 + Send + Sync>, errno: i32) ->
     })
 }
 
+#[cfg(unix)]
 fn copy_fd(src: i32, dst: i32) {
     use std::io::{Read, Write};
     use std::os::fd::FromRawFd;
@@ -44,7 +46,7 @@ fn copy_fd(src: i32, dst: i32) {
     let _ = writer.write_all(&buffer);
 }
 
-fn context(id: &str, base_dir: &Path, max_copy_bytes: Option<u64>) -> IsolationContext {
+fn context(id: &str, base_dir: &std::path::Path, max_copy_bytes: Option<u64>) -> IsolationContext {
     IsolationContext {
         id: id.to_string(),
         base_dir: base_dir.to_path_buf(),
@@ -54,6 +56,7 @@ fn context(id: &str, base_dir: &Path, max_copy_bytes: Option<u64>) -> IsolationC
 }
 
 #[test]
+#[cfg(unix)]
 fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() {
     let f = fixture();
     let merged = f.root.join("merged");
@@ -73,6 +76,7 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
         filetime::FileTime::from_unix_time(1234567890, 0),
     )
     .expect("mtime");
+    #[cfg(unix)]
     std::os::unix::fs::symlink("dir/data", f.repo_root.join("link")).expect("symlink");
     let requests: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&requests);
@@ -109,11 +113,16 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
         .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
         .collect();
     entries.sort();
+    #[cfg(unix)]
     assert_eq!(entries, vec!["dir", "link"]);
+    #[cfg(not(unix))]
+    assert_eq!(entries, vec!["dir"]);
+    #[cfg(unix)]
     assert_eq!(
         std::fs::read_link(merged.join("link")).expect("readlink"),
         Path::new("dir").join("data")
     );
+    #[cfg(unix)]
     assert!(std::fs::symlink_metadata(merged.join("link"))
         .expect("lstat")
         .file_type()
@@ -148,6 +157,7 @@ fn ficlone_walks_fd_pairs_preserves_metadata_and_symlinks_and_isolates_writes() 
 }
 
 #[test]
+#[cfg(unix)]
 fn first_mid_walk_eopnotsupp_aborts_and_removes_all_partial_output() {
     let f = fixture();
     let merged = f.root.join("merged");
@@ -265,10 +275,8 @@ fn reflink_byte_ceiling_aborts_before_cloning_oversized_input() {
 }
 
 #[test]
+#[cfg(unix)]
 fn reflink_walk_skips_sockets_and_fifos_rather_than_opening_them() {
-    if cfg!(windows) {
-        return;
-    }
     let f = fixture();
     let merged = f.root.join("merged");
     let status = std::process::Command::new("mkfifo")

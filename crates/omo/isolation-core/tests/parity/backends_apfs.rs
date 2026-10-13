@@ -43,10 +43,8 @@ impl CloneSymbols for FakeSymbols {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_symlinks() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     let f = repo();
     let lower = f.repo_root.clone();
     std::fs::write(lower.join("staged"), "stage").expect("staged");
@@ -104,10 +102,8 @@ fn apfs_clones_many_files_cow_skips_special_entries_and_never_follows_entry_syml
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn clonefile_errno_is_read_before_strerror_and_classifies_exdev_versus_eexist() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     for errno in [18, 17] {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
         let symbols: Arc<dyn CloneSymbols> = Arc::new(FakeSymbols {
@@ -126,10 +122,8 @@ fn clonefile_errno_is_read_before_strerror_and_classifies_exdev_versus_eexist() 
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn ensure_removes_stale_snapshot_locks_before_the_git_consistency_probe() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     let f = repo();
     std::fs::write(f.repo_root.join(".git/index.lock"), "stale").expect("lock");
     let handle = ensure_isolation(EnsureIsolationOptions {
