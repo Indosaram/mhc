@@ -237,7 +237,7 @@ impl SessionRouter {
         self.invalidations.send_modify(|count| *count += 1);
     }
     async fn close_internal(&self) -> Result<(), ServerError> {
-        let _admissions=self.admissions.write().await;
+        let admissions=self.admissions.write().await;
         let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();
@@ -249,6 +249,12 @@ impl SessionRouter {
             if let Err(error) = result {
                 errors.push(error.message);
             }
+        }
+        // Publish after admissions reopen: an attaching client holds its presentation lock while
+        // waiting on admissions, and publishing takes that same lock.
+        drop(admissions);
+        for lease in &leases {
+            self.publish_detach(lease).await;
         }
         if errors.is_empty() {
             Ok(())
