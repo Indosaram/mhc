@@ -143,7 +143,15 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
     }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
-    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
+    // senpi agent-session.ts `_buildRuntime`: the built-in tools honour `images.autoResize`,
+    // `shellCommandPrefix` and `shellPath` from settings.
+    let tools_options = maho_tools::index::ToolsOptions {
+        read: maho_tools::read::ReadToolOptions { auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
+        bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
+            shell_path: settings.get_string("shellPath"), ..Default::default() },
+        ..Default::default()
+    };
+    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), tools_options);
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
     let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
@@ -532,6 +540,21 @@ mod tests {
         assert_eq!(tools, vec!["bash"]);
         let result = result.expect("tool");
         assert!(maho_ai::utils::text::content_text(&result.content, "").contains("sdk"));
+    }
+
+    #[tokio::test]
+    async fn sdk_bash_tool_honours_shell_command_prefix_setting() {
+        let dir = tempfile::tempdir().expect("directory");
+        let settings = crate::settings_manager::SettingsManager::in_memory(
+            serde_json::Map::from_iter([("shellCommandPrefix".to_owned(), serde_json::json!("SDK_PREFIX=prefixed"))]), false);
+        let created = create_agent_session(CreateAgentSessionOptions {
+            cwd: Some(dir.path().to_string_lossy().into_owned()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()),
+            model: Some(test_model()), session_manager: Some(SessionManager::in_memory(&dir.path().to_string_lossy(), None, None)),
+            settings_manager: Some(settings), tools: Some(vec!["bash".to_owned()]), ..Default::default()
+        }).await.expect("SDK session");
+        let result = created.session.execute_tool("bash", serde_json::json!({"command":"printf \"$SDK_PREFIX\""}), Default::default()).await;
+        created.session.dispose().await;
+        assert!(maho_ai::utils::text::content_text(&result.expect("tool").content, "").contains("prefixed"));
     }
 
     #[tokio::test]
