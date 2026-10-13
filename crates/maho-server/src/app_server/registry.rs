@@ -66,7 +66,21 @@ pub struct MethodRegistration {
 pub struct MethodRegistry {
     methods: BTreeMap<String, MethodRegistration>,
 }
-pub type ExtensionThreadResolver=Arc<dyn Fn(&str)->Result<Arc<maho_ext_host::ExtensionRunner>,JsonRpcError>+Send+Sync>;
+/// senpi `ExtensionRequestTarget.extensionRunner.requestRpc`: the loaded thread's extension RPC entry.
+pub trait ExtensionRequestTarget: Send + Sync {
+    fn request_rpc<'a>(&'a self, name: &'a str, data: Value) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+}
+impl ExtensionRequestTarget for maho_ext_host::ExtensionRunner {
+    fn request_rpc<'a>(&'a self, name: &'a str, data: Value) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>> {
+        Box::pin(async move { self.handle_rpc_request(name, data).await.map_err(|error| error.message) })
+    }
+}
+impl ExtensionRequestTarget for maho_core::agent_session::AgentSession {
+    fn request_rpc<'a>(&'a self, name: &'a str, data: Value) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>> {
+        Box::pin(self.extension_runner_request(name, data))
+    }
+}
+pub type ExtensionThreadResolver=Arc<dyn Fn(String)->Pin<Box<dyn Future<Output=Result<Arc<dyn ExtensionRequestTarget>,JsonRpcError>>+Send>>+Send+Sync>;
 pub fn register_extension_request_method(
     registry: &mut MethodRegistry,
     get_thread: ExtensionThreadResolver,
@@ -91,15 +105,16 @@ pub fn register_extension_request_method(
                         .and_then(Value::as_str)
                         .filter(|v| !v.is_empty())
                         .ok_or_else(|| JsonRpcError::new(-32602, "Invalid params"))?;
-                    let runner = get_thread(thread_id)
+                    let target = get_thread(thread_id.to_owned())
+                        .await
                         .map_err(|error| JsonRpcError::new(-32603, error.message))?;
-                    runner
-                        .handle_rpc_request(
+                    target
+                        .request_rpc(
                             name,
                             params.get("data").cloned().unwrap_or(Value::Null),
                         )
                         .await
-                        .map_err(|error| JsonRpcError::new(-32603, error.message))
+                        .map_err(|error| JsonRpcError::new(-32603, error))
                 })
             }),
         },
