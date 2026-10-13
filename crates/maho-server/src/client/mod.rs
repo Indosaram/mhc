@@ -6,6 +6,7 @@ pub mod service_wire;
 pub mod service_transport;
 pub mod transport;
 pub mod types;
+#[cfg(unix)]
 pub mod unix;
 
 pub use api::Client;

@@ -57,4 +57,4 @@ pub fn run_server_entry(options: ServerOptions, cwd: &str, spawn: super::server:
 }
 
 #[cfg(not(unix))]
-pub fn run_server_entry(_options: ServerOptions, _cwd: &str, _spawn: super::server::SpawnWorker) -> Result<(), String> { Err("The mini session server requires the Unix socket transport".to_owned()) }
+pub fn run_server_entry<S>(_options: ServerOptions, _cwd: &str, _spawn: S) -> Result<(), String> { Err("The mini session server requires the Unix socket transport".to_owned()) }

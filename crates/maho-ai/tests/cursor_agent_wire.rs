@@ -661,22 +661,19 @@ async fn aborts_cleanly_when_the_caller_cancels_mid_stream() {
     let options = CursorAgentOptions { base, ..CursorAgentOptions::default() };
     let stream = stream_with_options(&build_model(&base_url), &hello_context(), Some(options));
 
-    let controller_for_task = controller.clone();
-    let aborter = {
-        let stream = stream.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok(Some(event)) = stream.next().await else { return };
-                if matches!(event, AssistantMessageEvent::TextDelta { .. }) {
-                    controller_for_task.abort(None);
-                    return;
-                }
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let Ok(Some(event)) = stream.next().await else { return };
+            if matches!(event, AssistantMessageEvent::TextDelta { .. }) {
+                controller.abort(None);
+                return;
             }
-        })
-    };
+        }
+    })
+    .await
+    .expect("text delta timeout");
     let _ = stream.collect().await;
     let message = stream.result().await.expect("result");
-    aborter.abort();
     assert_eq!(message.stop_reason, StopReason::Aborted);
 }
 

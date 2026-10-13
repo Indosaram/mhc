@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use futures_util::{SinkExt, StreamExt};
 use maho_server::app_server::{runtime::AppServerRuntime, thread_registry::SessionFactory, unix_socket::start_unix_socket_listener, websocket_auth::ResolvedWebSocketListenerAuth};
 use serde_json::{Value, json};

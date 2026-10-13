@@ -1,7 +1,10 @@
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use maho_ext_config_reload::log::{ConfigReloadLogger, LogEvent, LogLevel};
 
 #[test]
+#[cfg(unix)]
 fn writes_parseable_jsonl_entries_and_private_permissions() {
     let root = tempfile::tempdir().unwrap();
     let mut logger = ConfigReloadLogger::new(root.path(), None).unwrap();

@@ -1,6 +1,9 @@
+#[cfg(unix)]
 use maho_core::{model_runtime::{CreateModelRuntimeOptions, ModelRuntime}, sdk::{CreateAgentSessionOptions, NoToolsMode, create_agent_session}, session_manager::SessionManager, settings_manager::{InMemorySettingsStorage, SettingsManager}};
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(unix)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = std::env::args().nth(1).ok_or("usage: native_bad_recording <output.jsonl>")?;
@@ -34,3 +37,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     session.dispose().await;
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}

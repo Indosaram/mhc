@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_rpc::rpc_client::{ClientFrame, RpcSocketClient};
 use serde_json::{Value, json};
 use std::{cell::RefCell, time::Duration};

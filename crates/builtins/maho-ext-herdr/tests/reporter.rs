@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_herdr::reporter::{count_running_child_tasks, has_user_reporter, Herdr, HerdrDependencies, HerdrExtension};
 use maho_ext_api::*;
 use serde_json::{json, Value};

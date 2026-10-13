@@ -1,13 +1,13 @@
-use maho_ext_mcp::auth::{commands_auth::run_loopback_auth, oauth_provider::McpOAuthProvider, token_store::McpTokenStore};
+mod support;
 
-const IDP: &str = "/home/indo/code/senpi/packages/coding-agent/test/mcp/fixtures/oauth-idp.ts";
+use maho_ext_mcp::auth::{commands_auth::run_loopback_auth, oauth_provider::McpOAuthProvider, token_store::McpTokenStore};
 
 #[tokio::test]
 async fn the_loopback_announcement_retains_the_full_authorization_url() {
     use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command};
 
-    let mut child = Command::new("/usr/bin/node")
-        .arg(IDP)
+    let mut child = Command::new(support::node())
+        .arg(support::senpi("packages/coding-agent/test/mcp/fixtures/oauth-idp.ts"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true)

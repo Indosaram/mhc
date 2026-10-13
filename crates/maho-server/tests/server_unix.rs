@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_server::{
     protocol::codec::{MessageDecoder, encode_client_message},
     server::{

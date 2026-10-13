@@ -42,6 +42,7 @@ pub mod websocket_auth;
 pub mod websocket_connection_handler;
 pub mod websocket;
 pub mod start_options;
+#[cfg(unix)]
 pub mod unix_socket;
 pub mod fuzzy_files;
 pub mod gitignore;

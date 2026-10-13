@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_rpc::host_watchdog::*;
 
 #[tokio::test]

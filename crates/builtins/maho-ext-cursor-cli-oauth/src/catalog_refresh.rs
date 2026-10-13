@@ -42,6 +42,7 @@ mod tests {
     fn slot(name:&str)->crate::accounts::CursorCliAccountSlot {crate::accounts::CursorCliAccountSlot {name:name.into(),display_name:None,access:format!("{name}-access"),refresh:format!("{name}-refresh"),expires:100000.0,source:crate::accounts::AccountSource::Login,blocked_until:None,block_reason:None}}
     fn with_accounts(names:&[&str])->Credential {let mut credential=crate::accounts::empty_credential();for name in names {credential=crate::accounts::add_account(&credential,slot(name)).expect("slot");}Credential::OAuth(credential)}
     #[tokio::test]
+    #[cfg(unix)]
     async fn unknown_pin_falls_back_to_first_account_home() {
         use std::os::unix::fs::PermissionsExt;
         let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");
@@ -54,6 +55,7 @@ mod tests {
         assert_eq!(models[0].id,"model-a");
     }
     #[tokio::test]
+    #[cfg(unix)]
     async fn probes_in_pinned_account_home() {
         use std::os::unix::fs::PermissionsExt;
         let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("cursor-agent");

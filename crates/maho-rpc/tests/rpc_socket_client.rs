@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_rpc::rpc_client::{RpcSocketClient,ClientFrame};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 #[tokio::test]

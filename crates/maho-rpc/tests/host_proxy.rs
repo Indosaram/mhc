@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #[tokio::test(start_paused=true)]
 async fn installed_idle_timer_exits_after_a_continuous_idle_window(){
     let(_activity,receiver)=tokio::sync::watch::channel(maho_rpc::host_lifecycle::HostActivity::default());

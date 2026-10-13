@@ -299,10 +299,10 @@ mod tests {
         let unsupported = lazy_api(Arc::new(|| Err("nope".to_owned())), LazyApiCapabilities::default());
         assert!(unsupported.fetch_deferred(&model(), &handle, None).is_none());
         let failed = unsupported.stream(&model(), &context, None);
-        assert_eq!(
-            failed.result().await.map_err(|error: StreamError| error.message),
-            Ok(message_with_error("nope"))
-        );
+        let actual = failed.result().await.map_err(|error: StreamError| error.message).expect("result");
+        let mut expected = message_with_error("nope");
+        expected.timestamp = actual.timestamp;
+        assert_eq!(actual, expected);
     }
 
     fn message_with_error(text: &str) -> crate::types::AssistantMessage {

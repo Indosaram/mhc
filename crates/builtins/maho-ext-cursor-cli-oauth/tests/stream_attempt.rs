@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_cursor_cli_oauth::{stream::{spawn_attempt,SpawnAttemptInput},accounts::{CursorCliAccountSlot,AccountSource},guardrails::ExecutionDecision,session_router::SessionAttempt,settings::ExecutionMode};
 use std::{collections::BTreeMap,os::unix::fs::PermissionsExt,time::Duration};
 fn input(root:&std::path::Path,body:&str)->SpawnAttemptInput {
