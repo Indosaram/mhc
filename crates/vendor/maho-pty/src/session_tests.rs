@@ -163,7 +163,7 @@ fn pty_session_sends_signal_to_process_group() {
     let mut session = PtySession::start(
         PtySessionOptions::new("sh")
             .arg("-lc")
-            .arg("trap 'echo got-term; exit 7' TERM; echo ready; sleep 30"),
+            .arg("trap 'echo got-term; exit 7' TERM; echo ready; sleep 30 & wait"),
         move |chunk| seen.lock().unwrap().extend_from_slice(chunk),
     )
     .unwrap();
