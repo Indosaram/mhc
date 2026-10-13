@@ -285,7 +285,16 @@ impl InteractiveMode {
         for (name, renderers) in snapshot { self.install_native_tool_renderers(name, renderers); }
     }
     pub(crate) fn set_terminal_dimensions(&self, columns:usize, rows:usize) { self.terminal_dimensions.set((u16::try_from(columns).unwrap_or(u16::MAX),u16::try_from(rows).unwrap_or(u16::MAX))); }
-    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); }
+    pub(crate) fn set_mounted_renderer(&mut self, renderer: Rc<RefCell<crate::tui_renderer::InteractiveTui>>) { self.mounted_renderer = Some(Rc::downgrade(&renderer)); self.apply_smooth_streaming_render_fps(); }
+    /// senpi `applySmoothStreamingRenderFps`: the render cap follows the smooth-streaming FPS while
+    /// smooth streaming is on, and the default 60fps otherwise.
+    pub fn smooth_streaming_render_fps(&self) -> f64 {
+        if self.reveal.smooth { self.reveal.fps } else { crate::streaming_reveal_pacing::DEFAULT_SMOOTH_FPS }
+    }
+    fn apply_smooth_streaming_render_fps(&self) {
+        let fps = self.smooth_streaming_render_fps();
+        if let Some(renderer) = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade) { renderer.borrow_mut().base_mut().set_max_render_fps(fps); }
+    }
     /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
     pub fn set_debug_log_path(&mut self, path: Option<String>) { self.debug_log_path = path; }
     /// The pending startup changelog markdown (senpi `changelogMarkdown`), once loaded.
@@ -2551,8 +2560,8 @@ impl InteractiveMode {
                     "showImages" => { for component in &self.tool_cards { component.borrow_mut().set_show_images(value.as_bool().expect("show images")); } },
                     "imageWidthCells" => { for component in &self.tool_cards { component.borrow_mut().set_image_width_cells(u32::try_from(value.as_u64().expect("image width")).expect("selector image width")); } },
                     "hideThinkingBlock" => { self.reveal.hide_thinking = value.as_bool().expect("thinking visibility"); for component in &self.assistant_cards { component.borrow_mut().set_hide_thinking_block(self.reveal.hide_thinking); } if let Some(component) = &self.streaming { let content = self.reveal.resync_visibility(self.clock.elapsed().as_secs_f64() * 1000.0); component.borrow_mut().update_content(&content, Some(true)); } },
-                    "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
-                    "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; },
+                    "smoothStreaming" => { let smooth = value.as_bool().expect("smooth streaming"); self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth; self.apply_smooth_streaming_render_fps(); self.tick(self.clock.elapsed().as_secs_f64() * 1000.0); },
+                    "smoothStreamingFps" => { let fps = value.as_f64().expect("streaming fps"); self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps; self.apply_smooth_streaming_render_fps(); },
                     "theme" => {
                         let setting = value.as_str().expect("theme setting");
                         let terminal_theme = if self.theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark };

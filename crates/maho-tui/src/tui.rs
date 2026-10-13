@@ -1632,11 +1632,26 @@ impl TuiBase {
     /// (immediate, next poll tick); otherwise the request is throttled to
     /// `min_render_interval_ms` after the last render, mirroring the 16ms `setTimeout` cap.
     pub fn request_render(&mut self, force: bool, now_ms: u64) {
+        self.request_render_from(force, "unknown", now_ms);
+    }
+
+    /// senpi's `requestRender(force, source)`. An `"input"`/`"editor.input"` source is
+    /// expedited: the frame is due immediately instead of after the throttle interval, so
+    /// keystrokes echo without waiting for the next throttled frame.
+    pub fn request_render_from(&mut self, force: bool, source: &str, now_ms: u64) {
         let mut state = self.state.borrow_mut();
         if force {
             state.input_render_pending = false;
             state.render_requested = true;
             state.render_due_at_ms = Some(now_ms);
+            return;
+        }
+        if source == "input" || source == "editor.input" {
+            if !state.input_render_pending {
+                state.input_render_pending = true;
+                state.render_requested = true;
+                state.render_due_at_ms = Some(now_ms);
+            }
             return;
         }
         if state.render_requested {
@@ -1648,11 +1663,40 @@ impl TuiBase {
         state.render_due_at_ms = Some(now_ms + delay);
     }
 
+    /// senpi's `setMaxRenderFps`: cap the render scheduler at `fps` frames per second, clamped
+    /// to 30-120fps (120fps yields an 8ms minimum interval). Never calling this keeps the
+    /// historic 16ms (~60fps) throttle.
+    pub fn set_max_render_fps(&mut self, fps: f64) {
+        let clamped = fps.round().clamp(30.0, 120.0);
+        self.state.borrow_mut().min_render_interval_ms = (1000.0 / clamped).floor() as u64;
+    }
+
     /// `true` once [`TuiBase::request_render`] has a due frame at or before `now_ms`; the
     /// caller's poll loop then calls [`TuiBase::render_now`].
     pub fn render_due(&self, now_ms: u64) -> bool {
         let state = self.state.borrow();
         state.render_requested && state.render_due_at_ms.is_some_and(|due| due <= now_ms)
+    }
+
+    /// senpi's `scheduleRender`/`commitExpeditedRender` timer callback: when a frame is due at
+    /// `now_ms`, clear the request and record `now_ms` as the last render so the next
+    /// non-input request is throttled to `min_render_interval_ms`. Returns whether the caller
+    /// should render now.
+    pub fn take_due_render(&mut self, now_ms: u64) -> bool {
+        if !self.render_due(now_ms) {
+            return false;
+        }
+        let mut state = self.state.borrow_mut();
+        state.render_requested = false;
+        state.input_render_pending = false;
+        state.render_due_at_ms = None;
+        state.last_render_at_ms = now_ms;
+        true
+    }
+
+    /// The current throttle interval (16ms unless [`TuiBase::set_max_render_fps`] changed it).
+    pub fn min_render_interval_ms(&self) -> u64 {
+        self.state.borrow().min_render_interval_ms
     }
 
     pub fn get_show_hardware_cursor(&self) -> bool {
@@ -1847,7 +1891,7 @@ impl TuiBase {
                 return;
             }
             focused.borrow_mut().handle_input(data);
-            self.request_render(false, 0);
+            self.request_render_from(false, "input", 0);
         }
     }
 
