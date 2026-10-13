@@ -182,7 +182,7 @@ fn register_with_device(api: &mut ExtensionApi, default_device: Option<String>) 
                 });
                 outer
             })), ..Default::default() };
-        if let Err(error) = api.register_provider("glm-zcode",config) { eprintln!("glm-zcode: registration failed ({})", crate::oauth::redact_secrets(&error.to_string())); }
+        if let Err(error) = api.register_provider("glm-zcode",config) { maho_ext_api::diagnostic(&format!("glm-zcode: registration failed ({})", crate::oauth::redact_secrets(&error.to_string()))); }
 }
 #[cfg(test)]
 mod tests {
