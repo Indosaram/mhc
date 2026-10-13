@@ -179,18 +179,13 @@ pub async fn run_app_server_command(
             )
             .await;
             // The installed OMO packaged skills root reaches the shipped consumer through the
-            // existing `skills/list` loader seam: the runtime's default loader reads only
-            // `<agent_dir>/skills`, so the packaged root (`OMO_SENPI_SKILLS_ROOT`, else the `skills/`
-            // directory beside the executable) is appended as an extra skill path here. No new RPC
-            // method is added - `MethodRegistry::register` replaces the default registration.
+            // existing `skills/list` loader seam: the runtime's resource loader (settings skill paths,
+            // installed packages, auto-discovered dirs) gets the packaged root (`OMO_SENPI_SKILLS_ROOT`,
+            // else the `skills/` directory beside the executable) as an extra skill path here. No new
+            // RPC method is added - `MethodRegistry::register` replaces the default registration.
             let packaged_skills_root = maho_omo::builtin_skills_root();
             if packaged_skills_root.is_dir() {
-                let skill_paths = vec![packaged_skills_root.to_string_lossy().into_owned()];
-                let loader: maho_server::app_server::skills::SkillLoader = Arc::new(move |cwd: &str, agent_dir: &str| {
-                    Ok(maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
-                        cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), skill_paths: skill_paths.clone(), include_defaults: true,
-                    }))
-                });
+                let loader = maho_server::app_server::skills::resource_skill_loader(vec![packaged_skills_root.to_string_lossy().into_owned()]);
                 let mut core = runtime.core.write().await;
                 maho_server::app_server::skills::register_skill_methods_with_loader(
                     &mut core.registry, config.agent_dir.clone(), config.cwd.clone(), runtime.threads.clone(), loader,

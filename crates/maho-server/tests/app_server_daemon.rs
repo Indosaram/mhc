@@ -133,7 +133,11 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     let id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
     assert_eq!(read(&mut client).await["method"],"thread/started");
     send(&mut client,json!({"id":3,"method":"thread/settings/update","params":{"threadId":id,"effort":"unrecognized"}})).await;
-    assert_eq!(read(&mut client).await["error"]["code"],-32603);
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
+    send(&mut client,json!({"id":31,"method":"thread/settings/update","params":{"threadId":id,"model":""}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
+    send(&mut client,json!({"id":32,"method":"thread/settings/update","params":{"threadId":id,"effort":1}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
     let entry = runtime.threads.get_loaded_thread(&id).await.unwrap();
     assert_eq!(serde_json::to_value(entry.lock().await.session.thinking_level()).unwrap(),"off");
     send(&mut client,json!({"id":4,"method":"thread/settings/update","params":{"threadId":id,"effort":"minimal"}})).await;

@@ -19,7 +19,7 @@ pub async fn register_thread_settings(core: &Arc<RwLock<ServerCore>>,threads: Ar
             let model = match params.get("model").filter(|value|!value.is_null()) {
                 None => None,
                 Some(value) => {
-                    let reference = value.as_str().filter(|value|!value.is_empty()).ok_or_else(||JsonRpcError::new(-32603,"Invalid params: model must be a non-empty string"))?;
+                    let reference = value.as_str().filter(|value|!value.is_empty()).ok_or_else(||JsonRpcError::new(-32602,"Invalid params: model must be a non-empty string"))?;
                     let model = if let Some((provider,id)) = reference.split_once('/').filter(|(provider,_)|!provider.is_empty()) {session.model_registry().find(provider,id)} else {session.model_registry().get_all().into_iter().find(|model|model.id == reference)};
                     Some(model.ok_or_else(||JsonRpcError::new(-32600,format!("model not found: {reference}")))?)
                 }
@@ -27,9 +27,9 @@ pub async fn register_thread_settings(core: &Arc<RwLock<ServerCore>>,threads: Ar
             let effort = match params.get("effort").filter(|value|!value.is_null()) {
                 None => None,
                 Some(value) => {
-                    let value = value.as_str().ok_or_else(||JsonRpcError::new(-32603,"Invalid params: effort must be a string"))?;
+                    let value = value.as_str().ok_or_else(||JsonRpcError::new(-32602,"Invalid params: effort must be a string"))?;
                     let levels = model.as_ref().map(maho_core::thinking_levels::get_supported_thinking_levels).unwrap_or_else(||session.get_available_thinking_levels());
-                    Some(levels.into_iter().find(|level|serde_json::to_value(level).is_ok_and(|level|level == value)).ok_or_else(||JsonRpcError::new(-32603,format!("Invalid params: unsupported effort {value}")))?)
+                    Some(levels.into_iter().find(|level|serde_json::to_value(level).is_ok_and(|level|level == value)).ok_or_else(||JsonRpcError::new(-32602,format!("Invalid params: unsupported effort {value}")))?)
                 }
             };
             let before_effort = session.thinking_level();

@@ -74,6 +74,30 @@ async fn runtime_subscribes_to_provider_account_events_and_unsubscribes_on_dispo
 }
 
 #[tokio::test]
+async fn provider_account_pin_response_precedes_the_updated_notification() {
+    use maho_server::app_server::runtime::AppServerRuntime;
+    let directory = tempfile::tempdir().unwrap();
+    let storage = maho_core::auth_storage::AuthStorage::create(&directory.path().join("auth.json").to_string_lossy());
+    storage.set("app-server-pin-fixture", Some(json!({"type":"api_key","key":"faux-test-only"}))).unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().display().to_string()),None).await;
+    let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    receive.try_recv().unwrap();
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":2,"method":"account/providerAccounts/pin","params":{"provider":"app-server-pin-fixture","name":null}}))).await.unwrap();
+    let ordered = tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        let mut seen = Vec::new();
+        loop {
+            let message = receive.recv().await.expect("connection alive");
+            if message["id"] == 2 { seen.push("response"); }
+            if message["method"] == "account/providerAccounts/updated" && message["params"]["provider"] == "app-server-pin-fixture" { seen.push("updated"); break seen; }
+        }
+    }).await.expect("updated notification within deadline");
+    assert_eq!(ordered, ["response","updated"]);
+    runtime.dispose().await;
+}
+
+#[tokio::test]
 async fn initialized_core_routes_user_input_responses_and_reports_unknown_ids() {
     use maho_server::app_server::user_input_bridge::UserInputBridge;
     use maho_ext_api::{QuestionRequest,QuestionOptions};
