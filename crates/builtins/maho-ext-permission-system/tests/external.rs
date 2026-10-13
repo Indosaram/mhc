@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use maho_ext_permission_system::external_dir::{is_external_path,extract_external_paths};
 use std::{path::Path,os::unix::fs::{symlink,PermissionsExt}};
 #[test]
