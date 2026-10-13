@@ -487,9 +487,11 @@ async fn coalesces_updates_and_spills_full_output() {
         publisher.mark_dirty();
     }
     clock.advance(100);
-    let published = coalesced_updates.lock().expect("tool test operation must succeed");
-    assert_eq!(published.len(), 2);
-    assert_eq!(published.last().map(String::as_str), Some("line-3000"));
+    {
+        let published = coalesced_updates.lock().expect("tool test operation must succeed");
+        assert_eq!(published.len(), 2);
+        assert_eq!(published.last().map(String::as_str), Some("line-3000"));
+    }
 
     let f = Fixture::new();
     let updates = Arc::new(Mutex::new(Vec::new()));
