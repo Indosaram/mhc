@@ -16,14 +16,6 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         if code != 0 { return Err(format!("app-server exited with code {code}")); }
         return Ok(());
     }
-    if mode == AppMode::Rpc && parsed.multi_session {
-        // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
-        // built from the CLI configuration, instead of the single-session command stream. It never
-        // returns until its watchdog or empty-exit policy ends it.
-        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
-        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
-        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
-    }
     if mode != AppMode::Interactive { super::stdout_guard::take_over_stdout(); }
     struct InteractiveStderr;
     impl Drop for InteractiveStderr {
@@ -49,6 +41,21 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if facts_bootstrap && !parsed.no_session { return Err("facts read-only bootstrap requires --no-session".into()); }
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
+    if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi main.ts:1119 `resolveSessionRuntime`: stdio hosts default to one isolated worker per
+        // session. The native host has no worker session registry yet, so a worker runtime
+        // degrades to the in-process registry; say so rather than silently ignoring the request.
+        if super::args::resolve_session_runtime(&parsed) == super::args::SessionRuntime::Worker {
+            maho_core::output_guard::maho_write_stderr("Warning: --session-runtime worker is not supported by the native host; sessions run in-process.\n");
+        }
+        // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
+        // built from the CLI configuration, instead of the single-session command stream. Like
+        // upstream it starts only after the stdout takeover and the migrations above, and never
+        // returns until its watchdog or empty-exit policy ends it.
+        let config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
+        let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
+        return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
+    }
     // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
     // `trust.json`, `defaultProjectTrust`, then the interactive startup prompt) before project
     // settings and resources load.
@@ -68,6 +75,8 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
     )).await;
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
+    // senpi main.ts `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
+    let mut runtime_diagnostics = maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation");
     let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
         auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
@@ -83,9 +92,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let mut base_factories = indicator.during_surface_write(|| super::default_extensions::assembled_factories(widget_sender, task_parent.clone()));
     if !parsed.no_extensions {
         let discovery = super::user_extensions::resolve_and_discover(&mut settings, &cwd_text, &agent_dir, &parsed.extensions).await.map_err(|error| error.to_string())?;
-        if !discovery.errors.is_empty() {
-            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-        }
+        // senpi main.ts `collectExtensionLoadDiagnostics`: an extension that cannot load is a warning;
+        // startup continues without it.
+        runtime_diagnostics.extend(discovery.errors.into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.path, error.message))));
         base_factories.extend(discovery.factories);
     }
     let environment = super::oauth_providers::environment_from_process();
@@ -111,7 +120,19 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let session_profile = super::shared_host::session_profile(mode, &settings, None, None);
     let extensions = indicator.during_prompt(maho_ext_host::loader::load_extensions_async(base_factories.clone(), &cwd, session_profile.clone())).await;
     let extension_snapshot = extensions.extensions.clone();
-    indicator.during_surface_write(|| { for error in &extensions.errors { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", error.extension_path, error.error)); } });
+    // senpi main.ts:1262-1268: every full launch refreshes what `--help` reads.
+    super::help_flags_cache::write_help_flags_cache(
+        &super::help_fast_path::help_flags_scope(&parsed, &cwd, std::path::Path::new(&agent_dir), settings.is_project_trusted()),
+        &extensions.extensions.iter().flat_map(|extension| extension.flags.iter().map(super::help_extension_flags::help_flag_value)).collect::<Vec<_>>(),
+        &extensions.extensions.iter().map(|extension| std::path::PathBuf::from(&extension.identity.resolved_path)).collect::<Vec<_>>(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    runtime_diagnostics.extend(extensions.errors.iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.extension_path, error.error))));
+    if mode != AppMode::Interactive {
+        runtime_diagnostics.extend(models.credentials.errors().into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("(runtime creation, auth storage) {error}"))));
+    }
+    indicator.during_surface_write(|| { for diagnostic in &runtime_diagnostics { maho_core::output_guard::maho_write_stderr(&format!("Warning: {}\n", diagnostic.message)); } });
+    let extension_load_failed = runtime_diagnostics.iter().any(|diagnostic| diagnostic.message.contains("Failed to load extension"));
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
     extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
     for (name, value) in &parsed.unknown_flags {
@@ -131,7 +152,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let has_context_messages = manager.has_context_messages();
     let options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
-    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) { return Err("Invalid model selection".into()); }
+    if options.diagnostics.iter().any(|diagnostic| diagnostic.error) {
+        // senpi main.ts EXTENSION_LOAD_FAILURE_HINT: an error exit after an extension failed to load
+        // points at the extension-free launch.
+        if extension_load_failed || options.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("Failed to load extension")) {
+            maho_core::output_guard::maho_write_stderr(&format!("Hint: Start without extensions using \"{} -ne\".\n", maho_core::config::app_command()));
+        }
+        return Err("Invalid model selection".into());
+    }
     let host_factory = maho_core::sdk::HostRuntimeFactory {
         model_registry: maho_core::model_registry::ModelRegistry::new(models.clone()),
         model_runtime: models, extension_factories: base_factories,

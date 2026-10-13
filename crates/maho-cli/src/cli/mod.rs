@@ -19,6 +19,7 @@ pub mod auth_command;
 pub mod auth_check;
 pub mod credential_print;
 pub mod help_flags_cache;
+pub mod help_extension_flags;
 pub mod file_processor;
 pub mod help_fast_path;
 pub mod host_command;

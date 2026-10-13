@@ -10,6 +10,10 @@ pub fn package_command_usage(command: PackageCommand) -> &'static str {
         PackageCommand::List => "mhc list [--approve|--no-approve]",
     }
 }
+pub fn package_command_name(command: PackageCommand) -> &'static str {
+    match command { PackageCommand::Install => "install", PackageCommand::Remove => "remove", PackageCommand::Update => "update", PackageCommand::List => "list" }
+}
+pub const CONFIG_COMMAND_USAGE: &str = "mhc config [-l] [--approve|--no-approve]";
 pub fn package_command_help(command: PackageCommand) -> String {
     let body = match command {
         PackageCommand::Install => "Install a package and add it to settings.\n\nOptions:\n  -l, --local       Install project-locally (.maho/settings.json)\n  -a, --approve     Trust project-local files for this command\n  -na, --no-approve Ignore project-local files for this command\n\nExamples:\n  mhc install npm:@foo/bar\n  mhc install git:github.com/user/repo\n  mhc install git:git@github.com:user/repo\n  mhc install https://github.com/user/repo\n  mhc install ssh://git@github.com/user/repo\n  mhc install ./local/path\n",
@@ -32,8 +36,8 @@ pub fn parse_config_command(args: &[String]) -> Result<Option<ConfigCommandOptio
             "-l" | "--local" => options.local = true,
             "-a" | "--approve" => options.project_trust_override = Some(true),
             "-na" | "--no-approve" => options.project_trust_override = Some(false),
-            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".")),
-            _ => return Err(format!("Unexpected argument {argument}.")),
+            _ if argument.starts_with('-') => return Err(format!("Unknown option {argument} for \"config\".\nUse \"mhc --help\" or \"{CONFIG_COMMAND_USAGE}\".")),
+            _ => return Err(format!("Unexpected argument {argument}.\nUsage: {CONFIG_COMMAND_USAGE}")),
         }
     }
     Ok(Some(options))
@@ -113,7 +117,7 @@ pub fn parse_package_command(args: &[String]) -> Option<PackageCommandOptions> {
     Some(parsed)
 }
 
-async fn command_settings(trust_override: Option<bool>, saved_only: bool) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
+async fn command_settings(trust_override: Option<bool>, saved_only: bool, context: &str) -> Result<(String, String, maho_core::settings_manager::SettingsManager), String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?.to_string_lossy().into_owned();
     let agent_dir = maho_core::config::get_agent_dir();
     let home = maho_core::config::home_dir();
@@ -133,7 +137,12 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool) -> Res
         }).await
     };
     let settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &home, trusted);
-    for error in settings.errors() { eprintln!("Resource command settings error: {error:?}"); }
+    // senpi package-manager-cli.ts `reportSettingsErrors`: settings errors are warnings, labelled with
+    // the command context and the settings scope.
+    for error in settings.errors() {
+        let scope = match error.scope { maho_core::settings_manager::SettingsScope::Global => "global", maho_core::settings_manager::SettingsScope::Project => "project" };
+        eprintln!("Warning ({context}, {scope} settings): {}", error.error);
+    }
     Ok((cwd, agent_dir, settings))
 }
 
@@ -153,7 +162,7 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
         maho_core::output_guard::maho_write_stdout("Model catalogs refreshed\n");
         return Ok(());
     }
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update).await?;
+    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update, "package command").await?;
     let mut manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
         cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
     });
@@ -169,12 +178,12 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
     use maho_core::package_manager::{InstalledSourceScope, PackageOptions};
     let text = match options.command {
         PackageCommand::Install => {
-            let source = options.source.as_deref().ok_or("Missing install source")?;
+            let source = options.source.as_deref().ok_or("Missing install source.")?;
             manager.install_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())?;
             format!("Installed {source}\n")
         }
         PackageCommand::Remove => {
-            let source = options.source.as_deref().ok_or("Missing remove source")?;
+            let source = options.source.as_deref().ok_or("Missing remove source.")?;
             if !manager.remove_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())? {
                 return Err(format!("No matching package found for {source}"));
             }
@@ -218,7 +227,7 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
 
 pub async fn run_config_command(options: ConfigCommandOptions) -> Result<(), String> {
     use maho_core::package_manager::{DefaultPackageManager, PackageManagerOptions};
-    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, false).await?;
+    let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, false, "config command").await?;
     if options.local && !settings.is_project_trusted() { return Err("Project is not trusted. Use --approve to modify local resource config.".into()); }
     let mut global_settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), false);
     let global = DefaultPackageManager::new(PackageManagerOptions { cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut global_settings }).resolve(None).await.map_err(|error| error.to_string())?;
