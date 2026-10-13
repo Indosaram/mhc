@@ -1,3 +1,9 @@
+#![cfg(unix)]
+
+#![cfg(unix)]
+
+#![cfg(unix)]
+
 #[path = "../tests/support/mod.rs"]
 mod support;
 use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex}, time::Duration};
@@ -108,3 +114,7 @@ async fn main()->Result<(),Box<dyn std::error::Error>> {
     println!("RECEIPT explicit lifecycle teardown terminated and reaped native child after Drop observation");
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}
+

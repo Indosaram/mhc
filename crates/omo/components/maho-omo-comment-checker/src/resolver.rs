@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use comment_checker_core::{
     CommentCheckerCacheDirInput, comment_checker_binary_name, comment_checker_cache_dir,
@@ -22,7 +24,16 @@ pub fn resolve_senpi_comment_checker_binary(
                 .filter(|p| !p.as_os_str().is_empty())
                 .map(|p| p.join(name))
                 .find(|p| {
-                    std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+                    std::fs::metadata(p).is_ok_and(|m| {
+                        #[cfg(unix)]
+                        {
+                            m.permissions().mode() & 0o111 != 0
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            m.is_file()
+                        }
+                    })
                 })
         },
         "linux",

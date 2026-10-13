@@ -13,7 +13,11 @@ pub const KNOWN_MODELS: &[(&str, &[&str])] = &[
     ("vercel", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.6-flash", "gpt-5.6-sol", "gpt-5.6-terra", "kimi-k3", "minimax-m2.7", "minimax-m3"]),
     ("xai", &["grok-4.20-0309-non-reasoning"]),
 ];
-use std::{collections::HashMap,io::{Read,Write},os::unix::fs::OpenOptionsExt,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+use std::{collections::HashMap,io::{Read,Write},path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+#[cfg(unix)]
+fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600) }
+#[cfg(not(unix))]
+fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { options }
 use sha2::{Digest,Sha256};
 pub fn create_omo_native_product_config() -> telemetry_core::TelemetryProductConfig {
     let mut config=crate::index::create_senpi_telemetry_product_config();
@@ -96,7 +100,7 @@ pub fn hash_session_id(raw:&str,state_dir:&Path)->std::io::Result<String> {
     let read=||std::fs::read(&path).ok().and_then(|b|<[u8;32]>::try_from(b).ok());
     let salt=if let Some(salt)=read() {salt} else {
         let mut salt=[0;32];std::fs::File::open("/dev/urandom")?.read_exact(&mut salt)?;
-        let write=|exclusive:bool|->std::io::Result<()> {std::fs::create_dir_all(state_dir)?;let mut file=std::fs::OpenOptions::new().write(true).create(!exclusive).create_new(exclusive).truncate(!exclusive).mode(0o600).open(&path)?;file.write_all(&salt)};
+        let write=|exclusive:bool|->std::io::Result<()> {std::fs::create_dir_all(state_dir)?;let mut options=std::fs::OpenOptions::new();options.write(true).create(!exclusive).create_new(exclusive).truncate(!exclusive);let mut file=private_file(&mut options).open(&path)?;file.write_all(&salt)};
         if write(true).is_ok() {FALLBACK_SALTS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&path);salt}
         else if let Some(existing)=read() {existing}
         else if write(false).is_ok() {FALLBACK_SALTS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&path);salt}
@@ -120,6 +124,7 @@ mod identity_tests {
     #[test] fn schema_keys_match_capture_allowlists() {let schemas=omo_native_event_schemas();for (name,keys) in EVENT_PROPERTY_ALLOWLISTS {let mut actual=schemas[*name].as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>();let mut expected=keys.to_vec();actual.sort();expected.sort();assert_eq!(actual,expected);}assert_eq!(schemas["parallelism_summary"].as_object().unwrap().len(),crate::parallelism_schema::PARALLELISM_SUMMARY_SCHEMA.len());}
     #[test] fn schemas_preserve_closed_vocabularies_and_types() {let s=omo_native_event_schemas();assert_eq!(s["session_started"]["cpu_count"]["type"],"number");assert_eq!(s["prompt_submitted"]["keyword_any"]["type"],"boolean");assert_eq!(s["feature_used"]["feature"]["values"],serde_json::json!(["goal_tool","team_create","memory_tool"]));assert_eq!(s["parallelism_summary"]["schema_kind"]["values"],serde_json::json!(["parallelism_v1","parallelism_v2"]));assert!(s["delegation_started"]["name"]["values"].as_array().unwrap().contains(&serde_json::json!(builtin_category_names()[0])));assert!(!s.to_string().contains("prompt_text"));}
     #[test] fn salted_hash_stable_private() {let t=tempfile::tempdir().unwrap();let a=hash_session_id("private-session",t.path()).unwrap();assert_eq!(a,hash_session_id("private-session",t.path()).unwrap());assert_ne!(a,hash_session_id("other-session",t.path()).unwrap());assert_eq!(a.len(),64);assert!(!a.contains("private-session"));assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
+    #[cfg(unix)]
     #[test] fn salt_file_private() {use std::os::unix::fs::PermissionsExt;let t=tempfile::tempdir().unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::metadata(t.path().join("session-id-salt")).unwrap().permissions().mode()&0o777,0o600);}
     #[test] fn invalid_salt_repaired() {let t=tempfile::tempdir().unwrap();std::fs::write(t.path().join("session-id-salt"),"invalid").unwrap();hash_session_id("s",t.path()).unwrap();assert_eq!(std::fs::read(t.path().join("session-id-salt")).unwrap().len(),32);}
     #[test] fn fallback_salt_stable() {let t=tempfile::tempdir().unwrap();let blocked=t.path().join("file");std::fs::write(&blocked,"").unwrap();assert_eq!(hash_session_id("s",&blocked).unwrap(),hash_session_id("s",&blocked).unwrap());}

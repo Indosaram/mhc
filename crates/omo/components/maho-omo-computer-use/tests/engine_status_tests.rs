@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -63,6 +62,7 @@ fn test_engine_error_code_mapping() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn test_probe_computer_use_engine_success() {
     let dir = tempdir().unwrap();
     let engine_script = dir.path().join("fake_engine.sh");
@@ -79,12 +79,16 @@ EOF
 "#
     );
     fs::write(&engine_script, script_content).unwrap();
-    let mut perms = match fs::metadata(&engine_script).map(|m| m.permissions()) {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    perms.set_mode(0o755);
-    fs::set_permissions(&engine_script, perms).unwrap();
+    #[cfg(unix)]
+    {
+        let mut perms = match fs::metadata(&engine_script).map(|m| m.permissions()) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o755);
+        fs::set_permissions(&engine_script, perms).unwrap();
+    }
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -106,6 +110,7 @@ EOF
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn test_probe_computer_use_engine_timeout_and_descendant_cleanup() {
     let dir = tempdir().unwrap();
     let engine_script = dir.path().join("sleep_engine.sh");
@@ -122,9 +127,13 @@ sleep 30
         marker_file.display()
     );
     fs::write(&engine_script, script_content).unwrap();
-    let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&engine_script, perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&engine_script, perms).unwrap();
+    }
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -146,6 +155,7 @@ sleep 30
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn test_probe_multibyte_stderr_truncation() {
     let dir = tempdir().unwrap();
     let engine_script = dir.path().join("multibyte_stderr.sh");
@@ -156,9 +166,13 @@ done
 exit 1
 "#;
     fs::write(&engine_script, script_content).unwrap();
-    let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&engine_script, perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&engine_script, perms).unwrap();
+    }
 
     let env = BTreeMap::new();
     let res = probe_computer_use_engine(
@@ -180,6 +194,7 @@ exit 1
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn test_describe_engine_permissions_passive() {
     let dir = tempdir().unwrap();
     let engine_script = dir.path().join("senpi-desktop-engine");
@@ -192,9 +207,13 @@ EOF
 "#
     );
     fs::write(&engine_script, script_content).unwrap();
-    let mut perms = fs::metadata(&engine_script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&engine_script, perms).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&engine_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&engine_script, perms).unwrap();
+    }
 
     let env = BTreeMap::new();
     let opts = maho_omo_computer_use::installed_engine::DesktopEngineLocatorOptions {
