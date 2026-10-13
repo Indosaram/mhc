@@ -109,3 +109,41 @@ async fn preset_prompt_renders_forwarded_tool_snippets_and_guidelines() {
  assert!(prompt.contains("- read: Fixture read snippet"));
  assert!(prompt.contains("- Fixture guideline"));
 }
+
+struct HeaderUi(std::sync::Mutex<Option<Option<ComponentFactory>>>);
+impl ExtensionUi for HeaderUi {
+    fn select<'a>(&'a self, _: &'a str, _: &'a [String], _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn confirm<'a>(&'a self, _: &'a str, _: &'a str, _: ExtensionUiDialogOptions) -> UiFuture<'a, bool> { Box::pin(async { false }) }
+    fn input<'a>(&'a self, _: &'a str, _: Option<&'a str>, _: ExtensionUiDialogOptions) -> UiFuture<'a, Option<String>> { Box::pin(async { None }) }
+    fn notify(&self, _: &str, _: NotificationType) {}
+    fn set_status(&self, _: &str, _: Option<&str>) {}
+    fn set_widget(&self, _: &str, _: Option<WidgetContent>, _: ExtensionWidgetOptions) {}
+    fn set_header(&self, factory: Option<ComponentFactory>) { *self.0.lock().unwrap() = Some(factory); }
+    fn set_footer(&self, _: Option<ComponentFactory>) {}
+    fn set_title(&self, _: &str) {}
+    fn paste_to_editor(&self, _: &str) {}
+    fn set_editor_text(&self, _: &str) {}
+    fn get_editor_text(&self) -> String { String::new() }
+    fn custom(&self, _: ComponentFactory, _: CustomUiOptions) -> ExtensionFuture<'_, JsonValue> { Box::pin(async { Err("UI not available".into()) }) }
+    fn theme(&self) -> Theme { Theme::default() }
+}
+#[tokio::test]
+async fn session_start_and_model_select_refresh_the_preset_header() {
+ let ui = Arc::new(HeaderUi(std::sync::Mutex::new(None)));
+ let mut ctx = context(); ctx.ui = ui.clone(); ctx.cwd = "/nonexistent/preset-header".into(); ctx.agent_dir = ctx.cwd.clone();
+ ctx.is_project_trusted_fn = Arc::new(|| false);
+ let model: Model = serde_json::from_value(serde_json::json!({"id":"gpt-5.6","name":"gpt-5.6","api":"openai-responses","provider":"custom","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).unwrap();
+ ctx.model = Some(model.clone());
+ let mut api = ExtensionApi::new(LoadedExtension::new("preset", ctx.cwd.clone(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ maho_ext_prompt_preset::PromptPreset.register(&mut api);
+ let mut start = ExtensionEvent::SessionStart(SessionStartEvent { reason: SessionReason::Startup, initial_model_provenance: None, previous_session_file: None });
+ api.registered.handlers[&EventKind::SessionStart][0](&mut start, &ctx).await.unwrap();
+ let factory = ui.0.lock().unwrap().take().expect("header set").expect("preset header");
+ let lines = factory(&Theme::default()).render(80);
+ assert_eq!(lines.len(), 1);
+ assert!(lines[0].contains("Optimized system prompt applied: gpt-5.6"));
+ let mut unknown = model; unknown.id = "unknown".into(); unknown.name = "unknown".into();
+ let mut select = ExtensionEvent::ModelSelect(ModelSelectEvent { model: unknown, previous_model: None, source: ModelSelectSource::Set, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() });
+ api.registered.handlers[&EventKind::ModelSelect][0](&mut select, &ctx).await.unwrap();
+ assert!(ui.0.lock().unwrap().take().expect("header refreshed").is_none());
+}
