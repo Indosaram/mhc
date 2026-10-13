@@ -121,6 +121,14 @@ pub fn compose_models(id: &str, base: &[Model], config: Option<&ModelsJsonProvid
     Ok(models)
 }
 
+/// `streamWith`'s text tool-call branch: a `compat.toolCallFormat` model with tools gets a
+/// transformed (tool-free) context and its stream parsed back into tool calls.
+fn tool_call_protocol(model: &Model, context: &Context) -> Option<(&'static dyn maho_ai::tool_call_middleware::types::ToolCallProtocol, Vec<maho_ai::types::Tool>)> {
+    let format = maho_ai::get_tool_call_format(model)?;
+    let tools = context.tools.as_ref().filter(|tools| !tools.is_empty())?;
+    Some((maho_ai::tool_call_middleware::get_protocol(format), tools.clone()))
+}
+
 struct ComposedProvider { id: String, name: String, models: Vec<Model>, base: Option<Arc<dyn Provider>>, config:Option<ModelsJsonProvider>, extension:Option<ProviderConfigInput>, refreshed:Arc<std::sync::RwLock<Option<Vec<ModelsJsonModel>>>> }
 impl Provider for ComposedProvider {
     fn id(&self) -> &str { &self.id }
@@ -137,10 +145,16 @@ impl Provider for ComposedProvider {
         } else {self.models.clone()}
     }
     fn stream(&self, model: &Model, context: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+        if let Some((protocol, tools)) = tool_call_protocol(model, context) {
+            return maho_ai::tool_call_middleware::wrap_stream_with_tool_call_middleware(self.stream(model, &maho_ai::tool_call_middleware::transform_context(context, protocol), options), protocol, tools);
+        }
         if let Some(extension)=&self.extension&&extension.api.as_ref().is_some_and(|api|api==&model.api)&&let Some(stream)=&extension.stream_simple{return stream(model,context,options.map(|stream|SimpleStreamOptions{stream,..Default::default()}));}
         match &self.base { Some(base) if base.get_models().iter().any(|m|m.api==model.api) => base.stream(model, context, options), _ => maho_ai::compat::stream(model, context, options) }
     }
     fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+        if let Some((protocol, tools)) = tool_call_protocol(model, context) {
+            return maho_ai::tool_call_middleware::wrap_stream_with_tool_call_middleware(self.stream_simple(model, &maho_ai::tool_call_middleware::transform_context(context, protocol), options), protocol, tools);
+        }
         if let Some(extension)=&self.extension&&extension.api.as_ref().is_some_and(|api|api==&model.api)&&let Some(stream)=&extension.stream_simple{return stream(model,context,options);}
         match &self.base { Some(base) if base.get_models().iter().any(|m|m.api==model.api) => base.stream_simple(model, context, options), _ => maho_ai::compat::stream_simple(model, context, options) }
     }
@@ -256,5 +270,49 @@ mod tests {
 
         let incapable_base = Arc::new(CancelRecordingProvider { supports: false, seen: Default::default() });
         assert!(!composed(Some(incapable_base)).supports_cancel_deferred());
+    }
+
+    struct HermesBase(std::sync::Mutex<Option<Context>>);
+    impl Provider for HermesBase {
+        fn id(&self) -> &str { "proxy" }
+        fn name(&self) -> &str { "proxy" }
+        fn get_models(&self) -> Vec<Model> { vec![test_model()] }
+        fn stream(&self, model: &Model, context: &Context, _options: Option<StreamOptions>) -> AssistantMessageEventStream {
+            use maho_ai::types::{AssistantMessageEvent, ContentBlock, DoneReason, StopReason, TextContent};
+            *self.0.lock().expect("capture") = Some(context.clone());
+            let text = r#"<tool_call>{"name":"get_weather","arguments":{"city":"Seoul"}}</tool_call>"#;
+            let stream = AssistantMessageEventStream::assistant();
+            let mut message = maho_ai::utils::lazy::setup_error_message(model, "");
+            message.error_message = None;
+            message.stop_reason = StopReason::Stop;
+            let start = message.clone();
+            message.content = vec![ContentBlock::Text(TextContent { text: text.into(), ..Default::default() })];
+            stream.push(AssistantMessageEvent::Start { partial: start.clone() });
+            stream.push(AssistantMessageEvent::TextStart { content_index: 0, partial: start });
+            stream.push(AssistantMessageEvent::TextDelta { content_index: 0, delta: text.into(), partial: message.clone() });
+            stream.push(AssistantMessageEvent::TextEnd { content_index: 0, content: text.into(), partial: message.clone() });
+            stream.push(AssistantMessageEvent::Done { reason: DoneReason::Stop, message });
+            stream
+        }
+        fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+            self.stream(model, context, options.map(|o| o.stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_format_models_get_a_rewritten_context_and_parsed_tool_calls() {
+        let base = Arc::new(HermesBase(Default::default()));
+        let provider = composed(Some(base.clone()));
+        let mut model = test_model();
+        model.compat = Some(ModelCompat(Map::from_iter([("toolCallFormat".to_owned(), serde_json::json!("hermes"))])));
+        let tool = maho_ai::types::Tool { name: "get_weather".into(), description: "d".into(), parameters: serde_json::json!({"type": "object"}), freeform: None, constrained_sampling: None };
+        let context = Context { system_prompt: Some("base".into()), messages: Vec::new(), tools: Some(vec![tool]) };
+        let message = tokio::time::timeout(std::time::Duration::from_secs(5), provider.stream_simple(&model, &context, None).result())
+            .await.expect("bounded stream").expect("result");
+        let sent = base.0.lock().expect("capture").clone().expect("base provider called");
+        assert!(sent.tools.is_none());
+        assert!(sent.system_prompt.as_deref().is_some_and(|prompt| prompt.contains("<tool_call>") && prompt.ends_with("base")));
+        assert_eq!(message.stop_reason, maho_ai::types::StopReason::ToolUse);
+        assert!(message.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(call) if call.name == "get_weather")));
     }
 }
