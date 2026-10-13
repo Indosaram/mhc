@@ -979,6 +979,26 @@ impl Agent {
         lock(&self.inner.settings).convert_to_llm = convert_to_llm;
     }
 
+    /// `Agent.convertToLlm` (read side of the public TS field).
+    pub fn convert_to_llm(&self) -> ConvertToLlm {
+        lock(&self.inner.settings).convert_to_llm.clone()
+    }
+
+    /// `Agent.transformContext` (read side of the public TS field).
+    pub fn transform_context(&self) -> Option<TransformContext> {
+        lock(&self.inner.settings).transform_context.clone()
+    }
+
+    /// `Agent.onPayload` (read side of the public TS field).
+    pub fn on_payload(&self) -> Option<OnPayload> {
+        lock(&self.inner.settings).on_payload.clone()
+    }
+
+    /// `Agent.onResponse` (read side of the public TS field).
+    pub fn on_response(&self) -> Option<OnResponse> {
+        lock(&self.inner.settings).on_response.clone()
+    }
+
     /// `Agent.transformContext`.
     pub fn set_transform_context(&self, transform_context: Option<TransformContext>) {
         lock(&self.inner.settings).transform_context = transform_context;
