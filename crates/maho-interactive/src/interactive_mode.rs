@@ -1007,7 +1007,17 @@ impl InteractiveMode {
         tokio::pin!(binding);
         loop { tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) } }
         self.drain_ui_requests();
+        self.register_discovered_themes();
         self.refresh_tool_renderer_snapshots().await;
+    }
+
+    /// senpi `setRegisteredThemes(resourceLoader.getThemes().themes)`: themes an extension
+    /// contributed through `resources_discover` join the registry after binding and reload.
+    fn register_discovered_themes(&mut self) {
+        let paths = self.session.discovered_theme_paths();
+        for diagnostic in self.extension_ui.set_discovered_theme_paths(&paths, self.theme.get_color_mode()) {
+            self.show_status(format!("theme: {diagnostic}"));
+        }
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
@@ -1327,7 +1337,7 @@ impl InteractiveMode {
             if self.host_reload().await? {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
+                Self::setup_autocomplete(&self.session, &mut self.editor); self.register_discovered_themes(); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -1768,7 +1778,7 @@ impl InteractiveMode {
             let mut config = SettingsConfig { auto_compact:self.host_auto_compaction_enabled(),
                 thinking_level:ThinkingLevel::from_name(self.host_thinking_level().as_str()).expect("session thinking level"),
                 available_thinking_levels:self.host_available_thinking_levels().into_iter().filter_map(|level| ThinkingLevel::from_name(level.as_str())).collect(), ..Default::default() };
-            let theme_registry = crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode()).map_err(|error| error.to_string())?;
+            let theme_registry = self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode()).map_err(|error| error.to_string())?;
             config.current_theme = self.theme.name.clone(); config.available_themes = theme_registry.get_available_themes_with_paths().into_iter().map(|theme| theme.name).collect();
             self.session.with_settings_manager(|settings| {
                 macro_rules! boolean { ($field:ident, $key:literal) => { config.$field = settings.get_bool($key).unwrap_or(config.$field); }; }
@@ -2557,7 +2567,7 @@ impl InteractiveMode {
                         let setting = value.as_str().expect("theme setting");
                         let terminal_theme = if self.theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark };
                         let name = crate::theme::resolve_theme_setting(Some(setting), terminal_theme).unwrap_or("dark");
-                        match crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
+                        match self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
                             Ok(theme) => { self.theme = theme; self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history(); },
                             Err(error) => self.show_status(error.to_string()),
                         }
