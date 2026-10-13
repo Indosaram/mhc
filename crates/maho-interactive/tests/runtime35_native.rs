@@ -1885,7 +1885,7 @@ fn is_terminal_session_event(event: &maho_ext_api::AgentSessionEvent) -> bool {
         maho_ext_api::AgentSessionEvent::AgentSettled
         | maho_ext_api::AgentSessionEvent::AgentIdle
         | maho_ext_api::AgentSessionEvent::SessionAbort)
-        || matches!(event, maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. }))
+        || matches!(event, maho_ext_api::AgentSessionEvent::AgentEnd { .. } | maho_ext_api::AgentSessionEvent::Agent(maho_agent::types::AgentEvent::AgentEnd { .. }))
 }
 
 fn abort_count(events: &std::sync::Mutex<Vec<maho_ext_api::AgentSessionEvent>>) -> usize {
