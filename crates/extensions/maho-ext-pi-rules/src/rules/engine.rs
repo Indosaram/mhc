@@ -6,8 +6,15 @@ pub trait EngineDeps {
     fn read_file(&mut self,path:&str)->Option<String>;
     fn find_project_root(&mut self,path:&str)->Option<String>;
     fn file_fingerprint(&mut self,path:&str)->String{
+        #[cfg(unix)]
+        {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(path).map_or_else(|_|"missing".into(),|stats|format!("{}:{}:{}",i128::from(stats.mtime())*1_000_000_000+i128::from(stats.mtime_nsec()),i128::from(stats.ctime())*1_000_000_000+i128::from(stats.ctime_nsec()),stats.len()))
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::metadata(path).map_or_else(|_|"missing".into(),|stats|format!("{}:0:{}",stats.modified().ok().and_then(|time|time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0,|time|time.as_nanos()),stats.len()))
+        }
     }
     fn match_rule(&mut self,matcher:&mut super::matcher::Matcher,input:super::matcher::MatcherInput<'_>)->Result<super::matcher::MatchResult,super::matcher::MatcherError>{matcher.match_rule(input)}
 }
