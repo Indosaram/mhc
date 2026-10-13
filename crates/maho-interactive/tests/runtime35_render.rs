@@ -28,7 +28,7 @@ fn helper_renders_equal_pinned_senpi_at_three_widths() {
             "thinking" => ThinkingSelectorComponent::new(&theme, keybindings(), ThinkingSelectorOptions {
                 current: maho_ai::types::ModelThinkingLevel::Medium, available: maho_ai::types::ModelThinkingLevel::ALL.to_vec(), default: Some(maho_ai::types::ModelThinkingLevel::High), on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}), on_select_as_default: Some(Box::new(|_| {})),
             }).render(width),
-            "trust" => TrustSelectorComponent::new(&theme, keybindings(), TrustSelectorOptions { cwd: "/tmp".into(), saved_decision: None, project_trusted: false, on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}) }).render(width),
+            "trust" => TrustSelectorComponent::new(&theme, keybindings(), TrustSelectorOptions { cwd: "/usr/bin".into(), saved_decision: None, project_trusted: false, on_select: Box::new(|_| {}), on_cancel: Box::new(|| {}) }).render(width),
             "editor" => {
                 let mut editor = CustomEditor::new(std::rc::Rc::new(EditorHost), editor_theme(&theme), keybindings(), CustomEditorOptions::default());
                 editor.editor.set_text("hello 한국어");
