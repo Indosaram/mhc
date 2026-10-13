@@ -981,6 +981,21 @@ impl SessionManager {
         entry
     }
 
+    /// senpi `appendModelChangeRejected` (#1526): record a refused model switch, which otherwise
+    /// leaves no trace because no `model_change` is written. Budget numbers are present only for
+    /// the context-budget reason.
+    pub fn append_model_change_rejected(&mut self, provider: &str, model_id: &str, reason: &str, detail: &str, budget: Option<Map<String, Value>>) -> Value {
+        let mut entry = self.base_entry("model_change_rejected");
+        entry.insert("provider".to_owned(), Value::from(provider));
+        entry.insert("modelId".to_owned(), Value::from(model_id));
+        entry.insert("reason".to_owned(), Value::from(reason));
+        entry.insert("detail".to_owned(), Value::from(detail));
+        entry.extend(budget.unwrap_or_default());
+        let entry = Value::Object(entry);
+        self.append_entry(entry.clone());
+        entry
+    }
+
     pub fn append_model_change(&mut self, provider: &str, model_id: &str, reason: Option<&str>, original: Option<(&str, &str)>) -> Value {
         let mut entry = self.base_entry("model_change");
         entry.insert("provider".to_owned(), Value::from(provider));
@@ -1567,6 +1582,20 @@ mod tests {
         let at_root = manager.branch_with_summary(None, "t", None, None, None).expect("root summary");
         assert_eq!(at_root["fromId"], "root");
         assert_eq!(at_root["parentId"], Value::Null);
+    }
+
+    #[test]
+    fn rejected_model_changes_are_recorded_but_stay_out_of_context() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let mut budget = Map::new();
+        budget.insert("contextWindow".to_owned(), Value::from(1000));
+        let entry = manager.append_model_change_rejected("p", "m", "context-budget", "too big", Some(budget));
+        assert_eq!(entry["type"], "model_change_rejected");
+        assert_eq!(entry["modelId"], "m");
+        assert_eq!(entry["contextWindow"], 1000);
+        let context = manager.build_context(manager.leaf_id());
+        assert!(context.messages.is_empty());
+        assert_eq!(context.model, None);
     }
 
     #[test]

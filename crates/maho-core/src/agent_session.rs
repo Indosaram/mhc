@@ -3325,6 +3325,24 @@ impl AgentSession {
         Ok(live)
     }
 
+    /// senpi `_recordRejectedModelChange` (#1526): persist the refusal, then emit it.
+    fn record_rejected_model_change(&self, model: Model, detail: String, budget: Option<maho_ext_api::ModelBudget>) {
+        let reason = if budget.is_some() { "context-budget" } else { "auth" };
+        let numbers = budget.as_ref().map(|budget| {
+            let mut numbers = Map::new();
+            numbers.insert("contextWindow".to_owned(), Value::from(budget.context_window));
+            numbers.insert("liveContextTokens".to_owned(), Value::from(budget.live_context_tokens));
+            numbers.insert("requiredTokens".to_owned(), Value::from(budget.required_tokens));
+            numbers.insert("shortfallTokens".to_owned(), Value::from(budget.shortfall_tokens));
+            if let Some(profile) = &budget.safety_margin_profile {
+                numbers.insert("safetyMarginProfile".to_owned(), Value::from(profile.clone()));
+            }
+            numbers
+        });
+        self.with_session_manager_mut(|manager| manager.append_model_change_rejected(&model.provider, &model.id, reason, &detail, numbers));
+        self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: reason.to_owned(), detail, budget });
+    }
+
     async fn set_model_internal(&self, model: Model, persist_default: bool, source: maho_ext_api::ModelSelectSource,
         allow_deferral: bool) -> Result<Option<SystemPromptChangeEvent>, String>
     {
@@ -3352,10 +3370,15 @@ impl AgentSession {
             self.assert_model_usable(&model, live)
         } else { Ok(()) };
         if let Err(detail) = admission {
-            self.emit(AgentSessionEvent::ModelChangeRejected { model, reason: "context-budget".to_owned(), detail: detail.clone(), budget: Some(budget) });
+            self.record_rejected_model_change(model, detail.clone(), Some(budget));
             return Err(detail);
         }
-        if self.state().uses_default_stream_function { self.get_required_request_auth(&model).await?; }
+        if self.state().uses_default_stream_function
+            && let Err(detail) = self.get_required_request_auth(&model).await
+        {
+            self.record_rejected_model_change(model, detail.clone(), None);
+            return Err(detail);
+        }
         if allow_deferral && budget.shortfall_tokens > 0 && repairable {
             let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, budget.shortfall_tokens);
             self.state().pending_model_switch = Some(PendingModelSwitch { model: model.clone(), budget: budget.clone(), persist_default, notice: notice.clone() });
