@@ -90,7 +90,7 @@ mod tests {
     #[test] fn prompt_hook_preserves_host_prompt_and_appends_shipped_section() {
         let event=maho_ext_api::ExtensionEvent::BeforeAgentStart(maho_ext_api::BeforeAgentStartEvent {
             prompt:"work".into(),images:None,system_prompt:"host prompt".into(),
-            system_prompt_options:maho_ext_api::BuildSystemPromptOptions {cwd:Default::default(),custom_prompt:None,append_system_prompt:None,tools:vec![],skills:vec![],context_files:vec![]},
+            system_prompt_options:maho_ext_api::BuildSystemPromptOptions {cwd:Default::default(),custom_prompt:None,append_system_prompt:None,tools:vec![],tool_snippets:Default::default(),prompt_guidelines:vec![],skills:vec![],context_files:vec![]},
         });
         match prompt_hook_result(&event) {
             maho_ext_api::EventResult::BeforeAgentStart(result)=>{
