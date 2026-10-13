@@ -1217,7 +1217,7 @@ impl InteractiveMode {
     /// `pump_turn` with an explicit waker so an event-driven caller can re-poll exactly when the
     /// in-flight turn (or abort future) wakes, instead of on a fixed cadence.
     pub async fn pump_turn_with(&mut self, waker: &std::task::Waker) {
-        if let Err(error) = self.dispatch_submission().await { self.show_status(error); }
+        if let Err(error) = self.dispatch_submission().await { self.show_error(&error); }
         self.poll_turn_with(waker);
     }
 
@@ -1247,9 +1247,9 @@ impl InteractiveMode {
                         if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
                         self.show_status("Copied last agent message to clipboard".into());
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => { self.show_error(&error); return Ok(PromptDisposition::Handled); }
                 }
-            } else { return Err("No agent messages to copy yet.".into()); }
+            } else { self.show_error("No agent messages to copy yet."); }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/keybindings" {
@@ -1355,7 +1355,12 @@ impl InteractiveMode {
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/new" {
-            if self.host_new_session(None).await? { self.rebuild_history(); self.show_status("Started new session".into()); }
+            if self.host_new_session(None).await? {
+                self.rebuild_history();
+                // senpi `handleClearCommand`: the accent confirmation, not a dim status.
+                self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+                self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Accent, "✓ New session started"), 1, 1))));
+            }
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/clone" {
@@ -1434,7 +1439,7 @@ impl InteractiveMode {
         }
         if let Some(name) = text.trim().strip_prefix("/rename ").or_else(|| text.trim().strip_prefix("/name ")) {
             let name = name.trim();
-            if name.is_empty() { return Err("Session name cannot be empty".into()); }
+            if name.is_empty() { self.show_warning("Session name cannot be empty"); return Ok(PromptDisposition::Handled); }
             self.apply_session_name(name).await;
             return Ok(PromptDisposition::Handled);
         }
@@ -2012,9 +2017,15 @@ impl InteractiveMode {
             if stats.cost > 0.0 || waste.missed_tokens > 0.0 {
                 info += &format!("\n{}\n{} ${:.3}", theme.bold("Cost"), label("Total:"), stats.cost);
                 if breakdown.len() > 1 { for entry in breakdown { info += &format!("\n  {} ${:.3} {}", label(&format!("{}:", entry.key)), entry.cost, label(&format!("({} tokens)", crate::components::footer::format_tokens(entry.tokens as f64)))); } }
-                if waste.missed_tokens > 0.0 { info += &format!("\n{} {}{}", label("Cache Re-billed:"), if waste.missed_cost >= 0.0001 { format!("${:.3} ", waste.missed_cost) } else { String::new() }, label(&format!("({} tokens, {} miss{})", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" }))); }
+                if waste.missed_tokens > 0.0 {
+                    let detail = format!("{} tokens, {} miss{}", count(waste.missed_tokens as u64), waste.miss_count, if waste.miss_count == 1 { "" } else { "es" });
+                    info += &if waste.missed_cost >= 0.0001 { format!("\n{} ${:.3} {}", label("Cache Re-billed:"), waste.missed_cost, label(&format!("({detail})"))) } else { format!("\n{} {detail}", label("Cache Re-billed:")) };
+                }
             }
-            self.show_status(info); return Ok(true);
+            // senpi `handleSessionCommand`: a plain Text block, never the dim merging status line.
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(info, 1, 0))));
+            return Ok(true);
         }
         if matches!(text, "/rename" | "/name") {
             let accepted = self.rename_result.clone();
@@ -2167,7 +2178,7 @@ impl InteractiveMode {
         let data = format_debug_log(&timestamp, width, usize::from(rows), &lines, &messages);
         if let Some(parent) = std::path::Path::new(&path).parent() { let _ = std::fs::create_dir_all(parent); }
         match std::fs::write(&path, data) {
-            Ok(()) => self.show_status(format!("✓ Debug log written: {path}")),
+            Ok(()) => self.show_notice_box(crate::components::earendil_announcement::NoticeSpec { title: "✓ Debug log written".into(), tone: Some(crate::theme::ThemeColor::Success), why: path, extra: Vec::new(), expanded_line: None }),
             Err(error) => self.show_status(format!("Failed to write debug log: {error}")),
         }
     }
@@ -2290,6 +2301,25 @@ impl InteractiveMode {
 
     fn show_error(&mut self, message: &str) {
         let text = self.theme.fg(crate::theme::ThemeColor::Error, &format!("Error: {}", crate::extension_error_format::sanitize_tui_error_message(message)));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+    }
+
+    /// senpi `showNoticeBox`: sanitize every visible line, then append the notice box.
+    fn show_notice_box(&mut self, spec: crate::components::earendil_announcement::NoticeSpec) {
+        use crate::extension_error_format::sanitize_tui_error_message as sanitize;
+        let spec = crate::components::earendil_announcement::NoticeSpec {
+            title: sanitize(&spec.title), tone: spec.tone, why: sanitize(&spec.why),
+            extra: spec.extra.into_iter().map(|line| crate::components::earendil_announcement::NoticeLine { text: sanitize(&line.text), tone: line.tone }).collect(),
+            expanded_line: spec.expanded_line.as_deref().map(sanitize),
+        };
+        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_child(crate::components::earendil_announcement::build_notice_box(&spec, self.tools_expanded, &self.theme));
+    }
+
+    /// senpi `showWarning`.
+    fn show_warning(&mut self, message: &str) {
+        let text = self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}"));
         self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
         self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
     }
@@ -3279,7 +3309,7 @@ impl InteractiveMode {
                 self.rename_input = None;
                 if let Some(name) = result {
                     let name = name.trim();
-                    if name.is_empty() { self.show_status("Session name cannot be empty".into()); }
+                    if name.is_empty() { self.show_warning("Session name cannot be empty"); }
                     else { self.fire_set_session_name(name); self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into()))); }
                 }
             }

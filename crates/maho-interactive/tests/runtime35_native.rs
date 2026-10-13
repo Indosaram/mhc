@@ -630,6 +630,33 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
 }
 
 #[tokio::test]
+async fn new_command_confirms_with_the_accent_started_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/new", Default::default()).await.expect("new");
+    assert!(mode.render(80).join("\n").contains("✓ New session started"));
+}
+
+#[tokio::test]
+async fn copy_without_agent_messages_renders_an_error_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/copy", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Error: No agent messages to copy yet."));
+}
+
+#[tokio::test]
+async fn session_info_does_not_replace_the_previous_status_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.set_tools_expanded(true);
+    mode.submit("/session", Default::default()).await.expect("session info");
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Tool output: expanded"), "the previous status survives: {rendered}");
+    assert!(rendered.contains("Session Info"));
+}
+
+#[tokio::test]
 async fn empty_compact_shows_the_pinned_no_messages_warning() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
