@@ -10,7 +10,18 @@ use crate::harness::session::values::{branch_tip, delete_list, pending_assistant
 use crate::harness::runtime::types::*;
 use super::terminal::{operation_cleanup_writes, operation_result_record};
 
-pub async fn consume_response(lane: &dyn RuntimeDriveLane, drive: &Drive, intent: &OperationState, stream: &maho_ai::types::AssistantMessageEventStream, recovery: bool) -> Result<AssistantMessage, SessionError> {
+/// Shared slot the request's `onResponse` fills with the provider status and headers.
+pub type ResponseMetadataSlot = Arc<std::sync::Mutex<crate::harness::execution::assistant::AssistantResponseMetadata>>;
+
+/// Pinned `onResponse: (response) => { metadata = { status, headers } }`.
+pub fn capture_response_metadata(slot: &ResponseMetadataSlot) -> maho_ai::types::OnResponse {
+    let slot = slot.clone();
+    Arc::new(move |response: &maho_ai::types::ProviderResponse, _: &maho_ai::model::Model| {
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = crate::harness::execution::assistant::AssistantResponseMetadata { status: Some(response.status), headers: Some(response.headers.clone()) };
+    })
+}
+
+pub async fn consume_response(lane: &dyn RuntimeDriveLane, drive: &Drive, intent: &OperationState, stream: &maho_ai::types::AssistantMessageEventStream, metadata: &ResponseMetadataSlot, recovery: bool) -> Result<AssistantMessage, SessionError> {
     use maho_ai::types::AssistantMessageEvent;
     use maho_ai::utils::assistant_message_frame::AssistantMessageFrameEncoder;
     let response_id = match intent { OperationState::AssistantEffectPending(s) => &s.response_entry_id, OperationState::DeferredEffectPending(s) => &s.response_entry_id, _ => return Err(session_invariant_error("Assistant response requires an effect-pending state")) };
@@ -40,7 +51,8 @@ pub async fn consume_response(lane: &dyn RuntimeDriveLane, drive: &Drive, intent
     progress.seal(); progress.drain().await?;
     let mut message = stream.result().await.map_err(|e| session_invariant_error(e.message))?;
     if message.stop_reason == StopReason::Pending { return Err(session_invariant_error("Assistant stream settled with a pending stop reason")); }
-    let mut invocation = crate::harness::hooks::HookInvocation::new(lane.name(), &drive.operation_id); invocation.message = Some(message.clone());
+    let metadata = metadata.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut invocation = crate::harness::hooks::HookInvocation::new(lane.name(), &drive.operation_id); invocation.status = metadata.status; invocation.headers = metadata.headers; invocation.message = Some(message.clone());
     match lane.hooks().run_with_gate(crate::harness::hooks::HookName::AfterResponse, invocation, &drive.gate, &drive.context).await {
         Ok(crate::harness::hooks::HookResult::AfterResponse { message: replacement }) => message = *replacement,
         Ok(_) => {},

@@ -53,8 +53,10 @@ pub async fn run_deferred(lane: &dyn RuntimeDriveLane, drive: &Drive, expected: 
     options.request.max_retries = stream_options.max_retries;
     options.request.max_retry_delay_ms = stream_options.max_retry_delay_ms;
     options.request.headers = stream_options.headers.as_ref().map(|headers| headers.iter().map(|(key,value)| (key.clone(), value.as_str().map(str::to_owned))).collect());
+    let metadata = super::response::ResponseMetadataSlot::default();
+    options.request.on_response = Some(super::response::capture_response_metadata(&metadata));
     options.request.async_on_payload = Some(crate::harness::hooks::before_payload_hook(lane.hooks(), drive.gate.clone(), drive.context.clone(), lane.name().to_owned(), drive.operation_id.clone()));
     let stream = drive.gate.admit(|| lane.models().stream_deferred(&model, &source, Some(options), maho_ai::models::ModelsRequestTransforms::default())).map_err(|e| session_invariant_error(e.to_string()))?;
-    let response = super::response::consume_response(lane, drive, &intent, &stream, recovery).await?;
+    let response = super::response::consume_response(lane, drive, &intent, &stream, &metadata, recovery).await?;
     publish_response(lane, drive, &intent, response, recovery).await
 }
