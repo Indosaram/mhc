@@ -72,8 +72,8 @@ async fn start_unix_with(path: std::path::PathBuf, handshake_timeout: Option<Dur
         Arc::new(Host),
         UnixServerOptions { server_id: ID.into(), path, max_frame_length: Some(MAX), handshake_timeout, ..Default::default() },
     )
-    .unwrap();
-    server.start().await.unwrap();
+    .expect("test fixture");
+    server.start().await.expect("test fixture");
     server
 }
 async fn start_unix(path: std::path::PathBuf) -> Arc<Server> {
@@ -335,7 +335,7 @@ async fn next_message(stream: &mut UnixStream, decoder: &mut MessageDecoder, que
     .expect("server response deadline")
 }
 async fn connect_ready(path: &std::path::Path) -> (UnixStream, MessageDecoder) {
-    let mut stream = UnixStream::connect(path).await.unwrap();
+    let mut stream = UnixStream::connect(path).await.expect("test fixture");
     let mut decoder = MessageDecoder::server();
     write(&mut stream, json!({"type":"hello","version":8})).await;
     assert_eq!(read(&mut stream, &mut decoder).await["type"], "hello");

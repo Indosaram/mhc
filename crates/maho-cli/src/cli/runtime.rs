@@ -281,7 +281,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         let packages = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions { cwd: &session_cwd, agent_dir: &session_agent_dir, settings_manager: &mut theme_settings });
         match packages.resolve(None).await {
             Ok(paths) => theme_paths.extend(paths.themes.into_iter().filter(|resource| resource.enabled).map(|resource| std::path::PathBuf::from(resource.path))),
-            Err(error) => maho_core::output_guard::maho_write_stderr(&format!("package themes: {error}\n")),
+            Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("package themes: {error}\n")); }
         }
         theme_paths.extend(runtime_config.resolved_theme_paths().into_iter().map(std::path::PathBuf::from));
         super::default_extensions::configure_rpc_html_theme_with_paths(&session, theme_paths);
