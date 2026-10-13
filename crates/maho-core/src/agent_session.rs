@@ -487,6 +487,8 @@ struct AgentSessionState {
     extension_hint_backups: BTreeMap<String, Option<String>>,
     skills: Vec<crate::skills::Skill>,
     skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    prompt_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    resource_loader_inputs: crate::resource_loader::ResourceLoaderInputs,
     skills_loaded: bool,
     discovered_resources: maho_ext_api::DiscoveredResources,
     global_hook_source_paths: Vec<std::path::PathBuf>,
@@ -1179,6 +1181,21 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             if let Some(mut sources) = state.loaded_hook_sources.clone() {
                 sources.cwd = cwd.into();
                 sources.project_hooks_path = sources.cwd.join(crate::config::config_dir_name()).join("hooks.json");
+                // Package and auto-discovered hook files (senpi `globalHookSourcePaths` /
+                // `projectHookSourcePaths` / `preSessionHookSourcePaths`) join the caller's record.
+                let global_base = sources.agent_dir.to_string_lossy().into_owned();
+                let project_base = sources.cwd.join(crate::config::config_dir_name()).to_string_lossy().into_owned();
+                let cwd_base = sources.cwd.to_string_lossy().into_owned();
+                for (target, resolved, base) in [(&mut sources.global_hook_source_paths, &state.global_hook_source_paths, &global_base),
+                    (&mut sources.project_hook_source_paths, &state.project_hook_source_paths, &project_base),
+                    (&mut sources.pre_session_hook_source_paths, &state.pre_session_hook_source_paths, &cwd_base)] {
+                    for path in resolved {
+                        let wanted = crate::paths::canonicalize_path(&path.to_string_lossy());
+                        let known = target.iter().any(|existing| crate::paths::canonicalize_path(
+                            &crate::paths::resolve_path(&existing.to_string_lossy(), base, &Default::default())) == wanted);
+                        if !known { target.push(path.clone()); }
+                    }
+                }
                 for entry in &state.discovered_resources.hook_paths {
                     let path = std::path::PathBuf::from(&entry.path);
                     if !sources.runtime_hook_source_paths.contains(&path) { sources.runtime_hook_source_paths.push(path); }
@@ -1680,6 +1697,8 @@ impl AgentSession {
             extension_hint_backups: BTreeMap::new(),
             skills: Vec::new(),
             skill_diagnostics: Vec::new(),
+            prompt_diagnostics: Vec::new(),
+            resource_loader_inputs: Default::default(),
             skills_loaded: false,
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
             global_hook_source_paths: Vec::new(), project_hook_source_paths: Vec::new(), pre_session_hook_source_paths: Vec::new(),
@@ -4075,6 +4094,37 @@ impl AgentSession {
         state.skills_loaded = true;
     }
 
+    /// The CLI/SDK resource inputs every [`Self::load_resources`] pass reuses.
+    pub fn set_resource_loader_inputs(&self, inputs: crate::resource_loader::ResourceLoaderInputs) {
+        self.state().resource_loader_inputs = inputs;
+    }
+
+    pub fn resource_loader_inputs(&self) -> crate::resource_loader::ResourceLoaderInputs {
+        self.state().resource_loader_inputs.clone()
+    }
+
+    /// Theme files contributed by extension `resources_discover` handlers (senpi `extendResources`
+    /// theme paths), resolved against the session cwd.
+    pub fn discovered_theme_paths(&self) -> Vec<String> {
+        self.state().discovered_resources.theme_paths.iter().map(|entry| entry.path.clone()).collect()
+    }
+
+    /// Prompt-template load diagnostics, including name collisions (pinned `getPrompts().diagnostics`).
+    pub fn prompt_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
+        self.state().prompt_diagnostics.clone()
+    }
+
+    /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hook sources: package
+    /// and auto-discovered resources plus the stored CLI inputs, loaded into this session.
+    pub async fn load_resources(&self) {
+        let inputs = self.resource_loader_inputs();
+        let settings = self.with_settings_manager(crate::resource_loader::snapshot_settings);
+        let loaded = crate::resource_loader::load_resources(&self.cwd(), &self.agent_dir(), settings, &inputs).await;
+        self.set_prompt_resources_with_diagnostics(loaded.prompts, loaded.skills.skills, loaded.skills.diagnostics);
+        self.state().prompt_diagnostics = loaded.prompt_diagnostics;
+        self.set_hook_source_paths(loaded.hook_resources, loaded.pre_session_hook_paths);
+    }
+
     /// The skills this session loaded, with their diagnostics (pinned `resourceLoader.getSkills()`).
     ///
     /// `None` when the session has no loaded skill cache (e.g. `minimalResources`, or before the
@@ -4356,18 +4406,7 @@ impl AgentSession {
         // reloading a clone re-reads models.json for the session's live catalog.
         self.model_runtime().clone().reload_config().await;
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
-        let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
-            let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
-                values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
-            (paths("prompts"), paths("skills"))
-        });
-        let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-            cwd: self.cwd(), agent_dir: self.agent_dir(), prompt_paths, include_defaults: true,
-        });
-        let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
-            cwd: self.cwd(), agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
-        });
-        self.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
+        self.load_resources().await;
         self.rebuild_system_prompt();
         self.publish_eval_only_tool_hints();
         self.renew_extension_runtime(maho_ext_api::SessionReason::Reload).await?;

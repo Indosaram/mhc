@@ -60,7 +60,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     // senpi `applyGrokNeoThemeFallback`: grok-night until the user chooses a theme (never persisted).
     let theme_setting = theme_setting.or_else(|| parsed.grok_neo.then(|| "grok-night".to_owned()));
-    let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
+    let (theme, registered_themes) = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
     // senpi main.ts:1192-1195 `autoTrustOnReloadCwd`.
@@ -75,6 +75,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         auto_trust_on_reload_cwd,
         initial_title_prompt: initial.initial_title_prompt.clone(),
     });
+    *mode.extension_ui.registered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = registered_themes;
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
         mode.set_session_host(host);
     }
@@ -350,7 +351,7 @@ async fn resolve_interactive_startup_theme(
     session: &maho_core::agent_session::AgentSession,
     parsed: &super::args::Args,
     setting: Option<&str>,
-) -> Result<maho_interactive::theme::Theme, String> {
+) -> Result<(maho_interactive::theme::Theme, Vec<maho_interactive::theme::Theme>), String> {
     let cwd = session.cwd();
     let agent_dir = session.agent_dir();
     let mut diagnostics: Vec<String> = Vec::new();
@@ -374,11 +375,11 @@ async fn resolve_interactive_startup_theme(
     diagnostics.extend(theme_diagnostics);
     let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(
-        setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered,
+        setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered.clone(),
     )?;
     diagnostics.extend(resolution.diagnostics);
     for diagnostic in &diagnostics { maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n")); }
-    Ok(resolution.theme)
+    Ok((resolution.theme, registered))
 }
 
 /// senpi `loadStartupThemes` (startup-ui.ts:65-75):
