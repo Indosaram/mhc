@@ -1492,6 +1492,12 @@ impl InteractiveMode {
             }
         } else {
             for message in self.session.messages() { self.add_history_message(&message); }
+            // senpi `renderInitialMessages`: show compaction info if the session was compacted.
+            let compaction_count = self.session.with_session_manager(|manager| manager.count_compactions());
+            if compaction_count > 0 {
+                let times = if compaction_count == 1 { "1 time".to_owned() } else { format!("{compaction_count} times") };
+                self.show_status(format!("Session compacted {times}"));
+            }
         }
     }
 
@@ -2820,9 +2826,7 @@ impl InteractiveMode {
         }
         if text == "/tree" {
             let (tree, leaf) = self.session.with_session_manager(|manager| {
-                let entries = manager.entries();
-                let roots = entries.iter().filter(|entry| entry.get("parentId").is_none_or(serde_json::Value::is_null)).filter_map(|entry| entry["id"].as_str()).filter_map(|id| manager.get_tree(Some(id))).collect::<Vec<_>>();
-                (roots, manager.leaf_id().map(str::to_owned))
+                (manager.get_tree(), manager.leaf_id().map(str::to_owned))
             });
             if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
@@ -2833,7 +2837,7 @@ impl InteractiveMode {
                 Arc::new(self.keybindings()),
                 tree, leaf.as_deref(), self.editor_host.terminal_rows(),
                 Box::new(move |id| { submissions.borrow_mut().push_back(format!("/tree {id}")); selected.borrow_mut().take(); }), Box::new(move || { cancelled.borrow_mut().take(); }),
-                Some(Box::new(move |id, label| session.with_session_manager_mut(|manager| { manager.append_label(id, label); }))), None, Some(filter), std::env::var("HOME").ok());
+                Some(Box::new(move |id, label| if let Err(error_message) = session.with_session_manager_mut(|manager| manager.append_label(id, label)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message }); })), None, Some(filter), std::env::var("HOME").ok());
             let copies=self.tree_copies.clone();
             selector.on_copy=Some(Box::new(move |text|copies.borrow_mut().push_back(text.map(str::to_owned))));
             // senpi `selector.onEditMessage`: close the selector, then open the edit flow.
