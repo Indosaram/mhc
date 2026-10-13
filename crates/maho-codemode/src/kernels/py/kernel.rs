@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, path::Path, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::VecDeque, sync::{Arc, Mutex}, time::Duration};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use crate::kernels::shared::kernel_prelude_plan::KernelPreludeTracker;
@@ -27,7 +27,7 @@ impl PythonKernel {
     }
     pub async fn start_with_signal(options: PythonKernelStartOptions,signal:&maho_ai::utils::abort::AbortSignal) -> Result<Self, String> {
         let transport_options = PythonTransportOptions { interpreter_path:options.interpreter_path,session_id:options.session_id,cwd:options.cwd,connection:options.connection,env:options.env,session_env:options.session_env,startup_timeout:options.startup_timeout.unwrap_or(Duration::from_secs(5)) };
-        let transport = PythonKernelTransport::start_with_signal(&transport_options,Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/py/prelude.py")),||true,signal).await.map_err(|error|error.to_string())?;
+        let transport = PythonKernelTransport::start_with_signal(&transport_options,&python_prelude_path()?,||true,signal).await.map_err(|error|error.to_string())?;
         let shutdown=maho_ai::utils::abort::AbortController::new();let cancel=shutdown.clone();
         let listener=signal.add_abort_listener(move |reason|cancel.abort(Some(reason.clone())));
         if signal.aborted() {shutdown.abort(signal.reason());}
@@ -79,7 +79,12 @@ impl Drop for PythonKernel {
 }
 
 async fn start_transport(options: &PythonTransportOptions,signal:&maho_ai::utils::abort::AbortSignal) -> Result<PythonKernelTransport,String> {
-    PythonKernelTransport::start_with_signal(options,Path::new(concat!(env!("CARGO_MANIFEST_DIR"),"/assets/kernels/py/prelude.py")),||true,signal).await.map_err(|error|error.to_string())
+    PythonKernelTransport::start_with_signal(options,&python_prelude_path()?,||true,signal).await.map_err(|error|error.to_string())
+}
+
+fn python_prelude_path() -> Result<std::path::PathBuf,String> {
+    let executable=std::env::current_exe().map_err(|error|error.to_string())?;
+    super::transport::resolve_python_prelude_path(super::transport::PythonPreludePathOptions {local_path:None,environment:crate::kernels::shared::runtime_asset::CodemodeRuntimeAssetEnvironment {bun_version:None,executable_path:&executable}}).map_err(|error|error.to_string())
 }
 
 fn settle(mut run: PendingRun, mut result: Value, retained: bool) {

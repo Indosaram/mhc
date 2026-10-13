@@ -1,6 +1,6 @@
 use serde_json::Value;
 use crate::kernels::shared::subprocess_process::ProcessError;
-use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, resolve_js_worker_entry_path}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS}};
+use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, resolve_js_worker_entry_path}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS, retire_worker}};
 
 pub struct WorkerSlot {
     worker: Option<WorkerHost>,
@@ -60,9 +60,14 @@ impl WorkerSlot {
         if let Some(owner)=worker.pid() {
             super::process_tree_host::terminate_process_trees(&children,super::process_tree_host::TerminateProcessTreesOptions {grace_ms:1000,kill_wait_ms:None,owner_pid:Some(owner)}).await;
         }
-        match tokio::time::timeout(std::time::Duration::from_millis(WORKER_TERMINATE_DEADLINE_MS), worker.terminate()).await {
-            Ok(result) => { result?; Ok(WorkerRetirement::Terminated) },
-            Err(_) => { worker.terminate().await?; Ok(WorkerRetirement::Terminated) },
+        // A worker blocked in a synchronous call is abandoned at the deadline; its termination keeps running detached.
+        let termination = tokio::spawn(async move { worker.terminate().await });
+        let mut outcome = None;
+        let retirement = retire_worker(async { outcome = Some(termination.await); }, WORKER_TERMINATE_DEADLINE_MS).await;
+        match outcome {
+            Some(Ok(result)) => { result?; Ok(WorkerRetirement::Terminated) },
+            Some(Err(error)) => Err(ProcessError::Startup(format!("JavaScript worker termination failed: {error}"))),
+            None => Ok(retirement),
         }
     }
 }
