@@ -684,6 +684,26 @@ async fn bare_model_selector_cancels_and_releases_native_composer() {
 }
 
 #[tokio::test]
+async fn model_command_switches_on_a_bare_exact_id() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model faux-1", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Model: faux-1"));
+}
+
+#[tokio::test]
+async fn model_command_miss_refreshes_then_opens_a_prefiltered_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model no-such-model", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Refreshing model catalogs…"), "the catalog refresh precedes the selector: {rendered}");
+    assert!(rendered.contains("no-such-model"), "the selector opens with the term as its search: {rendered}");
+    mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
 async fn resume_path_restores_exported_native_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, directory) = native_mode();
