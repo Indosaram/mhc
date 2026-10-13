@@ -208,10 +208,10 @@ use crate::harness::compaction::compaction::{
     compact_with_request, prepare_compaction, should_compact, CompactGenerationOptions, CompactResult,
     SummaryRequest,
 };
-use crate::harness::context::{Context, with_abort_signal};
+use crate::harness::context::{Context, provider_telemetry_context, with_abort_signal};
 use crate::harness::events::{HarnessEvent, HarnessEventPayload, RunEndPayload};
 use crate::harness::execution::effect_gate::GateRefusal;
-use crate::harness::hooks::{HookInvocation, HookName, HookResult, HookRunError, apply_stream_options_patch};
+use crate::harness::hooks::{HookInvocation, HookName, HookResult, HookRunError, apply_stream_options_patch, before_payload_hook};
 use crate::harness::runtime::drive::boundary::{
     assistant_ready_at_boundary, boundary_placement_events, finish_run_boundary, normalized_retry_policy,
     BoundaryPlacement,
@@ -336,7 +336,7 @@ fn request_stream_options(
     options.stream.cache_retention = Some(CacheRetention::None);
     options.deferred = Some(DeferredOption::Enabled(false));
     options.stream.request.signal = context.abort_signal();
-    options.stream.request.telemetry_context = None;
+    options.stream.request.telemetry_context = provider_telemetry_context(context);
     options
 }
 
@@ -884,32 +884,13 @@ impl SummaryRequest for HarnessStructuralRequest<'_> {
             let admitted_context = with_abort_signal(self.drive.gate.signal(), request_context);
             let mut request_options = request_stream_options(options, &stream_options, &admitted_context);
             // Pinned `before_payload` hook: the request's `onPayload` runs the gate-guarded hook.
-            {
-                let gate = self.drive.gate.clone();
-                let hook_context = self.drive.context.clone();
-                let lane_name = self.lane.name.clone();
-                let operation_id = self.drive.operation_id.clone();
-                let hooks = self.lane.hooks.clone();
-                request_options.stream.request.async_on_payload = Some(Arc::new(
-                    move |payload: serde_json::Value, model: maho_ai::model::Model, _metadata: Option<maho_ai::types::ProviderRequestMetadata>| {
-                        let gate = gate.clone();
-                        let context = hook_context.clone();
-                        let lane_name = lane_name.clone();
-                        let operation_id = operation_id.clone();
-                        let hooks = hooks.clone();
-                        Box::pin(async move {
-                            let mut invocation = HookInvocation::new(lane_name, operation_id);
-                            invocation.model = Some(model);
-                            invocation.payload = Some(payload);
-                            match hooks.run_with_gate(HookName::BeforePayload, invocation, &gate, &context).await {
-                                Ok(HookResult::BeforePayload { payload }) => Ok(Some(payload)),
-                                Ok(_) => Ok(None),
-                                Err(error) => Err(error.to_string()),
-                            }
-                        })
-                    },
-                ));
-            }
+            request_options.stream.request.async_on_payload = Some(before_payload_hook(
+                self.lane.hooks.clone(),
+                self.drive.gate.clone(),
+                self.drive.context.clone(),
+                self.lane.name.clone(),
+                self.drive.operation_id.clone(),
+            ));
             let response = match self.lane.models.complete_simple(self.model, ai_context, Some(request_options), ModelsRequestTransforms::default()).await {
                 Ok(message) => message,
                 Err(_) => {

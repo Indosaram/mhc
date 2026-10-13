@@ -233,6 +233,11 @@ pub fn get_telemetry_context(context: &Context) -> TelemetryContext {
     context.value(&TELEMETRY_CONTEXT_KEY).unwrap_or_else(noop_telemetry_context)
 }
 
+/// `telemetryContext: getTelemetryContext(context)` as carried on provider request options.
+pub fn provider_telemetry_context(context: &Context) -> Option<maho_ai::types::ProviderTelemetryContext> {
+    Some(Arc::new(get_telemetry_context(context)))
+}
+
 /// `withTelemetryContext(telemetryContext, context)`.
 pub fn with_telemetry_context(telemetry_context: TelemetryContext, context: &Context) -> Context {
     with_context_value(&TELEMETRY_CONTEXT_KEY, telemetry_context, context)
