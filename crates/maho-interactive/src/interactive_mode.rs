@@ -143,12 +143,14 @@ enum QuestionAction {
     CloseList,
 }
 
+type ScopedModelsRefreshedFn = Box<dyn FnMut(&mut crate::components::scoped_models_selector::ScopedModelsSelectorComponent, ScopedModelsRefreshOutcome)>;
+
 /// One login or logout flow's messages from its runtime task back to the single-threaded UI.
 enum AuthUiEvent {
     Prompt(maho_ai::auth::types::AuthPrompt, tokio::sync::oneshot::Sender<Result<String, String>>),
     Notify(maho_ai::auth::types::AuthEvent),
     LoginFinished { provider_id: String, provider_name: String, method: crate::login_outcome::LoginMethod, result: Result<(), crate::login_outcome::LoginFailure>, selection_error: Option<String> },
-    LoginCatalogFinished { provider_name: String, action: String, result: Result<(), String>, selection_error: Option<String>, selected_model: Option<maho_ai::model::Model> },
+    LoginCatalogFinished { provider_name: String, action: String, result: Result<(), String>, selection_error: Option<String>, selected_model: Option<Box<maho_ai::model::Model>> },
     AnthropicSubscriptionAuth,
     LogoutFinished { provider_name: String, auth_type: crate::components::oauth_selector::AuthSelectorAuthType, result: Result<(), String> },
 }
@@ -1395,7 +1397,7 @@ impl InteractiveMode {
                                 None => session.set_model(model.clone()).await.map(|_| ()).map_err(|error| error.to_string()),
                             };
                             match result {
-                                Ok(()) => { let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name: provider_name.clone(), action: format!("{action}. Selected {}.", model.id), result: Ok(()), selection_error: None, selected_model: Some(model.clone()) }); return; }
+                                Ok(()) => { let _ = sender.send(AuthUiEvent::LoginCatalogFinished { provider_name: provider_name.clone(), action: format!("{action}. Selected {}.", model.id), result: Ok(()), selection_error: None, selected_model: Some(Box::new(model.clone())) }); return; }
                                 Err(error) => selection_error = Some(format!("{action}, but selecting its default model failed: {error}. Use /model to select a model.")),
                             }
                         }
@@ -1725,7 +1727,7 @@ impl InteractiveMode {
         let replaced_index = {
             let borrowed: Vec<Option<std::cell::Ref<'_, CustomEntryComponent>>> = self.chat.children().iter().map(|child| match child { TranscriptChild::Entry(card) => Some(card.borrow()), _ => None }).collect();
             let cards: Vec<EntryCard<'_>> = borrowed.iter().enumerate().map(|(index, card)| match card {
-                Some(card) => EntryCard::Entry(&**card),
+                Some(card) => EntryCard::Entry(card),
                 None if transient.contains(&index) => EntryCard::Transient,
                 None => EntryCard::Other,
             }).collect();
@@ -3882,7 +3884,7 @@ impl InteractiveMode {
                     }
                     if let Some(error) = &selection_error { self.show_error(error); }
                     match &selected_model {
-                        Some(model) => { self.show_risky_main_model_warning(model); self.maybe_warn_about_anthropic_subscription_auth(model.clone()); }
+                        Some(model) => { self.show_risky_main_model_warning(model); self.maybe_warn_about_anthropic_subscription_auth((**model).clone()); }
                         None if selection_error.is_none() => { let model = self.host_model(); self.maybe_warn_about_anthropic_subscription_auth(model); }
                         None => {}
                     }
@@ -5101,7 +5103,7 @@ struct ScopedModelsRefreshDialog {
     selector: crate::components::scoped_models_selector::ScopedModelsSelectorComponent,
     refresh: Option<tokio::sync::oneshot::Receiver<ScopedModelsRefreshOutcome>>,
     controller: maho_ai::utils::abort::AbortController,
-    on_refreshed: Box<dyn FnMut(&mut crate::components::scoped_models_selector::ScopedModelsSelectorComponent, ScopedModelsRefreshOutcome)>,
+    on_refreshed: ScopedModelsRefreshedFn,
 }
 
 impl ScopedModelsRefreshDialog {
