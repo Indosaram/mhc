@@ -75,6 +75,15 @@ pub trait InteractiveSession: Send + Sync {
     fn export_html(&self, _output_path: Option<String>, _theme_name: Option<String>) -> SessionFuture<'_, Result<Option<String>, String>> { Box::pin(async { Err("export_html is not implemented for this session host".to_owned()) }) }
     fn new_session(&self, parent_session: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
     fn switch_session(&self, session_path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>>;
+    /// senpi `switchSession(path, { cwdOverride })`; without an override this is `switch_session`.
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        match cwd_override {
+            None => self.switch_session(session_path),
+            Some(_) => Box::pin(async { Err("switch_session_with_cwd is not implemented for this session host".to_owned()) }),
+        }
+    }
+    /// senpi `importFromJsonl(path, cwdOverride)`.
+    fn import_from_jsonl(&self, _input_path: String, _cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> { Box::pin(async { Err("import_from_jsonl is not implemented for this session host".to_owned()) }) }
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>>;
     fn dispose(&self) -> SessionFuture<'_, ()>;
 }
@@ -138,6 +147,24 @@ impl InteractiveSession for LocalInteractiveSession {
         Box::pin(async move {
             self.session
                 .switch_session(&session_path)
+                .await
+                .map(|replaced| if replaced { ReplacementOutcome::Replaced } else { ReplacementOutcome::Cancelled })
+        })
+    }
+
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move {
+            self.session
+                .switch_session_with_cwd(&session_path, cwd_override.as_deref())
+                .await
+                .map(|replaced| if replaced { ReplacementOutcome::Replaced } else { ReplacementOutcome::Cancelled })
+        })
+    }
+
+    fn import_from_jsonl(&self, input_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move {
+            self.session
+                .import_from_jsonl(&input_path, cwd_override.as_deref())
                 .await
                 .map(|replaced| if replaced { ReplacementOutcome::Replaced } else { ReplacementOutcome::Cancelled })
         })
@@ -354,6 +381,14 @@ impl InteractiveSession for RemoteInteractiveRuntime {
 
     fn switch_session(&self, session_path: String) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
         Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::switch_session(self, &session_path, None).await) })
+    }
+
+    fn switch_session_with_cwd(&self, session_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::switch_session(self, &session_path, cwd_override.as_deref()).await) })
+    }
+
+    fn import_from_jsonl(&self, input_path: String, cwd_override: Option<String>) -> SessionFuture<'_, Result<ReplacementOutcome, String>> {
+        Box::pin(async move { remote_outcome(self, RemoteInteractiveRuntime::import_jsonl(self, &input_path, cwd_override.as_deref()).await) })
     }
 
     fn fork(&self, entry_id: String, include_entry: bool) -> SessionFuture<'_, Result<ForkOutcome, String>> {

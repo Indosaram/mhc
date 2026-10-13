@@ -23,6 +23,98 @@ type TurnFuture = Pin<Box<dyn Future<Output = Result<PromptDisposition, String>>
 type AbortFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// A header slot in the document header container (senpi's `Component` children).
 type HeaderSlot = Rc<RefCell<dyn Component>>;
+/// The running `!` command: its card and the session's `executeBash`, polled by `poll_turn`.
+type PendingBash = (Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, Pin<Box<dyn Future<Output = Result<maho_tools::bash_executor::BashResult, String>>>>);
+/// A running `flushCompactionQueue`; resolves to the failure notice it reported, if any.
+type CompactionFlush = Pin<Box<dyn Future<Output = Option<String>>>>;
+
+/// senpi `compactionQueuedMessages` / `compactionInFlightMessages`, shared with the running flush.
+#[derive(Default)]
+struct CompactionQueueState {
+    queued: Vec<crate::compaction_queue_transfer::CompactionQueuedMessage>,
+    in_flight: Vec<crate::compaction_queue_transfer::CompactionQueuedMessage>,
+}
+
+/// senpi `flushCompactionQueue`'s transfer dependencies. Messages are identified by their reserved
+/// `enqueueOrder` (senpi compares object identity).
+struct CompactionQueueTransfer {
+    state: Rc<RefCell<CompactionQueueState>>,
+    session: Arc<AgentSession>,
+    host: Option<Arc<dyn crate::interactive_session::InteractiveSession>>,
+    extension_commands: Vec<String>,
+    tasks: tokio::task::JoinSet<()>,
+    events: tokio::sync::mpsc::UnboundedSender<maho_ext_api::AgentSessionEvent>,
+    failure: Option<String>,
+}
+
+impl crate::compaction_queue_transfer::TransferDependencies for CompactionQueueTransfer {
+    type Error = String;
+    fn take_batch(&mut self) -> Vec<crate::compaction_queue_transfer::CompactionQueuedMessage> {
+        let mut state = self.state.borrow_mut();
+        let batch = std::mem::take(&mut state.queued);
+        state.in_flight.extend(batch.iter().cloned());
+        batch
+    }
+    fn commit_accepted(&mut self, message: &crate::compaction_queue_transfer::CompactionQueuedMessage) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(index) = state.in_flight.iter().position(|queued| queued.enqueue_order == message.enqueue_order) else { return false; };
+        state.in_flight.remove(index);
+        true
+    }
+    fn restore_undelivered(&mut self, messages: &[crate::compaction_queue_transfer::CompactionQueuedMessage]) -> usize {
+        let mut state = self.state.borrow_mut();
+        let restorable: Vec<_> = messages.iter().filter(|message| state.in_flight.iter().any(|queued| queued.enqueue_order == message.enqueue_order)).cloned().collect();
+        state.in_flight.retain(|queued| !restorable.iter().any(|message| message.enqueue_order == queued.enqueue_order));
+        let count = restorable.len();
+        let rest = std::mem::take(&mut state.queued);
+        state.queued = restorable.into_iter().chain(rest).collect();
+        count
+    }
+    fn is_command(&self, message: &crate::compaction_queue_transfer::CompactionQueuedMessage) -> bool {
+        is_extension_command_text(&message.text, &self.extension_commands)
+    }
+    async fn deliver_command(&mut self, message: &crate::compaction_queue_transfer::CompactionQueuedMessage) -> Result<(), String> {
+        match self.host.clone() {
+            Some(host) => host.prompt(message.text.clone(), PromptOptions::default()).await,
+            None => self.session.prompt(&message.text, PromptOptions::default()).await.map(|_| ()),
+        }
+    }
+    async fn deliver_first_prompt(&mut self, message: &crate::compaction_queue_transfer::CompactionQueuedMessage) -> Result<PromptDisposition, String> {
+        let behavior = message.mode;
+        if let Some(host) = self.host.clone() {
+            return host.prompt(message.text.clone(), PromptOptions { streaming_behavior: Some(behavior), ..Default::default() }).await.map(|_| PromptDisposition::Started);
+        }
+        let session = self.session.clone();
+        let text = message.text.clone();
+        let events = self.events.clone();
+        crate::compaction_queue_transfer::wait_for_prompt_disposition(&mut self.tasks, move |preflight, disposition| async move {
+            let admitted: Arc<dyn Fn(PromptDisposition) + Send + Sync> = Arc::new(move |next| { preflight(true); disposition(next); });
+            session.prompt(&text, PromptOptions { streaming_behavior: Some(behavior), prompt_admitted: Some(admitted), ..Default::default() }).await.map(|_| ())
+        }, move |error: String| {
+            let _ = events.send(maho_ext_api::AgentSessionEvent::ContinuationError { error_message: format!("Queued prompt failed after acceptance: {error}") });
+        }).await.map_err(|error| error.to_string())
+    }
+    async fn deliver_queued(&mut self, message: &crate::compaction_queue_transfer::CompactionQueuedMessage) -> Result<(), String> {
+        let follow_up = message.mode == maho_ext_api::StreamingBehavior::FollowUp;
+        match self.host.clone() {
+            Some(host) => if follow_up { host.follow_up(message.text.clone()).await } else { host.steer(message.text.clone()).await },
+            None => {
+                let options = maho_core::agent_session::QueuedInputOptions { enqueue_order: message.enqueue_order, ..Default::default() };
+                if follow_up { self.session.follow_up(&message.text, None, options).await } else { self.session.steer(&message.text, None, options).await }
+            }
+        }
+    }
+    fn report_failure(&mut self, error: String, undelivered_count: usize) {
+        self.failure = Some(format!("Failed to send queued message{}: {error}", if undelivered_count == 1 { "" } else { "s" }));
+    }
+}
+
+/// senpi `isExtensionCommand`: a `/name` registered by an extension.
+fn is_extension_command_text(text: &str, extension_commands: &[String]) -> bool {
+    let Some(rest) = text.strip_prefix('/') else { return false; };
+    let name = rest.split(' ').next().unwrap_or_default();
+    extension_commands.iter().any(|command| command == name)
+}
 
 /// Work the collapsed question widget's mouse callbacks hand back to the mode, which owns the
 /// registry and cannot be reached from a `Box<dyn FnMut>`.
@@ -278,6 +370,20 @@ pub struct InteractiveMode {
     anthropic_subscription_warning_shown: bool,
     /// senpi `continuityNotices`.
     continuity_notices: crate::components::continuity_notice::ContinuityNoticeTracker,
+    /// senpi `activeStatusIndicator` for the non-working kinds (retry, compaction, branch summary).
+    /// The working indicator is derived per frame by `working_frame`.
+    active_status_indicator: Option<Rc<RefCell<crate::components::status_indicator::StatusIndicator>>>,
+    /// senpi `idleStatus`: the placeholder that reserves the cleared status row's height.
+    idle_status: Option<crate::components::status_indicator::IdleStatus>,
+    /// senpi's compaction queue: submissions typed while compaction runs.
+    compaction_queue: Rc<RefCell<CompactionQueueState>>,
+    pending_compaction_flush: Option<CompactionFlush>,
+    queued_compaction_flushes: std::collections::VecDeque<crate::compaction_queue_transfer::TransferOptions>,
+    /// The local `!` command in flight (senpi `bashComponent` + `session.isBashRunning`).
+    pending_bash: Option<PendingBash>,
+    /// senpi `pendingBashComponents`: `!` cards started while streaming, shown above the editor
+    /// until the next ordinary submission moves them into the chat.
+    pending_bash_components: Vec<Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>>,
 }
 const ANTHROPIC_SUBSCRIPTION_AUTH_WARNING: &str = "Anthropic subscription auth is active. Third-party harness usage draws from extra usage and is billed per token, not your Claude plan limits. Manage extra usage at https://claude.ai/settings/usage. Disable this warning in /settings.";
 
@@ -603,8 +709,12 @@ impl InteractiveMode {
         let queued_images = submission_images.clone();
         let paste_submissions = submissions.clone();
         editor.on_paste_image = Some(Box::new(move || paste_submissions.borrow_mut().push_back("/paste-clipboard".into())));
+        let question_actions: QuestionActions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
+        let empty_submit_actions = question_actions.clone();
         editor.editor.on_submit = Some(Box::new(move |text| {
-            if !text.trim().is_empty() {
+            // senpi `onSubmit`: Enter on an empty editor opens the pending async question.
+            if text.trim().is_empty() { empty_submit_actions.borrow_mut().push_back(QuestionAction::Expand); }
+            else {
                 let mut payloads = std::mem::take(&mut *images.borrow_mut());
                 let ordered = maho_tui::image_markers::IMAGE_MARKER_REGEX.captures_iter(text)
                     .filter_map(|capture| capture.get(1).and_then(|id| id.as_str().parse::<u64>().ok()))
@@ -632,7 +742,7 @@ impl InteractiveMode {
             request_render: Rc::new(move || chat_host.request_render()),
         }, theme.clone());
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new() }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -824,11 +934,25 @@ impl InteractiveMode {
         match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
     }
 
+    /// senpi `clearAllQueues`: the native queue plus the compaction queue, in enqueue order.
     fn host_clear_queue(&self, abort_will_follow: bool) -> Vec<maho_core::agent_session::QueuedInput> {
-        match self.session_host.clone() {
+        let mut ordered = match self.session_host.clone() {
             Some(host) => { host.fire_clear_queue(abort_will_follow); ordered_inputs_from_remote_state(self.remote_state_snapshot().as_ref()) }
             None => self.session.clear_queue(abort_will_follow).ordered,
-        }
+        };
+        let compaction = {
+            let mut state = self.compaction_queue.borrow_mut();
+            let mut messages = std::mem::take(&mut state.in_flight);
+            messages.extend(std::mem::take(&mut state.queued));
+            messages
+        };
+        if compaction.is_empty() { return ordered; }
+        let fallback = ordered.iter().map(|message| message.enqueue_order).max().unwrap_or(0);
+        ordered.extend(compaction.into_iter().enumerate().map(|(index, message)| maho_core::agent_session::QueuedInput {
+            text: message.text, mode: message.mode, enqueue_order: message.enqueue_order.unwrap_or(fallback + index as u64 + 1),
+        }));
+        ordered.sort_by_key(|message| message.enqueue_order);
+        ordered
     }
 
     async fn host_set_model(&self, provider: &str, id: &str) -> Result<Option<String>, String> {
@@ -1029,14 +1153,68 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_switch_session(&mut self, path: String) -> Result<bool, String> {
+    async fn host_switch_session(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
         match self.session_host.clone() {
-            Some(host) => match host.switch_session(path.clone()).await? {
+            Some(host) => match host.switch_session_with_cwd(path.clone(), cwd_override.clone()).await? {
                 crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
                 crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
-                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.switch_session(&path).await,
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.switch_session_with_cwd(&path, cwd_override.as_deref()).await,
             },
-            None => self.session.switch_session(&path).await,
+            None => self.session.switch_session_with_cwd(&path, cwd_override.as_deref()).await,
+        }
+    }
+
+    /// senpi `runtimeHost.importFromJsonl(path, cwdOverride)`.
+    async fn host_import_from_jsonl(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
+        match self.session_host.clone() {
+            Some(host) => match host.import_from_jsonl(path.clone(), cwd_override.clone()).await? {
+                crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
+                crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.import_from_jsonl(&path, cwd_override.as_deref()).await,
+            },
+            None => self.session.import_from_jsonl(&path, cwd_override.as_deref()).await,
+        }
+    }
+
+    /// senpi `promptForMissingSessionCwd`: a Yes/No confirm; Yes queues `confirm_command`, No
+    /// queues `cancel_command`.
+    fn prompt_for_missing_session_cwd(&mut self, issue: &maho_core::session_cwd::SessionCwdIssue, path: &str, confirm_command: &str, cancel_command: &str) {
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = selected.clone();
+        let submissions = self.submissions.clone(); let cancel_submissions = self.submissions.clone();
+        let confirm = format!("{confirm_command} \"{path}\""); let cancel = cancel_command.to_owned(); let dismissed = cancel.clone();
+        let title = format!("Session cwd not found\n{}", maho_core::session_cwd::format_missing_session_cwd_prompt(issue));
+        self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
+            Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { confirm.clone() } else { cancel.clone() }); selected.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(dismissed.clone()); cancelled.borrow_mut().take(); }), Default::default())));
+    }
+
+    /// senpi `handleResumeSession`: switch, prompting to continue in the current cwd when the
+    /// session's recorded cwd no longer exists.
+    async fn handle_resume_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
+            self.prompt_for_missing_session_cwd(&issue, &path, "/resume-cwd", "/resume-cwd-cancel");
+            return Ok(());
+        }
+        let in_current_cwd = cwd_override.is_some();
+        if self.host_switch_session(path, cwd_override).await? {
+            self.rebuild_history(); self.editor.editor.set_text("");
+            self.show_status(if in_current_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+        }
+        Ok(())
+    }
+
+    /// senpi `handleImportCommand` after its confirm: import through the runtime host, prompting
+    /// to continue in the current cwd when the imported session's cwd no longer exists.
+    async fn handle_import_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
+            self.prompt_for_missing_session_cwd(&issue, &path, "/import-cwd", "/import-cancel");
+            return Ok(());
+        }
+        match self.host_import_from_jsonl(path.clone(), cwd_override).await {
+            Ok(true) => { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status(format!("Session imported from: {path}")); Ok(()) }
+            Ok(false) => { self.show_status("Import cancelled".into()); Ok(()) }
+            Err(error) => Err(format!("Failed to import session: {error}")),
         }
     }
 
@@ -1344,6 +1522,7 @@ impl InteractiveMode {
             }
             return Ok(());
         }
+        if keys.matches(data, "app.interrupt") && self.pending_bash.is_some() { self.session.abort_bash(); return Ok(()); }
         if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue(); return Ok(()); }
         self.handle_filtered_input_at(data, now_ms);
         Ok(())
@@ -1378,8 +1557,81 @@ impl InteractiveMode {
     pub async fn submit(&mut self, text: &str, options: PromptOptions) -> Result<PromptDisposition, String> {
         let had_turn = self.pending_turn.is_some();
         let disposition = self.submit_start(text, options).await?;
+        if self.pending_bash.is_some() { self.await_bash().await; }
         if !had_turn && self.pending_turn.is_some() { self.await_turn().await; }
         Ok(disposition)
+    }
+
+    /// Await the local `!` command for direct `submit` callers, streaming its output into its card.
+    async fn await_bash(&mut self) {
+        let Some((component, mut execution)) = self.pending_bash.take() else { return; };
+        let result = loop { tokio::select! {
+            result = &mut execution => break result,
+            Some(event) = self.events.recv() => self.route_bash_event(&component, &event),
+            Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
+        }};
+        while let Ok(event) = self.events.try_recv() { self.route_bash_event(&component, &event); }
+        self.finish_bash(component, result);
+    }
+
+    fn route_bash_event(&mut self, component: &Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, event: &maho_ext_api::AgentSessionEvent) {
+        if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(event); }
+    }
+
+    fn finish_bash(&mut self, component: Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, result: Result<maho_tools::bash_executor::BashResult, String>) {
+        match result {
+            Ok(result) => component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned())),
+            Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); self.show_status(error); }
+        }
+        self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+    }
+
+    /// senpi `flushPendingBashComponents`: move deferred `!` cards into the chat.
+    fn flush_pending_bash_components(&mut self) {
+        for component in std::mem::take(&mut self.pending_bash_components) { self.chat.add_component(component); }
+    }
+
+    /// senpi `isExtensionCommand`.
+    fn is_extension_command(&self, text: &str) -> bool {
+        let commands = self.session.command_groups().0.into_iter().map(|command| command.name).collect::<Vec<_>>();
+        is_extension_command_text(text, &commands)
+    }
+
+    /// senpi `queueCompactionSubmission`: the compaction queue carries text only, so attachments
+    /// are dropped visibly and their markers stripped.
+    fn queue_compaction_submission(&mut self, text: &str, images: Option<Vec<maho_ai::types::ImageContent>>) {
+        let count = images.map_or(0, |images| images.len());
+        if count == 0 { self.queue_compaction_message(text, 0); return; }
+        let queued = maho_tui::image_markers::IMAGE_MARKER_REGEX.replace_all(text, "").trim().to_owned();
+        if !queued.is_empty() { self.queue_compaction_message(&queued, count); return; }
+        self.show_status(format!("Dropped {count} image{}: messages sent during compaction cannot carry images - paste again after compaction finishes", if count > 1 { "s" } else { "" }));
+    }
+
+    /// senpi `queueCompactionMessage`.
+    fn queue_compaction_message(&mut self, text: &str, dropped_image_count: usize) {
+        let enqueue_order = self.session.reserve_queued_input_order();
+        self.compaction_queue.borrow_mut().queued.push(crate::compaction_queue_transfer::CompactionQueuedMessage { text: text.to_owned(), mode: maho_ext_api::StreamingBehavior::Steer, enqueue_order: Some(enqueue_order), pending_echo_id: None });
+        self.editor.editor.add_to_history(text);
+        self.editor.editor.set_text("");
+        self.show_status(if dropped_image_count > 0 {
+            format!("Queued message for after compaction; dropped {dropped_image_count} image{}: messages sent during compaction cannot carry images - paste again after compaction finishes", if dropped_image_count > 1 { "s" } else { "" })
+        } else { "Queued message for after compaction".into() });
+    }
+
+    /// senpi `flushCompactionQueue`: transfers run one after another (senpi chains them on a tail).
+    fn start_compaction_flush(&mut self, options: crate::compaction_queue_transfer::TransferOptions) {
+        if self.pending_compaction_flush.is_some() { self.queued_compaction_flushes.push_back(options); return; }
+        let dependencies = CompactionQueueTransfer {
+            state: self.compaction_queue.clone(), session: self.session.clone(), host: self.session_host.clone(),
+            extension_commands: self.session.command_groups().0.into_iter().map(|command| command.name).collect(),
+            tasks: tokio::task::JoinSet::new(), events: self.events_sender.clone(), failure: None,
+        };
+        self.pending_compaction_flush = Some(Box::pin(async move {
+            let mut dependencies = dependencies;
+            crate::compaction_queue_transfer::transfer_compaction_queue(&mut dependencies, options).await;
+            dependencies.tasks.detach_all();
+            dependencies.failure
+        }));
     }
 
     /// Start the turn for `text` and return, or route it into a turn that is already in flight.
@@ -1430,26 +1682,28 @@ impl InteractiveMode {
         }
         if text.trim().starts_with("/import-confirm ") {
             let path = get_path_command_argument(text.trim(), "/import-confirm").ok_or("Usage: /import <path.jsonl>")?;
-            let resolved = std::path::PathBuf::from(&path);
-            if !resolved.exists() {
-                return Err(maho_core::agent_session_runtime::SessionImportFileNotFoundError { file_path: resolved.to_string_lossy().into_owned() }.to_string());
-            }
-            let session_dir = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
-            std::fs::create_dir_all(&session_dir).map_err(|error| format!("Failed to import session: {error}"))?;
-            let destination = prepare_import_destination(&resolved, std::path::Path::new(&session_dir)).map_err(|error| format!("Failed to import session: {error}"))?;
-            if destination != resolved {
-                std::fs::copy(&resolved, &destination).map_err(|error| format!("Failed to import session: {error}"))?;
-            }
-            if self.host_switch_session(destination.to_string_lossy().into_owned()).await? {
-                self.rebuild_history(); self.editor.editor.set_text("");
-                self.show_status(format!("Session imported from: {path}"));
-            } else { self.show_status("Import cancelled".into()); }
+            self.handle_import_session(path, None).await?;
             return Ok(PromptDisposition::Handled);
         }
-        if let Some(command) = text.strip_prefix('!') {
-            let (command, excluded) = command.strip_prefix('!').map_or((command, false), |command| (command, true));
+        if text.trim().starts_with("/import-cwd ") {
+            let path = get_path_command_argument(text.trim(), "/import-cwd").ok_or("Usage: /import <path.jsonl>")?;
+            let cwd = self.host_cwd();
+            self.handle_import_session(path, Some(cwd)).await?;
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/import-cancel" { self.show_status("Import cancelled".into()); return Ok(PromptDisposition::Handled); }
+        if let Some(command) = text.strip_prefix('!').map(|command| command.strip_prefix('!').map_or((command.trim(), false), |command| (command.trim(), true))).filter(|(command, _)| !command.is_empty()) {
+            let (command, excluded) = command;
+            if self.pending_bash.is_some() || (self.session_host.is_none() && self.session.is_bash_running()) {
+                self.show_warning("A bash command is already running. Press Esc to cancel it first.");
+                self.editor.editor.set_text(text);
+                return Ok(PromptDisposition::Handled);
+            }
             let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
             component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
+            component.borrow_mut().set_expanded(self.tools_expanded);
+            // senpi shows a `!` started while streaming in the pending area until the next submission.
+            if self.host_is_streaming() { self.pending_bash_components.push(component.clone()); } else { self.chat.add_component(component.clone()); }
             if let Some(host) = self.session_host.clone() {
                 let result = match host.execute_bash(command.to_owned(), excluded).await { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
                 let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
@@ -1459,17 +1713,10 @@ impl InteractiveMode {
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
                 return Ok(PromptDisposition::Handled);
             }
+            // Run without blocking the frame loop: `poll_turn` drives it and streams its output.
             let session = self.session.clone();
-            let execution = session.execute_bash(command, None, excluded, None, None); tokio::pin!(execution);
-            let result = loop { tokio::select! {
-                result = &mut execution => break result,
-                Some(event) = self.events.recv() => { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = &event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(&event); } },
-                Some(request) = self.ui_requests.recv() => self.handle_ui_request(request),
-            }};
-            while let Ok(event) = self.events.try_recv() { if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = &event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(&event); } }
-            let result = match result { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
-            component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned()));
-            self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+            let command = command.to_owned();
+            self.pending_bash = Some((component, Box::pin(async move { session.execute_bash(&command, None, excluded, None, None).await })));
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/paste-clipboard" {
@@ -1552,9 +1799,16 @@ impl InteractiveMode {
         }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
-            if self.host_switch_session(path).await? { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Resumed session".into()); }
+            self.handle_resume_session(path, None).await?;
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/resume-cwd ") {
+            let path = get_path_command_argument(text.trim(), "/resume-cwd").ok_or("Missing session path")?;
+            let cwd = self.host_cwd();
+            self.handle_resume_session(path, Some(cwd)).await?;
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/resume-cwd-cancel" { self.show_status("Resume cancelled".into()); return Ok(PromptDisposition::Handled); }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
             let result = self.host_fork(id.trim().to_owned(), false).await?;
             if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
@@ -1642,7 +1896,15 @@ impl InteractiveMode {
             self.apply_session_name(name).await;
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim() == "/logout" { self.show_logout_selector().await; return Ok(PromptDisposition::Handled); }
+        if let Some(provider_id) = text.trim().strip_prefix("/logout-provider ") { self.logout_provider(provider_id.trim()).await; return Ok(PromptDisposition::Handled); }
         if self.dispatch_command(text)? { return Ok(PromptDisposition::Handled); }
+        // senpi queues non-command input during compaction for delivery after it settles.
+        if self.host_is_compacting() && !self.is_extension_command(text.trim()) {
+            self.queue_compaction_submission(text.trim(), options.images.clone());
+            return Ok(PromptDisposition::Handled);
+        }
+        self.flush_pending_bash_components();
         if self.pending_turn.is_some() {
             // A turn is already in flight: hand the submission to the session's steer/follow-up
             // queue (the pinned `streamingBehavior` path) instead of replacing the running turn.
@@ -1684,6 +1946,23 @@ impl InteractiveMode {
             self.pending_turn = None;
             if let Err(error) = result { self.show_status(error); }
         }
+        let bash_result = self.pending_bash.as_mut().and_then(|(_, execution)| match execution.as_mut().poll(&mut context) {
+            std::task::Poll::Pending => None,
+            std::task::Poll::Ready(result) => Some(result),
+        });
+        if let Some(result) = bash_result && let Some((component, _)) = self.pending_bash.take() {
+            while let Ok(event) = self.events.try_recv() { self.route_bash_event(&component, &event); }
+            self.finish_bash(component, result);
+        }
+        let flush_result = self.pending_compaction_flush.as_mut().and_then(|flush| match flush.as_mut().poll(&mut context) {
+            std::task::Poll::Pending => None,
+            std::task::Poll::Ready(failure) => Some(failure),
+        });
+        if let Some(failure) = flush_result {
+            self.pending_compaction_flush = None;
+            if let Some(failure) = failure { self.show_error(&failure); }
+            if let Some(next) = self.queued_compaction_flushes.pop_front() { self.start_compaction_flush(next); }
+        }
         self.drain_events();
     }
 
@@ -1715,7 +1994,9 @@ impl InteractiveMode {
 
     pub async fn abort(&self) { let _ = self.host_abort().await; }
 
-    pub fn restore_queued_messages(&mut self, abort_will_follow: bool) -> usize {
+    /// senpi `restoreQueuedMessagesToEditor`: move every queued input (native and compaction) into
+    /// the editor, ahead of the current draft.
+    fn restore_queued_messages_to_editor(&mut self, abort_will_follow: bool) -> usize {
         let cleared = self.host_clear_queue(abort_will_follow);
         let queued = cleared.iter().map(|message| message.text.as_str()).collect::<Vec<_>>();
         let count = queued.len();
@@ -1724,6 +2005,11 @@ impl InteractiveMode {
             let queued = queued.join("\n\n");
             self.editor.editor.set_text(&[queued.as_str(), current.as_str()].into_iter().filter(|text| !text.trim().is_empty()).collect::<Vec<_>>().join("\n\n"));
         }
+        count
+    }
+
+    pub fn restore_queued_messages(&mut self, abort_will_follow: bool) -> usize {
+        let count = self.restore_queued_messages_to_editor(abort_will_follow);
         self.show_status(if count == 0 { "No queued messages to restore".into() } else { format!("Restored {count} queued message{} to editor", if count > 1 { "s" } else { "" }) });
         count
     }
@@ -1856,7 +2142,11 @@ impl InteractiveMode {
         if self.host_is_streaming() { self.restore_queued_messages(false); let _ = self.host_abort().await; }
         if self.host_is_compacting() { return Err("Wait for the current compaction or tree navigation to finish before navigating the session tree.".into()); }
         let options = maho_core::agent_session::TreeNavigationOptions { summarize: Some(summarize), custom_instructions, ..Default::default() };
-        let result = self.host_navigate_tree(entry_id, options).await?;
+        // senpi shows `BranchSummaryStatusIndicator` while a summarizing navigation runs.
+        if summarize { self.show_branch_summary_status_indicator(); }
+        let result = self.host_navigate_tree(entry_id, options).await;
+        if summarize { self.clear_status_indicator(Some(crate::components::status_indicator::StatusIndicatorKind::BranchSummary)); }
+        let result = result?;
         if result.aborted == Some(true) { self.show_status("Branch summarization cancelled".into()); self.submissions.borrow_mut().push_back(format!("/tree {entry_id}")); return Ok(()); }
         if result.cancelled { self.show_status("Navigation cancelled".into()); return Ok(()); }
         self.rebuild_history();
@@ -1899,37 +2189,6 @@ impl InteractiveMode {
             let Some((provider_id, method)) = args.trim().split_once(' ') else { return Ok(true); };
             let auth_type = match method { "oauth" => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, "api_key" => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey, _ => return Ok(true) };
             if let Some(provider) = self.login_provider_options(Some(auth_type)).into_iter().find(|provider| provider.id == provider_id) { self.start_provider_login(&provider); }
-            return Ok(true);
-        }
-        if text == "/logout" {
-            // senpi `showOAuthSelector("logout")`.
-            let options = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().map(|option| crate::components::oauth_selector::AuthSelectorProvider {
-                id: option.id, name: option.name, auth_type: match option.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey }, method_name: None, status: None,
-            }).collect::<Vec<_>>();
-            if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return Ok(true); }
-            let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
-            self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
-                Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), None)));
-            return Ok(true);
-        }
-        if let Some(provider_id) = text.strip_prefix("/logout-provider ") {
-            let provider_id = provider_id.trim();
-            let Some(provider) = maho_core::auth_providers::build_logout_provider_infos(self.session.model_registry()).into_iter().find(|provider| provider.id == provider_id) else { return Ok(true); };
-            let runtime = self.session.model_registry().model_runtime.clone();
-            let sender = self.auth_ui_sender.clone();
-            let auth_type = match provider.auth_type { maho_core::auth_storage::CredentialKind::Oauth => crate::components::oauth_selector::AuthSelectorAuthType::OAuth, maho_core::auth_storage::CredentialKind::ApiKey => crate::components::oauth_selector::AuthSelectorAuthType::ApiKey };
-            tokio::spawn(async move {
-                // senpi bounds logout with `AbortSignal.timeout(15_000)`.
-                let abort = maho_ai::utils::abort::AbortController::new();
-                let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
-                let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
-                    Ok(result) => result.map_err(|error| error.to_string()),
-                    Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
-                };
-                let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
-            });
             return Ok(true);
         }
         if text == "/changelog" {
@@ -2407,12 +2666,12 @@ impl InteractiveMode {
         if text == "/import" || text.starts_with("/import ") {
             let path = get_path_command_argument(text, "/import").ok_or("Usage: /import <path.jsonl>")?;
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let cancel_submissions = self.submissions.clone();
             let confirm_path = path.clone();
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-                Box::new(move |choice| { if choice == "Yes" { submissions.borrow_mut().push_back(format!("/import-confirm \"{confirm_path}\"")); } selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+                Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() }); selected.borrow_mut().take(); }),
+                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), Default::default());
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
         }
@@ -2485,6 +2744,64 @@ impl InteractiveMode {
         }).collect::<Vec<_>>();
         options.sort_by(|left, right| left.name.cmp(&right.name));
         options
+    }
+
+    /// senpi `getLogoutProviderOptions`: the stored credentials, listed under a 15 s abort.
+    async fn get_logout_provider_options(&self) -> Result<Vec<crate::components::oauth_selector::AuthSelectorProvider>, String> {
+        use crate::components::oauth_selector::{AuthSelectorAuthType, AuthSelectorProvider};
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let abort = maho_ai::utils::abort::AbortController::new();
+        let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+        let credentials = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.list_credentials(Some(options))).await {
+            Ok(result) => result.map_err(|error| error.to_string())?,
+            Err(_) => { abort.abort(None); return Err("The operation was aborted due to timeout".to_owned()); }
+        };
+        let registry = self.session.model_registry();
+        let mut options = credentials.into_iter().map(|credential| {
+            let auth_type = match credential.credential_type { maho_ai::auth::types::CredentialType::OAuth => AuthSelectorAuthType::OAuth, maho_ai::auth::types::CredentialType::ApiKey => AuthSelectorAuthType::ApiKey };
+            AuthSelectorProvider {
+                name: registry.get_provider_display_name(&credential.provider_id), id: credential.provider_id, auth_type, method_name: None,
+                status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
+            }
+        }).collect::<Vec<_>>();
+        options.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(options)
+    }
+
+    /// senpi `showOAuthSelector("logout")`.
+    async fn show_logout_selector(&mut self) {
+        let options = match self.get_logout_provider_options().await {
+            Ok(options) => options,
+            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
+        };
+        if options.is_empty() { self.show_status("No stored credentials to remove. /logout only removes credentials saved by /login; environment variables and models.json config are unchanged.".into()); return; }
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = self.ui_reply.clone(); let submissions = self.submissions.clone();
+        self.ui_dialog = Some(Box::new(crate::components::oauth_selector::OAuthSelectorComponent::new(&self.theme, crate::components::oauth_selector::AuthSelectorMode::Logout, options,
+            Box::new(move |id, _| { submissions.borrow_mut().push_back(format!("/logout-provider {id}")); selected.borrow_mut().take(); }),
+            Box::new(move || { cancelled.borrow_mut().take(); }), None)));
+    }
+
+    /// senpi's logout selector callback: remove the chosen provider's stored credential.
+    async fn logout_provider(&mut self, provider_id: &str) {
+        let options = match self.get_logout_provider_options().await {
+            Ok(options) => options,
+            Err(error) => { self.show_error(&format!("Could not read stored credentials: {error}")); return; }
+        };
+        let Some(provider) = options.into_iter().find(|provider| provider.id == provider_id) else { return; };
+        let runtime = self.session.model_registry().model_runtime.clone();
+        let sender = self.auth_ui_sender.clone();
+        let auth_type = provider.auth_type;
+        tokio::spawn(async move {
+            // senpi bounds logout with `AbortSignal.timeout(15_000)`.
+            let abort = maho_ai::utils::abort::AbortController::new();
+            let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(abort.signal()) };
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(15), runtime.logout(&provider.id, options)).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => { abort.abort(None); Err("The operation was aborted due to timeout".to_owned()) }
+            };
+            let _ = sender.send(AuthUiEvent::LogoutFinished { provider_name: provider.name, auth_type, result });
+        });
     }
 
     /// senpi `showLoginAuthTypeSelector`.
@@ -2634,6 +2951,24 @@ impl InteractiveMode {
         let model = self.host_model();
         self.show_risky_main_model_warning(&model);
         self.maybe_warn_about_anthropic_subscription_auth(model);
+    /// senpi `showWarning`.
+    pub fn show_warning(&mut self, message: &str) {
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.fg(crate::theme::ThemeColor::Warning, &format!("Warning: {message}")), 1, 0))));
+    }
+
+    /// senpi `showNewVersionNotification`: the "Update Available" notice box.
+    pub fn show_new_version_notification(&mut self, new_version: &str, action: &str, changelog_url: &str) {
+        use crate::components::earendil_announcement::{build_notice_box, NoticeLine, NoticeSpec};
+        let link = if maho_tui::terminal_image::get_capabilities().hyperlinks { maho_tui::terminal_image::hyperlink(changelog_url, changelog_url) } else { changelog_url.to_owned() };
+        let spec = NoticeSpec {
+            title: "Update Available".into(), tone: Some(crate::theme::ThemeColor::Warning),
+            why: crate::extension_error_format::sanitize_tui_error_message(&format!("New version {new_version} is available.")),
+            extra: vec![NoticeLine { text: action.to_owned(), tone: None }, NoticeLine { text: format!("Changelog: {link}"), tone: Some(crate::theme::ThemeColor::Accent) }],
+            expanded_line: None,
+        };
+        self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        self.chat.add_component(build_notice_box(&spec, self.tools_expanded, &self.theme));
     }
 
     fn show_error(&mut self, message: &str) {
@@ -2687,10 +3022,15 @@ impl InteractiveMode {
                 AuthUiEvent::LogoutFinished { provider_name, auth_type, result } => {
                     let _ = self.auth_lifecycle_events.send(AuthLifecycleEvent::LogoutCompleted { provider_name: provider_name.clone(), auth_type, outcome: result.clone() });
                     match result {
-                    Ok(()) => self.show_status(match auth_type {
+                    Ok(()) => {
+                        // senpi `updateAvailableProviderCount` after a successful logout.
+                        self.footer_data.set_available_provider_count(self.host_available_models().iter().map(|model| &model.provider).collect::<std::collections::BTreeSet<_>>().len());
+                        if let Some(footer) = &mut self.footer { footer.invalidate(); }
+                        self.show_status(match auth_type {
                         crate::components::oauth_selector::AuthSelectorAuthType::OAuth => format!("Logged out of {provider_name}"),
                         crate::components::oauth_selector::AuthSelectorAuthType::ApiKey => format!("Removed stored API key for {provider_name}. Environment variables and models.json config are unchanged."),
-                    }),
+                    });
+                    }
                     Err(error) => self.show_error(&format!("Logout failed: {error}")),
                     }
                 },
@@ -2765,10 +3105,72 @@ impl InteractiveMode {
         }
     }
 
+    /// senpi `showStatusIndicator`: replace the active indicator. Retry and branch-summary embed in
+    /// the editor border at render time; compaction keeps its own status row.
+    fn show_status_indicator(&mut self, indicator: crate::components::status_indicator::StatusIndicator) {
+        if let Some(previous) = self.active_status_indicator.take() { previous.borrow_mut().dispose(); }
+        self.idle_status = None;
+        self.active_status_indicator = Some(Rc::new(RefCell::new(indicator)));
+    }
+
+    /// senpi `clearStatusIndicator(kind)`: clear only when the active indicator matches `kind`.
+    fn clear_status_indicator(&mut self, kind: Option<crate::components::status_indicator::StatusIndicatorKind>) {
+        use crate::components::status_indicator::{IdleStatus, StatusIndicatorKind};
+        let Some(active) = self.active_status_indicator.clone() else { return; };
+        let active_kind = active.borrow().kind;
+        if kind.is_some_and(|kind| kind != active_kind) { return; }
+        // senpi reserves the cleared row's height under `clearOnShrink` in regular mode; only the
+        // standalone compaction row occupies dock rows here (the others live in the editor border).
+        let (_, clear_on_shrink, _) = self.terminal_settings();
+        let reserved = (clear_on_shrink && active_kind == StatusIndicatorKind::Compaction).then(|| {
+            let (columns, rows) = self.terminal_dimensions.get();
+            let rendered = active.borrow_mut().render(usize::from(columns)).len();
+            IdleStatus { height: usize::from(rows).min(rendered.max(1)) }
+        });
+        active.borrow_mut().dispose();
+        self.active_status_indicator = None;
+        self.idle_status = reserved;
+    }
+
+    fn status_indicator_now(&self) -> u64 { self.clock.elapsed().as_millis() as u64 }
+
+    fn show_retry_status_indicator(&mut self, attempt: u32, max_attempts: u32, delay_ms: u64, error_message: &str) {
+        let trouble = crate::provider_error_presentation::is_network_provider_error(Some(error_message), false);
+        let indicator = crate::components::status_indicator::StatusIndicator::retry(attempt as usize, max_attempts as usize, delay_ms, trouble, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
+    fn show_compaction_status_indicator(&mut self, reason: maho_ext_api::CompactionReason) {
+        use crate::components::status_indicator::CompactionStatusReason;
+        let reason = match reason {
+            maho_ext_api::CompactionReason::Manual => CompactionStatusReason::Manual,
+            maho_ext_api::CompactionReason::Threshold => CompactionStatusReason::Threshold,
+            maho_ext_api::CompactionReason::Overflow => CompactionStatusReason::Overflow,
+            maho_ext_api::CompactionReason::PrePrompt => CompactionStatusReason::PrePrompt,
+            maho_ext_api::CompactionReason::Branch => CompactionStatusReason::Branch,
+            maho_ext_api::CompactionReason::Extension => CompactionStatusReason::Extension,
+        };
+        let indicator = crate::components::status_indicator::StatusIndicator::compaction(reason, &crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
+    fn show_branch_summary_status_indicator(&mut self) {
+        let indicator = crate::components::status_indicator::StatusIndicator::branch_summary(&crate::components::keybinding_hints::key_text("app.interrupt"), self.theme.clone(), self.status_indicator_now());
+        self.show_status_indicator(indicator);
+    }
+
     pub fn handle_session_event(&mut self, event: &maho_ext_api::AgentSessionEvent) {
         use maho_ext_api::AgentSessionEvent;
+        use crate::components::status_indicator::StatusIndicatorKind;
         match event {
-            AgentSessionEvent::Agent(event) => self.handle_event(event),
+            AgentSessionEvent::Agent(event) => {
+                // senpi `message_update`: visible assistant text ends a pending retry indicator.
+                if let AgentEvent::MessageUpdate { message, .. } = event
+                    && message.as_assistant().is_some_and(|assistant| assistant.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::Text(text) if !text.text.trim().is_empty()))) {
+                    self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                }
+                self.handle_event(event);
+            }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
@@ -2779,6 +3181,50 @@ impl InteractiveMode {
             AgentSessionEvent::CompactionStart { .. } => self.show_status("Compacting context...".into()),
             AgentSessionEvent::CompactionEnd { error_message:Some(error), .. } => self.show_status(error.clone()),
             AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled | AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; }
+            AgentSessionEvent::ThinkingLevelChanged { level } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
+            AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
+            AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                if !*success && final_error.as_deref() != Some("Retry cancelled") {
+                    self.show_error(&format!("Retry failed after {attempt} attempts: {}", final_error.as_deref().filter(|error| !error.is_empty()).unwrap_or("Unknown error")));
+                }
+            }
+            AgentSessionEvent::SummarizationRetryScheduled { attempt, max_attempts, delay_ms, error_message } => { self.show_error(error_message); self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message); }
+            AgentSessionEvent::SummarizationRetryAttemptStart { source, reason } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Retry));
+                if source == "branchSummary" { self.show_branch_summary_status_indicator(); }
+                else { self.show_compaction_status_indicator(reason.unwrap_or(maho_ext_api::CompactionReason::Manual)); }
+            }
+            AgentSessionEvent::SummarizationRetryFinished => self.clear_status_indicator(Some(StatusIndicatorKind::Retry)),
+            AgentSessionEvent::CompactionStart { reason, .. } => self.show_compaction_status_indicator(*reason),
+            AgentSessionEvent::CompactionProgress { delta, text, .. } => {
+                if let Some(indicator) = self.active_status_indicator.clone().filter(|indicator| indicator.borrow().kind == StatusIndicatorKind::Compaction) {
+                    let next = text.clone().or_else(|| delta.clone()).unwrap_or_default();
+                    if !next.is_empty() {
+                        let tail = next.char_indices().rev().nth(3_999).map_or(next.as_str(), |(index, _)| &next[index..]);
+                        let preview = if tail.len() < next.len() { format!("...{tail}") } else { next.clone() };
+                        indicator.borrow_mut().set_progress_text(&maho_tui::terminal_text::sanitize_terminal_label(&preview), self.status_indicator_now());
+                    }
+                }
+            }
+            AgentSessionEvent::CompactionEnd { result, will_retry, accepted, error_message, .. } => {
+                self.clear_status_indicator(Some(StatusIndicatorKind::Compaction));
+                if let Some(error) = error_message { self.show_status(error.clone()); }
+                // senpi: every terminal compaction_end resolves the compaction queue.
+                if *accepted == Some(true) || result.is_some() {
+                    self.start_compaction_flush(crate::compaction_queue_transfer::TransferOptions { will_retry: *will_retry, defer_admission: false });
+                } else if *will_retry {
+                    let held = self.compaction_queue.borrow().queued.len();
+                    if held > 0 { self.show_status(format!("{held} queued message{} will send with the next turn (compaction will retry)", if held == 1 { "" } else { "s" })); }
+                    self.start_compaction_flush(crate::compaction_queue_transfer::TransferOptions { will_retry: true, defer_admission: true });
+                } else {
+                    let restored = self.restore_queued_messages_to_editor(false);
+                    if restored > 0 { self.show_status(format!("{restored} queued message{} restored to the editor (compaction did not complete)", if restored == 1 { "" } else { "s" })); }
+                }
+            }
+            AgentSessionEvent::BashExecutionUpdate { delta, .. } => { if let Some((component, _)) = &self.pending_bash { component.borrow_mut().append_output(delta); } }
+            AgentSessionEvent::AgentIdle | AgentSessionEvent::AgentSettled => { self.agent_idle = true; self.working_started_ms = None; }
+            AgentSessionEvent::SessionAbort => { self.agent_idle = true; self.working_started_ms = None; self.clear_status_indicator(Some(StatusIndicatorKind::Retry)); }
             _ => {}
         }
     }
@@ -3602,13 +4048,22 @@ impl InteractiveMode {
     pub(crate) fn render_dock(&mut self,width:usize)->Vec<String> {
         let mut lines=Vec::new();
         let now = self.clock.elapsed().as_secs_f64() * 1000.0;
-        let indicator = self.working_frame(now).map(|frame| {
+        // senpi `activeStatusIndicator`: a retry/branch-summary indicator owns the editor border;
+        // compaction keeps a standalone status row; otherwise the working frame is embedded.
+        let active = self.active_status_indicator.clone();
+        if let Some(active) = &active { active.borrow_mut().tick(now.max(0.0) as u64); }
+        let compaction = active.clone().filter(|indicator| indicator.borrow().kind == crate::components::status_indicator::StatusIndicatorKind::Compaction);
+        let embedded = active.filter(|indicator| indicator.borrow().kind != crate::components::status_indicator::StatusIndicatorKind::Compaction);
+        let indicator = embedded.or_else(|| self.working_frame(now).map(|frame| {
             let mut indicator = crate::components::status_indicator::StatusIndicator::working(&frame, self.theme.clone(), self.working_started_ms.unwrap_or(now).max(0.0) as u64);
             indicator.tick(now.max(0.0) as u64);
             Rc::new(RefCell::new(indicator))
-        });
+        }));
         self.editor.set_working_status_indicator(indicator);
         lines.push(String::new());
+        for component in &self.pending_bash_components { lines.extend(component.borrow_mut().render(width)); }
+        if let Some(compaction) = compaction { lines.extend(compaction.borrow_mut().render(width)); }
+        else if let Some(idle) = &mut self.idle_status { lines.extend(idle.render(width)); }
         for (_, widget, placement) in &mut self.widgets { if *placement == maho_ext_api::WidgetPlacement::AboveEditor { lines.extend(widget.render(width)); } }
         if self.shortcut_overlay { lines.extend(crate::components::shortcut_overlay::ShortcutOverlay::new(&self.theme).render(width)); }
         if let Some(widget) = &mut self.async_question_widget { lines.extend(widget.render(width)); }
@@ -3681,6 +4136,7 @@ impl InteractiveMode {
             if submit {
                 let text = editor.get_expanded_text().unwrap_or_else(|| editor.get_text());
                 if !text.trim().is_empty() { self.submissions.borrow_mut().push_back(text); editor.set_text(""); }
+                else { self.question_actions.borrow_mut().push_back(QuestionAction::Expand); }
             } else { editor.handle_input(data); }
         } else { self.editor.handle_input(data); }
         let text = self.custom_editor.as_ref().map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
@@ -3735,6 +4191,63 @@ pub(crate) fn format_debug_log(timestamp: &str, width: usize, height: usize, lin
     for message in messages { data.push_str(message); data.push('\n'); }
     data.push('\n');
     data
+}
+
+fn quote_if_needed(value: &str) -> String {
+    if !value.is_empty() && value.chars().all(|character| character.is_ascii_alphanumeric() || "_-./~:@".contains(character)) { return value.to_owned(); }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// senpi `formatResumeCommand`: the command line that reopens this session, when it is on disk.
+/// `is_tty` is senpi's `process.stdout.isTTY`.
+pub fn format_resume_command(manager: &maho_core::session_manager::SessionManager, is_tty: bool) -> Option<String> {
+    if !is_tty || !manager.is_persisted() { return None; }
+    let session_file = manager.session_file()?;
+    if !std::path::Path::new(session_file).exists() { return None; }
+    let mut args = vec![maho_core::config::app_command()];
+    if !manager.uses_default_session_dir() { args.push("--session-dir".into()); args.push(quote_if_needed(manager.session_dir())); }
+    args.push("--session".into());
+    args.push(manager.session_id().to_owned());
+    Some(args.join(" "))
+}
+
+/// senpi `checkTmuxKeyboardSetup`: query the tmux options (2 s each) and build the warning.
+pub async fn check_tmux_keyboard_setup() -> Option<String> {
+    std::env::var_os("TMUX")?;
+    async fn run_tmux(args: &[&str]) -> Option<String> {
+        let output = tokio::process::Command::new("tmux").args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true).output();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(2), output).await.ok()?.ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+    let (extended_keys, extended_keys_format, client_termname, allow_passthrough, focus_events, version) = tokio::join!(
+        run_tmux(&["show", "-gv", "extended-keys"]),
+        run_tmux(&["show", "-gv", "extended-keys-format"]),
+        run_tmux(&["display-message", "-p", "#{client_termname}"]),
+        run_tmux(&["show", "-gv", "allow-passthrough"]),
+        run_tmux(&["show", "-gv", "focus-events"]),
+        run_tmux(&["display-message", "-p", "#{version}"]),
+    );
+    // Could not query tmux (timeout, sandbox, ...): do not warn.
+    let extended_keys = extended_keys?;
+    crate::tmux_setup::build_tmux_setup_warning(&crate::tmux_setup::TmuxSetupCheck {
+        extended_keys: Some(extended_keys.as_str()),
+        extended_keys_format: extended_keys_format.as_deref(),
+        images_enabled: maho_tui::terminal_image::get_capabilities().tmux_passthrough,
+        outer_kitty_capable: maho_tui::terminal_capabilities::outer_kitty_graphics_mode(client_termname.as_deref().unwrap_or("")).is_some(),
+        allow_passthrough: allow_passthrough.as_deref(),
+        focus_events: focus_events.as_deref(),
+        version: version.as_deref(),
+    })
+}
+
+/// senpi `getMissingSessionCwdIssue` for a session file not yet opened: the header's recorded cwd
+/// when it is set and no longer exists, read without opening (and possibly migrating) the file.
+pub fn missing_session_cwd_issue(path: &str, fallback_cwd: &str) -> Option<maho_core::session_cwd::SessionCwdIssue> {
+    if !std::path::Path::new(path).exists() { return None; }
+    let entries = maho_core::session_manager::load_entries_from_file(path);
+    let session_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(serde_json::Value::as_str)?.to_owned();
+    if session_cwd.is_empty() || std::path::Path::new(&session_cwd).exists() { return None; }
+    Some(maho_core::session_cwd::SessionCwdIssue { session_file: Some(path.to_owned()), session_cwd, fallback_cwd: fallback_cwd.to_owned() })
 }
 
 /// senpi `importFromJsonl` destination planning: imports are stored beside the
@@ -3797,6 +4310,44 @@ mod tests {
         let data = format_debug_log("t", 10, 10, &["\u{1b}[31mred\u{1b}[0m".into()], &[]);
         assert!(data.contains("(w=3)"));
         assert!(data.contains("\\u001b[31mred"));
+    }
+
+    #[test]
+    fn resume_command_quotes_only_unsafe_paths() {
+        assert_eq!(quote_if_needed("/tmp/sessions-1"), "/tmp/sessions-1");
+        assert_eq!(quote_if_needed("/tmp/my sessions"), "'/tmp/my sessions'");
+        assert_eq!(quote_if_needed("it's"), "'it'\\''s'");
+        assert_eq!(quote_if_needed(""), "''");
+    }
+
+    #[test]
+    fn resume_command_requires_a_tty_and_a_persisted_session() {
+        let manager = maho_core::session_manager::SessionManager::in_memory("/tmp", None, None);
+        assert_eq!(format_resume_command(&manager, true), None);
+        assert_eq!(format_resume_command(&manager, false), None);
+    }
+
+    #[test]
+    fn compaction_queue_identifies_extension_commands_by_name() {
+        let commands = vec!["deploy".to_owned()];
+        assert!(is_extension_command_text("/deploy now", &commands));
+        assert!(!is_extension_command_text("/deployx", &commands));
+        assert!(!is_extension_command_text("deploy", &commands));
+    }
+
+    #[test]
+    fn missing_session_cwd_issue_reports_only_a_vanished_recorded_cwd() {
+        let directory = tempfile::tempdir().expect("directory");
+        let fallback = directory.path().to_string_lossy().into_owned();
+        let gone = directory.path().join("gone").to_string_lossy().into_owned();
+        let missing = directory.path().join("missing.jsonl");
+        std::fs::write(&missing, format!("{}\n", serde_json::json!({"type":"session","id":"s","cwd":gone}))).expect("missing-cwd session");
+        let missing = missing.to_string_lossy().into_owned();
+        assert_eq!(missing_session_cwd_issue(&missing, &fallback), Some(maho_core::session_cwd::SessionCwdIssue { session_file: Some(missing.clone()), session_cwd: gone, fallback_cwd: fallback.clone() }));
+        let present = directory.path().join("present.jsonl");
+        std::fs::write(&present, format!("{}\n", serde_json::json!({"type":"session","id":"s","cwd":fallback}))).expect("present-cwd session");
+        assert_eq!(missing_session_cwd_issue(&present.to_string_lossy(), &fallback), None);
+        assert_eq!(missing_session_cwd_issue(&directory.path().join("absent.jsonl").to_string_lossy(), &fallback), None);
     }
 
     #[test]
