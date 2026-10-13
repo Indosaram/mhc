@@ -59,24 +59,68 @@ pub async fn start_daemon(paths: &DaemonPaths, listen: &Value, version: &str, ex
     let mut command = tokio::process::Command::new(executable);
     if let Some(agent_dir) = paths.dir.parent() { command.env(maho_core::config::env_agent_dir_var(),agent_dir); }
     command.args(prefix_args).args(["app-server","--listen",listen["url"].as_str().ok_or_else(||std::io::Error::other("Missing listen URL"))?]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(stderr);
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command.spawn()?;
     let pid = child.id().ok_or_else(||std::io::Error::other("failed to spawn daemon process"))?;
     let registration = async {
         let identity = wait_for_start_time(u64::from(pid),10_000).await?.ok_or_else(||std::io::Error::other(format!("spawned daemon {pid} started but its process identity stayed unreadable")))?;
         write_sidecar_file_atomic(&paths.pid_file,&format!("{}\n",json!({"pid":pid,"processStartTime":identity}))).await.map_err(std::io::Error::other)?;
         write_sidecar_file_atomic(&paths.settings_file,&format!("{}\n",json!({"listen":listen}))).await.map_err(std::io::Error::other)?;
-        tokio::select! {
-            probe = poll_probe(&paths.token_file,listen,10_000,version) => if probe?.is_some() {Ok(())} else {Err(std::io::Error::other("spawned daemon did not answer initialize within 10s"))},
-            exit = child.wait() => Err(std::io::Error::other(format!("spawned daemon exited with {exit:?} before answering initialize"))),
-        }
+        Ok::<_,std::io::Error>(tokio::select! {
+            probe = poll_probe(&paths.token_file,listen,10_000,version) => if probe?.is_some() {None} else {Some("spawned daemon did not answer initialize within 10s".to_owned())},
+            exit = child.wait() => Some(format!("spawned daemon {} before answering initialize",describe_daemon_exit(&exit))),
+        })
     }.await;
-    if let Err(error) = registration {
-        if child.try_wait()?.is_none() {child.kill().await?;child.wait().await?;}
+    let failure = match registration {
+        Ok(None) => None,
+        Ok(Some(message)) => {
+            terminate_child(&mut child,pid).await?;
+            Some(std::io::Error::other(append_daemon_stderr(paths,&message).await?))
+        },
+        Err(error) => {
+            terminate_child(&mut child,pid).await?;
+            Some(error)
+        },
+    };
+    if let Some(error) = failure {
         cleanup_state(&paths.pid_file,&paths.settings_file,listen).await?;
         return Err(error);
     }
     tokio::spawn(async move {if let Err(error) = child.wait().await {eprintln!("app-server daemon reap: {error}");}});
     Ok(json!({"status":"started","pid":pid,"listen":listen["url"]}))
+}
+async fn terminate_child(child: &mut tokio::process::Child, pid: u32) -> std::io::Result<()> {
+    if child.try_wait()?.is_some() {return Ok(());}
+    #[cfg(unix)]
+    {
+        super::daemon_process::signal_pid(u64::from(pid),"-TERM")?;
+        if tokio::time::timeout(std::time::Duration::from_secs(10),child.wait()).await.is_ok() {return Ok(());}
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+    if child.try_wait()?.is_none() {child.kill().await?;child.wait().await?;}
+    Ok(())
+}
+pub fn describe_daemon_exit(exit: &std::io::Result<std::process::ExitStatus>) -> String {
+    let status = match exit {Ok(status) => status, Err(error) => return format!("failed to launch ({error})")};
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {return format!("was terminated by {}",signal_name(signal));}
+    }
+    match status.code() {Some(code) => format!("exited with code {code}"),None => "exited with code unknown".to_owned()}
+}
+#[cfg(unix)]
+fn signal_name(signal: i32) -> String {
+    match signal {1 => "SIGHUP".into(),2 => "SIGINT".into(),3 => "SIGQUIT".into(),4 => "SIGILL".into(),6 => "SIGABRT".into(),9 => "SIGKILL".into(),11 => "SIGSEGV".into(),13 => "SIGPIPE".into(),14 => "SIGALRM".into(),15 => "SIGTERM".into(),other => format!("signal {other}")}
+}
+pub async fn append_daemon_stderr(paths: &DaemonPaths, message: &str) -> std::io::Result<String> {
+    match tokio::fs::read_to_string(&paths.stderr_log).await {
+        Ok(stderr) => {let stderr = maho_ai::utils::js::trim(&stderr); Ok(if stderr.is_empty() {message.to_owned()} else {format!("{message}\n{stderr}")})},
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(message.to_owned()),
+        Err(error) => Err(error),
+    }
 }
 pub async fn saved_listen(paths: &DaemonPaths, fallback: &Value) -> std::io::Result<Value> {
     Ok(read_settings(&paths.settings_file).await?.map(|settings|settings["listen"].clone()).unwrap_or_else(||fallback.clone()))
