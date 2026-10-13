@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
-use crate::{bash::{BashOperations, BashExecOptions, BashDataCallback}, definition::*, output_accumulator::{OutputAccumulator, OutputAccumulatorOptions}};
+use crate::{ansi::strip_ansi, bash::{BashOperations, BashExecOptions, BashDataCallback}, definition::*, output_accumulator::{OutputAccumulator, OutputAccumulatorOptions}};
 pub type BashChunkCallback = Arc<dyn Fn(&str) -> Result<(), ToolError> + Send + Sync>;
 pub type BashAsyncChunkCallback = Arc<dyn Fn(String) -> ToolFuture<'static, ()> + Send + Sync>;
 #[derive(Default)]
@@ -17,7 +17,6 @@ pub async fn execute_bash_with_operations(command: &str, cwd: &Path, operations:
     let async_callback = options.on_chunk_async;
     let pending = Arc::new(Mutex::new(Vec::<u8>::new()));
     let pending_callback = Arc::clone(&pending);
-    let ansi = regex::Regex::new(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))").map_err(|e| ToolError::Message(e.to_string()))?;
     let on_data: BashDataCallback = Arc::new(move |data| {
         if data_error.lock().map_err(|_| ToolError::Message("Bash callback lock poisoned".into()))?.is_some() { return Ok(()); }
         let mut pending = pending_callback.lock().map_err(|_| ToolError::Message("Bash decoder lock poisoned".into()))?;
@@ -33,7 +32,7 @@ pub async fn execute_bash_with_operations(command: &str, cwd: &Path, operations:
             }
         }
         pending.drain(..consumed); drop(pending);
-        let text: String = ansi.replace_all(&decoded, "").chars().filter(|c| (*c > '\u{1f}' || *c == '\n' || *c == '\t') && !('\u{fff9}'..='\u{fffb}').contains(c)).collect();
+        let text: String = strip_ansi(&decoded).chars().filter(|c| (*c > '\u{1f}' || *c == '\n' || *c == '\t') && !('\u{fff9}'..='\u{fffb}').contains(c)).collect();
         captured.lock().map_err(|_| ToolError::Message("Bash output lock poisoned".into()))?.append_text(&text)?;
         if let Some(callback) = &callback && let Err(error) = callback(&text) {
             let message = error.to_string();
