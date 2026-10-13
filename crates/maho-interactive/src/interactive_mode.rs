@@ -164,7 +164,9 @@ pub struct InteractiveMode {
     /// async ingress, so the synchronous card path can consume registered renderers.
     tool_renderer_snapshots: std::collections::HashMap<String, Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>>,
     native_tool_renderer_snapshots: std::collections::HashMap<String, Rc<RefCell<dyn crate::tools::renderers::ToolRenderers>>>,
-    chat: Container,
+    /// senpi `chatContainer`: an `ExplorationTranscriptContainer` that groups read/search calls into
+    /// Exploring/Explored cells and paints a bounded tail first when resuming long sessions.
+    chat: crate::components::exploration_transcript_container::ExplorationTranscriptContainer,
     streaming: Option<Rc<RefCell<AssistantMessageComponent>>>,
     assistant_segments: BTreeMap<usize, Rc<RefCell<AssistantMessageComponent>>>,
     pending_tools: BTreeMap<String, Rc<RefCell<ToolExecutionComponent>>>,
@@ -340,20 +342,20 @@ impl InteractiveMode {
         if self.startup_notices_shown { return; }
         self.startup_notices_shown = true;
         let Some(markdown) = self.changelog_markdown.clone() else { return; };
-        if !self.chat.children.is_empty() { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); }
-        self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+        if !self.chat.children().is_empty() { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))))); }
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
         let collapse = self.session.with_settings_manager(|settings| settings.get_bool("collapseChangelog").unwrap_or(false));
         if collapse {
             let latest = crate::interactive_changelog::latest_version_in_markdown(&markdown).unwrap_or_else(|| maho_core::config::display_version(maho_core::engine_build_identity::ENGINE_VERSION));
             let condensed = format!("Updated to v{latest}. Use {} to view full changelog.", self.theme.bold("/changelog"));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(condensed, 1, 0))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(condensed, 1, 0)))));
         } else {
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent, "What's New")), 1, 0))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 0, get_markdown_theme(&self.theme), None, Default::default())))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent, "What's New")), 1, 0)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 0, get_markdown_theme(&self.theme), None, Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
         }
-        self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
     }
     // ---- senpi's built-in welcome header (`interactive-mode.ts:1598-1673`, `showStartupNoticesIfNeeded`)
 
@@ -600,8 +602,14 @@ impl InteractiveMode {
         );
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
+        let chat_host = host.clone();
+        let chat = crate::components::exploration_transcript_container::ExplorationTranscriptContainer::new(crate::components::progressive_transcript_container::ProgressiveTranscriptOptions {
+            tail_budget: crate::components::progressive_transcript_container::DEFAULT_TAIL_BUDGET,
+            warm_chunk_size: crate::components::progressive_transcript_container::DEFAULT_WARM_CHUNK_SIZE,
+            request_render: Rc::new(move || chat_host.request_render()),
+        }, theme.clone());
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], mermaid_theme, reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1029,17 +1037,17 @@ impl InteractiveMode {
             }
             AgentMessage::Custom(CustomAgentMessage::Custom(message)) if message.display => {
                 let component = Rc::new(RefCell::new(crate::components::custom_message::CustomMessageComponent::new(serde_json::to_value(message).expect("custom message"), None, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad())));
-                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::BranchSummary(message)) => {
                 let component = Rc::new(RefCell::new(crate::components::branch_summary_message::BranchSummaryMessageComponent::new(message.summary.clone(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
-                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::CompactionSummary(message)) => {
                 let component = Rc::new(RefCell::new(crate::components::compaction_summary_message::CompactionSummaryMessageComponent::new(serde_json::to_value(message).expect("summary"), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"))));
-                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+                component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             AgentMessage::Custom(CustomAgentMessage::BashExecution(message)) => {
@@ -1047,7 +1055,7 @@ impl InteractiveMode {
                 component.append_output(&message.output);
                 component.set_complete(message.exit_code.map(|code| i32::try_from(code).expect("exit code")), message.cancelled, None, message.full_output_path.clone());
                 component.set_expanded(self.tools_expanded);
-                let component = Rc::new(RefCell::new(component)); self.chat.add_child(component.clone());
+                let component = Rc::new(RefCell::new(component)); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                 self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
             }
             _ => {}
@@ -1351,7 +1359,7 @@ impl InteractiveMode {
         if let Some(command) = text.strip_prefix('!') {
             let (command, excluded) = command.strip_prefix('!').map_or((command, false), |command| (command, true));
             let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
-            component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(component.clone());
+            component.borrow_mut().set_expanded(self.tools_expanded); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
             if let Some(host) = self.session_host.clone() {
                 let result = match host.execute_bash(command.to_owned(), excluded).await { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
                 let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
@@ -1718,11 +1726,11 @@ impl InteractiveMode {
 
     fn show_status(&mut self, text: String) {
         let text = self.theme.fg(crate::theme::ThemeColor::Dim, &text);
-        if let Some((count, component)) = &self.last_status && *count == self.chat.children.len() { component.borrow_mut().set_text(text); return; }
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
+        if let Some((count, component)) = &self.last_status && *count == self.chat.children().len() { component.borrow_mut().set_text(text); return; }
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
         let component = Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0)));
-        self.chat.add_child(component.clone());
-        self.last_status = Some((self.chat.children.len(), component));
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
+        self.last_status = Some((self.chat.children().len(), component));
     }
 
     fn dispatch_command(&mut self, text: &str) -> Result<bool, String> {
@@ -1787,12 +1795,12 @@ impl InteractiveMode {
             let source=maho_core::changelog_source::resolve_changelog_source();
             let entries=crate::interactive_changelog::entries(&source.path);
             let markdown=if entries.is_empty(){"No changelog entries found.".into()}else{entries.into_iter().rev().map(|(version,content)|if source.rewrite_links {crate::interactive_changelog::normalize_links(&content,&version)}else{content}).collect::<Vec<_>>().join("\n\n")};
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"What's New")),1,0))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown,1,1,get_markdown_theme(&self.theme),None,Default::default())))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"What's New")),1,0)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(&markdown,1,1,get_markdown_theme(&self.theme),None,Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             return Ok(true);
         }
         if text == "/resume" {
@@ -2182,12 +2190,12 @@ impl InteractiveMode {
 | `!` | Run bash command |
 | `!!` | Run bash command (excluded from context) |
 "#);
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"Keyboard Shortcuts")),1,0))));
-            self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 1, get_markdown_theme(&self.theme), None, Default::default())))));
-            self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"Keyboard Shortcuts")),1,0)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::markdown_transform::MarkdownComponent(maho_tui::components::markdown::Markdown::new(markdown.trim(), 1, 1, get_markdown_theme(&self.theme), None, Default::default()))))));
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone())))));
             return Ok(true);
         }
         if text == "/debug" { self.handle_debug_command(); return Ok(true); }
@@ -2351,8 +2359,8 @@ impl InteractiveMode {
 
     fn show_error(&mut self, message: &str) {
         let text = self.theme.fg(crate::theme::ThemeColor::Error, &format!("Error: {}", crate::extension_error_format::sanitize_tui_error_message(message)));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
-        self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0))));
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))));
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(text, 1, 0)))));
     }
 
     /// Bridge the running login/logout tasks into the UI: mount prompts, forward answers, report outcomes.
@@ -2931,22 +2939,22 @@ impl InteractiveMode {
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
                         let mut component = crate::components::skill_invocation_message::SkillInvocationMessageComponent::new(block.skills.into_iter().map(|skill| crate::components::skill_invocation_message::InvokedSkill { name:skill.name, content:skill.content }).collect(), self.theme.clone(), get_markdown_theme(&self.theme), crate::components::keybinding_hints::key_display_text("app.tools.expand"));
                         component.set_expanded(self.tools_expanded);
-                        let component = Rc::new(RefCell::new(component)); self.chat.add_child(component.clone());
+                        let component = Rc::new(RefCell::new(component)); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component.clone()));
                         self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
-                        if let Some(text) = block.user_message { self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1)))); self.chat.add_child(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone())))); }
+                        if let Some(text) = block.user_message { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))))); self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(UserMessageComponent::new(text, self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone()))))); }
                         return;
                     }
                     let component = Rc::new(RefCell::new(UserMessageComponent::new(text.clone(), self.theme.clone(), get_markdown_theme(&self.theme), self.output_pad(), self.markdown_transformers.clone())));
                     if let Some(frame) = crate::components::ask_user_answer_chip::parse_ask_user_answer_frame(&text) {
                         let entries = self.session.with_session_manager(|manager| manager.entries());
                         let headers = crate::components::ask_user_answer_chip::get_ask_user_answer_headers(&entries, &frame.request_id);
-                        self.chat.add_child(Rc::new(RefCell::new(crate::components::ask_user_answer_chip::AskUserAnswerChip::new(&frame, &headers, component, self.theme.clone()))));
-                    } else { self.chat.add_child(component); }
+                        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(Rc::new(RefCell::new(crate::components::ask_user_answer_chip::AskUserAnswerChip::new(&frame, &headers, component, self.theme.clone())))));
+                    } else { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Other(component)); }
                 } else if message.role() == "assistant" {
                     self.assistant_segments.clear();
                     self.reveal.begin(serde_json::to_value(message).expect("assistant"), self.clock.elapsed().as_secs_f64() * 1000.0);
                     let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
-                    self.chat.add_child(component.clone());
+                    self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone()));
                     self.assistant_cards.push(component.clone());
                     component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
                     self.streaming = Some(component);
@@ -3016,7 +3024,7 @@ impl InteractiveMode {
             Some(self.assistant_segments.entry(start).or_insert_with(|| {
                 let component = Rc::new(RefCell::new(AssistantMessageComponent::new(None, false, get_markdown_theme(&self.theme), "Thinking…", output_pad, self.markdown_transformers.clone(), self.theme.clone())));
                 component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
-                self.chat.add_child(component.clone()); self.assistant_cards.push(component.clone()); component
+                self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone())); self.assistant_cards.push(component.clone()); component
             }).clone())
         };
         if let Some(component) = component {
@@ -3041,6 +3049,7 @@ impl InteractiveMode {
         for component in &self.tool_cards { let mut component = component.borrow_mut(); component.set_now_ms(now_ms); component.tick(now_ms.max(0.0) as u64); }
         if let Some(value) = self.reveal.tick(now_ms) && let Some(component) = &self.streaming { component.borrow_mut().update_content(&value, Some(true)); }
         for (id, value) in self.tool_reveal.tick(now_ms) { if let Some(component) = self.pending_tools.get(&id) { component.borrow_mut().update_result(Self::tool_result(&value, false), true); } }
+        self.chat.warm_next_chunk();
     }
 
     pub fn working_frame(&self, now_ms: f64) -> Option<String> {
@@ -3064,7 +3073,7 @@ impl InteractiveMode {
         let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
         self.pending_tools.get(id).cloned().unwrap_or_else(|| {
             let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
-            self.chat.add_child(component.clone());
+            self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Tool(component.clone()));
             component.borrow_mut().set_expanded(self.tools_expanded);
             self.tool_cards.push(component.clone());
             self.pending_tools.insert(id.into(), component.clone());
@@ -3114,9 +3123,9 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
         let component = Rc::new(RefCell::new(AssistantMessageComponent::new(Some(serde_json::to_value(message).expect("assistant")), self.reveal.hide_thinking, get_markdown_theme(&self.theme), "Thinking…", self.output_pad(), self.markdown_transformers.clone(), self.theme.clone())));
         component.borrow_mut().set_expanded(self.tools_expanded);
         component.borrow_mut().set_hidden_thinking_label(&self.hidden_thinking_label);
-        self.chat.add_child(component.clone()); self.assistant_cards.push(component);
+        self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Assistant(component.clone())); self.assistant_cards.push(component);
     }
-    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(component.clone()); self.tool_cards.push(component); }
+    fn add_child(&mut self, component: Rc<RefCell<ToolExecutionComponent>>) { self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Tool(component.clone())); self.tool_cards.push(component); }
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
