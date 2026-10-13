@@ -37,8 +37,7 @@ impl AnthropicSubscriptionOAuth {
         if settings.values.get("enabled") != Some(&serde_json::Value::Bool(true)) { return Ok(false); }
         self.ambient.read(Some(signal)).await
     }
-    /// Ambient resolution remains a concrete method until the shared OAuthAuth
-    /// trait exposes the upstream resolveAmbient hook.
+    /// senpi `resolveAmbient`; also exposed through `OAuthAuth::resolve_ambient`.
     pub async fn resolve_ambient(&self, ctx: &dyn AuthContext, request: Option<&BTreeMap<String, String>>, signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
         let mut environment: BTreeMap<String, String> = request.into_iter().flat_map(|environment| environment.iter()).filter(|(name, _)| name.as_str() == "CLAUDE_CODE_OAUTH_TOKEN" || (2..=16).any(|i| name.as_str() == format!("CLAUDE_CODE_OAUTH_TOKEN_{i}"))).map(|(name, value)| (name.clone(), value.clone())).collect();
         if environment.is_empty() { environment = Self::environment(ctx).await; }
@@ -61,6 +60,10 @@ fn to_slot(credential: OAuthCredential, name: String, source: AccountSource) -> 
 impl OAuthAuth for AnthropicSubscriptionOAuth {
     fn name(&self) -> &str { PROVIDER_NAME }
     fn is_subscription(&self) -> bool { true }
+    fn has_resolve_ambient(&self) -> bool { true }
+    async fn resolve_ambient(&self, ctx: &dyn AuthContext, env: Option<&BTreeMap<String, String>>, signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        AnthropicSubscriptionOAuth::resolve_ambient(self, ctx, env, signal).await
+    }
     async fn login(&self, interaction: &ProviderAuthInteraction) -> anyhow::Result<OAuthCredential> {
         let current = self.store.read(crate::auth_lane::PROVIDER_ID, None).await?.and_then(Credential::into_oauth).unwrap_or_else(empty_credential);
         let existing = list_accounts(&current, None)?;

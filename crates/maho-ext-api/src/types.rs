@@ -265,6 +265,13 @@ pub trait ExtensionOAuthConfig: Send + Sync {
     fn refresh_token<'a>(&'a self, credentials: &'a maho_ai::oauth::OAuthCredentials, signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
     fn get_api_key(&self, credentials: &maho_ai::oauth::OAuthCredentials) -> String;
     fn modify_models(&self, models: Vec<Model>, _: &maho_ai::oauth::OAuthCredentials) -> Vec<Model> { models }
+    /// Whether `resolve_ambient` is implemented (senpi optional `resolveAmbient`).
+    fn has_resolve_ambient(&self) -> bool { false }
+    /// senpi `resolveAmbient`: request auth for credentials that live outside auth.json (an env
+    /// token, a CLI login); never consulted once a credential is stored.
+    fn resolve_ambient<'a>(&'a self, _ctx: &'a dyn maho_ai::auth::types::AuthContext, _signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, Option<maho_ai::auth::types::AuthResult>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 #[derive(Clone)]
 pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, ConfigOptions { name: String, options: Box<ProviderConfigOptions> }, Native(Arc<dyn maho_ai::models::Provider>) }

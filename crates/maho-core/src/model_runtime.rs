@@ -138,8 +138,7 @@ fn compose_provider_auth(
         maho_ai::env_api_keys::get_api_key_env_vars(id)
             .map(|vars| Arc::new(maho_ai::auth::helpers::env_api_key_auth("API key", &vars)) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>)
     });
-    let api_key = crate::provider_api_key_auth::compose_api_key_auth(id, inherited, oauth.is_some(), config.as_ref(), extension.as_ref().map(|e| &e.config))
-        .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::ApiKeyAuth>);
+    let api_key = crate::provider_api_key_auth::compose_api_key_auth(id, inherited, oauth.as_ref(), config.as_ref(), extension.as_ref().map(|e| &e.config));
     let oauth = crate::provider_composer::compose_oauth_auth(id, oauth, config.as_ref(), extension.as_ref().map(|e| &e.config))
         .map(|auth| Arc::new(auth) as Arc<dyn maho_ai::auth::types::OAuthAuth>);
     ProviderAuth { api_key, oauth }
@@ -1002,6 +1001,27 @@ mod tests {
         assert_eq!(*keys.lock().expect("keys"), vec!["bad".to_owned(), "good".to_owned()]);
         let sidecar = std::fs::read_to_string(dir.path().join("credential-pool-state.json")).expect("sidecar written");
         assert!(sidecar.contains("auth_error"));
+    }
+
+    struct AmbientOAuth;
+    #[async_trait::async_trait]
+    impl maho_ai::auth::types::OAuthAuth for AmbientOAuth {
+        fn name(&self) -> &str { "ambient-oauth" }
+        async fn login(&self, _: &maho_ai::auth::types::ProviderAuthInteraction) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { anyhow::bail!("login is not exercised") }
+        async fn refresh(&self, credential: &maho_ai::auth::types::OAuthCredential, _: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<maho_ai::auth::types::OAuthCredential> { Ok(credential.clone()) }
+        async fn to_auth(&self, _: &maho_ai::auth::types::OAuthCredential) -> anyhow::Result<maho_ai::auth::types::ModelAuth> { Ok(Default::default()) }
+        fn has_resolve_ambient(&self) -> bool { true }
+        async fn resolve_ambient(&self, _: &dyn maho_ai::auth::types::AuthContext, _: Option<&maho_ai::types::ProviderEnv>, _: &maho_ai::utils::abort::AbortSignal) -> anyhow::Result<Option<maho_ai::auth::types::AuthResult>> {
+            Ok(Some(maho_ai::auth::types::AuthResult { auth: maho_ai::auth::types::ModelAuth { api_key: Some("ambient-token".into()), ..Default::default() }, env: None, source: Some("ambient CLI".into()) }))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ambient_oauth_provider_resolves_without_a_stored_credential() {
+        let (_dir, mut runtime) = configured_runtime(r#"{"providers":{"p":{"api":"openai-completions","baseUrl":"http://localhost/v1","models":[{"id":"sol"}]}}}"#);
+        runtime.register_provider("p", crate::provider_composer::ProviderConfigInput { oauth: Some(std::sync::Arc::new(AmbientOAuth)), ..Default::default() }).expect("register oauth");
+        assert_eq!(runtime.get_auth("p").await.expect("resolve").expect("ambient auth").auth.api_key.as_deref(), Some("ambient-token"));
+        assert!(runtime.get_available(Some("p")).await.iter().any(|model| model.id == "sol"));
     }
 
     #[tokio::test]

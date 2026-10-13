@@ -116,32 +116,82 @@ pub struct ComposedApiKeyAuth {
     auth_header: bool,
 }
 
-/// Returns `None` where senpi would build the ambient-only adapter: a provider with OAuth but no
-/// key, no credential headers and no inherited api-key auth. The native OAuth trait has no
-/// `resolveAmbient` hook, so that adapter never resolves and is omitted.
+/// An OAuth provider with no key, no credential headers and no inherited api-key auth gets the
+/// ambient-only adapter (`ambientOnlyAuth`) when its OAuth declares `resolveAmbient`, else none.
 pub fn compose_api_key_auth(
     provider_id: &str,
     inherited: Option<Arc<dyn ApiKeyAuth>>,
-    has_oauth: bool,
+    oauth: Option<&Arc<dyn maho_ai::auth::types::OAuthAuth>>,
     config: Option<&ModelsJsonProvider>,
     extension: Option<&ModelsJsonProvider>,
-) -> Option<ComposedApiKeyAuth> {
+) -> Option<Arc<dyn ApiKeyAuth>> {
     let raw_key = configured_api_key(config, extension).map(str::to_owned);
     let header_source = crate::provider_header_auth::header_auth_resolution_source(
         config.and_then(|c| c.headers.as_ref()),
         extension.and_then(|c| c.headers.as_ref()),
     );
-    if inherited.is_none() && raw_key.is_none() && header_source.is_none() && has_oauth {
-        return None;
+    let raw_headers = configured_headers(config, extension);
+    let auth_header = extension.and_then(|c| c.auth_header).or(config.and_then(|c| c.auth_header)).unwrap_or(false);
+    if let Some(oauth) = oauth.filter(|_| inherited.is_none() && raw_key.is_none() && header_source.is_none()) {
+        if !oauth.has_resolve_ambient() { return None; }
+        return Some(Arc::new(AmbientOnlyAuth { provider_id: provider_id.to_owned(), oauth: oauth.clone(), raw_headers, header_source, auth_header }));
     }
-    Some(ComposedApiKeyAuth {
-        provider_id: provider_id.to_owned(),
-        inherited,
-        raw_key,
-        raw_headers: configured_headers(config, extension),
-        header_source,
-        auth_header: extension.and_then(|c| c.auth_header).or(config.and_then(|c| c.auth_header)).unwrap_or(false),
-    })
+    Some(Arc::new(ComposedApiKeyAuth { provider_id: provider_id.to_owned(), inherited, raw_key, raw_headers, header_source, auth_header }))
+}
+
+/// senpi `ambientOnlyAuth`: api-key adapter for OAuth providers whose credentials live outside
+/// auth.json; it never outranks a stored OAuth credential (`ambient_only`).
+pub struct AmbientOnlyAuth {
+    provider_id: String,
+    oauth: Arc<dyn maho_ai::auth::types::OAuthAuth>,
+    raw_headers: Option<HashMap<String, String>>,
+    header_source: Option<String>,
+    auth_header: bool,
+}
+
+impl AmbientOnlyAuth {
+    async fn resolve_ambient(&self, ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>, signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        let Some(result) = self.oauth.resolve_ambient(ctx, credential.and_then(|c| c.env.as_ref()), signal).await? else { return Ok(None) };
+        // Auxiliary callers replay resolved auth as an explicit key; accept only this resolver's own marker.
+        if let Some(key) = credential.and_then(|c| c.key.as_ref()).filter(|key| !key.is_empty())
+            && result.auth.api_key.as_ref() != Some(key)
+        {
+            return Ok(None);
+        }
+        let mut explicit_env: ProviderEnv = credential.and_then(|c| c.env.clone()).unwrap_or_default();
+        explicit_env.extend(result.env.clone().unwrap_or_default());
+        let header_values: Vec<&str> = self.raw_headers.iter().flat_map(|headers| headers.values().map(String::as_str)).collect();
+        let header_env = config_context_env(&header_values, ctx, Some(&explicit_env)).await;
+        let headers = resolve_headers_or_throw(self.raw_headers.as_ref(), &format!("provider \"{}\"", self.provider_id), header_env.as_ref())
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?
+            .map(|values| values.into_iter().map(|(k, v)| (k, Some(v))).collect::<ProviderHeaders>());
+        let auth = with_configured_auth(model_auth_to_result(result.auth), headers, self.auth_header).map_err(|error| anyhow::anyhow!(error))?;
+        Ok(Some(AuthResult { auth: result_to_model_auth(auth), env: result.env, source: result.source.or_else(|| self.header_source.clone()) }))
+    }
+}
+
+#[async_trait]
+impl ApiKeyAuth for AmbientOnlyAuth {
+    fn name(&self) -> &str {
+        self.oauth.name()
+    }
+
+    fn ambient_only(&self) -> bool {
+        true
+    }
+
+    fn has_check(&self) -> bool {
+        true
+    }
+
+    async fn check(&self, ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>, signal: &AbortSignal) -> anyhow::Result<Option<AuthCheck>> {
+        Ok(self.resolve_ambient(ctx, credential, signal).await?.map(|resolved| AuthCheck { source: resolved.source, auth_type: AuthType::OAuth }))
+    }
+
+    async fn resolve(&self, ctx: &dyn AuthContext, credential: Option<&ApiKeyCredential>, signal: &AbortSignal) -> anyhow::Result<Option<AuthResult>> {
+        self.resolve_ambient(ctx, credential, signal).await
+    }
 }
 
 impl ComposedApiKeyAuth {
@@ -308,7 +358,7 @@ mod tests {
     async fn composed_auth_layers_configured_key_and_bearer_header_over_inherited_auth() {
         let inherited: Arc<dyn ApiKeyAuth> = Arc::new(maho_ai::auth::helpers::env_api_key_auth("Fixture key", &["FIXTURE_KEY"]));
         let config = ModelsJsonProvider { api_key: Some("configured".into()), auth_header: Some(true), ..Default::default() };
-        let auth = compose_api_key_auth("custom", Some(inherited), false, Some(&config), None).expect("composed");
+        let auth = compose_api_key_auth("custom", Some(inherited), None, Some(&config), None).expect("composed");
         let signal = maho_ai::utils::abort::AbortController::new().signal();
         let result = auth.resolve(&Env(HashMap::new()), None, &signal).await.expect("resolve").expect("auth");
         assert_eq!(result.auth.api_key.as_deref(), Some("configured"));
@@ -318,7 +368,7 @@ mod tests {
     #[tokio::test]
     async fn composed_check_does_not_run_configured_commands() {
         let config = ModelsJsonProvider { api_key: Some("!exit 1".into()), ..Default::default() };
-        let auth = compose_api_key_auth("custom", None, false, Some(&config), None).expect("composed");
+        let auth = compose_api_key_auth("custom", None, None, Some(&config), None).expect("composed");
         let signal = maho_ai::utils::abort::AbortController::new().signal();
         let check = auth.check(&Env(HashMap::new()), None, &signal).await.expect("check").expect("configured");
         assert_eq!(check.source.as_deref(), Some("configured API key"));
