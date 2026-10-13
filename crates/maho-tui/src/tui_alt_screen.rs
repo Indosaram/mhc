@@ -30,6 +30,12 @@ use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width,
 /// whole (senpi's `TERMINAL_WORD_SELECTION_JOINERS`).
 const WORD_SELECTION_JOINERS: [&str; 2] = ["/", "-"];
 const DOUBLE_CLICK_INTERVAL_MS: i64 = 500;
+const PAGE_SCROLL_OVERLAP: i64 = 4;
+
+/// senpi's `OSC133_PROMPT_START`: an OSC 133 `A` (prompt start) marker at the start of a line.
+fn is_osc133_prompt_start(line: &str) -> bool {
+    line.starts_with("\x1b]133;A\x07") || line.starts_with("\x1b]133;A\x1b\\")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SelectionPoint {
@@ -530,6 +536,56 @@ impl TuiAltScreen {
 
     pub fn flashes_mut(&mut self) -> &mut AltScreenFlashContainer {
         &mut self.flashes
+    }
+
+    /// senpi's `viewportTop`.
+    pub fn viewport_top(&self) -> usize {
+        self.get_primary_scroll_view().borrow().scroll_top()
+    }
+
+    /// senpi's `isFollowingOutput`.
+    pub fn is_following_output(&self) -> bool {
+        self.get_primary_scroll_view().borrow().is_following_end()
+    }
+
+    pub fn scroll_by(&mut self, lines: i64) {
+        self.get_primary_scroll_view().borrow_mut().scroll_by(lines, 0);
+        self.base.request_render(false, 0);
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.get_primary_scroll_view().borrow_mut().scroll_to_start(0);
+        self.base.request_render(false, 0);
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.get_primary_scroll_view().borrow_mut().scroll_to_end(0);
+        self.base.request_render(false, 0);
+    }
+
+    /// senpi's `scrollToPrompt`: jump the primary scroll view to the previous/next OSC 133
+    /// prompt-start line.
+    fn scroll_to_prompt(&mut self, direction: i64) {
+        let Some(frame) = self.current_layout.as_ref() else {
+            return;
+        };
+        let scroll_view = self.get_primary_scroll_view();
+        let Some(lines) = get_scroll_view_box(frame, &scroll_view).and_then(|boxed| boxed.scroll_content_lines.as_ref()) else {
+            return;
+        };
+        let mut row = scroll_view.borrow().scroll_top() as i64 + direction;
+        let mut target = None;
+        while row >= 0 && (row as usize) < lines.len() {
+            if is_osc133_prompt_start(&lines[row as usize]) {
+                target = Some(row);
+                break;
+            }
+            row += direction;
+        }
+        if let Some(target) = target {
+            scroll_view.borrow_mut().scroll_to(target, Default::default(), 0);
+            self.base.request_render(false, 0);
+        }
     }
 
     /// senpi's `resetRenderState`.
@@ -1187,39 +1243,68 @@ impl TuiAltScreen {
             }
             return;
         }
-        if !self.search_visible && kb.matches(data, "tui.altScreen.top") {
-            if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
-                && !is_key_release
-            {
-                primary.borrow_mut().scroll_to_start(0);
-                self.base.request_render(false, 0);
+        if self.search_visible {
+            self.base.handle_terminal_input(data, is_key_release);
+            return;
+        }
+        let viewport_height = self.get_primary_scroll_view().borrow().viewport_height() as i64;
+        if kb.matches(data, "tui.altScreen.pageUp") {
+            if !is_key_release {
+                self.scroll_by(-(viewport_height - PAGE_SCROLL_OVERLAP).max(1));
             }
             return;
         }
-        if !self.search_visible && kb.matches(data, "tui.altScreen.bottom") {
-            if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
-                && !is_key_release
-            {
-                primary.borrow_mut().scroll_to_end(0);
-                self.base.request_render(false, 0);
+        if kb.matches(data, "tui.altScreen.pageDown") {
+            if !is_key_release {
+                self.scroll_by((viewport_height - PAGE_SCROLL_OVERLAP).max(1));
             }
             return;
         }
-        if !self.search_visible && kb.matches(data, "tui.altScreen.lineUp") {
-            if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
-                && !is_key_release
-            {
-                primary.borrow_mut().scroll_by(-1, 0);
-                self.base.request_render(false, 0);
+        if kb.matches(data, "tui.altScreen.halfPageUp") {
+            if !is_key_release {
+                self.scroll_by(-(viewport_height / 2).max(1));
             }
             return;
         }
-        if !self.search_visible && kb.matches(data, "tui.altScreen.lineDown") {
-            if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
-                && !is_key_release
-            {
-                primary.borrow_mut().scroll_by(1, 0);
-                self.base.request_render(false, 0);
+        if kb.matches(data, "tui.altScreen.halfPageDown") {
+            if !is_key_release {
+                self.scroll_by((viewport_height / 2).max(1));
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.lineUp") {
+            if !is_key_release {
+                self.scroll_by(-1);
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.lineDown") {
+            if !is_key_release {
+                self.scroll_by(1);
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.previousPrompt") {
+            if !is_key_release {
+                self.scroll_to_prompt(-1);
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.nextPrompt") {
+            if !is_key_release {
+                self.scroll_to_prompt(1);
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.top") {
+            if !is_key_release {
+                self.scroll_to_top();
+            }
+            return;
+        }
+        if kb.matches(data, "tui.altScreen.bottom") {
+            if !is_key_release {
+                self.scroll_to_bottom();
             }
             return;
         }
