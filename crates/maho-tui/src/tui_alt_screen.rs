@@ -470,6 +470,36 @@ impl TuiAltScreen {
         &mut self.flashes
     }
 
+    /// senpi's `flash`: show a transient message in the alternate-screen flash stack and
+    /// request a render (the container's constructor-injected `requestRender`).
+    pub fn flash(&mut self, message: &str, duration_ms: Option<u64>, now_ms: u64) {
+        self.flashes.flash(message, duration_ms, now_ms);
+        self.base.request_render(false, now_ms);
+    }
+
+    /// Fire the poll-driven stand-ins for senpi's timers - flash expiry and every mounted
+    /// scroll view's transient-scrollbar hide timer - requesting a render when one fired.
+    /// Call once per driver loop iteration.
+    pub fn poll_timers(&mut self, now_ms: u64) {
+        let mut render = self.flashes.tick(now_ms);
+        fn visit(boxed: &crate::layout::LayoutBox, now_ms: u64, render: &mut bool) {
+            if let Some(scroll_view) = &boxed.scroll_view
+                && scroll_view.borrow_mut().fire_hide_timer_if_due(now_ms)
+            {
+                *render = true;
+            }
+            for child in &boxed.children {
+                visit(child, now_ms, render);
+            }
+        }
+        if let Some(layout) = &self.current_layout {
+            visit(&layout.root, now_ms, &mut render);
+        }
+        if render {
+            self.base.request_render(false, now_ms);
+        }
+    }
+
     /// senpi's `resetRenderState`.
     pub fn reset_render_state(&mut self) {
         self.previous_screen.clear();
@@ -980,17 +1010,18 @@ impl TuiAltScreen {
         if text.is_empty() { None } else { Some(text) }
     }
 
-    pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn Terminal) -> bool {
+    pub fn copy_active_selection_to_clipboard(&mut self, terminal: &mut dyn Terminal, now_ms: u64) -> bool {
         let Some(text) = self.get_active_selection_text() else {
             return false;
         };
-        self.copy_text_to_clipboard(&text, terminal);
+        self.copy_text_to_clipboard(&text, terminal, now_ms);
         true
     }
 
-    fn copy_text_to_clipboard(&mut self, text: &str, terminal: &mut dyn Terminal) {
+    fn copy_text_to_clipboard(&mut self, text: &str, terminal: &mut dyn Terminal, now_ms: u64) {
         let encoded = base64_encode::encode_base64(text.as_bytes());
         terminal.write(&format!("\x1b]52;c;{encoded}\x07"));
+        self.flash("Copied!", None, now_ms);
     }
 
     pub fn toggle_search(&mut self, visible: bool) {

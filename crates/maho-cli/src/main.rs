@@ -18,6 +18,8 @@ fn run() -> Result<(), String> {
     // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
     // statically embedded OAuth flows once per process before any login/auth resolution.
     maho_ai::bun_oauth::register_bun_oauth_flows();
+    // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
+    maho_tui::native_platform::register_builtin_native_platform_helper();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(&argv);
