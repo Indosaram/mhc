@@ -12,7 +12,7 @@ use maho_omo_memory::{composition::MemoryExtensionOptions, context::MemoryIdenti
     facts_runner::NativeFactsAttemptOptions, index::{MemoryComponent, MemoryComponentOptions},
     wiring::{MemoryWiring, create_memory_wiring}, wiring_runtime::MemoryRuntimeWiring,
     wiring_static::MemoryStaticOptions, wiring_types::{MemoryWiringOptions, NativeMemoryWiringOptions}, worker};
-use maho_omo_memory::commands::people_ask::{create_people_ask_runner, PeopleAskLauncher, PeopleAskOptions};
+use maho_omo_memory::commands::people_ask::PeopleAskLauncher;
 use maho_omo_memory::commands::register::{DreamCommandOutcome, DreamRequestSink, ManualDreamCommandRequest, MemoryCommandDeps};
 use memory_core::{git::{exec::system_git_exec, GitMemoryRepo}, reflection::{ReflectionReservationStore, ReservedRun}};
 use serde_json::Value;
@@ -159,13 +159,10 @@ impl MemoryRuntime {
             })}),
             exec: Some(system_git_exec()),
             env: Some(self.host.env.clone()),
-            people_ask: Some(create_people_ask_runner(PeopleAskOptions {
-                config: (self.host.load_config)().unwrap_or_else(|_| serde_json::json!({})),
-                registry: None,
-                env: self.host.env.clone(),
-                launcher: Some(PeopleAskLauncher { command: self.host.launcher.command.clone(), prefix_args: self.host.launcher.prefix_args.clone() }),
-                deadline_ms: None,
-            })),
+            // Upstream leaves `peopleAsk` unset in production: `/people --ask` builds its runner per
+            // call from the live config and the invoking context's model registry.
+            people_ask: None,
+            launcher: Some(PeopleAskLauncher { command: self.host.launcher.command.clone(), prefix_args: self.host.launcher.prefix_args.clone() }),
             now: Some(Arc::new(memory_core::support::time::now_millis)),
             is_process_alive: None,
         };

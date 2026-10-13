@@ -286,6 +286,8 @@ pub struct MemoryCommandDeps {
     pub env: Option<BTreeMap<String, String>>,
     /// Dialectic-lite seam for `/people --ask`; defaults to a real quick child.
     pub people_ask: Option<PeopleAsk>,
+    /// Host `senpi -p` launcher for the default `/people --ask` child (upstream `resolveSenpiLaunch`).
+    pub launcher: Option<crate::commands::people_ask::PeopleAskLauncher>,
     /// Clock seam; defaults to the system clock.
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
     /// Doctor stale-lock liveness probe; defaults to a real signal-0 probe.
