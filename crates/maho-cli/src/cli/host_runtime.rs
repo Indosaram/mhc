@@ -466,6 +466,8 @@ pub async fn serve_multi_session_host(
     core: std::sync::Arc<maho_rpc::multi_session_host::HostCore>,
     listen: Option<String>,
 ) -> std::io::Result<()> {
+    #[cfg(unix)]
+    { maho_rpc::multi_session_host::set_host_signal_cleanup(crate::utils::shell::kill_tracked_detached_children); }
     maho_rpc::multi_session_host::run_multi_session_host(core, listen).await
 }
 

@@ -4135,8 +4135,8 @@ impl AgentSession {
             Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
             Ok(_) => {}, Err(error) => {
                 let error = ExtensionError { extension_path: "<runtime>".to_owned(), event: "session_title_generation".to_owned(), error, stack: None };
-                if let Some(runner) = self.extension_runner.lock().await.as_mut() { runner.emit_error(error.clone()); }
-                let listener = self.state().extension_error_listener.clone();
+                let emitted = match self.extension_runner.lock().await.as_mut() { Some(runner) => { runner.emit_error(error.clone()); true }, None => false };
+                let listener = if emitted { None } else { self.state().extension_error_listener.clone() };
                 if let Some(listener) = listener { listener(&error); }
             },
         }
@@ -4486,9 +4486,7 @@ impl AgentSession {
         if let Err(error) = runner.invoke_command(name, args, &context).await {
             let error = ExtensionError { extension_path: format!("command:{name}"), event: "command".to_owned(),
                 error: error.message, stack: error.stack };
-            runner.emit_error(error.clone());
-            let listener = self.state().extension_error_listener.clone();
-            if let Some(listener) = listener { listener(&error); }
+            runner.emit_error(error);
         }
         Ok(true)
     }
@@ -5640,6 +5638,15 @@ impl AgentSession {
 
     /// Bind the extension runner the tool hooks read at execution time.
     pub async fn set_extension_runner(&self, mut runner: ExtensionRunner) {
+        // senpi `_applyExtensionBindings`: the bound `onError` listener observes every error the
+        // runner emits (handler failures included), read at emit time so a later rebind wins. A
+        // listener copied onto a replacement runner stays inert once its session is disposed.
+        let weak = Arc::downgrade(&self.inner);
+        runner.on_error(Arc::new(move |error: &ExtensionError| {
+            let Some(inner) = weak.upgrade() else { return; };
+            let listener = { let state = lock(&inner.state); if state.disposed { None } else { state.extension_error_listener.clone() } };
+            if let Some(listener) = listener { listener(error); }
+        }));
         let weak = Arc::downgrade(&self.inner);
         runner.set_shutdown_budget_resolver(Arc::new(move || {
             let Some(inner) = weak.upgrade() else { return (2_000, 10_000); };
@@ -11807,6 +11814,18 @@ mod tests {
         assert!(!errors[0].error.is_empty());
         assert!(!lock(&events).iter().any(|event| matches!(event, AgentSessionEvent::ContinuationError { .. })));
         assert!(session.state().session_title_abort_controller.is_none());
+    }
+
+    #[tokio::test]
+    async fn runner_errors_reach_the_bound_error_listener_once() {
+        let session = test_session();
+        session.set_extension_runner(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), test_extension_context(&session))).await;
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let observed = errors.clone();
+        session.bind_extensions(ExtensionBindings { on_error: Some(Arc::new(move |error: &ExtensionError| lock(&observed).push(error.clone()))), ..Default::default() }).await;
+        let error = ExtensionError { extension_path: "ext.rs".to_owned(), event: "tool_call".to_owned(), error: "boom".to_owned(), stack: None };
+        if let Some(runner) = session.extension_runner.lock().await.as_mut() { runner.emit_error(error.clone()); }
+        assert_eq!(lock(&errors).iter().map(|error| error.error.clone()).collect::<Vec<_>>(), ["boom".to_owned()]);
     }
 
     #[tokio::test]
