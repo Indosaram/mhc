@@ -13,7 +13,7 @@ use crate::alt_screen_search::{
     find_alt_screen_search_matches, get_alt_screen_search_match_key, AltScreenSearchComponent, AltScreenSearchMatch,
 };
 use crate::components::alt_screen_flash::AltScreenFlashContainer;
-use crate::components::scroll_view::ScrollView;
+use crate::components::scroll_view::{ScrollView, ScrollViewFollow, ScrollViewOptions};
 use crate::image_stub::{self, ImageProtocol};
 use crate::keybindings::get_keybindings;
 use crate::layout::{
@@ -22,7 +22,7 @@ use crate::layout::{
 };
 use crate::mouse_input::{is_mouse_sequence, parse_sgr_mouse_event, parse_wheel_event, MouseTracking, SgrMouseEvent};
 use crate::terminal::Terminal;
-use crate::tui::{can_receive_keys, composite_tui_line, Component, CURSOR_MARKER, Focusable, MouseBlocker, TuiBase};
+use crate::tui::{can_receive_keys, composite_tui_line, Component, Container, CURSOR_MARKER, Focusable, MouseBlocker, TuiBase};
 use crate::utils::{slice_by_column, strip_terminal_sequences, truncate_to_width, visible_width, word_segments};
 
 /// A double/triple-click word-selection joiner set: fullscreen owns mouse selection and
@@ -130,6 +130,12 @@ pub struct TuiAltScreen {
     image_protocol: ImageProtocol,
     flashes: AltScreenFlashContainer,
     scroll_to_end_indicator: Option<Rc<dyn Fn() -> String>>,
+    /// senpi's `implicitDocument`: renders the base container's children when no layout root
+    /// is set. Its children are refreshed from `base.children()` before each layout pass because
+    /// this port's `TuiBase` owns its `Container` by value.
+    implicit_document: Rc<RefCell<Container>>,
+    /// senpi's `implicitScrollView`: a primary follow-end view around `implicit_document`.
+    implicit_scroll_view: Rc<RefCell<ScrollView>>,
 }
 
 pub struct MouseTrackingSupport {
@@ -143,6 +149,11 @@ type SearchHighlightRanges = (usize, Vec<(usize, usize, bool)>);
 
 impl TuiAltScreen {
     pub fn new() -> Self {
+        let implicit_document = Rc::new(RefCell::new(Container::new()));
+        let implicit_scroll_view = ScrollView::new(
+            Rc::clone(&implicit_document) as Rc<RefCell<dyn Component>>,
+            ScrollViewOptions { follow: ScrollViewFollow::End, primary: true, ..Default::default() },
+        );
         Self {
             base: TuiBase::new(),
             layout_root: None,
@@ -172,7 +183,32 @@ impl TuiAltScreen {
             image_protocol: ImageProtocol::None,
             flashes: AltScreenFlashContainer::new(),
             scroll_to_end_indicator: None,
+            implicit_document,
+            implicit_scroll_view,
         }
+    }
+
+    /// senpi's `getPrimaryScrollView`: the laid-out primary view, else the implicit one.
+    fn get_primary_scroll_view(&self) -> Rc<RefCell<ScrollView>> {
+        self.current_layout
+            .as_ref()
+            .and_then(|layout| layout.primary_scroll_view.clone())
+            .unwrap_or_else(|| Rc::clone(&self.implicit_scroll_view))
+    }
+
+    /// senpi's `layoutRoot ?? implicitScrollView`.
+    fn get_render_root(&mut self) -> Rc<RefCell<dyn Component>> {
+        if let Some(root) = &self.layout_root {
+            return Rc::clone(root);
+        }
+        let children = self.base.children().to_vec();
+        let mut document = self.implicit_document.borrow_mut();
+        document.detach_all();
+        for child in children {
+            document.add_child(child);
+        }
+        drop(document);
+        Rc::clone(&self.implicit_scroll_view) as Rc<RefCell<dyn Component>>
     }
 
     /// Sets the single component the alt screen renders and dispatches mouse/focus against
@@ -304,10 +340,7 @@ impl TuiAltScreen {
         }
         let width = (terminal.columns() as usize).max(1);
         let height = (terminal.rows() as usize).max(1);
-        let Some(root) = self.layout_root.clone() else {
-            self.current_layout = None;
-            return;
-        };
+        let root = self.get_render_root();
 
         let mut next_layout = render_layout_frame(&root, width, height);
         if self.refresh_search(&next_layout.lines) {
