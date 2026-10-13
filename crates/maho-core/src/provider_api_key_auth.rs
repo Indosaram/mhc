@@ -58,7 +58,7 @@ pub async fn resolve_configured_auth(id: &str, config: Option<&ModelsJsonProvide
         else if let Some(raw) = configured_api_key(config, extension) { Some(resolve_config_value_or_throw(raw, &format!("API key for provider \"{id}\""), env).await?) }
         else {
             let provider_env = env.map(|v| v.iter().map(|(k,v)|(k.clone(),v.clone())).collect());
-            maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref())
+            maho_ai::env_api_keys::get_env_api_key(id, provider_env.as_ref()).filter(|key| key != maho_ai::models::AMBIENT_AUTH_MARKER)
         };
     let raw_headers = configured_headers(config, extension);
     let headers = resolve_headers_or_throw(raw_headers.as_ref(), &format!("provider \"{id}\""), env).await?
@@ -288,6 +288,11 @@ mod tests {
         let auth = resolve_configured_auth("custom",Some(&config),None,Some("stored"),Some(&HashMap::new())).await.expect("resolve").expect("auth");
         assert_eq!(auth.api_key.as_deref(),Some("stored"));
         assert_eq!(auth.headers.expect("headers")["Authorization"].as_deref(),Some("Bearer stored"));
+    }
+    #[tokio::test]
+    async fn ambient_marker_is_never_a_configured_key() {
+        let env = HashMap::from([("AWS_PROFILE".to_owned(), "work".to_owned())]);
+        assert!(resolve_configured_auth("amazon-bedrock", None, None, None, Some(&env)).await.expect("resolve").is_none());
     }
     #[test]
     fn bearer_auth_requires_a_key() { assert!(with_configured_auth(Default::default(),None,true).is_err()); }

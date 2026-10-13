@@ -328,6 +328,18 @@ fn plain_provider(id: &str, models: Vec<Model>) -> Arc<dyn Provider> {
     test_provider(id, models, None)
 }
 
+#[tokio::test]
+async fn ambient_bedrock_credentials_resolve_without_a_request_key() {
+    let models = create_models(None);
+    models.set_provider(crate::providers::amazon_bedrock::amazon_bedrock_provider());
+    let overrides = AuthResolutionOverrides {
+        env: Some(ProviderEnv::from([("AWS_PROFILE".to_owned(), "work".to_owned())])),
+        ..AuthResolutionOverrides::default()
+    };
+    let resolution = models.get_auth("amazon-bedrock", &overrides).await.expect("resolve").expect("configured");
+    assert_eq!(resolution.auth.api_key, None);
+}
+
 #[test]
 fn registers_replaces_and_deletes_providers() {
     let title = "registers, replaces, and deletes providers";
