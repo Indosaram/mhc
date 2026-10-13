@@ -342,6 +342,14 @@ pub struct CompactionExecutionError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequiredCompactionError;
 
+impl std::fmt::Display for RequiredCompactionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Context remains above the compaction threshold because compaction did not complete")
+    }
+}
+
+impl std::error::Error for RequiredCompactionError {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MissingModelAccessError;
 
@@ -2401,10 +2409,11 @@ impl AgentSession {
     async fn compact_for_model(&self, instructions: Option<&str>, budget_model: &Model, reason: &str)
         -> Result<crate::compaction::compaction::CompactionResult, String>
     {
-        self.compact_for_model_with_retry(instructions, budget_model, reason, reason != "manual").await
+        self.compact_for_model_with_retry(instructions, budget_model, reason, reason != "manual", false, None).await
     }
 
-    async fn compact_for_model_with_retry(&self, instructions: Option<&str>, budget_model: &Model, reason: &str, will_retry: bool)
+    async fn compact_for_model_with_retry(&self, instructions: Option<&str>, budget_model: &Model, reason: &str, will_retry: bool,
+        allow_summary_only: bool, keep_recent_tokens_override: Option<i64>)
         -> Result<crate::compaction::compaction::CompactionResult, String>
     {
         use crate::compaction::compaction::{CompactionResult, prepare_compaction};
@@ -2420,11 +2429,15 @@ impl AgentSession {
             } else { resolved.keep_recent_tokens };
             resolved.keep_recent_tokens = keep.min(((window as f64 * (1.0 - ratio - 0.05)).floor() as i64).max(1_024)).max(1);
         }
+        if let Some(keep_recent_tokens) = keep_recent_tokens_override { resolved.keep_recent_tokens = keep_recent_tokens; }
         let entries = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
-        let preparation = prepare_compaction(&entries, &crate::compaction::settings::CompactionSettings {
+        let settings = maho_ai::utils::overflow::cursor_overflow_compaction_settings(crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
+            restoration_enabled: Some(resolved.restoration_enabled),
+            summarization_max_duration_ms: resolved.summarization_max_duration_ms,
             ..crate::compaction::settings::default_compaction_settings()
-        }, reason == "overflow", false);
+        }, Some(self.model().provider.as_str()), Some(reason));
+        let preparation = prepare_compaction(&entries, &settings, reason == "overflow", allow_summary_only);
         let request_id = uuid::Uuid::new_v4().to_string();
         let Some(preparation) = preparation else {
             let error = if entries.last().is_some_and(|entry| entry["type"] == "compaction") {
@@ -2533,68 +2546,8 @@ impl AgentSession {
                     if !self.state().compaction_lifecycle.is_current(&request_id, &controller) {
                         return Err("Compaction cancelled".to_owned());
                     }
-                    let auth = self.get_summarization_request_auth(&model).await?;
-                    let split = preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty();
-                    let messages = &preparation.messages_to_summarize;
-                    let mut prompt = format!("<conversation>\n{}\n</conversation>\n\n",
-                        crate::compaction::utils::serialize_conversation(messages));
-                    if let Some(previous) = &preparation.previous_summary {
-                        prompt.push_str(&format!("<previous-summary>\n{previous}\n</previous-summary>\n\n"));
-                        prompt.push_str(&crate::compaction::compaction::update_summarization_prompt());
-                    } else { prompt.push_str(crate::compaction::compaction::SUMMARIZATION_PROMPT); }
-                    if let Some(instructions) = instructions.filter(|instructions| !instructions.is_empty()) {
-                        prompt.push_str(&format!("\n\nAdditional focus: {instructions}"));
-                    }
-                    let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
-                    let context = maho_ai::types::Context { system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()),
-                        messages: vec![user], tools: None };
-                    let mut summary = "No prior history.".to_owned();
-                    let mut summary_usage = None;
-                    if !split || !messages.is_empty() {
-                    let response = self.complete_summary_stream(&auth.model, &context, Some(maho_ai::types::StreamOptions {
-                        request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key.clone(),
-                            headers: auth.headers.clone().map(|headers| headers.into_iter().map(|(key, value)| (key, Some(value))).collect()), env: auth.env.clone(),
-                            ..Default::default() },
-                        max_tokens: Some(((resolved.reserve_tokens as f64 * 0.8).floor() as u64).min(
-                            if auth.model.max_tokens > 0 { auth.model.max_tokens } else { u64::MAX })),
-                        session_id: Some(self.session_id()), ..Default::default()
-                    })).await.map_err(|error| error.to_string())?;
-                    if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Compaction") { return Err(error); }
-                    if response.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_))) {
-                        return Err("Summarization attempted to call a tool".to_owned());
-                    }
-                    summary = maho_ai::utils::text::content_text(&response.content, "");
-                    if summary.trim().is_empty() { return Err("Compaction produced an empty summary".to_owned()); }
-                    summary_usage = Some(response.usage);
-                    }
-                    if split {
-                        let prompt = format!("<conversation>\n{}\n</conversation>\n\nThis is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix.",
-                            crate::compaction::utils::serialize_conversation(&preparation.turn_prefix_messages));
-                        let AgentMessage::Llm(user) = make_user_message(&prompt, None) else { return Err("Invalid summary prompt".to_owned()); };
-                        let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context {
-                            system_prompt: Some(crate::compaction::utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![user], tools: None,
-                        }, Some(maho_ai::types::StreamOptions {
-                            request: maho_ai::types::ProviderRequestOptions { signal: Some(signal.clone()), api_key: auth.api_key,
-                                headers: auth.headers.map(|headers| headers.into_iter().map(|(key,value)| (key,Some(value))).collect()), env: auth.env,
-                                ..Default::default() },
-                            max_tokens: Some(((resolved.reserve_tokens as f64 * 0.5).floor() as u64).min(
-                                if auth.model.max_tokens > 0 { auth.model.max_tokens } else { u64::MAX })),
-                            session_id: Some(self.session_id()), ..Default::default()
-                        })).await.map_err(|error| error.to_string())?;
-                        if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Turn prefix summarization") { return Err(error); }
-                        if response.content.iter().any(|block| matches!(block, maho_ai::types::ContentBlock::ToolCall(_))) {
-                            return Err("Turn prefix summarization attempted to call a tool".to_owned());
-                        }
-                        summary.push_str("\n\n---\n\n**Turn Context (split turn):**\n\n");
-                        summary.push_str(&maho_ai::utils::text::content_text(&response.content, ""));
-                        summary_usage = Some(summary_usage.map_or_else(|| response.usage, |usage|
-                            crate::compaction::compaction::combine_usage(&usage, &response.usage)));
-                    }
-                    let (read_files, modified_files) = crate::compaction::utils::compute_file_lists(&preparation.file_ops);
-                    summary.push_str(&crate::compaction::utils::format_file_operations(&read_files, &modified_files));
-                    (CompactionResult { summary, first_kept_entry_id: preparation.first_kept_entry_id.clone(),
-                        tokens_before: preparation.tokens_before, details: Some(serde_json::json!({"readFiles":read_files,"modifiedFiles":modified_files})),
-                        usage: summary_usage, estimated_tokens_after: None }, false)
+                    let auth = self.get_compaction_request_auth(&model).await?;
+                    (self.run_default_compaction(&preparation, auth, instructions, signal.clone(), compact_reason).await?, false)
                 }
             };
             signal.throw_if_aborted().map_err(|error| error.to_string())?;
@@ -2915,7 +2868,7 @@ impl AgentSession {
                 self.flush_post_compaction_deferred_messages();
                 overflow_compacted = true;
                 let will_retry = message.stop_reason != StopReason::Stop;
-                let execution = self.compact_for_model_with_retry(None, &self.model(), "overflow", will_retry).await;
+                let execution = self.compact_for_model_with_retry(None, &self.model(), "overflow", will_retry, false, None).await;
                 if self.is_compaction_delegated() { return Ok(()); }
                 execution?;
                 if !will_retry { return Ok(()); }
@@ -3100,6 +3053,32 @@ impl AgentSession {
             self.state().retry_abort_controller = None;
             let policy = crate::retry_fallback::settings::resolve_retry_fallback_settings(Some(&settings)).revert_policy;
             if let Some(controller) = self.retry_fallback.lock().await.as_mut() { controller.maybe_restore_primary(policy).await?; }
+            // Model fallback can select a smaller window after the earlier checks: re-check the canonical
+            // context right before the continuation so a failed compaction never admits that model.
+            let model = self.model();
+            let resolved = self.get_compaction_settings(Some(&model))?;
+            let compaction_settings = crate::compaction::settings::CompactionSettings {
+                enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
+                ideal: crate::compaction::ideal_settings::IdealCompactionSettings {
+                    reserve_scaling_enabled: Some(resolved.reserve_scaling_enabled),
+                    ..crate::compaction::ideal_settings::default_ideal_compaction_settings()
+                },
+                ..crate::compaction::settings::default_compaction_settings()
+            };
+            let context_tokens = crate::compaction::estimate_context_tokens(&crate::messages::filter_context_excluded_messages(
+                self.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages))).tokens;
+            if compaction_settings.enabled && crate::compaction::should_compact(context_tokens as f64, model.context_window as f64, &compaction_settings) {
+                let pre_retry_compaction = if self.is_compaction_delegated() { None }
+                    else { Some(self.compact_for_model_with_retry(None, &model, "threshold", true, true, None).await) };
+                let on_cooldown = matches!(self.compaction_state(), crate::compaction::lifecycle::CompactionLifecycleState::Failed(_, _, Some(cause), _)
+                    if cause == "circuit-breaker");
+                if !pre_retry_compaction.as_ref().is_some_and(Result::is_ok) && !on_cooldown && !self.is_compaction_delegated() {
+                    self.state().retry_attempt = 0;
+                    self.reset_hint_tier_state();
+                    self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some(RequiredCompactionError.to_string()) });
+                    return Ok(());
+                }
+            }
             if let Err(error) = self.revalidate_continuation_admission(false).await {
                 self.state().retry_attempt = 0;
                 self.reset_hint_tier_state();
@@ -3788,18 +3767,26 @@ impl AgentSession {
         let preparation = branch_summarization::prepare_branch_entries(entries,
             if model.context_window == 0 { 128_000 } else { model.context_window as i64 } - reserve);
         if preparation.messages.is_empty() { return Ok(serde_json::json!({"summary":"No content to summarize"})); }
-        let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
-            reason: maho_ext_api::CompactionReason::Branch, will_retry: false, request_id: uuid::Uuid::new_v4().to_string(),
-            preparation: maho_ext_api::CompactionPreparation {
-                settings: maho_ext_api::CompactionSettings { enabled: true, reserve_tokens: reserve as u64, keep_recent_tokens: 0 },
-                messages_to_summarize: preparation.messages.iter().cloned().map(serde_json::from_value).collect::<Result<_,_>>()
-                    .map_err(|error| error.to_string())?, turn_prefix_messages: Vec::new(), tokens_before: preparation.total_tokens as u64,
-                first_kept_entry_id: entries.first().and_then(|entry| entry["id"].as_str()).unwrap_or_default().to_owned(), previous_summary: None,
-            }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
-            custom_instructions: custom_instructions.map(str::to_owned), signal: extension_signal,
-        })).await?;
-        if before.cancel == Some(true) || signal.aborted() { return Ok(serde_json::json!({"aborted":true})); }
-        if let Some(result) = before.compaction { return Ok(serde_json::json!({"summary":result.summary})); }
+        if self.has_extension_handlers(maho_ext_api::EventKind::SessionBeforeCompact).await {
+            let compaction = branch_summarization::create_branch_compaction_preparation(entries, &preparation, reserve);
+            let before = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeCompact(maho_ext_api::SessionBeforeCompactEvent {
+                reason: maho_ext_api::CompactionReason::Branch, will_retry: false, request_id: uuid::Uuid::new_v4().to_string(),
+                preparation: maho_ext_api::CompactionPreparation {
+                    settings: maho_ext_api::CompactionSettings { enabled: compaction.settings.enabled,
+                        reserve_tokens: compaction.settings.reserve_tokens as u64, keep_recent_tokens: compaction.settings.keep_recent_tokens as u64 },
+                    messages_to_summarize: compaction.messages_to_summarize.iter().cloned().map(serde_json::from_value).collect::<Result<_,_>>()
+                        .map_err(|error| error.to_string())?,
+                    turn_prefix_messages: compaction.turn_prefix_messages.iter().cloned().map(serde_json::from_value).collect::<Result<_,_>>()
+                        .map_err(|error| error.to_string())?,
+                    tokens_before: compaction.tokens_before as u64, first_kept_entry_id: compaction.first_kept_entry_id,
+                    previous_summary: compaction.previous_summary,
+                }, branch_entries: entries.iter().cloned().map(session_entry_from_value).collect(),
+                custom_instructions: custom_instructions.map(str::to_owned), signal: extension_signal,
+            })).await?;
+            if before.cancel == Some(true) { return Ok(serde_json::json!({"aborted":true})); }
+            if let Some(result) = before.compaction { return Ok(serde_json::json!({"summary":result.summary})); }
+        }
+        if signal.aborted() { return Ok(serde_json::json!({"aborted":true})); }
         let instructions = match custom_instructions {
             Some(instructions) if replace_instructions => instructions.to_owned(),
             Some(instructions) => format!("{}\n\nAdditional focus: {instructions}", branch_summarization::BRANCH_SUMMARY_PROMPT),
@@ -3809,6 +3796,7 @@ impl AgentSession {
         let prompt = format!("<conversation>\n{transcript}\n</conversation>\n\n{instructions}");
         let auth = self.get_summarization_request_auth(&model).await?;
         let AgentMessage::Llm(message) = make_user_message(&prompt, None) else { return Err("Invalid branch summary prompt".to_owned()); };
+        let callbacks = self.summarization_retry_callbacks("branchSummary", None);
         let response = self.complete_summary_stream(&auth.model, &maho_ai::types::Context {
             system_prompt: Some(utils::SUMMARIZATION_SYSTEM_PROMPT.to_owned()), messages: vec![message], tools: None,
         }, Some(maho_ai::types::StreamOptions {
@@ -3818,7 +3806,7 @@ impl AgentSession {
             extra_body: self.model_runtime().get_compatibility_request_config(&model).extra_body,
             max_tokens: Some(if model.max_tokens == 0 { 4096 } else { model.max_tokens.min(4096) }),
             ..Default::default()
-        })).await.map_err(|error| error.to_string())?;
+        }), Some(&callbacks)).await.map_err(|error| error.to_string())?;
         if response.stop_reason == maho_ai::types::StopReason::Aborted { return Ok(serde_json::json!({"aborted":true})); }
         if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Branch summarization") { return Err(error); }
         if response.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_))) {
@@ -4230,7 +4218,8 @@ impl AgentSession {
     }
 
     async fn complete_summary_stream(&self, model: &Model, context: &maho_ai::types::Context,
-        options: Option<maho_ai::types::StreamOptions>) -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
+        options: Option<maho_ai::types::StreamOptions>, callbacks: Option<&maho_ai::utils::retry::RetryCallbacks<'_>>)
+        -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
         use crate::compaction::stream_watchdog;
         let mut options = options.unwrap_or_default();
         let override_ms = self.with_settings_manager(|settings| settings.get_value("compaction")
@@ -4242,14 +4231,7 @@ impl AgentSession {
         options.request.affinity_session_id = options.request.affinity_session_id.clone().or_else(|| options.session_id.clone());
         options.session_id = Some(uuid::Uuid::new_v4().to_string());
         options.cache_retention.get_or_insert(maho_ai::types::CacheRetention::None);
-        let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
-        let policy = maho_ai::utils::retry::RetryPolicy {
-            enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
-            max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3) as u32,
-            base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000),
-            max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
-            random: Some(self.retry_random.clone()),
-        };
+        let policy = self.summarization_retry_policy();
         maho_ai::utils::retry::retry_transient_call(|| {
             let mut options = options.clone();
             let caller = caller.clone();
@@ -4274,7 +4256,116 @@ impl AgentSession {
                 Ok(response)
             }
         }, |error: &String| maho_ai::utils::retry::is_retryable_error_message(error),
-            Some(&policy), caller.as_ref(), None).await.map_err(maho_ai::utils::event_stream::StreamError::new)
+            Some(&policy), caller.as_ref(), callbacks).await.map_err(maho_ai::utils::event_stream::StreamError::new)
+    }
+
+    /// `settingsManager.getRetrySettings()` as the summarization retry policy.
+    fn summarization_retry_policy(&self) -> maho_ai::utils::retry::RetryPolicy {
+        let retry = self.with_settings_manager(|manager| manager.get_value("retry").cloned());
+        maho_ai::utils::retry::RetryPolicy {
+            enabled: retry.as_ref().and_then(|settings| settings.get("enabled")).and_then(Value::as_bool).unwrap_or(true),
+            max_retries: retry.as_ref().and_then(|settings| settings.get("maxRetries")).and_then(Value::as_u64).unwrap_or(3) as u32,
+            base_delay_ms: retry.as_ref().and_then(|settings| settings.get("baseDelayMs")).and_then(Value::as_u64).unwrap_or(2_000),
+            max_agent_delay_ms: retry.as_ref().and_then(|settings| settings.get("maxAgentDelayMs")).and_then(Value::as_u64),
+            random: Some(self.retry_random.clone()),
+        }
+    }
+
+    /// senpi `_summarizationRetryCallbacks`: surface summarization retries as session events.
+    fn summarization_retry_callbacks(&self, source: &'static str, reason: Option<maho_ext_api::CompactionReason>)
+        -> maho_ai::utils::retry::RetryCallbacks<'static>
+    {
+        let scheduled = self.clone();
+        let attempt_start = self.clone();
+        let finished = self.clone();
+        maho_ai::utils::retry::RetryCallbacks {
+            on_retry_scheduled: Some(Box::new(move |attempt, max_attempts, delay_ms, error_message| {
+                scheduled.emit(AgentSessionEvent::SummarizationRetryScheduled {
+                    attempt, max_attempts, delay_ms, error_message: error_message.to_owned(),
+                });
+            })),
+            on_retry_attempt_start: Some(Box::new(move || {
+                attempt_start.emit(AgentSessionEvent::SummarizationRetryAttemptStart { source: source.to_owned(), reason });
+            })),
+            on_retry_finished: Some(Box::new(move |_, _, _| finished.emit(AgentSessionEvent::SummarizationRetryFinished))),
+        }
+    }
+
+    /// senpi `_runDefaultCompaction`: generate the built-in summary, reusing the exact provider
+    /// context prefix (experimental) so the summary request can hit the prompt cache.
+    async fn run_default_compaction(&self, preparation: &crate::compaction::compaction::CompactionPreparation, auth: RequestAuth,
+        instructions: Option<&str>, signal: maho_ai::utils::abort::AbortSignal, reason: maho_ext_api::CompactionReason)
+        -> Result<crate::compaction::compaction::CompactionResult, String>
+    {
+        use crate::compaction::compaction as library;
+        let to_agent_messages = |messages: &[Value]| messages.iter().cloned().map(session_message_from_value)
+            .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string());
+        let mut cache_friendly = None;
+        if crate::experimental::are_experimental_features_enabled() {
+            let state = self.agent.state();
+            let system_prompt = self.agent.system_prompt();
+            let tools = state.tools().to_vec();
+            let build_source_context = |messages: Vec<AgentMessage>| {
+                let context = maho_agent::types::AgentContext { system_prompt: system_prompt.clone(), messages, tools: Some(tools.clone()) };
+                let signal = signal.clone();
+                async move { self.agent.build_provider_context(&context, Some(signal)).await }
+            };
+            let full_context = build_source_context(state.messages().to_vec()).await;
+            let is_exact_prefix = |candidate: &maho_ai::types::Context| !candidate.messages.is_empty()
+                && candidate.messages.len() <= full_context.messages.len()
+                && candidate.messages[..] == full_context.messages[..candidate.messages.len()];
+            let mut source_context = None;
+            if !preparation.messages_to_summarize.is_empty() && !preparation.source_messages.is_empty() {
+                let candidate = build_source_context(to_agent_messages(&preparation.source_messages)?).await;
+                if is_exact_prefix(&candidate) { source_context = Some(candidate); }
+            }
+            let mut turn_prefix_source_context = None;
+            if preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty() && !preparation.turn_prefix_source_messages.is_empty() {
+                let candidate = build_source_context(to_agent_messages(&preparation.turn_prefix_source_messages)?).await;
+                let provider_turn_prefix = (self.agent.convert_to_llm())(to_agent_messages(&preparation.turn_prefix_messages)?).await;
+                if is_exact_prefix(&candidate) && !provider_turn_prefix.is_empty()
+                    && provider_turn_prefix.len() <= candidate.messages.len()
+                    && candidate.messages[candidate.messages.len() - provider_turn_prefix.len()..] == provider_turn_prefix[..]
+                {
+                    turn_prefix_source_context = Some(candidate);
+                }
+            }
+            if source_context.is_some() || turn_prefix_source_context.is_some() {
+                cache_friendly = Some(library::CacheFriendlySummaryOptions {
+                    source_context, turn_prefix_source_context,
+                    request_options: Some(library::SummaryRequestOptions {
+                        session_id: self.agent.session_id(), on_payload: self.agent.on_payload(), on_response: self.agent.on_response(),
+                        transport: self.agent.transport(), thinking_budgets: self.agent.thinking_budgets(),
+                        max_retry_delay_ms: self.agent.max_retry_delay_ms(),
+                    }),
+                });
+            }
+        }
+        let transform_context = self.agent.transform_context().map(|transform| -> library::SummaryTransformContext {
+            Arc::new(move |messages: Vec<Value>, signal: Option<maho_ai::utils::abort::AbortSignal>|
+                -> maho_ai::types::BoxFuture<'static, Result<Vec<Value>, String>>
+            {
+                let transform = transform.clone();
+                Box::pin(async move {
+                    let messages = messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())?;
+                    let transformed = transform(messages, signal).await;
+                    transformed.iter().map(session_message_to_value).collect::<Result<Vec<_>, _>>()
+                        .map_err(|error| error.to_string())
+                })
+            })
+        });
+        let stream_fn = |model: &Model, context: &maho_ai::types::Context, options: maho_ai::types::SimpleStreamOptions|
+            self.model_runtime().stream_simple(model, context, Some(options));
+        let retry = self.summarization_retry_policy();
+        let callbacks = self.summarization_retry_callbacks("compaction", Some(reason));
+        let request = library::SummarizationRequest {
+            model: &auth.model, api_key: auth.api_key.clone(), headers: auth.headers.clone(), env: auth.env.clone(),
+            signal: Some(signal.clone()), extra_body: auth.extra_body.clone(), thinking_level: Some(self.thinking_level()),
+            stream_fn: Some(&stream_fn as &library::SummarizationStreamFn<'_>), transform_context, retry: Some(&retry), callbacks: Some(&callbacks),
+            session_id: Some(self.session_id()), summarization_max_duration_ms: None,
+        };
+        library::compact(preparation, instructions, cache_friendly.as_ref(), &request).await
     }
 
     /// Resolve optional auth for a summarization stream.
@@ -10408,7 +10499,7 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.complete_summary_stream(&model,
             &maho_ai::types::Context::default(), Some(maho_ai::types::StreamOptions {
                 session_id: Some("caller-affinity".into()), ..Default::default()
-            }))).await;
+            }), None)).await;
         session.dispose().await;
         let response = result.expect("bounded retries").expect("retried summary");
         assert_eq!(maho_ai::utils::text::content_text(&response.content, ""), "summary");
@@ -10453,7 +10544,7 @@ mod tests {
                 session_id: Some("caller".into()), request: maho_ai::types::ProviderRequestOptions {
                     affinity_session_id: Some("explicit-affinity".into()), ..Default::default()
                 }, ..Default::default()
-            }))).await;
+            }), None)).await;
         session.dispose().await;
         assert_eq!(result.expect("bounded deterministic error").expect_err("failure").to_string(), "invalid request fixture");
         let seen = lock(&seen);
@@ -12036,7 +12127,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("next", Default::default())).await.expect("bounded prompt").expect("blocked retry settles");
         assert_eq!(session.with_session_manager(|manager| manager.entries()).iter().filter(|entry| entry["message"]["role"] == "assistant").count(), 1);
         assert!(matches!(&lock(&events)[0], AgentSessionEvent::AutoRetryEnd { success: false, attempt: 1, final_error: Some(error) }
-            if error == "Compaction required before provider request"));
+            if error == "Context remains above the compaction threshold because compaction did not complete"));
         assert!(!session.is_retrying());
     }
 
