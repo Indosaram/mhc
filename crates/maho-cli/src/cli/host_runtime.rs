@@ -302,16 +302,12 @@ pub async fn mount_agent_session_runtime(
     }).await;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let mut extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(widget_sender, task_parent.clone(), mcp_registry);
-    if !config.no_extensions {
-        let discovery = super::user_extensions::resolve_and_discover(
-            &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(),
-        ).await.map_err(|error| error.to_string())?;
-        if !discovery.errors.is_empty() {
-            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-        }
-        extension_factories.extend(discovery.factories);
-    }
+    let extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(
+        widget_sender, task_parent.clone(), mcp_registry, &services.settings_manager, Path::new(&cwd), &config.agent_dir,
+    );
+    let extension_factories = super::default_extensions::with_user_extensions(
+        extension_factories, &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions,
+    ).await?;
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {

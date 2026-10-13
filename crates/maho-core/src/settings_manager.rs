@@ -714,6 +714,16 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_bool)
     }
 
+    /// senpi `getDisabledBuiltinExtensions`: builtin extension ids to skip loading.
+    pub fn get_disabled_builtin_extensions(&self) -> Vec<String> {
+        string_list(self.settings.get("disabledBuiltinExtensions")).unwrap_or_default()
+    }
+
+    /// senpi `getEnabledBuiltinExtensions`: optional allowlist of builtin extension ids (default: all).
+    pub fn get_enabled_builtin_extensions(&self) -> Option<Vec<String>> {
+        string_list(self.settings.get("enabledBuiltinExtensions"))
+    }
+
     pub fn get_image_auto_resize(&self) -> bool {
         self.settings
             .get("images")
@@ -1137,6 +1147,11 @@ fn settings_ms(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_f64().filter(|value| value.is_finite() && *value >= 0.0).map(|value| value.floor() as u64))
 }
 
+/// A settings string array; non-string entries are skipped (senpi reads the typed field verbatim).
+fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+}
+
 pub fn serialize_settings(settings: &Settings) -> String {
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings.clone())).unwrap_or_else(|_| "{}".to_owned());
     serialized.push('\n');
@@ -1147,6 +1162,16 @@ pub fn serialize_settings(settings: &Settings) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn builtin_extension_allowlist_and_denylist_read_merged_settings() {
+        let unset = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(unset.get_enabled_builtin_extensions(), None);
+        assert!(unset.get_disabled_builtin_extensions().is_empty());
+        let configured = SettingsManager::in_memory(settings(r#"{"enabledBuiltinExtensions":["mcp","help"],"disabledBuiltinExtensions":["tps"]}"#), false);
+        assert_eq!(configured.get_enabled_builtin_extensions(), Some(vec!["mcp".to_owned(), "help".to_owned()]));
+        assert_eq!(configured.get_disabled_builtin_extensions(), vec!["tps".to_owned()]);
+    }
 
     fn settings(json_text: &str) -> Settings {
         parse_settings_json(json_text).expect("settings")

@@ -30,10 +30,11 @@ async fn concrete_default_factories_register_tools_and_commands() {
 async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
     let root = tempfile::tempdir().expect("isolated factory directory");
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-    let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()));
+    let settings = maho_core::settings_manager::SettingsManager::in_memory(Default::default(), false);
+    let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
     let paths = factories.iter().map(|factory| factory.path.clone()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(paths.len(), factories.len());
-    for path in ["<builtin:gpt-apply-patch>", "<builtin:todowrite>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<user:pi-ast-grep>"] {
+    for path in ["<builtin:gpt-apply-patch>", "<builtin:todowrite>", "<builtin:omo>", "<builtin:codemode>", "<builtin:hooks>", "<builtin:terminal>", "<builtin:claude-sdk-oauth>", "<builtin:cursor-cli-oauth>", "<user:pi-ast-grep>"] {
         assert!(paths.contains(path), "Missing factory {path}");
     }
     let registered = factories.iter().filter_map(|factory| factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>')))
@@ -45,6 +46,35 @@ async fn assembled_factories_preserve_sdk_and_cli_extensions_once() {
     let loaded = maho_ext_host::loader::load_extensions_async(factories, root.path(), Default::default()).await;
     assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
     assert_eq!(loaded.extensions.len(), paths.len());
+}
+
+#[tokio::test]
+async fn oauth_lanes_sit_before_config_reload_and_mcp_stays_last_builtin() {
+    let root = tempfile::tempdir().expect("isolated factory directory");
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let settings = maho_core::settings_manager::SettingsManager::in_memory(Default::default(), false);
+    let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
+    let position = |path: &str| factories.iter().position(|factory| factory.path == path).expect(path);
+    assert!(position("<builtin:gpt-account>") < position("<builtin:claude-sdk-oauth>"));
+    assert!(position("<builtin:claude-sdk-oauth>") < position("<builtin:cursor-cli-oauth>"));
+    assert!(position("<builtin:cursor-cli-oauth>") < position("<builtin:config-reload>"));
+    let builtins = factories.iter().filter(|factory| factory.path.strip_prefix("<builtin:").and_then(|id| id.strip_suffix('>'))
+        .is_some_and(|id| maho_cli::cli::extension_registry::BUILTIN_EXTENSION_IDS.contains(&id))).collect::<Vec<_>>();
+    assert_eq!(builtins.last().map(|factory| factory.path.as_str()), Some("<builtin:mcp>"));
+}
+
+#[tokio::test]
+async fn settings_allowlist_and_denylist_filter_builtin_ids_only() {
+    let root = tempfile::tempdir().expect("isolated factory directory");
+    let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+    let global = serde_json::json!({"disabledBuiltinExtensions":["tps","cursor-cli-oauth"]});
+    let settings = maho_core::settings_manager::SettingsManager::in_memory(global.as_object().expect("object").clone(), false);
+    let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
+    let paths = factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>();
+    assert!(!paths.contains(&"<builtin:tps>") && !paths.contains(&"<builtin:cursor-cli-oauth>"), "{paths:?}");
+    assert!(paths.contains(&"<builtin:claude-sdk-oauth>") && paths.contains(&"<builtin:omo>") && paths.contains(&"<inline:llama.cpp>"), "{paths:?}");
+    let allow = maho_cli::cli::default_extensions::BuiltinExtensionSelection { enabled: Some(vec!["mcp".into()]), disabled: Vec::new() };
+    assert!(allow.is_active("mcp") && !allow.is_active("help") && !allow.is_active("codemode") && allow.is_active("omo"));
 }
 
 #[tokio::test]
