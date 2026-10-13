@@ -312,3 +312,18 @@ async fn directory_without_source_files_reports_no_files() {
         })
     );
 }
+
+#[test]
+fn symbols_limit_truncates_like_js_slice() {
+    let range = json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+    let symbols: Vec<Value> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|name| json!({ "name": name, "kind": 12, "range": range, "selectionRange": range }))
+        .collect();
+    for (limit, shown) in [(2.5, 2), (-1.0, 3)] {
+        let result =
+            handlers::format_symbols_result("a.ts", "document", Value::Array(symbols.clone()), limit, None);
+        let text = &result.content[0].text;
+        assert_eq!(text.lines().count(), 1 + shown, "limit {limit}: {text}");
+    }
+}
