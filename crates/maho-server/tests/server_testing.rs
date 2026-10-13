@@ -246,3 +246,19 @@ async fn unexpected_session_termination_publishes_a_detach_to_the_attached_clien
     tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
     test.server.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn connection_count_observer_sees_each_connect_and_disconnect() {
+    let counts=Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));let captured=counts.clone();
+    let test=create_test_server(TestServerOptions {on_connection_count_changed:Some(Arc::new(move |count| captured.lock().unwrap().push(count))),..Default::default()}).unwrap();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(4);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    let serving=tokio::spawn(test.server.clone().serve(connection.clone(),inbound,signal));
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="hello").await;
+    assert_eq!(counts.lock().unwrap().as_slice(),[1]);
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
+    assert_eq!(counts.lock().unwrap().as_slice(),[1,0]);
+    test.server.close().await.unwrap();
+}

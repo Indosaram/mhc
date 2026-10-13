@@ -17,7 +17,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -29,6 +29,9 @@ use tokio::{
 /// Observer invoked with every internal server error (pinned `ServerOptions.onError`). The default
 /// `Server::new` has no observer, and errors are then dropped like the pinned optional `onError`.
 pub type ServerErrorObserver = Arc<dyn Fn(ServerError) + Send + Sync>;
+/// Pinned `ServerOptions.onConnectionCountChanged`: called with the live connection count after
+/// each connect and disconnect.
+pub type ConnectionCountObserver = Arc<dyn Fn(usize) + Send + Sync>;
 
 /// Pinned `reportError`: deliver to the observer, swallowing observer panics.
 fn report_to(observer: Option<&ServerErrorObserver>, error: ServerError) {
@@ -47,6 +50,8 @@ pub struct Server {
     closing: AtomicBool,
     listeners: Vec<Arc<dyn ServerListener>>,
     on_error: Option<ServerErrorObserver>,
+    on_connection_count_changed: Option<ConnectionCountObserver>,
+    connections: AtomicUsize,
     started: AtomicBool,
     listener_shutdown: Mutex<Option<watch::Sender<bool>>>,
     closed: watch::Sender<Option<Result<(), ServerError>>>,
@@ -59,7 +64,7 @@ impl Server {
         max_frame_length: Option<u32>,
         handshake_timeout: Option<Duration>,
     ) -> Result<Arc<Self>, ServerError> {
-        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None)
+        Self::with_options(host, server_id, max_frame_length, handshake_timeout, Vec::new(), None, None)
     }
     /// Pinned `ServerOptions` construction: the server owns its listener set and error observer
     /// (`listeners`/`onError`), exactly like the pinned `new Server(host, options)`.
@@ -70,6 +75,7 @@ impl Server {
         handshake_timeout: Option<Duration>,
         listeners: Vec<Arc<dyn ServerListener>>,
         on_error: Option<ServerErrorObserver>,
+        on_connection_count_changed: Option<ConnectionCountObserver>,
     ) -> Result<Arc<Self>, ServerError> {
         if !is_server_id(&server_id) {
             return Err(ServerError::new(
@@ -108,6 +114,8 @@ impl Server {
             closing: AtomicBool::new(false),
             listeners,
             on_error,
+            on_connection_count_changed,
+            connections: AtomicUsize::new(0),
             started: AtomicBool::new(false),
             listener_shutdown: Mutex::new(None),
             closed,
@@ -118,6 +126,15 @@ impl Server {
     /// swallows observer exceptions: error observers cannot affect server state.
     pub(crate) fn report_error(&self, error: &ServerError) {
         report_to(self.on_error.as_ref(), error.clone());
+    }
+    /// Pinned `notifyConnectionCountChanged`: observer panics are reported, never propagated.
+    fn notify_connection_count_changed(&self, count: usize) {
+        if let Some(observer) = &self.on_connection_count_changed {
+            let observer = Arc::clone(observer);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || observer(count))).is_err() {
+                self.report_error(&ServerError::new("internal_error", "Connection count observer failed"));
+            }
+        }
     }
     /// Pinned `failProtocol`: close the connection with one final `hello_error` frame. Encode and
     /// close failures are reported, never surfaced, like the pinned `closeConnection`.
@@ -227,6 +244,18 @@ impl Server {
         if self.closing.load(Ordering::SeqCst) {
             return connection.close(None).await;
         }
+        let count = self.connections.fetch_add(1, Ordering::SeqCst) + 1;
+        self.notify_connection_count_changed(count);
+        // Every exit from `serve` is a disconnect (pinned `disconnect` deletes the connection
+        // and notifies once).
+        struct Connected<'a>(&'a Server);
+        impl Drop for Connected<'_> {
+            fn drop(&mut self) {
+                let count = self.0.connections.fetch_sub(1, Ordering::SeqCst) - 1;
+                self.0.notify_connection_count_changed(count);
+            }
+        }
+        let _connected = Connected(self.as_ref());
         let mut decoder = MessageDecoder::new(
             crate::protocol::codec::MessageKind::Client,
             self.max_frame_length,
@@ -596,11 +625,11 @@ mod tests {
         let captured = Arc::clone(&errors);
         let host: Arc<dyn ServerHost> = Arc::new(crate::server::testing::TestServerHost::default());
         let server = Server::with_options(Arc::clone(&host), "00000000-0000-4000-8000-000000000001".into(), None, None, Vec::new(),
-            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message)))).expect("server");
+            Some(Arc::new(move |error: ServerError| captured.lock().expect("errors").push(error.message))), None).expect("server");
         server.report_error(&ServerError::new("internal_error", "boom"));
         assert_eq!(errors.lock().expect("errors").as_slice(), ["boom".to_string()]);
         let panicking = Server::with_options(host, "00000000-0000-4000-8000-000000000002".into(), None, None, Vec::new(),
-            Some(Arc::new(|_: ServerError| panic!("observer failure")))).expect("server");
+            Some(Arc::new(|_: ServerError| panic!("observer failure"))), None).expect("server");
         panicking.report_error(&ServerError::new("internal_error", "ignored"));
     }
 }
