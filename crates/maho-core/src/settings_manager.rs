@@ -688,6 +688,25 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// senpi `getMermaidRenderingMode`: `markdown.mermaid`, with anything but `off`/`final` read as
+    /// `streaming`.
+    pub fn get_mermaid_rendering_mode(&self) -> crate::settings_shapes::MermaidRenderingMode {
+        use crate::settings_shapes::MermaidRenderingMode;
+        match self.settings.get("markdown").and_then(|markdown| markdown.get("mermaid")).and_then(Value::as_str) {
+            Some("off") => MermaidRenderingMode::Off,
+            Some("final") => MermaidRenderingMode::Final,
+            _ => MermaidRenderingMode::Streaming,
+        }
+    }
+
+    /// senpi `setMermaidRenderingMode`: writes global `markdown.mermaid`, keeping the other
+    /// `markdown` keys.
+    pub fn set_mermaid_rendering_mode(&mut self, mode: crate::settings_shapes::MermaidRenderingMode) -> Result<(), String> {
+        let mut markdown = self.global_settings.get("markdown").and_then(Value::as_object).cloned().unwrap_or_default();
+        markdown.insert("mermaid".into(), Value::String(mode.as_str().to_owned()));
+        self.set(SettingsScope::Global, &Settings::from_iter([("markdown".into(), Value::Object(markdown))]))
+    }
+
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.settings.get(key).and_then(Value::as_f64)
     }
@@ -1033,6 +1052,24 @@ mod tests {
         assert!(manager.get_project().is_empty());
         assert!(!manager.is_project_trusted());
         assert_eq!(manager.get_value("theme"), Some(&serde_json::json!("custom")));
+    }
+
+    #[test]
+    fn mermaid_rendering_mode_defaults_to_streaming_and_reads_markdown_mermaid() {
+        use crate::settings_shapes::MermaidRenderingMode;
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Streaming);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"final"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Final);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"off"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Off);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"bogus"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Streaming);
+    }
+
+    #[test]
+    fn set_mermaid_rendering_mode_keeps_other_markdown_keys() {
+        use crate::settings_shapes::MermaidRenderingMode;
+        let mut manager = SettingsManager::in_memory(settings(r#"{"markdown":{"codeBlockIndent":"    "}}"#), false);
+        manager.set_mermaid_rendering_mode(MermaidRenderingMode::Off).expect("set mermaid");
+        assert_eq!(manager.get_mermaid_rendering_mode(), MermaidRenderingMode::Off);
+        assert_eq!(manager.get_value("markdown"), Some(&json!({"codeBlockIndent":"    ","mermaid":"off"})));
     }
 
     #[test]

@@ -278,7 +278,7 @@ impl Default for SettingsConfig {
             hide_thinking_block: false,
             smooth_streaming: true,
             smooth_streaming_fps: 60,
-            mermaid_rendering_mode: MermaidRenderingMode::Final,
+            mermaid_rendering_mode: MermaidRenderingMode::Streaming,
             show_cache_miss_notices: true,
             collapse_changelog: false,
             enable_install_telemetry: true,

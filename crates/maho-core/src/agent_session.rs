@@ -4496,7 +4496,7 @@ impl AgentSession {
         self.rebuild_system_prompt();
     }
 
-    fn project_context_files(&self) -> Vec<crate::system_prompt::ContextFile> {
+    pub fn project_context_files(&self) -> Vec<crate::system_prompt::ContextFile> {
         if self.state().context_files_enabled {
             crate::resource_loader::load_project_context_files(&self.cwd(), &self.agent_dir())
         } else {
@@ -4504,7 +4504,7 @@ impl AgentSession {
         }
     }
 
-    pub(crate) fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
+    pub fn system_prompt_sources(&self) -> (Option<String>, Vec<String>) {
         let state = self.state();
         (state.custom_system_prompt_source.clone(), state.append_system_prompt_sources.clone())
     }
