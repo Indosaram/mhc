@@ -101,6 +101,7 @@ async fn test_active_tool_kernel_prelude_js_and_python_execution() {
         complete: Arc::new(|request| Box::pin(async move {
             Ok(json!({"text": request.prompt, "details": {"model": "fixture/model"}}))
         })),
+        python_startup_timeout: Some(std::time::Duration::from_secs(60)),
     }).await.unwrap());
 
     let active_tools_clone = active_tools.clone();
