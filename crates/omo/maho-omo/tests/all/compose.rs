@@ -34,6 +34,15 @@ fn top_level_disable_skips_components_and_logs_once() {
 }
 
 #[test]
+fn disabled_env_skips_components_like_the_flag() {
+    let logger=Arc::new(RecordingLogger::new());
+    let provisioning=maho_omo::ProvisioningOptions{env:Some(Arc::new(|name:&str|(name==maho_omo::OMO_SENPI_DISABLED_ENV).then(||"1".to_owned()))),..Default::default()};
+    let extension=OmoExtension::with_options(vec![OmoSenpiComponent::new("alpha",Box::new(FakeComponent::new(|_|panic!("disabled component"))))],manual_runtime_options(logger),provisioning);
+    let mut api=new_api();extension.register(&mut api);
+    assert!(extension.runtime().is_none());assert!(api.registered.tools.is_empty());
+}
+
+#[test]
 fn components_receive_one_runtime_and_see_earlier_captured_tools() {
     let shared = Arc::new(Mutex::new(Vec::new()));
     let first = shared.clone();
