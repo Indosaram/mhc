@@ -1,5 +1,5 @@
 use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc, sync::Arc};
-use maho_tui::{components::editor::EditorTuiHost, terminal::{ProcessTerminal, Terminal}, tui::Component};
+use maho_tui::{components::editor::EditorTuiHost, terminal::Terminal, tui::Component};
 
 use super::shared_host::{is_truthy_env_flag, join_shared_host, should_join_shared_host, shared_host_setting_enabled, SharedHostMount, SHARED_HOST_ENABLE_ENV_SUFFIX};
 
@@ -55,7 +55,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
     let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
-    let mut terminal = ProcessTerminal::default();
+    let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
     let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
@@ -107,7 +107,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         rendered.clone()
     };
     screen.set_render_root(component.clone());
-    screen.base_mut().set_focus(Some(component));
+    screen.base_mut().set_focus(Some(component.clone()));
     // senpi focuses the editor (`ui.setFocus(this.editor)`); a focused editor emits the cursor
     // marker the renderer turns into the per-frame hardware cursor restore (row move + absolute
     // column). The mounted root here is a line buffer, so focus is handed to the mode directly.
@@ -136,8 +136,15 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let _ = notice_sender.send(StartupNotice::Warning(warning));
         }
     });
-    screen.before_terminal_start(&mut terminal, false, false);
+    // senpi `TuiAltScreen` `mouse: terminalMouseMode !== "off"`; multiplexers get button-motion
+    // tracking. The `TuiBase.start()` sequence brackets `terminal.start`.
+    let mouse_enabled = session.with_settings_manager(|settings| settings.get_string("terminalMouse")).as_deref() != Some("off");
+    screen.base_mut().prepare_start();
+    screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
+    mode.resume_question_mouse_capture(&mut screen, &mut terminal);
+    mode.bind_terminal_theme(&mut screen, theme_setting);
     let result = async {
         if let Some(text) = initial.initial_message { mode.enqueue_submission(&text, initial.initial_images); }
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
@@ -184,7 +191,13 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             let chunks = std::mem::take(&mut *input.borrow_mut());
             let had_input = !chunks.is_empty();
-            for chunk in chunks { mode.handle_runtime_input(&chunk, now).await?; }
+            for chunk in chunks {
+                if let Some(data) = route_terminal_input(&mut screen, &mut terminal, &component, &chunk, now) {
+                    mode.handle_runtime_input(&data, now).await?;
+                }
+            }
+            mode.sync_question_mouse_capture(&mut screen, &mut terminal);
+            mode.poll_terminal_theme(&mut screen, &mut terminal);
             mode.pump_turn().await;
             if fullscreen {
                 let (document, dock) = mode.render_split(usize::from(terminal.columns()));
@@ -207,9 +220,15 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         }
         Ok(())
     }.await;
-    screen.before_terminal_stop(&mut terminal, false);
+    // senpi `stopInteractiveTui` -> `TuiBase.stop()`: release mouse leases, disable color-scheme
+    // notifications, hand terminal modes back, park the cursor below the last frame, show it.
+    mode.pause_question_mouse_capture(&mut screen, &mut terminal);
+    screen.base_mut().begin_stop(&mut terminal);
+    screen.before_terminal_stop(&mut terminal, mouse_enabled);
+    screen.base_mut().finish_stop_output(&mut terminal, fullscreen);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     drop(shared_host);
     // senpi `shutdown`: after the terminal stops, tell the user how to reopen this session.
     let resume_command = session.with_session_manager(|manager| maho_interactive::interactive_mode::format_resume_command(manager, std::io::IsTerminal::is_terminal(&std::io::stdout())));
@@ -221,6 +240,31 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
 enum StartupNotice {
     NewVersion(String),
     Warning(String),
+}
+
+/// senpi `TuiBase.handleTerminalInput` for the mounted interactive renderer: terminal protocol
+/// replies are consumed, the renderer's input listeners (mouse, focus reports and, in fullscreen,
+/// the `tui.altScreen.*` viewport keys) run before focus delivery, overlay focus is restored, and
+/// input for a focused overlay is delivered through the renderer. Returns the input for the
+/// interactive mode when the mounted root holds focus.
+fn route_terminal_input(screen: &mut maho_interactive::tui_renderer::InteractiveTui, terminal: &mut dyn Terminal, root: &Rc<RefCell<dyn Component>>, chunk: &str, now_ms: u64) -> Option<String> {
+    let data = screen.base_mut().consume_terminal_protocol_input(chunk)?;
+    if screen.handle_mouse_input(&data, i64::try_from(now_ms).unwrap_or(i64::MAX), terminal) {
+        return None;
+    }
+    let root_focused = |screen: &maho_interactive::tui_renderer::InteractiveTui| screen.base().get_focused_component().is_some_and(|focused| Rc::ptr_eq(&focused, root));
+    if root_focused(&*screen)
+        && let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut *screen
+        && alt.handle_viewport_input(&data, maho_tui::keys::is_key_release(&data))
+    {
+        return None;
+    }
+    screen.base_mut().apply_input_focus_rules();
+    if root_focused(&*screen) {
+        return Some(data);
+    }
+    screen.base_mut().handle_terminal_input(&data, maho_tui::keys::is_key_release(&data));
+    None
 }
 
 /// senpi `createStartupTui`'s theme half, owned by this interactive entry: register the
