@@ -13,7 +13,7 @@ pub const KNOWN_MODELS: &[(&str, &[&str])] = &[
     ("vercel", &["claude-fable-5", "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "deepseek-v4-flash", "deepseek-v4-pro", "gemini-3.6-flash", "gpt-5.6-sol", "gpt-5.6-terra", "kimi-k3", "minimax-m2.7", "minimax-m3"]),
     ("xai", &["grok-4.20-0309-non-reasoning"]),
 ];
-use std::{collections::HashMap,io::{Read,Write},path::{Path,PathBuf},sync::{Mutex,OnceLock}};
+use std::{collections::HashMap,io::Write,path::{Path,PathBuf},sync::{Mutex,OnceLock}};
 #[cfg(unix)]
 fn private_file(options: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600) }
 #[cfg(not(unix))]
@@ -92,14 +92,13 @@ pub fn omo_native_event_schemas()->serde_json::Value {
 }
 static FALLBACK_SALTS:OnceLock<Mutex<HashMap<PathBuf,[u8;32]>>>=OnceLock::new();
 pub fn get_omo_native_state_dir(env:&telemetry_core::TelemetryEnv)->PathBuf {
-    let legacy=crate::index::get_senpi_telemetry_state_dir(env);
-    legacy.parent().unwrap_or(&legacy).join("omo-native")
+    crate::index::get_senpi_agent_dir(env).join("omo-senpi/omo-native")
 }
 pub fn hash_session_id(raw:&str,state_dir:&Path)->std::io::Result<String> {
     let path=state_dir.join("session-id-salt");
     let read=||std::fs::read(&path).ok().and_then(|b|<[u8;32]>::try_from(b).ok());
     let salt=if let Some(salt)=read() {salt} else {
-        let mut salt=[0;32];std::fs::File::open("/dev/urandom")?.read_exact(&mut salt)?;
+        let mut salt=[0;32];getrandom::fill(&mut salt).map_err(std::io::Error::other)?;
         let write=|exclusive:bool|->std::io::Result<()> {std::fs::create_dir_all(state_dir)?;let mut options=std::fs::OpenOptions::new();options.write(true).create(!exclusive).create_new(exclusive).truncate(!exclusive);let mut file=private_file(&mut options).open(&path)?;file.write_all(&salt)};
         if write(true).is_ok() {FALLBACK_SALTS.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&path);salt}
         else if let Some(existing)=read() {existing}
