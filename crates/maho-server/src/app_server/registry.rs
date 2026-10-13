@@ -42,6 +42,11 @@ impl RegistryConnection {
         for action in actions { tokio::task::yield_now().await; action().await; }
     }
 }
+tokio::task_local! {
+    /// Pinned `ServerCore.activeDispatch` (`AsyncLocalStorage`): the connection whose request is being
+    /// dispatched on this task, so events fired inside a handler defer until its response is sent.
+    pub static ACTIVE_DISPATCH: RegistryConnection;
+}
 #[derive(Clone)]
 pub struct HandlerContext {
     pub connection: RegistryConnection,

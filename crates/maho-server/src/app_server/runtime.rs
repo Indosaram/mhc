@@ -234,7 +234,12 @@ impl AppServerRuntime {
         let provider_account_unsubscribe = maho_core::subscribe_provider_account_events(Arc::new(move |event| {
             let notification = super::account::provider_account_event_notification_native(&event);
             if let Some(core) = provider_core.upgrade() {
-                tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
+                let send = move || tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
+                // Pinned `subscribeToProviderAccountEvents`: inside a dispatch, defer until its response.
+                match super::registry::ACTIVE_DISPATCH.try_with(|dispatch| dispatch.clone()) {
+                    Ok(dispatch) => dispatch.defer_task_until_responded(send),
+                    Err(_) => drop(send()),
+                }
             }
         }));
         Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)) }

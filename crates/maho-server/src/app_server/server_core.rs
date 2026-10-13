@@ -131,7 +131,7 @@ impl ReceiveContext {
                     let mut state = connection.initialized.lock().await.registry_connection();
                     state.id = id.to_owned();
                     dispatch_connection = Some(state.clone());
-                    self.registry.dispatch(state, request).await
+                    super::registry::ACTIVE_DISPATCH.scope(state.clone(), self.registry.dispatch(state, request)).await
                 }
             }
             ClassifiedIncoming::ProtocolInvalid(_) => json!({"id":null,"error":errors::invalid_request_error()}),
