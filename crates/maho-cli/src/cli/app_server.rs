@@ -163,6 +163,12 @@ pub async fn run_app_server_command(
         }
         CliArgs::Server { listen, ws_auth, json_logs } => {
             let _ = json_logs;
+            let session_dir = session_dir.or_else(|| {
+                std::env::var(maho_core::config::env_session_dir_var())
+                    .ok()
+                    .filter(|dir| !dir.is_empty())
+                    .map(|dir| maho_core::paths::normalize_path(&dir, &Default::default()))
+            });
             let runtime = AppServerRuntime::new(
                 config.agent_dir.clone(),
                 config.cwd.clone(),
