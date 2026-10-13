@@ -37,7 +37,7 @@ pub async fn ensure_prepared_host(mut prepared:LockedHostEnsure,socket:&str,agen
     prepared.lock.release().map_err(std::io::Error::other)?;
     Ok(EnsuredHost::Started(started))
 }
-pub async fn stop_managed_host(owner:&crate::host_daemon_registration::RegisteredHost,timeout:std::time::Duration)->std::io::Result<()>{
+#[cfg(unix)] pub async fn stop_managed_host(owner:&crate::host_daemon_registration::RegisteredHost,timeout:std::time::Duration)->std::io::Result<()>{
     for signal in [rustix::process::Signal::TERM,rustix::process::Signal::KILL]{
         let owned=owner.process_start_time.as_ref().is_some_and(|recorded|crate::host_reservations::read_process_start_time(owner.pid).as_ref()==Some(recorded));
         if !owned{return if crate::host_reservations::process_is_live(owner.pid){Err(std::io::Error::other("host process identity is unknown"))}else{Ok(())};}
@@ -51,13 +51,17 @@ pub async fn stop_managed_host(owner:&crate::host_daemon_registration::Registere
     }
     Err(std::io::Error::other("host remained alive after SIGKILL"))
 }
+#[cfg(not(unix))] pub async fn stop_managed_host(_: &crate::host_daemon_registration::RegisteredHost,_:std::time::Duration)->std::io::Result<()>{Err(std::io::Error::new(std::io::ErrorKind::Unsupported,"stopping managed hosts is unsupported on this platform"))}
 pub async fn start_host(prepared:&LockedHostEnsure,socket:&str,launch:&crate::host_launch::HostLaunch,options:HostStartOptions)->std::io::Result<StartedHost>{
     let HostStartOptions{env,settings,launch_profile_id,timeout}=options;
-    use std::os::unix::fs::OpenOptionsExt;
     let socket=normalize_socket_path(socket);
     crate::host_daemon_state::write_host_settings(&prepared.paths,&settings).map_err(|error|error.source)?;
-    let stderr=std::fs::OpenOptions::new().create(true).write(true).truncate(settings.generation==0.).append(settings.generation!=0.).mode(0o600).open(&prepared.paths.stderr_log)?;
-    let mut child=tokio::process::Command::new(&launch.command).args(&launch.args).env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr).process_group(0).spawn()?;
+    let mut stderr_options=std::fs::OpenOptions::new();stderr_options.create(true).write(true).truncate(settings.generation==0.).append(settings.generation!=0.);
+    #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;stderr_options.mode(0o600);}
+    let stderr=stderr_options.open(&prepared.paths.stderr_log)?;
+    let mut command=tokio::process::Command::new(&launch.command);command.args(&launch.args).env_clear().envs(env).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(stderr);
+    #[cfg(unix)] command.process_group(0);
+    let mut child=command.spawn()?;
     let pid=child.id().ok_or_else(||std::io::Error::other("RPC socket host has no process identity"))?;
     let result=async{
         let registration=crate::host_daemon_registration::HostRegistration{pid,process_start_time:crate::host_reservations::read_process_start_time(pid),socket:socket.into(),instance_id:settings.instance_id.clone(),generation:settings.generation,launch_profile_id};

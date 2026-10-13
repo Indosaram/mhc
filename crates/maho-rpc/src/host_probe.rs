@@ -9,6 +9,8 @@ const PROBE_REQUEST_ID:&str="ensure-host-probe";
 #[derive(Default)]pub struct ProbeOutcome{pub connected:bool,pub answer:Option<Value>}
 pub fn read_answer(text:&str)->Option<Value>{let parsed:Value=serde_json::from_str(text).ok()?;if parsed["id"]!=PROBE_REQUEST_ID||parsed["success"]!=true{return None;}Some(parsed.get("data").filter(|value|!value.is_null()).cloned().unwrap_or_else(||serde_json::json!({})))}
 pub async fn connect_and_ask(socket_path:&str,request:&Value,timeout_ms:u64)->ProbeOutcome{
+    #[cfg(unix)]
+    {
     let mut outcome=ProbeOutcome::default();
     let _=tokio::time::timeout(std::time::Duration::from_millis(timeout_ms),async{
         let mut socket=tokio::net::UnixStream::connect(socket_path).await.ok()?;outcome.connected=true;
@@ -19,6 +21,9 @@ pub async fn connect_and_ask(socket_path:&str,request:&Value,timeout_ms:u64)->Pr
             while let Some(newline)=buffer.find('\n'){let line=buffer[..newline].to_owned();buffer.drain(..=newline);if let Some(answer)=read_answer(&line){outcome.answer=Some(answer);return Some(());}}
         }
     }).await;outcome
+    }
+    #[cfg(not(unix))]
+    { let _=(socket_path,request,timeout_ms); ProbeOutcome::default() }
 }
 pub async fn request_on_socket(socket_path:&str,command:&Value,timeout_ms:u64)->Option<Value>{let mut request=serde_json::json!({"id":PROBE_REQUEST_ID});if let Some(fields)=command.as_object(){request.as_object_mut()?.extend(fields.clone());}connect_and_ask(socket_path,&request,timeout_ms).await.answer}
 pub async fn probe_protocol_info(socket_path:&str,timeout_ms:u64)->Option<HostProtocolInfo>{parse_host_protocol_info(&request_on_socket(socket_path,&serde_json::json!({"type":"get_protocol_info"}),timeout_ms).await?)}
