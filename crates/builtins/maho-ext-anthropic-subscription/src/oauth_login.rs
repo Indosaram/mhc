@@ -12,9 +12,17 @@ pub struct AnthropicSubscriptionOAuth {
 
 impl AnthropicSubscriptionOAuth {
     pub fn native(store: Arc<dyn CredentialStore>, settings: Arc<dyn Fn() -> crate::settings::ProviderSettings + Send + Sync>, executable: std::path::PathBuf) -> Self {
+        Self::native_with_resolver(store, settings, Arc::new(move || -> anyhow::Result<(std::path::PathBuf, Option<crate::executable::ExecutableSource>)> { Ok((executable.clone(), None)) }))
+    }
+    /// senpi `probeAmbientClaudeAuthStatus`: the executable is resolved per probe and an
+    /// unresolvable binary reports the ambient lane unavailable instead of failing.
+    pub fn native_with_resolver(store: Arc<dyn CredentialStore>, settings: Arc<dyn Fn() -> crate::settings::ProviderSettings + Send + Sync>, resolve: crate::executable::ExecutableResolver) -> Self {
         let ambient = crate::availability::AmbientAuthStatusReader::new(Arc::new(move || {
-            let executable = executable.clone();
-            Box::pin(async move { Ok(crate::availability::probe_ambient_claude_auth_status(&executable, crate::availability::AMBIENT_PROBE_TIMEOUT_MS).await) })
+            let executable = resolve().map(|(executable, _)| executable);
+            Box::pin(async move {
+                let Ok(executable) = executable else { return Ok(false) };
+                Ok(crate::availability::probe_ambient_claude_auth_status(&executable, crate::availability::AMBIENT_PROBE_TIMEOUT_MS).await)
+            })
         }), Arc::new(|| maho_ai::utils::diagnostics::now_ms().max(0) as u64), crate::availability::AMBIENT_STATUS_TTL_MS);
         Self { store, settings, ambient, flow: Arc::new(maho_ai::auth::oauth::anthropic::AnthropicOAuth::new(maho_ai::auth::oauth::transport::default_transport())) }
     }

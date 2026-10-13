@@ -16,6 +16,18 @@ pub struct StreamDeps {
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
+/// A turn that fails before any SDK work (senpi `stream.ts` catch path): one error event carrying
+/// `message`, then the end of the stream.
+pub fn failed_stream(model: &Model, message: &str) -> AssistantMessageEventStream {
+    let stream = create_assistant_message_event_stream();
+    let mut output = crate::stream_events::StreamEventContext::new(model.clone(), maho_ai::utils::diagnostics::now_ms(), BTreeMap::new()).output;
+    output.stop_reason = StopReason::Error;
+    output.error_message = Some(message.to_owned());
+    stream.push(Event::Error { reason: ErrorReason::Error, error: output });
+    stream.end(None);
+    stream
+}
+
 pub fn stream_anthropic_subscription(model: Model, context: Context, options: Option<SimpleStreamOptions>, deps: StreamDeps) -> AssistantMessageEventStream {
     let stream = create_assistant_message_event_stream();
     let events = stream.clone();

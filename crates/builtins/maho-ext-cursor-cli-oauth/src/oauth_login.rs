@@ -3,6 +3,8 @@ use crate::{accounts::{list_accounts,add_account,CursorCliAccountSlot,AccountSou
 pub const PROVIDER_ID:&str="cursor-cli-oauth";
 pub const PROVIDER_NAME:&str="Cursor CLI (OAuth)";
 pub type ExecutableCheck=std::sync::Arc<dyn Fn(&CursorCliOauthProviderSettings)->anyhow::Result<()>+Send+Sync>;
+/// Per-turn cursor-agent resolution: the executable path, or the not-installed guidance.
+pub type ExecutablePathResolver=std::sync::Arc<dyn Fn(&CursorCliOauthProviderSettings)->anyhow::Result<std::path::PathBuf>+Send+Sync>;
 pub type AcknowledgementWriter=std::sync::Arc<dyn Fn(&str)->anyhow::Result<()>+Send+Sync>;
 pub struct CursorCliOAuth {
     pub store:std::sync::Arc<dyn maho_ai::auth::types::CredentialStore>,
@@ -17,6 +19,10 @@ pub struct CursorCliOAuth {
 /// when cursor-agent is installed.
 pub fn production_executable_check(environment:std::collections::BTreeMap<String,String>,home:std::path::PathBuf) -> ExecutableCheck {
     std::sync::Arc::new(move |settings|crate::executable::resolve_default(&environment,settings.executable_path.as_deref(),&home).map(|_|()).map_err(|error|anyhow::anyhow!(error.to_string())))
+}
+/// Production per-turn resolver over the same `resolve_default` the executable check uses.
+pub fn production_executable_resolver(environment:std::collections::BTreeMap<String,String>,home:std::path::PathBuf) -> ExecutablePathResolver {
+    std::sync::Arc::new(move |settings|crate::executable::resolve_default(&environment,settings.executable_path.as_deref(),&home).map(std::path::PathBuf::from).map_err(|error|anyhow::anyhow!(error.to_string())))
 }
 /// Production acknowledgement writer over the global settings file.
 pub fn production_acknowledgement_writer(storage:std::sync::Arc<dyn maho_core::settings_manager::SettingsStorage>) -> AcknowledgementWriter {
