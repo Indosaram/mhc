@@ -288,9 +288,16 @@ fn pi_nested_agents_md() -> Box<dyn Extension> {
 fn omo_zcode_oauth() -> Box<dyn Extension> {
     Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
 }
+/// Installed package entry for a `git:github.com/<owner>/<repo>` user package; the native port
+/// resolves the package's own `node_modules` from here, as the TS entry does via `import.meta.url`.
+fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(maho_core::config::get_agent_dir())
+        .join("git").join("github.com").join(owner).join(repo).join("src").join("index.ts")
+}
 fn pi_comment_checker() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_comment_checker::CommentChecker {
-        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from).unwrap_or_default(),
+        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| installed_git_package_entry("code-yeongyu", "pi-comment-checker")),
     })
 }
 fn orca_prefill() -> Box<dyn Extension> {
