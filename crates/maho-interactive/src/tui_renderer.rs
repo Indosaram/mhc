@@ -75,6 +75,24 @@ impl InteractiveTui {
         }
     }
 }
+/// senpi `createInteractiveTui`'s default terminal: a `ProcessTerminal` whose stray stdout writes
+/// are diverted to the hidden-stdout debug log and whose stderr observation follows the visible
+/// stderr sink, so external writes cannot desynchronize the differential renderer.
+pub fn create_process_terminal() -> maho_tui::terminal::ProcessTerminal {
+    use std::sync::Arc;
+    maho_tui::terminal::ProcessTerminal::new(maho_tui::terminal::ProcessTerminalOptions {
+        on_external_stdout_write: Some(Arc::new(|text: &str| {
+            maho_core::hidden_stdout_log::append_hidden_tui_stdout(text);
+            Ok(())
+        })),
+        observe_external_stderr_writes: Some(Arc::new(|listener: maho_tui::terminal::ExternalWriteListener| {
+            let observation = maho_core::output_guard::observe_visible_stderr_writes(listener);
+            Box::new(move || drop(observation)) as Box<dyn FnOnce() + Send>
+        })),
+        ..Default::default()
+    })
+}
+
 pub fn create_interactive_tui(options: InteractiveTuiOptions, theme: Theme) -> InteractiveTui {
     let mut tui = match options.tui_mode {
         TuiMode::Regular => InteractiveTui::Regular(Box::default()),
