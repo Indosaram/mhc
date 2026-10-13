@@ -189,14 +189,14 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let (entered, first_event) = mpsc::channel();
     let runner = Arc::new(ImmediateRunner(Mutex::new(Some(first_event))));
     let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
-    let dag = Arc::new(maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?);
+    let dag = maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?;
     let started = dag.manager.start(senpi_task::dag::manager::DagStartParams {
         definition: senpi_task::dag::graph::DagDefinition { key:"configured-ring".into(), name:"configured ring".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
             id:"one".into(), prompt:"one".into(), target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(), model:Some("faux/native".into()) },
             label:None, depends_on:None, task_summary:None, description:None, load_skills:None,
         }] }, parent_session_id:"s".into(), root_session_id:"s".into(),
     })?;
-    let configured = dag.scheduler(&dag_task_engine, &started.snapshot.run_id, "s")?;
+    let configured = dag.scheduler(&started.snapshot.run_id, "s")?;
     let (release, released) = mpsc::channel();
     let released = Mutex::new(released);
     let overflow = Arc::new(Mutex::new(Vec::new()));
@@ -274,7 +274,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     let tool = &api.registered.tools.iter().find(|tool| tool.definition.name == "dag").ok_or("dag missing")?.definition;
     let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"explore","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"explore","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
     let run = result.details.as_ref().and_then(|details| details["run_id"].as_str()).ok_or("dag run missing")?;
-    let scheduler = dag.scheduler(&component.engine, run, "s")?;
+    let scheduler = dag.scheduler(run, "s")?;
     let record = scheduler.snapshot();
     let terminal = settled.recv_timeout(Duration::from_secs(10))?;
     rpc_timers.fire_delay(150);

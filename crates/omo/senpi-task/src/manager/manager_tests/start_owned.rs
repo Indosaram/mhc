@@ -227,6 +227,8 @@ fn given_depth_residency_and_concurrency_gates_when_owned_starts_attempted_then_
         customize: Some(Box::new(|options: &mut TaskManagerOptions| {
             options.admit = Some(Arc::new(|_parent: &str| SpawnAdmission::Rejected {
                 message: "cap reached".to_string(),
+                max_children: None,
+                residents: None,
             }));
         })),
         ..HarnessOptions::default()

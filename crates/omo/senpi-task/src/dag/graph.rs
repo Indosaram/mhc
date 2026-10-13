@@ -37,6 +37,7 @@ pub enum DagCompileErrorCode {
     NodeCountExceeded,
     PromptBytesExceeded,
     DependencyFanoutExceeded,
+    EmptyGraph,
 }
 
 impl DagCompileErrorCode {
@@ -49,6 +50,7 @@ impl DagCompileErrorCode {
             Self::NodeCountExceeded => "node_count_exceeded",
             Self::PromptBytesExceeded => "prompt_bytes_exceeded",
             Self::DependencyFanoutExceeded => "dependency_fanout_exceeded",
+            Self::EmptyGraph => "empty_graph",
         }
     }
 }
@@ -96,7 +98,7 @@ pub fn route_of(target: &DagNodeTarget) -> DagRoute {
             subagent_type,
             model,
         } => DagRoute::Agent {
-            agent: subagent_type.clone(),
+            agent: subagent_type.trim().to_string(),
             model: model.clone(),
         },
     }
@@ -184,6 +186,13 @@ fn validate(
     settings: &DagSettings,
 ) -> (Vec<DagCompileError>, HashMap<DagNodeId, usize>) {
     let mut errors = Vec::new();
+    if definition.nodes.is_empty() {
+        errors.push(DagCompileError {
+            code: DagCompileErrorCode::EmptyGraph,
+            message: "dag has no nodes; a run needs at least one node".to_string(),
+            node_ids: Vec::new(),
+        });
+    }
     if definition.nodes.len() > settings.max_nodes_per_run {
         errors.push(DagCompileError {
             code: DagCompileErrorCode::NodeCountExceeded,

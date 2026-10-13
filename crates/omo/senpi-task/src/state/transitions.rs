@@ -114,8 +114,9 @@ fn apply_transition_fields(record: &TaskRecord, transition: &TaskTransition) -> 
         TaskTransition::Start {
             pid,
             child_session_id,
-            ..
+            timestamp,
         } => {
+            next.started_at = Some(timestamp.clone());
             if pid.is_some() {
                 next.pid = *pid;
             }

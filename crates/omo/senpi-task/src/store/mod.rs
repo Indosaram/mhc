@@ -9,6 +9,7 @@ mod record_store;
 mod types;
 
 pub use claim::{ClaimError, ClaimOptions, NameBinding, TaskRecordSaver, claim_task_record};
+pub(crate) use event_log::event_log_path;
 pub use event_log::redact_event_payload;
 pub use record_lock::with_task_record_lock;
 pub use record_parse::parse_task_record;

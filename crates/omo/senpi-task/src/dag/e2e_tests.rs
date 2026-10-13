@@ -103,9 +103,10 @@ fn given_a_linear_three_node_definition_when_the_real_engine_runs_then_every_eve
         store: Arc::clone(&store),
         task_manager: Arc::clone(&task_manager),
         initial_record: dag_manager.record(&run_id, PARENT_SESSION_ID).expect("record"),
-        execution_mode_agents: None,
-        execution_mode_config: None,
-        ancestry_depth: None,
+        execution_mode: None,
+        ancestry: None,
+        node_spawn_policy: None,
+        pre_attached_tasks: None,
         subscriber_ring: None,
         now: None,
     })
@@ -228,9 +229,10 @@ fn given_a_failed_root_when_the_real_engine_runs_then_the_dependent_chain_is_ski
         store: Arc::clone(&store),
         task_manager: Arc::clone(&task_manager),
         initial_record: dag_manager.record(&run_id, PARENT_SESSION_ID).expect("record"),
-        execution_mode_agents: None,
-        execution_mode_config: None,
-        ancestry_depth: None,
+        execution_mode: None,
+        ancestry: None,
+        node_spawn_policy: None,
+        pre_attached_tasks: None,
         subscriber_ring: None,
         now: None,
     })
@@ -283,7 +285,7 @@ impl ScriptedFixture {
     }
 
     fn run(&self, run_id: &DagRunId) -> DagRunResult {
-        let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&self.store), task_manager: Arc::clone(&self.tasks), initial_record: self.manager.record(run_id, PARENT_SESSION_ID).unwrap(), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: None, now: None }).unwrap();
+        let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&self.store), task_manager: Arc::clone(&self.tasks), initial_record: self.manager.record(run_id, PARENT_SESSION_ID).unwrap(), execution_mode: None, ancestry: None, node_spawn_policy: None, pre_attached_tasks: None, subscriber_ring: None, now: None }).unwrap();
         scheduler.run().unwrap();
         let wait = create_dag_wait_surface(DagWaitSurfaceOptions { store: Arc::clone(&self.store), subscribe: Arc::new(|_, _| Box::new(|| {})), cancel: None, read_output: None });
         wait.wait(run_id, PARENT_SESSION_ID).unwrap()
@@ -522,7 +524,7 @@ fn spawn_before_attachment_recovers_owned_task_without_a_second_spawn() {
     let OwnedStartResult::Started { task, .. } = owned else { panic!("owned start failed") };
     fixture.tasks.wait_for(&task.task_id, None, Some(Duration::from_secs(5))).unwrap();
     let second = make_manager(HarnessOptions { project: Some(fixture._project.clone()), ..Default::default() });
-    let outcomes = create_dag_recovery(DagRecoveryOptions { store: Arc::clone(&fixture.store), task_manager: Arc::new(second.manager), host_pid: Some(202), is_process_alive: Some(Arc::new(|pid| pid == 202)), now: None, subscriber_ring: None, stop_admission: None, reattach: None }).resume_paused_runs(PARENT_SESSION_ID);
+    let outcomes = create_dag_recovery(DagRecoveryOptions { store: Arc::clone(&fixture.store), task_manager: Arc::new(second.manager), host_pid: Some(202), is_process_alive: Some(Arc::new(|pid| pid == 202)), is_run_held_in_process: None, now: None, subscriber_ring: None, stop_admission: None, reattach: None, ancestry: None, node_spawn_policy: None }).resume_paused_runs(PARENT_SESSION_ID);
     assert_eq!(outcomes.len(), 1);
     let crate::dag::recovery::DagRecoveryOutcome::Resumed { record, .. } = &outcomes[0] else { panic!("not resumed") };
     assert_eq!(record.status, DagRunStatus::Completed);
@@ -546,7 +548,7 @@ fn reversed_failures_leave_independent_branches_running_and_select_graph_first()
     let input = definition("failure-order", vec![node("graph-first-failure", &[]), node("wall-clock-first-failure", &[]), node("sibling-success", &[]), node("independent-root", &[]), node("skipped-dependent", &["graph-first-failure"]), node("sibling-dependent", &["sibling-success"]), node("independent-dependent", &["independent-root"])]);
     let started = fixture.start(input);
     let run_id = started.snapshot.run_id;
-    let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&fixture.store), task_manager: Arc::clone(&fixture.tasks), initial_record: fixture.manager.record(&run_id, PARENT_SESSION_ID).unwrap(), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: None, now: None }).unwrap();
+    let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&fixture.store), task_manager: Arc::clone(&fixture.tasks), initial_record: fixture.manager.record(&run_id, PARENT_SESSION_ID).unwrap(), execution_mode: None, ancestry: None, node_spawn_policy: None, pre_attached_tasks: None, subscriber_ring: None, now: None }).unwrap();
     let (failure_tx, failure_rx) = mpsc::channel();
     let _unsubscribe = scheduler.subscribe(Arc::new(move |event| {
         if matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Failed, .. } if node_id == "wall-clock-first-failure") { failure_tx.send(()).unwrap(); }
@@ -651,7 +653,7 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     let mut options = crate::manager::types::TaskManagerOptions::new(fixture._project.store(), crate::manager::types::ManagedRunners { in_process: Arc::clone(&runner) as Arc<dyn crate::manager::types::ManagedRunner>, process: Arc::clone(&runner) as Arc<dyn crate::manager::types::ManagedRunner> }, crate::manager::manager_tests::fakes::category_planner(&[]), fixture._project.cwd());
     options.config = config(16, 1);
     options.admit = Some(Arc::new(move |_| {
-        if admission_residents.load(Ordering::SeqCst) >= 2 { return crate::manager::types::SpawnAdmission::Rejected { message: "resident cap reached".into() }; }
+        if admission_residents.load(Ordering::SeqCst) >= 2 { return crate::manager::types::SpawnAdmission::Rejected { message: "resident cap reached".into(), max_children: Some(crate::manager::types::MaxChildren::Number(2)), residents: Some(Vec::new()) }; }
         let count = admission_residents.fetch_add(1, Ordering::SeqCst) + 1;
         admission_peak.fetch_max(count, Ordering::SeqCst);
         crate::manager::types::SpawnAdmission::Admitted
@@ -660,7 +662,7 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     let input = definition("batched-wave", (0..7).map(|index| node(&format!("wide-{index}"), &[])).collect());
     let started = fixture.start(input);
     let run_id = started.snapshot.run_id;
-    let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&fixture.store), task_manager: Arc::clone(&fixture.tasks), initial_record: fixture.manager.record(&run_id, PARENT_SESSION_ID).unwrap(), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: None, now: None }).unwrap();
+    let scheduler = create_dag_scheduler(DagSchedulerOptions { store: Arc::clone(&fixture.store), task_manager: Arc::clone(&fixture.tasks), initial_record: fixture.manager.record(&run_id, PARENT_SESSION_ID).unwrap(), execution_mode: None, ancestry: None, node_spawn_policy: None, pre_attached_tasks: None, subscriber_ring: None, now: None }).unwrap();
     let (attached_tx, attached_rx) = mpsc::channel();
     let (completed_tx, completed_rx) = mpsc::channel();
     let _unsubscribe = scheduler.subscribe(Arc::new(move |event| {

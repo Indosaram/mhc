@@ -158,6 +158,7 @@ pub fn mass_revive_at_cap(state: &ChaosState) {
             notify_on_terminal: false,
             created_at: timestamp.clone(),
             updated_at: timestamp,
+            started_at: None,
             notification: crate::state::TaskNotification {
                 run_epoch: (index % 3) as i64,
                 notified_epoch: -1,

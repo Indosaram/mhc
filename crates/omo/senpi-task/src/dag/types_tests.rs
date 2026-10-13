@@ -8,11 +8,11 @@ use super::*;
 use crate::tools::task::validation::TaskTargetErrorCode;
 
 #[test]
-fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_has_exactly_14_members_and_excludes_live_activity()
+fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_has_exactly_17_members_and_excludes_live_activity()
  {
     let mut tags = DAG_RUN_EVENT_TYPES.to_vec();
 
-    assert_eq!(tags.len(), 14);
+    assert_eq!(tags.len(), 17);
     assert!(!tags.contains(&"dag.node.activity"));
     tags.sort_unstable();
     let mut expected: Vec<&str> = [
@@ -28,6 +28,9 @@ fn given_the_journaled_payload_union_when_its_type_tags_are_enumerated_then_it_h
         DagRunEventType::NodeTransitioned,
         DagRunEventType::NodeTaskAttached,
         DagRunEventType::NodeReused,
+        DagRunEventType::NodeRetried,
+        DagRunEventType::NodeSteered,
+        DagRunEventType::DefinitionAmended,
         DagRunEventType::DiagnosticAdded,
         DagRunEventType::StreamOverflow,
     ]
@@ -186,6 +189,7 @@ fn given_the_state_vocabularies_when_enumerated_then_statuses_states_codes_and_r
             "task_lost",
             "task_cancelled",
             "resume_task_missing",
+            "resume_task_orphaned",
             "journal_corrupt"
         ])
     );
@@ -205,7 +209,10 @@ fn given_the_state_vocabularies_when_enumerated_then_statuses_states_codes_and_r
             "skipped",
             "interrupted",
             "lost",
-            "resumed"
+            "resumed",
+            "retried",
+            "amend_invalidated",
+            "revived"
         ]
         .into_iter()
         .map(|kind| json!({ "kind": kind }))

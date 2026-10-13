@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::dag::graph::DagNodeInput;
-use crate::dag::manager::DagMaterializeSkills;
+use crate::dag::manager::{DagManagerError, DagManagerErrorCode, DagMaterializeSkills};
 use crate::dag::store::DagFileStore;
+use crate::dag::store::DagStoreError;
 use crate::dag::types::{DagDiagnostic, DagNodeId, DagRunId};
 use crate::tools::task::skills::{build_skill_prepend, create_fs_skill_loader, FsSkillLoaderOptions};
 use crate::tools::task::types::{LoadedSkill, SkillLoader};
@@ -62,6 +63,10 @@ pub struct DagSkillMaterializerOptions {
     pub home_dir: Option<PathBuf>,
     pub extra_dirs: Vec<PathBuf>,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("DAG skill manifest persistence failed: {0}")]
+pub struct DagSkillManifestError(#[from] DagStoreError);
 
 fn manifest_path(store: &DagFileStore, run_id: &str) -> PathBuf {
     store.paths.root.join("skills").join(format!("{run_id}.json"))
@@ -175,26 +180,43 @@ pub fn create_dag_skill_materializer(options: DagSkillMaterializerOptions) -> Da
             nodes: nodes.clone(),
         };
         let path = manifest_path(&store, input.run_id);
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        // The manifest shape is a fixed, always-serializable struct.
-        let serialized = serde_json::to_string(&manifest).unwrap_or_default();
-        let _ = fs::write(&path, serialized);
-        crate::dag::manager::DagSkillMaterialization {
+        let persist = (|| -> Result<(), DagSkillManifestError> {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(DagStoreError::Io)?;
+            }
+            let serialized = serde_json::to_string(&manifest).map_err(DagStoreError::from)?;
+            fs::write(&path, serialized).map_err(DagStoreError::Io)?;
+            Ok(())
+        })();
+        persist.map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, error.to_string()))?;
+        Ok(crate::dag::manager::DagSkillMaterialization {
             nodes: nodes
                 .into_iter()
                 .map(|node| (node.node_id, node.effective_prompt))
                 .collect(),
             diagnostics,
-        }
+        })
     })
 }
 
 /// Resume path: read the creation-time materialization, never `SKILL.md`.
-pub fn read_dag_skill_manifest(store: &DagFileStore, run_id: &str) -> Option<DagSkillManifest> {
-    let raw = fs::read_to_string(manifest_path(store, run_id)).ok()?;
-    serde_json::from_str(&raw).ok()
+pub fn read_dag_skill_manifest(store: &DagFileStore, run_id: &str) -> Result<Option<DagSkillManifest>, DagManagerError> {
+    let path = manifest_path(store, run_id);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("failed to read DAG skill manifest: {error}"))),
+    };
+    serde_json::from_str(&raw).map(Some).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("invalid DAG skill manifest: {error}")))
+}
+
+pub fn write_dag_skill_manifest(store: &DagFileStore, manifest: &DagSkillManifest) -> Result<(), DagManagerError> {
+    let path = manifest_path(store, &manifest.run_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))?;
+    }
+    let serialized = serde_json::to_string(manifest).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))?;
+    fs::write(path, serialized).map_err(|error| DagManagerError::new(DagManagerErrorCode::InvalidArguments, format!("DAG skill manifest persistence failed: {error}")))
 }
 
 #[cfg(test)]

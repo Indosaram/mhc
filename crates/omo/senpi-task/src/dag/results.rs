@@ -128,9 +128,20 @@ fn write_stats_sidecar(
 }
 
 fn write_artifact(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let mut file = OpenOptions::new().write(true).create(true).truncate(true).open(path)?;
-    file.write_all(contents)?;
-    file.sync_all()
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let suffix = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_path = path.with_file_name(format!("{}.tmp-{}-{suffix}", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn artifact_ref(state_dir: &Path, path: &Path, contents: &[u8]) -> DagNodeResultArtifact {
@@ -193,7 +204,8 @@ fn read_stats(path: &Path) -> Option<TaskRunStats> {
 }
 
 fn read_text_file(path: &Path) -> Option<String> {
-    fs::read_to_string(path).ok()
+    let contents = fs::read(path).ok()?;
+    Some(String::from_utf8_lossy(&contents).into_owned())
 }
 
 fn system_now() -> i64 {

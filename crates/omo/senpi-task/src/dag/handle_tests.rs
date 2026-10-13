@@ -119,6 +119,9 @@ fn record(nodes: Vec<DagNode>, status: DagRunStatus) -> DagRunRecordV1 {
         critical_path: Vec::new(),
         bottlenecks: Vec::<DagBottleneck>::new(),
         diagnostics: Vec::<DagDiagnostic>::new(),
+        amend_history: None,
+        lease_holder_pid: None,
+        previous_lease_holder_pid: None,
         edges: Vec::<DagEdge>::new(),
         nodes,
     }

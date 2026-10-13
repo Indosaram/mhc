@@ -362,6 +362,8 @@ pub struct TaskRecord {
     pub notify_on_terminal: bool,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
     pub notification: TaskNotification,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

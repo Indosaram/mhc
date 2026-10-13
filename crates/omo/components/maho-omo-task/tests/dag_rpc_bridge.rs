@@ -41,6 +41,16 @@ fn fixture() -> (Arc<maho_omo_task::dag_rpc_bridge::DagRpcBridge>, Arc<Timers>, 
 #[test] fn missing_parent_session_suppresses_snapshot_channel() {
     let timers=Arc::new(Timers::default()); let events:Events=Arc::new(Mutex::new(vec![])); let sink=events.clone(); let bridge=create_dag_rpc_bridge(DagRpcBridgeDeps { live_runs:Arc::new(Vec::new),run_snapshots:Some(Arc::new(Vec::new)),parent_session_id:Arc::new(|| None),emit:Arc::new(move |name,value| sink.lock().expect("events").push((name.into(),value))),timers:timers.clone(),now:Arc::new(|| 0),heartbeat_ms:None,activity_coalesce_ms:None,snapshot_debounce_ms:None }); bridge.attach(); timers.fire(50); assert!(events.lock().expect("events").is_empty()); assert_eq!(timers.count(),0); bridge.dispose();
 }
+#[test] fn snapshot_read_fault_warns_once_and_recovers_after_success() {
+    use maho_omo_task::dag_rpc_bridge::{create_dag_rpc_bridge_with_options};
+    use maho_omo_task::dag_rpc_bridge_contract::{DagBridgeLogger,DagRpcBridgeOptions};
+    struct Logger(Mutex<Vec<String>>);
+    impl DagBridgeLogger for Logger { fn warn(&self,message:&str,_:&Value) { self.0.lock().expect("warnings").push(message.into()); } }
+    let timers=Arc::new(Timers::default()); let warnings=Arc::new(Logger(Mutex::new(Vec::new()))); let current=Arc::new(Mutex::new(true)); let should_panic=current.clone(); let events:Events=Arc::new(Mutex::new(Vec::new())); let sink=events.clone();
+    let bridge=create_dag_rpc_bridge_with_options(DagRpcBridgeDeps { live_runs:Arc::new(Vec::new),run_snapshots:Some(Arc::new(move || { if *should_panic.lock().expect("fault") { panic!("store unavailable"); } Vec::new() })),parent_session_id:Arc::new(||Some("parent".into())),emit:Arc::new(move |name,value|sink.lock().expect("events").push((name.into(),value))),timers:timers.clone(),now:Arc::new(||0),heartbeat_ms:None,activity_coalesce_ms:None,snapshot_debounce_ms:None },DagRpcBridgeOptions { logger:Some(warnings.clone()) });
+    bridge.attach(); timers.fire(50); bridge.notify_store_mutation(); timers.fire(50); assert_eq!(warnings.0.lock().expect("warnings").len(),1); assert!(events.lock().expect("events").is_empty());
+    *current.lock().expect("fault")=false; bridge.notify_store_mutation(); timers.fire(50); assert_eq!(events.lock().expect("events").len(),1); *current.lock().expect("fault")=true; bridge.notify_store_mutation(); timers.fire(50); assert_eq!(warnings.0.lock().expect("warnings").len(),2);
+}
 #[test] fn activity_preserves_first_insertion_order_when_updated() {
     let (bridge,timers,events) = fixture(); bridge.attach();
     for (node,activity) in [("z","first"),("a","second"),("z","last")] { bridge.publish_activity(json!({"runId":"run","nodeId":node,"activity":activity})); }

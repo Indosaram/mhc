@@ -21,6 +21,9 @@ pub fn dag_event_lane(event_type: DagRunEventType) -> DagEventLane {
         | DagRunEventType::NodeTransitioned
         | DagRunEventType::NodeTaskAttached
         | DagRunEventType::NodeReused
+        | DagRunEventType::NodeRetried
+        | DagRunEventType::NodeSteered
+        | DagRunEventType::DefinitionAmended
         | DagRunEventType::DiagnosticAdded
         | DagRunEventType::StreamOverflow => DagEventLane::Boundary,
     }
@@ -38,7 +41,7 @@ pub fn dag_event_lane_of(event_type: &str) -> Result<DagEventLane, UnknownDagEve
 }
 
 impl DagRunEventType {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::RunCreated,
         Self::RunStarted,
         Self::RunPaused,
@@ -51,6 +54,9 @@ impl DagRunEventType {
         Self::NodeTransitioned,
         Self::NodeTaskAttached,
         Self::NodeReused,
+        Self::NodeRetried,
+        Self::NodeSteered,
+        Self::DefinitionAmended,
         Self::DiagnosticAdded,
         Self::StreamOverflow,
     ];
@@ -65,8 +71,8 @@ pub fn payload_lane(payload: &DagRunEventPayload) -> DagEventLane {
     dag_event_lane(payload.event_type())
 }
 
-/// The 14 journaled type tags, in contract order.
-pub fn journaled_event_types() -> [&'static str; 14] {
+/// The 17 journaled type tags, in contract order.
+pub fn journaled_event_types() -> [&'static str; 17] {
     DAG_RUN_EVENT_TYPES
 }
 

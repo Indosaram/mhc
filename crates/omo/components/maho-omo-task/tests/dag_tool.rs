@@ -24,6 +24,39 @@ struct Fixture {
     _temp_dir: tempfile::TempDir,
 }
 
+#[test]
+fn given_workflow_schema_when_parameters_are_registered_then_only_latest_actions_are_exposed() {
+    let f = fixture();
+    let schema = create_dag_tool(deps(&f.manager)).parameters;
+    let properties = schema["properties"].as_object().expect("schema properties");
+    let actions = properties["action"]["anyOf"].as_array().expect("action choices");
+    assert_eq!(actions.len(), 8);
+    assert!(actions.iter().all(|action| action["const"] != "detach"));
+    assert!(properties.get("detach").is_none());
+}
+
+#[test]
+fn given_send_message_with_surrounding_whitespace_when_dispatching_send_then_original_message_is_preserved() {
+    let f = fixture();
+    let started = run_dag_tool(&deps(&f.manager), DagToolInput {
+        action: "start".into(), definition: Some(default_definition()), run_id: None,
+        reason: None, detach: None, node_id: None, node_ids: None, message: None, prompt: None,
+    }).expect("start");
+    let run_id = started.details.expect("details")["run_id"].as_str().expect("run id").to_owned();
+    let sent = Arc::new(Mutex::new(String::new()));
+    let seen = sent.clone();
+    let mut dependencies = deps(&f.manager);
+    dependencies.send = Some(Arc::new(move |_, _, message| {
+        *seen.lock().expect("sent mutex") = message.to_owned();
+        Ok(DagToolSendOutcome { node_id: "plan".into(), task_id: "task-1".into(), delivery: DagToolSendDelivery::Steer, queue_position: None })
+    }));
+    run_dag_tool(&dependencies, DagToolInput {
+        action: "send".into(), definition: None, run_id: Some(run_id), reason: None,
+        detach: None, node_id: Some("plan".into()), node_ids: None, message: Some("  continue  ".into()), prompt: None,
+    }).expect("send");
+    assert_eq!(*sent.lock().expect("sent mutex"), "  continue  ");
+}
+
 impl Fixture {
     fn run_file_count(&self) -> usize {
         let runs_path = &self.store.paths.runs;

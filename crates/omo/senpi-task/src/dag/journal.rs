@@ -27,6 +27,7 @@ pub trait DagJournalCheckpoint: Clone + Send + Sync + 'static {
 pub type DagJournalListener = Arc<dyn Fn(&DagRunEvent) + Send + Sync>;
 pub type DagJournalApplyEvent<C> = Arc<dyn Fn(&C, &DagRunEvent) -> C + Send + Sync>;
 pub type DagJournalUnsubscribe = Box<dyn FnOnce() + Send>;
+type DuplicatePredicate<C> = Arc<dyn Fn(&C, &DagRunEventPayload) -> bool + Send + Sync>;
 
 pub struct DagJournalOptions<C: DagJournalCheckpoint> {
     pub store: Arc<DagFileStore>,
@@ -46,7 +47,7 @@ struct Subscriber {
     listener: DagJournalListener,
     ring_size: usize,
     active: std::sync::atomic::AtomicBool,
-    commit_overflow: Box<dyn Fn(OverflowState) -> Option<DagRunEvent> + Send + Sync>,
+    commit_overflow: Box<dyn Fn(Box<OverflowState>) -> Option<DagRunEvent> + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -110,9 +111,9 @@ impl Subscriber {
             let next = {
                 let mut queue = self.lock();
                 if let Some(overflow) = queue.overflow.take() {
-                    Some(DeliveryItem::Overflow(overflow))
+                    Some(DeliveryItem::Overflow(Box::new(overflow)))
                 } else {
-                    queue.events.pop_front().map(DeliveryItem::Event)
+                    queue.events.pop_front().map(Box::new).map(DeliveryItem::Event)
                 }
             };
             match next {
@@ -155,20 +156,37 @@ impl Subscriber {
 }
 
 enum DeliveryItem {
-    Overflow(OverflowState),
-    Event(DagRunEvent),
+    Overflow(Box<OverflowState>),
+    Event(Box<DagRunEvent>),
 }
 
 /// Process-local durable-commit subscription: fires once per store, independent of any particular
 /// `DagJournal` instance in this process.
 type CommitListener = Arc<dyn Fn(&DagRunEvent) + Send + Sync>;
+struct CommitDelivery {
+    queue: Mutex<VecDeque<CommitQueueEntry>>,
+    running: std::sync::atomic::AtomicBool,
+    idle: Condvar,
+}
+
+static COMMIT_DELIVERY: std::sync::OnceLock<CommitDelivery> = std::sync::OnceLock::new();
+
+fn commit_delivery() -> &'static CommitDelivery {
+    COMMIT_DELIVERY.get_or_init(|| CommitDelivery {
+        queue: Mutex::new(VecDeque::new()),
+        running: std::sync::atomic::AtomicBool::new(false),
+        idle: Condvar::new(),
+    })
+}
 
 struct CommitSubscriber {
     listener: CommitListener,
     active: std::sync::atomic::AtomicBool,
 }
 
-type CommitRegistry = Mutex<Vec<(usize, DagRunId, Vec<Arc<CommitSubscriber>>)>>;
+type CommitQueueEntry = (Arc<CommitSubscriber>, DagRunEvent);
+type CommitRegistryEntry = (usize, DagRunId, Vec<Arc<CommitSubscriber>>);
+type CommitRegistry = Mutex<Vec<CommitRegistryEntry>>;
 
 static COMMIT_SUBSCRIBERS: std::sync::OnceLock<CommitRegistry> = std::sync::OnceLock::new();
 
@@ -244,8 +262,26 @@ fn publish_commit(store: &Arc<DagFileStore>, run_id: &DagRunId, event: &DagRunEv
     };
     for subscriber in subscribers {
         if subscriber.active.load(std::sync::atomic::Ordering::SeqCst) {
-            (subscriber.listener)(event);
+            commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).push_back((subscriber, event.clone()));
         }
+    }
+    if !commit_delivery().running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        std::thread::spawn(|| loop {
+            let next = commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner).pop_front();
+            let Some((subscriber, event)) = next else {
+                let queue = commit_delivery().queue.lock().unwrap_or_else(PoisonError::into_inner);
+                if queue.is_empty() {
+                    commit_delivery().running.store(false, std::sync::atomic::Ordering::SeqCst);
+                    commit_delivery().idle.notify_all();
+                    break;
+                }
+                drop(queue);
+                continue;
+            };
+            if subscriber.active.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (subscriber.listener)(&event)));
+            }
+        });
     }
 }
 
@@ -256,6 +292,7 @@ pub struct DagJournal<C: DagJournalCheckpoint> {
     run_id: DagRunId,
     apply_event: DagJournalApplyEvent<C>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    skip_duplicate: Mutex<Option<DuplicatePredicate<C>>>,
     ring_size: usize,
     checkpoint: Mutex<C>,
     subscribers: Arc<Mutex<Vec<Arc<Subscriber>>>>,
@@ -287,6 +324,7 @@ pub fn create_dag_journal<C: DagJournalCheckpoint + DeserializeOwned + Serialize
         run_id,
         apply_event,
         now,
+        skip_duplicate: Mutex::new(None),
         ring_size,
         checkpoint: Mutex::new(recovered),
         subscribers: Arc::new(Mutex::new(Vec::new())),
@@ -330,18 +368,34 @@ fn recover_checkpoint<C: DagJournalCheckpoint + DeserializeOwned + Serialize>(
 }
 
 impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
-    pub fn append(&self, payload: DagRunEventPayload) -> Result<DagRunEvent, DagStoreError> {
+    pub fn set_skip_duplicate(&self, predicate: DuplicatePredicate<C>) {
+        *self.skip_duplicate.lock().unwrap_or_else(PoisonError::into_inner) = Some(predicate);
+    }
+    pub fn append_maybe(&self, payload: DagRunEventPayload) -> Result<Option<DagRunEvent>, DagStoreError> {
         self.append_from(payload, None)
+    }
+
+    pub fn append(&self, payload: DagRunEventPayload) -> Result<DagRunEvent, DagStoreError> {
+        self.append_maybe(payload)?.ok_or_else(|| DagStoreError::Message("DAG journal mutation completed without an event".to_string()))
+    }
+
+    pub fn refresh(&self) -> Result<C, DagStoreError> {
+        let checkpoint = self.store.with_run_lock(&self.run_id, || {
+            recover_checkpoint(&self.store, &self.run_id, &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(), &self.apply_event)
+        })??;
+        *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = checkpoint.clone();
+        Ok(checkpoint)
     }
 
     fn append_from(
         &self,
         payload: DagRunEventPayload,
         direct_subscriber: Option<&Arc<Subscriber>>,
-    ) -> Result<DagRunEvent, DagStoreError> {
+    ) -> Result<Option<DagRunEvent>, DagStoreError> {
         let event = self.store.with_run_lock(&self.run_id, || {
             self.append_locked(payload)
         })??;
+        let Some(event) = event else { return Ok(None) };
         let subscribers: Vec<Arc<Subscriber>> = self
             .subscribers
             .lock()
@@ -354,16 +408,20 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
             }
         }
         publish_commit(&self.store, &self.run_id, &event);
-        Ok(event)
+        Ok(Some(event))
     }
 
-    fn append_locked(&self, payload: DagRunEventPayload) -> Result<DagRunEvent, DagStoreError> {
+    fn append_locked(&self, payload: DagRunEventPayload) -> Result<Option<DagRunEvent>, DagStoreError> {
         let recovered = recover_checkpoint(
             &self.store,
             &self.run_id,
             &self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner).clone(),
             &self.apply_event,
         )?;
+        if self.skip_duplicate.lock().unwrap_or_else(PoisonError::into_inner).as_ref().is_some_and(|predicate| predicate(&recovered, &payload)) {
+            *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = recovered;
+            return Ok(None);
+        }
         let tail_seq = self
             .store
             .read_events(
@@ -396,7 +454,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         let next = applied.with_checkpoint_seq(seq);
         self.store.write_checkpoint(&self.run_id, &next)?;
         *self.checkpoint.lock().unwrap_or_else(PoisonError::into_inner) = next;
-        Ok(event)
+        Ok(Some(event))
     }
 
     /// Durable-commit overflow event: appended through the normal WAL path so the coalesced
@@ -412,7 +470,7 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
                 recover_after_seq: overflow.recover_after_seq,
             },
             Some(subscriber),
-        )
+        )?.ok_or_else(|| DagStoreError::Message("overflow append was unexpectedly skipped".to_string()))
     }
 
     pub fn snapshot(&self) -> C {
@@ -429,13 +487,13 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
         let journal_weak: Weak<DagJournal<C>> = Arc::downgrade(self);
         let subscriber_slot: Arc<Mutex<Option<Arc<Subscriber>>>> = Arc::new(Mutex::new(None));
         let commit_slot = Arc::clone(&subscriber_slot);
-        let commit_overflow = move |overflow: OverflowState| -> Option<DagRunEvent> {
+        let commit_overflow = move |overflow: Box<OverflowState>| -> Option<DagRunEvent> {
             let journal = journal_weak.upgrade()?;
             let subscriber = commit_slot
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()?;
-            journal.commit_overflow(&subscriber, overflow).ok()
+            journal.commit_overflow(&subscriber, *overflow).ok()
         };
         let subscriber = Arc::new(Subscriber {
             queue: Mutex::new(SubscriberQueue {
@@ -478,6 +536,15 @@ impl<C: DagJournalCheckpoint + DeserializeOwned + Serialize> DagJournal<C> {
             .clone();
         for subscriber in &subscribers {
             subscriber.wait_idle();
+        }
+        let delivery = commit_delivery();
+        loop {
+            let mut queue = delivery.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            if !delivery.running.load(std::sync::atomic::Ordering::SeqCst) && queue.is_empty() {
+                break;
+            }
+            queue = delivery.idle.wait(queue).unwrap_or_else(PoisonError::into_inner);
+            drop(queue);
         }
     }
 }

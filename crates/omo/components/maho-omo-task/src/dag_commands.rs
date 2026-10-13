@@ -42,7 +42,9 @@ pub fn dag_command_text(manager: &dyn DagCommandManager, args: &str, session: Op
     Ok((if rows.is_empty() { "No dag runs in this session.".into() } else { rows.join("\n") }, NotificationType::Info))
 }
 pub fn detail_text(run: &DagRunSnapshot, manager: &dyn DagCommandManager) -> Vec<String> {
-    let mut rows = vec![format!("{} ({}) {} {} nodes, {} waves", normalize_renderer_text(&run.name), normalize_renderer_text(&run.run_id), run.status.as_str(), run.nodes.len(), run.waves.len())];
+    let amendments = run.amend_history.as_ref().map_or(0, Vec::len);
+    let amended = if amendments == 0 { String::new() } else { format!(", amended x{amendments}") };
+    let mut rows = vec![format!("{} ({}) {} {} nodes, {} waves{}", normalize_renderer_text(&run.name), normalize_renderer_text(&run.run_id), run.status.as_str(), run.nodes.len(), run.waves.len(), amended)];
     for (position, wave) in run.waves.iter().enumerate() {
         rows.push(format!("wave {}/{}", position + 1, run.waves.len()));
         for id in &wave.node_ids {
@@ -52,21 +54,31 @@ pub fn detail_text(run: &DagRunSnapshot, manager: &dyn DagCommandManager) -> Vec
             let record = node.task_id.as_deref().and_then(|id| manager.task_record(id));
             let model = record.as_ref().map(|record| record.resolved_model.as_ref().map_or(record.model.as_str(), |model| model.display.as_str())).or(match &node.route { DagRoute::Agent { model, .. } => model.as_deref(), DagRoute::Category { .. } => None });
             if let Some(model) = model { parts.push(format!("model:{}", normalize_renderer_text(model))); }
-            if node.attempt > 1 { parts.push(format!("attempt {}", node.attempt)); }
+            if node.attempt > 1 { parts.push(format!("x{}", node.attempt)); }
             if let (Some(start), Some(end)) = (&node.started_at, &node.completed_at) && let (Ok(start), Ok(end)) = (chrono::DateTime::parse_from_rfc3339(start), chrono::DateTime::parse_from_rfc3339(end)) && end >= start {
                 let milliseconds = (end - start).num_milliseconds();
-                let tenths = milliseconds.saturating_add(50) / 100;
+                let tenths = ((milliseconds as f64) / 100.0).round() as i64;
                 parts.push(format!("{}.{:01}s", tenths / 10, tenths % 10));
             }
             let mut dependencies = node.depends_on.clone();
             for edge in run.edges.iter().filter(|edge| edge.to == node.id) { if !dependencies.contains(&edge.from) { dependencies.push(edge.from.clone()); } }
             if !dependencies.is_empty() { parts.push(format!("after {}", dependencies.iter().map(|id| normalize_renderer_text(id)).collect::<Vec<_>>().join(", "))); }
             if run.critical_path.contains(id) { parts.push("*critical*".into()); }
-            if let Some(error) = &node.error { parts.push(format!("error: {}", normalize_renderer_text(&error.message))); }
+            if let Some(error) = &node.error { parts.push(format!("error: {} {}", node_error_code(error.code), normalize_renderer_text(&error.message))); }
             rows.push(format!("  {}", parts.join(" ")));
         }
     }
     if !run.critical_path.is_empty() { rows.push(format!("critical path: {}", run.critical_path.iter().map(|id| normalize_renderer_text(id)).collect::<Vec<_>>().join(" -> "))); }
     for bottleneck in &run.bottlenecks { rows.push(format!("bottleneck: {} blocks {}", normalize_renderer_text(&bottleneck.node_id), bottleneck.blocked_count)); }
     rows
+}
+
+fn node_error_code(code: senpi_task::dag::types::DagNodeErrorCode) -> &'static str {
+    use senpi_task::dag::types::DagNodeErrorCode::*;
+    match code {
+        PlanUnresolved => "plan_unresolved", DepthDenied => "depth_denied", StartFailed => "start_failed",
+        ResidencyDenied => "residency_denied", TaskError => "task_error", TaskInterrupted => "task_interrupted",
+        TaskLost => "task_lost", TaskCancelled => "task_cancelled", ResumeTaskMissing => "resume_task_missing",
+        ResumeTaskOrphaned => "resume_task_orphaned", JournalCorrupt => "journal_corrupt",
+    }
 }

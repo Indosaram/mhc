@@ -1,5 +1,5 @@
 {
-  "source": "adb672532d55cb0c4e4be257146f36bd81996459",
+  "source": "455dee6",
   "parameters": {
     "type": "object",
     "required": [
@@ -128,10 +128,6 @@
       "reason": {
         "type": "string",
         "description": "Optional human-readable reason recorded when cancelling a run."
-      },
-      "detach": {
-        "type": "boolean",
-        "description": "wait only. Defaults to true: against a live run, return immediately with the current snapshot instead of blocking - the session is woken as each node completes and when the run settles. Pass false to block until settle and return the final result; the eval SDK and dag library pass false."
       },
       "node_id": {
         "type": "string",

@@ -1,10 +1,9 @@
-//! `dag/scheduler.test.ts`. Covers the load-bearing scheduler contracts (strict wave admission,
+//! `dag/scheduler.test.ts`. Covers the load-bearing scheduler contracts (dependency-frontier admission,
 //! failure cascade, queue-position journaling, cancellation, and terminal result persistence)
 //! against the real `TaskManager` + `FakeRunner` fixture from `manager::manager_tests::fakes`, the
 //! Rust-idiomatic counterpart of the TS file's hand-rolled `FakeTaskManager`. Rust's `TaskManager`
 //! is a concrete struct rather than the pluggable interface TS mocks directly, so this file's
-//! coverage is narrower than the pinned 18-case suite: the remaining execution-mode-dispatch,
-//! subscriber-backpressure, and residency-retry cases are tracked as an N/A gap in the parity row.
+//! coverage exercises the scheduler against the real manager and controlled fake task port.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -104,6 +103,9 @@ fn record_for(input: &DagDefinition) -> DagRunRecordV1 {
         critical_path: compiled.critical_path,
         bottlenecks: compiled.bottlenecks,
         diagnostics: compiled.diagnostics,
+        amend_history: None,
+        lease_holder_pid: None,
+        previous_lease_holder_pid: None,
     }
 }
 
@@ -135,10 +137,11 @@ fn fixture(input: DagDefinition, concurrency: usize) -> Fixture {
         store: Arc::clone(&store),
         task_manager: Arc::new(harness.manager),
         initial_record,
-        execution_mode_agents: None,
-        execution_mode_config: None,
-        ancestry_depth: None,
+        execution_mode: None,
+        ancestry: None,
+        node_spawn_policy: None,
         subscriber_ring: None,
+        pre_attached_tasks: None,
         now: None,
     })
     .expect("scheduler");
@@ -356,7 +359,7 @@ fn given_a_wave_one_task_is_still_running_when_the_scheduler_is_active_then_wave
 
     assert!(
         attached_task_id(&fixture, "b").is_none(),
-        "wave two must not admit before wave one settles"
+        "dependent must not admit before its dependency settles"
     );
 
     handle_a.complete("done a");
@@ -365,6 +368,20 @@ fn given_a_wave_one_task_is_still_running_when_the_scheduler_is_active_then_wave
     let result = recv_within(&rx, "scheduler run").expect("run");
 
     assert_eq!(result.status, DagRunStatus::Completed);
+}
+
+#[test]
+fn given_dependency_completes_while_unrelated_sibling_runs_then_dependent_is_admitted() {
+    let (fixture, manager) = scripted(definition(vec![node("a", &[]), node("slow", &[]), node("b", &["a"])]), FakeOptions { manual: true, ..Default::default() });
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("a");
+    manager.when_started("slow");
+    manager.complete("a", TaskStatus::Completed);
+    manager.when_started("b");
+    assert_eq!(manager.state.lock().unwrap().starts, vec!["a", "slow", "b"]);
+    manager.complete("b", TaskStatus::Completed);
+    manager.complete("slow", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "frontier completion").unwrap().status, DagRunStatus::Completed);
 }
 
 #[test]
@@ -508,7 +525,15 @@ fn scheduler_dispatch_resolves_the_configured_execution_mode() {
     let harness = make_manager(HarnessOptions::default());
     let manager = FakeTaskManager::new(FakeOptions::default());
     let scheduler = create_dag_scheduler(DagSchedulerOptions {
-        store, task_manager: Arc::new(harness.manager), initial_record: record_for(&definition(vec![node("mode", &[])])), execution_mode_agents: Some(Arc::new(BTreeMap::new())), execution_mode_config: Some(ExecutionMode::Process), ancestry_depth: None, subscriber_ring: None, now: None,
+        store,
+        task_manager: Arc::new(harness.manager),
+        initial_record: record_for(&definition(vec![node("mode", &[])])),
+        execution_mode: Some(DagExecutionModeOptions { agents: Arc::new(BTreeMap::new()), config: Some(ExecutionMode::Process), auto_mode: None, config_is_auto: false }),
+        ancestry: None,
+        node_spawn_policy: None,
+        subscriber_ring: None,
+        pre_attached_tasks: None,
+        now: None,
     }).unwrap();
     scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
     scheduler.run().unwrap();
@@ -557,6 +582,149 @@ fn residency_denied_node_retries_after_attached_sibling_frees_a_slot() {
     assert_eq!(result.status, DagRunStatus::Completed);
     assert!(manager.state.lock().unwrap().denials.contains(&"retry".into()));
     assert!(result.nodes.iter().all(|node| node.error.is_none()));
+}
+
+#[test]
+fn given_residency_denial_then_slot_release_wakes_parked_node_and_journals_queue_once() {
+    let (fixture, manager) = scripted(definition(vec![node("holder", &[]), node("parked", &[])]), FakeOptions { manual: true, residency_limit: Some(1), ..Default::default() });
+    let queued = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::ResidencyQueued { residents: 1, held_by_other_owners: 0 }, .. } if node_id == "parked"));
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("holder");
+    manager.when_denied("parked");
+    recv_within(&queued, "residency queued event");
+    manager.complete("holder", TaskStatus::Completed);
+    manager.when_started("parked");
+    manager.complete("parked", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "parked task completion").unwrap().status, DagRunStatus::Completed);
+    let events = events_of(&fixture.store);
+    assert_eq!(events.iter().filter(|event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::ResidencyQueued { .. }, .. } if node_id == "parked")).count(), 1);
+}
+
+#[test]
+fn given_lease_denial_then_scheduler_immediately_reprobes_node() {
+    let (fixture, manager) = scripted(definition(vec![node("lease", &[])]), FakeOptions { manual: true, lease_denials: ["lease".into()].into(), ..Default::default() });
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_denied("lease");
+    manager.when_started("lease");
+    manager.complete("lease", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "lease retry").unwrap().status, DagRunStatus::Completed);
+    assert_eq!(manager.state.lock().unwrap().attempts.iter().filter(|id| *id == "lease").count(), 2);
+}
+
+#[test]
+fn given_resident_denial_with_external_resident_then_release_wakes_parked_node() {
+    let (fixture, manager) = scripted(definition(vec![node("parked", &[])]), FakeOptions { manual: true, residency_limit: Some(1), ..Default::default() });
+    manager.add_external_resident(PARENT_SESSION_ID);
+    let queued = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::ResidencyQueued { residents: 1, held_by_other_owners: 1 }, .. } if node_id == "parked"));
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("holder");
+    manager.when_denied("parked");
+    recv_within(&queued, "residency queued reason");
+    manager.release_residency(PARENT_SESSION_ID);
+    manager.when_started("parked");
+    manager.complete("parked", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "residency release settle").unwrap().status, DagRunStatus::Completed);
+}
+
+#[test]
+fn given_resident_denial_names_no_residents_then_node_fails_without_parking() {
+    let (fixture, manager) = scripted(definition(vec![node("empty", &[])]), FakeOptions { empty_resident_denials: ["empty".into()].into(), ..Default::default() });
+    let result = fixture.scheduler.run().unwrap();
+    assert_eq!(result.nodes[0].state, DagNodeState::Failed);
+    assert_eq!(result.nodes[0].error.as_ref().map(|error| error.code), Some(DagNodeErrorCode::ResidencyDenied));
+    assert!(result.nodes[0].error.as_ref().is_some_and(|error| error.message.contains("names no resident child")));
+    assert!(manager.state.lock().unwrap().starts.is_empty());
+}
+
+#[test]
+fn given_owner_conflict_then_existing_child_is_attached_and_reused() {
+    let (fixture, manager) = scripted(definition(vec![node("owned", &[])]), FakeOptions { manual: true, ..Default::default() });
+    let spec = ManagerStartSpec { parent_session_id: PARENT_SESSION_ID.into(), root_session_id: Some(ROOT_SESSION_ID.into()), category: Some("quick".into()), prompt: "do owned".into(), ..Default::default() };
+    let owner_stamp = owner(&fixture.scheduler, &"owned".into());
+    let first = manager.start_owned(&spec, &owner_stamp).unwrap();
+    let task_id = match first { OwnedStartResult::Started { task, .. } => task.task_id, _ => panic!("fixture start failed") };
+    manager.add_owner_conflict("owned");
+    let run = run_in_background(&fixture.scheduler);
+    manager.when_waiting("owned");
+    manager.complete("owned", TaskStatus::Completed);
+    assert_eq!(recv_within(&run, "owner conflict attach").unwrap().status, DagRunStatus::Completed);
+    assert_eq!(attached_task_id(&fixture, "owned").as_deref(), Some(task_id.as_str()));
+    assert_eq!(manager.state.lock().unwrap().starts, vec!["owned"]);
+}
+
+#[test]
+fn given_preattached_task_then_it_settles_without_new_start() {
+    let store = temp_store();
+    let input = definition(vec![node("attached", &[])]);
+    let initial_record = record_for(&input);
+    store.write_checkpoint(&run_id(), &initial_record).unwrap();
+    let harness = make_manager(HarnessOptions::default());
+    let manager = FakeTaskManager::new(FakeOptions { manual: true, ..Default::default() });
+    let spec = ManagerStartSpec { parent_session_id: PARENT_SESSION_ID.into(), root_session_id: Some(ROOT_SESSION_ID.into()), category: Some("quick".into()), prompt: "do attached".into(), ..Default::default() };
+    let owner_stamp = DagTaskOwner { kind: DagOwnerKind::Dag, run_id: run_id(), node_id: "attached".into(), fingerprint: "attached-owner".into() };
+    let task_id = match manager.start_owned(&spec, &owner_stamp).unwrap() { OwnedStartResult::Started { task, .. } => task.task_id, _ => panic!("fixture start failed") };
+    let scheduler = create_dag_scheduler(DagSchedulerOptions { store, task_manager: Arc::new(harness.manager), initial_record, execution_mode: None, ancestry: None, node_spawn_policy: None, subscriber_ring: None, pre_attached_tasks: Some([(String::from("attached"), task_id)].into()), now: None }).unwrap();
+    scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);
+    let running = run_in_background(&scheduler);
+    manager.when_waiting("attached");
+    manager.complete("attached", TaskStatus::Completed);
+    assert_eq!(recv_within(&running, "preattached settle").unwrap().status, DagRunStatus::Completed);
+    assert!(manager.state.lock().unwrap().starts.contains(&"attached".into()));
+    assert_eq!(manager.state.lock().unwrap().attempts.iter().filter(|id| *id == "attached").count(), 1, "only the fixture's initial spawn is attempted");
+}
+
+#[test]
+fn given_parked_residency_wait_when_suspended_then_run_retires_without_cancelling_child() {
+    let (fixture, manager) = scripted(definition(vec![node("holder", &[]), node("parked", &[])]), FakeOptions { manual: true, residency_limit: Some(1), ..Default::default() });
+    let queued = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::ResidencyQueued { .. }, .. } if node_id == "parked"));
+    let running = run_in_background(&fixture.scheduler);
+    manager.when_started("holder");
+    manager.when_denied("parked");
+    recv_within(&queued, "parked queued");
+    fixture.scheduler.suspend();
+    assert_eq!(recv_within(&running, "suspended scheduler").unwrap().status, DagRunStatus::Running);
+    assert!(manager.state.lock().unwrap().cancellations.is_empty());
+}
+
+#[test]
+fn given_spawn_policy_denies_agent_node_then_no_task_is_started_and_node_fails() {
+    let mut input = definition(vec![node("agent", &[])]);
+    input.nodes[0].target = DagNodeTarget::SubagentType { subagent_type: "worker".into(), model: None };
+    let store = temp_store();
+    let initial_record = record_for(&input);
+    store.write_checkpoint(&run_id(), &initial_record).unwrap();
+    let harness = make_manager(HarnessOptions::default());
+    let scheduler = create_dag_scheduler(DagSchedulerOptions {
+        store, task_manager: Arc::new(harness.manager), initial_record,
+        execution_mode: None, ancestry: None,
+        node_spawn_policy: Some(Arc::new(|_, _, _, _| DagNodeSpawnPolicyVerdict::Deny { message: "policy".into() })),
+        subscriber_ring: None, pre_attached_tasks: None, now: None,
+    }).unwrap();
+    let result = scheduler.run().unwrap();
+    assert_eq!(result.nodes[0].state, DagNodeState::Failed);
+    assert!(result.nodes[0].error.as_ref().is_some_and(|error| error.message.contains("policy")));
+}
+
+#[test]
+fn given_run_resumed_then_completed_timestamp_is_cleared() {
+    let record = record_for(&definition(vec![node("resume", &[])]));
+    let terminal = DagRunRecordV1 { completed_at: Some("done-at".into()), status: DagRunStatus::Completed, ..record.clone() };
+    let event = DagRunEvent { schema_version: SchemaVersion1, run_id: run_id(), seq: 1, at: AT.into(), lane: crate::dag::types::DagEventLane::Boundary, payload: DagRunEventPayload::RunResumed { generation: 2 } };
+    let resumed = apply_dag_scheduler_event(&terminal, &event, &BTreeMap::new());
+    assert_eq!(resumed.completed_at, None);
+    assert_eq!(resumed.generation, 2);
+}
+
+#[test]
+fn given_terminal_node_when_revive_transition_runs_then_old_terminal_metadata_is_cleared() {
+    let mut record = record_for(&definition(vec![node("revive", &[])]));
+    record.nodes[0].state = DagNodeState::Failed;
+    record.nodes[0].completed_at = Some("old".into());
+    record.nodes[0].output = Some("previous output".into());
+    let event = DagRunEvent { schema_version: SchemaVersion1, run_id: run_id(), seq: 1, at: AT.into(), lane: crate::dag::types::DagEventLane::Boundary, payload: DagRunEventPayload::NodeTransitioned { node_id: "revive".into(), from: DagNodeState::Failed, to: DagNodeState::Running, reason: DagNodeTransitionReason::Revived } };
+    let revived = apply_dag_scheduler_event(&record, &event, &BTreeMap::new());
+    assert_eq!(revived.nodes[0].completed_at, None);
+    assert_eq!(revived.nodes[0].output, None);
 }
 
 #[test]
@@ -675,7 +843,15 @@ fn configured_subscriber_ring_overflows_at_its_bound() {
     let store = temp_store();
     let harness = make_manager(HarnessOptions::default());
     let scheduler = create_dag_scheduler(DagSchedulerOptions {
-        store, task_manager: Arc::new(harness.manager), initial_record: record_for(&definition(vec![node("ring", &[])])), execution_mode_agents: None, execution_mode_config: None, ancestry_depth: None, subscriber_ring: Some(1), now: None,
+        store,
+        task_manager: Arc::new(harness.manager),
+        initial_record: record_for(&definition(vec![node("ring", &[])])),
+        execution_mode: None,
+        ancestry: None,
+        node_spawn_policy: None,
+        subscriber_ring: Some(1),
+        pre_attached_tasks: None,
+        now: None,
     }).unwrap();
     let manager = FakeTaskManager::new(FakeOptions { manual: true, ..Default::default() });
     scheduler.set_task_port(Arc::clone(&manager) as Arc<dyn TestTaskPort>);

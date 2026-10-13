@@ -376,6 +376,50 @@ fn given_a_durable_commit_subscription_when_it_is_removed_before_another_journal
 }
 
 #[test]
+fn given_a_foreign_instance_commit_when_refresh_is_called_then_the_snapshot_catches_up() {
+    let store = temp_store();
+    let options = || DagJournalOptions {
+        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+    };
+    let first = create_dag_journal(options()).expect("first journal");
+    let second = create_dag_journal(options()).expect("second journal");
+    second.append(run_started(7)).expect("append");
+    assert!(first.snapshot().generations.is_empty());
+    assert_eq!(first.refresh().expect("refresh").generations, vec![7]);
+}
+
+#[test]
+fn given_a_duplicate_predicate_match_when_appended_then_nothing_is_journaled_or_notified() {
+    let store = temp_store();
+    let journal = create_dag_journal(DagJournalOptions {
+        store: Arc::clone(&store), run_id: run_id(), initial_checkpoint: initial_checkpoint(),
+        apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+    }).expect("journal");
+    journal.set_skip_duplicate(Arc::new(|_, payload| matches!(payload, DagRunEventPayload::RunStarted { generation: 7 })));
+    let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&delivered);
+    let _unsubscribe = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+    assert_eq!(journal.append_maybe(run_started(7)).expect("duplicate check"), None);
+    journal.when_idle();
+    assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(store.read_events(&run_id(), 0, &DagEventReadOptions { limit: 10, ..Default::default() }).expect("read").events.len(), 0);
+}
+
+#[test]
+fn given_a_panicking_durable_listener_when_a_commit_is_published_then_later_listeners_still_run() {
+    let store = temp_store();
+    let _first = subscribe_dag_journal(&store, &run_id(), Arc::new(|_| panic!("listener fault")));
+    let (tx, rx) = mpsc::channel();
+    let _second = subscribe_dag_journal(&store, &run_id(), Arc::new(move |_| { let _ = tx.send(()); }));
+    let journal = create_dag_journal(DagJournalOptions {
+        store, run_id: run_id(), initial_checkpoint: initial_checkpoint(), apply_event: Arc::new(apply_event), subscriber_ring: None, now: None,
+    }).expect("journal");
+    journal.append(run_started(1)).expect("append");
+    recv_within(&rx, "second commit listener");
+}
+
+#[test]
 fn given_a_subscriber_blocked_on_its_first_event_when_its_ring_overflows_then_it_receives_one_coalesced_overflow_with_the_last_delivered_recovery_seq()
  {
     let store = temp_store();

@@ -108,7 +108,7 @@ async fn live_lifecycle(shutdown_live:bool,peer_live:bool) {
         let event:senpi_task::dag::types::DagRunEvent=serde_json::from_value(event["data"].clone()).expect("forwarded DAG event");
         if event.run_id==attachment_run && matches!(event.payload,senpi_task::dag::types::DagRunEventPayload::NodeTransitioned { to:senpi_task::dag::types::DagNodeState::Running,.. }) { attached.send(()).expect("attached"); }
     }));
-    let scheduler=dag.scheduler(&component.engine,&run,"session").expect("scheduler"); let running=scheduler.clone(); let worker=std::thread::spawn(move || running.run());
+    let scheduler=dag.scheduler(&run,"session").expect("scheduler"); let running=scheduler.clone(); let worker=std::thread::spawn(move || running.run());
     let mut cleanup=Cleanup { component:component.clone(),scheduler:scheduler.clone(),run:run.clone(),worker:Some(worker) };
     let child=children.recv_timeout(Duration::from_secs(10)).expect("child"); attachment.recv_timeout(Duration::from_secs(10)).expect("attachment");
     let peer=if peer_live { let peer=children.recv_timeout(Duration::from_secs(10)).expect("peer"); attachment.recv_timeout(Duration::from_secs(10)).expect("peer attachment"); Some(peer) } else { None };

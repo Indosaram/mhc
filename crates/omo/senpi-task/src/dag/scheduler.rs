@@ -8,7 +8,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
-use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -20,6 +19,8 @@ use crate::dag::journal::{
 };
 use crate::dag::manager::{DagPersistedNode, DagRunRecordV1};
 use crate::dag::owner::{DagOwnerKind, DagTaskOwner, OwnedStartResult};
+use crate::dag::node_retry::{DagRunReentry, retry_dag_nodes};
+use crate::dag::node_send::{DagNodeSendResult, send_to_dag_node};
 use crate::dag::results::{
     DagNodeResultArtifact, DagNodeResultPersistInput, DagNodeResultPersistOutcome,
     DagNodeResultReadInput, persist_dag_node_result, read_dag_node_result,
@@ -30,7 +31,7 @@ use crate::dag::types::{
     DagNodeState, DagNodeTransitionReason, DagRoute, DagRunEvent, DagRunEventPayload, DagRunId,
 };
 use crate::manager::execution_mode::ExecutionMode;
-use crate::manager::types::{ManagerStartSpec, StartFailure, StartResult};
+use crate::manager::types::{ManagerStartSpec, ResidencyDeniedCause, StartFailure, StartResult};
 use crate::manager::TaskManager;
 use crate::state::{TaskRecord, TaskRunStats, TaskStatus};
 use crate::steering::CancelOptions;
@@ -46,16 +47,52 @@ pub struct DagSchedulerOptions {
     pub store: Arc<DagFileStore>,
     pub task_manager: Arc<TaskManager>,
     pub initial_record: DagRunRecordV1,
-    pub execution_mode_agents: Option<Arc<BTreeMap<String, AgentDefinition>>>,
-    pub execution_mode_config: Option<ExecutionMode>,
-    pub ancestry_depth: Option<u32>,
+    pub execution_mode: Option<DagExecutionModeOptions>,
+    pub ancestry: Option<DagSchedulerAncestry>,
+    pub node_spawn_policy: Option<DagNodeSpawnPolicy>,
     pub subscriber_ring: Option<usize>,
+    pub pre_attached_tasks: Option<BTreeMap<DagNodeId, String>>,
     pub now: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
 
-struct AttachedTask {
-    settled: std::sync::mpsc::Receiver<AttachedTaskSettlement>,
+impl Clone for DagSchedulerOptions {
+    fn clone(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+            task_manager: Arc::clone(&self.task_manager),
+            initial_record: self.initial_record.clone(),
+            execution_mode: self.execution_mode.as_ref().map(|mode| DagExecutionModeOptions {
+                agents: Arc::clone(&mode.agents), config: mode.config, auto_mode: mode.auto_mode, config_is_auto: mode.config_is_auto,
+            }),
+            ancestry: self.ancestry,
+            node_spawn_policy: self.node_spawn_policy.clone(),
+            subscriber_ring: self.subscriber_ring,
+            pre_attached_tasks: self.pre_attached_tasks.clone(),
+            now: self.now.clone(),
+        }
+    }
 }
+
+pub struct DagExecutionModeOptions {
+    pub agents: Arc<BTreeMap<String, AgentDefinition>>,
+    pub config: Option<ExecutionMode>,
+    pub auto_mode: Option<ExecutionMode>,
+    pub config_is_auto: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DagSchedulerAncestry { pub depth: u32 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DagNodeSpawnPolicyVerdict { Allow, Deny { message: String }, Force { prompt: String } }
+
+pub type DagNodeSpawnPolicy = Arc<dyn Fn(&DagNodeId, &str, &str, &str) -> DagNodeSpawnPolicyVerdict + Send + Sync>;
+
+struct AttachedTask {
+    _task_id: String,
+}
+
+enum SchedulerWake { Settled(DagNodeId, AttachedTaskSettlement), ResidencyReleased, Wake }
 
 enum AttachedTaskSettlement {
     Record(Box<TaskRecord>),
@@ -75,6 +112,10 @@ struct SchedulerState {
     cancellation_completed_condvar: Condvar,
     admission_in_progress: Mutex<bool>,
     admission_condvar: Condvar,
+    residency_waiting: Mutex<bool>,
+    wake: Condvar,
+    settlement_tx: Sender<SchedulerWake>,
+    settlement_rx: Mutex<std::sync::mpsc::Receiver<SchedulerWake>>,
 }
 
 pub struct DagSchedulerContext {
@@ -85,9 +126,15 @@ pub struct DagSchedulerContext {
     definition_nodes: BTreeMap<DagNodeId, DagPersistedNode>,
     execution_mode_agents: Option<Arc<BTreeMap<String, AgentDefinition>>>,
     execution_mode_config: Option<ExecutionMode>,
-    ancestry_depth: Option<u32>,
+    execution_mode_auto: Option<ExecutionMode>,
+    execution_mode_is_auto: bool,
+    ancestry: Option<DagSchedulerAncestry>,
+    node_spawn_policy: Option<DagNodeSpawnPolicy>,
+    residency_queued: Mutex<std::collections::BTreeSet<DagNodeId>>,
+    pending_admission: Mutex<Vec<DagNodeId>>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
     state: Arc<SchedulerState>,
+    options: DagSchedulerOptions,
 }
 
 pub fn create_dag_scheduler(
@@ -95,7 +142,11 @@ pub fn create_dag_scheduler(
 ) -> Result<Arc<DagSchedulerContext>, crate::dag::store::DagStoreError> {
     let now = options
         .now
+        .clone()
         .unwrap_or_else(|| Arc::new(|| i64::try_from(crate::state::system_now_ms()).unwrap_or(i64::MAX)));
+    let mut options = options;
+    options.now = Some(Arc::clone(&now));
+    let (settlement_tx, settlement_rx) = channel();
     let state = Arc::new(SchedulerState {
         admission_stopped: std::sync::atomic::AtomicBool::new(false),
         running: Mutex::new(false),
@@ -109,8 +160,12 @@ pub fn create_dag_scheduler(
         cancellation_completed_condvar: Condvar::new(),
         admission_in_progress: Mutex::new(false),
         admission_condvar: Condvar::new(),
+        residency_waiting: Mutex::new(false),
+        wake: Condvar::new(),
+        settlement_tx,
+        settlement_rx: Mutex::new(settlement_rx),
     });
-    let store = options.store;
+    let store = Arc::clone(&options.store);
     let reducer_state = Arc::clone(&state);
     let reducer_store = Arc::clone(&store);
     let reducer_now = Arc::clone(&now);
@@ -138,18 +193,43 @@ pub fn create_dag_scheduler(
         .iter()
         .map(|node| (node.id.clone(), node.clone()))
         .collect();
-    Ok(Arc::new(DagSchedulerContext {
-        task_manager: options.task_manager,
+    let pre_attached_tasks = options.pre_attached_tasks.clone().unwrap_or_default();
+    let task_manager_key = Arc::as_ptr(&options.task_manager) as usize;
+    let context = Arc::new(DagSchedulerContext {
+        task_manager: Arc::clone(&options.task_manager),
         #[cfg(test)]
         task_port: Mutex::new(None),
         journal,
         definition_nodes,
-        execution_mode_agents: options.execution_mode_agents,
-        execution_mode_config: options.execution_mode_config,
-        ancestry_depth: options.ancestry_depth,
+        execution_mode_agents: options.execution_mode.as_ref().map(|mode| Arc::clone(&mode.agents)),
+        execution_mode_config: options.execution_mode.as_ref().and_then(|mode| mode.config),
+        execution_mode_auto: options.execution_mode.as_ref().and_then(|mode| mode.auto_mode),
+        execution_mode_is_auto: options.execution_mode.as_ref().is_some_and(|mode| mode.config_is_auto),
+        ancestry: options.ancestry,
+        node_spawn_policy: options.node_spawn_policy.clone(),
+        residency_queued: Mutex::new(std::collections::BTreeSet::new()),
+        pending_admission: Mutex::new(Vec::new()),
         now,
         state,
-    }))
+        options: DagSchedulerOptions {
+            task_manager: Arc::clone(&options.task_manager),
+            node_spawn_policy: options.node_spawn_policy.clone(),
+            ..options
+        },
+    });
+    for (node_id, task_id) in pre_attached_tasks {
+        context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).insert(node_id.clone(), task_id.clone());
+        let node = node_by_id(&context.journal.snapshot(), &node_id).ok();
+        if let Some(node) = node && node.task_id.as_deref() != Some(&task_id) {
+            let _ = context.journal.append(DagRunEventPayload::NodeTaskAttached { node_id: node_id.clone(), task_id: task_id.clone(), attempt: node.attempt });
+        }
+        spawn_wait_for(&context, node_id, task_id);
+    }
+    if let Some(registry) = DAG_SCHEDULER_OBSERVERS.get() {
+        let observers: Vec<_> = registry.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|(registered, _)| *registered == task_manager_key).map(|(_, observer)| Arc::clone(observer)).collect();
+        for observer in observers { observer(Arc::clone(&context)); }
+    }
+    Ok(context)
 }
 
 /// The pure event reducer (`applyDagSchedulerEvent`), usable without result persistence for
@@ -196,7 +276,7 @@ fn apply_dag_scheduler_event_with_results(
             status: crate::dag::types::DagRunStatus::Paused, updated_at:event.at.clone(), ..record.clone()
         },
         DagRunEventPayload::RunResumed { generation } => DagRunRecordV1 {
-            status: crate::dag::types::DagRunStatus::Running, generation:*generation, updated_at:event.at.clone(), ..record.clone()
+            status: crate::dag::types::DagRunStatus::Running, generation:*generation, completed_at: None, updated_at:event.at.clone(), ..record.clone()
         },
         DagRunEventPayload::RunStarted { .. } => DagRunRecordV1 {
             status: crate::dag::types::DagRunStatus::Running,
@@ -254,6 +334,19 @@ fn apply_dag_scheduler_event_with_results(
                 .collect(),
             updated_at: event.at.clone(),
             ..record.clone()
+        },
+        DagRunEventPayload::NodeSteered { node_id, task_id, delivery } => DagRunRecordV1 {
+            nodes: record.nodes.iter().map(|node| if &node.id == node_id && *delivery == crate::dag::types::DagNodeDelivery::Revive { DagNode { task_id: Some(task_id.clone()), ..node.clone() } } else { node.clone() }).collect(),
+            updated_at: event.at.clone(), ..record.clone()
+        },
+        DagRunEventPayload::NodeRetried { node_id, exec_attempt, .. } => DagRunRecordV1 {
+            nodes: record.nodes.iter().map(|node| if &node.id == node_id { DagNode { state: DagNodeState::Pending, exec_attempt: Some(*exec_attempt), error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
+            updated_at: event.at.clone(), ..record.clone()
+        },
+        DagRunEventPayload::DefinitionAmended { fingerprint, invalidated_node_ids, .. } => DagRunRecordV1 {
+            definition_fingerprint: fingerprint.clone(),
+            nodes: record.nodes.iter().map(|node| if invalidated_node_ids.contains(&node.id) { DagNode { state: DagNodeState::Pending, error: None, completed_at: None, output: None, output_bytes: None, run_stats: None, ..node.clone() } } else { node.clone() }).collect(),
+            updated_at: event.at.clone(), ..record.clone()
         },
         _ => DagRunRecordV1 {
             updated_at: event.at.clone(),
@@ -347,6 +440,11 @@ fn reduce_node_transitioned(
             let mut transitioned = transitioned_node(node, to, &event.at, pending_errors.get(node_id));
             if result_artifact.is_some() {
                 transitioned.run_stats = run_stats.clone().or(transitioned.run_stats);
+                let output_path = store.map(|store| store.paths.result(&record.run_id, node_id));
+                if let Some(path) = output_path && let Ok(contents) = fs::read_to_string(&path) {
+                    transitioned.output = Some(contents.chars().take(crate::dag::types::DAG_NODE_OUTPUT_PREVIEW_CHARS).collect());
+                    transitioned.output_bytes = Some(fs::metadata(path).map_or(contents.len() as u64, |meta| meta.len()));
+                }
             }
             transitioned
         })
@@ -452,8 +550,9 @@ impl DagSchedulerContext {
     pub fn stop_admission(&self) {
         self.state.admission_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
         when_admission_idle(self);
+        let _ = self.state.settlement_tx.send(SchedulerWake::Wake);
         let mut running = self.state.running.lock().unwrap_or_else(PoisonError::into_inner);
-        while *running { running = self.state.run_idle.wait(running).unwrap_or_else(PoisonError::into_inner); }
+        while *running { self.state.wake.notify_all(); running = self.state.run_idle.wait(running).unwrap_or_else(PoisonError::into_inner); }
     }
     #[cfg(test)]
     pub(crate) fn set_task_port(&self, port: Arc<dyn TestTaskPort>) {
@@ -475,7 +574,23 @@ impl DagSchedulerContext {
             }
         }
         let _running = RunGuard(&self.state);
-        run_waves(self)
+    run_frontier(self)
+    }
+
+    pub fn suspend(&self) {
+        self.state.admission_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.state.admission_condvar.notify_all();
+        let _ = self.state.settlement_tx.send(SchedulerWake::Wake);
+        self.state.wake.notify_all();
+        when_admission_idle(self);
+        self.journal.when_idle();
+    }
+
+    pub fn retry_node(&self, run_id: DagRunId, node_ids: Option<&[DagNodeId]>, retry_options: Option<crate::dag::node_retry::DagRetryOptions>) -> Result<DagRunReentry, DagNodeControlError> { retry_dag_nodes(self.options.clone(), run_id, node_ids, retry_options) }
+
+    pub fn send_to_node(&self, run_id: &DagRunId, node_id: &DagNodeId, message: &str) -> std::thread::JoinHandle<Result<DagNodeSendResult, DagNodeControlError>> {
+        let options = self.options.clone(); let run_id = run_id.clone(); let node_id = node_id.clone(); let message = message.to_string();
+        std::thread::spawn(move || send_to_dag_node(&options, &run_id, &node_id, &message))
     }
 
     pub fn cancel(&self, run_id: &DagRunId, reason: Option<&str>) -> Result<(), String> {
@@ -493,6 +608,16 @@ impl DagSchedulerContext {
     pub fn when_idle(&self) {
         self.journal.when_idle();
     }
+}
+
+type DagSchedulerObserver = Arc<dyn Fn(Arc<DagSchedulerContext>) + Send + Sync>;
+static DAG_SCHEDULER_OBSERVERS: std::sync::OnceLock<Mutex<Vec<(usize, DagSchedulerObserver)>>> = std::sync::OnceLock::new();
+pub use crate::dag::node_retry::{DagRetryOptions as DagSchedulerRetryOptions, DagRunReentry as DagSchedulerRunReentry, reenter_dag_run};
+pub use crate::dag::node_send::{DagNodeSendResult as DagSchedulerNodeSendResult, DagNodeDeliveryResult as DagSchedulerNodeDeliveryResult};
+pub fn observe_dag_schedulers(task_manager: &Arc<TaskManager>, observer: Arc<dyn Fn(Arc<DagSchedulerContext>) + Send + Sync>) -> Box<dyn FnOnce() + Send> {
+    let key = Arc::as_ptr(task_manager) as usize;
+    DAG_SCHEDULER_OBSERVERS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap_or_else(PoisonError::into_inner).push((key, observer));
+    Box::new(move || DAG_SCHEDULER_OBSERVERS.get_or_init(|| Mutex::new(Vec::new())).lock().unwrap_or_else(PoisonError::into_inner).retain(|(registered, _)| *registered != key))
 }
 
 fn cancel_run(
@@ -526,6 +651,9 @@ fn cancel_run(
         *started = true;
     }
     context.state.cancellation_condvar.notify_all();
+    context.state.admission_condvar.notify_all();
+    context.state.wake.notify_all();
+    let _ = context.state.settlement_tx.send(SchedulerWake::Wake);
     let result = perform_cancellation(context, reason);
     *context
         .state
@@ -636,7 +764,7 @@ fn cancellation_started(context: &DagSchedulerContext) -> bool {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
+fn run_frontier(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
     if admission_stopped(context) || context.journal.snapshot().status.is_terminal() {
         return Ok(context.journal.snapshot());
     }
@@ -646,38 +774,36 @@ fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag
             .journal
             .append(DagRunEventPayload::RunStarted { generation })?;
     }
+    if !context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+        let mut attached = recover_attached(context);
+        if !settle_one(context, &mut attached)? { return Ok(context.journal.snapshot()); }
+    }
 
-    for wave in context.journal.snapshot().waves.clone() {
+    let mut emitted_admissions = std::collections::BTreeSet::new();
+    let mut emitted_completions = std::collections::BTreeSet::new();
+    loop {
         if admission_stopped(context) { return Ok(context.journal.snapshot()); }
         if cancellation_started(context) {
             return Ok(cancelled_snapshot(context));
         }
-        apply_dependent_skip_cascade(context)?;
-        let runnable: Vec<DagNodeId> = wave
-            .node_ids
-            .iter()
-            .filter(|node_id| is_runnable(&context.journal.snapshot(), node_id))
-            .cloned()
-            .collect();
-        if runnable.is_empty() {
-            continue;
+        if context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+            apply_dependent_skip_cascade(context)?;
         }
-
-        for node_id in &runnable {
-            transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled);
-        }
-        context.journal.append(DagRunEventPayload::WaveStarted {
-            wave_index: wave.index,
-            node_ids: runnable.clone(),
-        })?;
-        if !admit_and_settle_wave(context, &runnable)? {
+        emit_frontier_wave_events(context, &mut emitted_admissions, &mut emitted_completions)?;
+        if !admit_frontier(context, &mut emitted_admissions)? {
             if admission_stopped(context) { return Ok(context.journal.snapshot()); }
             return Ok(cancelled_snapshot(context));
         }
-        context.journal.append(DagRunEventPayload::WaveCompleted {
-            wave_index: wave.index,
-            node_ids: runnable,
-        })?;
+        let snapshot = context.journal.snapshot();
+        if snapshot.nodes.iter().all(|node| is_terminal_node_state(node.state)) { break; }
+        if context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+            continue;
+        }
+        let mut attached = recover_attached(context);
+        if !settle_one(context, &mut attached)? {
+            if admission_stopped(context) { return Ok(context.journal.snapshot()); }
+            return Ok(cancelled_snapshot(context));
+        }
     }
 
     apply_dependent_skip_cascade(context)?;
@@ -699,93 +825,121 @@ fn run_waves(context: &DagSchedulerContext) -> Result<DagRunRecordV1, crate::dag
     Ok(context.journal.snapshot())
 }
 
-fn admit_and_settle_wave(
-    context: &DagSchedulerContext,
-    node_ids: &[DagNodeId],
-) -> Result<bool, crate::dag::store::DagStoreError> {
-    let mut awaiting_admission: Vec<DagNodeId> = node_ids.to_vec();
-    let mut attached: BTreeMap<DagNodeId, AttachedTask> = BTreeMap::new();
+fn recover_attached(context: &DagSchedulerContext) -> BTreeMap<DagNodeId, AttachedTask> {
+    let ids = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    ids.into_iter().map(|(node_id, task_id)| {
+        spawn_wait_for(context, node_id.clone(), task_id.clone());
+        (node_id, AttachedTask { _task_id: task_id })
+    }).collect()
+}
 
-    while !awaiting_admission.is_empty() {
-        if admission_stopped(context) { return Ok(false); }
-        if cancellation_started(context) {
-            return Ok(false);
-        }
-        {
-            let mut in_progress = context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner);
-            if admission_stopped(context) { return Ok(false); }
-            *in_progress = true;
-        }
-        let results: Vec<(DagNodeId, Result<OwnedStartResult, String>)> = awaiting_admission
-            .iter()
-            .map(|node_id| {
-                let spec = start_spec(context, node_id);
-                let owner_stamp = owner(context, node_id);
-                (
-                    node_id.clone(),
-                    start_owned(context, &spec, &owner_stamp),
-                )
-            })
-            .collect();
-        let mut denied: Vec<DagNodeId> = Vec::new();
-        let attachment_result = (|| -> Result<(), crate::dag::store::DagStoreError> {
-        for (node_id, settled) in results {
-            match settled {
-                Err(error) => {
-                    if !cancellation_started(context) {
-                        fail_node(context, &node_id, DagNodeErrorCode::StartFailed, &error)?;
+fn admit_frontier(context: &DagSchedulerContext, emitted: &mut std::collections::BTreeSet<usize>) -> Result<bool, crate::dag::store::DagStoreError> {
+    let mut queued = std::mem::take(&mut *context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner));
+    let queued_set: std::collections::BTreeSet<_> = queued.iter().cloned().collect();
+    let snapshot = context.journal.snapshot();
+    let mut ready: Vec<_> = snapshot.nodes.iter().filter(|node| !queued_set.contains(&node.id) && is_runnable(&snapshot, &node.id)).map(|node| node.id.clone()).collect();
+    queued.append(&mut ready);
+    if queued.is_empty() { return Ok(true); }
+    let mut groups: BTreeMap<usize, Vec<DagNodeId>> = BTreeMap::new();
+    for node_id in &queued {
+        if is_runnable(&context.journal.snapshot(), node_id) { transition(context, node_id, DagNodeState::Scheduled, DagNodeTransitionReason::Scheduled); }
+        if let Some(wave) = snapshot.waves.iter().find(|wave| wave.node_ids.contains(node_id)) { groups.entry(wave.index).or_default().push(node_id.clone()); }
+    }
+    for (index, ids) in groups { let _ = context.journal.append(DagRunEventPayload::WaveStarted { wave_index: index, node_ids: ids }); emitted.insert(index); }
+    let residency_changed = context.task_manager.residency_changed(&snapshot.parent_session_id);
+    #[cfg(test)]
+    let (test_residency_tx, test_residency_rx) = channel();
+    #[cfg(test)]
+    if let Some(port) = context.task_port.lock().unwrap().as_ref() { port.residency_changed(&snapshot.parent_session_id, test_residency_tx); }
+    let mut attached = BTreeMap::new();
+    let mut denied = Vec::new();
+    let mut lease_denied = false;
+    {
+        let mut busy = context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner); *busy = true;
+    }
+    for node_id in queued {
+        let (spec, policy_failure) = start_spec(context, &node_id);
+        let result = if let Some(message) = policy_failure { Err(message) } else { start_owned(context, &spec, &owner(context, &node_id)) };
+        match result {
+            Err(message) => fail_node(context, &node_id, DagNodeErrorCode::StartFailed, &message)?,
+            Ok(OwnedStartResult::NotStarted(StartResult::ResidencyDenied { reason, cause })) => {
+                match cause {
+                    ResidencyDeniedCause::Lease => { lease_denied = true; denied.push(node_id); }
+                    ResidencyDeniedCause::Residents { residents, .. } if residents.is_empty() => {
+                        context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
+                        fail_node(context, &node_id, DagNodeErrorCode::ResidencyDenied, &format!("resident child cap reached and the denial names no resident child that could free a slot: {reason}"))?;
                     }
-                }
-                Ok(result) => {
-                    if cancellation_started(context) {
-                        if let OwnedStartResult::Started { task, reused } = result {
-                            attach_started(context, &mut attached, &node_id, &task, reused)?;
+                    ResidencyDeniedCause::Residents { residents, .. } => {
+                        let mut first = context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner);
+                        if first.insert(node_id.clone()) {
+                            let own_ids = context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner);
+                            let held_by_other_owners = residents.iter().filter(|resident| !own_ids.values().any(|own| own == &resident.task_id)).count() as u64;
+                            let _ = context.journal.append(DagRunEventPayload::NodeTransitioned { node_id: node_id.clone(), from: DagNodeState::Scheduled, to: DagNodeState::Scheduled, reason: DagNodeTransitionReason::ResidencyQueued { residents: residents.len() as u64, held_by_other_owners } });
                         }
-                    } else if matches!(
-                        result,
-                        OwnedStartResult::NotStarted(StartResult::ResidencyDenied { .. })
-                    ) {
                         denied.push(node_id);
-                    } else {
-                        attach_or_fail(context, &mut attached, &node_id, result)?;
                     }
                 }
             }
+            Ok(result) => { context.residency_queued.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id); attach_or_fail(context, &mut attached, &node_id, result)?; }
         }
-        Ok(())
-        })();
-        resolve_admission_idle(context);
-        attachment_result?;
-        if admission_stopped(context) { return Ok(false); }
-        if cancellation_started(context) {
-            return Ok(false);
-        }
-        awaiting_admission = denied;
-        if awaiting_admission.is_empty() {
-            break;
-        }
-        if attached.is_empty() {
-            for node_id in &awaiting_admission {
-                fail_node(
-                    context,
-                    node_id,
-                    DagNodeErrorCode::ResidencyDenied,
-                    "resident child cap reached and no task can free a slot",
-                )?;
+    }
+    resolve_admission_idle(context);
+    *context.state.admission_in_progress.lock().unwrap_or_else(PoisonError::into_inner) = false;
+    if !denied.is_empty() {
+        *context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner) = denied;
+    }
+    if lease_denied { return Ok(true); }
+    if !context.pending_admission.lock().unwrap_or_else(PoisonError::into_inner).is_empty() {
+        *context.state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        let state = Arc::clone(&context.state);
+        let change = residency_changed.clone();
+        #[cfg(test)]
+        let fake_change = context.task_port.lock().unwrap_or_else(PoisonError::into_inner).is_some().then_some(test_residency_rx);
+        let _ = std::thread::Builder::new().name("dag-residency-wake".into()).spawn(move || {
+            #[cfg(test)]
+            if let Some(receiver) = fake_change { let _ = receiver.recv(); } else { change.wait(); }
+            #[cfg(not(test))]
+            change.wait();
+            *state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = false;
+            let _ = state.settlement_tx.send(SchedulerWake::ResidencyReleased);
+        });
+        let mut residency_released = false;
+        loop {
+            if residency_changed.is_fired() || admission_stopped(context) || cancellation_started(context) { break; }
+            match context.state.settlement_rx.lock().unwrap_or_else(PoisonError::into_inner).recv() {
+                Ok(SchedulerWake::Settled(node_id, settlement)) => {
+                    if attached.contains_key(&node_id) {
+                        attached.remove(&node_id);
+                        context.state.attached_task_ids.lock().unwrap_or_else(PoisonError::into_inner).remove(&node_id);
+                        match settlement {
+                            AttachedTaskSettlement::Error(message) => fail_node(context, &node_id, DagNodeErrorCode::TaskError, &message)?,
+                            AttachedTaskSettlement::Record(record) => fold_task_outcome(context, &node_id, *record)?,
+                        }
+                    }
+                }
+                Ok(SchedulerWake::ResidencyReleased) => { residency_released = true; break; }
+                Ok(SchedulerWake::Wake) => {}
+                Err(_) => break,
             }
-            break;
         }
-        if !settle_one(context, &mut attached)? {
-            return Ok(false);
-        }
+        *context.state.residency_waiting.lock().unwrap_or_else(PoisonError::into_inner) = false;
+        if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
+        if residency_released || residency_changed.is_fired() { return Ok(true); }
     }
-
-    while !attached.is_empty() {
-        if !settle_one(context, &mut attached)? {
-            return Ok(false);
-        }
-    }
+    if attached.is_empty() { return Ok(true); }
+    while !attached.is_empty() { if !settle_one(context, &mut attached)? { return Ok(false); } }
     Ok(true)
+}
+
+fn emit_frontier_wave_events(context: &DagSchedulerContext, admitted: &mut std::collections::BTreeSet<usize>, completed: &mut std::collections::BTreeSet<usize>) -> Result<(), crate::dag::store::DagStoreError> {
+    let snapshot = context.journal.snapshot();
+    for wave in &snapshot.waves {
+        if admitted.contains(&wave.index) && !completed.contains(&wave.index) && wave.node_ids.iter().all(|id| node_by_id(&snapshot, id).is_ok_and(|node| is_terminal_node_state(node.state))) {
+            context.journal.append(DagRunEventPayload::WaveCompleted { wave_index: wave.index, node_ids: wave.node_ids.clone() })?;
+            completed.insert(wave.index);
+        }
+    }
+    Ok(())
 }
 
 fn attach_or_fail(
@@ -796,12 +950,14 @@ fn attach_or_fail(
 ) -> Result<(), crate::dag::store::DagStoreError> {
     match result {
         OwnedStartResult::Started { task, reused } => attach_started(context, attached, node_id, &task, reused),
-        OwnedStartResult::OwnerConflict { task_id, .. } => fail_node(
-            context,
-            node_id,
-            DagNodeErrorCode::StartFailed,
-            &format!("DAG task owner conflicts with existing task {task_id}"),
-        ),
+        OwnedStartResult::OwnerConflict { task_id, .. } => {
+            #[cfg(test)]
+            let record = context.task_port.lock().unwrap().as_ref().and_then(|port| port.get_task(&task_id)).or_else(|| context.task_manager.get(&task_id));
+            #[cfg(not(test))]
+            let record = context.task_manager.get(&task_id);
+            let Some(record) = record else { return fail_node(context, node_id, DagNodeErrorCode::StartFailed, &format!("DAG owner-conflict task {task_id} is unavailable")); };
+            attach_started(context, attached, node_id, &crate::manager::types::StartedTask { task_id, status: record.status, name: record.name.unwrap_or_default(), resolved_model: record.resolved_model, queue_position: None, name_warning: None }, true)
+        },
         OwnedStartResult::NotStarted(start_result) => {
             let failure = start_failure(&start_result);
             fail_node(context, node_id, failure.0, &failure.1)
@@ -854,19 +1010,17 @@ fn attach_started(
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(node_id.clone(), task.task_id.clone());
-    let (sender, receiver): (Sender<AttachedTaskSettlement>, _) = channel();
-    spawn_wait_for(context, task.task_id.clone(), sender);
+    spawn_wait_for(context, node_id.clone(), task.task_id.clone());
     attached.insert(
         node_id.clone(),
-        AttachedTask {
-            settled: receiver,
-        },
+        AttachedTask { _task_id: task.task_id.clone() },
     );
     Ok(())
 }
 
-fn spawn_wait_for(context: &DagSchedulerContext, task_id: String, sender: Sender<AttachedTaskSettlement>) {
+fn spawn_wait_for(context: &DagSchedulerContext, node_id: DagNodeId, task_id: String) {
     let task_manager = Arc::clone(&context.task_manager);
+    let state = Arc::clone(&context.state);
     #[cfg(test)]
     let port = context.task_port.lock().unwrap().clone();
     std::thread::spawn(move || {
@@ -881,7 +1035,8 @@ fn spawn_wait_for(context: &DagSchedulerContext, task_id: String, sender: Sender
             Ok(record) => AttachedTaskSettlement::Record(Box::new(record)),
             Err(error) => AttachedTaskSettlement::Error(error.to_string()),
         };
-        let _ = sender.send(settlement);
+        let _ = state.settlement_tx.send(SchedulerWake::Settled(node_id, settlement));
+        state.wake.notify_all();
     });
 }
 
@@ -890,6 +1045,8 @@ pub(crate) trait TestTaskPort: Send + Sync {
     fn start_owned(&self, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> Result<OwnedStartResult, String>;
     fn wait_for(&self, task_id: &str) -> Result<TaskRecord, String>;
     fn cancel_task(&self, task_id: &str) -> Result<(), String>;
+    fn residency_changed(&self, _parent_session_id: &str, _sender: Sender<()>) {}
+    fn get_task(&self, _task_id: &str) -> Option<TaskRecord> { None }
 }
 
 fn start_owned(context: &DagSchedulerContext, spec: &ManagerStartSpec, owner: &DagTaskOwner) -> Result<OwnedStartResult, String> {
@@ -920,14 +1077,9 @@ fn settle_one(
         if cancellation_started(context) {
             return Ok(false);
         }
-        let mut ready: Option<(DagNodeId, AttachedTaskSettlement)> = None;
-        for (node_id, task) in attached.iter() {
-            if let Ok(settlement) = task.settled.try_recv() {
-                ready = Some((node_id.clone(), settlement));
-                break;
-            }
-        }
-        if let Some((node_id, settlement)) = ready {
+        let wake = context.state.settlement_rx.lock().unwrap_or_else(PoisonError::into_inner).recv();
+        if let Ok(SchedulerWake::Settled(node_id, settlement)) = wake {
+            if !attached.contains_key(&node_id) { continue; }
             attached.remove(&node_id);
             context
                 .state
@@ -945,7 +1097,7 @@ fn settle_one(
             }
             return Ok(true);
         }
-        std::thread::sleep(Duration::from_millis(5));
+        if admission_stopped(context) || cancellation_started(context) { return Ok(false); }
     }
 }
 
@@ -1060,30 +1212,35 @@ fn fail_node(
     Ok(())
 }
 
-fn start_spec(context: &DagSchedulerContext, node_id: &DagNodeId) -> ManagerStartSpec {
+fn start_spec(context: &DagSchedulerContext, node_id: &DagNodeId) -> (ManagerStartSpec, Option<String>) {
     let record = context.journal.snapshot();
     let node = node_by_id(&record, node_id).expect("scheduled node exists");
+    let parent_session_id = record.parent_session_id.clone();
+    let root_session_id = record.root_session_id.clone();
+    let policy_parent_session_id = parent_session_id.clone();
     let persisted = context
         .definition_nodes
         .get(node_id)
         .expect("persisted definition for scheduled node");
-    let execution_mode = context.execution_mode_agents.as_ref().map(|agents| {
+    let execution_mode = context.execution_mode_agents.as_ref().and_then(|agents| {
         resolve_dag_node_execution_mode(&DagExecutionModeSources {
             route: &node.route,
             agents,
             config_mode: context.execution_mode_config,
+            config_is_auto: context.execution_mode_is_auto,
+            auto_mode: context.execution_mode_auto,
         })
     });
     let (category, subagent_type, model) = match &node.route {
         DagRoute::Category { category } => (Some(category.clone()), None, None),
         DagRoute::Agent { agent, model } => (None, Some(agent.clone()), model.clone()),
     };
-    ManagerStartSpec {
+    let mut spec = ManagerStartSpec {
         prompt: persisted.effective_prompt.clone(),
         task_summary: persisted.task_summary.clone(),
-        parent_session_id: record.parent_session_id.clone(),
-        root_session_id: Some(record.root_session_id.clone()),
-        depth: context.ancestry_depth.unwrap_or(0) + 1,
+        parent_session_id: parent_session_id.clone(),
+        root_session_id: Some(root_session_id),
+        depth: context.ancestry.map_or(0, |ancestry| ancestry.depth) + 1,
         category,
         subagent_type,
         model,
@@ -1092,11 +1249,21 @@ fn start_spec(context: &DagSchedulerContext, node_id: &DagNodeId) -> ManagerStar
         description: persisted.description.clone(),
         run_in_background: true,
         ..ManagerStartSpec::default()
+    };
+    let mut policy_failure = None;
+    if let (Some(policy), Some(agent)) = (&context.node_spawn_policy, &spec.subagent_type) {
+        match policy(node_id, agent, &spec.prompt, &policy_parent_session_id) {
+            DagNodeSpawnPolicyVerdict::Allow => {},
+            DagNodeSpawnPolicyVerdict::Deny { message } => policy_failure = Some(format!("DAG node \"{node_id}\" denied by spawn policy: {message}")),
+            DagNodeSpawnPolicyVerdict::Force { prompt } => spec.prompt = prompt,
+        }
     }
+    (spec, policy_failure)
 }
 
 fn owner(context: &DagSchedulerContext, node_id: &DagNodeId) -> DagTaskOwner {
     let record = context.journal.snapshot();
+    let exec_attempt = node_by_id(&record, node_id).ok().and_then(|node| node.exec_attempt);
     DagTaskOwner {
         kind: DagOwnerKind::Dag,
         run_id: record.run_id,
@@ -1104,6 +1271,7 @@ fn owner(context: &DagSchedulerContext, node_id: &DagNodeId) -> DagTaskOwner {
         fingerprint: dag_fingerprint(&serde_json::json!({
             "definitionFingerprint": record.definition_fingerprint,
             "nodeId": node_id,
+            "execAttempt": exec_attempt,
         })),
     }
 }
@@ -1115,7 +1283,7 @@ fn start_failure(result: &StartResult) -> (DagNodeErrorCode, String) {
         StartResult::StartFailed(StartFailure { error_message, .. }) => {
             (DagNodeErrorCode::StartFailed, error_message.clone())
         }
-        StartResult::ResidencyDenied { reason } => (DagNodeErrorCode::ResidencyDenied, reason.clone()),
+        StartResult::ResidencyDenied { reason, .. } => (DagNodeErrorCode::ResidencyDenied, reason.clone()),
         StartResult::Started(_) => unreachable!("Started never reaches start_failure"),
     }
 }
@@ -1144,6 +1312,7 @@ fn transitioned_node(
     at: &str,
     error: Option<&DagNodeError>,
 ) -> DagNode {
+    let clear_terminal = state == DagNodeState::Running && is_terminal_node_state(node.state);
     DagNode {
         state,
         started_at: if state == DagNodeState::Running && node.started_at.is_none() {
@@ -1153,10 +1322,15 @@ fn transitioned_node(
         },
         completed_at: if is_terminal_node_state(state) {
             Some(at.to_string())
+        } else if clear_terminal {
+            None
         } else {
             node.completed_at.clone()
         },
-        error: error.cloned().or_else(|| node.error.clone()),
+        error: if clear_terminal { None } else { error.cloned().or_else(|| node.error.clone()) },
+        output: if clear_terminal { None } else { node.output.clone() },
+        output_bytes: if clear_terminal { None } else { node.output_bytes },
+        run_stats: if clear_terminal { None } else { node.run_stats.clone() },
         ..node.clone()
     }
 }
