@@ -271,8 +271,12 @@ impl Client {
         if let Some(cancel) = cancellation.as_mut() {
             tokio::select! {
                 result=rx=>result.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?,
-                reason=async { cancel.wait_for(|v| v.is_some()).await.map(|value| value.clone()) }=>{
-                    let reason=reason.ok().flatten().unwrap_or_else(|| ClientError::Disconnected("The operation was aborted".into()));
+                reason=async {
+                    // A dropped sender never aborts, matching an AbortSignal that is never fired.
+                    let changed=cancel.wait_for(|v| v.is_some()).await.map(|value| value.clone());
+                    match changed { Ok(value)=>value, Err(_)=>std::future::pending().await }
+                }=>{
+                    let reason=reason.unwrap_or_else(|| ClientError::Disconnected("The operation was aborted".into()));
                     if let Some(request)=lock(&self.state).pending.get_mut(&id) { request.reply=None; }
                     if self.connected() {
                         let frame=encode_client_message(&json!({"type":"cancel","id":id,"target":target}),self.connection.max_frame_length())?;
@@ -375,10 +379,14 @@ impl Client {
             if let Some(signal)=cancellation.as_mut() {
                 tokio::select! {
                     result=reply=>result.map_err(|_|ClientError::Disconnected("Client is disconnected".into()))?,
-                    reason=async {signal.wait_for(|v|v.is_some()).await.map(|v|v.clone())}=>{
+                    reason=async {
+                        // A dropped sender never aborts, matching an AbortSignal that is never fired.
+                        let changed=signal.wait_for(|v|v.is_some()).await.map(|v|v.clone());
+                        match changed { Ok(value)=>value, Err(_)=>std::future::pending().await }
+                    }=>{
                         if let Some(pending)=lock(&self.state).pending.get_mut(&request_id) {pending.reply=None;pending.subscription=None;}
                         if self.connected() {let frame=encode_client_message(&json!({"type":"cancel","id":request_id,"target":target}),self.connection.max_frame_length())?;self.connection.send(&frame).await?;}
-                        Err(reason.ok().flatten().unwrap_or_else(||ClientError::Disconnected("The operation was aborted".into())))
+                        Err(reason.unwrap_or_else(||ClientError::Disconnected("The operation was aborted".into())))
                     }
                 }
             } else {reply.await.map_err(|_| ClientError::Disconnected("Client is disconnected".into()))?}
