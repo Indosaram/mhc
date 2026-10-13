@@ -68,14 +68,14 @@ impl Delivery {
         if let Some(detail) = state.blocked_detail() { payload["detail"] = json!(detail); }
         if self.config.port.is_some() { payload["token"] = json!(self.config.token); }
         if let Some(sender) = self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-            && let Err(error) = sender.send(format!("{payload}\n")) { eprintln!("Ferryx delivery queue: {error}"); }
+            && let Err(error) = sender.send(format!("{payload}\n")) { maho_ext_api::diagnostic(&format!("Ferryx delivery queue: {error}")); }
     }
 }
 impl Drop for Delivery {
     fn drop(&mut self) {
         self.sender.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         if let Some(thread) = self.thread.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take()
-            && thread.join().is_err() { eprintln!("Ferryx delivery thread panicked"); }
+            && thread.join().is_err() { maho_ext_api::diagnostic(&format!("Ferryx delivery thread panicked")); }
     }
 }
 

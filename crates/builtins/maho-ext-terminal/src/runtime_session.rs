@@ -181,8 +181,8 @@ impl TerminalRuntimeSession {
 impl Drop for TerminalRuntimeSession {
     fn drop(&mut self) {
         match self.exited() {
-            Ok(false)=>{if let Err(error)=self.session.kill() {eprintln!("terminal cleanup failed: {error}");}}
-            Ok(true)=>{},Err(error)=>eprintln!("terminal cleanup state failed: {error}"),
+            Ok(false)=>{if let Err(error)=self.session.kill() {maho_ext_api::diagnostic(&format!("terminal cleanup failed: {error}"));}}
+            Ok(true)=>{},Err(error)=>maho_ext_api::diagnostic(&format!("terminal cleanup state failed: {error}")),
         }
     }
 }

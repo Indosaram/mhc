@@ -29,7 +29,7 @@ impl EndpointCache {
             Err(error) => {
                 self.key = None;
                 self.values = None;
-                if error.kind() != std::io::ErrorKind::NotFound && !self.warned { self.warned = true; eprintln!("[orca-pi-status] failed to parse endpoint file: {error}"); }
+                if error.kind() != std::io::ErrorKind::NotFound && !self.warned { self.warned = true; maho_ext_api::diagnostic(&format!("[orca-pi-status] failed to parse endpoint file: {error}")); }
                 Default::default()
             }
         }
@@ -60,7 +60,7 @@ impl Delivery {
             let mut endpoints = EndpointCache::default();
             let client = match reqwest::blocking::Client::builder().timeout(Duration::from_millis(1000)).build() {
                 Ok(client) => client,
-                Err(error) => { eprintln!("Orca hook client: {error}"); return; }
+                Err(error) => { maho_ext_api::diagnostic(&format!("Orca hook client: {error}")); return; }
             };
             loop {
                 let (lock, signal) = &*worker_pending;
@@ -107,7 +107,7 @@ impl Drop for Delivery {
         lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shutdown = true;
         signal.notify_one();
         if let Some(thread) = self.thread.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner).take()
-            && thread.join().is_err() { eprintln!("Orca hook thread panicked"); }
+            && thread.join().is_err() { maho_ext_api::diagnostic(&format!("Orca hook thread panicked")); }
     }
 }
 

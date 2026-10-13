@@ -17,7 +17,7 @@ impl Extension for AstGrep {
         let resolver = Arc::new(BinaryResolver::new(source.clone(), cache.clone(), path.clone(), platform_key.clone(), offline));
         let version = resolver.version.clone();
         for replace in [false,true] {
-            if let Err(error) = api.register_tool_with_renderers(tool_with_resolver(replace,Arc::clone(&resolver)),crate::render::renderers(replace)) { eprintln!("pi-ast-grep: {error}"); }
+            if let Err(error) = api.register_tool_with_renderers(tool_with_resolver(replace,Arc::clone(&resolver)),crate::render::renderers(replace)) { maho_ext_api::diagnostic(&format!("pi-ast-grep: {error}")); }
         }
         api.register_command("ast-grep", Some("Show ast-grep binary path, version, and cache directory".into()), None, Arc::new(move |args, ctx| {
             let cache = cache.clone();

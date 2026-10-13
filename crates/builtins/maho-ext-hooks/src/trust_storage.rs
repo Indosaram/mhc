@@ -119,8 +119,8 @@ fn acquire_directory(path:&Path,check_stale:bool)->std::io::Result<()> {
     }
 }
 impl Drop for DirectoryLease {fn drop(&mut self) {
-    if let Err(error)=self.stop_heartbeat() {eprintln!("hook state heartbeat release failed: {error}");}
-    if self.held&&self.state.0.lock().is_ok_and(|state|state.compromised.is_none())&&let Err(error)=std::fs::remove_dir(&self.path)&&error.kind()!=std::io::ErrorKind::NotFound {eprintln!("hook state lock release failed: {error}");}
+    if let Err(error)=self.stop_heartbeat() {maho_ext_api::diagnostic(&format!("hook state heartbeat release failed: {error}"));}
+    if self.held&&self.state.0.lock().is_ok_and(|state|state.compromised.is_none())&&let Err(error)=std::fs::remove_dir(&self.path)&&error.kind()!=std::io::ErrorKind::NotFound {maho_ext_api::diagnostic(&format!("hook state lock release failed: {error}"));}
 }}
 fn release_result<T>(lease:DirectoryLease,result:std::io::Result<T>)->std::io::Result<T> {
     match (result,lease.release()) {(Ok(value),Ok(()))=>Ok(value),(Err(error),Ok(()))=>Err(error),(Ok(_),Err(error))=>Err(error),(Err(operation),Err(release))=>Err(std::io::Error::other(format!("Hook state operation and lock release both failed: {operation}; {release}")))}

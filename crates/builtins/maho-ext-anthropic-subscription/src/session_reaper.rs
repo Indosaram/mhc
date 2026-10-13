@@ -11,7 +11,7 @@ pub fn schedule(registry: &std::sync::Arc<tokio::sync::Mutex<crate::session_stre
             delay = crate::session_registry::SESSION_REGISTRY_IDLE_TTL_MS.saturating_sub(((now)().max(0) as u64).saturating_sub(entry.last_used_at));
             if delay == 0 {
                 registry.reapers.remove(&session);
-                if let Err(error) = registry.close(&session).await { eprintln!("Anthropic Subscription idle close failed: {error}"); }
+                if let Err(error) = registry.close(&session).await { maho_ext_api::diagnostic(&format!("Anthropic Subscription idle close failed: {error}")); }
                 return;
             }
         }

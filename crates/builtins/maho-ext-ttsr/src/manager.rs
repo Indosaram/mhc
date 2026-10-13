@@ -12,14 +12,14 @@ impl TtsrManager {
         let mut conditions=Vec::new();
         for pattern in &rule.condition {
             if let Some(regex)=(self.compile_condition)(pattern) { conditions.push(regex); self.max_condition_length=self.max_condition_length.max(pattern.encode_utf16().count()); }
-            else { eprintln!("TTSR condition has invalid regex pattern, skipping condition {{ ruleName: {:?}, pattern: {:?} }}",rule.name,pattern); }
+            else { maho_ext_api::diagnostic(&format!("TTSR condition has invalid regex pattern, skipping condition {{ ruleName: {:?}, pattern: {:?} }}",rule.name,pattern)); }
         }
-        if conditions.is_empty() { eprintln!("TTSR rule has no valid condition, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
-        if !has_reachable_scope(&rule.scope) { eprintln!("TTSR scope excludes all streams, skipping rule {{ ruleName: {:?} }}",rule.name); return false; }
-        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match crate::scope::glob_compilation_error(glob) { None=>true,Some(error)=>{ eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); false } }).cloned().collect();
+        if conditions.is_empty() { maho_ext_api::diagnostic(&format!("TTSR rule has no valid condition, skipping rule {{ ruleName: {:?} }}",rule.name)); return false; }
+        if !has_reachable_scope(&rule.scope) { maho_ext_api::diagnostic(&format!("TTSR scope excludes all streams, skipping rule {{ ruleName: {:?} }}",rule.name)); return false; }
+        let matching_globs=rule.globs.as_deref().unwrap_or(&[]).iter().filter(|glob|match crate::scope::glob_compilation_error(glob) { None=>true,Some(error)=>{ maho_ext_api::diagnostic(&format!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error)); false } }).cloned().collect();
         let mut matching_scope=rule.scope.clone();
         for tool in &mut matching_scope.tool_scopes {
-            if let Some(glob)=tool.path_glob.as_ref() && let Some(error)=crate::scope::glob_compilation_error(glob) { eprintln!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error); tool.path_glob=None; }
+            if let Some(glob)=tool.path_glob.as_ref() && let Some(error)=crate::scope::glob_compilation_error(glob) { maho_ext_api::diagnostic(&format!("TTSR glob pattern is invalid, skipping glob {{ ruleName: {:?}, pattern: {:?}, error: {:?} }}",rule.name,glob,error)); tool.path_glob=None; }
         }
         self.can_match_text|=rule.scope.allow_text; self.can_match_thinking|=rule.scope.allow_thinking;
         self.rules.push(Entry { rule,conditions,matching_globs,matching_scope }); true

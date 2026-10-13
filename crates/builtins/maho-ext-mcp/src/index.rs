@@ -11,7 +11,7 @@ pub fn register_mcp_lifecycle_with_tool_search(api:&mut ExtensionApi,registry:Ar
     let inventory=api.events.on_native::<crate::control_inventory::McpControlInventoryRequest>(crate::control_inventory::MCP_CONTROL_INVENTORY_REQUEST_EVENT,Arc::new(move |request| {
         let sender=request.respond.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let service=inventory_service.clone();
-        if let Some(sender)=sender { tokio::spawn(async move { let snapshot=service.lock().await.wire_status_snapshot().await; match serde_json::to_value(snapshot) { Ok(snapshot) => { if sender.send(snapshot).is_err() { /* Requesting connection was disposed. */ } }, Err(error) => eprintln!("MCP inventory serialization failed: {error}") } }); }
+        if let Some(sender)=sender { tokio::spawn(async move { let snapshot=service.lock().await.wire_status_snapshot().await; match serde_json::to_value(snapshot) { Ok(snapshot) => { if sender.send(snapshot).is_err() { /* Requesting connection was disposed. */ } }, Err(error) => maho_ext_api::diagnostic(&format!("MCP inventory serialization failed: {error}")) } }); }
     }));
     let inventory=Arc::new(std::sync::Mutex::new(Some(inventory)));
     let registrar:Arc<dyn crate::tool_registrar::McpToolRegistrar>=Arc::new(crate::tool_registrar::SessionMcpToolRegistrar::from_api(api));
