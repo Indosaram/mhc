@@ -49,8 +49,51 @@ impl ServerCore {
         if self.connections.remove(id).is_some() && let Some(on_disconnect) = &self.on_disconnect { on_disconnect(id.to_owned()); }
     }
     pub fn get_connection(&self, id: &str) -> Option<Arc<CoreConnection>> { self.connections.get(id).cloned() }
+    /// Owned snapshot of everything one `receive` needs, so a transport can release the core lock
+    /// before dispatching (pinned per-message dispatch holds no shared lock across the handler).
+    pub fn receive_context(&self, id: &str) -> Option<ReceiveContext> {
+        Some(ReceiveContext {
+            id: id.to_owned(), connection: self.connections.get(id)?.clone(), registry: self.registry.clone(),
+            agent_home: self.agent_home.clone(), version: self.version.clone(), os_type: self.os_type.clone(),
+            os_release: self.os_release.clone(), arch: self.arch.clone(), platform: self.platform.clone(),
+            approvals: self.approvals.clone(), user_input: self.user_input.clone(),
+        })
+    }
     pub async fn receive(&self, id: &str, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
-        let Some(connection) = self.connections.get(id) else { return Ok(()); };
+        match self.receive_context(id) { Some(context) => context.receive(envelope).await, None => Ok(()) }
+    }
+    pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
+        let Some(connection) = self.connections.get(id) else { return Ok(false); };
+        if !connection.initialized.lock().await.can_deliver_notification(notification["method"].as_str().unwrap_or_default()) { return Ok(false); }
+        (connection.send)(populate_outbound_notification(notification, now)).await?;
+        Ok(true)
+    }
+    pub async fn broadcast_notification(&self, notification: Value, now: u64) -> Result<usize, errors::JsonRpcError> {
+        let mut delivered = 0;
+        for id in self.connections.keys() {
+            if self.send_notification_to_connection(id, notification.clone(), now).await? { delivered += 1; }
+        }
+        Ok(delivered)
+    }
+}
+/// See [`ServerCore::receive_context`].
+pub struct ReceiveContext {
+    id: String,
+    connection: Arc<CoreConnection>,
+    registry: MethodRegistry,
+    agent_home: String,
+    version: String,
+    os_type: String,
+    os_release: String,
+    arch: String,
+    platform: String,
+    approvals: Option<Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>>,
+    user_input: Option<Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>>,
+}
+impl ReceiveContext {
+    pub async fn receive(&self, envelope: ClassifiedIncoming) -> Result<(), errors::JsonRpcError> {
+        let id = self.id.as_str();
+        let connection = &self.connection;
         if connection.initialized.lock().await.state.is_some() && let Some(input) = &self.user_input {
             let routed = match &envelope {
                 ClassifiedIncoming::Notification(message) if message["method"] == "item/tool/userInputProgress" => Some(input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).progress(&message["params"])),
@@ -99,18 +142,5 @@ impl ServerCore {
             connection.finish_response().await;
         }
         Ok(())
-    }
-    pub async fn send_notification_to_connection(&self, id: &str, notification: Value, now: u64) -> Result<bool, errors::JsonRpcError> {
-        let Some(connection) = self.connections.get(id) else { return Ok(false); };
-        if !connection.initialized.lock().await.can_deliver_notification(notification["method"].as_str().unwrap_or_default()) { return Ok(false); }
-        (connection.send)(populate_outbound_notification(notification, now)).await?;
-        Ok(true)
-    }
-    pub async fn broadcast_notification(&self, notification: Value, now: u64) -> Result<usize, errors::JsonRpcError> {
-        let mut delivered = 0;
-        for id in self.connections.keys() {
-            if self.send_notification_to_connection(id, notification.clone(), now).await? { delivered += 1; }
-        }
-        Ok(delivered)
     }
 }
