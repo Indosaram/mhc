@@ -189,7 +189,72 @@ mod platform {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod platform {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, INVALID_HANDLE_VALUE, STILL_ACTIVE,
+    };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcessId, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    /// The errno Node's win32 `process.kill(pid, 0)` reports for an exited or unknown pid.
+    pub const ESRCH: i32 = 3;
+
+    /// libuv's win32 signal-0 probe: `OpenProcess`, then `GetExitCodeProcess`; a pid naming no
+    /// process or an exited process is `ESRCH`, any other open failure is reported as its code.
+    pub fn probe(pid: u32) -> Option<i32> {
+        // SAFETY: OpenProcess takes plain integers; a null handle is checked before any use.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // SAFETY: GetLastError only reads the calling thread's last-error value.
+            let error = unsafe { GetLastError() };
+            return Some(if error == ERROR_INVALID_PARAMETER { ESRCH } else { i32::try_from(error).unwrap_or(i32::MAX) });
+        }
+        let mut exit_code = 0u32;
+        // SAFETY: `handle` is a live process handle and `exit_code` outlives the call.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+        // SAFETY: `handle` came from OpenProcess and is closed exactly once.
+        unsafe { CloseHandle(handle) };
+        if queried != 0 && exit_code != STILL_ACTIVE as u32 {
+            return Some(ESRCH);
+        }
+        None
+    }
+
+    /// Finds the current process's parent in a ToolHelp process snapshot; 0 when unavailable.
+    pub fn parent_process_id() -> u32 {
+        // SAFETY: GetCurrentProcessId has no preconditions.
+        let current = unsafe { GetCurrentProcessId() };
+        // SAFETY: a process snapshot takes plain integers; the handle is checked before use.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return 0;
+        }
+        // SAFETY: PROCESSENTRY32W is plain data; all-zero is a valid value before dwSize is set.
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap_or(0);
+        let mut parent = 0;
+        // SAFETY: `snapshot` is a live snapshot handle and `entry` is sized via dwSize.
+        let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while more {
+            if entry.th32ProcessID == current {
+                parent = entry.th32ParentProcessID;
+                break;
+            }
+            // SAFETY: as above.
+            more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        // SAFETY: `snapshot` came from CreateToolhelp32Snapshot and is closed exactly once.
+        unsafe { CloseHandle(snapshot) };
+        parent
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod platform {
     pub const ESRCH: i32 = 3;
 

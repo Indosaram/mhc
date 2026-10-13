@@ -149,17 +149,18 @@ async fn given_a_matching_interactive_prompt_when_the_mass_ulw_pointer_is_inject
 }
 
 #[tokio::test]
-async fn given_a_matching_interactive_prompt_when_ulw_loop_and_mass_ulw_pointers_are_injected_then_only_ulw_loop_teaches_the_eval_sdk_import() {
+async fn given_a_matching_interactive_prompt_when_ulw_loop_and_mass_ulw_pointers_are_injected_then_only_ulw_loop_teaches_the_native_cli() {
     let harness = setup_harness("/skills/");
     let _ = dispatch_input(&harness, "mass ulw-loop ship the refactor", InputSource::Interactive, None, "test-session").await;
 
     let mass_content = injected_content(&harness, MASS_ULW_CUSTOM_TYPE);
     let loop_content = injected_content(&harness, ULW_LOOP_CUSTOM_TYPE);
 
-    assert!(loop_content.contains("await import(`${env(\"OMO_AGENT_TOOLKIT_SDK_ROOT\")}/sdk.js`)"));
+    assert!(loop_content.contains("`mhc ulw-loop <subcommand> --json`"));
+    assert!(!loop_content.contains("OMO_AGENT_TOOLKIT_SDK_ROOT"));
     assert!(!loop_content.contains("tool.omo_agent_toolkit"));
     assert!(!loop_content.contains("runtime/agent-toolkit"));
-    assert!(!mass_content.contains("OMO_AGENT_TOOLKIT_SDK_ROOT"));
+    assert!(!mass_content.contains("mhc ulw-loop"));
 }
 
 #[tokio::test]
