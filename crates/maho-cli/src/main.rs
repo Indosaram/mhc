@@ -235,16 +235,23 @@ fn run() -> Result<(), String> {
     if parsed.list_tips { return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        // senpi main.ts:1030: migrations run before any runtime service, model listing included.
+        maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), &agent).map_err(|error| error.to_string())?;
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
-        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let settings = maho_core::settings_manager::SettingsManager::create(&cwd.to_string_lossy(), &agent.to_string_lossy(), &maho_core::config::home_dir(), true);
+        let auth_errors = runtime.credentials.errors();
         let loaded = maho_cli::cli::extension_registry::load_native_extensions(&cwd, Default::default());
         let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
         let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
-        for error in &loaded.errors { eprintln!("{}: {}", error.extension_path, error.error); }
-        if runtime.get_error().is_some() { eprintln!("Warning: errors loading models.json"); }
+        // senpi main.ts:1084-1089 `reportDiagnostics`: service, settings and auth diagnostics.
+        for error in &loaded.errors { eprintln!("Warning: Failed to load extension \"{}\": {}", error.extension_path, error.error); }
+        for diagnostic in maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "model listing") { eprintln!("Warning: {}", diagnostic.message); }
+        for error in auth_errors { eprintln!("Warning: (model listing, auth storage) {error}"); }
+        if let Some(error) = runtime.get_error() { eprintln!("Warning: errors loading models.json:\n{error}"); }
         return output(&format!("{}\n", maho_cli::cli::list_models::list_models(&runtime, Some(search))));
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
