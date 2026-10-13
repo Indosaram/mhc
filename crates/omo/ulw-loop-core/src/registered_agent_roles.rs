@@ -52,7 +52,8 @@ fn codex_dirs(cwd: &Path, codex_home: Option<&str>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let home = match codex_home {
         Some(h) if !h.trim().is_empty() => PathBuf::from(h.trim()),
-        _ => std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home")).join(".codex"),
+        // os.homedir(): HOME on unix, USERPROFILE on Windows.
+        _ => std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home")).join(".codex"),
     };
     dirs.push(home);
 
