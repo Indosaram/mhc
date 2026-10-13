@@ -1,6 +1,5 @@
 pub use maho_core::config::*;
 use std::path::Path;
-pub fn get_bin_dir() -> String { Path::new(&get_agent_dir()).join("bin").to_string_lossy().into_owned() }
 pub fn get_tools_dir() -> String { Path::new(&get_agent_dir()).join("tools").to_string_lossy().into_owned() }
 pub fn get_prompts_dir() -> String { Path::new(&get_agent_dir()).join("prompts").to_string_lossy().into_owned() }
 pub fn get_custom_themes_dir() -> String { Path::new(&get_agent_dir()).join("themes").to_string_lossy().into_owned() }

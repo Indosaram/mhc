@@ -27,6 +27,12 @@ async fn executor_sanitizes_and_flushes_split_utf8() {
 }
 
 #[tokio::test]
+async fn executor_strips_every_ansi_sequence_like_upstream() {
+    let result = execute_bash_with_operations("ignored", Path::new("."), &Chunks(vec!["\x1bcdone \u{9b}31mred\x1b]52;c;data\x07!".as_bytes().to_vec()]), BashExecutorOptions::default()).await.unwrap();
+    assert_eq!(result.output, "done red!");
+}
+
+#[tokio::test]
 async fn shell_flushes_final_update_and_full_spill() {
     let data = "x".repeat(60_000);
     let updates = Arc::new(Mutex::new(Vec::new()));
