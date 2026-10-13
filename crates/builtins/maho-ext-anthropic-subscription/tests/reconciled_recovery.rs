@@ -499,6 +499,12 @@ fn continuity_retry_checkpoint_requires_matching_prefix_and_fingerprint_drift_re
     let mut binding=continuity_snapshot();binding.sent_prefix_hash=Some(prefix_digest(&hashes,2));binding.unanswered_turn_digest=Some(prefix_digest(&hashes,3));
     let mut request=continuity_input(&hashes);request.binding=Some(&binding);
     assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a2".into(),from:2,reason:"timeout_retry".into()});
+    // Pinned decideFromBinding checks the retry checkpoint before prompt/toolset drift, so a
+    // same-turn retry with drifted tools still forks at the checkpoint; with no checkpoint, the
+    // matching prefix reattaches carrying the drift reason.
+    let mut request=continuity_input(&hashes);request.binding=Some(&binding);request.toolset_hash="new-tools";
+    assert_eq!(decide(&request),Decision::Fork {sdk_session_id:"sdk".into(),at_uuid:"a2".into(),from:2,reason:"timeout_retry".into()});
+    binding.unanswered_turn_digest=None;
     let mut request=continuity_input(&hashes);request.binding=Some(&binding);request.toolset_hash="new-tools";
     assert_eq!(decide(&request),Decision::Reattach {sdk_session_id:"sdk".into(),from:2,reason:"toolset_changed".into()});
 }
