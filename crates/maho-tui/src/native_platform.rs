@@ -3,7 +3,8 @@
 //! senpi loads an optional prebuilt Node addon (`native/<platform>/prebuilds/...node`) for the
 //! clipboard, Windows VT input and native modifier state; when no addon loads, every caller falls
 //! back (no clipboard helper, no native Shift detection). maho has no Node addons, so the helper
-//! is a registered Rust trait object and none is registered by default, which reproduces senpi's
+//! is a registered Rust trait object; [`register_builtin_native_platform_helper`] installs the
+//! macOS/Windows ports at startup, and an unregistered platform reproduces senpi's
 //! "helper unavailable" path. See parity.d/6.md.
 
 use std::path::{Path, PathBuf};
@@ -97,6 +98,22 @@ pub fn get_native_platform_helper() -> Option<Helper> {
         return None;
     }
     load_native_platform_helper(platform, "")
+}
+
+/// Registers this platform's built-in helper (the Rust port of senpi's prebuilt
+/// `native/<platform>` addon) under the path senpi loads it from. Call once at startup; Linux
+/// keeps senpi's command-line clipboard tools and registers nothing.
+pub fn register_builtin_native_platform_helper() {
+    #[cfg(target_os = "macos")]
+    register_native_platform_helper(
+        native_path("darwin", node_arch(), ""),
+        Arc::new(crate::native_platform_darwin::DarwinPlatformHelper),
+    );
+    #[cfg(windows)]
+    register_native_platform_helper(
+        native_path("win32", node_arch(), ""),
+        Arc::new(crate::native_platform_win32::Win32PlatformHelper),
+    );
 }
 
 /// Loads a clipboard helper without opening the display until a read is requested.

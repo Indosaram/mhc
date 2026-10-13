@@ -21,6 +21,10 @@ pub mod mux; // todo 6
 pub mod native_modifiers; // todo 6
 pub mod native_module_path; // todo 6
 pub mod native_platform; // todo 6
+#[cfg(target_os = "macos")]
+pub mod native_platform_darwin;
+#[cfg(windows)]
+pub mod native_platform_win32;
 pub mod paste_markers; // todo 8
 pub mod process_env; // todo 6
 pub mod process_stdio; // todo 6

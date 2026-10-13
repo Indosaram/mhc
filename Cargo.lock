@@ -5288,18 +5288,26 @@ dependencies = [
 name = "maho-tui"
 version = "0.0.0"
 dependencies = [
+ "clipboard-win",
  "crossterm",
+ "crossterm_winapi",
  "dirs",
  "fancy-regex",
  "icu_segmenter",
  "indexmap",
  "jiff",
  "maho-test-support",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "png 0.18.1",
  "regex",
  "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
+ "tiff",
  "unicode-segmentation",
  "unicode-width",
 ]
