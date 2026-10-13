@@ -1043,7 +1043,7 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     expand(pattern, 0, true)
 }
 
-fn minimatch_path(candidate: &str, pattern: &str) -> bool {
+pub(crate) fn minimatch_path(candidate: &str, pattern: &str) -> bool {
     fn segments(candidate: &[&str], pattern: &[&str]) -> bool {
         let Some((part, rest)) = pattern.split_first() else { return candidate.is_empty(); };
         if *part == "**" {
