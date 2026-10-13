@@ -327,6 +327,23 @@ fn footer_factory_receives_tui_and_readonly_footer_data() {
 }
 
 #[test]
+fn theme_guest_foreground_bold_and_color_mode_prefixes() {
+    let theme = Theme { colors: [("accent".into(), "\x1b[38;2;1;2;3m".into()), ("muted".into(), "\x1b[38;5;8m".into())].into_iter().collect(), ..Default::default() };
+    assert_eq!(theme.fg("accent", "x"), "\x1b[38;2;1;2;3mx\x1b[39m");
+    assert_eq!(theme.fg("missing", "x"), "\x1b[39mx\x1b[39m");
+    let only_256 = Theme { colors: [("accent".into(), "\x1b[38;5;8m".into())].into_iter().collect(), ..Default::default() };
+    assert_eq!(only_256.fg("accent", "x"), "\x1b[38;5;8mx\x1b[39m");
+}
+
+#[test]
+fn theme_guest_background_keys_and_49_reset() {
+    let theme = Theme { backgrounds: [("selectedBg".into(), "\x1b[48;5;236m".into())].into_iter().collect(), ..Default::default() };
+    assert_eq!(theme.bg("selectedBg", "x"), "\x1b[48;5;236mx\x1b[49m");
+    assert_eq!(theme.bg("ToolErrorBg", "x"), "\x1b[49mx\x1b[49m");
+    assert_eq!(theme.bg("selectedBg", &theme.fg("text", "status")), "\x1b[48;5;236m\x1b[39mstatus\x1b[39m\x1b[49m");
+}
+
+#[test]
 fn provider_extra_body_rejects_nonobjects_before_queuing_registration() {
     let runtime = ExtensionRuntime::default();
     let api = api(runtime.clone());

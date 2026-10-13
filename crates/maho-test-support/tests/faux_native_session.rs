@@ -41,6 +41,44 @@ async fn native_session_drives_prompt_reply_and_durable_entries() {
 }
 
 #[tokio::test]
+async fn native_session_preserves_a_provider_refusal() {
+    let session = FauxSession::new(FauxScript { name: "native-refusal".into(), prompt: "hi".into(),
+        responses: vec![FauxResponse { content: "refused".into(), stop_reason: "error".into() }] });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native()).await
+        .expect("native turn settles").expect("native session result");
+    assert_eq!(result["messages"].as_array().expect("messages").last().expect("final message")["stopReason"], "error");
+}
+
+#[tokio::test]
+async fn native_session_runs_a_native_extension_before_prompt_completion() {
+    let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let captured = observed.clone();
+    let extension = maho_ext_host::loader::NativeExtensionFactory {
+        path: "<session-start-probe>".into(), source_info: Default::default(),
+        extension: Box::new(SessionStartProbe(captured)),
+    };
+    let session = FauxSession::new(FauxScript {
+        name: "native-extension-fallback".into(), prompt: "hi".into(),
+        responses: vec![FauxResponse { content: "native extension turn".into(), stop_reason: "stop".into() }],
+    }).with_native_extension(extension);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), session.run_native()).await
+        .expect("native turn settles").expect("native session result");
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(result["messages"].as_array().expect("messages").last().expect("assistant")["content"][0]["text"], "native extension turn");
+}
+
+struct SessionStartProbe(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl maho_ext_api::Extension for SessionStartProbe {
+    fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        let observed = self.0.clone();
+        api.on(maho_ext_api::EventKind::SessionStart, std::sync::Arc::new(move |_, _| {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
+    }
+}
+
+#[tokio::test]
 async fn native_handle_drives_a_prompt_and_closes_cleanly() {
     let session = FauxSession::new(FauxScript {
         name: "native-handle".to_owned(),

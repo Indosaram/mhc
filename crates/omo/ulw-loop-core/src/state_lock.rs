@@ -57,25 +57,17 @@ fn is_pid_alive(pid: u32) -> bool {
     {
         Path::new(&format!("/proc/{pid}")).exists()
     }
+    // Other unix kernels have no /proc: `kill(pid, 0)` answers liveness without signalling, and
+    // EPERM means the pid exists under another user. A pid that is not a valid positive pid_t is
+    // never probed (`kill(-1, 0)` would ask about every process).
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let Ok(pid) = i32::try_from(pid) else {
+        let Some(pid) = i32::try_from(pid).ok().and_then(rustix::process::Pid::from_raw) else {
             return false;
         };
-        if pid == 0 {
-            return true;
-        }
-
-        match std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .output()
-        {
-            Ok(output) => {
-                output.status.success()
-                    || String::from_utf8_lossy(&output.stderr).contains("Operation not permitted")
-            }
-            Err(_) => true,
+        match rustix::process::test_kill_process(pid) {
+            Ok(()) => true,
+            Err(error) => error == rustix::io::Errno::PERM,
         }
     }
     #[cfg(not(unix))]

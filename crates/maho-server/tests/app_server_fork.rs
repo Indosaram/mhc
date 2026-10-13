@@ -73,6 +73,7 @@ async fn fork_copies_history_into_a_new_persisted_session_referencing_the_source
     harness.write_source("source-thread");
     let response = harness.call(json!({"id":2,"method":"thread/fork","params":{"threadId":"source-thread"}})).await;
     assert_eq!(response["id"],2);
+    assert_eq!(response["result"]["approvalPolicy"],"never");
     assert_eq!(response["result"]["thread"]["forkedFromId"],"source-thread");
     let forked_id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
     assert_ne!(forked_id,"source-thread");

@@ -8,9 +8,17 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::{ColorMode, palette::rgb_to_256};
 
-const SPARKLE_CELLS_PER_SECOND: f64 = 36.0;
-const SPARKLE_TRAIL_CELLS: f64 = 14.0;
-const GRADIENT_DRIFT_PERIOD_MS: f64 = 4000.0;
+const LOOP_SECONDS: f64 = 3.0;
+const BANDS: f64 = 2.0;
+const HUE_LOOP_SECONDS: f64 = 6.0;
+const BASE_LEVEL: f64 = 0.42;
+const PEAK_LEVEL: f64 = 0.95;
+const PALETTE: [(f64, [f64; 3]); 4] = [
+    (0.00, [64.0, 220.0, 230.0]),
+    (0.33, [150.0, 110.0, 255.0]),
+    (0.66, [240.0, 90.0, 220.0]),
+    (1.00, [64.0, 220.0, 230.0]),
+];
 
 pub fn has_ulw_keyword(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
@@ -30,30 +38,36 @@ pub fn apply_neon_border(lines: &mut [String], now_ms: f64, mode: ColorMode) -> 
     if top_cells.is_empty() || bottom_cells.is_empty() {
         return false;
     }
-    let perimeter = top_cells.len() + bottom_cells.len();
-    let top_len = top_cells.len();
-    let bottom_len = bottom_cells.len();
-    lines[0] = paint(&top_cells, |column| column, perimeter, now_ms, mode);
+    let (top_len, bottom_len) = (top_cells.len(), bottom_cells.len());
+    let perimeter = (top_len + bottom_len) as f64;
+    let seconds = now_ms.max(0.0) / 1000.0;
+    lines[0] = paint(&top_cells, |column| column as f64 / perimeter, seconds, mode);
     // Clockwise loop: top border left->right, then bottom border right->left.
-    lines[bottom] = paint(&bottom_cells, |column| top_len + (bottom_len - 1 - column), perimeter, now_ms, mode);
+    lines[bottom] = paint(&bottom_cells, |column| (top_len + (bottom_len - 1 - column)) as f64 / perimeter, seconds, mode);
+    if bottom > 1 {
+        color_prompt_glyph(&mut lines[1], flow_color(0.0, seconds), mode);
+    }
     true
 }
 
-fn paint(cells: &[String], loop_index: impl Fn(usize) -> usize, perimeter: usize, now_ms: f64, mode: ColorMode) -> String {
+fn paint(cells: &[String], position: impl Fn(usize) -> f64, seconds: f64, mode: ColorMode) -> String {
     let mut out = String::new();
     for (column, cell) in cells.iter().enumerate() {
-        let (rgb, bold) = neon_cell(loop_index(column), perimeter, now_ms);
-        if bold {
-            out.push_str("\x1b[1m");
-        }
-        out.push_str(&fg(rgb, mode));
+        out.push_str(&fg(flow_color(position(column), seconds), mode));
         out.push_str(cell);
-        if bold {
-            out.push_str("\x1b[22m");
-        }
     }
     out.push_str("\x1b[39m");
     out
+}
+
+fn color_prompt_glyph(line: &mut String, rgb: [u8; 3], mode: ColorMode) {
+    let Some(position) = line.find('❯') else { return };
+    if !strip_terminal_sequences(&line[..position]).is_empty() {
+        return;
+    }
+    let rest = &line[position + '❯'.len_utf8()..];
+    let rest = rest.strip_prefix("\x1b[39m").unwrap_or(rest);
+    *line = format!("\x1b[1m{}❯\x1b[22m\x1b[39m{rest}", fg(rgb, mode));
 }
 
 fn fg([r, g, b]: [u8; 3], mode: ColorMode) -> String {
@@ -63,43 +77,39 @@ fn fg([r, g, b]: [u8; 3], mode: ColorMode) -> String {
     }
 }
 
-pub fn neon_cell(index: usize, perimeter: usize, now_ms: f64) -> ([u8; 3], bool) {
-    let perimeter_f = perimeter.max(1) as f64;
-    let position = index as f64;
-    let head = (now_ms.max(0.0) / 1000.0 * SPARKLE_CELLS_PER_SECOND).rem_euclid(perimeter_f);
-    // Distance behind the nearer of two heads half a loop apart.
-    let behind = [head, (head + perimeter_f / 2.0).rem_euclid(perimeter_f)]
-        .into_iter()
-        .map(|head| (head - position).rem_euclid(perimeter_f))
-        .fold(f64::INFINITY, f64::min);
-    let glow = if behind < SPARKLE_TRAIL_CELLS { 1.0 - behind / SPARKLE_TRAIL_CELLS } else { 0.0 };
-    let phase = position / perimeter_f + now_ms.max(0.0) / GRADIENT_DRIFT_PERIOD_MS;
-    let hue = 185.0 + 125.0 * (0.5 + 0.5 * (phase * std::f64::consts::TAU).sin());
-    let saturation = 0.9 - 0.75 * glow * glow;
-    let value = 0.55 + 0.45 * glow;
-    (hsv_to_rgb(hue, saturation, value), behind < 1.0)
+/// Color at loop position `s` (0..1, clockwise from the top-left corner) after `seconds`: wide soft
+/// brightness bands travel clockwise while the cyan-violet-magenta palette drifts more slowly.
+pub fn flow_color(s: f64, seconds: f64) -> [u8; 3] {
+    let soft = band_glow(s, seconds);
+    let level = BASE_LEVEL + (PEAK_LEVEL - BASE_LEVEL) * soft;
+    let lift = 0.18 * soft * soft;
+    palette(s - seconds / HUE_LOOP_SECONDS).map(|c| ((c + (255.0 - c) * lift) * level).round().clamp(0.0, 255.0) as u8)
 }
 
-fn hsv_to_rgb(hue: f64, saturation: f64, value: f64) -> [u8; 3] {
-    let chroma = value * saturation;
-    let sector = (hue.rem_euclid(360.0)) / 60.0;
-    let x = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
-    let (r, g, b) = match sector as u8 {
-        0 => (chroma, x, 0.0),
-        1 => (x, chroma, 0.0),
-        2 => (0.0, chroma, x),
-        3 => (0.0, x, chroma),
-        4 => (x, 0.0, chroma),
-        _ => (chroma, 0.0, x),
-    };
-    let m = value - chroma;
-    let channel = |c: f64| ((c + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-    [channel(r), channel(g), channel(b)]
+pub fn band_glow(s: f64, seconds: f64) -> f64 {
+    (0.5 + 0.5 * (std::f64::consts::TAU * (s * BANDS - seconds / LOOP_SECONDS)).cos()).powf(1.6)
+}
+
+fn palette(u: f64) -> [f64; 3] {
+    let u = u.rem_euclid(1.0);
+    for pair in PALETTE.windows(2) {
+        let ((a, from), (b, to)) = (pair[0], pair[1]);
+        if u <= b {
+            let t = (u - a) / (b - a);
+            let smooth = t * t * (3.0 - 2.0 * t);
+            return [0, 1, 2].map(|i| from[i] + (to[i] - from[i]) * smooth);
+        }
+    }
+    PALETTE[0].1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn brightness(rgb: [u8; 3]) -> u32 {
+        rgb.iter().map(|c| u32::from(*c)).sum()
+    }
 
     #[test]
     fn detects_ulw_family_keywords_at_word_starts() {
@@ -112,13 +122,14 @@ mod tests {
     }
 
     #[test]
-    fn recolors_only_the_two_borders_and_keeps_their_glyphs() {
-        let mut lines = vec!["\x1b[38;5;8m──────────\x1b[39m".to_owned(), "❯ ulw hi  ".to_owned(), "\x1b[38;5;8m──────────\x1b[39m".to_owned(), "  → /ulw-loop".to_owned()];
+    fn recolors_borders_and_prompt_without_changing_glyphs() {
+        let mut lines = vec!["\x1b[38;5;8m".to_owned() + &"─".repeat(40) + "\x1b[39m", "\x1b[38;2;1;2;3m❯\x1b[39m ulw hi".to_owned(), "─".repeat(40), "  → /ulw-loop".to_owned()];
         assert!(apply_neon_border(&mut lines, 0.0, ColorMode::Truecolor));
-        assert_eq!(strip_terminal_sequences(&lines[0]), "─".repeat(10));
-        assert_eq!(strip_terminal_sequences(&lines[2]), "─".repeat(10));
+        assert_eq!(strip_terminal_sequences(&lines[0]), "─".repeat(40));
+        assert_eq!(strip_terminal_sequences(&lines[2]), "─".repeat(40));
         assert!(lines[0].contains("\x1b[38;2;") && !lines[0].contains("\x1b[38;5;8m"));
-        assert_eq!(lines[1], "❯ ulw hi  ");
+        assert_eq!(strip_terminal_sequences(&lines[1]), "❯ ulw hi");
+        assert!(!lines[1].contains("1;2;3m"));
         assert_eq!(lines[3], "  → /ulw-loop");
     }
 
@@ -129,16 +140,35 @@ mod tests {
         assert_eq!(lines, vec!["────".to_owned(), "❯ ulw".to_owned()]);
     }
 
+    fn glow_peaks(seconds: f64) -> Vec<u32> {
+        let glow = |i: u32| band_glow(f64::from(i % 200) / 200.0, seconds);
+        (0..200).filter(|i| glow(*i) > glow(i + 199) && glow(*i) >= glow(i + 1)).collect()
+    }
+
     #[test]
-    fn sparkle_head_flows_around_the_loop_over_time() {
-        let perimeter = 80;
-        let heads = |now_ms: f64| (0..perimeter).filter(|index| neon_cell(*index, perimeter, now_ms).1).collect::<Vec<_>>();
-        let first = heads(0.0);
-        let later = heads(500.0);
-        assert_eq!(first.len(), 2);
-        assert_eq!(later.len(), 2);
-        assert_ne!(first, later);
-        assert_eq!(later, first.iter().map(|index| (index + 18) % perimeter).collect::<Vec<_>>());
+    fn two_bright_bands_half_a_loop_apart() {
+        let peaks = glow_peaks(0.2);
+        assert_eq!(peaks.len(), 2, "{peaks:?}");
+        assert!((peaks[1] - peaks[0]).abs_diff(100) <= 1, "{peaks:?}");
+    }
+
+    #[test]
+    fn bands_flow_clockwise_and_complete_a_loop_in_three_seconds() {
+        let start = glow_peaks(0.0)[0];
+        let later = glow_peaks(0.3)[0];
+        assert!(later > start, "the band moves clockwise: {start} -> {later}");
+        for s in [0.1, 0.37, 0.8] {
+            assert!((band_glow(s, 0.4) - band_glow(s, 3.4)).abs() < 1e-9, "the brightness wave repeats every 3s at {s}");
+        }
+    }
+
+    #[test]
+    fn whole_border_stays_lit_with_gentle_contrast() {
+        let levels = (0..100).map(|i| brightness(flow_color(f64::from(i) / 100.0, 1.234))).collect::<Vec<_>>();
+        let min = *levels.iter().min().unwrap_or(&0);
+        let max = *levels.iter().max().unwrap_or(&0);
+        assert!(min > 120, "dimmest cell still glows: {min}");
+        assert!(max > min * 2, "a visible band exists: {min}..{max}");
     }
 
     #[test]
