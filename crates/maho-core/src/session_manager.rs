@@ -553,12 +553,23 @@ pub struct SessionManager {
     usage_totals: UsageTotals,
     ownership: Arc<Mutex<SessionOwnership>>,
     writer_token: Arc<SessionWriterToken>,
+    resident_store: crate::session_resident_store::ResidentStringStore,
+    resident_blobs_dir: Arc<Mutex<Option<String>>>,
+    mirror_trimmed: bool,
 }
 
 impl SessionManager {
     fn build(cwd: &str, session_dir: &str, session_file: Option<String>, persist: bool, options: Option<NewSessionOptions>) -> Self {
         let ownership = Arc::new(Mutex::new(SessionOwnership { session_file: None, persisted: persist }));
         let writer_token = Arc::new(SessionWriterToken(Arc::clone(&ownership)));
+        // Lazily resolved: the session id only exists once the header loads or new_session() runs.
+        // Unpersisted sessions disable eviction entirely - dropping strings with no backing would lose them.
+        let resident_blobs_dir: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let provider_slot = Arc::clone(&resident_blobs_dir);
+        let resident_store = crate::session_resident_store::ResidentStringStore::new(crate::session_resident_store::ResidentStringStoreOptions {
+            blobs_dir: Some(Arc::new(move || provider_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())),
+            ..Default::default()
+        });
         let mut manager = Self {
             session_id: String::new(),
             session_file: None,
@@ -575,6 +586,9 @@ impl SessionManager {
             usage_totals: UsageTotals::default(),
             ownership,
             writer_token,
+            resident_store,
+            resident_blobs_dir,
+            mirror_trimmed: false,
         };
         if persist && !manager.session_dir.is_empty() {
             let _ = std::fs::create_dir_all(&manager.session_dir);
@@ -602,6 +616,15 @@ impl SessionManager {
 
     fn sync_session_file_ownership(&self) {
         self.ownership.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_file = self.session_file.clone();
+    }
+
+    fn sync_resident_blobs_dir(&self) {
+        *self.resident_blobs_dir.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = self.blobs_dir();
+    }
+
+    fn externalize_file_entries(&mut self) {
+        let store = self.resident_store.clone();
+        self.file_entries = self.file_entries.iter().map(|entry| store.externalize(entry)).collect();
     }
 
     fn blobs_dir(&self) -> Option<String> {
@@ -676,6 +699,7 @@ impl SessionManager {
     }
 
     pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Self {
+        crate::session_write_reservation::reserve_session_write(&resolve_path(path, path, &PathInputOptions::default()));
         let entries = load_entries_from_file(path);
         let header_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(str::to_owned);
         let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| ".".to_owned());
@@ -690,9 +714,11 @@ impl SessionManager {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(create_session_id);
+            manager.sync_resident_blobs_dir();
             if migrate_to_current_version(&mut manager.file_entries) {
                 manager.rewrite_file();
             }
+            manager.externalize_file_entries();
             manager.build_index();
             manager.flushed = true;
         }
@@ -720,6 +746,7 @@ impl SessionManager {
                     manager.new_session(None);
                     manager.file_entries.extend(entries);
                 }
+                manager.externalize_file_entries();
                 manager.build_index();
             }
         manager
@@ -738,8 +765,13 @@ impl SessionManager {
     }
 
     pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) {
+        if self.persist {
+            crate::session_write_reservation::reserve_session_write(&resolve_path(session_file, session_file, &PathInputOptions::default()));
+        }
         self.session_file = Some(resolve_path(session_file, session_file, &PathInputOptions::default()));
         self.sync_session_file_ownership();
+        self.mirror_trimmed = false;
+        self.resident_store.clear();
         let Some(current) = self.session_file.clone() else { return };
         if Path::new(&current).exists() {
             let entries = load_entries_from_file(&current);
@@ -762,9 +794,14 @@ impl SessionManager {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(create_session_id);
+            self.sync_resident_blobs_dir();
+            // Blobs left under this id by a process that is gone are a disposable cache: the JSONL
+            // is the authority for every entry, so clearing them bounds the directory to one process lifetime.
+            self.release_blobs_dir_unless_shared();
             if migrate_to_current_version(&mut self.file_entries) {
                 self.rewrite_file();
             }
+            self.externalize_file_entries();
             self.build_index();
             self.flushed = true;
         } else {
@@ -781,8 +818,9 @@ impl SessionManager {
         let timestamp = self.reset_to_new_session(options);
         if self.persist {
             let file_timestamp = timestamp.replace([':', '.'], "-");
-            let path = Path::new(&self.session_dir).join(format!("{file_timestamp}_{}.jsonl", self.session_id));
-            self.session_file = Some(path.to_string_lossy().into_owned());
+            let path = Path::new(&self.session_dir).join(format!("{file_timestamp}_{}.jsonl", self.session_id)).to_string_lossy().into_owned();
+            crate::session_write_reservation::reserve_session_write(&path);
+            self.session_file = Some(path);
         }
         self.sync_session_file_ownership();
         self.session_file.clone()
@@ -792,7 +830,11 @@ impl SessionManager {
         if let Some(id) = options.as_ref().and_then(|options| options.id.as_deref()) {
             assert_valid_session_id(id);
         }
+        // Capture the previous backing before the id changes: clear() below resolves against the
+        // new id, so it would otherwise leak the old session's blob directory on disk.
+        let previous_blobs_dir = self.resident_store.resolved_blobs_dir();
         self.session_id = options.as_ref().and_then(|options| options.id.clone()).unwrap_or_else(create_session_id);
+        self.sync_resident_blobs_dir();
         let timestamp = now_iso_millis();
         let mut header = Map::new();
         header.insert("type".to_owned(), Value::from("session"));
@@ -804,6 +846,11 @@ impl SessionManager {
             header.insert("parentSession".to_owned(), Value::from(parent_session));
         }
         self.file_entries = vec![Value::Object(header)];
+        self.mirror_trimmed = false;
+        self.resident_store.clear();
+        if let Some(previous_blobs_dir) = previous_blobs_dir {
+            let _ = std::fs::remove_dir_all(previous_blobs_dir);
+        }
         self.by_id.clear();
         self.labels_by_id.clear();
         self.label_timestamps_by_id.clear();
@@ -865,6 +912,10 @@ impl SessionManager {
         self.usage_totals.cache_read += usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
         self.usage_totals.cache_write += usage.get("cacheWrite").and_then(Value::as_i64).unwrap_or(0);
         self.usage_totals.cost += usage.get("cost").and_then(|cost| cost.get("total")).and_then(Value::as_f64).unwrap_or(0.0);
+        let cache_read = usage.get("cacheRead").and_then(Value::as_i64).unwrap_or(0);
+        let latest_prompt_tokens = usage.get("input").and_then(Value::as_i64).unwrap_or(0) + cache_read + usage.get("cacheWrite").and_then(Value::as_i64).unwrap_or(0);
+        self.usage_totals.latest_cache_hit_rate =
+            (latest_prompt_tokens > 0).then(|| cache_read as f64 / latest_prompt_tokens as f64 * 100.0);
     }
 
     fn rewrite_file(&mut self) {
@@ -872,9 +923,10 @@ impl SessionManager {
             return;
         }
         let Some(session_file) = self.session_file.clone() else { return };
+        crate::session_write_reservation::reserve_session_write(&session_file);
         let mut content = String::new();
         for entry in &self.file_entries {
-            content.push_str(&serialize_entry(entry));
+            content.push_str(&serialize_entry(&self.resident_store.materialize(entry)));
             content.push('\n');
         }
         let _ = std::fs::write(&session_file, content);
@@ -890,9 +942,10 @@ impl SessionManager {
             entry_type(candidate) == "message"
                 && candidate.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant")
         });
+        let persisted_entry = self.resident_store.materialize(entry);
         if !has_assistant {
             if self.flushed {
-                append_line(&session_file, entry)?;
+                append_line(&session_file, &persisted_entry)?;
             }
             return Ok(());
         }
@@ -900,12 +953,13 @@ impl SessionManager {
             self.rewrite_file();
             self.flushed = true;
         } else {
-            append_line(&session_file, entry)?;
+            append_line(&session_file, &persisted_entry)?;
         }
         Ok(())
     }
 
     fn append_entry(&mut self, entry: Value) {
+        let entry = self.resident_store.externalize(&entry);
         let id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
         self.file_entries.push(entry.clone());
         if let Some(id) = id {
@@ -1037,7 +1091,39 @@ impl SessionManager {
         }
         let entry = Value::Object(entry);
         self.append_entry(entry.clone());
+        self.trim_mirror_after_compaction(&entry);
         entry
+    }
+
+    fn trim_mirror_after_compaction(&mut self, compaction: &Value) {
+        // An unflushed mirror is the only copy of its entries, so it is never trimmed.
+        if !self.persist || !self.flushed {
+            return;
+        }
+        let first_kept_entry_id = compaction.get("firstKeptEntryId").and_then(Value::as_str);
+        let compaction_id = compaction.get("id").and_then(Value::as_str);
+        let position = |id: Option<&str>| self.file_entries.iter().position(|entry| id.is_some() && entry.get("id").and_then(Value::as_str) == id);
+        let (Some(first_kept_index), Some(compaction_index)) = (position(first_kept_entry_id), position(compaction_id)) else { return };
+        if compaction_index < first_kept_index {
+            return;
+        }
+        let header = self.file_entries.iter().find(|entry| entry_type(entry) == "session").cloned();
+        let mut retained: Vec<Value> = self.file_entries[..first_kept_index]
+            .iter()
+            .filter(|entry| !matches!(entry_type(entry), "message" | "session"))
+            .cloned()
+            .chain(self.file_entries[first_kept_index..=compaction_index].iter().cloned())
+            .collect();
+        let mut parent_id = Value::Null;
+        for entry in &mut retained {
+            entry["parentId"] = parent_id;
+            parent_id = entry.get("id").cloned().unwrap_or(Value::Null);
+        }
+        self.resident_store.spill_resident();
+        self.mirror_trimmed = true;
+        self.file_entries = header.into_iter().chain(retained).collect();
+        self.externalize_file_entries();
+        self.build_index();
     }
 
     pub fn append_branch_summary(&mut self, from_id: &str, summary: &str, details: Option<Value>, usage: Option<Value>, from_hook: Option<bool>) -> Value {
@@ -1144,16 +1230,74 @@ impl SessionManager {
         &self.usage_totals
     }
 
+    /// Exposes the resident store for out-of-band string lifecycles such as the agent's runtime
+    /// message state (tokenized while idle, hydrated per turn).
+    pub fn resident_store(&self) -> &crate::session_resident_store::ResidentStringStore {
+        &self.resident_store
+    }
+
+    pub fn resident_store_stats(&self) -> crate::session_resident_store::ResidentStoreStats {
+        self.resident_store.stats()
+    }
+
+    fn load_full_history_entries(&self) -> Vec<Value> {
+        match &self.session_file {
+            Some(session_file) => load_entries_from_file(session_file),
+            None => self.file_entries.clone(),
+        }
+    }
+
+    fn materialize_entry(&self, entry: &Value) -> Value {
+        let missing = std::cell::Cell::new(false);
+        let materialized = self.resident_store.materialize_with(entry, Some(&|_| {
+            missing.set(true);
+            None
+        }));
+        // The resident store is a bounded cache; the JSONL stays authoritative for an evicted blob.
+        if missing.get() && self.session_file.is_some() {
+            let id = entry.get("id");
+            if let Some(persisted) = self.load_full_history_entries().into_iter().find(|candidate| id.is_some() && candidate.get("id") == id) {
+                return persisted;
+            }
+        }
+        materialized
+    }
+
+    /// The resident mirror's entries, materialized; after a compaction trim this is the bounded
+    /// post-compaction view rather than the full history.
+    fn compact_entries(&self) -> Vec<Value> {
+        let entries: Vec<Value> = self.file_entries.iter().filter(|entry| entry_type(entry) != "session").cloned().collect();
+        crate::session_entry_materializer::materialize_session_entries(&entries, &self.resident_store, || self.load_full_history_entries(), |_| {})
+    }
+
     pub fn header(&self) -> Option<Value> {
-        self.file_entries.iter().find(|entry| entry_type(entry) == "session").cloned()
+        self.file_entries.iter().find(|entry| entry_type(entry) == "session").map(|header| self.resident_store.materialize(header))
     }
 
     pub fn entries(&self) -> Vec<Value> {
-        self.file_entries.iter().filter(|entry| entry_type(entry) != "session").cloned().collect()
+        if self.mirror_trimmed && self.session_file.is_some() {
+            return self
+                .load_full_history_entries()
+                .into_iter()
+                .filter(|entry| entry_type(entry) != "session")
+                .map(|entry| self.resident_store.materialize(&entry))
+                .collect();
+        }
+        self.compact_entries()
     }
 
     pub fn entry(&self, id: &str) -> Option<Value> {
-        self.by_id.get(id).and_then(|order| self.file_entries.get(*order)).cloned()
+        if let Some(entry) = self.by_id.get(id).and_then(|order| self.file_entries.get(*order)) {
+            return Some(self.materialize_entry(entry));
+        }
+        if self.mirror_trimmed && self.session_file.is_some() {
+            return self
+                .load_full_history_entries()
+                .into_iter()
+                .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(id))
+                .map(|persisted| self.resident_store.materialize(&persisted));
+        }
+        None
     }
 
     pub fn leaf_entry(&self) -> Option<Value> {
@@ -1218,15 +1362,22 @@ impl SessionManager {
     }
 
     pub fn branch(&self, leaf_id: Option<&str>) -> Vec<Value> {
-        build_session_path(&self.entries(), leaf_id)
+        if let Some(id) = leaf_id
+            && !self.by_id.contains_key(id)
+            && self.mirror_trimmed
+            && self.session_file.is_some()
+        {
+            return build_session_path(&self.entries(), leaf_id);
+        }
+        build_session_path(&self.compact_entries(), leaf_id)
     }
 
     pub fn context_entries(&self, leaf_id: Option<&str>) -> Vec<Value> {
-        build_context_entries(&self.entries(), leaf_id)
+        build_context_entries(&self.compact_entries(), leaf_id)
     }
 
     pub fn build_context(&self, leaf_id: Option<&str>) -> SessionContext {
-        build_session_context(&self.entries(), leaf_id)
+        build_session_context(&self.compact_entries(), leaf_id)
     }
 
     /// senpi `branch(branchFromId)` (a `None` target is `resetLeaf()`): move the leaf so the
@@ -1917,6 +2068,79 @@ mod tests {
         std::fs::write(&path, format!("{}\n", serialize_entry(&json!({ "type": "message", "id": "a" })))).expect("write");
         assert!(load_entries_from_file(&path.to_string_lossy()).is_empty());
         assert!(load_entries_from_file("/definitely/not/here.jsonl").is_empty());
+    }
+
+    #[test]
+    fn usage_totals_track_the_latest_cache_hit_rate() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
+        manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 10, "output": 1, "cacheRead": 30, "cacheWrite": 0 } }));
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, Some(75.0));
+        manager.append_message(json!({ "role": "assistant", "content": [], "usage": { "input": 0, "output": 1, "cacheRead": 0, "cacheWrite": 0 } }));
+        assert_eq!(manager.usage_totals().latest_cache_hit_rate, None);
+    }
+
+    #[test]
+    fn every_persisted_write_path_reserves_the_session_file() {
+        static RESERVED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let _ = crate::session_write_reservation::install_session_write_reservation(|path| {
+            RESERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(path.to_owned());
+        });
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let session_file = manager.session_file().expect("session file").to_owned();
+        let count = |path: &str| RESERVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|reserved| reserved.as_str() == path).count();
+        assert_eq!(count(&session_file), 1);
+        manager.append_message(json!({ "role": "assistant", "content": [] }));
+        let after_flush = count(&session_file);
+        assert!(after_flush >= 3);
+        manager.append_message(json!({ "role": "user", "content": "next", "timestamp": 2 }));
+        assert_eq!(count(&session_file), after_flush + 1);
+        let before_open = count(&session_file);
+        drop(SessionManager::open(&session_file, Some(&dir), None, None));
+        assert!(count(&session_file) >= before_open + 2);
+    }
+
+    #[test]
+    fn large_strings_stay_resident_out_of_line_but_persist_and_read_in_full() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let large = "L".repeat(40 * 1024);
+        let entry = manager.append_message(json!({ "role": "assistant", "content": [{ "type": "text", "text": large }] }));
+        let id = entry["id"].as_str().expect("id").to_owned();
+        let resident = manager.file_entries.last().expect("resident entry");
+        assert!(resident["message"]["content"][0]["text"].as_str().expect("text").starts_with(crate::session_resident_store::RESIDENT_STRING_PREFIX));
+        assert_eq!(manager.entry(&id).expect("entry")["message"]["content"][0]["text"], Value::from(large.clone()));
+        let persisted = load_entries_from_file(manager.session_file().expect("file"));
+        assert_eq!(persisted.last().expect("persisted")["message"]["content"][0]["text"], Value::from(large));
+        assert_eq!(manager.resident_store_stats().blob_count, 1);
+    }
+
+    #[test]
+    fn compaction_trims_the_resident_mirror_while_full_history_stays_readable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        manager.append_message(json!({ "role": "user", "content": "old", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "provider": "p", "model": "m" }));
+        manager.append_thinking_level_change("high", None);
+        let kept = manager.append_message(json!({ "role": "user", "content": "kept", "timestamp": 2 }));
+        let kept_id = kept["id"].as_str().expect("kept id").to_owned();
+        manager.append_compaction("digest", &kept_id, 10, None, None, None);
+        let after = manager.append_message(json!({ "role": "user", "content": "after", "timestamp": 3 }));
+        // Pre-compaction messages leave the mirror; non-message settings entries stay.
+        assert_eq!(manager.file_entries.len(), 5);
+        assert_eq!(manager.entries().len(), 6);
+        let first_id = manager.entries()[0]["id"].as_str().expect("first id").to_owned();
+        assert_eq!(manager.entry(&first_id).expect("full-history entry")["message"]["content"], "old");
+        let context = manager.build_context(after["id"].as_str());
+        assert_eq!(context.messages.len(), 3);
+        assert_eq!(context.thinking_level, "high");
+        manager.set_leaf(Some(&first_id));
+        assert_eq!(manager.leaf_id(), Some(first_id.as_str()));
+        assert_eq!(manager.file_entries.len(), 7);
     }
 
     #[test]
