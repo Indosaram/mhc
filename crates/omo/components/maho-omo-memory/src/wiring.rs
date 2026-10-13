@@ -42,6 +42,11 @@ impl MemoryWiring{
             clear_status:std::sync::Arc::new(|context|context.ui.set_status(crate::status::MEMORY_STATUS_KEY,None)),warn:options.warn.clone(),
         },register_static)?;
         if !registered{return Ok(false);}
+        // Pull side of the RPC bridge (pin `wiring.ts:111` registerRpc in registerStatic).
+        let rpc_component=component.clone();let rpc_now=options.now.clone();
+        wiring.try_lock().map_err(|error|format!("memory wiring locked during registration: {error}"))?.reflection_live.register_rpc(api,std::sync::Arc::new(move||{
+            rpc_component.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().filter(|(_,state)|state.enabled).filter_map(|(session,state)|state.context.clone().map(|context|(session.clone(),context))).collect()
+        }),std::sync::Arc::new(move||rpc_now() as i64)).map_err(|error|error.to_string())?;
         let now=options.now;let warn=options.warn;
         api.on(maho_ext_api::EventKind::AgentSettled,std::sync::Arc::new(move|_,context|{
             let wiring=wiring.clone();let api=handle.clone();let now=now.clone();let warn=warn.clone();
