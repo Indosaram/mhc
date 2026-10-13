@@ -13,6 +13,26 @@ pub fn extension_theme(theme: &crate::theme::Theme) -> maho_ext_api::Theme {
     }
 }
 
+/// The inverse of [`extension_theme`]: rebuild a native theme from the ANSI SGR prefixes an
+/// extension theme carries (`38;2;r;g;b` -> hex, `38;5;n` -> index, `39`/`49` -> terminal default).
+pub fn theme_from_extension(theme: &maho_ext_api::Theme, mode: crate::theme::ColorMode) -> Result<crate::theme::Theme, crate::theme::theme_json::ThemeError> {
+    use crate::theme::theme_json::ColorValue;
+    let parse = |prefix: &str| -> Option<ColorValue> {
+        let body = prefix.strip_prefix("\u{1b}[")?.strip_suffix('m')?;
+        let parts: Vec<u8> = body.split(';').map(str::parse).collect::<Result<_, _>>().ok()?;
+        match parts.as_slice() {
+            [38 | 48, 2, r, g, b] => Some(ColorValue::Text(format!("#{r:02x}{g:02x}{b:02x}"))),
+            [38 | 48, 5, index] => Some(ColorValue::Index(*index)),
+            [39] | [49] => Some(ColorValue::Text(String::new())),
+            _ => None,
+        }
+    };
+    let colors = theme.colors.iter().chain(theme.backgrounds.iter())
+        .filter_map(|(key, prefix)| parse(prefix).map(|value| (key.clone(), value))).collect();
+    let json = crate::theme::theme_json::ThemeJson { name: theme.name.clone().unwrap_or_else(|| "<in-memory>".into()), vars: BTreeMap::new(), colors, export_colors: BTreeMap::new() };
+    crate::theme::Theme::from_json(json, mode)
+}
+
 pub enum UiRequest {
     WidgetFrame,
     Select { title: String, options: Vec<String>, timeout_ms: Option<u64>, reply: tokio::sync::oneshot::Sender<Option<String>> },
@@ -26,6 +46,8 @@ pub enum UiRequest {
     FooterFactory(Option<FooterComponentFactory>),
     CustomFactory(CustomComponentFactory, CustomUiFactoryOptions, tokio::sync::oneshot::Sender<Result<serde_json::Value, ExtensionFailure>>),
     Title(String),
+    /// senpi `setThemeInstance`: apply an in-memory theme handed over by an extension.
+    ThemeInstance(maho_ext_api::Theme),
     Paste(String),
     EditorText(String),
     WorkingMessage(Option<String>),
@@ -49,6 +71,8 @@ pub struct InteractiveExtensionUi {
     pub tools_expanded: std::sync::atomic::AtomicBool,
     pub editor_factory: Mutex<Option<EditorFactory>>,
     pub theme_directory: Mutex<std::path::PathBuf>,
+    /// senpi `getThemesDir()`: the shipped builtin theme directory, reported as builtin theme paths.
+    pub builtin_theme_directory: Mutex<Option<std::path::PathBuf>>,
     /// Session event-bus publisher used to bracket host dialogs with `herdr:blocked`
     /// (senpi `withBlockedHostDialog`); unset when no session bus is bound.
     pub blocked_emitter: Mutex<Option<BlockedEmitter>>,
@@ -90,6 +114,7 @@ impl InteractiveExtensionUi {
     /// then initialised to `name` (falling back to `dark` like [`ThemeRegistry::new`]).
     pub fn theme_registry(&self, directory: std::path::PathBuf, name: &str, mode: crate::theme::ColorMode) -> Result<crate::theme::registry::ThemeRegistry, crate::theme::theme_json::ThemeError> {
         let mut registry = crate::theme::registry::ThemeRegistry::new(directory, "dark", mode)?;
+        registry.set_builtin_directory(self.builtin_theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
         let mut themes = self.registered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         for theme in self.discovered_themes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
             if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme.clone()); }
@@ -114,7 +139,7 @@ impl InteractiveExtensionUi {
     }
     pub fn channel(theme: Theme) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<UiRequest>) {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), blocked_emitter:Mutex::new(None), registered_themes:Mutex::new(Vec::new()), discovered_themes:Mutex::new(Vec::new()), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
+        (Arc::new(Self { editor_factory:Mutex::new(None), theme_directory:Mutex::new(Default::default()), builtin_theme_directory:Mutex::new(None), blocked_emitter:Mutex::new(None), registered_themes:Mutex::new(Vec::new()), discovered_themes:Mutex::new(Vec::new()), sender, editor_text: Mutex::new(String::new()), statuses: Mutex::new(BTreeMap::new()), theme: Mutex::new(theme), terminal_input:Arc::new(Mutex::new(Vec::new())), tools_expanded:std::sync::atomic::AtomicBool::new(false) }), receiver)
     }
 }
 
@@ -228,14 +253,26 @@ impl ExtensionUiActions for InteractiveExtensionUi {
         self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor)
             .map(|registry| registry.get_available_themes_with_paths().into_iter().map(|theme| ThemeInfo { name:theme.name, path:theme.path }).collect()).unwrap_or_default()
     }
+    /// senpi `getThemeByName`: the named theme, or `None` when it cannot be loaded.
     fn get_theme(&self, name: &str) -> Option<Theme> {
         let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        self.theme_registry(directory, name, crate::theme::ColorMode::Truecolor).ok()
-            .map(|registry| extension_theme(&registry.current))
+        self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor).and_then(|registry| registry.load_theme(name)).ok()
+            .map(|theme| extension_theme(&theme))
     }
     fn set_theme(&self, theme: ThemeSelection) -> SetThemeResult {
-        let name = match theme { ThemeSelection::Name(name) => name, ThemeSelection::Theme(theme) => theme.name.unwrap_or_default() };
-        if ExtensionUiActions::get_theme(self, &name).is_none() { return SetThemeResult { success:false, error:Some(format!("Theme not found: {name}")) }; }
+        let name = match theme {
+            ThemeSelection::Name(name) => name,
+            ThemeSelection::Theme(theme) => {
+                return match theme_from_extension(&theme, crate::theme::ColorMode::Truecolor) {
+                    Ok(_) => { self.send(UiRequest::ThemeInstance(theme)); SetThemeResult { success:true, error:None } }
+                    Err(error) => SetThemeResult { success:false, error:Some(error.to_string()) },
+                };
+            }
+        };
+        let directory = self.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Err(error) = self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor).and_then(|registry| registry.load_theme(&name)) {
+            return SetThemeResult { success:false, error:Some(error.to_string()) };
+        }
         self.send(UiRequest::SettingChanged("theme".into(), serde_json::json!(name)));
         SetThemeResult { success:true, error:None }
     }
@@ -294,6 +331,44 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert!(ExtensionUiActions::get_all_themes(ui.as_ref()).iter().any(|theme| theme.name == "discovered"));
         assert_eq!(ExtensionUiActions::get_theme(ui.as_ref(), "discovered").and_then(|theme| theme.name).as_deref(), Some("discovered"));
+    }
+
+    #[test]
+    fn unknown_theme_names_are_not_found() {
+        let dir = tempfile::tempdir().expect("theme directory");
+        let (ui, mut requests) = InteractiveExtensionUi::channel(maho_ext_api::Theme::default());
+        *ui.theme_directory.lock().expect("directory") = dir.path().to_path_buf();
+        assert!(ExtensionUiActions::get_theme(ui.as_ref(), "nope").is_none());
+        let result = ExtensionUiActions::set_theme(ui.as_ref(), ThemeSelection::Name("nope".into()));
+        assert!(!result.success);
+        assert_eq!(result.error.as_deref(), Some("Theme not found: nope"));
+        assert!(requests.try_recv().is_err(), "a failed switch must not reach the mode");
+    }
+
+    #[test]
+    fn registered_themes_are_listed_and_builtins_carry_their_path() {
+        let (ui, _requests) = InteractiveExtensionUi::channel(maho_ext_api::Theme::default());
+        let mut package = crate::theme::Theme::builtin("dark", crate::theme::ColorMode::Truecolor).expect("dark theme");
+        package.name = "Package".into();
+        *ui.registered_themes.lock().expect("registered") = vec![package];
+        *ui.builtin_theme_directory.lock().expect("builtin directory") = Some(std::path::PathBuf::from("/shipped/theme"));
+        let themes = ExtensionUiActions::get_all_themes(ui.as_ref());
+        let names: Vec<&str> = themes.iter().map(|theme| theme.name.as_str()).collect();
+        assert_eq!(names, ["dark", "grok-day", "grok-night", "light", "Package"]);
+        assert_eq!(themes[0].path.as_deref(), Some(std::path::Path::new("/shipped/theme/dark.json")));
+        assert!(ExtensionUiActions::get_theme(ui.as_ref(), "Package").is_some());
+    }
+
+    #[test]
+    fn theme_instances_are_applied_rather_than_reduced_to_a_name() {
+        let (ui, mut requests) = InteractiveExtensionUi::channel(maho_ext_api::Theme::default());
+        let mut exported = extension_theme(&crate::theme::Theme::builtin("light", crate::theme::ColorMode::Truecolor).expect("light theme"));
+        exported.name = Some("mine".into());
+        assert!(ExtensionUiActions::set_theme(ui.as_ref(), ThemeSelection::Theme(exported.clone())).success);
+        let Ok(UiRequest::ThemeInstance(theme)) = requests.try_recv() else { panic!("expected a theme instance request") };
+        let theme = theme_from_extension(&theme, crate::theme::ColorMode::Truecolor).expect("instance theme");
+        assert_eq!(theme.name, "mine");
+        assert_eq!(extension_theme(&theme).colors, exported.colors);
     }
 
     #[test]

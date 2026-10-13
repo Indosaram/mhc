@@ -620,9 +620,12 @@ impl InteractiveMode {
     /// senpi `applyThemeName`: load and apply `name`, reporting a load failure.
     fn apply_theme_name(&mut self, name: &str) -> bool {
         match self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), name, self.theme.get_color_mode()).and_then(|registry| registry.load_theme(name)) {
-            Ok(theme) => { self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history(); true },
+            Ok(theme) => { self.set_active_theme(theme); true },
             Err(error) => { self.show_status(error.to_string()); false },
         }
+    }
+    fn set_active_theme(&mut self, theme: crate::theme::Theme) {
+        self.theme = theme; *self.mermaid_theme.borrow_mut() = self.theme.clone(); self.editor.editor.border_color = editor_theme(&self.theme).border_color; self.editor_border_key = None; *self.extension_ui.theme.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::interactive_extension_ui::extension_theme(&self.theme); self.rebuild_history();
     }
     /// senpi `/debug` writes the agent directory's global debug log; the override lets a caller redirect it.
     pub fn set_debug_log_path(&mut self, path: Option<String>) { self.debug_log_path = path; }
@@ -740,9 +743,9 @@ impl InteractiveMode {
         context_paths.extend(append_sources.iter().filter_map(existing));
         context_paths.extend(self.session.project_context_files().into_iter().map(|file| file.path));
         let skills_result = self.session.loaded_skills().unwrap_or_default();
-        let themes = crate::theme::registry::ThemeRegistry::new(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode())
+        let themes = self.extension_ui.theme_registry(std::path::Path::new(&self.session.agent_dir()).join("themes"), &self.theme.name, self.theme.get_color_mode())
             .map(|registry| registry.get_available_themes_with_paths()).unwrap_or_default()
-            .into_iter().filter_map(|theme| theme.path.map(|path| LoadedThemeResource { name: theme.name, source_path: path.to_string_lossy().into_owned(), source_info: None })).collect();
+            .into_iter().filter(|theme| !matches!(theme.name.as_str(), "dark" | "light" | "grok-day" | "grok-night")).filter_map(|theme| theme.path.map(|path| LoadedThemeResource { name: theme.name, source_path: path.to_string_lossy().into_owned(), source_info: None })).collect();
         let resources = LoadedResources {
             cwd,
             context_paths,
@@ -4167,6 +4170,13 @@ impl InteractiveMode {
             UiRequest::WorkingVisible(visible) => self.working_visible = visible,
             UiRequest::Notify(text, _) => self.show_status(text),
             UiRequest::Title(title) => self.terminal_title = Some(title),
+            // senpi `themeController.setThemeInstance`: auto-sync stops and the instance is applied.
+            UiRequest::ThemeInstance(theme) => {
+                match crate::interactive_extension_ui::theme_from_extension(&theme, self.theme.get_color_mode()) {
+                    Ok(theme) => { self.theme_auto_sync = None; self.set_active_theme(theme); }
+                    Err(error) => self.show_status(error.to_string()),
+                }
+            }
             UiRequest::EditorText(text) => self.editor.editor.set_text(&text),
             UiRequest::Paste(text) => self.editor.editor.insert_text_at_cursor(&text),
             UiRequest::Header(factory) => {

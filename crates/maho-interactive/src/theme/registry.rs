@@ -12,6 +12,8 @@ pub struct ThemeRegistry {
     pub current: Theme,
     pub current_name: String,
     custom_directory: PathBuf,
+    /// senpi `getThemesDir()`: the shipped builtin theme directory reported as builtin paths.
+    builtin_directory: Option<PathBuf>,
     registered: BTreeMap<String, Theme>,
     watched_name: Option<String>,
     reload_at: Option<u64>,
@@ -23,6 +25,7 @@ impl ThemeRegistry {
             current: theme,
             current_name: "dark".into(),
             custom_directory,
+            builtin_directory: None,
             registered: BTreeMap::new(),
             watched_name: None,
             reload_at: None,
@@ -43,6 +46,9 @@ impl ThemeRegistry {
         }
         Ok(())
     }
+    pub fn set_builtin_directory(&mut self, directory: Option<PathBuf>) {
+        self.builtin_directory = directory;
+    }
     pub fn load_theme(&self, name: &str) -> Result<Theme, ThemeError> {
         if let Some(theme) = self.registered.get(name) {
             return Ok(theme.clone());
@@ -50,17 +56,25 @@ impl ThemeRegistry {
         if matches!(name, "dark" | "light" | "grok-day" | "grok-night") {
             Theme::builtin(name, self.current.get_color_mode())
         } else {
-            Theme::load_from_path(
-                &self.custom_directory.join(format!("{name}.json")),
-                self.current.get_color_mode(),
-            )
+            let path = self.custom_directory.join(format!("{name}.json"));
+            // senpi `loadThemeJson`: a missing custom file is `Theme not found: <name>`.
+            if !path.exists() {
+                return Err(ThemeError::Schema(format!("Theme not found: {name}")));
+            }
+            Theme::load_from_path(&path, self.current.get_color_mode())
         }
     }
     pub fn get_available_themes_with_paths(&self) -> Vec<ThemeInfo> {
         let mut themes: BTreeMap<String, Option<PathBuf>> =
             ["dark", "light", "grok-day", "grok-night"]
                 .into_iter()
-                .map(|n| (n.into(), None))
+                .map(|n| {
+                    let path = self
+                        .builtin_directory
+                        .as_ref()
+                        .map(|directory| directory.join(format!("{n}.json")));
+                    (n.into(), path)
+                })
                 .collect();
         if let Ok(entries) = std::fs::read_dir(&self.custom_directory) {
             for entry in entries.flatten() {
@@ -77,10 +91,18 @@ impl ThemeRegistry {
                 .entry(name.clone())
                 .or_insert(theme.source_path.clone());
         }
-        themes
+        let mut themes: Vec<ThemeInfo> = themes
             .into_iter()
             .map(|(name, path)| ThemeInfo { name, path })
-            .collect()
+            .collect();
+        // senpi `a.name.localeCompare(b.name)`: case-insensitive, lowercase first on ties.
+        themes.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| b.name.cmp(&a.name))
+        });
+        themes
     }
     pub fn init_theme(&mut self, name: &str, watch: bool) -> Result<(), ThemeError> {
         match self.set_theme(name, watch) {
