@@ -20,7 +20,7 @@ fn bind_completion(id:String,manager:Arc<Mutex<TerminalManager>>,backgrounds:Bac
         let (status,output)={let mut manager=manager.lock().expect("terminal manager");let Some(runtime)=manager.get(&id) else {return;};(runtime.exit_result().ok().flatten(),runtime.full_output().unwrap_or_default())};
         notifier.lock().expect("terminal notifier").notify_completion(&id,*delivery.lock().expect("terminal delivery"),status.as_ref(),&output,|content,delivery| {
             use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
-            if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(content)],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {eprintln!("terminal notification failed: {error}");}
+            if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(content)],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {maho_ext_api::diagnostic(&format!("terminal notification failed: {error}"));}
         });
     }))
 }
@@ -38,7 +38,7 @@ fn bind_monitor_events(mut state:tokio::sync::watch::Receiver<Vec<crate::monitor
     tokio::spawn(async move {
         loop {
             let snapshot=state.borrow_and_update().clone();let payload=monitor_state_payload(&snapshot);
-            sender.events.emit("terminal_monitor_state",&payload);if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {eprintln!("monitor state RPC delivery failed: {error}");}
+            sender.events.emit("terminal_monitor_state",&payload);if let Err(error)=sender.rpc_emit("terminal_monitor_state",&payload) {maho_ext_api::diagnostic(&format!("monitor state RPC delivery failed: {error}"));}
             sender.events.emit("wake_source_state",&json!({"source":"terminal-monitors","activeCount":snapshot.len(),"monitors":snapshot.iter().map(|entry|json!({"id":entry.id,"description":entry.description,"startedAtMs":entry.started_at_ms})).collect::<Vec<_>>()}));
             if state.changed().await.is_err() {return;}
         }
@@ -75,7 +75,7 @@ fn restore_digest_sentence(digest:&crate::restore::RestoreDigest)->Option<String
 fn send_terminal_reminder(sender:&ExtensionApi,delivery:Option<crate::notify::NotificationDelivery>,sentence:&str) {
     use maho_ext_api::types::{CustomMessage,SendMessageOptions,DeliverAs};
     let Some(delivery)=delivery else {return;};
-    if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(format!("<system-reminder>{sentence}</system-reminder>"))],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {eprintln!("terminal reminder failed: {error}");}
+    if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::notify::TERMINAL_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(format!("<system-reminder>{sentence}</system-reminder>"))],display:false,details:None},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery==crate::notify::NotificationDelivery::Steer {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {maho_ext_api::diagnostic(&format!("terminal reminder failed: {error}"));}
 }
 impl Extension for TerminalExtension {
     fn register(&self,api:&mut ExtensionApi) {
@@ -93,7 +93,7 @@ impl Extension for TerminalExtension {
         let event_notifier=notifier.clone();
         let ended_bus=api.events.clone();
         let monitors=Arc::new(Mutex::new(crate::monitor_registry::MonitorRegistry::new_with_ended(move |event| {
-            if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}
+            if let Some(notifier)=event_notifier.lock().expect("monitor notifier").as_ref() && let Err(error)=notifier.notify_event(event) {maho_ext_api::diagnostic(&format!("monitor delivery failed: {error}"));}
         },move |event| {
             let payload=monitor_ended_payload(&event);
             ended_bus.emit(crate::shared::TERMINAL_MONITOR_ENDED_EVENT,&payload);
@@ -211,12 +211,12 @@ impl Extension for TerminalExtension {
                 let Some(mut lifecycle)=state.lock().map_err(|_|ExtensionFailure::new("terminal state lifecycle poisoned"))?.take() else {return Ok(EventResult::None);};
                 lifecycle.record_shutdown(terminal_now_ms()).await;
                 if lifecycle.is_owner() {
-                    if let Err(error)=lifecycle.release() {eprintln!("terminal lease release failed: {error}");}
+                    if let Err(error)=lifecycle.release() {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
                 } else if let Some((_session_dir,terminal_dir))=terminal_state_dir(ctx) {
                     // A reload generation inherited the lease instead of acquiring it, so it releases
                     // by (path, own pid) - which removes exactly that file and no foreign holder's.
                     let encoded=maho_core::session_sidecar_store::encoded_session_id(ctx.session_manager.session_id());
-                    if let Err(error)=crate::terminal_state::release_lease_at(&terminal_dir,&encoded,f64::from(std::process::id())) {eprintln!("terminal lease release failed: {error}");}
+                    if let Err(error)=crate::terminal_state::release_lease_at(&terminal_dir,&encoded,f64::from(std::process::id())) {maho_ext_api::diagnostic(&format!("terminal lease release failed: {error}"));}
                 }
             }
             #[cfg(not(unix))]
@@ -237,14 +237,14 @@ impl Extension for TerminalExtension {
                 let Some(delivery_mode)=*lifecycle_delivery.lock().expect("terminal delivery") else {return;};
                 if !injection.pause_ids.is_empty() {monitors.lock().expect("monitor registry").pause(&injection.pause_ids);}
                 let force_wake=!injection.pause_ids.is_empty();
-                if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(injection.content)],display:false,details:Some(injection.details)},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery_mode==crate::notify::NotificationDelivery::Steer||force_wake {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {eprintln!("monitor notification failed: {error}");}
+                if let Err(error)=sender.send_message(CustomMessage {custom_type:crate::monitor_notify::MONITOR_NOTIFICATION_CUSTOM_TYPE.to_owned(),content:vec![ToolContent::text(injection.content)],display:false,details:Some(injection.details)},SendMessageOptions {trigger_turn:true,deliver_as:Some(if delivery_mode==crate::notify::NotificationDelivery::Steer||force_wake {DeliverAs::Steer}else {DeliverAs::FollowUp})}) {maho_ext_api::diagnostic(&format!("monitor notification failed: {error}"));}
             });
             *notifier.lock().map_err(|_|ExtensionFailure::new("monitor notifier state poisoned"))?=Some(delivery);
             Ok(EventResult::None)
         })}));
         let delivery_monitors=monitors.clone();let delivery_notifier=notifier.clone();
         api.on(EventKind::SessionStart,Arc::new(move |_,_| {let monitors=delivery_monitors.clone();let notifier=delivery_notifier.clone();Box::pin(async move {
-            monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.bind_delivery(move |event| {if let Some(notifier)=notifier.lock().expect("monitor notifier").as_ref()&&let Err(error)=notifier.notify_event(event) {eprintln!("monitor delivery failed: {error}");}});Ok(EventResult::None)
+            monitors.lock().map_err(|_|ExtensionFailure::new("monitor registry state poisoned"))?.bind_delivery(move |event| {if let Some(notifier)=notifier.lock().expect("monitor notifier").as_ref()&&let Err(error)=notifier.notify_event(event) {maho_ext_api::diagnostic(&format!("monitor delivery failed: {error}"));}});Ok(EventResult::None)
         })}));
         let bash_manager=Arc::clone(&manager);let bash_configuration=configuration.clone();
         let completion_tasks:Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>=Arc::new(Mutex::new(vec![]));let bash_tasks=completion_tasks.clone();let cleanup_terminal_notifier=terminal_notifier.clone();

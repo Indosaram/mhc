@@ -159,7 +159,7 @@ pub fn register_with_router(api:&mut maho_ext_api::ExtensionApi,oauth:std::sync:
                             tokio::spawn(async move {
                                 let (program,args)=match std::env::consts::OS {"macos"=>("open",vec![url]),"windows"=>("rundll32",vec!["url.dll,FileProtocolHandler".into(),url]),_=>("xdg-open",vec![url])};
                                 let result=tokio::process::Command::new(program).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().await;
-                                if !result.is_ok_and(|status|status.success()) {eprintln!("OAuth browser launcher failed; use the displayed authorization URL.");}
+                                if !result.is_ok_and(|status|status.success()) {maho_ext_api::diagnostic(&format!("OAuth browser launcher failed; use the displayed authorization URL."));}
                             });
                         })));
                         let interaction=ProviderAuthInteraction::new(interaction.signal().expect("login signal"),interaction);

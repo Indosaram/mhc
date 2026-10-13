@@ -17,10 +17,10 @@ fn base_title(cwd: &str, session: Option<&str>) -> String {
 struct Animation { stop: mpsc::Sender<()>, thread: Option<JoinHandle<()>> }
 impl Drop for Animation {
     fn drop(&mut self) {
-        if let Err(error) = self.stop.send(()) { eprintln!("orca spinner stop: {error}"); }
+        if let Err(error) = self.stop.send(()) { maho_ext_api::diagnostic(&format!("orca spinner stop: {error}")); }
         if let Some(thread) = self.thread.take()
             && thread.join().is_err() {
-            eprintln!("orca spinner thread panicked");
+            maho_ext_api::diagnostic(&format!("orca spinner thread panicked"));
         }
     }
 }

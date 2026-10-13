@@ -107,8 +107,8 @@ impl CompactionLogger {
             writeln!(file, "{line}")
         })();
         match result {
-            Ok(()) => if self.mirror_to_stderr { eprintln!("[senpi-compaction] {line}"); },
-            Err(error) => if !self.reported_failure { self.reported_failure = true; eprintln!("Unable to write compaction log {error}"); },
+            Ok(()) => if self.mirror_to_stderr { maho_ext_api::diagnostic(&format!("[senpi-compaction] {line}")); },
+            Err(error) => if !self.reported_failure { self.reported_failure = true; maho_ext_api::diagnostic(&format!("Unable to write compaction log {error}")); },
         }
     }
 
