@@ -166,6 +166,15 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if mode == AppMode::Interactive { crate::migrations::show_deprecation_warnings(&migrations.deprecation_warnings).map_err(|error| error.to_string())?; }
     let result = async { match mode {
         AppMode::Rpc => {
+            // senpi main.ts:1324-1332: RPC refreshes model catalogs in the background, bounded to 15 s
+            // and skipped offline; interactive mode starts its own refresh after TUI startup.
+            let offline = parsed.offline || super::shared_host::is_truthy_env_flag(maho_core::brand::env_value("OFFLINE", &maho_core::config::current_env()).as_deref());
+            if !offline {
+                let mut runtime = session.model_runtime().clone();
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), runtime.refresh(maho_ai::models::ModelsRefreshOptions::default())).await;
+                });
+            }
             session.bind_extensions(maho_core::agent_session::ExtensionBindings {
                 mode: Some(maho_ext_api::ExtensionMode::Rpc), ..Default::default()
             }).await;
