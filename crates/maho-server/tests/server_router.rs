@@ -386,3 +386,24 @@ async fn termination_releases_only_the_matched_handle_leases() {
         router.close().await.unwrap();
     }).await.unwrap();
 }
+#[tokio::test]
+async fn calls_on_one_attachment_run_concurrently() {
+    use maho_server::server::testing::TestServerHost;
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+        let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into());
+        let attachment=router.attach("session-1").await.unwrap();
+        let harness=host.latest_harness("session-1").await.unwrap();
+        let gate=harness.gate_next_service_call().await;
+        let publish:Publisher=Arc::new(|_,_|Box::pin(async {Ok(())}));
+        let (_cancel,cancelled)=tokio::sync::watch::channel(false);let context=Context {cancelled};
+        let call=json!({"serviceId":"test","member":"run","args":[]});
+        let first={let attachment=attachment.clone();let publish=publish.clone();let context=context.clone();let call=call.clone();tokio::spawn(async move {attachment.invoke(call,publish,context).await})};
+        gate.entered.wait().await;
+        assert_eq!(attachment.invoke(call,publish,context).await.unwrap(),Some(json!({"ok":true})));
+        assert!(!first.is_finished());
+        gate.release.resolve(());
+        assert!(first.await.unwrap().is_ok());
+        attachment.release().await.unwrap();router.close().await.unwrap();
+    }).await.unwrap();
+}
