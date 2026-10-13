@@ -5,6 +5,10 @@
 //! senpi's optional members are modelled as trait methods with default `None` returns.
 
 use crate::autocomplete::{AutocompleteItem, AutocompleteProvider, ApplyCompletionResult, MentionRange};
+use crate::components::editor::{
+    ChangeCallback, ImageMarkersChangedCallback, RestoreAttachmentCallback, SnapshotAttachmentCallback, StyleFn,
+    SubmitCallback,
+};
 use crate::image_markers::EditorImageState;
 use crate::paste_markers::EditorPasteState;
 use crate::tui::Component;
@@ -14,6 +18,12 @@ pub trait EditorComponent: Component {
     fn get_text(&self) -> String;
 
     fn set_text(&mut self, text: &str);
+
+    /// senpi's `onSubmit` callback: called when the user submits (for example the Enter key).
+    fn set_on_submit(&mut self, _callback: Option<SubmitCallback>) {}
+
+    /// senpi's `onChange` callback: called when the text changes.
+    fn set_on_change(&mut self, _callback: Option<ChangeCallback>) {}
 
     /// Add text to history for up/down navigation.
     fn add_to_history(&mut self, _text: &str) {}
@@ -51,8 +61,27 @@ pub trait EditorComponent: Component {
     /// Called with the image-marker ids in text reading order whenever markers change.
     fn on_image_markers_changed(&mut self, _order: &[u64]) {}
 
+    /// Install senpi's `onImageMarkersChanged` callback (PRE-renumber ids in reading order).
+    fn set_on_image_markers_changed(&mut self, _callback: Option<ImageMarkersChangedCallback>) {}
+
+    /// senpi's `snapshotAttachmentState`: capture the attachment payloads keyed by marker id so
+    /// the editor's undo stack can restore them with the marker text.
+    fn set_snapshot_attachment_state(&mut self, _callback: Option<SnapshotAttachmentCallback>) {}
+
+    /// senpi's `restoreAttachmentState`: restore payloads captured by the snapshot hook when undo
+    /// pops the matching snapshot.
+    fn set_restore_attachment_state(&mut self, _callback: Option<RestoreAttachmentCallback>) {}
+
     /// Set the autocomplete provider.
     fn set_autocomplete_provider(&mut self, _provider: Box<dyn AutocompleteProvider>) {}
+
+    /// senpi's `borderColor`; `None` means the editor has no border color to expose.
+    fn border_color(&self) -> Option<StyleFn> {
+        None
+    }
+
+    /// Replace the border color; a no-op for editors without one.
+    fn set_border_color(&mut self, _color: StyleFn) {}
 
     /// Set horizontal padding.
     fn set_padding_x(&mut self, _padding: usize) {}

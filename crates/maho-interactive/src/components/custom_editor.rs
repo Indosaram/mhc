@@ -119,6 +119,13 @@ impl Focusable for CustomEditor {
 impl EditorComponent for CustomEditor {
     fn get_text(&self) -> String { self.editor.get_text() }
     fn set_text(&mut self, text: &str) { self.editor.set_text(text); }
+    fn set_on_submit(&mut self, callback: Option<maho_tui::components::editor::SubmitCallback>) { self.editor.on_submit = callback; }
+    fn set_on_change(&mut self, callback: Option<maho_tui::components::editor::ChangeCallback>) { self.editor.on_change = callback; }
+    fn set_on_image_markers_changed(&mut self, callback: Option<maho_tui::components::editor::ImageMarkersChangedCallback>) { self.editor.on_image_markers_changed = callback; }
+    fn set_snapshot_attachment_state(&mut self, callback: Option<maho_tui::components::editor::SnapshotAttachmentCallback>) { self.editor.snapshot_attachment_state = callback; }
+    fn set_restore_attachment_state(&mut self, callback: Option<maho_tui::components::editor::RestoreAttachmentCallback>) { self.editor.restore_attachment_state = callback; }
+    fn border_color(&self) -> Option<maho_tui::components::editor::StyleFn> { Some(self.editor.border_color.clone()) }
+    fn set_border_color(&mut self, color: maho_tui::components::editor::StyleFn) { self.editor.border_color = color; }
     fn add_to_history(&mut self, text: &str) { self.editor.add_to_history(text); }
     fn insert_text_at_cursor(&mut self, text: &str) { self.editor.insert_text_at_cursor(text); }
     fn get_expanded_text(&self) -> Option<String> { Some(self.editor.get_expanded_text()) }
