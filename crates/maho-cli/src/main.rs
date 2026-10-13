@@ -284,9 +284,21 @@ fn run() -> Result<(), String> {
         let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
             models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
         });
-        let settings = maho_core::settings_manager::SettingsManager::create(&cwd.to_string_lossy(), &agent.to_string_lossy(), &maho_core::config::home_dir(), true);
         let auth_errors = runtime.credentials.errors();
-        let loaded = maho_cli::cli::extension_registry::load_native_extensions(&cwd, Default::default());
+        // senpi main.ts:1066-1092: model listing builds the full services, so every builtin
+        // (OAuth lanes included) and every settings/`-e` extension contributes its providers.
+        let runtime_host = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        let (loaded, settings) = runtime_host.block_on(async {
+            let cwd_text = cwd.to_string_lossy();
+            let agent_dir = maho_core::config::get_agent_dir();
+            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, maho_core::project_trust::AppMode::Print);
+            let trusted = maho_cli::cli::host_runtime::resolve_runtime_project_trust(&config, &cwd_text, config.trust_prompt_mode(), false, Box::new(|_, _| None)).await;
+            let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), trusted);
+            let (widget_sender, _widget_requests) = tokio::sync::mpsc::unbounded_channel();
+            let factories = maho_cli::cli::default_extensions::assembled_factories(widget_sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, &cwd, &agent_dir);
+            let factories = maho_cli::cli::default_extensions::with_user_extensions(factories, &mut settings, &cwd_text, &agent_dir, &config.resolved_extension_paths(), parsed.no_extensions).await?;
+            Ok::<_, String>((maho_ext_host::loader::load_extensions_async(factories, &cwd, Default::default()).await, settings))
+        })?;
         let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
         let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();

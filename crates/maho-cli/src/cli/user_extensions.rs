@@ -100,12 +100,38 @@ pub fn factories(paths: &ResolvedPaths) -> Result<Vec<NativeAsyncExtensionFactor
     if result.errors.is_empty() { Ok(result.factories) } else { Err(result.errors) }
 }
 
+/// senpi `VENDORED_BUILTIN_EXTENSION_PACKAGES` (`resource-loader.ts`): third-party packages a builtin
+/// already vendors. An installed copy is shadowed while its builtin is active.
+pub const VENDORED_BUILTIN_EXTENSION_PACKAGES: [(&str, &str); 7] = [
+    ("anthropic-bash", "pi-anthropic-bash"),
+    ("anthropic-web-search", "pi-anthropic-web-search"),
+    ("gpt-apply-patch", "pi-apply-patch"),
+    ("bash-timeout", "pi-bash-timeout"),
+    ("openai-web-search", "pi-openai-web-search"),
+    ("todowrite", "pi-todotools"),
+    ("codemode", "@code-yeongyu/senpi-codemode"),
+];
+
+/// senpi `shadowVendoredBuiltinExtensionPaths`: drop non-CLI extension paths whose nearest package
+/// is a vendored copy of an active builtin.
+pub fn shadow_vendored_builtin_extensions(resources: &mut Vec<ResolvedResource>, selection: &super::default_extensions::BuiltinExtensionSelection) {
+    let shadowed: Vec<&str> = VENDORED_BUILTIN_EXTENSION_PACKAGES.iter()
+        .filter(|(builtin, _)| selection.is_active(builtin)).map(|(_, package)| *package).collect();
+    if shadowed.is_empty() { return; }
+    resources.retain(|resource| {
+        resource.metadata.source == "cli"
+            || maho_core::package_identity::find_nearest_package_identity(&resource.path)
+                .is_none_or(|identity| !shadowed.contains(&identity.package_name.as_str()))
+    });
+}
+
 pub async fn resolve_and_discover(
     settings_manager: &mut SettingsManager,
     cwd: &str,
     agent_dir: &str,
     cli_extension_paths: &[String],
 ) -> Result<UserExtensionDiscovery, PackageManagerError> {
+    let selection = super::default_extensions::BuiltinExtensionSelection::from_settings(settings_manager);
     let manager = DefaultPackageManager::new(PackageManagerOptions { cwd, agent_dir, settings_manager });
     let mut paths = manager.resolve(None).await?;
     if !cli_extension_paths.is_empty() {
@@ -118,6 +144,7 @@ pub async fn resolve_and_discover(
             resource
         }));
     }
+    shadow_vendored_builtin_extensions(&mut paths.extensions, &selection);
     Ok(discover(&paths))
 }
 

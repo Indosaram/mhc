@@ -38,29 +38,77 @@ pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyn
     }).collect()
 }
 
-pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
-    assembled_factories_with_mcp_registry(widget_sender, parent, None)
+/// senpi `getActiveBuiltinExtensionIds` (`resource-loader.ts`): the settings allowlist
+/// (`enabledBuiltinExtensions`) and denylist (`disabledBuiltinExtensions`) over the pinned builtin
+/// ids and the bundled `codemode` extension.
+pub struct BuiltinExtensionSelection {
+    pub enabled: Option<Vec<String>>,
+    pub disabled: Vec<String>,
+}
+
+impl BuiltinExtensionSelection {
+    pub fn from_settings(settings: &maho_core::settings_manager::SettingsManager) -> Self {
+        Self { enabled: settings.get_enabled_builtin_extensions(), disabled: settings.get_disabled_builtin_extensions() }
+    }
+
+    /// Whether `id` loads; ids outside senpi's builtin and bundled sets are never filtered.
+    pub fn is_active(&self, id: &str) -> bool {
+        if !super::extension_registry::BUILTIN_EXTENSION_IDS.contains(&id) && id != "codemode" { return true; }
+        self.enabled.as_ref().is_none_or(|enabled| enabled.iter().any(|candidate| candidate == id))
+            && !self.disabled.iter().any(|candidate| candidate == id)
+    }
+}
+
+fn builtin_id(path: &str) -> Option<&str> {
+    path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>'))
+}
+
+/// Every builtin factory a runtime mounts, OAuth provider lanes included, filtered by the settings
+/// selection and sorted into senpi's `builtinExtensions` order (global defaults first, MCP last).
+pub fn assembled_factories(
+    widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>,
+    parent: TaskParent,
+    settings: &maho_core::settings_manager::SettingsManager,
+    cwd: &std::path::Path,
+    agent_dir: &str,
+) -> Vec<NativeAsyncExtensionFactory> {
+    assembled_factories_with_mcp_registry(widget_sender, parent, None, settings, cwd, agent_dir)
 }
 
 /// senpi `resource-loader` `mcpRegistry`: a multi-session host passes its one shared
 /// `HostMcpRegistry` so every session leases the same MCP connections.
-pub fn assembled_factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent, mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>) -> Vec<NativeAsyncExtensionFactory> {
+pub fn assembled_factories_with_mcp_registry(
+    widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>,
+    parent: TaskParent,
+    mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>,
+    settings: &maho_core::settings_manager::SettingsManager,
+    cwd: &std::path::Path,
+    agent_dir: &str,
+) -> Vec<NativeAsyncExtensionFactory> {
     let mut assembled = factories_with_mcp_registry(widget_sender, parent.clone(), mcp_registry);
     let env = std::env::vars().collect();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    match super::omo_mount::OmoMount::for_parent(parent, &cwd, std::path::Path::new(&maho_core::config::get_agent_dir()), env) {
+    let process_cwd = std::env::current_dir().unwrap_or_default();
+    match super::omo_mount::OmoMount::for_parent(parent, &process_cwd, std::path::Path::new(&maho_core::config::get_agent_dir()), env) {
         Ok(mount) => assembled.extend(async_factories(vec![mount.factory()])),
         Err(error) => assembled.push(NativeAsyncExtensionFactory {
             path: "<builtin:omo>".into(), source_info: Default::default(),
             factory: Arc::new(move |_| { let error = error.clone(); Box::pin(async move { Err(ExtensionFailure::new(error)) }) }),
         }),
     }
+    assembled.extend(super::oauth_providers::runtime_oauth_factories(settings, cwd, agent_dir));
     let paths: std::collections::BTreeSet<_> = assembled.iter().map(|factory| factory.path.clone()).collect();
     let native = super::extension_registry::native_extension_factories().into_iter()
         .filter(|factory| !paths.contains(&factory.path)).collect();
     assembled.extend(async_factories(native));
+    let selection = BuiltinExtensionSelection::from_settings(settings);
+    assembled.retain(|factory| builtin_id(&factory.path).is_none_or(|id| selection.is_active(id)));
+    // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports: both register the
+    // `no-nested-agents` flag and `/nested-agents`, so the linked port yields to an active builtin.
+    if selection.is_active("nested-agents-md") {
+        assembled.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
+    }
     assembled.sort_by_key(|factory| {
-        let id = factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>'));
+        let id = builtin_id(&factory.path);
         if let Some(position) = id.and_then(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.iter().position(|candidate| *candidate == id)) {
             position
         } else {
@@ -70,6 +118,32 @@ pub fn assembled_factories_with_mcp_registry(widget_sender: tokio::sync::mpsc::U
         }
     });
     assembled
+}
+
+/// senpi resource-loader order after the builtins: discovered user/settings/`-e` extensions are
+/// appended last. `--no-extensions` skips discovery and the linked user ports (senpi `noExtensions`
+/// only skips user and settings paths, never builtins).
+pub async fn with_user_extensions(
+    mut factories: Vec<NativeAsyncExtensionFactory>,
+    settings: &mut maho_core::settings_manager::SettingsManager,
+    cwd: &str,
+    agent_dir: &str,
+    cli_extension_paths: &[String],
+    no_extensions: bool,
+) -> Result<Vec<NativeAsyncExtensionFactory>, String> {
+    if no_extensions {
+        factories.retain(|factory| factory.source_info.source != "user");
+        return Ok(factories);
+    }
+    let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths).await.map_err(|error| error.to_string())?;
+    if !discovery.errors.is_empty() {
+        return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
+    }
+    // A discovered port replaces its linked default so it registers once, with the discovered
+    // source provenance, after the builtins.
+    factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
+    factories.extend(discovery.factories);
+    Ok(factories)
 }
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
