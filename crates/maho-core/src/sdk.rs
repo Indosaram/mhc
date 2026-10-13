@@ -143,10 +143,31 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             source: maho_ai::types::ThinkingSelectionSource::Explicit, legacy_variant_id: None });
     }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
-    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), Default::default());
+    let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
+    // senpi `_buildRuntime` composes the extensions' filesystem policies into the file tools.
+    // Native extensions may register theirs at bind time, so the composition is re-read per call.
+    let policy_accessor = session_accessor.clone();
+    let filesystem_policy: maho_tools::FilesystemPolicyChecker = Arc::new(move |request| {
+        let session = policy_accessor.get().and_then(|accessor| accessor());
+        Box::pin(async move {
+            let policies = match session { Some(session) => session.filesystem_policies().await, None => Vec::new() };
+            match maho_tools::filesystem_policy::compose_filesystem_policies(policies) {
+                Some(check) => check(request).await,
+                None => Ok(maho_tools::FilesystemPolicyDecision::Allow),
+            }
+        })
+    });
+    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), maho_tools::index::ToolsOptions {
+        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
+        find: maho_tools::find::FindToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        ls: maho_tools::ls::LsToolOptions { filesystem_policy: Some(filesystem_policy), ..Default::default() },
+        ..Default::default()
+    });
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
-    let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
     let context_accessor = session_accessor.clone();
     let context_factory: maho_tools::tool_definition_wrapper::ContextFactory = Arc::new(move || {
         let session = context_accessor.get().expect("SDK session initialized before tool execution")()
