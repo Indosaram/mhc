@@ -71,8 +71,11 @@ fn contents(goal: Option<&Goal>) -> Result<String, GoalError> {
     Ok(format!("{}\n",maho_ai::utils::js::json_stringify_pretty(&value)))
 }
 fn write_private(path: &Path, contents: &str, exclusive: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
-    let mut options = fs::OpenOptions::new(); options.write(true).mode(0o600);
+    let mut options = fs::OpenOptions::new(); options.write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
     if exclusive { options.create_new(true); } else { options.create(true).truncate(true); }
     options.open(path)?.write_all(contents.as_bytes())
 }
@@ -156,6 +159,7 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
         let error=migrate_legacy_goal_file_with_publish(&reference,dir.path(),|_,_|Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied,"publication denied"))).unwrap_err(); assert!(matches!(error,GoalError::Io(_))); assert!(legacy.join("t.json").exists()); assert!(!legacy.join("t.json.migrated").exists());
         fs::create_dir_all(goal_file_path(&reference)).unwrap(); assert!(matches!(migrate_legacy_goal_file(&reference,dir.path()),Err(GoalError::Io(_))));
     }
+    #[cfg(unix)]
     #[test] fn upstream_atomic_replacement_preserves_private_mode() {
         use std::os::unix::fs::PermissionsExt;
         let dir=tempfile::tempdir().unwrap(); let reference=GoalStoreRef { base_dir:dir.path().join("goal"),thread_id:"thread-private-mode".into() };
@@ -194,6 +198,7 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
             let delivered=crate::store::record_continuation_delivered(&reference,"signature",Some(&goal.id),true).await.unwrap().unwrap(); assert_eq!(delivered.consecutive_continuations,Some(1));
         }
     }
+    #[cfg(unix)]
     #[test] fn upstream_standalone_root_migration_publishes_private_file() {
         use std::os::unix::fs::PermissionsExt;
         let dir=tempfile::tempdir().unwrap(); let standalone=tempfile::tempdir().unwrap(); let key="d".repeat(24);
@@ -285,6 +290,7 @@ fn migrate_legacy_goal_file_with_publish(reference:&GoalStoreRef,standalone_agen
     #[test] fn invalid_continuation_state_is_sanitized() { let mut input: Value = serde_json::from_str(&raw()).unwrap(); input["goal"]["consecutiveContinuations"] = Value::from(-1); input["goal"]["lastContinuationSignature"] = Value::from(3); let result = parse_goal_file(&input.to_string(), false).unwrap().goal.unwrap(); assert_eq!(result.consecutive_continuations, None); assert_eq!(result.last_continuation_signature, None); }
     #[test] fn legacy_budget_status_resumes_without_budget() { let mut input: Value = serde_json::from_str(&raw()).unwrap(); input["goal"]["status"] = Value::from("budgetLimited"); input["goal"]["tokenBudget"] = Value::from(42); let result = parse_goal_file(&input.to_string(), true).unwrap().goal.unwrap(); assert_eq!(result.status, crate::types::GoalStatus::Active); assert_eq!(result.token_budget, None); }
     #[test] fn blocked_requires_reason_and_timestamp() { let mut input: Value = serde_json::from_str(&raw()).unwrap(); input["goal"]["status"] = Value::from("blocked"); let result = parse_goal_file(&input.to_string(), false); assert!(matches!(result, Err(GoalError::InvalidStore(_)))); }
+    #[cfg(unix)]
     #[test] fn atomic_write_uses_private_permissions_and_cleans_temp() { use std::os::unix::fs::PermissionsExt; let dir = tempfile::tempdir().unwrap(); let reference = GoalStoreRef { base_dir: dir.path().join("goal"), thread_id: "t".into() }; let goal = parse_goal_file(&raw(), false).unwrap().goal; write_goal_file(&reference, goal.as_ref()).unwrap(); assert_eq!(read_goal_file(&reference).unwrap(), goal); assert_eq!(fs::metadata(goal_file_path(&reference)).unwrap().permissions().mode() & 0o777, 0o600); assert_eq!(fs::read_dir(&reference.base_dir).unwrap().count(), 1); }
     #[test] fn absent_file_returns_none() { let dir = tempfile::tempdir().unwrap(); let reference = GoalStoreRef { base_dir: dir.path().into(), thread_id: "missing".into() }; let result = read_goal_file(&reference).unwrap(); assert!(result.is_none()); }
     #[test] fn thread_id_is_uri_encoded() { let reference = GoalStoreRef { base_dir: PathBuf::new(), thread_id: "a/b 한".into() }; let result = encoded_thread_id(&reference); assert_eq!(result, "a%2Fb%20%ED%95%9C"); }

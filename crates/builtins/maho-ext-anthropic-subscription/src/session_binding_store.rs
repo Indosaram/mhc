@@ -1,4 +1,6 @@
-use std::{path::{Path,PathBuf},io::Write,os::unix::fs::PermissionsExt};
+use std::{path::{Path,PathBuf},io::Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 #[derive(Clone,Debug,PartialEq,serde::Serialize,serde::Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 pub struct StoredBinding {
@@ -37,13 +39,16 @@ pub fn write_binding(session:&Path,binding:&StoredBinding)->anyhow::Result<()> {
     let mut binding=binding.clone();binding.session_path=canonical.to_string_lossy().into_owned();let mut bytes=serde_json::to_vec(&binding)?;bytes.push(b'\n');
     if bytes.len()>16384 {anyhow::bail!("Stored binding exceeds 16384 bytes: {}",bytes.len());}
     let path=sidecar_path(session)?;let mut temporary=tempfile::NamedTempFile::new_in(path.parent().ok_or_else(||anyhow::anyhow!("binding has no parent"))?)?;
-    temporary.as_file().set_permissions(std::fs::Permissions::from_mode(0o600))?;temporary.write_all(&bytes)?;temporary.persist(path)?;Ok(())
+    #[cfg(unix)]
+    temporary.as_file().set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(&bytes)?;temporary.persist(path)?;Ok(())
 }
 pub fn delete_binding(session:&Path)->std::io::Result<()> {match std::fs::remove_file(sidecar_path(session)?) {Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(()),result=>result}}
 #[cfg(test)]
 mod tests {
     use super::*;
     fn record(path:&Path)->StoredBinding {StoredBinding {schema_version:1,session_path:path.to_string_lossy().into_owned(),session_id:"session".into(),marker_entry_id:"marker".into(),sdk_session_id:"sdk".into(),sent_count:1,sent_prefix_hash:"1".repeat(64),assistant_content_hash:"2".repeat(64),last_assistant_uuid:Some("assistant".into()),account_name:"default".into(),model_id:"model".into(),system_prompt_hash:"3".repeat(64),toolset_hash:"4".repeat(64)}}
+    #[cfg(unix)]
     #[test]
     fn roundtrip_replace_delete_private_mode() {
         let directory=tempfile::tempdir().expect("directory");let directory=directory.path().canonicalize().expect("canonical directory");let session=directory.join("session.json");std::fs::write(&session,"{}").expect("session");
@@ -79,6 +84,7 @@ mod tests {
         binding.session_id="x".repeat(1024*1024);assert!(write_binding(&session,&binding).is_err());
         assert!(!sidecar_path(&session).expect("path").exists());
     }
+    #[cfg(unix)]
     #[test]
     fn symlinked_directory_uses_the_same_canonical_sidecar() {
         let directory=tempfile::tempdir().expect("directory");let directory=directory.path().canonicalize().expect("canonical directory");let real=directory.join("real");std::fs::create_dir(&real).expect("real");

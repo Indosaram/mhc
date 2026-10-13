@@ -21,11 +21,13 @@ impl VersionProbe {
 pub fn bundled_version(manifest:&Path)->Option<String> {serde_json::from_slice::<serde_json::Value>(&std::fs::read(manifest).ok()?).ok()?["claudeCodeVersion"].as_str().map(str::to_owned)}
 #[cfg(test)]
 mod tests {
-    use super::*;use std::os::unix::fs::PermissionsExt;
+    use super::*;
     #[test]
     fn compares_only_parsed_semantic_triplets() {assert!(is_newer(Some("Claude Code 2.1.100"),Some("2.1.99")));assert!(!is_newer(Some("2.1.100"),Some("2.1.100")));assert!(!is_newer(Some("bad"),Some("2.1.1")));assert!(!is_newer(Some("2.1.1"),None));}
+    #[cfg(unix)]
     #[tokio::test]
     async fn probe_caches_success_and_failure_by_path() {
+        use std::os::unix::fs::PermissionsExt;
         let directory=tempfile::tempdir().expect("directory");let executable=directory.path().join("claude");std::fs::write(&executable,"#!/bin/sh\nprintf '2.1.101 (Claude Code)\\n'\n").expect("script");std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).expect("permissions");let probe=VersionProbe::default();assert_eq!(probe.probe(&executable).await.as_deref(),Some("2.1.101"));std::fs::write(&executable,"#!/bin/sh\nexit 1\n").expect("replace");assert_eq!(probe.probe(&executable).await.as_deref(),Some("2.1.101"));let failing=directory.path().join("bad");assert!(probe.probe(&failing).await.is_none());
     }
 }
