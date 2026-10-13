@@ -109,6 +109,8 @@ async fn host_close_waits_for_draining_runtime_disposal_before_acknowledging(){
     assert!(futures::poll!(&mut close).is_pending(),"close acknowledged before disposal release");
     let _=release_tx.send(());close.await.unwrap();
     line.clear();reader.read_line(&mut line).await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["type"],"session_closed");
+    line.clear();reader.read_line(&mut line).await.unwrap();
     assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap()["command"],"close_session");
 }
 
