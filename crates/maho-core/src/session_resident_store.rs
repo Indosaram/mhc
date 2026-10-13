@@ -41,6 +41,12 @@ struct ResidentStoreInner {
     evicted_bytes: usize,
 }
 
+impl std::fmt::Debug for ResidentStringStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ResidentStringStore").field("max_bytes", &self.max_bytes).finish_non_exhaustive()
+    }
+}
+
 impl Default for ResidentStringStore {
     fn default() -> Self {
         Self::new(ResidentStringStoreOptions::default())
