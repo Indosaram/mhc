@@ -82,28 +82,27 @@ impl BindingRecords{
 }
 /// A session-owned adapter around the classic command loop and extension-UI wiring: the
 /// classic handler stays the single source of command semantics, and its records are routed
-/// through the session writer (senpi `createRpcSessionBinding`).
-pub struct RpcSessionBinding{session_id:String,handler:crate::connection_handler::RpcConnectionHandler,writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>,subscription:std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>}
+/// through the host's session record router (senpi `createRpcSessionBinding`).
+pub struct RpcSessionBinding{session_id:String,handler:crate::connection_handler::RpcConnectionHandler,sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,subscription:std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>}
 /// Builds an RPC binding for one live session: input lines route through the handler and every
-/// produced record goes to the session's writer, tagged with its routing id.
-pub async fn create_rpc_session_binding(session_id:String,session:maho_core::agent_session::AgentSession,writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>,capabilities:Vec<String>)->RpcSessionBinding{
-    let tag=session_id.clone();let sink_writer=writer.clone();
-    let sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>=std::sync::Arc::new(move|value:serde_json::Value|{let _=sink_writer.enqueue(&tag,value);});
+/// produced record goes to `sink`, which tags it with the routing id and fans it out to the
+/// connections attached to the session (senpi `SessionEventWriter.enqueue`).
+pub async fn create_rpc_session_binding(session_id:String,session:maho_core::agent_session::AgentSession,sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>)->RpcSessionBinding{
     let event_sink=sink.clone();
     let subscription=session.subscribe(std::sync::Arc::new(move|event|{match session_event_record(event){Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}}));
-    let handler=crate::connection_handler::RpcConnectionHandler::create(session,sink,capabilities).await;
-    RpcSessionBinding{session_id,handler,writer,subscription:std::sync::Mutex::new(Some(subscription))}
+    let handler=crate::connection_handler::RpcConnectionHandler::create(session,sink.clone(),capabilities).await;
+    RpcSessionBinding{session_id,handler,sink,subscription:std::sync::Mutex::new(Some(subscription))}
 }
 impl RpcSessionBinding{
     pub fn session_id(&self)->&str{&self.session_id}
     pub fn ui(&self)->&std::sync::Arc<crate::connection_handler::RpcExtensionUi>{self.handler.ui()}
-    /// Feed one inbound command; a response the handler produced is written tagged to this session.
+    /// Feed one inbound command; a response the handler produced is routed tagged to this session.
     pub async fn handle(&self,command:&serde_json::Value)->Result<(),String>{
         let line=serde_json::to_string(command).map_err(|error|error.to_string())?;
         if let Some(response)=self.handler.handle_input_line(&line).await.map_err(|error|error.to_string())?{
             for record in response.split('\n').filter(|record|!record.is_empty()){
                 let value:serde_json::Value=serde_json::from_str(record).map_err(|error|error.to_string())?;
-                self.writer.enqueue(&self.session_id,value)?;
+                (self.sink)(value);
             }
         }
         Ok(())
