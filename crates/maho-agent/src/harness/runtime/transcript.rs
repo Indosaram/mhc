@@ -9,7 +9,7 @@ use crate::types::AgentMessage;
 use super::types::{ContinueOperationResult, Drive, RuntimeLane};
 use crate::harness::session::types::{Control, EntryType, OperationState, StorageBranchScan};
 
-pub async fn watch_lane(lane: std::sync::Arc<dyn RuntimeLane>, events: crate::harness::events::HarnessEventBus, context: &Context, faulted: bool) -> Result<std::sync::Arc<crate::harness::events::BufferedEventWatcher<Result<serde_json::Value, SessionError>>>, SessionError> {
+pub async fn watch_lane(lane: std::sync::Arc<dyn RuntimeLane>, events: crate::harness::events::HarnessEventBus, context: &Context) -> Result<std::sync::Arc<crate::harness::events::BufferedEventWatcher<Result<serde_json::Value, SessionError>>>, SessionError> {
     let mutation=lane.session().begin_mutation(context).await?;
     let name=lane.name().to_owned();
     let capture_lane=lane.clone();
@@ -17,7 +17,7 @@ pub async fn watch_lane(lane: std::sync::Arc<dyn RuntimeLane>, events: crate::ha
         let lane=capture_lane.clone();
         Box::pin(async move {
             let mutation=lane.session().begin_mutation(&context).await?;
-            let result=capture_lane_snapshot(lane.as_ref(),mutation.as_ref(),&context,faulted).await;
+            let result=capture_lane_snapshot(lane.as_ref(),mutation.as_ref(),&context).await;
             mutation.end(&context).await;
             result
         }) as maho_ai::types::BoxFuture<'static,Result<serde_json::Value,SessionError>>
@@ -27,12 +27,12 @@ pub async fn watch_lane(lane: std::sync::Arc<dyn RuntimeLane>, events: crate::ha
         Box::pin(async move {let snapshot=capture(context).await;mark_boundary();snapshot}) as maho_ai::types::BoxFuture<'static,Result<serde_json::Value,SessionError>>
     });
     let watcher=events.watch(Ok(serde_json::Value::Null),std::sync::Arc::new(move |event|event.event_type()=="usage"||event.lane.is_none()||event.lane.as_deref()==Some(&name)),Some(resnapshot));
-    let result=capture_lane_snapshot(lane.as_ref(),mutation.as_ref(),context,faulted).await;
+    let result=capture_lane_snapshot(lane.as_ref(),mutation.as_ref(),context).await;
     mutation.end(context).await;
     match result {Ok(snapshot)=>{watcher.set_snapshot(Ok(snapshot));Ok(watcher)},Err(error)=>{watcher.unsubscribe();Err(error)}}
 }
 
-pub async fn capture_lane_snapshot(lane: &dyn RuntimeLane, reader: &dyn SessionReader, context: &Context, faulted: bool) -> Result<serde_json::Value, SessionError> {
+pub async fn capture_lane_snapshot(lane: &dyn RuntimeLane, reader: &dyn SessionReader, context: &Context) -> Result<serde_json::Value, SessionError> {
     use serde_json::{json, Value};
     use maho_ai::types::{ContentBlock, Message};
     use crate::harness::session::types::ToolCall;
@@ -45,7 +45,7 @@ pub async fn capture_lane_snapshot(lane: &dyn RuntimeLane, reader: &dyn SessionR
     let queues=read_lane_queues(reader,&captured.inbox,context).await?;
     let mut snapshot=json!({"lane":lane.name(),"transcript":transcript,"tipId":captured.tip_id,"configuration":captured.configuration,"stats":reader.get_stats(context).await?,"operation":null,"queues":queues.iter().map(|q|{let mut value=json!({"entryId":q.entry_id,"kind":q.kind,"type":q.item_type});if let Some(m)=&q.message{value["message"]=json!(m);}
     if let Some(t)=&q.custom_type{value["customType"]=json!(t);}
-    if let Some(d)=&q.data{value["data"]=d.clone();}value}).collect::<Vec<_>>(),"faulted":faulted});
+    if let Some(d)=&q.data{value["data"]=d.clone();}value}).collect::<Vec<_>>(),"faulted":lane.faulted()});
     if let Some(id)=&captured.last_operation_id {snapshot["lastResult"]=reader.get_value(&operation_result(id),context).await?.ok_or_else(||session_invariant_error(format!("Lane {:?} is missing result {id}",lane.name())))?.value;}
     if let Some(operation)=captured.operation {
         let mut projected=json!({"id":operation.meta.operation_id,"kind":operation.meta.intent.kind(),"startedAt":operation.meta.started_at,"fromTipId":operation.meta.source_tip_id,"status":if matches!(operation.state.operation_scope_of().control,Control::CancelRequested {..}){"aborting"}else{"open"},"runningTools":[]});
