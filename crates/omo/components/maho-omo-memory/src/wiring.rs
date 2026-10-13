@@ -92,6 +92,7 @@ impl MemoryWiring{
             })
         }));Ok(true)
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn after_bind<F:std::future::Future<Output=Result<(),String>>>(
         &mut self,api:&mut maho_ext_api::ExtensionApi,input:MemoryAfterBindInput<'_>,ui:Option<&mut (dyn MemoryFooterUi+Send)>,
         live:Option<&mut (dyn crate::wiring_reflection_live::ReflectionBindLive+Send)>,reconcile:impl FnOnce()->F,facts:crate::facts_wiring::MemoryFactsWiringOptions,warn:impl FnOnce(&str,&memory_core::journal::store::JournalError),
