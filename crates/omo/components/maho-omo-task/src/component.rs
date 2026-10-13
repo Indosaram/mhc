@@ -52,7 +52,7 @@ impl TaskComponent {
         let session = Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
         let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let dag_status_timers = status_timers;
-        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
+        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| { use maho_tui::terminal::TerminalIo; maho_tui::terminal::ProcessIo.size().map(|(columns, _)| usize::from(columns)) }));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
         let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), eval_handles: Mutex::new(None), before_suspend:Mutex::new(None), dag:Mutex::new(None) });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
