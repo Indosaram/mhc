@@ -225,6 +225,8 @@ pub struct CliRuntimeRequest {
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     pub auto_title_sessions: Option<bool>,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    /// senpi `mcpRegistry`: the multi-session host's one shared MCP registry.
+    pub mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -272,6 +274,7 @@ pub async fn mount_agent_session_runtime(
         extension_flag_values,
         auto_title_sessions,
         session_profile,
+        mcp_registry,
     } = request;
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
@@ -293,7 +296,7 @@ pub async fn mount_agent_session_runtime(
     });
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let mut extension_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
+    let mut extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(widget_sender, task_parent.clone(), mcp_registry);
     if !config.no_extensions {
         let discovery = super::user_extensions::resolve_and_discover(
             &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(),
@@ -417,7 +420,7 @@ pub fn create_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Opti
     // the sessions share one agent dir, so a per-open rebuild would pay the same catalog load once
     // per open instead of once per host.
     let model_runtime = host_model_runtime(&config);
-    let create_runtime = host_runtime_factory(config.clone(), model_runtime);
+    let create_runtime = host_runtime_factory_with_mcp_registry(config.clone(), model_runtime, Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()));
     // A socket host answers each connection through its own writer, so its fallback writer is a
     // sink; the stdio host answers on stdout (senpi `runSocketHost` vs `runStdioHost`).
     let writer = match listen {
@@ -466,9 +469,16 @@ pub async fn serve_multi_session_host(
 /// per `open_session`, built by the same CLI mount path every other mode uses (the seam
 /// `maho_rpc::multi_session_host::HostRuntimeFactory` exists for).
 pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: ModelRuntime) -> maho_rpc::multi_session_host::HostRuntimeFactory {
+    host_runtime_factory_with_mcp_registry(config, model_runtime, Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()))
+}
+
+/// `host_runtime_factory` over the host's one `HostMcpRegistry` (senpi `createHostCore`
+/// `mcpRegistry: new HostMcpRegistry()`), injected into every session's `mcp` builtin.
+pub fn host_runtime_factory_with_mcp_registry(config: CliRuntimeConfiguration, model_runtime: ModelRuntime, mcp_registry: Arc<maho_ext_mcp::host_registry::HostMcpRegistry>) -> maho_rpc::multi_session_host::HostRuntimeFactory {
     std::sync::Arc::new(move |profile: maho_rpc::session_registry::RpcSessionLaunchProfile| {
         let config = config.clone();
         let model_runtime = model_runtime.clone();
+        let mcp_registry = mcp_registry.clone();
         Box::pin(async move {
             let session_manager = open_profile_session_manager(&config, &profile);
             // The profile's per-session startup choices feed the same resolver as
@@ -501,6 +511,7 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
                     session_kind: profile.session_kind.unwrap_or_default(),
                     session_context: profile.session_context.clone().unwrap_or_default(),
                 },
+                mcp_registry: Some(mcp_registry),
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), Some(settings)).await?;
