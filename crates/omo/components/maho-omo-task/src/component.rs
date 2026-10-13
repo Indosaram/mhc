@@ -116,7 +116,7 @@ impl TaskComponent {
                         component.engine.notifier.reconcile_unnotified_notifications(ReconcileUnnotifiedNotificationsInput { session_id: session, parent_state }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         drop(delivery);
                         component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        if let Some(team)=team && let Err(error)=team.pollers.tick() { eprintln!("task session-start lead poll failed: {error}"); }
+                        if let Some(team)=team && let Err(error)=team.pollers.tick() { maho_ext_api::diagnostic(&format!("task session-start lead poll failed: {error}")); }
                         if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.attach(); }
                         component.sync();
                     }
@@ -155,13 +155,13 @@ impl TaskComponent {
         self.channels.emit_if_changed();
         let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
         let finished: Vec<_> = waiters.iter().filter(|(_, waiter)| waiter.thread.is_finished()).map(|(id, _)| id.clone()).collect();
-        for id in finished { if let Some(waiter) = waiters.remove(&id) && waiter.thread.join().is_err() { eprintln!("task completion waiter panicked"); } }
+        for id in finished { if let Some(waiter) = waiters.remove(&id) && waiter.thread.join().is_err() { maho_ext_api::diagnostic("task completion waiter panicked"); } }
         for entry in self.engine.manager.list(&ListScope::All) {
             if entry.record.status.is_terminal() {
                 self.notify_owned_terminal(&entry.record);
                 let parent_state = self.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state();
                 let delivery = self.delivery.lock().unwrap_or_else(PoisonError::into_inner);
-                if !waiters.contains_key(&entry.record.task_id) && let Err(error) = self.engine.notifier.notify_terminal(&CompletionRequest { run_in_background: self.engine.manager.was_background(&entry.record.task_id), record: entry.record, parent_state, tokens: None }) { eprintln!("task terminal delivery failed: {error}"); }
+                if !waiters.contains_key(&entry.record.task_id) && let Err(error) = self.engine.notifier.notify_terminal(&CompletionRequest { run_in_background: self.engine.manager.was_background(&entry.record.task_id), record: entry.record, parent_state, tokens: None }) { maho_ext_api::diagnostic(&format!("task terminal delivery failed: {error}")); }
                 drop(delivery);
                 continue;
             }
@@ -177,7 +177,7 @@ impl TaskComponent {
                     component.notify_owned_terminal(&record);
                     let parent_state = component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).parent_state();
                     let delivery = component.delivery.lock().unwrap_or_else(PoisonError::into_inner);
-                    if let Err(error) = component.engine.notifier.notify_terminal(&CompletionRequest { record, parent_state, run_in_background: manager.was_background(&task), tokens: None }) { eprintln!("task terminal delivery failed: {error}"); }
+                    if let Err(error) = component.engine.notifier.notify_terminal(&CompletionRequest { record, parent_state, run_in_background: manager.was_background(&task), tokens: None }) { maho_ext_api::diagnostic(&format!("task terminal delivery failed: {error}")); }
                     drop(delivery);
                     component.channels.emit_if_changed();
                     component.status.schedule_sync();
@@ -233,7 +233,7 @@ impl TaskComponent {
         if let Some(handle) = self.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner).take() { self.status.timers.clear(handle); }
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
         for waiter in waiters.values() { waiter.signal.abort(); }
-        for waiter in waiters.into_values() { if waiter.thread.join().is_err() { eprintln!("task completion waiter panicked"); } }
+        for waiter in waiters.into_values() { if waiter.thread.join().is_err() { maho_ext_api::diagnostic("task completion waiter panicked"); } }
         self.status.dispose();
         if let Some(rpc) = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).take() { rpc.dispose(); }
         if let Some(team)=self.team.lock().unwrap_or_else(PoisonError::into_inner).clone() { team.pollers.shutdown(); }

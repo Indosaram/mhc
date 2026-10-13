@@ -398,7 +398,7 @@ let notices = notification_messages(&migration, &config, &DevinSwe2Policy::nativ
                             if ctx.has_ui {
                                 ctx.ui.notify(&notice.message, kind);
                             } else {
-                                eprintln!("{}", notice.message);
+                                maho_ext_api::diagnostic(&notice.message);
                             }
                         }
                     }

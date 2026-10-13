@@ -38,7 +38,7 @@ pub fn publish_durable_events(
 }
 fn deliver_durable_event(listener:&DurableDagListener,event:&DagRunEvent) {
     if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| listener(event))).is_err() {
-        eprintln!("DAG runtime subscriber failed");
+        maho_ext_api::diagnostic("DAG runtime subscriber failed");
     }
 }
 pub trait DagRuntimeLifecycle:Send+Sync {

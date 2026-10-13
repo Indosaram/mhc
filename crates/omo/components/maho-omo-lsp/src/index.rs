@@ -24,7 +24,7 @@ impl LspComponent {
         if api.get_flag(TOOLS_FLAG)==Some(FlagValue::Boolean(false)) {return;}
         let home=crate::daemon_tool_client::resolve_request_home(std::env::var("HOME").ok().as_deref(),||dirs::home_dir().unwrap_or_default());
         for notice in crate::adapter::migration_notices::get_config_notices(&api.cwd,&home) {
-            eprintln!("omo-senpi ignored project-local LSP commands; move custom commands to the user config {}: {} ({:?})",notice.user_config_path.display(),notice.config_path.display(),notice.server_ids);
+            maho_ext_api::diagnostic(&format!("omo-senpi ignored project-local LSP commands; move custom commands to the user config {}: {} ({:?})",notice.user_config_path.display(),notice.config_path.display(),notice.server_ids));
         }
         for mut tool in descriptors() {
             let name=tool.name.clone();let cwd=api.cwd.clone();let home=home.clone();

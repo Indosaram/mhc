@@ -73,14 +73,14 @@ pub async fn run_child_bootstrap(run_dir: &Path) -> Result<(), String> {
     let (graceful_sent, mut graceful_received) = tokio::sync::oneshot::channel();
     let mut cancel_term = schedule_supervisor_deadline(manifest.hard_deadline_at, &env, wall_now, move || {
         if runtime_platform(&term_env) == SupervisorRuntimePlatform::Posix {
-            if let Err(error) = signal_supervisor_process_group(own_pid, "SIGTERM", &term_env) { eprintln!("{error}"); }
+            if let Err(error) = signal_supervisor_process_group(own_pid, "SIGTERM", &term_env) { maho_ext_api::diagnostic(&error.to_string()); }
         } else if graceful_sent.send(()).is_err() {
-            eprintln!("bootstrap graceful deadline receiver closed");
+            maho_ext_api::diagnostic("bootstrap graceful deadline receiver closed");
         }
     }).map_err(|error| error.to_string())?;
     let kill_env = env.clone();
     let mut cancel_kill = schedule_supervisor_deadline(manifest.hard_deadline_at + manifest.termination_grace_ms, &env, wall_now, move || {
-        if let Err(error) = terminate_supervisor_child_hard(runtime_platform(&kill_env), Some(own_pid), false, &kill_env) { eprintln!("{error}"); }
+        if let Err(error) = terminate_supervisor_child_hard(runtime_platform(&kill_env), Some(own_pid), false, &kill_env) { maho_ext_api::diagnostic(&error.to_string()); }
     }).map_err(|error| error.to_string())?;
     let status = loop {
         tokio::select! {
@@ -119,7 +119,7 @@ fn signal_model_gracefully(child: &mut tokio::process::Child) -> Result<(), Stri
 struct ContainedBootstrap { pid: Option<u32>, env: BTreeMap<String, String> }
 impl Drop for ContainedBootstrap {
     fn drop(&mut self) {
-        if let Err(error) = terminate_supervisor_child_hard(runtime_platform(&self.env), self.pid, true, &self.env) { eprintln!("{error}"); }
+        if let Err(error) = terminate_supervisor_child_hard(runtime_platform(&self.env), self.pid, true, &self.env) { maho_ext_api::diagnostic(&error.to_string()); }
     }
 }
 
@@ -163,7 +163,7 @@ pub async fn run_supervisor(
             SupervisorRuntimePlatform::Posix => signal_supervisor_process_group(pid, "SIGTERM", &term_env),
             SupervisorRuntimePlatform::Win32 => super::supervisor_process_identity::record_supervisor_graceful_deadline(Some(pid), &term_env),
         };
-        if let Err(error) = result { eprintln!("{error}"); }
+        if let Err(error) = result { maho_ext_api::diagnostic(&error.to_string()); }
     }).map_err(|error| error.to_string())?;
     let kill_env = env.clone();
     let model_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(pid));
@@ -172,8 +172,8 @@ pub async fn run_supervisor(
     let mut cancel_kill = schedule_supervisor_deadline(manifest.hard_deadline_at + manifest.termination_grace_ms, &env, wall_now, move || {
         let platform = runtime_platform(&kill_env);
         let target = if platform == SupervisorRuntimePlatform::Posix { pid } else { kill_pid.load(std::sync::atomic::Ordering::SeqCst) };
-        if let Err(error) = terminate_supervisor_child_hard(platform, Some(target), false, &kill_env) { eprintln!("{error}"); }
-        if kill_finished.send(()).is_err() { eprintln!("supervisor hard-kill receiver closed"); }
+        if let Err(error) = terminate_supervisor_child_hard(platform, Some(target), false, &kill_env) { maho_ext_api::diagnostic(&error.to_string()); }
+        if kill_finished.send(()).is_err() { maho_ext_api::diagnostic("supervisor hard-kill receiver closed"); }
     }).map_err(|error| error.to_string())?;
     let read_status = async {
         let mut text = String::new();
