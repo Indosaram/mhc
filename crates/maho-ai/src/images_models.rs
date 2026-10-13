@@ -1,9 +1,15 @@
-//! Port of senpi packages/ai/src/images-models.ts. Provider auth goes through
-//! `ImagesProvider::resolve_auth` (the `ProviderAuth` of auth/, todo 13).
+//! Port of senpi packages/ai/src/images-models.ts. Provider auth is the provider's `ProviderAuth`,
+//! resolved against the collection's credential store and auth context by `resolve_provider_auth`.
 
+use crate::auth::context::default_provider_auth_context;
+use crate::auth::credential_store::InMemoryCredentialStore;
+use crate::auth::resolve::{self, resolve_provider_auth};
+use crate::auth::types::{ApiKeyCredential, AuthContext, AuthResult, CredentialStore, ProviderAuth};
 use crate::images::images_error;
-use crate::models::{AuthResolution, AuthResolutionOverrides, ModelsError, ModelsErrorCode};
-use crate::types::{AssistantImages, BoxFuture, ImagesContext, ImagesModel, ImagesOptions, ProviderImages};
+use crate::models::{AuthResolution, AuthResolutionOverrides, ModelsError, ModelsErrorCode, ProviderAuthResult};
+use crate::types::{AssistantImages, BoxFuture, ImagesContext, ImagesModel, ImagesOptions, ProviderEnv, ProviderImages};
+use crate::utils::abort::{operation_signal, race_with_abort_signal};
+use async_trait::async_trait;
 use futures::FutureExt;
 use futures::future::{BoxFuture as SharedFuture, Shared};
 use indexmap::IndexMap;
@@ -19,10 +25,7 @@ pub trait ImagesProvider: Send + Sync {
     fn refresh_models(&self) -> BoxFuture<'_, Result<(), ModelsError>> {
         Box::pin(async { Ok(()) })
     }
-    fn resolve_auth<'a>(
-        &'a self,
-        overrides: &'a AuthResolutionOverrides,
-    ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>>;
+    fn auth(&self) -> &ProviderAuth;
     fn generate_images<'a>(
         &'a self,
         model: &'a ImagesModel,
@@ -31,13 +34,57 @@ pub trait ImagesProvider: Send + Sync {
     ) -> BoxFuture<'a, AssistantImages>;
 }
 
-#[derive(Default)]
 pub struct ImagesModels {
     providers: RwLock<IndexMap<String, Arc<dyn ImagesProvider>>>,
+    credentials: Arc<dyn CredentialStore>,
+    auth_context: Arc<dyn AuthContext>,
 }
 
-pub fn create_images_models() -> ImagesModels {
-    ImagesModels::default()
+#[derive(Clone, Default)]
+pub struct CreateImagesModelsOptions {
+    pub credentials: Option<Arc<dyn CredentialStore>>,
+    pub auth_context: Option<Arc<dyn AuthContext>>,
+}
+
+pub fn create_images_models(options: Option<CreateImagesModelsOptions>) -> ImagesModels {
+    let options = options.unwrap_or_default();
+    ImagesModels {
+        providers: RwLock::new(IndexMap::new()),
+        credentials: options.credentials.unwrap_or_else(|| Arc::new(InMemoryCredentialStore::new())),
+        auth_context: options.auth_context.unwrap_or_else(|| Arc::new(default_provider_auth_context())),
+    }
+}
+
+/// `overlayEnvAuthContext`: request env values shadow the ambient context.
+struct EnvOverlayAuthContext<'a> {
+    base: &'a dyn AuthContext,
+    env: &'a ProviderEnv,
+}
+
+#[async_trait]
+impl AuthContext for EnvOverlayAuthContext<'_> {
+    async fn env(&self, name: &str) -> Option<String> {
+        match self.env.get(name) {
+            Some(value) => Some(value.clone()),
+            None => self.base.env(name).await,
+        }
+    }
+
+    async fn file_exists(&self, path: &str) -> bool {
+        self.base.file_exists(path).await
+    }
+}
+
+fn models_error(error: resolve::ModelsError) -> ModelsError {
+    let code = if error.code == "oauth" { ModelsErrorCode::OAuth } else { ModelsErrorCode::Auth };
+    ModelsError::new(code, error.message)
+}
+
+fn auth_resolution(result: AuthResult) -> AuthResolution {
+    AuthResolution {
+        auth: ProviderAuthResult { api_key: result.auth.api_key, headers: result.auth.headers, base_url: result.auth.base_url },
+        env: result.env,
+    }
 }
 
 impl ImagesModels {
@@ -88,7 +135,38 @@ impl ImagesModels {
 
     pub async fn get_auth(&self, provider_id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {
         let Some(provider) = self.get_provider(provider_id) else { return Ok(None) };
-        provider.resolve_auth(overrides).await
+        let signal = operation_signal(overrides.signal.clone());
+        let overlay = overrides.env.as_ref().map(|env| EnvOverlayAuthContext { base: self.auth_context.as_ref(), env });
+        let ctx: &dyn AuthContext = match &overlay {
+            Some(overlay) => overlay,
+            None => self.auth_context.as_ref(),
+        };
+        let api_key_auth = provider.auth().api_key.as_ref().filter(|auth| !auth.ambient_only());
+        if let (Some(key), Some(api_key_auth)) = (&overrides.api_key, api_key_auth) {
+            let credential = ApiKeyCredential { key: Some(key.clone()), env: overrides.env.clone() };
+            return match race_with_abort_signal(api_key_auth.resolve(ctx, Some(&credential), &signal), &signal).await {
+                Ok(Ok(result)) => Ok(result.map(auth_resolution)),
+                Ok(Err(error)) => Err(ModelsError::with_cause(
+                    ModelsErrorCode::Auth,
+                    format!("API key auth failed for provider {provider_id}"),
+                    &error.to_string(),
+                )),
+                Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
+            };
+        }
+        let resolution = resolve_provider_auth(
+            provider.id(),
+            provider.auth(),
+            &self.credentials,
+            ctx,
+            overrides.slot_name.as_deref(),
+            None,
+            &signal,
+        );
+        match race_with_abort_signal(resolution, &signal).await {
+            Ok(result) => result.map(|result| result.map(auth_resolution)).map_err(models_error),
+            Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
+        }
     }
 
     /// Never fails: setup errors become an `AssistantImages` with `stopReason: "error"`.
@@ -103,7 +181,7 @@ impl ImagesModels {
             signal: request.signal.clone(),
             ..AuthResolutionOverrides::default()
         };
-        let resolution = match provider.resolve_auth(&overrides).await {
+        let resolution = match self.get_auth(&model.provider, &overrides).await {
             Ok(resolution) => resolution,
             Err(error) => return images_error(model, error.message),
         };
@@ -130,14 +208,12 @@ impl ImagesModels {
     }
 }
 
-pub type ResolveImagesAuth =
-    Arc<dyn Fn(&AuthResolutionOverrides) -> BoxFuture<'static, Result<Option<AuthResolution>, ModelsError>> + Send + Sync>;
 pub type RefreshImagesModels = Arc<dyn Fn() -> BoxFuture<'static, Result<Vec<ImagesModel>, ModelsError>> + Send + Sync>;
 
 pub struct CreateImagesProviderOptions {
     pub id: String,
     pub name: Option<String>,
-    pub auth: ResolveImagesAuth,
+    pub auth: ProviderAuth,
     pub models: Vec<ImagesModel>,
     pub refresh_models: Option<RefreshImagesModels>,
     pub api: Arc<dyn ProviderImages>,
@@ -190,8 +266,8 @@ impl ImagesProvider for CreatedImagesProvider {
         Box::pin(shared)
     }
 
-    fn resolve_auth<'a>(&'a self, overrides: &'a AuthResolutionOverrides) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
-        (self.input.auth)(overrides)
+    fn auth(&self) -> &ProviderAuth {
+        &self.input.auth
     }
 
     fn generate_images<'a>(

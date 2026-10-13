@@ -171,7 +171,7 @@ fn lists_every_builtin_images_provider() {
     let providers = builtin_images_providers();
     let ids: Vec<&str> = providers.iter().map(|provider| provider.id()).collect();
     assert_eq!(ids, ["openrouter", "openai"]);
-    let models = builtin_images_models();
+    let models = builtin_images_models(None);
     assert_eq!(models.get_providers().len(), 2);
     assert!(!models.get_models(Some("openai")).is_empty());
     assert!(!models.get_models(Some("openrouter")).is_empty());
