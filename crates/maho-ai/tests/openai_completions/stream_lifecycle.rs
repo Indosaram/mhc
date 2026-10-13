@@ -142,6 +142,36 @@ async fn rejects_a_real_sse_transport_eof_without_finish_reason() {
 }
 
 #[tokio::test]
+async fn surfaces_an_sse_error_frame_instead_of_a_missing_finish_reason() {
+    let server = RawServer::start(raw_handler(|mut stream, _request| async move {
+        use tokio::io::AsyncWriteExt;
+        let frame = json!({
+            "error": { "message": "This model does not support assistant message prefill.", "type": "upstream_error" },
+        });
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+        let _ = stream.write_all(head.as_bytes()).await;
+        let _ = stream.write_all(format!("data: {frame}\n\ndata: [DONE]\n\n").as_bytes()).await;
+        let _ = stream.flush().await;
+        let _ = stream.shutdown().await;
+    }))
+    .await;
+
+    let mut options: SimpleStreamOptions = simple_options("test");
+    options.stream.request.max_retries = Some(0);
+    let response = finish(&run_simple(
+        &lifecycle_model(&server.base_url),
+        &lifecycle_context(),
+        options,
+        None,
+    ))
+    .await;
+
+    assert_eq!(response.stop_reason, StopReason::Error);
+    assert_eq!(response.error_message.as_deref(), Some("This model does not support assistant message prefill."));
+    server.shutdown();
+}
+
+#[tokio::test]
 async fn ends_each_content_block_before_starting_the_next_block_type() {
     let server = RawServer::start(raw_handler(|mut stream, _request| async move {
         let frames = vec![
