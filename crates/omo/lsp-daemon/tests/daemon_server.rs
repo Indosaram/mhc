@@ -1,25 +1,40 @@
 //! Ports of auth-ownership.test.ts and daemon-roundtrip.test.ts against a real daemon.
+#![cfg(unix)]
 
 mod common;
 
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
 use common::{context_for, short_tempdir, test_paths, within};
+#[cfg(unix)]
 use lsp_core::request_context::LspRequestContext;
+#[cfg(unix)]
 use lsp_daemon::daemon_client::{CallToolOptions, call_tool_via_daemon};
+#[cfg(unix)]
 use lsp_daemon::daemon_server::{DaemonServerHandle, DaemonServerOptions, start_daemon_server};
+#[cfg(unix)]
 use lsp_daemon::ensure_daemon::{PROBE_TIMEOUT_MS, probe_daemon};
+#[cfg(unix)]
 use lsp_daemon::ipc_protocol::{auth_envelope, read_auth_token};
+#[cfg(unix)]
 use lsp_daemon::ownership::{
     DaemonOwner, EndpointIdentity, StartupError, endpoint_identity, read_daemon_owner,
     remove_daemon_metadata_for_owner, write_daemon_owner,
 };
+#[cfg(unix)]
 use lsp_daemon::paths::DaemonPaths;
+#[cfg(unix)]
 use lsp_daemon::request_routing::Dispatch;
+#[cfg(unix)]
 use lsp_daemon::socket_jsonrpc::{LineBuffer, encode_json_line};
+#[cfg(unix)]
 use serde_json::{Map, Value, json};
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+#[cfg(unix)]
 fn options() -> DaemonServerOptions {
     DaemonServerOptions {
         on_idle_shutdown: Some(Arc::new(|| {})),
@@ -28,9 +43,11 @@ fn options() -> DaemonServerOptions {
     }
 }
 
+#[cfg(unix)]
 type Seen = Arc<Mutex<Vec<(Value, Option<LspRequestContext>)>>>;
 
 /// Records what reaches Core and answers with a text block naming the context cwd.
+#[cfg(unix)]
 fn recording_dispatch(seen: Seen) -> Dispatch {
     Arc::new(
         move |input: Value, context: Option<LspRequestContext>, _signal| {
@@ -49,6 +66,7 @@ fn recording_dispatch(seen: Seen) -> Dispatch {
     )
 }
 
+#[cfg(unix)]
 async fn start(paths: &DaemonPaths, dispatch: Option<Dispatch>) -> DaemonServerHandle {
     within(start_daemon_server(
         paths,
@@ -61,6 +79,7 @@ async fn start(paths: &DaemonPaths, dispatch: Option<Dispatch>) -> DaemonServerH
     .unwrap()
 }
 
+#[cfg(unix)]
 async fn exchange(paths: &DaemonPaths, message: &Value) -> Value {
     let mut stream = tokio::net::UnixStream::connect(&paths.socket)
         .await
@@ -83,6 +102,7 @@ async fn exchange(paths: &DaemonPaths, message: &Value) -> Value {
     .await
 }
 
+#[cfg(unix)]
 fn call_options(paths: &DaemonPaths, context: LspRequestContext) -> CallToolOptions {
     CallToolOptions {
         context: Some(context),
@@ -278,6 +298,7 @@ async fn live_unreachable_owner_defers_without_unlinking() {
 /// A crashed daemon leaves its lock, owner, pid and a dead socket file behind; the next
 /// candidate must reclaim all of it without hanging or panicking.
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(unix)]
 async fn crashed_owner_leftovers_are_reclaimed_and_auth_rotated() {
     let root = short_tempdir();
     let paths = test_paths(&root);

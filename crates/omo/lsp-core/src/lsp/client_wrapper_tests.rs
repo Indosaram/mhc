@@ -112,6 +112,7 @@ fn repository_marker_wins_over_nearest_package_marker() {
 }
 
 #[test]
+#[cfg(unix)]
 fn symlink_inside_cwd_pointing_outside_keeps_lexical_read_path_and_cwd_root() {
     let root = temp_root();
     let outside = temp_root();
@@ -139,6 +140,7 @@ fn symlink_inside_cwd_pointing_outside_keeps_lexical_read_path_and_cwd_root() {
 }
 
 #[test]
+#[cfg(unix)]
 fn absolute_alias_path_through_outside_symlink_preserves_lexical_suffix() {
     let root = temp_root();
     let outside = temp_root();
@@ -178,6 +180,7 @@ fn missing_parent_directories_without_markers_use_existing_directory() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
 async fn rename_through_outside_symlink_rejects_before_client_acquisition() {
     let root = temp_root();
     let outside = temp_root();

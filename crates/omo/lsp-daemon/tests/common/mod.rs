@@ -1,4 +1,5 @@
 //! Shared helpers for lsp-daemon integration tests.
+#![cfg(unix)]
 #![allow(dead_code)]
 
 use std::future::Future;
@@ -13,6 +14,7 @@ use lsp_daemon::paths::DaemonPaths;
 use lsp_daemon::socket_jsonrpc::{LineBuffer, encode_json_line};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::Notify;
 
@@ -74,12 +76,14 @@ pub enum Reply {
 
 /// Scripted stand-in for the daemon socket that records every received line.
 #[derive(Clone, Default)]
+#[cfg(unix)]
 pub struct FakeDaemon {
     pub received: Arc<Mutex<Vec<Value>>>,
     pub connections_closed: Arc<Mutex<usize>>,
     pub changed: Arc<Notify>,
 }
 
+#[cfg(unix)]
 impl FakeDaemon {
     pub fn received(&self) -> Vec<Value> {
         self.received.lock().unwrap().clone()

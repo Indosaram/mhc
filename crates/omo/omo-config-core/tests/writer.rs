@@ -343,6 +343,7 @@ fn the_user_write_target_never_leaves_the_dot_omo_directory() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_preexisting_temp_symlink_is_never_followed() {
     let (_root, _home, project) = fixture();
     let config_path = format!("{project}/.omo/omo.jsonc");
@@ -369,6 +370,7 @@ fn a_preexisting_temp_symlink_is_never_followed() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_symlinked_existing_config_is_rejected_without_writing_a_backup() {
     for extension in ["jsonc", "json"] {
         let (_root, _home, project) = fixture();
@@ -396,6 +398,7 @@ fn a_symlinked_existing_config_is_rejected_without_writing_a_backup() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_symlinked_project_omo_directory_is_rejected_without_touching_the_target() {
     let (_root, home, project) = fixture();
     let target_dir = format!("{home}/.omo");

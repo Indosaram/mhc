@@ -101,6 +101,7 @@ fn missing_transcripts_directory_is_empty_but_other_read_errors_propagate() {
 }
 
 #[test]
+#[cfg(unix)]
 fn unexpected_read_errors_propagate() {
     let root = tempfile::tempdir().unwrap();
     let read_error = root.path().join("read-error");
