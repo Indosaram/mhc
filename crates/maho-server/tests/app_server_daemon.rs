@@ -327,3 +327,20 @@ async fn idle_lifecycle_unloads_only_unsubscribed_inactive_threads_and_dispose_c
     let result=runtime.core.read().await.registry.dispatch(RegistryConnection {initialized:true,id:"observer".into(),..Default::default()},json!({"id":1,"method":"thread/read","params":{"threadId":id}})).await;assert!(result.get("result").is_some());
     runtime.core.write().await.remove_connection("observer");runtime.dispose().await;
 }
+
+#[tokio::test]
+async fn daemon_exit_is_described_with_code_or_signal_and_stderr_is_appended() {
+    use maho_server::app_server::daemon::{DaemonPaths, append_daemon_stderr, describe_daemon_exit};
+    let status = tokio::process::Command::new("sh").args(["-c","exit 3"]).status().await.unwrap();
+    assert_eq!(describe_daemon_exit(&Ok(status)),"exited with code 3");
+    let mut child = tokio::process::Command::new("sleep").arg("600").kill_on_drop(true).spawn().unwrap();
+    child.start_kill().unwrap();
+    assert_eq!(describe_daemon_exit(&child.wait().await),"was terminated by SIGKILL");
+    assert_eq!(describe_daemon_exit(&Err(std::io::Error::other("boom"))),"failed to launch (boom)");
+    let directory = tempfile::tempdir().unwrap();
+    let paths = DaemonPaths::new(directory.path());
+    assert_eq!(append_daemon_stderr(&paths,"message").await.unwrap(),"message");
+    std::fs::create_dir_all(&paths.dir).unwrap();
+    std::fs::write(&paths.stderr_log,"\n  bind failed  \n").unwrap();
+    assert_eq!(append_daemon_stderr(&paths,"message").await.unwrap(),"message\nbind failed");
+}
