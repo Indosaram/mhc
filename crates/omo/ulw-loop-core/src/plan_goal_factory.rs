@@ -105,7 +105,7 @@ fn truncate_objective(objective: &str) -> String {
 fn replace_via(goal_id: &str, id: &str, surface: UlwLoopToolkitSurface) -> String {
     match surface {
         UlwLoopToolkitSurface::OmoSenpi => format!(
-            "Replace via agentToolkit.steer({{ kind: \"revise_criterion\", source: \"finding\", goalId: \"{goal_id}\", criterionId: \"{id}\", scenario, expectedEvidence, evidence, rationale }}) (or pass successCriteria to addGoal)"
+            "Replace via mhc ulw-loop steer --kind revise_criterion --source finding --goal-id {goal_id} --criterion-id {id} --scenario \"<scenario>\" --expected-evidence \"<proof>\" --evidence \"<why>\" --rationale \"<why>\" (successCriteria cannot be passed to add-goal)"
         ),
         UlwLoopToolkitSurface::LazyCodex => format!(
             "Replace via ulw-loop steer --kind revise_criterion --goal-id {goal_id} --criterion-id {id} --scenario \"<scenario>\" --expected-evidence \"<proof>\" --evidence \"<why>\" --rationale \"<why>\""

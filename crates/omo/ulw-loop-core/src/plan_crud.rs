@@ -161,7 +161,7 @@ pub fn create_ulw_loop_plan(
 fn completed_plan_exists_error(scope: Option<&UlwLoopScope>, surface: UlwLoopToolkitSurface) -> UlwLoopError {
     let msg = if surface == UlwLoopToolkitSurface::OmoSenpi {
         format!(
-            "Existing ulw-loop aggregate is already complete at {}. Start a new run under a fresh session id (a new senpi session) or call agentToolkit.createGoals({{ brief, force: true }}) to recreate.",
+            "Existing ulw-loop aggregate is already complete at {}. Start a new run under a fresh session id (a new session) or run `mhc ulw-loop create-goals --brief \"<brief>\" --force --json` to recreate.",
             ulw_loop_goals_relative_path(scope)
         )
     } else {
