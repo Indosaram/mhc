@@ -27,7 +27,7 @@ for (const width of [40, 80, 120]) {
   }
   const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   cases.push({ kind: 'thinking', width, expected: new ThinkingSelectorComponent('medium', levels, () => {}, () => {}, () => {}, 'high').render(width) });
-  cases.push({ kind: 'trust', width, expected: new TrustSelectorComponent({ cwd: '/tmp', savedDecision: null, projectTrusted: false, onSelect() {}, onCancel() {} }).render(width) });
+  cases.push({ kind: 'trust', width, expected: new TrustSelectorComponent({ cwd: '/usr/bin', savedDecision: null, projectTrusted: false, onSelect() {}, onCancel() {} }).render(width) });
   const editor = new CustomEditor({ terminal: { rows: 36 }, requestRender() {}, getShowHardwareCursor() { return false; } }, getEditorTheme(), new KeybindingsManager({}, undefined));
   editor.setText('hello 한국어');
   cases.push({ kind: 'editor', width, expected: editor.render(width) });
