@@ -1618,6 +1618,17 @@ impl TuiBase {
             .any(|entry| TuiBaseState::is_overlay_visible(entry, 0, 0))
     }
 
+    /// `true` when keyboard focus sits on a visible overlay (senpi's protected `isOverlayFocused`).
+    pub fn is_overlay_focused(&self) -> bool {
+        let state = self.state.borrow();
+        state.focused_component.as_ref().is_some_and(|focused| {
+            state
+                .overlay_stack
+                .iter()
+                .any(|entry| Rc::ptr_eq(&entry.component, focused) && TuiBaseState::is_overlay_visible(entry, 0, 0))
+        })
+    }
+
     pub fn invalidate(&mut self) {
         for root in self.mounted_roots() {
             root.borrow_mut().invalidate();
