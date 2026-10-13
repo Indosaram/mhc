@@ -2808,9 +2808,10 @@ impl AgentSession {
         self.with_session_manager_mut(|manager| {
             let branch = manager.branch(manager.leaf_id().or(Some("")));
             if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
-                manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
+                return manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
             }
-        });
+            Ok(())
+        })?;
         messages.pop();
         self.agent.set_messages(messages);
         self.state().message_revision += 1;
@@ -3742,11 +3743,13 @@ impl AgentSession {
                 editor_text = Some(user_message_text(&session_message_from_value(entry["message"].clone()).map_err(|error| error.to_string())?));
                 entry.get("parentId").and_then(Value::as_str).map(str::to_owned)
             } else { Some(target_id.to_owned()) };
-        self.with_session_manager_mut(|manager| manager.set_leaf(leaf.as_deref()));
-        let summary_entry = summary.as_ref().and_then(|summary| summary.get("summary").and_then(Value::as_str))
-            .map(|text| self.with_session_manager_mut(|manager| manager.append_branch_summary(old_leaf.as_deref().unwrap_or_default(), text,
+        let summary_text = summary.as_ref().and_then(|summary| summary.get("summary").and_then(Value::as_str)).filter(|text| !text.is_empty());
+        let summary_entry = match summary_text {
+            Some(text) => Some(self.with_session_manager_mut(|manager| manager.branch_with_summary(leaf.as_deref(), text,
                 summary.as_ref().and_then(|summary| summary.get("details")).cloned(),
-                summary.as_ref().and_then(|summary| summary.get("usage")).cloned(), Some(from_extension))));
+                summary.as_ref().and_then(|summary| summary.get("usage")).cloned(), Some(from_extension)))?),
+            None => { self.with_session_manager_mut(|manager| manager.set_leaf(leaf.as_deref()))?; None }
+        };
         let replacement_entry = replacement.map(|message| serde_json::to_value(message).map(|message|
             self.with_session_manager_mut(|manager| manager.append_message(message)))).transpose().map_err(|error| error.to_string())?;
         if let Some(label) = options.label.as_deref() {
@@ -3754,7 +3757,7 @@ impl AgentSession {
             self.with_session_manager_mut(|manager| manager.append_label(labelled, Some(label)))?;
         }
         if options.intent == Some(TreeNavigationIntent::Resume) && replacement_entry.is_none() && (summary_entry.is_some() || options.label.is_some()) {
-            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
+            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)))?;
         }
         self.rebuild_session_context()?;
         self.dispatch_extension_event(maho_ext_api::ExtensionEvent::SessionTree { new_leaf_id: self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)),
@@ -3762,7 +3765,7 @@ impl AgentSession {
         if options.intent == Some(TreeNavigationIntent::Resume)
             && self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)).as_deref() != Some(target_id)
         {
-            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)));
+            self.with_session_manager_mut(|manager| manager.set_leaf(Some(target_id)))?;
             self.rebuild_session_context()?;
         }
         Ok(AssistantEditResult { editor_text, summary_entry, entry_id: replacement_entry.as_ref().and_then(|entry| entry.get("id")).and_then(Value::as_str).map(str::to_owned), ..Default::default() })
@@ -8914,7 +8917,7 @@ mod tests {
             selected["id"].as_str().expect("id").to_owned()
         });
         for leaf in [Some(selected.as_str()), None] {
-            session.with_session_manager_mut(|manager| manager.set_leaf(leaf));
+            session.with_session_manager_mut(|manager| manager.set_leaf(leaf)).expect("leaf");
             let path = dir.path().join("selected.jsonl");
             session.export_to_jsonl(Some(path.to_str().expect("path"))).expect("export");
             let entries = crate::session_manager::load_entries_from_file(path.to_str().expect("path"));
@@ -10965,7 +10968,7 @@ mod tests {
             manager.append_compaction("abandoned digest", root["id"].as_str().expect("root"), 1000, None, None, None);
             selected
         });
-        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str())).expect("leaf");
         session.rebuild_session_context().expect("selected context");
         assert_eq!(session.get_context_usage().expect("usage").tokens, Some(1000));
     }
@@ -12079,18 +12082,18 @@ mod tests {
                 manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"selected".repeat(5000)}],"timestamp":0}));
             }
             let selected = manager.leaf_id().expect("selected leaf").to_owned();
-            manager.set_leaf(root["id"].as_str());
+            manager.set_leaf(root["id"].as_str()).expect("leaf");
             manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1}));
             selected
         });
-        session.with_session_manager_mut(|manager| manager.set_leaf(Some(&selected)));
+        session.with_session_manager_mut(|manager| manager.set_leaf(Some(&selected))).expect("leaf");
         session.rebuild_session_context().expect("selected context");
         session.with_session_manager_mut(|manager| {
             let root = manager.entries().into_iter().find(|entry| entry["type"] == "message").expect("root");
             let selected = manager.leaf_id().expect("selected context leaf").to_owned();
-            manager.set_leaf(root["id"].as_str());
+            manager.set_leaf(root["id"].as_str()).expect("leaf");
             manager.append_custom("abandoned-metadata", None);
-            manager.set_leaf(Some(&selected));
+            manager.set_leaf(Some(&selected)).expect("leaf");
         });
         let mut target = test_model();
         target.id = "fallback-small".to_owned();
@@ -12238,7 +12241,7 @@ mod tests {
         session.agent.set_model(test_model());
         let selected = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"selected","timestamp":0})));
         let abandoned = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"abandoned","timestamp":1})));
-        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str()));
+        session.with_session_manager_mut(|manager| manager.set_leaf(selected["id"].as_str())).expect("leaf");
         let result = crate::compaction::compaction::CompactionResult { summary: "summary".to_owned(),
             first_kept_entry_id: abandoned["id"].as_str().expect("abandoned").to_owned(), tokens_before: 100,
             estimated_tokens_after: None, usage: None, details: None };

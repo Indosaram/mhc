@@ -1160,15 +1160,47 @@ impl SessionManager {
         build_session_context(&self.entries(), leaf_id)
     }
 
-    pub fn set_leaf(&mut self, leaf_id: Option<&str>) {
-        match leaf_id {
-            Some(id) => {
-                if self.by_id.contains_key(id) {
-                    self.leaf_id = Some(id.to_owned());
-                }
-            }
-            None => self.leaf_id = None,
+    /// senpi `branch(branchFromId)` (a `None` target is `resetLeaf()`): move the leaf so the
+    /// next append starts a new branch. An id unknown to the mirror triggers one reload from disk
+    /// and is an error when still missing.
+    pub fn set_leaf(&mut self, leaf_id: Option<&str>) -> Result<(), String> {
+        let Some(id) = leaf_id else {
+            self.reset_leaf();
+            return Ok(());
+        };
+        if !self.by_id.contains_key(id) && self.session_file.is_some() {
+            self.reload_from_disk();
         }
+        if !self.by_id.contains_key(id) {
+            return Err(format!("Entry {id} not found"));
+        }
+        self.leaf_id = Some(id.to_owned());
+        Ok(())
+    }
+
+    /// senpi `resetLeaf`: the next append creates a new root entry (parentId = null).
+    pub fn reset_leaf(&mut self) {
+        self.leaf_id = None;
+    }
+
+    /// senpi `branchWithSummary`: move the leaf to `branch_from_id` (None = root) and append a
+    /// branch_summary there whose `fromId` is the abandoned leaf (or "root").
+    pub fn branch_with_summary(
+        &mut self,
+        branch_from_id: Option<&str>,
+        summary: &str,
+        details: Option<Value>,
+        usage: Option<Value>,
+        from_hook: Option<bool>,
+    ) -> Result<Value, String> {
+        if let Some(id) = branch_from_id
+            && !self.by_id.contains_key(id)
+        {
+            return Err(format!("Entry {id} not found"));
+        }
+        let from_id = self.leaf_id.clone().unwrap_or_else(|| "root".to_owned());
+        self.leaf_id = branch_from_id.map(str::to_owned);
+        Ok(self.append_branch_summary(&from_id, summary, details, usage, from_hook))
     }
 
     /// senpi `getTree`: every root, with orphaned entries (broken parent chain) also returned as
@@ -1505,9 +1537,9 @@ mod tests {
         let mut manager = SessionManager::create(&dir, Some(&dir), None);
         let root = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
         let root_id = root["id"].as_str().unwrap_or_default().to_owned();
-        manager.set_leaf(Some(&root_id));
+        manager.set_leaf(Some(&root_id)).expect("leaf");
         let left = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
-        manager.set_leaf(Some(&root_id));
+        manager.set_leaf(Some(&root_id)).expect("leaf");
         let right = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 3 }));
         let trees = manager.get_tree();
         assert_eq!(trees.len(), 1);
@@ -1517,6 +1549,24 @@ mod tests {
         assert_eq!(tree.children[0].entry["id"], left["id"]);
         assert_eq!(tree.children[1].entry["id"], right["id"]);
         assert_eq!(manager.leaf_id(), Some(right["id"].as_str().unwrap_or_default()));
+    }
+
+    #[test]
+    fn branching_rejects_unknown_ids_and_summaries_record_the_abandoned_leaf() {
+        let mut manager = SessionManager::in_memory("/tmp", None, None);
+        let root = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        let root_id = root["id"].as_str().unwrap_or_default().to_owned();
+        let leaf = manager.append_message(json!({ "role": "user", "content": "b", "timestamp": 2 }));
+        assert_eq!(manager.set_leaf(Some("missing")), Err("Entry missing not found".to_owned()));
+        assert_eq!(manager.leaf_id(), leaf["id"].as_str());
+        assert!(manager.branch_with_summary(Some("missing"), "s", None, None, None).is_err());
+        let summary = manager.branch_with_summary(Some(&root_id), "s", None, None, None).expect("summary");
+        assert_eq!(summary["fromId"], leaf["id"]);
+        assert_eq!(summary["parentId"], json!(root_id));
+        manager.reset_leaf();
+        let at_root = manager.branch_with_summary(None, "t", None, None, None).expect("root summary");
+        assert_eq!(at_root["fromId"], "root");
+        assert_eq!(at_root["parentId"], Value::Null);
     }
 
     #[test]
