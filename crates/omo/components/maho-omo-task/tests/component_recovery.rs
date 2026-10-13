@@ -103,6 +103,51 @@ async fn registered_send_observes_late_team_routing_and_propagates_resolver_fail
     component.dispose(); drop(execute); drop(api); drop(component); root.close().expect("cleanup");
 }
 
+#[derive(Default)]
+struct IdleFlushes(std::sync::atomic::AtomicUsize);
+impl IdleInjectionCoordinator for IdleFlushes {
+    fn enqueue(&self, _: IdleInjection) -> bool { true }
+    fn schedule_flush(&self) {}
+    fn flush_soon(&self) {}
+    fn flush_on_idle(&self) -> usize { self.0.fetch_add(1, Ordering::SeqCst); 0 }
+    fn pending_count(&self) -> usize { 0 }
+    fn remove(&self, _: &str) -> bool { false }
+}
+
+#[tokio::test]
+async fn registered_agent_end_defers_idle_flush_past_the_handler() {
+    let root = tempfile::tempdir().expect("root");
+    let runner = Arc::new(NoLaunch);
+    let engine = compose_task_engine(ComposeTaskEngineDeps {
+        cwd: root.path().into(), config: serde_json::json!({}),
+        runners: ManagedRunners { in_process: runner.clone(), process: runner },
+        actions: Arc::new(Actions::default()), coordinator: None, resolve_registry: Arc::new(|| None), host_transport: None,
+    });
+    let mut api = support::api();
+    let ownership = TeamMemberOwnershipDeps {
+        state_dir: StateDirConfig { project_dir: root.path().into(), task_state_dir: None },
+        team_bounds: TeamTaskBounds { max_members: 4, max_parallel_members: 2, max_wall_clock_minutes: 10 }, load_runtime_state: None,
+    };
+    let component = TaskComponent::register_with_status_timers(&mut api, engine, Default::default(), ownership, false, Arc::new(Timers::default())).expect("register").expect("component");
+    let flushes = Arc::new(IdleFlushes::default());
+    let deferred = Arc::new(Mutex::new(Vec::<Box<dyn FnOnce() + Send>>::new()));
+    let queued = deferred.clone();
+    let mut context = support::context();
+    context.cwd = root.path().into();
+    context.idle_coordinator = Some(flushes.clone() as Arc<dyn IdleInjectionCoordinator>);
+    context.defer_macrotask = Some(Arc::new(move |task: Box<dyn FnOnce() + Send>| queued.lock().expect("deferred").push(task)));
+    let mut end = ExtensionEvent::AgentEnd { messages: vec![], aborted: None, will_retry: None, abort_source: None };
+    for handler in &api.registered.handlers[&EventKind::AgentEnd] {
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler(&mut end, &context)).await.expect("agent end deadline").expect("agent end");
+    }
+    assert_eq!(flushes.0.load(Ordering::SeqCst), 0, "the idle flush is deferred, never run inside the handler");
+    let tasks = std::mem::take(&mut *deferred.lock().expect("deferred"));
+    assert_eq!(tasks.len(), 1, "agent_end defers exactly one idle flush");
+    for task in tasks { task(); }
+    assert_eq!(flushes.0.load(Ordering::SeqCst), 1);
+    component.dispose(); drop(api); drop(component); root.close().expect("cleanup");
+}
+
 #[tokio::test]
 async fn registered_start_redelivers_expired_completion_before_ttl_cleanup() {
     recovery(Case { member: false, marker: Marker::Exact, expire_after_ack: false }).await;
