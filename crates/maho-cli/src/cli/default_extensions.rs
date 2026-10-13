@@ -49,8 +49,17 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
             factory: Arc::new(move |_| { let error = error.clone(); Box::pin(async move { Err(ExtensionFailure::new(error)) }) }),
         }),
     }
+    let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
+    if let Err(error) = super::global_default_shims::ensure_global_default_extensions(&agent_dir) {
+        maho_core::output_guard::maho_write_stderr(&format!("Could not write default extension shims: {error}\n"));
+    }
+    let active_defaults = super::global_default_shims::active_global_default_extension_ids(&agent_dir);
+    assembled.retain(|factory| {
+        let id = factory.path.strip_prefix("<builtin:").and_then(|path| path.strip_suffix('>'));
+        !id.is_some_and(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.contains(&id) && !active_defaults.contains(id))
+    });
     let paths: std::collections::BTreeSet<_> = assembled.iter().map(|factory| factory.path.clone()).collect();
-    let native = super::extension_registry::native_extension_factories().into_iter()
+    let native = super::extension_registry::native_extension_factories_for(&agent_dir).into_iter()
         .filter(|factory| !paths.contains(&factory.path)).collect();
     assembled.extend(async_factories(native));
     assembled.sort_by_key(|factory| {
