@@ -29,6 +29,22 @@ pub fn register_soul_notice(api:&mut maho_ext_api::ExtensionApi,resolve:crate::p
         })
     }));
 }
+/// Direct-surface post-commit seam (pin `wiring-static.ts:115-118`, `soul-notice.ts` onCommit):
+/// the native commit carries only its sha, so subject and affected paths are read back from git.
+pub fn soul_commit_notice(api:&maho_ext_api::ExtensionApi,resolve:crate::tools::MemoryContextResolver,edit_notice:std::sync::Arc<dyn Fn(&str)->bool+Send+Sync>,warn:crate::guard::GuardWarning)->crate::tools::MemoryCommitNotice{
+    let actions=maho_ext_api::ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory-soul",api.cwd.clone(),Default::default()),api.profile.clone(),api.events.clone(),api.runtime.clone());
+    std::sync::Arc::new(move |commit:memory_core::tools::memory::MemoryToolCommit| {
+        let Some(context)=resolve()else{return;};
+        let record=match read_soul_commit(&context,&commit.sha){Ok(Some(record))=>record,Ok(None)=>return,Err(error)=>{warn(&format!("memory soul notice failed: {error}"));return;}};
+        if !memory_core::soul::touches_soul_path(record.affected_paths.as_slice())||!edit_notice(&context.identity){return;}
+        if let Err(error)=actions.append_entry(SOUL_UPDATED_ENTRY_TYPE,Some(serde_json::json!({"sha":record.sha,"subject":record.subject,"affectedPaths":record.affected_paths}))){warn(&format!("memory soul notice failed: {error}"));}
+    })
+}
+fn read_soul_commit(context:&crate::context::MemoryIdentityContext,sha:&str)->Result<Option<SoulUpdatedRecord>,memory_core::git::errors::GitError>{
+    let repo=memory_core::git::GitMemoryRepo::open(&context.identity_paths.repo,&context.identity)?;
+    let commit=repo.log(Some(&memory_core::git::GitLogOptions{range:Some(sha.into()),paths:None,limit:Some(1),include_paths:true}))?.into_iter().next();
+    Ok(commit.map(|commit|SoulUpdatedRecord{sha:commit.sha,subject:commit.subject,affected_paths:commit.paths.unwrap_or_default()}))
+}
 pub trait SoulNoticeApi{fn register_entry_renderer(&mut self,entry_type:&str);fn append_entry(&mut self,entry_type:&str,record:&SoulUpdatedRecord);}
 pub fn on_soul_commit(api:Option<&mut dyn SoulNoticeApi>,edit_notice:bool,commit:&SoulUpdatedRecord){
     if !edit_notice||!commit.affected_paths.iter().any(|path|path=="system/persona.md"||path=="system/identity.md"){return;}
