@@ -2334,6 +2334,8 @@ impl InteractiveMode {
                 self.maybe_warn_about_anthropic_subscription_auth(requested);
             }
             else { self.show_status(format!("Model switch pending: {reference}")); }
+            return Ok(PromptDisposition::Handled);
+        }
         if let Some(reference) = text.trim().strip_prefix("/model-select ") {
             // The selectors' `onSelect`: senpi calls `selectModelFromUi` with the chosen model directly.
             let Some((provider, id)) = reference.trim().split_once('/') else { return Ok(PromptDisposition::Handled); };
@@ -3286,7 +3288,9 @@ impl InteractiveMode {
                 }
             }
         }
-    }: one row per provider and supported auth type, by name.
+    }
+
+    /// senpi `getLoginProviderOptions`: one row per provider and supported auth type, by name.
     fn login_provider_options(&self, auth_type: Option<crate::components::oauth_selector::AuthSelectorAuthType>) -> Vec<crate::components::oauth_selector::AuthSelectorProvider> {
         use crate::components::oauth_selector::AuthSelectorAuthType;
         let registry = self.session.model_registry();
