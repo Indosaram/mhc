@@ -73,7 +73,9 @@ struct ScrollbarDrag {
     grab_offset: i64,
 }
 
-const KITTY_IMAGE_BYTE_BUDGET: u64 = 64 * 1024 * 1024;
+const MAX_CACHED_OFFSCREEN_KITTY_IMAGES: usize = 16;
+const MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 
 const ENTER_ALT_SCREEN: &str = "\x1b[?1049h";
 const EXIT_ALT_SCREEN: &str = "\x1b[?1049l";
@@ -87,9 +89,11 @@ const END_SYNCHRONIZED_OUTPUT: &str = "\x1b[?2026l";
 const DELETE_ALL_KITTY_IMAGES: &str = "\x1b_Ga=d,d=A,q=2\x1b\\";
 const DELETE_ALL_KITTY_PLACEMENTS: &str = "\x1b_Ga=d,d=a,q=2\x1b\\";
 
+#[derive(Debug, Clone, Copy)]
 struct CachedKittyImage {
-    generation: u64,
-    bytes: u64,
+    transmission_generation: u64,
+    transmission_bytes: u64,
+    estimated_decoded_bytes: u64,
 }
 
 /// TUI implementation that switches the terminal to the alternate screen buffer and owns the
@@ -113,9 +117,10 @@ pub struct TuiAltScreen {
     search_matches: Vec<AltScreenSearchMatch>,
     search_selected_index: i64,
     search_visible: bool,
-    kitty_image_cache: std::collections::HashMap<u32, CachedKittyImage>,
-    kitty_image_cache_generation: u64,
-    kitty_image_cache_bytes: u64,
+    /// senpi's `uploadedKittyImages` `Map`: insertion order is the eviction order, and a
+    /// re-rendered image moves to the end.
+    uploaded_kitty_images: Vec<(u32, CachedKittyImage)>,
+    saved_capabilities: Option<crate::terminal_image::TerminalCapabilities>,
     alt_screen_active: bool,
     previous_screen: Vec<String>,
     previous_screen_width: usize,
@@ -156,9 +161,8 @@ impl TuiAltScreen {
             search_matches: Vec::new(),
             search_selected_index: -1,
             search_visible: false,
-            kitty_image_cache: std::collections::HashMap::new(),
-            kitty_image_cache_generation: 0,
-            kitty_image_cache_bytes: 0,
+            uploaded_kitty_images: Vec::new(),
+            saved_capabilities: None,
             alt_screen_active: false,
             previous_screen: Vec::new(),
             previous_screen_width: 0,
@@ -210,8 +214,7 @@ impl TuiAltScreen {
             self.delete_alt_screen_kitty_images(),
             if mouse_enabled { DISABLE_MOUSE } else { "" }
         ));
-        self.kitty_image_cache.clear();
-        self.kitty_image_cache_bytes = 0;
+        self.uploaded_kitty_images.clear();
     }
 
     pub fn acquire_mouse_capture(&mut self, reason: impl Into<String>, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
@@ -348,10 +351,18 @@ impl TuiAltScreen {
             line != previous && (image_stub::is_image_line(line) || image_stub::is_image_line(previous))
         });
 
+        let redraw_images = full_redraw || images_need_redraw;
+        let had_uploaded_kitty_images = !self.uploaded_kitty_images.is_empty();
+        let (prepared_lines, evicted_image_deletion) = if redraw_images && self.image_protocol == ImageProtocol::Kitty {
+            self.prepare_kitty_screen(&screen)
+        } else {
+            (screen.clone(), String::new())
+        };
+
         let mut buffer = String::from(BEGIN_SYNCHRONIZED_OUTPUT);
         if full_redraw {
             self.full_redraw_count += 1;
-            let clear_images = if self.image_protocol == ImageProtocol::Kitty && !self.kitty_image_cache.is_empty() {
+            let clear_images = if self.image_protocol == ImageProtocol::Kitty && had_uploaded_kitty_images {
                 DELETE_ALL_KITTY_PLACEMENTS.to_string()
             } else {
                 self.delete_alt_screen_kitty_images()
@@ -365,6 +376,7 @@ impl TuiAltScreen {
                 buffer.push_str(DELETE_ALL_KITTY_PLACEMENTS);
             }
         }
+        buffer.push_str(&evicted_image_deletion);
 
         for row in 0..height {
             let line = screen.get(row).map(String::as_str).unwrap_or("");
@@ -372,7 +384,8 @@ impl TuiAltScreen {
             if !full_redraw && !images_need_redraw && line == previous {
                 continue;
             }
-            buffer.push_str(&format!("\x1b[{};1H\x1b[2K{line}", row + 1));
+            let painted = prepared_lines.get(row).map(String::as_str).unwrap_or("");
+            buffer.push_str(&format!("\x1b[{};1H\x1b[2K{painted}", row + 1));
         }
 
         if let Some((row, col)) = cursor_pos {
@@ -398,9 +411,16 @@ impl TuiAltScreen {
         self.stop_scrollbar_drag();
         self.flashes.dispose();
         self.alt_screen_active = true;
+        let capabilities = crate::terminal_image::get_capabilities();
         self.image_protocol = image_stub::get_capabilities().images;
-        self.kitty_image_cache.clear();
-        self.kitty_image_cache_bytes = 0;
+        self.uploaded_kitty_images.clear();
+        // iTerm2 inline images are placed relative to the scrolling main buffer; in the alternate
+        // screen they break the viewport, so senpi disables them until the alt screen is left.
+        if capabilities.images == Some(crate::terminal_capabilities::ImageProtocol::Iterm2) {
+            self.saved_capabilities = Some(capabilities);
+            crate::terminal_image::set_capabilities(crate::terminal_image::TerminalCapabilities { images: None, ..capabilities });
+            self.base.invalidate();
+        }
         self.reset_render_state();
         let mouse_sequence = if multiplexer { ENABLE_BUTTON_MOTION_MOUSE } else { ENABLE_ALL_MOTION_MOUSE };
         terminal.write(&format!(
@@ -418,8 +438,17 @@ impl TuiAltScreen {
         self.alt_screen_active = false;
         if preserve_screen {
             terminal.write(&format!("{BEGIN_SYNCHRONIZED_OUTPUT}{EXIT_ALT_SCREEN}\x1b[?25h{END_SYNCHRONIZED_OUTPUT}"));
-            return;
+        } else {
+            self.write_last_document(terminal);
         }
+        if let Some(capabilities) = self.saved_capabilities.take() {
+            crate::terminal_image::set_capabilities(capabilities);
+        }
+    }
+
+    /// The non-preserving half of senpi's `afterTerminalStop`: repaint the alt document into the
+    /// main screen's scrollback.
+    fn write_last_document(&mut self, terminal: &mut dyn Terminal) {
         let width = (terminal.columns() as usize).max(1);
         let document_lines: Vec<String> = self
             .base
@@ -1032,39 +1061,71 @@ impl TuiAltScreen {
             .map(get_alt_screen_search_match_key)
     }
 
-    /// Records a rendered Kitty image placeholder for the byte-budget-bounded offscreen cache
-    /// (senpi's `uploadedKittyImages` eviction policy). Uses `image_stub.rs`'s placeholder
-    /// metadata extraction (todo 9 gap: real transmission byte accounting).
-    pub fn note_rendered_image_line(&mut self, line: &str, protocol: ImageProtocol) {
-        if protocol != ImageProtocol::Kitty {
-            return;
-        }
-        let Some(placement) = image_stub::get_kitty_image_placement(line) else {
-            return;
-        };
-        self.kitty_image_cache_generation += 1;
-        let previous = self.kitty_image_cache.insert(
-            placement.image_id,
-            CachedKittyImage { generation: self.kitty_image_cache_generation, bytes: placement.estimated_decoded_bytes },
-        );
-        if let Some(previous) = previous {
-            self.kitty_image_cache_bytes = self.kitty_image_cache_bytes.saturating_sub(previous.bytes);
-        }
-        self.kitty_image_cache_bytes += placement.estimated_decoded_bytes;
-        self.evict_kitty_images_over_budget();
-    }
+    /// senpi's `prepareKittyScreen`: swap an already-uploaded image's full transmission for its
+    /// placement-only replacement line, and evict offscreen uploads once any cache cap is exceeded.
+    fn prepare_kitty_screen(&mut self, screen: &[String]) -> (Vec<String>, String) {
+        let mut visible_image_ids: Vec<u32> = Vec::new();
+        let lines: Vec<String> = screen
+            .iter()
+            .map(|line| {
+                let Some(placement) = image_stub::get_kitty_image_placement(line) else {
+                    return line.clone();
+                };
+                visible_image_ids.push(placement.image_id);
+                let cached_image = self
+                    .uploaded_kitty_images
+                    .iter()
+                    .position(|(id, _)| *id == placement.image_id)
+                    .map(|index| self.uploaded_kitty_images.remove(index).1);
+                self.uploaded_kitty_images.push((
+                    placement.image_id,
+                    CachedKittyImage {
+                        transmission_generation: placement.transmission_generation,
+                        transmission_bytes: placement.transmission_bytes,
+                        estimated_decoded_bytes: placement.estimated_decoded_bytes,
+                    },
+                ));
+                if cached_image.is_some_and(|cached| cached.transmission_generation == placement.transmission_generation) {
+                    placement.replacement_line
+                } else {
+                    line.clone()
+                }
+            })
+            .collect();
 
-    fn evict_kitty_images_over_budget(&mut self) {
-        while self.kitty_image_cache_bytes > KITTY_IMAGE_BYTE_BUDGET {
-            let Some((&oldest_id, _)) = self.kitty_image_cache.iter().min_by_key(|(_, cached)| cached.generation) else {
-                break;
-            };
-            if let Some(cached) = self.kitty_image_cache.remove(&oldest_id) {
-                self.kitty_image_cache_bytes = self.kitty_image_cache_bytes.saturating_sub(cached.bytes);
-            } else {
+        let mut offscreen_count = 0usize;
+        let mut offscreen_transmission_bytes = 0u64;
+        let mut offscreen_decoded_bytes = 0u64;
+        for (image_id, cached) in &self.uploaded_kitty_images {
+            if visible_image_ids.contains(image_id) {
+                continue;
+            }
+            offscreen_count += 1;
+            offscreen_transmission_bytes += cached.transmission_bytes;
+            offscreen_decoded_bytes += cached.estimated_decoded_bytes;
+        }
+
+        let mut evicted_image_deletion = String::new();
+        let mut index = 0;
+        while index < self.uploaded_kitty_images.len() {
+            if offscreen_count <= MAX_CACHED_OFFSCREEN_KITTY_IMAGES
+                && offscreen_transmission_bytes <= MAX_CACHED_OFFSCREEN_KITTY_TRANSMISSION_BYTES
+                && offscreen_decoded_bytes <= MAX_CACHED_OFFSCREEN_KITTY_DECODED_BYTES
+            {
                 break;
             }
+            let (image_id, cached) = self.uploaded_kitty_images[index];
+            if visible_image_ids.contains(&image_id) {
+                index += 1;
+                continue;
+            }
+            evicted_image_deletion.push_str(&image_stub::delete_kitty_image(image_id));
+            self.uploaded_kitty_images.remove(index);
+            offscreen_count -= 1;
+            offscreen_transmission_bytes -= cached.transmission_bytes;
+            offscreen_decoded_bytes -= cached.estimated_decoded_bytes;
         }
+        (lines, evicted_image_deletion)
     }
 
     pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
