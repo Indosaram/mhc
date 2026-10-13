@@ -17,7 +17,16 @@ impl ModelRegistry {
     pub fn get_all(&self) -> Vec<Model> {self.model_runtime.get_models(None)}
     pub fn find(&self,provider:&str,id:&str) -> Option<Model> {self.model_runtime.get_model(provider,id)}
     pub fn get_error(&self) -> Option<String> {self.model_runtime.get_error()}
-    pub fn get_available(&self) -> Vec<Model> {self.get_all().into_iter().filter(|m|self.has_configured_auth(m)).collect()}
+    /// senpi `getAvailable`: the runtime's availability snapshot once one exists; before the first
+    /// pass, each configured provider's catalog narrowed by its own `filter_models`.
+    pub fn get_available(&self) -> Vec<Model> {
+        if self.model_runtime.has_availability_snapshot() {return self.model_runtime.get_available_snapshot();}
+        self.model_runtime.get_providers().into_iter().flat_map(|provider| {
+            let credential=self.auth_storage.get(provider.id());
+            if credential.is_none()&&!self.model_runtime.get_provider_auth_status(provider.id()).configured {return Vec::new();}
+            provider.filter_models(self.model_runtime.get_models(Some(provider.id())),credential.as_ref())
+        }).collect()
+    }
     pub fn has_configured_auth(&self,model:&Model) -> bool {self.auth_storage.get(&model.provider).is_some()||self.model_runtime.get_provider_auth_status(&model.provider).configured}
     pub fn get_provider_auth_status(&self,id:&str) -> AuthStatus {self.model_runtime.get_provider_auth_status(id)}
     pub fn get_provider(&self,id:&str) -> Option<Arc<dyn Provider>> {self.model_runtime.get_provider(id)}

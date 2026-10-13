@@ -190,7 +190,7 @@ async fn run_generate(
     }
     let data = body.get("data").and_then(Value::as_array).cloned().unwrap_or_default();
     if data.is_empty() {
-        return Err("[OI] images response contained no image data".into());
+        return Err("OpenAI images response contained no image data".into());
     }
 
     let output_format = requested_output_format(option_str(options, "outputFormat").as_deref());
@@ -399,20 +399,20 @@ pub fn parse_usage(raw_usage: &Value, model: &ImagesModel) -> Usage {
 }
 
 pub fn normalize_base_url(base_url: &str) -> Result<String, String> {
-    let mut url = url::Url::parse(base_url).map_err(|_| format!("Invalid [OI] images base URL: {base_url}"))?;
+    let mut url = url::Url::parse(base_url).map_err(|_| format!("Invalid OpenAI images base URL: {base_url}"))?;
     if url.scheme() != "http" && url.scheme() != "https" {
-        return Err("[OI] images base URL must use HTTP or HTTPS".into());
+        return Err("OpenAI images base URL must use HTTP or HTTPS".into());
     }
     if url.query().is_some() || url.fragment().is_some() {
-        return Err("[OI] images base URL must not include a query or fragment".into());
+        return Err("OpenAI images base URL must not include a query or fragment".into());
     }
     let pathname = url.path().trim_end_matches('/').to_owned();
     let normalized_pathname = pathname.to_lowercase();
     if normalized_pathname.contains("/images") {
-        return Err("[OI] images base URL must not include an images endpoint".into());
+        return Err("OpenAI images base URL must not include an images endpoint".into());
     }
     if ENDPOINT_SUFFIXES.iter().any(|suffix| normalized_pathname.ends_with(suffix)) {
-        return Err("[OI] images base URL must not include a known API endpoint".into());
+        return Err("OpenAI images base URL must not include a known API endpoint".into());
     }
     let pathname = if pathname.ends_with("/v1") { pathname } else { format!("{pathname}/v1") };
     url.set_path(&pathname);
@@ -467,23 +467,23 @@ mod tests {
         assert_eq!(normalize_base_url("https://api.openai.com"), Ok("https://api.openai.com/v1".into()));
         assert_eq!(
             normalize_base_url("https://api.openai.com/v1/images"),
-            Err("[OI] images base URL must not include an images endpoint".into())
+            Err("OpenAI images base URL must not include an images endpoint".into())
         );
         assert_eq!(
             normalize_base_url("https://api.openai.com/v1/chat/completions"),
-            Err("[OI] images base URL must not include a known API endpoint".into())
+            Err("OpenAI images base URL must not include a known API endpoint".into())
         );
         assert_eq!(
             normalize_base_url("https://api.openai.com/v1?a=1"),
-            Err("[OI] images base URL must not include a query or fragment".into())
+            Err("OpenAI images base URL must not include a query or fragment".into())
         );
         assert_eq!(
             normalize_base_url("ftp://api.openai.com"),
-            Err("[OI] images base URL must use HTTP or HTTPS".into())
+            Err("OpenAI images base URL must use HTTP or HTTPS".into())
         );
         assert_eq!(
             normalize_base_url("not a url"),
-            Err("Invalid [OI] images base URL: not a url".into())
+            Err("Invalid OpenAI images base URL: not a url".into())
         );
     }
 

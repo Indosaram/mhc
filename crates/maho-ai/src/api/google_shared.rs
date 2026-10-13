@@ -719,7 +719,7 @@ impl ProviderRequestError for GoogleRequestError {
 
 /// Run a Google GenAI SDK request with the shared provider retry policy
 /// (408/409/429/5xx with backoff, honoring retry-after), mirroring how the
-/// Anthropic and [OI] adapters wrap their initial request in
+/// Anthropic and OpenAI adapters wrap their initial request in
 /// retryProviderRequest. The SDK's ApiError has a `status` property but no
 /// `headers` property, and retryProviderRequest only retries errors that carry
 /// both, so normalize the error by adding the missing `headers` before

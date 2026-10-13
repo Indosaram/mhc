@@ -22,7 +22,7 @@ pub fn build_edit_params(
     mask: Option<&ImageContent>,
 ) -> Result<Map<String, Value>, String> {
     if images.len() > 16 {
-        return Err("[OI] image edits accept at most 16 reference images".into());
+        return Err("OpenAI image edits accept at most 16 reference images".into());
     }
     let mut params = params.clone();
     params.insert("image".into(), Value::Array(images.iter().map(|image| serde_json::to_value(image).unwrap_or(Value::Null)).collect()));
@@ -66,7 +66,7 @@ mod tests {
         let references: Vec<ImageContent> = (0..17).map(|_| image("image/png")).collect();
         assert_eq!(
             build_edit_params(&params, &references, None),
-            Err("[OI] image edits accept at most 16 reference images".into())
+            Err("OpenAI image edits accept at most 16 reference images".into())
         );
     }
 }

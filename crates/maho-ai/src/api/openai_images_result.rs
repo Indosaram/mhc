@@ -35,7 +35,7 @@ pub async fn resolve_image(
     }
     let url = datum.get("url").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
     let Some(url) = url else {
-        return Err("[OI] images response datum contained no image data".into());
+        return Err("OpenAI images response datum contained no image data".into());
     };
     if url.starts_with("data:") {
         return parse_data_url(url);
@@ -45,28 +45,28 @@ pub async fn resolve_image(
 
 fn parse_data_url(url: &str) -> Result<ImageContent, String> {
     let Some(rest) = url.strip_prefix("data:") else {
-        return Err("[OI] images response contained an invalid data URL".into());
+        return Err("OpenAI images response contained an invalid data URL".into());
     };
     let Some((header, data)) = rest.split_once(";base64,") else {
-        return Err("[OI] images response contained an invalid data URL".into());
+        return Err("OpenAI images response contained an invalid data URL".into());
     };
     if header.is_empty() || data.is_empty() {
-        return Err("[OI] images response contained an invalid data URL".into());
+        return Err("OpenAI images response contained an invalid data URL".into());
     }
     let mime_type = supported_mime(Some(header))
-        .ok_or_else(|| format!("[OI] images response used unsupported MIME type: {header}"))?;
+        .ok_or_else(|| format!("OpenAI images response used unsupported MIME type: {header}"))?;
     Ok(ImageContent { data: data.to_owned(), mime_type: mime_type.to_owned() })
 }
 
 async fn hydrate_image_url(url: &str, options: Option<&crate::types::ImagesOptions>) -> Result<ImageContent, String> {
-    let parsed = url::Url::parse(url).map_err(|_| "[OI] images response URL must be absolute".to_owned())?;
+    let parsed = url::Url::parse(url).map_err(|_| "OpenAI images response URL must be absolute".to_owned())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
-        return Err("[OI] images response URL must use HTTP or HTTPS".into());
+        return Err("OpenAI images response URL must use HTTP or HTTPS".into());
     }
     let client = options.and_then(|options| options.request.fetch.clone()).unwrap_or_default();
     let response = client.get(url).send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("[OI] image hydration failed with HTTP {}", response.status().as_u16()));
+        return Err(format!("OpenAI image hydration failed with HTTP {}", response.status().as_u16()));
     }
     if let Some(declared) = response
         .headers()
@@ -86,7 +86,7 @@ async fn hydrate_image_url(url: &str, options: Option<&crate::types::ImagesOptio
         .map(str::to_owned);
     let bytes = response.bytes().await.map_err(|error| error.to_string())?.to_vec();
     if bytes.is_empty() {
-        return Err("[OI] image hydration returned an empty body".into());
+        return Err("OpenAI image hydration returned an empty body".into());
     }
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(oversized_image_error());
@@ -95,11 +95,11 @@ async fn hydrate_image_url(url: &str, options: Option<&crate::types::ImagesOptio
     if let (Some(declared), Some(detected)) = (&declared_mime, &detected_mime)
         && declared != detected
     {
-        return Err(format!("[OI] image MIME mismatch: declared {declared}, detected {detected}"));
+        return Err(format!("OpenAI image MIME mismatch: declared {declared}, detected {detected}"));
     }
     let mime_type = detected_mime
         .or(declared_mime)
-        .ok_or_else(|| "[OI] image hydration returned unsupported image content".to_owned())?;
+        .ok_or_else(|| "OpenAI image hydration returned unsupported image content".to_owned())?;
     Ok(ImageContent { data: base64_encode(&bytes), mime_type })
 }
 
@@ -138,7 +138,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 fn oversized_image_error() -> String {
-    "[OI] image hydration exceeded the 24 MiB limit".into()
+    "OpenAI image hydration exceeded the 24 MiB limit".into()
 }
 
 #[cfg(test)]
@@ -180,11 +180,11 @@ mod tests {
 
         assert_eq!(
             resolve_image(&json!({ "url": "data:image/tiff;base64,AAAA" }), "png", None).await,
-            Err("[OI] images response used unsupported MIME type: image/tiff".into())
+            Err("OpenAI images response used unsupported MIME type: image/tiff".into())
         );
         assert_eq!(
             resolve_image(&json!({ "url": "data:image/png,AAAA" }), "png", None).await,
-            Err("[OI] images response contained an invalid data URL".into())
+            Err("OpenAI images response contained an invalid data URL".into())
         );
     }
 
@@ -192,11 +192,11 @@ mod tests {
     async fn datums_without_image_data_are_rejected() {
         assert_eq!(
             resolve_image(&json!({}), "png", None).await,
-            Err("[OI] images response datum contained no image data".into())
+            Err("OpenAI images response datum contained no image data".into())
         );
         assert_eq!(
             resolve_image(&json!({ "url": "ftp://example.com/x.png" }), "png", None).await,
-            Err("[OI] images response URL must use HTTP or HTTPS".into())
+            Err("OpenAI images response URL must use HTTP or HTTPS".into())
         );
     }
 }
