@@ -3,7 +3,9 @@ use std::process::Command;
 
 use crate::backend::{platform_name, IsolationError, Result};
 use crate::git::command::exists;
-use crate::util::{device_of, dirname, is_denied};
+use crate::util::{device_of, dirname};
+#[cfg(not(unix))]
+use crate::util::is_denied;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
