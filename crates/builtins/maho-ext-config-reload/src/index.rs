@@ -77,8 +77,8 @@ pub enum ReloadAdmission { Empty, InFlight, Busy, Compacting, Unavailable, Probe
 pub fn reload_admission(pending_empty: bool, in_flight: bool, idle: bool, pending_messages: bool, compacting: bool, request_available: bool) -> ReloadAdmission {
     if pending_empty { ReloadAdmission::Empty }
     else if in_flight { ReloadAdmission::InFlight }
-    else if !idle || pending_messages { ReloadAdmission::Busy }
     else if compacting { ReloadAdmission::Compacting }
+    else if !idle || pending_messages { ReloadAdmission::Busy }
     else if !request_available { ReloadAdmission::Unavailable }
     else { ReloadAdmission::ProbeVeto }
 }
