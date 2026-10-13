@@ -135,6 +135,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
             }
             // senpi `applySmoothStreamingRenderFps` + `requestRender(false, "input")`: the frame
             // cap follows the smooth-streaming FPS, and keystroke frames skip the throttle.
+            screen.poll_timers(now);
             screen.base_mut().set_max_render_fps(mode.smooth_streaming_render_fps());
             if had_input { screen.base_mut().request_render_from(false, "input", now); } else { screen.base_mut().request_render(false, now); }
             if screen.base_mut().take_due_render(now) {

@@ -31,8 +31,25 @@ impl InteractiveTui {
 
     pub fn do_render(&mut self, terminal: &mut dyn maho_tui::terminal::Terminal) {
         match self {
-            Self::Regular(tui) => { tui.base.do_render(terminal); tui.note_render(terminal); }
+            Self::Regular(tui) => { let _ = tui.take_mouse_external_write_pending(terminal); tui.base.do_render(terminal); tui.note_render(terminal); }
             Self::Fullscreen(tui) => tui.do_render(terminal),
+        }
+    }
+
+    /// Per-iteration poll of senpi's timer/promise callbacks: the main screen's in-flight CPR
+    /// mouse-anchor query, and the alternate screen's flash expiry and scrollbar hide timers.
+    pub fn poll_timers(&mut self, now_ms: u64) {
+        match self {
+            Self::Regular(tui) => tui.base.poll_mouse_anchor_query(),
+            Self::Fullscreen(tui) => tui.poll_timers(now_ms),
+        }
+    }
+
+    /// senpi `ui.flash(message)` when the UI is a `TuiAltScreen`; returns false on the main screen.
+    pub fn flash(&mut self, message: &str, now_ms: u64) -> bool {
+        match self {
+            Self::Regular(_) => false,
+            Self::Fullscreen(tui) => { tui.flash(message, None, now_ms); true }
         }
     }
 

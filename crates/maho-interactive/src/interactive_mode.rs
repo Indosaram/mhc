@@ -275,6 +275,7 @@ impl InteractiveMode {
         Ok(())
     }
 
+    pub(crate) fn clock_ms(&self) -> u64 { u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX) }
     pub(crate) fn tick_now(&mut self) { self.tick(self.clock.elapsed().as_secs_f64()*1000.0); }
     pub fn install_native_tool_renderers<S: Default + 'static>(&mut self, name: String, renderers: Arc<maho_ext_api::ToolRenderers<S, serde_json::Value>>) {
         self.native_tool_renderer_snapshots.insert(name, Rc::new(RefCell::new(crate::tools::renderers::native::NativeToolRenderers::new(renderers))));
@@ -1194,7 +1195,18 @@ impl InteractiveMode {
             else { self.show_status("No other models available for cycling".into()); }
             return Ok(());
         }
-        if keys.matches(data,"app.message.copy") { self.submit("/copy",Default::default()).await?;return Ok(()); }
+        if keys.matches(data,"app.message.copy") {
+            // senpi `handleCopyCommand({ flashConfirmation: true })`: the fullscreen UI confirms with
+            // `ui.flash("Copied!")` instead of a status line.
+            let renderer = self.mounted_renderer.as_ref().and_then(std::rc::Weak::upgrade).filter(|renderer| matches!(&*renderer.borrow(), crate::tui_renderer::InteractiveTui::Fullscreen(_)));
+            if let Some(renderer) = renderer && let Some(text) = self.session.get_last_assistant_text().filter(|text|!text.is_empty()) {
+                let sequence = crate::interactive_clipboard::copy(&text).await?;
+                if let Some(sequence) = sequence { maho_tui::process_stdio::stdout_write(&sequence); }
+                renderer.borrow_mut().flash("Copied!", now_ms);
+                return Ok(());
+            }
+            self.submit("/copy",Default::default()).await?;return Ok(());
+        }
         if keys.matches(data,"app.clipboard.pasteImage") {
             if let Some(text)=crate::interactive_clipboard::read_text().await {
                 if let Some(editor)=&mut self.custom_editor {editor.insert_text_at_cursor(&text);}else{self.editor.editor.insert_text_at_cursor(&text);}
