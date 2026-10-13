@@ -154,6 +154,7 @@ fn memory_command_deps() -> maho_omo_memory::commands::types::MemoryCommandDeps 
         exec: None,
         env: None,
         people_ask: None,
+        launcher: None,
         now: None,
         is_process_alive: None,
     }
