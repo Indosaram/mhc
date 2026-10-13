@@ -1,3 +1,4 @@
+#![cfg(unix)]
 use maho_rpc::{host_stop::{stop_host,StopHostResult},host_daemon_paths::{create_host_daemon_paths,create_daemon_directories,create_generation_directory,generation_paths}};
 use tokio::io::{AsyncReadExt,AsyncWriteExt};
 #[tokio::test]

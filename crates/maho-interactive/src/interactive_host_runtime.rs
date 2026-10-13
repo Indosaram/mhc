@@ -1244,7 +1244,7 @@ pub fn queue_snapshot(state: &RemoteSessionState) -> BTreeMap<String, Value> {
     ])
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
