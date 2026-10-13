@@ -552,14 +552,14 @@ impl AuthStorage {
         }
     }
 
-    pub fn set_runtime_api_key(&mut self, provider: &str, api_key: &str) {
+    pub fn set_runtime_api_key(&self, provider: &str, api_key: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider.to_owned(), api_key.to_owned());
     }
 
-    pub fn remove_runtime_api_key(&mut self, provider: &str) {
+    pub fn remove_runtime_api_key(&self, provider: &str) {
         self.runtime_overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -785,11 +785,14 @@ impl AuthStorage {
                 name: oauth.name().to_string(),
             })
             .collect();
-        for &(id, name) in &maho_ai::auth::oauth::load::BUILTIN_OAUTH_PROVIDERS {
-            if !dynamic.contains_key(id) {
+        // senpi `getOAuthProviders`: builtins are every builtin provider that declares OAuth, named
+        // by that OAuth method (so Radius is included and names match the login flow).
+        for provider in maho_ai::providers::all::builtin_providers() {
+            let Some(oauth) = provider.auth().and_then(|auth| auth.oauth.as_ref()) else { continue };
+            if !dynamic.contains_key(provider.id()) {
                 results.push(OAuthProviderInfo {
-                    id: id.to_string(),
-                    name: name.to_string(),
+                    id: provider.id().to_owned(),
+                    name: oauth.name().to_owned(),
                 });
             }
         }
@@ -1028,7 +1031,7 @@ mod tests {
     async fn the_auth_storage_sets_reads_and_deletes_credentials() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("auth.json").to_string_lossy().into_owned();
-        let mut storage = AuthStorage::create(&path);
+        let storage = AuthStorage::create(&path);
         assert!(storage.get("anthropic").is_none());
         storage.set("anthropic", Some(api_key("stored"))).expect("set");
         assert_eq!(storage.get_api_key("anthropic").await.as_deref(), Some("stored"));
@@ -1286,6 +1289,13 @@ mod tests {
     }
 
     #[test]
+    fn builtin_oauth_providers_come_from_provider_auth_declarations() {
+        let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers();
+        assert!(providers.iter().any(|p| p.id == "anthropic" && p.name == "Anthropic (Claude Pro/Max)"));
+        assert!(providers.iter().any(|p| p.id == "radius"));
+    }
+
+    #[test]
     fn builtin_providers_still_enumerate_after_dynamic_registration() {
         let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.register_oauth_provider(
@@ -1299,7 +1309,7 @@ mod tests {
 
     #[tokio::test]
     async fn logout_removes_stored_credential_and_runtime_key() {
-        let mut storage = AuthStorage::in_memory(AuthStorageData::new());
+        let storage = AuthStorage::in_memory(AuthStorageData::new());
         storage.set("anthropic", Some(api_key("stored"))).unwrap();
         storage.set_runtime_api_key("anthropic", "runtime");
         assert!(storage.has("anthropic"));

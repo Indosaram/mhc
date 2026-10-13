@@ -718,6 +718,7 @@ impl InteractiveMode {
         self.load_startup_changelog();
         self.mount_startup_header();
         self.show_loaded_resources(false, true);
+        self.show_model_runtime_diagnostics(true);
     }
 
     /// senpi `showLoadedResources`: rebuild the loaded-resources container from the session's
@@ -755,6 +756,16 @@ impl InteractiveMode {
         let view = build_loaded_resources(&resources, show_listing, show_diagnostics, self.get_startup_expansion_state(), self.tools_expanded, &self.theme);
         for child in view.children { self.loaded_resources_container.add_child(child); }
         self.loaded_resource_sections = view.sections;
+    }
+
+    /// senpi `initialize`'s startup warnings (`interactive-mode.ts:1809-1816`) and the `/reload`
+    /// re-check (`:9014`): a models.json load error, then (at startup) its non-fatal warnings.
+    fn show_model_runtime_diagnostics(&mut self, include_warnings: bool) {
+        let runtime = &self.session.model_registry().model_runtime;
+        let error = runtime.get_error();
+        let warnings = if include_warnings { runtime.get_warnings() } else { Vec::new() };
+        if let Some(error) = error { self.show_error(&format!("models.json error: {error}")); }
+        for warning in warnings { self.show_warning(&warning); }
     }
 
     /// Production `mount_startup_header`, using the wall clock for the tip schedule (senpi `Date.now()`).
@@ -2236,7 +2247,7 @@ impl InteractiveMode {
                     self.setup_extension_shortcuts().await;
                     if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
                     self.setup_autocomplete(); self.register_discovered_themes(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true);
-                    if let Some(error) = self.session.model_registry().get_error() { self.show_error(&format!("models.json error: {error}")); }
+                    self.show_model_runtime_diagnostics(false);
                     let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
                     self.show_status(message.into());
                 }
@@ -3447,6 +3458,7 @@ impl InteractiveMode {
         tokio::spawn(async move {
             let result = runtime.login(&provider_id, auth_type, interaction).await.map(|_| ()).map_err(|error| {
                 if error.message == crate::login_outcome::LOGIN_CANCELLED_NOTICE || error.message.contains("aborted") { crate::login_outcome::LoginFailure::Cancelled }
+                else if maho_core::model_runtime::is_credential_synchronization_error(&error) { crate::login_outcome::LoginFailure::CredentialSynchronization { message: error.message } }
                 else { crate::login_outcome::LoginFailure::Failed { message: error.message } }
             });
             let mut selection_error = None;

@@ -65,7 +65,7 @@ pub struct PolicySlotRef {
 pub struct RotationSources<'a> {
     pub provider_id: String,
     pub credential: Option<PooledCredential>,
-    pub env: &'a dyn Fn(&str) -> Option<String>,
+    pub env: &'a (dyn Fn(&str) -> Option<String> + Send + Sync),
     pub repository: &'a CredentialSlotRepository,
     pub policy: RotationPolicy,
     pub now: u64,
@@ -267,6 +267,184 @@ pub fn rotation_error_from_event(event: &Value) -> Option<Value> {
 
 pub use crate::credential_pool::rotation_events::{is_committed_rotation_output, is_rotation_stream_start};
 
+pub type RotationAttemptFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<maho_ai::types::AssistantMessageEventStream, Value>> + Send>>;
+/// One provider attempt for a rotation slot; resolved lazily so a slot's auth runs only when chosen.
+pub type RunRotationAttempt = std::sync::Arc<dyn Fn(RotationSlot) -> RotationAttemptFuture + Send + Sync>;
+
+/// Owned rotation inputs (`RotationSources` borrows; the rotation stream runs on its own task).
+pub struct OwnedRotationSources {
+    pub provider_id: String,
+    pub credential: Option<PooledCredential>,
+    pub env: std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub repository: std::sync::Arc<CredentialSlotRepository>,
+    pub policy: RotationPolicy,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis() as u64).unwrap_or(0)
+}
+
+impl OwnedRotationSources {
+    async fn list(&self, acquire_leases: bool) -> Result<Vec<RotationSlot>, String> {
+        let sources = RotationSources {
+            provider_id: self.provider_id.clone(),
+            credential: self.credential.clone(),
+            env: &*self.env,
+            repository: &self.repository,
+            policy: self.policy.clone(),
+            now: now_ms(),
+        };
+        list_rotation_slots(&sources, acquire_leases).await
+    }
+
+    /// senpi `listRotationSlots(sources, { acquireLeases: false })` as used by the admission check.
+    pub async fn list_without_leases(&self) -> Result<Vec<RotationSlot>, String> {
+        self.list(false).await
+    }
+}
+
+struct RotationHost {
+    sources: OwnedRotationSources,
+    affinity_key: String,
+    run_attempt: RunRotationAttempt,
+    slots: Vec<RotationSlot>,
+    target: maho_ai::types::AssistantMessageEventStream,
+}
+
+fn event_value(event: &maho_ai::types::AssistantMessageEvent) -> Value {
+    serde_json::to_value(event).unwrap_or(Value::Null)
+}
+
+impl crate::credential_pool::failover::FailoverHost for RotationHost {
+    type Event = maho_ai::types::AssistantMessageEvent;
+    type Attempt = maho_ai::types::AssistantMessageEventStream;
+
+    async fn list_slots(&mut self) -> Vec<RunSlot> {
+        // A sidecar read failure leaves no candidates, which reports "No credential slots available".
+        self.slots = self.sources.list(true).await.unwrap_or_default();
+        self.slots.iter().map(|slot| slot.slot.clone()).collect()
+    }
+
+    fn select(&self, candidates: &[RunSlot]) -> Option<RunSlot> {
+        let rotation: Vec<RotationSlot> = self.slots.iter().filter(|slot| candidates.iter().any(|candidate| candidate.name == slot.slot.name)).cloned().collect();
+        select_rotation_slot(&rotation, &self.affinity_key, policy_affinity(&self.sources.policy)).map(|slot| slot.slot)
+    }
+
+    async fn run_attempt(&mut self, slot: &RunSlot) -> Result<Self::Attempt, Value> {
+        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name).cloned() else {
+            return Err(Value::from("credential rotation selected an unknown slot"));
+        };
+        (self.run_attempt)(rotation).await
+    }
+
+    async fn next_event(&mut self, attempt: &mut Self::Attempt) -> Option<Result<Self::Event, Value>> {
+        match attempt.next().await {
+            Ok(Some(event)) => Some(Ok(event)),
+            Ok(None) => None,
+            Err(error) => Some(Err(serde_json::json!({ "message": error.message }))),
+        }
+    }
+
+    fn is_committed_output(&self, event: &Self::Event) -> bool {
+        is_committed_rotation_output(&event_value(event))
+    }
+
+    fn is_stream_start(&self, event: &Self::Event) -> bool {
+        is_rotation_stream_start(&event_value(event))
+    }
+
+    /// senpi `rotationErrorFromEvent`: `new Error(errorMessage)`.
+    fn error_from_event(&self, event: &Self::Event) -> Option<Value> {
+        match event {
+            maho_ai::types::AssistantMessageEvent::Error { error, .. } => Some(serde_json::json!({
+                "message": error.error_message.clone().unwrap_or_else(|| "provider stream error".to_owned())
+            })),
+            _ => None,
+        }
+    }
+
+    fn classify(&self, error: &Value, failure_count: u32) -> crate::credential_pool::classify::CredentialAction {
+        crate::credential_pool::classify::classify_credential_failure(error, &crate::credential_pool::classify::ClassifyContext {
+            failure_count: Some(failure_count),
+            cooldown_base_ms: self.sources.policy.cooldown_base_ms,
+            cooldown_cap_ms: self.sources.policy.cooldown_cap_ms,
+        })
+    }
+
+    async fn persist_block(&mut self, slot: &RunSlot, block: &CredentialBlock) -> Result<(), String> {
+        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name).cloned() else { return Ok(()) };
+        let revision = match (rotation.lane, &rotation.env_var_name, &rotation.env_key) {
+            (RotationLane::Env, Some(name), Some(key)) => Some(self.sources.repository.env_credential_revision(name, key).await?),
+            _ => rotation.stored_revision.clone(),
+        };
+        let policy = self.sources.policy.clone();
+        let now = now_ms();
+        self.sources.repository
+            .mutate_slot_state(&self.sources.provider_id, rotation.lane.as_str(), &slot.name, |current| {
+                Some(block_patch(block, current, now, revision.as_deref(), &policy))
+            })
+            .await
+            .map(|_| ())
+    }
+
+    async fn on_success(&mut self, slot: &RunSlot) -> Result<(), String> {
+        let Some(rotation) = self.slots.iter().find(|candidate| candidate.slot.name == slot.name) else { return Ok(()) };
+        let now = now_ms();
+        self.sources.repository
+            .mutate_slot_state(&self.sources.provider_id, rotation.lane.as_str(), &slot.name, |current| {
+                current.map(|current| CredentialSlotState {
+                    last_success_at: Some(now),
+                    lease: None,
+                    blocked_until: None,
+                    block_reason: None,
+                    ..current.clone()
+                })
+            })
+            .await
+            .map(|_| ())
+    }
+
+    fn now(&self) -> u64 {
+        now_ms()
+    }
+
+    fn emit(&mut self, event: Self::Event) {
+        self.target.push(event);
+    }
+}
+
+/// senpi `streamWithCredentialRotation`: in-lane credential rotation for one provider request.
+/// Selection follows the HRW order for the affinity key (a fresh key per request when absent).
+/// Rotation and same-slot retry stay transparent while only announcement frames have reached the
+/// caller; a failure after committed output is forwarded as the provider's own terminal event.
+pub fn stream_with_credential_rotation(
+    model: &maho_ai::types::Model,
+    sources: OwnedRotationSources,
+    affinity_key: Option<String>,
+    run_attempt: RunRotationAttempt,
+) -> maho_ai::types::AssistantMessageEventStream {
+    let target = maho_ai::types::AssistantMessageEventStream::assistant();
+    let affinity_key = affinity_key.unwrap_or_else(|| maho_ai::utils::uuid::uuidv7(None).unwrap_or_else(|_| now_ms().to_string()));
+    let mut host = RotationHost { sources, affinity_key, run_attempt, slots: Vec::new(), target: target.clone() };
+    let model = model.clone();
+    tokio::spawn(async move {
+        match crate::credential_pool::failover::run_credential_failover(&mut host).await {
+            Ok(()) => host.target.end(None),
+            Err(error) => {
+                // The failure detail is the provider error value; surface its own message.
+                let message = serde_json::from_str::<Value>(&error.detail).ok()
+                    .and_then(|value| value.get("message").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or(error.detail);
+                let failed = maho_ai::utils::lazy::error_stream(&model, &message);
+                while let Ok(Some(event)) = failed.next().await { host.target.push(event); }
+                host.target.end(None);
+            }
+        }
+    });
+    target
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,7 +475,7 @@ mod tests {
     fn sources<'a>(
         repository: &'a CredentialSlotRepository,
         credential: Option<PooledCredential>,
-        env: &'a dyn Fn(&str) -> Option<String>,
+        env: &'a (dyn Fn(&str) -> Option<String> + Send + Sync),
         now: u64,
     ) -> RotationSources<'a> {
         RotationSources { provider_id: "anthropic".to_owned(), credential, env, repository, policy: RotationPolicy::default(), now }

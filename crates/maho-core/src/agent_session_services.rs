@@ -194,6 +194,7 @@ pub async fn create_agent_session_services(mut options: CreateAgentSessionServic
             auth_path: Some(auth_path.clone()),
             credentials: Some(Arc::clone(&auth_storage)),
             providers: None,
+            ..Default::default()
         })
     });
     let auth_storage = model_runtime.credentials.clone();
@@ -206,6 +207,7 @@ pub async fn create_agent_session_services(mut options: CreateAgentSessionServic
     if owns_model_runtime {
         model_runtime.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }).await;
     }
+    model_runtime.set_settings_manager(&settings_manager);
     let model_registry = ModelRegistry::new(model_runtime);
     // Extension flag values are validated by `create_agent_session_from_services`, once the
     // extensions that register them are loaded.

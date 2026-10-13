@@ -92,10 +92,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         maho_core::http_dispatcher::apply_http_proxy_settings(proxy.as_deref(), parsed.multi_session, &mut next)?;
         maho_process_env::apply(&current, &next);
     }
-    let models = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
+    // senpi `ModelRuntime.create`: restores the stored dynamic catalogs (offline) before use.
+    let models = maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions {
         models_path: Some(std::path::Path::new(&agent_dir).join("models.json")),
-        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")), ..Default::default()
-    });
+        auth_path: Some(std::path::Path::new(&agent_dir).join("auth.json")),
+        agent_dir: Some(std::path::PathBuf::from(&agent_dir)), ..Default::default()
+    }).await;
     let identity = Some(maho_core::session_manager::NewSessionOptions { id: parsed.session_id.clone(), ..Default::default() });
     let session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), settings.get_string("sessionDir").as_deref());
     let mut manager = if parsed.no_session { SessionManager::in_memory(&cwd_text, identity, None) }
@@ -215,7 +217,14 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let model_patterns = maho_core::model_resolver::get_model_narrowing_patterns(parsed.models.as_deref(), enabled_models.as_deref());
     let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
-    let options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
+    let mut options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
+    // senpi `main.ts`: `--api-key` is a runtime key for the selected model's provider.
+    if let Some(api_key) = &parsed.api_key {
+        match &options.options.model {
+            None => options.diagnostics.push(super::args::Diagnostic { error: true, message: "--api-key requires a model to be specified via --model, --provider/--model, or --models".into() }),
+            Some(model) => models.set_runtime_api_key(&model.provider, api_key, Default::default()).await.map_err(|error| error.to_string())?,
+        }
+    }
     indicator.during_surface_write(|| { for diagnostic in &options.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("{}: {}\n", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message)); } });
     if options.diagnostics.iter().any(|diagnostic| diagnostic.error) {
         // senpi main.ts EXTENSION_LOAD_FAILURE_HINT: an error exit after an extension failed to load
