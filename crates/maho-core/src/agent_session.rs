@@ -4410,7 +4410,7 @@ impl AgentSession {
             if !std::path::Path::new(file).exists() {
                 return Err("Nothing to export yet - start a conversation first".to_owned());
             }
-            let default_output = format!("maho-session-{}.html", std::path::Path::new(file).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned()));
+            let default_output = format!("{}-session-{}.html", crate::config::app_name(), std::path::Path::new(file).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned()));
             let entries = manager.entries();
             let rendered = crate::export_html::index::pre_render_custom_tools(&entries, &mut renderer);
             if let Some((colors, export_colors)) = colors {
