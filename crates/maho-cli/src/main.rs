@@ -71,28 +71,77 @@ fn run() -> Result<(), String> {
     }
     let env = maho_core::config::current_env();
     let grok = maho_cli::cli::grok_neo_gate::is_grok_neo_enabled(&env);
-    if let Some(command) = maho_cli::cli::auth_command::parse_auth_command(&argv)? {
-        let parsed = maho_cli::cli::args::parse_args(&command.args, grok)?;
-        maho_cli::cli::auth_command::validate_auth_command_args(&parsed, command.kind)?;
+    // senpi main.ts `runAuthCommand`: a parse failure or unknown option exits 1; a validation error
+    // exits 2 for `auth check` (its "invalid" status code) and 1 for the credential printers.
+    let command = match maho_cli::cli::auth_command::parse_auth_command(&argv) {
+        Ok(command) => command,
+        Err(message) => { eprintln!("Error: {message}"); std::process::exit(1); }
+    };
+    if let Some(command) = command {
+        use maho_cli::cli::auth_command::{get_auth_command_name, get_auth_command_usage, AuthCommandKind};
+        let validation_exit = if command.kind == AuthCommandKind::Check { 2 } else { 1 };
+        let parsed = match maho_cli::cli::args::parse_args(&command.args, grok) {
+            Ok(parsed) => parsed,
+            Err(message) => { eprintln!("Error: {message}"); std::process::exit(validation_exit); }
+        };
+        if let Some(option) = parsed.unknown_flags.keys().next() {
+            eprintln!("Unknown option --{option} for \"{}\".", get_auth_command_name(command.kind));
+            eprintln!("Use \"{} --help\" or \"{}\".", maho_core::config::app_command(), get_auth_command_usage(command.kind));
+            std::process::exit(1);
+        }
+        if !parsed.diagnostics.is_empty() {
+            eprintln!("Error: {}", parsed.diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("\n"));
+            std::process::exit(validation_exit);
+        }
+        if let Err(message) = maho_cli::cli::auth_command::validate_auth_command_args(&parsed, command.kind) {
+            eprintln!("Error: {message}");
+            std::process::exit(validation_exit);
+        }
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
         return runtime.block_on(async {
             if command.kind != maho_cli::cli::auth_command::AuthCommandKind::Check {
                 let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default() });
-                let credential = maho_cli::cli::credential_print::resolve_credential_for_print(&parsed, &model_runtime, command.kind, command.min_expiry_ms).await?;
+                let credential = match maho_cli::cli::credential_print::resolve_credential_for_print(&parsed, &model_runtime, command.kind, command.min_expiry_ms).await {
+                    Ok(credential) => credential,
+                    Err(message) => { eprintln!("Error: {message}"); std::process::exit(1); }
+                };
                 return output(&format!("{credential}\n"));
             }
             let requested = maho_cli::cli::auth_check::requested_provider(&parsed);
             let auth_path = agent.join("auth.json");
-            let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: auth_path.exists().then_some(auth_path), ..Default::default() });
+            let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: None, auth_path: auth_path.exists().then_some(auth_path.clone()), ..Default::default() });
             let mut result = maho_cli::cli::auth_check::check_provider_auth(&parsed, &model_runtime, !command.no_refresh).await.unwrap_or(maho_cli::cli::auth_check::AuthCheckResult { status: maho_cli::cli::auth_check::AuthCheckStatus::Invalid, provider: requested, reason: Some(maho_cli::cli::auth_check::AuthCheckReason::InvalidState), auth_type: None });
             let mut credential = None;
             if command.credentials && result.status == maho_cli::cli::auth_check::AuthCheckStatus::Ready {
-                credential = maho_cli::cli::auth_check::provider_credential(&model_runtime, &result.provider, !command.no_refresh).await?;
-                if credential.is_none() { result.status = maho_cli::cli::auth_check::AuthCheckStatus::NotReady; result.reason = Some(maho_cli::cli::auth_check::AuthCheckReason::CredentialNotAvailable); }
+                match maho_cli::cli::auth_check::provider_credential(&model_runtime, &result.provider, !command.no_refresh).await {
+                    Ok(value) => {
+                        credential = value;
+                        if credential.is_none() { result.status = maho_cli::cli::auth_check::AuthCheckStatus::NotReady; result.reason = Some(maho_cli::cli::auth_check::AuthCheckReason::CredentialNotAvailable); }
+                    }
+                    // senpi: a failing credential read inside the check is an invalid auth state.
+                    Err(_) => { result.status = maho_cli::cli::auth_check::AuthCheckStatus::Invalid; result.reason = Some(maho_cli::cli::auth_check::AuthCheckReason::InvalidState); result.auth_type = None; }
+                }
             }
             let rendered = if command.json {
                 let mut value = serde_json::to_value(&result).map_err(|error| error.to_string())?;
+                // Account enrichment never turns a readable auth state into a failure.
+                let mut accounts = Vec::new();
+                if result.status != maho_cli::cli::auth_check::AuthCheckStatus::Invalid {
+                    let storage = maho_core::auth_storage::AuthStorage::create(&auth_path.to_string_lossy());
+                    let repository = maho_core::credential_pool::state_store::CredentialSlotRepository::new(
+                        &maho_core::credential_pool::state_store::credential_pool_state_path(&agent.to_string_lossy()),
+                    );
+                    let env = |key: &str| std::env::var(key).ok();
+                    let now = maho_ai::utils::diagnostics::now_ms().max(0) as u64;
+                    let summaries = maho_core::credential_accounts::summarize_credential_accounts(&result.provider, storage.get(&result.provider).as_ref(), &env, &repository, now).await.unwrap_or_default();
+                    accounts = summaries.iter().map(|account| {
+                        let mut wire = serde_json::json!({"name": account.name, "source": account.source.as_str(), "blocked": account.blocked, "pinned": account.pinned});
+                        if let Some(name) = &account.display_name { wire["displayName"] = serde_json::json!(name); }
+                        wire
+                    }).collect();
+                }
+                value["accounts"] = serde_json::Value::Array(accounts);
                 if let Some(credential) = credential { value["credentials"] = serde_json::Value::String(credential); }
                 serde_json::to_string(&value).map_err(|error| error.to_string())?
             } else if let Some(credential) = credential { credential } else { serde_json::to_value(&result.status).map_err(|error| error.to_string())?.as_str().unwrap_or("invalid").to_owned() };
