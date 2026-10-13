@@ -3950,6 +3950,16 @@ impl AgentSession {
         }
     }
 
+    /// senpi `AgentSessionRuntime.reportRemovedExtensions`: the outgoing runner reports, as
+    /// `session_extensions_removed`, every extension the replacement runner no longer loads.
+    pub(crate) async fn report_removed_extensions(&self, replacement: &maho_ext_host::runner::ExtensionRunner, reason: maho_ext_api::SessionReason) {
+        let Some(mut old) = self.extension_runner.lock().await.clone() else { return; };
+        let paths: BTreeSet<_> = replacement.extensions.iter().map(|extension| extension.identity.resolved_path.clone()).collect();
+        let removed: Vec<_> = old.extensions.iter().filter(|extension| !paths.contains(&extension.identity.resolved_path))
+            .map(|extension| extension.identity.clone()).collect();
+        if !removed.is_empty() { old.emit_removed_extensions(reason, removed).await; }
+    }
+
     pub async fn execute_user_bash(&self, command: &str, on_chunk: Option<maho_tools::bash_executor::BashChunkCallback>,
         exclude_from_context: bool, id: Option<String>) -> Result<maho_tools::bash_executor::BashResult, String> {
         match self.user_bash_hook(command, exclude_from_context).await? {
