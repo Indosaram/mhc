@@ -25,7 +25,7 @@ pub async fn resize_eval_image(image: EvalImageContent, provider: Option<&str>, 
     let bytes = base64::engine::general_purpose::STANDARD.decode(&image.data).map_err(|error|error.to_string())?;
     let resized = sdk.resize_image(bytes, &image.mime_type, max_bytes).await?;
     let (mut output, dimension_note) = match resized {
-        Some(resized) => (EvalImageContent {data:resized.data,mime_type:resized.mime_type}, Some(resized.dimension_note)),
+        Some(resized) => (EvalImageContent {data:resized.data,mime_type:resized.mime_type}, Some(resized.dimension_note).filter(|note|!note.is_empty())),
         None => (image, None),
     };
     if exclude_webp && output.mime_type == "image/webp" {
