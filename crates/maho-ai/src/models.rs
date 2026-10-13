@@ -122,6 +122,22 @@ pub trait ModelsAuth: Send + Sync {
         stored: Option<&'a Credential>,
         signal: &'a AbortSignal,
     ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>>;
+
+    /// Side-effect-free availability check (`checkProviderAuth`). The default treats a successful
+    /// resolution as configured, which is senpi's behavior for an api-key auth without `check`.
+    fn check<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<crate::auth::types::AuthCheck>, ModelsError>> {
+        Box::pin(async move {
+            let overrides = AuthResolutionOverrides { signal: Some(signal.clone()), ..AuthResolutionOverrides::default() };
+            Ok(self.resolve(provider, &overrides).await?.map(|_| crate::auth::types::AuthCheck {
+                source: None,
+                auth_type: crate::auth::types::AuthType::ApiKey,
+            }))
+        })
+    }
 }
 
 /// Env-var-only auth: an explicit API key override wins, then the provider's known env vars.
@@ -216,6 +232,10 @@ pub trait Provider: Send + Sync {
     fn headers(&self) -> Option<&ProviderHeaders> {
         None
     }
+    /// `Provider.auth`: the provider's api-key and OAuth auth methods.
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        None
+    }
     /// Provider-owned retry policy; omission selects the shipped default profile.
     fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
         None
@@ -279,6 +299,7 @@ pub struct CreateProviderOptions {
     pub name: Option<String>,
     pub base_url: Option<String>,
     pub headers: Option<ProviderHeaders>,
+    pub auth: Option<crate::auth::types::ProviderAuth>,
     pub models: Vec<Model>,
     pub fetch_models: Option<FetchModels>,
     pub restore_models: Option<RestoreModels>,
@@ -321,6 +342,10 @@ impl Provider for CreatedProvider {
 
     fn headers(&self) -> Option<&ProviderHeaders> {
         self.input.headers.as_ref()
+    }
+
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        self.input.auth.as_ref()
     }
 
     fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
@@ -718,14 +743,26 @@ impl Models {
         let signal = AbortController::new().signal();
         let mut available = Vec::new();
         for provider in providers {
-            let overrides = AuthResolutionOverrides::default();
-            if !matches!(self.inner.auth.resolve(provider.as_ref(), &overrides).await, Ok(Some(_))) {
+            if !matches!(self.inner.auth.check(provider.as_ref(), &signal).await, Ok(Some(_))) {
                 continue;
             }
             let credential = self.inner.auth.read_credential(provider.id(), &signal).await.ok().flatten();
             available.extend(provider.filter_models(provider.get_models(), credential.as_ref()));
         }
         available
+    }
+
+    /// `checkAuth(providerId, options)`: side-effect-free availability of the provider's auth.
+    pub async fn check_auth(
+        &self,
+        provider_id: &str,
+        signal: &AbortSignal,
+    ) -> Result<Option<crate::auth::types::AuthCheck>, ModelsError> {
+        let Some(provider) = self.get_provider(provider_id) else { return Ok(None) };
+        match race_with_abort_signal(self.inner.auth.check(provider.as_ref(), signal), signal).await {
+            Ok(result) => result,
+            Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
+        }
     }
 
     pub async fn get_auth(&self, provider_id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {

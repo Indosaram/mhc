@@ -1,5 +1,6 @@
 //! Port of senpi packages/ai/src/providers/cloudflare-workers-ai.ts.
 
+use crate::auth::types::ProviderAuth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::{builtin_api_streams, cloudflare_stream::cloudflare_streams};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ pub fn cloudflare_workers_ai_provider() -> Arc<dyn Provider> {
         name: Some("Cloudflare Workers AI".into()),
         base_url: None,
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(super::cloudflare_auth::cloudflare_workers_ai_auth())), oauth: None }),
         models: super::cloudflare_workers_ai_models::cloudflare_workers_ai_models(),
         fetch_models: None,
         restore_models: None,

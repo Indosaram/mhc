@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/github-copilot.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::{env_api_key_auth, lazy_oauth};
 use crate::models::{CreateProviderOptions, Credential, FilterModels, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
 use crate::types::Model;
@@ -37,6 +39,7 @@ pub fn github_copilot_provider() -> Arc<dyn Provider> {
         name: Some("GitHub Copilot".into()),
         base_url: Some("https://api.individual.githubcopilot.com".into()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("GitHub Copilot token", &["COPILOT_GITHUB_TOKEN"]))), oauth: Some(Arc::new(lazy_oauth("GitHub Copilot", true, None, || Box::pin(crate::auth::oauth::load::load_github_copilot_oauth())))) }),
         models: super::github_copilot_models::github_copilot_models(),
         fetch_models: None,
         restore_models: None,
