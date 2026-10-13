@@ -639,6 +639,21 @@ async fn empty_compact_shows_the_pinned_no_messages_warning() {
 }
 
 #[tokio::test]
+async fn compaction_and_retry_events_mount_status_indicators() {
+    use maho_ext_api::{AgentSessionEvent, CompactionReason};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_session_event(&AgentSessionEvent::CompactionStart { reason: CompactionReason::Threshold, request_id: None });
+    assert!(mode.render(120).join("\n").contains("Auto-compacting... ("), "compaction shows the reasoned loader with its interrupt hint");
+    mode.handle_session_event(&AgentSessionEvent::CompactionEnd { reason: CompactionReason::Threshold, result: None, aborted: false, will_retry: false, request_id: None, accepted: Some(true), rejection_cause: None, error_message: None });
+    assert!(!mode.render(120).join("\n").contains("Auto-compacting"), "compaction end clears the indicator");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryStart { attempt: 1, max_attempts: 3, delay_ms: 2000, error_message: "boom".into() });
+    assert!(mode.render(120).join("\n").contains("Retrying (1/3) in 2s..."), "auto-retry shows the countdown indicator in the editor border");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, final_error: None });
+    assert!(!mode.render(120).join("\n").contains("Retrying (1/3)"), "auto-retry end clears the indicator");
+}
+
+#[tokio::test]
 async fn native_shell_submission_renders_and_persists_without_model_turn() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
