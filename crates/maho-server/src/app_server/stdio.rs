@@ -16,6 +16,18 @@ fn acquire_active_stdio() -> Result<ActiveStdioGuard, JsonRpcError> {
     Ok(ActiveStdioGuard)
 }
 
+/// senpi `writeRawStdout`: the stdio transport's NDJSON sink once `takeOverStdout` routed every
+/// other stdout writer to stderr, so only protocol frames reach fd 1.
+pub struct RawStdoutWriter;
+impl tokio::io::AsyncWrite for RawStdoutWriter {
+    fn poll_write(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        let text = std::str::from_utf8(buf).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        std::task::Poll::Ready(text.map(|text| { maho_core::output_guard::write_raw_stdout(text); buf.len() }))
+    }
+    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> { std::task::Poll::Ready(Ok(())) }
+    fn poll_shutdown(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> { std::task::Poll::Ready(Ok(())) }
+}
+
 pub async fn run_shared_stdio<R, W>(core: Arc<RwLock<ServerCore>>, input: R, output: W) -> Result<(), JsonRpcError>
 where R: AsyncRead + Unpin, W: AsyncWrite + Unpin + Send + 'static {
     run_shared_stdio_until(core,input,output,std::future::pending(),None).await
