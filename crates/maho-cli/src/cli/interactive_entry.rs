@@ -65,6 +65,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     mode.bind_extensions().await;
     mode.use_registered_markdown_transformers(&extensions);
     mode.initialize_startup_header();
+    mode.show_startup_model_warnings();
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
         show_hardware_cursor: true, bottom_shortcut: String::new(),
