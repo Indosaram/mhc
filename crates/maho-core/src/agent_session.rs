@@ -1146,7 +1146,9 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         }).collect();
         let (custom, append) = session.system_prompt_sources();
         let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
-        maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools: session.get_active_tool_names(), skills,
+        let tools = session.get_active_tool_names();
+        let (tool_snippets, prompt_guidelines) = session.tool_prompt_contributions(&tools);
+        maho_ext_api::BuildSystemPromptOptions { cwd: session.cwd().into(), tools, tool_snippets, prompt_guidelines, skills,
             custom_prompt: crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt"),
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: session.project_context_files().into_iter()
@@ -4016,16 +4018,8 @@ impl AgentSession {
     pub fn rebuild_system_prompt(&self) {
         let skills = self.state().skills.clone();
         let active = self.get_active_tool_names();
-        let (snippets, guidelines) = {
-            let state = self.state();
-            let mut contributors = active.clone();
-            for name in &state.withheld_eval_only_tool_names {
-                if state.tool_registry.contains_key(name) && !contributors.contains(name) { contributors.push(name.clone()); }
-            }
-            let snippets = contributors.iter().filter_map(|name| state.tool_prompt_snippets.get(name).map(|snippet| (name.clone(), snippet.clone()))).collect();
-            let guidelines = contributors.iter().filter_map(|name| state.tool_prompt_guidelines.get(name)).flatten().cloned().collect();
-            (snippets, guidelines)
-        };
+        let (snippets, guidelines) = self.tool_prompt_contributions(&active);
+        let snippets = snippets.into_iter().collect();
         let (custom, append) = self.system_prompt_sources();
         let custom_prompt = crate::resource_loader::resolve_prompt_input(custom.as_deref(), "system prompt");
         let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
@@ -4065,7 +4059,22 @@ impl AgentSession {
         self.agent.set_system_prompt(prompt);
     }
 
+    /// Snippets and guidelines from the active tools plus withheld eval-only tools, which stay
+    /// callable as `tool.<name>(...)` so their contributions survive the withholding.
+    fn tool_prompt_contributions(&self, active: &[String]) -> (BTreeMap<String, String>, Vec<String>) {
+        let state = self.state();
+        let mut contributors = active.to_vec();
+        for name in &state.withheld_eval_only_tool_names {
+            if state.tool_registry.contains_key(name) && !contributors.contains(name) { contributors.push(name.clone()); }
+        }
+        let snippets = contributors.iter().filter_map(|name| state.tool_prompt_snippets.get(name).map(|snippet| (name.clone(), snippet.clone()))).collect();
+        let guidelines = contributors.iter().filter_map(|name| state.tool_prompt_guidelines.get(name)).flatten().cloned().collect();
+        (snippets, guidelines)
+    }
+
     fn extension_system_prompt_options(&self) -> maho_ext_api::BuildSystemPromptOptions {
+        let tools = self.get_active_tool_names();
+        let (tool_snippets, prompt_guidelines) = self.tool_prompt_contributions(&tools);
         let (custom, append) = self.system_prompt_sources();
         let append: Vec<_> = append.iter().filter_map(|source| crate::resource_loader::resolve_prompt_input(Some(source), "append system prompt")).collect();
         maho_ext_api::BuildSystemPromptOptions {
@@ -4073,7 +4082,7 @@ impl AgentSession {
             append_system_prompt: (!append.is_empty()).then(|| append.join("\n\n")),
             context_files: self.project_context_files().into_iter()
                 .map(|file| maho_ext_api::ContextFile { path: file.path, content: file.content }).collect(),
-            cwd: self.cwd().into(), tools: self.get_active_tool_names(),
+            cwd: self.cwd().into(), tools, tool_snippets, prompt_guidelines,
             skills: self.state().skills.iter().map(|skill| maho_ext_api::Skill {
                 name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(),
                 base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
@@ -9940,6 +9949,22 @@ mod tests {
         let prompt = session.system_prompt();
         assert!(prompt.contains("Shell commands run ONLY inside eval cells via tool.bash({ command: \"...\" }); hooks and permissions still apply."));
         assert!(prompt.ends_with("Text search runs ONLY inside eval cells via tool.grep({ pattern: \"...\", path: \"...\" }); it returns structured matches, respects .gitignore, and applies hooks and permissions - prefer it over rg/grep in tool.bash."));
+    }
+
+    #[test]
+    fn extension_prompt_options_carry_snippets_and_guidelines_of_withheld_eval_only_tools() {
+        use maho_ext_api::ExtensionContextActions;
+        let session = test_session_with_eval_only(vec!["grep".to_owned()]);
+        let mut grep = test_definition("grep");
+        grep.prompt_snippet = Some("Search file contents".to_owned());
+        grep.prompt_guidelines = Some(vec!["Prefer grep for search".to_owned()]);
+        session.register_tool_definition(test_definition("eval"), empty_source_info(), test_tool("eval"));
+        session.register_tool_definition(grep, empty_source_info(), test_tool("grep"));
+        session.set_active_tools_by_name(vec!["eval".to_owned(), "grep".to_owned()]);
+        let options = SessionExtensionActions(Arc::downgrade(&session.inner)).get_system_prompt_options();
+        assert!(!options.tools.contains(&"grep".to_owned()));
+        assert_eq!(options.tool_snippets.get("grep").map(String::as_str), Some("Search file contents"));
+        assert_eq!(options.prompt_guidelines, vec!["Prefer grep for search".to_owned()]);
     }
 
     fn test_session_with_eval_only(names: Vec<String>) -> AgentSession {

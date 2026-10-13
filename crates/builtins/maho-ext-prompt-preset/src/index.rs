@@ -32,7 +32,7 @@ fn settings(ctx: &ExtensionContext) -> PromptPresetName {
 fn builder_input(options: &BuildSystemPromptOptions, ctx: &ExtensionContext) -> BuildDynamicSystemPromptOptions<'static> {
     BuildDynamicSystemPromptOptions {
         cwd: if options.cwd.as_os_str().is_empty() { ctx.cwd.to_string_lossy().into_owned() } else { options.cwd.to_string_lossy().into_owned() },
-        selected_tools: options.tools.clone(), tool_snippets: Default::default(), prompt_guidelines: Vec::new(),
+        selected_tools: options.tools.clone(), tool_snippets: options.tool_snippets.iter().map(|(name, snippet)| (name.clone(), snippet.clone())).collect(), prompt_guidelines: options.prompt_guidelines.clone(),
         context_files: options.context_files.iter().map(|file| maho_core::system_prompt::ContextFile { path: file.path.clone(), content: file.content.clone() }).collect(),
         skills: options.skills.iter().map(|skill| maho_core::skills::Skill {
             name: skill.name.clone(), description: skill.description.clone(), file_path: skill.file_path.clone(), base_dir: skill.base_dir.clone(), disable_model_invocation: skill.disable_model_invocation,
