@@ -87,6 +87,12 @@ mod tests {
     }
 
     #[test]
+    fn kimi_coding_declares_the_kimi_code_profile() {
+        let provider = crate::providers::kimi_coding::kimi_coding_provider();
+        assert_eq!(provider.retry_policy().map(|profile| profile.id), Some("kimi-code"));
+    }
+
+    #[test]
     fn senpi_default_turn_backoff_caps_at_8s() {
         assert_eq!(SENPI_DEFAULT_RETRY_PROFILE.turn.backoff.per_attempt_cap_ms, Some(8_000.0));
     }
