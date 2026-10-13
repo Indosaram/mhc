@@ -233,6 +233,14 @@ pub struct InteractiveModeOptions {
     pub verbose: bool,
     /// senpi `chrome`: select an experimental interactive chrome (`GrokChrome`).
     pub chrome: Option<crate::grok::chrome::GrokChrome>,
+    /// senpi `migratedProviders`: shown as a startup warning.
+    pub migrated_providers: Vec<String>,
+    /// senpi `modelFallbackMessage`: shown as a startup warning.
+    pub model_fallback_message: Option<String>,
+    /// senpi `autoTrustOnReloadCwd`: the cwd whose implicit trust `/reload` may persist.
+    pub auto_trust_on_reload_cwd: Option<String>,
+    /// senpi `initialTitlePrompt`: the title source for the initial message (`None` disables titling).
+    pub initial_title_prompt: Option<String>,
 }
 
 pub struct InteractiveMode {
@@ -327,6 +335,15 @@ pub struct InteractiveMode {
     built_in_expandable: Option<Rc<RefCell<ExpandableText>>>,
     /// senpi `customHeader`: the extension `setHeader` override.
     custom_header: Option<HeaderSlot>,
+    /// senpi `options.migratedProviders` / `options.modelFallbackMessage`, consumed by `show_startup_warnings`.
+    startup_migrated_providers: Vec<String>,
+    startup_model_fallback_message: Option<String>,
+    /// senpi `this.autoTrustOnReloadCwd`.
+    auto_trust_on_reload_cwd: Option<String>,
+    /// senpi `options.initialTitlePrompt`, applied to the queued initial message.
+    initial_title_prompt: Option<String>,
+    /// The queued initial message text that carries `initial_title_prompt`.
+    initial_submission: Option<String>,
     /// senpi `options.verbose`.
     verbose: bool,
     /// senpi `this.chrome`.
@@ -929,7 +946,7 @@ impl InteractiveMode {
             if let Some(session) = blocked_session() { session.emit_extension_event(channel, data); }
         }));
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:if theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark }, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), question_mouse_paused:true, question_mouse_lease:None, always_mouse_lease:None, terminal_color_scheme_reports:Default::default(), terminal_color_scheme_listener:None, theme_detection:None, pending_theme_setting:None, theme_auto_sync:None, terminal_theme:if theme.name == "light" { crate::theme::TerminalTheme::Light } else { crate::theme::TerminalTheme::Dark }, fd_path:None, autocomplete_wrappers:Vec::new(), managed_tool_status_started:false, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat, streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false, armin_animations:Vec::new(), anthropic_subscription_warning_shown:false, continuity_notices:Default::default(), loaded_resources_container: Container::new(), loaded_resource_sections: Vec::new(), loaded_extensions: Vec::new(), mermaid_theme, active_status_indicator:None, idle_status:None, compaction_queue:Default::default(), pending_compaction_flush:None, queued_compaction_flushes:Default::default(), pending_bash:None, pending_bash_components:Vec::new(), share: None, startup_migrated_providers: options.migrated_providers, startup_model_fallback_message: options.model_fallback_message, auto_trust_on_reload_cwd: options.auto_trust_on_reload_cwd, initial_title_prompt: options.initial_title_prompt, initial_submission: None }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1697,7 +1714,14 @@ impl InteractiveMode {
             let mut queued = self.submission_images.borrow_mut();
             queued.iter().position(|(submitted, _)| submitted == &text).and_then(|index| queued.remove(index)).map(|(_, images)| images)
         };
-        let options = PromptOptions { images, streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
+        let mut options = PromptOptions { images, streaming_behavior: Some(maho_ext_api::StreamingBehavior::Steer), ..Default::default() };
+        // senpi `session.prompt(initialMessage, { sessionTitlePrompt: initialTitlePrompt ?? false })`.
+        if self.initial_submission.take_if(|initial| *initial == text).is_some() {
+            options.session_title_prompt = Some(match self.initial_title_prompt.take() {
+                Some(prompt) => maho_core::agent_session::SessionTitlePrompt::Text(prompt),
+                None => maho_core::agent_session::SessionTitlePrompt::Disabled,
+            });
+        }
         Some((text, options))
     }
 
@@ -1727,6 +1751,44 @@ impl InteractiveMode {
             self.submission_images.borrow_mut().push_back((text.to_owned(), images));
         }
         self.submissions.borrow_mut().push_back(text.to_owned());
+    }
+
+    /// senpi's initial-message prompt: queue it like any submission, tagged so `next_submission`
+    /// applies the `initialTitlePrompt` option to it.
+    pub fn enqueue_initial_message(&mut self, text: &str, images: Option<Vec<maho_ai::types::ImageContent>>) {
+        let trimmed = text.trim();
+        if trimmed.is_empty() { return; }
+        self.initial_submission = Some(trimmed.to_owned());
+        self.enqueue_submission(text, images);
+    }
+
+    /// senpi `init`'s startup warnings: migrated credentials and the model fallback message.
+    pub fn show_startup_warnings(&mut self) {
+        let migrated = std::mem::take(&mut self.startup_migrated_providers);
+        if !migrated.is_empty() {
+            self.show_warning(&format!("Migrated credentials to auth.json: {}", migrated.join(", ")));
+        }
+        if let Some(message) = self.startup_model_fallback_message.take() {
+            self.show_warning(&message);
+        }
+    }
+
+    /// senpi `maybeSaveImplicitProjectTrustAfterReload`: persist the implicit trust of a launch cwd
+    /// that had no trust-requiring resources at startup but gained them before `/reload`.
+    fn maybe_save_implicit_project_trust_after_reload(&mut self) -> bool {
+        let cwd = self.session.with_session_manager(|manager| manager.cwd().to_owned());
+        if self.auto_trust_on_reload_cwd.as_deref() != Some(cwd.as_str()) { return false; }
+        if !self.session.with_settings_manager(|settings| settings.is_project_trusted())
+            || !maho_core::trust_manager::has_trust_requiring_project_resources(&cwd, None) { return false; }
+        let store = maho_core::trust_manager::ProjectTrustStore::new(&self.session.agent_dir());
+        let saved = store.get(&cwd).and_then(|existing| match existing {
+            Some(_) => Ok(false),
+            None => store.set(&cwd, Some(true)).map(|()| true),
+        });
+        match saved {
+            Ok(saved) => { self.auto_trust_on_reload_cwd = None; saved }
+            Err(error) => { self.show_warning(&format!("Could not save project trust after reload: {error}")); false }
+        }
     }
 
     /// Pair an editor marker with its in-memory image payload.
@@ -2143,8 +2205,8 @@ impl InteractiveMode {
             // `reload` re-checks internally. A mounted host answers the veto inside its own reload.
             if self.session_host.is_none() {
                 match self.session.check_reload_veto().await {
-                    Ok(true) => { self.show_warning("Reload blocked by an extension."); return Ok(PromptDisposition::Handled); }
-                    Ok(false) => {}
+                    Ok(decision) if decision.cancelled => { self.show_warning("Reload blocked by an extension."); return Ok(PromptDisposition::Handled); }
+                    Ok(_) => {}
                     Err(error) => { self.show_error(&format!("Reload failed: {error}")); return Ok(PromptDisposition::Handled); }
                 }
             }
@@ -2165,7 +2227,8 @@ impl InteractiveMode {
                     if let Some(theme) = self.session.with_settings_manager(|settings| settings.get_string("theme")) { self.handle_ui_request(crate::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!(theme))); }
                     self.setup_autocomplete(); self.refresh_tool_renderer_snapshots().await; self.show_loaded_resources(false, true);
                     if let Some(error) = self.session.model_registry().get_error() { self.show_error(&format!("models.json error: {error}")); }
-                    self.show_status("Reloaded keybindings, extensions, skills, prompts, themes, and context files".into());
+                    let message = if self.maybe_save_implicit_project_trust_after_reload() { "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust" } else { "Reloaded keybindings, extensions, skills, prompts, themes, and context files" };
+                    self.show_status(message.into());
                 }
                 Ok(false) => self.show_warning("Reload blocked by an extension."),
                 Err(error) => self.show_error(&format!("Reload failed: {error}")),
@@ -3439,6 +3502,8 @@ impl InteractiveMode {
         let model = self.host_model();
         self.show_risky_main_model_warning(&model);
         self.maybe_warn_about_anthropic_subscription_auth(model);
+    }
+
     /// senpi `showWarning`.
     pub fn show_warning(&mut self, message: &str) {
         self.chat.add_component(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));

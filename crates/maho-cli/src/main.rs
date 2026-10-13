@@ -24,18 +24,23 @@ fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: 
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
-    // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
-    // statically embedded OAuth flows once per process before any login/auth resolution.
-    maho_ai::bun_oauth::register_bun_oauth_flows();
-    // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
-    maho_tui::native_platform::register_builtin_native_platform_helper();
-    maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
     // binary answers it when invoked through an argv0 ending in `-rpc` (a symlink or copy).
     if std::env::args_os().next().and_then(|argv0| std::path::Path::new(&argv0).file_stem().map(|stem| stem.to_string_lossy().ends_with("-rpc"))).unwrap_or(false) {
         argv.splice(0..0, ["--mode".to_owned(), "rpc".to_owned()]);
     }
+    // senpi cli.ts/cli-main.ts/main.ts process setup, applied while the process is single-threaded:
+    // resolve the brand before scrubbing it, mark the agent, and enter offline mode.
+    let _ = maho_core::brand::brand_profile();
+    let startup_env = maho_core::config::current_env();
+    maho_process_env::apply(&startup_env, &maho_cli::cli::setup::startup_process_env(&argv, &startup_env));
+    // senpi bun/runtime-modules.ts `registerBunRuntimeModules`: the standalone binary registers its
+    // statically embedded OAuth flows once per process before any login/auth resolution.
+    maho_ai::bun_oauth::register_bun_oauth_flows();
+    // senpi loads its prebuilt native platform addon on demand; the Rust ports are registered once.
+    maho_tui::native_platform::register_builtin_native_platform_helper();
+    maho_tools::managed_tools::set_managed_tool_resolver(std::sync::Arc::new(ensure_managed_tool));
     if argv.first().is_some_and(|arg| arg == "ulw-loop") {
         let code = ulw_loop_core::cli::main_cli(&argv);
         if code != 0 { std::process::exit(code); }
@@ -167,6 +172,14 @@ fn run() -> Result<(), String> {
             if code != 0 { std::process::exit(code); }
             Ok(())
         });
+    }
+    // senpi main.ts:944-945: the bootstrap (project-untrusted) global `httpProxy` before package
+    // commands and the runtime; still single-threaded here.
+    {
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        let current = maho_core::config::current_env();
+        let next = maho_cli::cli::setup::bootstrap_http_proxy_env(&argv, &cwd.to_string_lossy(), &maho_core::config::get_agent_dir(), &maho_core::config::home_dir(), &current)?;
+        maho_process_env::apply(&current, &next);
     }
     if let Some(command) = maho_cli::package_manager_cli::parse_package_command(&argv) {
         use maho_cli::package_manager_cli::{package_command_name, package_command_usage, PackageCommand};

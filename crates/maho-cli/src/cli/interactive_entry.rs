@@ -29,8 +29,12 @@ impl Component for LinesBuffer {
 /// senpi `main.ts`: join the shared session host before the interactive runtime is mounted, using
 /// the policy in `core/shared-host-policy.ts`.
 pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession, parsed: &super::args::Args) -> Option<SharedHostMount> {
+    let env = maho_core::config::current_env();
+    if is_truthy_env_flag(maho_core::brand::env_value("DISABLE_SHARED_HOST", &env).as_deref()) {
+        maho_core::output_guard::maho_write_stderr("DISABLE_SHARED_HOST is obsolete: the shared session host is now off by default. Enable the experimental.sharedHost setting (or set the brand-prefixed ENABLE_SHARED_HOST=1 env flag) to opt in.\n");
+    }
     let enable_env = is_truthy_env_flag(
-        maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &maho_core::config::current_env()).as_deref(),
+        maho_core::brand::env_value(SHARED_HOST_ENABLE_ENV_SUFFIX, &env).as_deref(),
     );
     let setting_enabled = session.with_settings_manager(shared_host_setting_enabled);
     if !should_join_shared_host(maho_core::project_trust::AppMode::Interactive, enable_env, setting_enabled) {
@@ -49,15 +53,28 @@ pub async fn mount_shared_host(session: &maho_core::agent_session::AgentSession,
     Some(join_shared_host(binding, &agent_dir, None).await)
 }
 
-pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>) -> Result<(), String> {
-    use maho_interactive::{interactive_mode::InteractiveMode, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
+pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &super::args::Args, initial: super::initial_message::InitialMessageResult, extensions: Vec<maho_ext_api::LoadedExtension>, mut widget_requests: tokio::sync::mpsc::UnboundedReceiver<maho_interactive::interactive_extension_ui::UiRequest>, migrated_providers: Vec<String>, model_fallback_message: Option<String>) -> Result<(), String> {
+    use maho_interactive::{interactive_mode::{InteractiveMode, InteractiveModeOptions}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode}};
     let shared_host = mount_shared_host(&session, parsed).await;
     if let Some(message) = shared_host.as_ref().and_then(SharedHostMount::warning_message) { maho_core::output_guard::maho_write_stderr(&format!("{message}\n")); }
     let theme_setting = parsed.use_theme.clone().or_else(|| session.with_settings_manager(|settings| settings.get_string("theme")));
+    // senpi `applyGrokNeoThemeFallback`: grok-night until the user chooses a theme (never persisted).
+    let theme_setting = theme_setting.or_else(|| parsed.grok_neo.then(|| "grok-night".to_owned()));
     let theme = resolve_interactive_startup_theme(&session, parsed, theme_setting.as_deref()).await?;
     let mut terminal = maho_interactive::tui_renderer::create_process_terminal();
     let host = Rc::new(EditorHost { rows: Cell::new(usize::from(terminal.rows())), render: Cell::new(true), full_redraws: Cell::new(0) });
-    let mut mode = InteractiveMode::new(session.clone(), theme.clone(), host.clone());
+    // senpi main.ts:1192-1195 `autoTrustOnReloadCwd`.
+    let session_cwd = session.with_session_manager(|manager| manager.cwd().to_owned());
+    let auto_trust_on_reload_cwd = (parsed.project_trust_override.is_none()
+        && !maho_core::trust_manager::has_trust_requiring_project_resources(&session_cwd, None)).then_some(session_cwd);
+    let mut mode = InteractiveMode::new_with_options(session.clone(), theme.clone(), host.clone(), InteractiveModeOptions {
+        verbose: parsed.verbose,
+        chrome: parsed.grok_neo.then(|| maho_interactive::grok::chrome::GrokChrome::new(theme.clone())),
+        migrated_providers,
+        model_fallback_message,
+        auto_trust_on_reload_cwd,
+        initial_title_prompt: initial.initial_title_prompt.clone(),
+    });
     if let Some(host) = shared_host.as_ref().and_then(|mount| mount.outcome.session_host()) {
         mode.set_session_host(host);
     }
@@ -78,6 +95,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         for status in statuses.into_inner() { mode.show_managed_tool_status(status.kind, &status.message); }
         mode.set_fd_path(fd_path);
     }
+    mode.show_startup_warnings();
     let mut screen = create_interactive_tui(InteractiveTuiOptions {
         tui_mode: if parsed.tui_mode.as_deref() == Some("fullscreen") { TuiMode::Fullscreen } else { TuiMode::Regular },
         show_hardware_cursor: true, bottom_shortcut: String::new(),
@@ -163,7 +181,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
     mode.bind_terminal_theme(&mut screen, theme_setting);
     let result = async {
-        if let Some(text) = initial.initial_message { mode.enqueue_submission(&text, initial.initial_images); }
+        if let Some(text) = initial.initial_message { mode.enqueue_initial_message(&text, initial.initial_images); }
         for text in &parsed.messages { mode.enqueue_submission(text, None); }
         let clock = std::time::Instant::now();
         let mut installed_native_renderers = Vec::new();
@@ -336,9 +354,10 @@ async fn resolve_interactive_startup_theme(
     let cwd = session.cwd();
     let agent_dir = session.agent_dir();
     let mut diagnostics: Vec<String> = Vec::new();
-    // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first.
+    // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first, unless
+    // `--no-themes` limits discovery to the explicit CLI theme paths (resource-loader.ts:758-760).
     let mut theme_paths: Vec<PathBuf> = Vec::new();
-    {
+    if !parsed.no_themes {
         let mut settings = startup_theme_settings_manager(session);
         let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
             cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
