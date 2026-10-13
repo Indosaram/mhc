@@ -193,3 +193,32 @@ fn custom_entries_match_pinned_senpi_with_and_without_content() {
         assert_eq!(trim(component.render(width)), expected(case), "entry at {width}");
     }
 }
+
+#[test]
+fn extension_entry_renderers_drive_custom_entries_and_their_replaces_predicate() {
+    use maho_interactive::components::custom_entry::{from_extension_entry_renderer, from_extension_entry_replaces};
+    let renderer: maho_ext_api::EntryRenderer = std::sync::Arc::new(|entry: &maho_ext_api::SessionEntry, options: &maho_ext_api::EntryRenderOptions, _theme: &maho_ext_api::Theme| {
+        let text = format!("{} {}", entry.data["data"]["text"].as_str().unwrap_or_default(), options.expanded);
+        Some(Box::new(Text::with_padding(text, 0, 0)) as Box<dyn Component>)
+    });
+    let entry = serde_json::json!({"type":"custom","id":"e1","customType":"note","data":{"text":"hello"}});
+    let mut component = CustomEntryComponent::new(entry.clone(), from_extension_entry_renderer(renderer), theme());
+    component.set_expanded(true);
+    assert!(component.has_content());
+    assert!(component.render(40).iter().any(|line| line.contains("hello true")));
+    let replaces = from_extension_entry_replaces(std::sync::Arc::new(|previous: &maho_ext_api::SessionEntry, next: &maho_ext_api::SessionEntry| previous.kind == next.kind && previous.id != next.id));
+    assert!(replaces(&entry, &serde_json::json!({"type":"custom","id":"e2","customType":"note"})));
+}
+
+#[test]
+fn extension_message_renderers_receive_typed_custom_messages() {
+    use maho_interactive::components::custom_message::{CustomMessageComponent, from_extension_message_renderer};
+    use maho_interactive::components::markdown_transform::get_markdown_theme;
+    let renderer: maho_ext_api::MessageRenderer = std::sync::Arc::new(|message: &maho_ext_api::CustomMessage, options: &maho_ext_api::MessageRenderOptions, _theme: &maho_ext_api::Theme| {
+        let maho_ext_api::ToolContent::Text { text, .. } = &message.content[0] else { return None };
+        Some(Box::new(Text::with_padding(format!("{}:{text}:{}", message.custom_type, options.output_pad), 0, 0)) as Box<dyn Component>)
+    });
+    let message = serde_json::json!({"role":"custom","customType":"notice","content":"body","display":true,"timestamp":0});
+    let mut component = CustomMessageComponent::new(message, Some(from_extension_message_renderer(renderer)), theme(), get_markdown_theme(&theme()), 2);
+    assert!(component.render(40).iter().any(|line| line.contains("notice:body:2")));
+}
