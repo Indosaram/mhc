@@ -1171,34 +1171,49 @@ impl SessionManager {
         }
     }
 
-    pub fn get_tree(&self, leaf_id: Option<&str>) -> Option<SessionTreeNode> {
+    /// senpi `getTree`: every root, with orphaned entries (broken parent chain) also returned as
+    /// roots and children sorted by timestamp (oldest first). Built iteratively so deep sessions
+    /// cannot overflow the stack.
+    pub fn get_tree(&self) -> Vec<SessionTreeNode> {
         let entries = self.entries();
-        let index = build_entry_index(&entries);
-        let root_id = match leaf_id {
-            Some(id) => id.to_owned(),
-            None => entries.first().and_then(|entry| entry.get("id")).and_then(Value::as_str)?.to_owned(),
-        };
-        let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
-        for entry in &entries {
-            if let Some(parent) = entry.get("parentId").and_then(Value::as_str)
-                && let Some(id) = entry.get("id").and_then(Value::as_str) {
-                    children_by_parent.entry(parent.to_owned()).or_default().push(id.to_owned());
-                }
+        let index_by_id: HashMap<&str, usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.get("id").and_then(Value::as_str).map(|id| (id, index)))
+            .collect();
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
+        let mut roots = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let id = entry.get("id").and_then(Value::as_str);
+            match entry.get("parentId").and_then(Value::as_str) {
+                Some(parent) if Some(parent) != id => match index_by_id.get(parent) {
+                    Some(&parent_index) => children[parent_index].push(index),
+                    None => roots.push(index),
+                },
+                _ => roots.push(index),
+            }
         }
-        fn build(id: &str, index: &HashMap<String, Value>, children: &HashMap<String, Vec<String>>, labels: &HashMap<String, String>, timestamps: &HashMap<String, String>) -> Option<SessionTreeNode> {
-            let entry = index.get(id)?.clone();
-            let child_nodes = children
-                .get(id)
-                .map(|ids| ids.iter().filter_map(|child| build(child, index, children, labels, timestamps)).collect())
-                .unwrap_or_default();
-            Some(SessionTreeNode {
-                entry,
-                children: child_nodes,
-                label: labels.get(id).cloned(),
-                label_timestamp: timestamps.get(id).cloned(),
-            })
+        for siblings in &mut children {
+            siblings.sort_by_key(|&index| parse_entry_timestamp(&entries[index]));
         }
-        build(&root_id, &index, &children_by_parent, &self.labels_by_id, &self.label_timestamps_by_id)
+        let mut built: Vec<Option<SessionTreeNode>> = (0..entries.len()).map(|_| None).collect();
+        let mut stack: Vec<(usize, bool)> = roots.iter().rev().map(|&index| (index, false)).collect();
+        while let Some((index, expanded)) = stack.pop() {
+            if expanded {
+                let child_nodes = children[index].iter().filter_map(|&child| built[child].take()).collect();
+                let id = entries[index].get("id").and_then(Value::as_str).unwrap_or_default();
+                built[index] = Some(SessionTreeNode {
+                    entry: entries[index].clone(),
+                    children: child_nodes,
+                    label: self.labels_by_id.get(id).cloned(),
+                    label_timestamp: self.label_timestamps_by_id.get(id).cloned(),
+                });
+            } else {
+                stack.push((index, true));
+                stack.extend(children[index].iter().map(|&child| (child, false)));
+            }
+        }
+        roots.iter().filter_map(|&index| built[index].take()).collect()
     }
 }
 
@@ -1494,12 +1509,29 @@ mod tests {
         let left = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
         manager.set_leaf(Some(&root_id));
         let right = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 3 }));
-        let tree = manager.get_tree(None).expect("tree");
+        let trees = manager.get_tree();
+        assert_eq!(trees.len(), 1);
+        let tree = &trees[0];
         assert_eq!(tree.entry["id"], root_id);
         assert_eq!(tree.children.len(), 2);
         assert_eq!(tree.children[0].entry["id"], left["id"]);
         assert_eq!(tree.children[1].entry["id"], right["id"]);
         assert_eq!(manager.leaf_id(), Some(right["id"].as_str().unwrap_or_default()));
+    }
+
+    #[test]
+    fn tree_returns_orphans_as_roots_and_sorts_children_by_timestamp() {
+        let entries = vec![
+            header("s", Some(3), "/tmp"),
+            json!({ "type": "custom", "id": "root", "parentId": null, "timestamp": "2024-01-01T00:00:00.000Z", "customType": "x" }),
+            json!({ "type": "custom", "id": "late", "parentId": "root", "timestamp": "2024-01-01T00:00:09.000Z", "customType": "x" }),
+            json!({ "type": "custom", "id": "early", "parentId": "root", "timestamp": "2024-01-01T00:00:01.000Z", "customType": "x" }),
+            json!({ "type": "custom", "id": "orphan", "parentId": "gone", "timestamp": "2024-01-01T00:00:02.000Z", "customType": "x" }),
+        ];
+        let manager = SessionManager::in_memory("/tmp", None, Some(entries));
+        let trees = manager.get_tree();
+        assert_eq!(trees.iter().map(|node| node.entry["id"].clone()).collect::<Vec<_>>(), vec![json!("root"), json!("orphan")]);
+        assert_eq!(trees[0].children.iter().map(|node| node.entry["id"].clone()).collect::<Vec<_>>(), vec![json!("early"), json!("late")]);
     }
 
     #[test]

@@ -1893,9 +1893,7 @@ impl InteractiveMode {
         }
         if text == "/tree" {
             let (tree, leaf) = self.session.with_session_manager(|manager| {
-                let entries = manager.entries();
-                let roots = entries.iter().filter(|entry| entry.get("parentId").is_none_or(serde_json::Value::is_null)).filter_map(|entry| entry["id"].as_str()).filter_map(|id| manager.get_tree(Some(id))).collect::<Vec<_>>();
-                (roots, manager.leaf_id().map(str::to_owned))
+                (manager.get_tree(), manager.leaf_id().map(str::to_owned))
             });
             if tree.is_empty() { self.show_status("No entries in session".into()); return Ok(true); }
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);

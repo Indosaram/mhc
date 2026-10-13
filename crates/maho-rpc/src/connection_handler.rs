@@ -457,11 +457,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
                 value
             }
             let (tree, leaf_id) = session.with_session_manager(|manager| {
-                let entries = manager.entries();
-                let ids = entries.iter().filter_map(|entry| entry["id"].as_str()).collect::<std::collections::HashSet<_>>();
-                let tree = entries.iter().filter(|entry| entry["parentId"].as_str().is_none_or(|parent| !ids.contains(parent)))
-                    .filter_map(|entry| entry["id"].as_str().and_then(|id| manager.get_tree(Some(id))))
-                    .map(tree_node).collect::<Vec<_>>();
+                let tree = manager.get_tree().into_iter().map(tree_node).collect::<Vec<_>>();
                 (tree, manager.leaf_id().map(str::to_owned))
             });
             ("get_tree", Ok(Some(serde_json::json!({"tree":tree,"leafId":leaf_id}))))
