@@ -38,3 +38,41 @@ fn every_enabled_language_combination_resolves_template_tags() {
         }
     }
 }
+
+fn all_languages() -> Languages { Languages { py:true, js:true, rb:true, jl:true } }
+
+#[test]
+fn monitor_guidance_appears_only_when_monitor_is_registered() {
+    for model in ["unknown", "claude-sonnet", "gpt-6", "codex-6", "kimi-k2"] {
+        let without = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some(model.into()), ..Default::default() }).unwrap();
+        assert!(!without.description.contains("tool.monitor"), "{model}");
+        let with = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some(model.into()), monitor:true, ..Default::default() }).unwrap();
+        assert!(with.description.contains("tool.monitor({ command, filter })"), "{model}");
+    }
+}
+
+#[test]
+fn dialect_blocks_follow_model_family() {
+    let claude = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some("claude-sonnet".into()), ..Default::default() }).unwrap();
+    assert!(claude.description.contains("<eval_first_batching>"));
+    let gpt = build_eval_prompt(&all_languages(), &EvalPromptOptions { model_id:Some("gpt-6".into()), ..Default::default() }).unwrap();
+    assert!(gpt.description.contains("<gpt_eval_dialect>"));
+    assert!(!gpt.description.contains("<eval_first_batching>"));
+}
+
+#[test]
+fn output_helper_and_spawn_default_agent_require_spawns() {
+    let plain = build_eval_prompt(&all_languages(), &EvalPromptOptions::default()).unwrap();
+    assert!(!plain.description.contains("output(*ids"));
+    let spawning = build_eval_prompt(&all_languages(), &EvalPromptOptions { spawns:true, spawn_default_agent:Some("sisyphus".into()), ..Default::default() }).unwrap();
+    assert!(spawning.description.contains("output(*ids"));
+    assert!(spawning.description.contains("agent(prompt, agent?=\"sisyphus\""));
+}
+
+#[test]
+fn language_line_uses_kernel_labels_and_any_joins() {
+    let prompt = build_eval_prompt(&Languages { py:false, js:false, rb:true, jl:true }, &EvalPromptOptions::default()).unwrap();
+    assert!(prompt.description.contains("`language`: `\"rb\"` persistent Ruby kernel, `\"jl\"` persistent Julia kernel."));
+    assert!(prompt.description.contains("Ruby: synchronous; helper options are keyword args;"));
+    assert!(prompt.description.contains("Julia: synchronous; helper options are standard keyword args;"));
+}
