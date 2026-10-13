@@ -1782,6 +1782,7 @@ impl AgentSession {
         );
 
         session.install_after_tool_call_hook();
+        session.install_agent_next_turn_refresh();
         Ok(session)
     }
 
@@ -5564,6 +5565,103 @@ impl AgentSession {
         if let Some(error) = error {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
         }
+    }
+
+    /// `_installAgentNextTurnRefresh`: before every follow-on provider request of a run, enforce
+    /// threshold compaction when a continuation is about to be admitted, then refresh the system
+    /// prompt, tools, model and thinking level/selection the next turn is sent with.
+    ///
+    /// Adaptations: the resident-store rehydration and Cursor admission belong to other parity rows;
+    /// the refreshed prompt is the agent's live prompt, which `rebuild_system_prompt` keeps equal to
+    /// `override ?? base`; a required compaction that fails aborts the run, the native equivalent of
+    /// the upstream callback throwing `RequiredCompactionError`.
+    fn install_agent_next_turn_refresh(&self) {
+        let previous: Option<maho_agent::PrepareNextTurnWithContext> = self.agent.prepare_next_turn_with_context().or_else(|| {
+            self.agent.prepare_next_turn().map(|without| -> maho_agent::PrepareNextTurnWithContext {
+                Arc::new(move |_turn, signal| without(signal))
+            })
+        });
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_prepare_next_turn_with_context(Some(Arc::new(move |turn, signal| {
+            let weak = weak.clone();
+            let previous = previous.clone();
+            Box::pin(async move {
+                let inner = weak.upgrade()?;
+                let session = AgentSession { inner };
+                let compacted_before_callback = session.compact_before_next_admission(&turn).await;
+                let messages = if compacted_before_callback { session.messages() } else { turn.context.messages.clone() };
+                let post_compaction_turn = maho_agent::types::PrepareNextTurnContext {
+                    context: maho_agent::types::AgentContext { messages, ..turn.context.clone() }, ..turn.clone()
+                };
+                let mut previous_snapshot = match &previous {
+                    Some(previous) => previous(post_compaction_turn.clone(), signal.clone()).await,
+                    None => None,
+                };
+                let mut previous_context = previous_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
+                    .unwrap_or_else(|| post_compaction_turn.context.clone());
+                // The previous callback may await while continuation work is enqueued; re-sample once.
+                let compacted_after_callback = !compacted_before_callback && session.compact_before_next_admission(&turn).await;
+                if compacted_after_callback {
+                    let post_late_compaction_turn = maho_agent::types::PrepareNextTurnContext {
+                        context: maho_agent::types::AgentContext { messages: session.messages(), ..turn.context.clone() }, ..turn.clone()
+                    };
+                    let late_snapshot = match &previous {
+                        Some(previous) => previous(post_late_compaction_turn.clone(), signal.clone()).await,
+                        None => None,
+                    };
+                    let base = previous_snapshot.unwrap_or_default();
+                    let context = late_snapshot.as_ref().and_then(|snapshot| snapshot.context.clone())
+                        .unwrap_or_else(|| post_late_compaction_turn.context.clone());
+                    previous_snapshot = Some(match late_snapshot {
+                        Some(late) => maho_agent::types::AgentLoopTurnUpdate {
+                            context: Some(context.clone()),
+                            model: late.model.or(base.model),
+                            thinking_level: late.thinking_level.or(base.thinking_level),
+                            thinking_selection: late.thinking_selection.or(base.thinking_selection),
+                            abort_server_side_fallback: late.abort_server_side_fallback.or(base.abort_server_side_fallback),
+                        },
+                        None => maho_agent::types::AgentLoopTurnUpdate { context: Some(context.clone()), ..base },
+                    });
+                    previous_context = context;
+                }
+                let state = session.agent.state();
+                Some(maho_agent::types::AgentLoopTurnUpdate {
+                    context: Some(maho_agent::types::AgentContext {
+                        system_prompt: state.system_prompt.clone(),
+                        messages: previous_context.messages,
+                        tools: Some(state.tools().to_vec()),
+                    }),
+                    model: Some(state.model.clone()),
+                    thinking_level: Some(state.thinking_level),
+                    thinking_selection: Some(state.thinking_selection.clone()),
+                    abort_server_side_fallback: previous_snapshot.and_then(|snapshot| snapshot.abort_server_side_fallback),
+                })
+            })
+        })));
+    }
+
+    /// `compactBeforeNextAdmission` inside `_installAgentNextTurnRefresh`: threshold compaction runs
+    /// only when this prepare precedes an actual provider admission (a tool continuation or queued
+    /// messages). Returns whether a compaction landed.
+    async fn compact_before_next_admission(&self, turn: &maho_agent::types::PrepareNextTurnContext) -> bool {
+        let model = self.model();
+        // Cursor rebuilds the full conversation each hop; compacting mid-run poisons its conversation id.
+        if model.provider == "cursor" || model.provider == "cursor-cli-oauth" || model.context_window == 0 {
+            return false;
+        }
+        if turn.tool_results.is_empty() && !self.agent.has_queued_messages() {
+            return false;
+        }
+        let latest_compaction = || self.with_session_manager(|manager|
+            crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id()))
+                .and_then(|entry| entry.get("id").cloned()));
+        let before = latest_compaction();
+        if let Err(error) = self.revalidate_continuation_admission(false).await {
+            self.emit(AgentSessionEvent::ContinuationError { error_message: error.clone() });
+            self.agent.abort(Some(maho_ai::utils::abort::AbortReason::new("RequiredCompactionError", error)));
+            return false;
+        }
+        latest_compaction() != before
     }
 
     fn install_after_tool_call_hook(&self) {
