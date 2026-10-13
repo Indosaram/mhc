@@ -419,6 +419,7 @@ impl maho_ext_api::Extension for CompactionExtension {
                 let warm = std::sync::Arc::clone(&warm);
                 let generation = std::sync::Arc::clone(&generation);
                 let reminder = std::sync::Arc::clone(&reminder);
+                let lane = std::sync::Arc::clone(&lane);
                 Box::pin(async move {
                     if lane_policy::live_disables_senpi_compaction(&lane, context) {return result;}
                     let maho_ext_api::ExtensionEvent::BeforeAgentStart(event) = event else {return result;};

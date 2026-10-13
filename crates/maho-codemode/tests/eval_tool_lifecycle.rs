@@ -132,13 +132,12 @@ fn capacity_tool(settings:maho_codemode::config::settings::CodemodeSettings,max_
     let (host,_host)=tokio::sync::mpsc::unbounded_channel();
     let kernel=Arc::new(CapacityKernel {admitted,pending:Mutex::new(HashMap::new())});
     let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {max_detached_cells,..Default::default()})));
-    create_eval_tool(Arc::new(CreateEvalToolOptions {completion_handles:Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells,on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None})).unwrap()
+    create_eval_tool(Arc::new(CreateEvalToolOptions {completion_handles:Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells,on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None})).expect("eval tool")
 }
 
 #[test]
 fn description_teaches_resolved_run_budget_and_detached_capacity() {
-    let mut settings=maho_codemode::config::settings::CodemodeSettings::default();
-    settings.run_budget_seconds=42.0;
+    let settings=maho_codemode::config::settings::CodemodeSettings{run_budget_seconds:42.0,..Default::default()};
     let tool=capacity_tool(settings,4);
     assert!(tool.description.contains("capped at 42s"),"{}",tool.description);
     assert!(tool.description.contains("up to 4 background cells per session"),"{}",tool.description);

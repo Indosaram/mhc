@@ -627,7 +627,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),

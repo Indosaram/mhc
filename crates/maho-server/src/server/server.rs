@@ -546,7 +546,7 @@ impl Presentation {
     /// attachment if it is still current, then tell the client unless it already disconnected.
     async fn publish_detached(&self, detached: &std::sync::Weak<Attachment>) -> Result<(), ServerError> {
         let mut current = self.attachment.lock().await;
-        if !current.as_ref().is_some_and(|attachment| Arc::as_ptr(attachment) == detached.as_ptr()) {
+        if current.as_ref().is_none_or(|attachment| Arc::as_ptr(attachment) != detached.as_ptr()) {
             return Ok(());
         }
         current.take();

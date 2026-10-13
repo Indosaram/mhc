@@ -3,7 +3,6 @@
 //! call falls back to a compact `tool.name(args)` row.
 use std::{cell::RefCell, collections::{BTreeMap, HashMap}, path::{Path, PathBuf}, rc::Rc, sync::LazyLock};
 use maho_ext_api::Theme;
-use maho_interactive::tools::renderers::ToolRenderers as _;
 use maho_tui::{components::text::Text, terminal_text::sanitize_terminal_label, tui::Component};
 use regex::Regex;
 use serde_json::Value;

@@ -2235,6 +2235,7 @@ async fn alt_enter_when_idle_submits_like_enter() {
 
 #[tokio::test]
 async fn alt_enter_while_streaming_queues_a_follow_up() {
+    use maho_tui::tui::Component;
     let mut gated = gated_native_mode();
     gated.mode.handle_input("hi");
     gated.mode.handle_input("\r");
