@@ -122,7 +122,7 @@ fn context() -> ExtensionContext {
 #[tokio::test]
 async fn extension_request_uses_real_registered_runner() {
     use maho_server::app_server::registry::{
-        JsonRpcError, MethodRegistry, RegistryConnection, register_extension_request_method,
+        ExtensionRequestTarget, JsonRpcError, MethodRegistry, RegistryConnection, register_extension_request_method,
     };
     let runtime = ExtensionRuntime::default();
     let events = EventBus::default();
@@ -144,12 +144,15 @@ async fn extension_request_uses_real_registered_runner() {
     let mut registry = MethodRegistry::default();
     register_extension_request_method(
         &mut registry,
-        Arc::new(move |id| {
-            if id == "thread" {
-                Ok(selected.clone())
-            } else {
-                Err(JsonRpcError::new(-32603, "Thread not found"))
-            }
+        Arc::new(move |id: String| {
+            let selected = selected.clone();
+            Box::pin(async move {
+                if id == "thread" {
+                    Ok(selected as Arc<dyn ExtensionRequestTarget>)
+                } else {
+                    Err(JsonRpcError::new(-32603, "Thread not found"))
+                }
+            })
         }),
     );
     let connection = RegistryConnection {

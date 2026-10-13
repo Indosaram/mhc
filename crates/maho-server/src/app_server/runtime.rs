@@ -53,6 +53,15 @@ impl AppServerRuntime {
             if let Some(core) = fuzzy_core.get().and_then(std::sync::Weak::upgrade) {tokio::spawn(async move {if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fuzzy search notification: {}",error.message);}});}
         }));
         super::fuzzy_search_methods::register_fuzzy_file_search_methods(&mut core.registry,fuzzy_search.clone());
+        let extension_threads = threads.clone();
+        super::registry::register_extension_request_method(&mut core.registry,Arc::new(move |thread_id: String| {
+            let threads = extension_threads.clone();
+            Box::pin(async move {
+                let entry = threads.get_loaded_thread(&thread_id).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                let session = entry.lock().await.session.clone();
+                Ok(Arc::new(session) as Arc<dyn super::registry::ExtensionRequestTarget>)
+            })
+        }));
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
