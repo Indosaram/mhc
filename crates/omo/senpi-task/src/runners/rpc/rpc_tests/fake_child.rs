@@ -66,6 +66,7 @@ fn exit_now(code: i32) -> ! {
 }
 
 fn ignore_sigterm() {
+    #[cfg(unix)]
     // SAFETY: installing SIG_IGN for SIGTERM has no preconditions.
     unsafe {
         libc::signal(libc::SIGTERM, libc::SIG_IGN);
@@ -123,9 +124,12 @@ fn handle_prompt(command: &Value, id: &Value) {
         respond("prompt", id, None);
         emit(&json!({ "type": "agent_start" }));
         // SAFETY: signalling our own pid.
+        #[cfg(unix)]
         unsafe {
             libc::kill(libc::getpid(), libc::SIGKILL);
         }
+        #[cfg(windows)]
+        exit_now(1);
         return;
     }
     if let Some(text) = message.strip_prefix("finish:") {
