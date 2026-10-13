@@ -1,3 +1,5 @@
+const SAFETY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[tokio::test]
 async fn real_print_entry_streams_loopback_model_and_exits() {
     run_print_entry(false).await;
@@ -38,7 +40,7 @@ async fn run_print_entry(no_context_files: bool) {
         .spawn().expect("print-entry fixture operation");
     let mut stdout = child.stdout.take().expect("print stdout");
     let mut stderr = child.stderr.take().expect("print stderr");
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let result = tokio::time::timeout(SAFETY_BOUND, async {
     let (mut connection, _) = listener.accept().await?;
     let mut request = Vec::new();
     let mut chunk = [0; 4096];

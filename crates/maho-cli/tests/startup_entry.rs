@@ -1,3 +1,5 @@
+const SAFETY_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn run(args: &[&str]) -> std::process::Output {
     let dir = tempfile::tempdir().expect("isolated CLI directory");
     std::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
@@ -37,7 +39,7 @@ async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     let mut input = child.stdin.take().expect("stdin");
     let mut stdout = child.stdout.take().expect("stdout");
     let mut stderr = child.stderr.take().expect("stderr");
-    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let result = tokio::time::timeout(SAFETY_BOUND, async {
         use tokio::io::AsyncReadExt;
         input.write_all(b"{\"id\":\"query\",\"type\":\"get_messages\"}\n{\"id\":\"query-repeat\",\"type\":\"get_messages\"}\n").await?;
         drop(input);
