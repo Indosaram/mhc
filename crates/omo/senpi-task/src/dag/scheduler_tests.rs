@@ -617,9 +617,10 @@ fn given_resident_denial_with_external_resident_then_release_wakes_parked_node()
     manager.add_external_resident(PARENT_SESSION_ID);
     let queued = event_signal(&fixture.scheduler, |event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, reason: DagNodeTransitionReason::ResidencyQueued { residents: 1, held_by_other_owners: 1 }, .. } if node_id == "parked"));
     let running = run_in_background(&fixture.scheduler);
-    manager.when_started("holder");
     manager.when_denied("parked");
     recv_within(&queued, "residency queued reason");
+    // The external resident settles; its release is what frees the slot for the parked node.
+    manager.complete("external", TaskStatus::Completed);
     manager.release_residency(PARENT_SESSION_ID);
     manager.when_started("parked");
     manager.complete("parked", TaskStatus::Completed);
@@ -656,7 +657,9 @@ fn given_owner_conflict_then_existing_child_is_attached_and_reused() {
 fn given_preattached_task_then_it_settles_without_new_start() {
     let store = temp_store();
     let input = definition(vec![node("attached", &[])]);
-    let initial_record = record_for(&input);
+    let mut initial_record = record_for(&input);
+    // Recovery hands over a reattached child with its node already running (TS reconcileNodes).
+    initial_record.nodes[0].state = DagNodeState::Running;
     store.write_checkpoint(&run_id(), &initial_record).unwrap();
     let harness = make_manager(HarnessOptions::default());
     let manager = FakeTaskManager::new(FakeOptions { manual: true, ..Default::default() });
@@ -766,7 +769,8 @@ fn cancellation_failure(error: &str, two_nodes: bool) {
     assert_eq!(result.status, DagRunStatus::Cancelled);
     assert!(result.nodes.iter().all(|node| node.state == DagNodeState::Cancelled));
     if two_nodes { assert_eq!(manager.state.lock().unwrap().cancellations.len(), 2); }
-    for id in if two_nodes { vec!["a", "b"] } else { vec!["a"] } { manager.complete(id, TaskStatus::Cancelled); }
+    // Only the child whose cancellation was rejected is still live in the fake manager.
+    manager.complete("a", TaskStatus::Cancelled);
 }
 
 #[test]

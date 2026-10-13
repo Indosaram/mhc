@@ -6,7 +6,7 @@ fn given_completed_node_when_retry_requested_then_node_not_retryable_is_returned
     record.nodes[0].state = DagNodeState::Completed;
     let error = assert_retryable(&record, &record.run_id, &["broken".into()]).unwrap_err();
     assert_eq!(error.code, DagNodeControlErrorCode::NodeNotRetryable);
-    assert_eq!(error.node_ids, vec!["done"]);
+    assert_eq!(error.node_ids, vec!["broken"]);
     assert!(error.message.contains("amend the definition"));
 }
 

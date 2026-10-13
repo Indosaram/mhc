@@ -2,11 +2,8 @@
 //! assembled `DagManager` + `DagScheduler` + `DagWaitSurface` + real `TaskManager` agree on the
 //! happy path (linear three-node run, wave-ordered events, durable artifacts) and one proving a
 //! mid-chain failure cascades to `skipped` descendants end to end. Rust's `TaskManager` is a
-//! concrete struct rather than the pluggable interface TS scripts directly with `ScriptedRunner`,
-//! so this file's coverage is narrower than the pinned 30-case (12+18) TS suite: the remaining
-//! diamond/mixed-route/residency/cancellation-under-load end-to-end permutations are tracked as an
-//! N/A gap in the parity row, each already covered at the unit level by
-//! `manager_tests.rs`/`scheduler_tests.rs`/`handle_tests.rs`.
+//! concrete struct rather than the pluggable interface TS scripts directly with `ScriptedRunner`;
+//! controlled runner cases below cover the end-to-end routing, wave, and residency contracts.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -305,20 +302,22 @@ fn assert_scripted_success(fixture: &ScriptedFixture, input: DagDefinition, wave
     let result = fixture.run(&started.snapshot.run_id);
     assert_eq!(result.status, DagRunStatus::Completed);
     assert_eq!(result.snapshot.counts.completed, input.nodes.len());
-    let actual_waves = fixture.events(&result.run_id).into_iter().filter_map(|event| match event.payload { DagRunEventPayload::WaveStarted { node_ids, .. } => Some(node_ids), _ => None }).collect::<Vec<_>>();
-    assert_eq!(actual_waves, waves);
+    // Compiled waves are informational under dependency-frontier admission: one wave index may be
+    // started by several admission passes, so membership is compared per index.
+    assert_eq!(result.snapshot.waves.iter().map(|wave| wave.node_ids.clone()).collect::<Vec<_>>(), waves.iter().map(|wave| wave.iter().map(|id| id.to_string()).collect::<Vec<_>>()).collect::<Vec<_>>());
     let events = fixture.events(&result.run_id);
     for (index, wave) in waves.iter().enumerate() {
+        let mut started_members = events.iter().filter_map(|event| match &event.payload { DagRunEventPayload::WaveStarted { wave_index, node_ids } if *wave_index == index => Some(node_ids.clone()), _ => None }).flatten().collect::<Vec<_>>();
+        started_members.sort();
+        let mut expected_members = wave.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        expected_members.sort();
+        assert_eq!(started_members, expected_members);
         let start = events.iter().position(|event| matches!(event.payload, DagRunEventPayload::WaveStarted { wave_index, .. } if wave_index == index)).unwrap();
         let finish = events.iter().position(|event| matches!(event.payload, DagRunEventPayload::WaveCompleted { wave_index, .. } if wave_index == index)).unwrap();
         for id in wave {
             let attached = events.iter().position(|event| matches!(&event.payload, DagRunEventPayload::NodeTaskAttached { node_id, .. } if node_id == id)).unwrap();
             let completed = events.iter().position(|event| matches!(&event.payload, DagRunEventPayload::NodeTransitioned { node_id, to: DagNodeState::Completed, .. } if node_id == id)).unwrap();
             assert!(start < attached && attached < completed && completed < finish);
-        }
-        if index + 1 < waves.len() {
-            let next = events.iter().position(|event| matches!(event.payload, DagRunEventPayload::WaveStarted { wave_index, .. } if wave_index == index + 1)).unwrap();
-            assert!(finish < next);
         }
     }
     for node in &input.nodes {
@@ -346,8 +345,12 @@ fn scripted_mixed_routes_preserve_models_membership_and_outputs() {
     let input = definition("mixed-eight", vec![node("intake", &[]), agent_node("research", &[], "explore"), design, agent_node("evidence", &["research"], "librarian"), budget, agent_node("build", &["design", "evidence"], "hephaestus"), docs, agent_node("review", &["build", "docs"], "momus")]);
     let result = assert_scripted_success(&fixture, input.clone(), vec![vec!["intake", "research"], vec!["design", "evidence", "budget"], vec!["build", "docs"], vec!["review"]]);
     assert_eq!(result.snapshot.nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>(), input.nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>());
+    // Launch order follows the frontier, not declaration (TS e2e-happy), so each node's spec is
+    // matched by its prompt.
     let specs = fixture.runner.specs();
-    for ((spec, target), input) in specs.iter().zip(["quick", "explore", "visual-engineering", "librarian", "deep", "hephaestus", "writing", "momus"]).zip(&input.nodes) {
+    assert_eq!(specs.len(), input.nodes.len());
+    for (target, input) in ["quick", "explore", "visual-engineering", "librarian", "deep", "hephaestus", "writing", "momus"].into_iter().zip(&input.nodes) {
+        let spec = specs.iter().find(|spec| spec.prompt == format!("do {}", input.id)).expect("node launched");
         assert_eq!(spec.model, Some(format!("scripted/{target}")));
         match &input.target {
             DagNodeTarget::Category(category) => {
@@ -653,7 +656,7 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     let mut options = crate::manager::types::TaskManagerOptions::new(fixture._project.store(), crate::manager::types::ManagedRunners { in_process: Arc::clone(&runner) as Arc<dyn crate::manager::types::ManagedRunner>, process: Arc::clone(&runner) as Arc<dyn crate::manager::types::ManagedRunner> }, crate::manager::manager_tests::fakes::category_planner(&[]), fixture._project.cwd());
     options.config = config(16, 1);
     options.admit = Some(Arc::new(move |_| {
-        if admission_residents.load(Ordering::SeqCst) >= 2 { return crate::manager::types::SpawnAdmission::Rejected { message: "resident cap reached".into(), max_children: Some(crate::manager::types::MaxChildren::Number(2)), residents: Some(Vec::new()) }; }
+        if admission_residents.load(Ordering::SeqCst) >= 2 { return crate::manager::types::SpawnAdmission::Rejected { message: "resident cap reached".into(), max_children: Some(crate::manager::types::MaxChildren::Number(2)), residents: Some(vec![crate::manager::types::ResidentSummary { task_id: "resident".into(), name: "resident".into(), status: "running".into() }; 2]) }; }
         let count = admission_residents.fetch_add(1, Ordering::SeqCst) + 1;
         admission_peak.fetch_max(count, Ordering::SeqCst);
         crate::manager::types::SpawnAdmission::Admitted
@@ -678,14 +681,19 @@ fn real_manager_residency_cap_batches_a_wide_wave_without_failures() {
     // that boundary, then release exactly one child for each replacement admission.
     assert_eq!(recv_within(&attached_rx, "first resident attached"), "wide-0");
     assert_eq!(recv_within(&attached_rx, "second resident attached"), "wide-1");
-    for index in 0..7 {
-        let id = format!("wide-{index}");
+    // TS drives this by releasing the oldest admitted child each time a slot is filled; the
+    // contract is batching under the cap (peak 2, all 7 started, no failures), not a fixed order.
+    let mut admitted = std::collections::VecDeque::from(["wide-0".to_string(), "wide-1".to_string()]);
+    for released in 0..7 {
+        let id = admitted.pop_front().expect("an admitted resident to release");
         let handle = Arc::clone(&handles.lock().unwrap()[&id]);
         residents.fetch_sub(1, Ordering::SeqCst);
         handle.complete(&format!("output:{id}"));
         assert_eq!(recv_within(&completed_rx, "released resident completed"), id);
-        if index < 5 {
-            assert_eq!(recv_within(&attached_rx, "replacement resident attached"), format!("wide-{}", index + 2));
+        if released < 5 {
+            let replacement = recv_within(&attached_rx, "replacement resident attached");
+            assert!(!admitted.contains(&replacement) && replacement != id, "replacement {replacement} was already admitted");
+            admitted.push_back(replacement);
         }
     }
     let result = run.join().unwrap();

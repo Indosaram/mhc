@@ -27,6 +27,7 @@ fn given_expired_run_when_sweep_prunes_then_reclaimed_count_is_logged() {
 fn given_prune_failure_when_sweep_runs_then_failure_is_warned_without_propagation() {
     let root = std::env::temp_dir().join(format!("dag-retention-failure-{}", std::process::id()));
     let store = Arc::new(senpi_task::dag::store::create_dag_file_store(&senpi_task::dag::store::DagStoreConfig::new(&root), Default::default()).expect("create store"));
+    std::fs::create_dir_all(&store.paths.runs).expect("create run directory");
     std::fs::remove_dir_all(&store.paths.runs).expect("remove run directory");
     std::fs::write(&store.paths.runs, "not a directory").expect("replace run directory with file");
     let logger = Arc::new(Log::default());
@@ -54,5 +55,7 @@ fn given_injected_scheduler_when_scheduled_then_prune_runs_once_and_reports_recl
     queued.lock().expect("scheduler mutex").take().expect("scheduled sweep")();
     assert!(logger.0.lock().expect("log mutex").is_empty());
     assert!(queued.lock().expect("scheduler mutex").is_none(), "one runtime schedules only one sweep closure");
-    std::fs::remove_dir_all(root).expect("remove fixture");
+    std::fs::remove_dir_all(root).or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) }
+    }).expect("remove fixture");
 }

@@ -475,7 +475,12 @@ impl DagManager {
     pub fn list(&self, parent_session_id: &str, limit: Option<usize>) -> Result<Vec<DagRunSummary>, DagManagerError> {
         let limit = resolve_limit(limit, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT)?;
         let mut summaries: Vec<DagRunSummary> = Vec::new();
-        let entries = fs::read_dir(&self.inner.store.paths.runs).map_err(DagStoreError::from).map_err(DagManagerError::from)?;
+        // TS readDagDirectory: a runs directory that does not exist yet lists as empty.
+        let entries = match fs::read_dir(&self.inner.store.paths.runs) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(DagManagerError::from(DagStoreError::from(error))),
+        };
         let mut present = HashSet::new();
         for entry in entries {
             let entry = entry.map_err(DagStoreError::from).map_err(DagManagerError::from)?;
@@ -488,7 +493,12 @@ impl DagManager {
             };
             let run_id = stem.to_string();
             present.insert(run_id.clone());
-            let metadata = fs::metadata(&path).map_err(DagStoreError::from).map_err(DagManagerError::from)?;
+            // TS runSummary statSync(throwIfNoEntry: false): a run pruned mid-list is skipped.
+            let metadata = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(DagManagerError::from(DagStoreError::from(error))),
+            };
             let modified = metadata.modified().map_err(DagStoreError::from).map_err(DagManagerError::from)?;
             let inode = file_inode(&metadata);
             let mut cache = self.inner.summary_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

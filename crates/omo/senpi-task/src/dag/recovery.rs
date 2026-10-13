@@ -261,7 +261,9 @@ fn claim_paused_run(context: &RecoveryContext, run_id: &DagRunId, parent_session
                 previous_lease_holder_pid: None,
                 ..fresh
             };
-            let _ = context.store.write_checkpoint(run_id, &claimed);
+            if context.store.write_checkpoint(run_id, &claimed).is_err() {
+                return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None);
+            }
             ClaimedRun::Claimed(Box::new(claimed))
         })
         .unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None))
@@ -280,8 +282,10 @@ fn claim_orphaned_run(context: &RecoveryContext, observed: &RecoverableRecord, p
         if fresh.record.parent_session_id != observed.record.parent_session_id { return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession, None) }
         let Some(pid) = fresh.lease_holder_pid.or(fresh.previous_lease_holder_pid) else { return ClaimedRun::Skipped(DagRecoverySkipReason::ForeignSession, None) };
         if pid != context.host_pid && (context.is_process_alive)(pid) { return ClaimedRun::Skipped(DagRecoverySkipReason::LiveLease, Some(pid)) }
-        let claimed = RecoverableRecord { record: DagRunRecordV1 { parent_session_id: parent.to_string(), root_session_id: parent.to_string(), ..fresh.record.clone() }, lease_holder_pid: Some(context.host_pid), ..fresh };
-        let _ = context.store.write_checkpoint(run_id, &claimed);
+        let claimed = RecoverableRecord { record: DagRunRecordV1 { parent_session_id: parent.to_string(), root_session_id: parent.to_string(), ..fresh.record.clone() }, lease_holder_pid: Some(context.host_pid), previous_lease_holder_pid: None };
+        if context.store.write_checkpoint(run_id, &claimed).is_err() {
+            return ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None);
+        }
         ClaimedRun::Claimed(Box::new(claimed))
     }).unwrap_or(ClaimedRun::Skipped(DagRecoverySkipReason::NotPaused, None))
 }
@@ -372,12 +376,12 @@ fn reconcile_nodes(
         let owner_stamp = task_owner(&journal.snapshot().record, &observed.id, observed.exec_attempt);
         let owned = context.task_manager.find_owned_task(&owner_stamp.run_id, &owner_stamp.node_id);
         let mut task = owned.or_else(|| observed.task_id.as_ref().and_then(|task_id| context.task_manager.get(task_id)));
-        let mut started_here = false;
-        if let Some(task) = &task
-            && observed.task_id.as_deref() != Some(task.task_id.as_str())
+        if let Some(replacement) = &task
+            && observed.task_id.as_deref() != Some(replacement.task_id.as_str())
         {
-            attach_task(journal, &observed.id, &task.task_id);
+            attach_task(journal, &observed.id, &replacement.task_id);
         }
+        let mut started_here = false;
 
         if task.is_none() && observed.state == DagNodeState::Scheduled && observed.task_id.is_none() {
             let spec = start_spec(&journal.snapshot().record, &observed.id, context.ancestry.map_or(0, |ancestry| ancestry.depth));
@@ -448,6 +452,9 @@ fn reconcile_nodes(
                 continue;
             }
             if let Some(reattach) = &context.reattach { reattach(&journal.snapshot().record.run_id, &current_task.task_id); }
+            if observed.task_id.as_deref() != Some(current_task.task_id.as_str()) {
+                attach_task(journal, &observed.id, &current_task.task_id);
+            }
             transition_to_running(journal, &observed.id);
             pre_attached_tasks.insert(observed.id.clone(), current_task.task_id);
             continue;

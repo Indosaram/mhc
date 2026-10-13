@@ -85,6 +85,7 @@ fn removing_one_commit_observer_preserves_the_other() {
     first();
     let journal = create_dag_journal(DagJournalOptions { store:store.clone(), run_id:run_id(), initial_checkpoint:initial_checkpoint(), apply_event:Arc::new(apply_event), subscriber_ring:None, now:Some(Arc::new(|| 1)) }).expect("journal");
     journal.append(run_started(1)).expect("append");
+    journal.when_idle();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     second();
 }

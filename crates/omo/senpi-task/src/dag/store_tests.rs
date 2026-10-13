@@ -89,7 +89,13 @@ fn stepping_clock() -> Option<DagNowFn> {
 }
 
 fn temp_project() -> TempDir {
-    tempfile::tempdir().expect("temp project")
+    let project = tempfile::tempdir().expect("temp project");
+    let paths = DagStorePaths::new(&resolve_dag_state_dir(&config(project.path())));
+    let dag_root = &paths.root;
+    for name in ["keys", "runs", "events", "results", "locks"] {
+        fs::create_dir_all(dag_root.join(name)).expect("create DAG fixture directory");
+    }
+    project
 }
 
 fn config(project: &Path) -> DagStoreConfig {
@@ -111,14 +117,18 @@ fn open(project: &Path, options: DagStoreOptions) -> DagFileStore {
 }
 
 #[test]
-fn given_a_fresh_store_without_directories_when_acquiring_a_run_lock_then_the_lock_directory_is_created() {
+fn given_the_dag_state_directory_vanished_after_open_when_a_run_lock_and_a_checkpoint_are_written_then_both_recreate_their_directories() {
+    // TS store.test.ts: a worktree cleanup removes the state dir while the session is live.
     let project = temp_project();
     let store = open(project.path(), DagStoreOptions::default());
-    assert!(!store.paths.locks.exists());
+    fs::remove_dir_all(&store.paths.root).expect("remove DAG root");
 
-    store.with_run_lock(RUN_ID, || {}).expect("fresh run lock");
+    let guarded = store.with_run_lock(RUN_ID, || "ran").expect("fresh run lock");
+    store.write_checkpoint(RUN_ID, &checkpoint(RUN_ID, "running", None, None)).expect("checkpoint recreates its directory");
 
+    assert_eq!(guarded, "ran");
     assert!(store.paths.locks.exists());
+    assert!(store.paths.run(RUN_ID).exists());
 }
 
 #[test]

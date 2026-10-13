@@ -106,7 +106,8 @@ impl FakeTaskManager {
             record.error_message = Some(format!("{} {node_id}", status.as_str()));
         }
         self.changed.notify_all();
-        if let Some(waiter) = state.residency_waiters.remove("ses-parent") {
+        let waiters = std::mem::take(&mut state.residency_waiters);
+        for waiter in waiters.into_values() {
             *waiter.0.lock().unwrap() = true;
             waiter.1.notify_all();
         }

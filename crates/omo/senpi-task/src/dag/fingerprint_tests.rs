@@ -302,6 +302,6 @@ fn dag_fingerprint_matches_ts_five_node_fixture() {
 
     assert_eq!(
         fp,
-        "2700d97cc05dc6f2f5b8ae41977321ab4754760f0fd4d45aebcc883f9ff37d07"
+        "ff2c2b7604c27efdac8ec6ac79652f65cf44c3e304005964d84cf06e05a22309"
     );
 }

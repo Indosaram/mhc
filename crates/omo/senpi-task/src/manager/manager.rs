@@ -688,6 +688,11 @@ impl TaskManager {
             .map(|owner| owner.fingerprint.clone())
             .unwrap_or_default();
         if existing != owner.fingerprint {
+            // A settled record cannot be re-run in place, so a differing fingerprint on it is a
+            // retry: ownership moves to the fresh task. Only a live task is a genuine conflict.
+            if crate::manager::helpers::is_terminal_record(&record) {
+                return None;
+            }
             return Some(OwnedStartResult::OwnerConflict {
                 task_id: record.task_id,
                 existing_fingerprint: existing,
