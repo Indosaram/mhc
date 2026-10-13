@@ -1054,7 +1054,7 @@ impl InteractiveMode {
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = self.keybindings();
         if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
-        for (action, command) in [("app.session.tree", "/tree"), ("app.session.fork", "/fork"), ("app.session.renameCurrent", "/rename")] {
+        for (action, command) in [("app.session.tree", "/tree"), ("app.session.fork", "/fork"), ("app.session.renameCurrent", "/rename"), ("app.session.resume", "/resume")] {
             if keys.matches(data, action) { if let Err(error) = self.dispatch_command(command) { self.show_status(error); } return; }
         }
         if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back("/new".into()); return; }
