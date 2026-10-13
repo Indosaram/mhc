@@ -20,7 +20,7 @@ pub async fn reconcile_operation(lane: &dyn RuntimeDriveLane, drive: &Drive) -> 
         reader.end(&drive.context).await;
         let handle = handle?;
         if let Some(model) = lane.models().get_model(&deferred.configuration.model.provider, &deferred.configuration.model.model_id) {
-            let options = maho_ai::types::ProviderRequestOptions { signal: Some(drive.close_signal.clone()), timeout_ms: deferred.stream_options.timeout_ms, max_retries: deferred.stream_options.max_retries, max_retry_delay_ms: deferred.stream_options.max_retry_delay_ms, headers: deferred.stream_options.headers.as_ref().map(|headers| headers.iter().map(|(key,value)| (key.clone(), value.as_str().map(str::to_owned))).collect()), ..Default::default() };
+            let options = maho_ai::types::ProviderRequestOptions { signal: Some(drive.close_signal.clone()), telemetry_context: crate::harness::context::provider_telemetry_context(&drive.context), timeout_ms: deferred.stream_options.timeout_ms, max_retries: deferred.stream_options.max_retries, max_retry_delay_ms: deferred.stream_options.max_retry_delay_ms, headers: deferred.stream_options.headers.as_ref().map(|headers| headers.iter().map(|(key,value)| (key.clone(), value.as_str().map(str::to_owned))).collect()), ..Default::default() };
             match lane.cancel_deferred(&model, &handle, options).await { Ok(()) | Err(_) => {} }
         }
     }
