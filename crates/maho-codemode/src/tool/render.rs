@@ -152,6 +152,50 @@ fn agent_lines(events: &[Value], context: &EvalRenderContext, width: usize) -> V
     }
     lines
 }
+
+/// One eval card half. The call/result pipelines above are width-aware, so the lines are built at
+/// render time from the card state the host hands the renderer.
+struct EvalCard {
+    args: Value,
+    result: Option<AgentToolResult>,
+    expanded: bool,
+    has_result: bool,
+    is_partial: bool,
+    is_error: bool,
+    show_images: bool,
+    image_protocol: Option<String>,
+    spinner_frame: Option<usize>,
+}
+
+impl Component for EvalCard {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        let context=EvalRenderContext {expanded:self.expanded,has_result:self.has_result,is_partial:self.is_partial,is_error:self.is_error,show_images:self.show_images,image_protocol:self.image_protocol.clone(),spinner_frame:self.spinner_frame,
+            now:std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0,|elapsed|elapsed.as_secs_f64()*1000.0)};
+        let request=super::eval_request::parse_eval_request(&self.args);
+        match (&self.result,request) {
+            (Some(result),Ok(request))=>render_eval_result(result,&request,&context,width),
+            (Some(result),Err(_))=>render_eval_result(result,&EvalToolRequest::List,&context,width),
+            (None,Ok(request))=>render_eval_call(&request,&context,width),
+            // Streaming arguments are incomplete until the model finishes the call.
+            (None,Err(_))=>if context.has_result {vec![]} else {visual("eval",width)},
+        }
+    }
+}
+
+fn eval_card(args: &Value, result: Option<&AgentToolResult>, context: &maho_ext_api::ToolRenderContext<(), Value>) -> Box<dyn Component> {
+    Box::new(EvalCard {args:args.clone(),result:result.cloned(),expanded:context.expanded,has_result:context.has_result.unwrap_or(result.is_some()),
+        is_partial:context.is_partial,is_error:context.is_error,show_images:context.show_images,
+        image_protocol:context.image_protocol.map(|protocol|format!("{protocol:?}")),spinner_frame:context.spinner_frame})
+}
+
+/// senpi registers the eval tool with its renderCall/renderResult pair; without it the host draws
+/// the generic JSON-argument fallback card.
+pub fn eval_tool_renderers() -> maho_ext_api::ToolRenderers<(), Value> {
+    maho_ext_api::ToolRenderers {
+        render_call:Some(std::sync::Arc::new(|args,_,context|eval_card(args,None,context))),
+        render_result:Some(std::sync::Arc::new(|result,options,_,context| {context.expanded=options.expanded;context.is_partial=options.is_partial;let args=context.args.clone();eval_card(&args,Some(result),context)})),
+    }
+}
 fn render_cell(cell: &Value, context: &EvalRenderContext, args: &EvalToolRequest, details: &Value, width: usize, first: bool, single: bool) -> Vec<String> {
     let status=text(cell,"status");let (label,icon)=presentation(status,context.spinner_frame);
     let mut header=format!("eval {}{} {label} {icon}",text(cell,"language"),runtime_badge(cell));
