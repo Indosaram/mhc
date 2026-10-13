@@ -1,4 +1,4 @@
-use maho_cli::cli::runtime::fork_session;
+use maho_cli::cli::runtime::{fork_session, resolve_session_dir};
 use maho_core::session_manager::SessionManager;
 
 #[test]
@@ -40,4 +40,13 @@ fn forks_history_into_new_session_with_parent_source() {
     let global = fork_session("source-session", &target_cwd_text, Some(&session_dir_text), None).expect("custom global fallback");
     assert_eq!(global.entries(), source.entries());
     assert_eq!(fork_session(&source_path, &target_cwd_text, Some(&session_dir_text), Some("source-local")).expect_err("distinct duplicate target"), "Session already exists with id 'source-local'");
+}
+
+#[test]
+fn session_dir_prefers_flag_then_env_then_setting_and_expands_tilde() {
+    let home = maho_core::config::home_dir();
+    assert_eq!(resolve_session_dir(Some("~/flag"), Some("/env"), Some("/setting")), Some(format!("{}/flag", home.trim_end_matches('/'))));
+    assert_eq!(resolve_session_dir(None, Some("~/env"), Some("/setting")), Some(format!("{}/env", home.trim_end_matches('/'))));
+    assert_eq!(resolve_session_dir(None, Some(""), Some("/setting")).as_deref(), Some("/setting"));
+    assert_eq!(resolve_session_dir(None, None, None), None);
 }

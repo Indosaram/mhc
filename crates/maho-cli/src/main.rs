@@ -134,13 +134,18 @@ fn run() -> Result<(), String> {
                 &agent_dir,
                 maho_core::project_trust::AppMode::AppServer,
             );
+            let session_dir = maho_cli::cli::runtime::resolve_session_dir(
+                parsed.session_dir.as_deref(),
+                std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(),
+                None,
+            );
             let executable = std::env::current_exe().map_err(|error| error.to_string())?;
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
             let code = runtime.block_on(maho_cli::cli::app_server::run_app_server_with_signals(
                 &argv,
                 config,
                 env!("CARGO_PKG_VERSION"),
-                parsed.session_dir.clone(),
+                session_dir,
                 &executable,
                 &[],
             ))?;
