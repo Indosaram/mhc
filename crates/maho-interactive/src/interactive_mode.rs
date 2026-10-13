@@ -24,6 +24,11 @@ type AbortFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// A header slot in the document header container (senpi's `Component` children).
 type HeaderSlot = Rc<RefCell<dyn Component>>;
 
+/// A step that needs the terminal released: the loop owning the terminal stops it, performs the
+/// step (`InteractiveMode::open_external_editor` / process suspend), then restarts and force-renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalRequest { Suspend, ExternalEditor }
+
 /// Work the collapsed question widget's mouse callbacks hand back to the mode, which owns the
 /// registry and cannot be reached from a `Box<dyn FnMut>`.
 enum QuestionAction {
@@ -188,6 +193,12 @@ pub struct InteractiveMode {
     rename_result: Rc<RefCell<Option<Option<String>>>>,
     shortcut_overlay: bool,
     last_clear_ms: Option<u64>,
+    /// senpi `lastEscapeTime`: the first press of a double-escape on an empty editor.
+    last_escape_ms: Option<u64>,
+    /// A terminal hand-off (suspend / external editor) the loop that owns the terminal performs.
+    terminal_request: Option<TerminalRequest>,
+    /// senpi `/hotkeys` Extensions rows: (normalized key, description or extension path).
+    extension_shortcut_rows: Vec<(String, String)>,
     pub shutdown_requested: bool,
     pub agent_idle: bool,
     pub extension_ui: Arc<crate::interactive_extension_ui::InteractiveExtensionUi>,
@@ -508,7 +519,10 @@ impl InteractiveMode {
         let (remote_stats_tx, remote_stats_rx) = tokio::sync::mpsc::unbounded_channel();
         let submissions = Rc::new(RefCell::new(std::collections::VecDeque::new()));
         let captured = submissions.clone();
-        let keys = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).inner().clone());
+        let manager = maho_core::keybindings::KeybindingsManager::create(Some(&session.agent_dir())).inner().clone();
+        // senpi `setKeybindings(KeybindingsManager.create())`: the TUI components read the global manager.
+        maho_tui::keybindings::set_keybindings(manager.clone());
+        let keys = Arc::new(manager);
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
         let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
@@ -553,7 +567,7 @@ impl InteractiveMode {
         let (extension_ui, ui_requests) = crate::interactive_extension_ui::InteractiveExtensionUi::channel(crate::interactive_extension_ui::extension_theme(&theme));
         *extension_ui.theme_directory.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::path::Path::new(&session.agent_dir()).join("themes");
         let (smooth, fps, hide) = session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0), settings.get_bool("hideThinkingBlock").unwrap_or(false)));
-        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
+        Self { footer_data:Arc::new(maho_core::footer_data_provider::FooterDataProvider::new(&session.cwd())), tree_copies:Default::default(), pending_tree_edit:Default::default(), pending_tree_nav:Default::default(), pending_turn:None, pending_abort:None, queued_questions:Default::default(), terminal_dimensions:Rc::new(std::cell::Cell::new((80,u16::try_from(host.terminal_rows()).unwrap_or(u16::MAX)))), mounted_renderer:None, custom_overlay:None, debug_log_path:None, changelog_markdown:None, startup_notices_shown:false, editor_border_key:None, custom_ui_builds:Vec::new(), custom_ui_result:Rc::new(RefCell::new(None)), custom_ui_reply:None, working_indicator:None, custom_editor:None, pending_images, submission_images, session, events, _subscription: subscription, session_host: None, session_host_subscription: None, events_sender, remote_history: None, remote_history_generation: 0, remote_history_tx, remote_history_rx, remote_models: None, remote_models_generation: 0, remote_models_tx, remote_models_rx, remote_stats: None, remote_stats_generation: 0, remote_stats_tx, remote_stats_rx, remote_active, tool_renderer_snapshots: std::collections::HashMap::new(), native_tool_renderer_snapshots: std::collections::HashMap::new(), chat: Container::new(), streaming: None, assistant_segments: BTreeMap::new(), pending_tools: BTreeMap::new(), theme, editor, submissions, rename_input: None, rename_result: Rc::new(RefCell::new(None)), shortcut_overlay: false, last_clear_ms: None, last_escape_ms: None, terminal_request: None, extension_shortcut_rows: Vec::new(), shutdown_requested: false, agent_idle: true, extension_ui, ui_requests, ui_dialog: None, login_dialog: None, ui_reply: Rc::new(RefCell::new(None)), header_container: Container::new(), built_in_header: None, built_in_expandable: None, custom_header: None, verbose: options.verbose, chrome: options.chrome, footer: None, widgets: Vec::new(), terminal_title: None, markdown_transformers: vec![mermaid_transformer], reveal: crate::streaming_reveal::StreamingRevealController::new(smooth, fps, hide), clock: std::time::Instant::now(), tool_reveal: crate::tool_result_reveal::ToolResultRevealController::new(smooth, fps), tool_args_reveal: crate::tool_args_reveal::ToolArgsRevealController::new(smooth, fps), tool_partial_json: BTreeMap::new(), last_status: None, assistant_cards: Vec::new(), tool_cards: Vec::new(), tools_expanded: false, local_dialog_reply: None, auth_ui_events, auth_ui_sender, auth_lifecycle_events, auth_abort: None, pending_auth_prompt: None, pending_auth_select: None, working_started_ms: None, working_message: None, working_visible: true, editor_host: host, hidden_thinking_label:"Thinking...".into(), history_expansion: Vec::new(), question:None, async_question_widget:None, question_reply:Rc::new(RefCell::new(None)), questions:Default::default(), question_actions:Rc::new(RefCell::new(std::collections::VecDeque::new())), question_result:Rc::new(RefCell::new(None)), blocking_question:false }
     }
 
     /// Mount the shared-host runtime as this mode's session host. With a host set, the replacement
@@ -1008,6 +1022,36 @@ impl InteractiveMode {
         loop { tokio::select! { () = &mut binding => break, Some(request) = self.ui_requests.recv() => self.handle_ui_request(request) } }
         self.drain_ui_requests();
         self.refresh_tool_renderer_snapshots().await;
+        self.setup_extension_shortcuts().await;
+    }
+
+    /// senpi `setupExtensionShortcuts`: resolve the runner's shortcuts against the effective
+    /// keybindings and route a matching key to its handler with a fresh extension context.
+    async fn setup_extension_shortcuts(&mut self) {
+        let effective = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).get_effective_config();
+        let (shortcuts, diagnostics) = self.session.extension_shortcuts(&effective).await;
+        for diagnostic in diagnostics { self.show_status(diagnostic); }
+        self.extension_shortcut_rows = shortcuts.iter().map(|(key, shortcut)| (key.clone(), shortcut.description.clone().unwrap_or_else(|| shortcut.extension_path.clone()))).collect();
+        let shortcuts: Vec<(String, maho_ext_api::ExtensionShortcut)> = shortcuts.into_iter().collect();
+        let session = self.session.clone();
+        let ui = self.extension_ui.clone();
+        self.editor.on_extension_shortcut = Some(Box::new(move |data| {
+            let Some((_, shortcut)) = shortcuts.iter().find(|(key, _)| maho_tui::keys::matches_key(data, key)) else { return false; };
+            let handler = shortcut.handler.clone();
+            let session = session.clone();
+            let ui = ui.clone();
+            // Run the handler async with a fresh context; do not block input.
+            tokio::spawn(async move {
+                let result = match session.extension_shortcut_context().await {
+                    Some(context) => handler(&context).await,
+                    None => Err(maho_ext_api::ExtensionFailure::new("Extension runner is not bound")),
+                };
+                if let Err(error) = result {
+                    maho_ext_api::ExtensionUi::notify(&*ui, &format!("Shortcut handler error: {}", error.message), maho_ext_api::NotificationType::Error);
+                }
+            });
+            true
+        }));
     }
 
     pub fn handle_input_at(&mut self, data: &str, now_ms: u64) {
@@ -1053,10 +1097,19 @@ impl InteractiveMode {
         if self.ui_dialog.is_some() || self.login_dialog.is_some() || self.rename_input.is_some() { self.handle_editor_input(data); return; }
         if self.shortcut_overlay { self.shortcut_overlay = false; return; }
         let keys = self.keybindings();
+        if self.editor.on_extension_shortcut.as_mut().is_some_and(|shortcut| shortcut(data)) { return; }
         if keys.matches(data, "app.model.select") { if let Err(error) = self.dispatch_command("/model") { self.show_status(error); } return; }
         for (action, command) in [("app.session.tree", "/tree"), ("app.session.fork", "/fork"), ("app.session.renameCurrent", "/rename"), ("app.session.resume", "/resume")] {
             if keys.matches(data, action) { if let Err(error) = self.dispatch_command(command) { self.show_status(error); } return; }
         }
+        if keys.matches(data, "app.interrupt") && !(self.custom_editor.is_none() && self.editor.editor.is_showing_autocomplete()) { self.handle_escape(now_ms); return; }
+        if keys.matches(data, "app.suspend") {
+            // senpi `handleCtrlZ`.
+            if cfg!(windows) { self.show_status("Suspend to background is not supported on Windows".into()); }
+            else { self.terminal_request = Some(TerminalRequest::Suspend); }
+            return;
+        }
+        if keys.matches(data, "app.editor.external") { self.terminal_request = Some(TerminalRequest::ExternalEditor); return; }
         if keys.matches(data, "app.session.new") { self.submissions.borrow_mut().push_back("/new".into()); return; }
         if keys.matches(data, "app.clear") {
             if self.last_clear_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) { self.shutdown_requested = true; }
@@ -1180,6 +1233,7 @@ impl InteractiveMode {
         let data = data.as_str();
         if self.ui_dialog.is_some() || self.rename_input.is_some() || (self.question.is_some() && self.async_question_widget.is_none()) { self.handle_filtered_input_at(data, now_ms); return Ok(()); }
         let keys = self.keybindings();
+        if self.editor.on_extension_shortcut.as_mut().is_some_and(|shortcut| shortcut(data)) { return Ok(()); }
         if keys.matches(data, "app.model.cycleForward") || keys.matches(data, "app.model.cycleBackward") {
             if let Some(name) = self.host_cycle_model(keys.matches(data, "app.model.cycleForward")).await? { self.show_status(format!("Switched to {name}")); }
             else { self.show_status("No other models available for cycling".into()); }
@@ -1199,9 +1253,142 @@ impl InteractiveMode {
             if let Err(error) = self.submit_start("/history", Default::default()).await { self.show_error(&format!("Failed to open history search: {error}")); }
             return Ok(());
         }
-        if keys.matches(data, "app.interrupt") && !self.agent_idle { self.abort_and_restore_queue(); return Ok(()); }
+        if keys.matches(data, "app.message.followUp") {
+            if let Err(error) = self.handle_follow_up().await { self.show_error(&error); }
+            return Ok(());
+        }
         self.handle_filtered_input_at(data, now_ms);
         Ok(())
+    }
+
+    /// The pending terminal hand-off, consumed by the loop that owns the terminal.
+    pub fn take_terminal_request(&mut self) -> Option<TerminalRequest> { self.terminal_request.take() }
+
+    /// senpi `getExpandedEditorText` for the active editor.
+    fn expanded_editor_text(&self) -> String {
+        match &self.custom_editor { Some(editor) => editor.get_expanded_text().unwrap_or_else(|| editor.get_text()), None => self.editor.editor.get_expanded_text() }
+    }
+
+    fn set_active_editor_text(&mut self, text: &str) {
+        match &mut self.custom_editor { Some(editor) => editor.set_text(text), None => self.editor.editor.set_text(text) }
+    }
+
+    /// senpi `takeSubmissionImages`: the attachments behind the text's `[Image #N]` markers, in
+    /// marker order; the pending payloads are cleared.
+    fn take_submission_images(&mut self, text: &str) -> Vec<maho_ai::types::ImageContent> {
+        let mut payloads = std::mem::take(&mut *self.pending_images.borrow_mut());
+        maho_tui::image_markers::IMAGE_MARKER_REGEX.captures_iter(text)
+            .filter_map(|capture| capture.get(1).and_then(|id| id.as_str().parse::<u64>().ok()))
+            .filter_map(|id| payloads.remove(&id)).collect()
+    }
+
+    /// senpi `isExtensionCommand`.
+    fn is_extension_command(&self, text: &str) -> bool {
+        let Some(rest) = text.strip_prefix('/') else { return false; };
+        let name = rest.split(' ').next().unwrap_or_default();
+        self.session.command_groups().0.iter().any(|command| command.name == name)
+    }
+
+    /// senpi `handleFollowUp` (Alt+Enter): queue a follow-up while streaming, queue it for after
+    /// compaction, or behave like Enter when idle. Attachments are resolved before the editor clear.
+    async fn handle_follow_up(&mut self) -> Result<(), String> {
+        self.questions.set_composer_reply(None);
+        let text = self.expanded_editor_text().trim().to_owned();
+        if text.is_empty() { return Ok(()); }
+        if self.host_is_compacting() {
+            if self.is_extension_command(&text) {
+                self.editor.editor.add_to_history(&text);
+                self.set_active_editor_text("");
+                self.submit_start(&text, Default::default()).await?;
+                return Ok(());
+            }
+            // The compaction queue carries text only: drop attachments visibly and strip markers.
+            let images = self.take_submission_images(&text);
+            let dropped = images.len();
+            let plural = if dropped > 1 { "s" } else { "" };
+            let queued = if dropped == 0 { text.clone() } else { maho_tui::image_markers::IMAGE_MARKER_REGEX.replace_all(&text, "").trim().to_owned() };
+            if queued.is_empty() {
+                self.show_status(format!("Dropped {dropped} image{plural}: messages sent during compaction cannot carry images - paste again after compaction finishes"));
+                return Ok(());
+            }
+            self.editor.editor.add_to_history(&queued);
+            self.set_active_editor_text("");
+            let options = PromptOptions { streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp), ..Default::default() };
+            match self.session_host.clone() { Some(host) => host.prompt(queued, options).await?, None => { self.session.prompt(&queued, options).await?; } }
+            self.drain_events();
+            self.show_status(if dropped > 0 {
+                format!("Queued message for after compaction; dropped {dropped} image{plural}: messages sent during compaction cannot carry images - paste again after compaction finishes")
+            } else { "Queued message for after compaction".into() });
+            return Ok(());
+        }
+        let images = self.take_submission_images(&text);
+        if self.host_is_streaming() || self.pending_turn.is_some() {
+            self.editor.editor.add_to_history(&text);
+            self.set_active_editor_text("");
+            let options = if self.is_extension_command(&text) { PromptOptions::default() } else {
+                PromptOptions { images: (!images.is_empty()).then_some(images), streaming_behavior: Some(maho_ext_api::StreamingBehavior::FollowUp), ..Default::default() }
+            };
+            match self.session_host.clone() { Some(host) => host.prompt(text, options).await?, None => { self.session.prompt(&text, options).await?; } }
+            self.drain_events();
+            return Ok(());
+        }
+        // Not streaming: Alt+Enter acts like Enter, with the pre-resolved images paired to the text.
+        if !images.is_empty() { self.submission_images.borrow_mut().push_back((text.clone(), images)); }
+        self.submissions.borrow_mut().push_back(text);
+        self.set_active_editor_text("");
+        Ok(())
+    }
+
+    /// senpi `handleOpenExternalEditor`, run by the terminal owner while the terminal is stopped.
+    pub async fn open_external_editor(&mut self) {
+        let configured = self.session.with_settings_manager(|settings| settings.get_string("externalEditor")).filter(|command| !command.trim().is_empty());
+        let command = configured
+            .or_else(|| std::env::var("VISUAL").ok().filter(|value| !value.is_empty()))
+            .or_else(|| std::env::var("EDITOR").ok().filter(|value| !value.is_empty()))
+            .unwrap_or_else(|| if cfg!(windows) { "notepad".into() } else { "nano".into() });
+        let content = self.expanded_editor_text();
+        match crate::external_editor::edit_in_external_editor(&command, &content).await {
+            Ok(crate::external_editor::ExternalEditorResult::Complete { content }) => self.set_active_editor_text(&content),
+            Ok(_) => {}
+            Err(error) => self.show_error(&format!("Failed to open external editor: {error}")),
+        }
+    }
+
+    /// senpi `defaultEditor.onEscape` with its `compaction_start` override: abort compaction, abort
+    /// the turn (also between retry attempts), abort a running `!` command, clear a `!` draft, or
+    /// run the double-escape `doubleEscapeAction` (`/tree`, `/fork`, or nothing) on an empty editor.
+    fn handle_escape(&mut self, now_ms: u64) {
+        if self.host_is_compacting() {
+            match self.session_host.clone() {
+                Some(host) => { tokio::spawn(async move { let _ = host.abort_compaction().await; }); }
+                None => self.session.abort_compaction(),
+            }
+            return;
+        }
+        let (retrying, bash_running) = match self.remote_state_snapshot() {
+            Some(state) => (state.retry_attempt > 0.0, state.is_bash_running),
+            None => (self.session.retry_attempt() > 0, self.session.is_bash_running()),
+        };
+        if !self.agent_idle || self.host_is_streaming() || retrying { self.abort_and_restore_queue(); return; }
+        if bash_running {
+            match self.session_host.clone() {
+                Some(host) => { tokio::spawn(async move { let _ = host.abort_bash().await; }); }
+                None => self.session.abort_bash(),
+            }
+            return;
+        }
+        let text = self.custom_editor.as_ref().map_or_else(|| self.editor.editor.get_text(), |editor| editor.get_text());
+        if text.trim_start().starts_with('!') {
+            match &mut self.custom_editor { Some(editor) => editor.set_text(""), None => self.editor.editor.set_text("") }
+            return;
+        }
+        if !text.trim().is_empty() { return; }
+        let action = self.session.with_settings_manager(|settings| settings.get_string("doubleEscapeAction")).unwrap_or_else(|| "tree".into());
+        if action == "none" { return; }
+        if self.last_escape_ms.is_some_and(|last| now_ms.saturating_sub(last) < 500) {
+            self.last_escape_ms = None;
+            if let Err(error) = self.dispatch_command(if action == "tree" { "/tree" } else { "/fork" }) { self.show_error(&error); }
+        } else { self.last_escape_ms = Some(now_ms); }
     }
 
     pub fn set_tools_expanded(&mut self, expanded: bool) {
@@ -1269,7 +1456,9 @@ impl InteractiveMode {
             let mut keybindings = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir()));
             match crate::keybindings_command::run_keybindings_edit(&config_path, &editor_command, &mut keybindings).await {
                 KeybindingsEditOutcome::Reloaded => {
-                    self.editor.set_keybindings(Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()));
+                    let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
+                    maho_tui::keybindings::set_keybindings(manager.clone());
+                    self.editor.set_keybindings(Arc::new(manager));
                     self.show_status("Keybindings reloaded".into());
                 }
                 KeybindingsEditOutcome::LaunchFailed { seeded } => {
@@ -1334,7 +1523,13 @@ impl InteractiveMode {
             if self.host_reload().await? {
                 let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
                 self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
-                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await; self.show_status("Reloaded session resources".into());
+                Self::setup_autocomplete(&self.session, &mut self.editor); self.rebuild_history(); self.refresh_tool_renderer_snapshots().await;
+                // senpi reload: `keybindings.reload()` then `setupExtensionShortcuts(runner)`.
+                let manager = maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone();
+                maho_tui::keybindings::set_keybindings(manager.clone());
+                self.editor.set_keybindings(Arc::new(manager));
+                self.setup_extension_shortcuts().await;
+                self.show_status("Reloaded session resources".into());
             }
             return Ok(PromptDisposition::Handled);
         }
@@ -2079,7 +2274,7 @@ impl InteractiveMode {
             let next_question=key_display_text("app.question.next");
             let paste_image=key_display_text("app.clipboard.pasteImage");
             let windows_note=if cfg!(target_os="windows") {" (Ctrl+Enter on Windows Terminal)"}else{""};
-            let markdown=format!(r#"
+            let mut markdown=format!(r#"
 **Navigation**
 | Key | Action |
 |-----|--------|
@@ -2128,6 +2323,13 @@ impl InteractiveMode {
 | `!` | Run bash command |
 | `!!` | Run bash command (excluded from context) |
 "#);
+            // senpi: append the extension-registered shortcuts.
+            if !self.extension_shortcut_rows.is_empty() {
+                markdown.push_str("\n**Extensions**\n| Key | Action |\n|-----|--------|\n");
+                for (key, description) in &self.extension_shortcut_rows {
+                    markdown.push_str(&format!("| `{}` | {description} |\n", crate::components::keybinding_hints::format_key_text(key, true)));
+                }
+            }
             self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::spacer::Spacer::new(1))));
             self.chat.add_child(Rc::new(RefCell::new(crate::components::dynamic_border::DynamicBorder::new(self.theme.clone()))));
             self.chat.add_child(Rc::new(RefCell::new(maho_tui::components::text::Text::with_padding(self.theme.bold(&self.theme.fg(crate::theme::ThemeColor::Accent,"Keyboard Shortcuts")),1,0))));
