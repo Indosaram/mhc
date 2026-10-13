@@ -280,7 +280,7 @@ fn orca_titlebar_spinner() -> Box<dyn Extension> {
     Box::new(maho_ext_orca_titlebar_spinner::OrcaTitlebarSpinner)
 }
 fn pi_ast_grep() -> Box<dyn Extension> {
-    Box::new(maho_ext_pi_ast_grep::AstGrep)
+    Box::new(maho_ext_pi_ast_grep::AstGrep { package_entry: Some(installed_git_package_entry("code-yeongyu", "pi-ast-grep")) })
 }
 fn pi_nested_agents_md() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)
