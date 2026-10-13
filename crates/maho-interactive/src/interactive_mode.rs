@@ -1825,13 +1825,6 @@ impl InteractiveMode {
             .filter_map(|id| payloads.remove(&id)).collect()
     }
 
-    /// senpi `isExtensionCommand`.
-    fn is_extension_command(&self, text: &str) -> bool {
-        let Some(rest) = text.strip_prefix('/') else { return false; };
-        let name = rest.split(' ').next().unwrap_or_default();
-        self.session.command_groups().0.iter().any(|command| command.name == name)
-    }
-
     /// senpi `handleFollowUp` (Alt+Enter): queue a follow-up while streaming, queue it for after
     /// compaction, or behave like Enter when idle. Attachments are resolved before the editor clear.
     async fn handle_follow_up(&mut self) -> Result<(), String> {
