@@ -1,3 +1,9 @@
+#![cfg(unix)]
+
+#![cfg(unix)]
+
+#![cfg(unix)]
+
 use std::{collections::BTreeMap, io::BufRead, sync::{Arc, Mutex, mpsc}, time::Duration};
 use senpi_task::{manager::{ManagedChildHandle, types::{ManagedRunners, ManagerStartSpec, StartResult}}, runners::{rpc::{process::{RpcChildProcess, RpcSpawnDescriptor}, model_admission::{RpcModelAdmissionOptions, create_rpc_model_admission}, terminate::terminate_rpc_child}, rpc_process::RpcProcessRunnerOptions, types::TerminateOptions}};
 
@@ -142,3 +148,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     println!("RECEIPT cancellation outcome, native process exit and worker joins observed");
     Ok(())
 }
+
+#[cfg(not(unix))]
+fn main() {}
+
