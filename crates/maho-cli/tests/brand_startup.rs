@@ -39,7 +39,7 @@ fn flat_brand_startup_copies_engine_state_once() {
         {
             assert!(fs::symlink_metadata(target.join("linked-fixture")).expect("file metadata").file_type().is_symlink());
             assert!(fs::symlink_metadata(target.join("cycle-fixture")).expect("directory metadata").file_type().is_symlink());
-            assert_eq!(fs::canonicalize(target.join("linked-fixture")).expect("file target"), home.path().join("external-fixture"));
+            assert_eq!(fs::canonicalize(target.join("linked-fixture")).expect("file target"), fs::canonicalize(home.path()).expect("canonical temp dir").join("external-fixture"));
             assert_eq!(fs::canonicalize(target.join("cycle-fixture")).expect("cycle target"), legacy);
         }
         assert_eq!(fs::read_to_string(legacy.join("models.json")).expect("original models"),

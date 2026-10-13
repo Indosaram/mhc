@@ -8,7 +8,7 @@ fn args(values: &[&str]) -> Vec<String> { values.iter().map(|v| (*v).to_owned())
     std::fs::create_dir_all(outside.join("dir")).unwrap();
     std::os::unix::fs::symlink(outside.join("dir"), root.path().join("jump")).unwrap();
     std::os::unix::fs::symlink("jump/../secret", root.path().join("entry")).unwrap();
-    assert_eq!(realpath_without_open_strict(&root.path().join("entry").to_string_lossy()).unwrap(), outside.join("secret").to_string_lossy());
+    assert_eq!(realpath_without_open_strict(&root.path().join("entry").to_string_lossy()).unwrap(), std::fs::canonicalize(&outside).unwrap().join("secret").to_string_lossy());
 }
 #[cfg(unix)]
 #[test] fn open_free_strict_resolution_rejects_symlink_loop() {
