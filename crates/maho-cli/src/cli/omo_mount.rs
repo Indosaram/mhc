@@ -38,7 +38,7 @@ impl OmoMount {
         let skills_root = environment.get(maho_omo::SKILLS_ROOT_ENV).map(std::path::PathBuf::from)
             .or_else(|| environment.get("OMO_SENPI_PLUGIN_ROOT").map(|root| Path::new(root).join("skills")))
             .unwrap_or_else(maho_omo::builtin_skills_root);
-        if !skills_root.is_dir() { eprintln!("omo mount: packaged skills directory is missing: {}", skills_root.display()); }
+        if !skills_root.is_dir() { maho_core::output_guard::maho_write_stderr(&format!("omo mount: packaged skills directory is missing: {}\n", skills_root.display())); }
         // State dir: the immutable-latest contract is the agent-home product-identity path
         // (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`), which `OmoComponentOptions`
         // already resolves; the onboarding marker/decline/cooldown files are agent-global (they carry
@@ -128,7 +128,7 @@ fn memory_for_parent(parent: super::default_extensions::TaskParent, cwd: &Path, 
     let paths = env.clone();
     let which = Arc::new(move |name: &str| paths.get("PATH").into_iter().flat_map(|path| std::env::split_paths(path))
         .map(|path| path.join(name)).find(|path| path.is_file()).map(|path| path.to_string_lossy().into_owned()));
-    let warn: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |message: &str| eprintln!("memory: {message}"));
+    let warn: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |message: &str| { maho_core::output_guard::maho_write_stderr(&format!("memory: {message}\n")); });
     let recall_warn: Arc<dyn Fn(&str) + Send + Sync> = Arc::clone(&warn);
 
     let runtime = super::memory_runtime::MemoryRuntime::new(super::memory_runtime::MemoryRuntimeHost {
@@ -279,7 +279,7 @@ pub fn task_component(
             load_runtime_state: ownership.load_runtime_state.clone(),
         };
         if let Err(error) = maho_omo_task::component::TaskComponent::register(api, engine, spawn, ownership, false) {
-            eprintln!("omo task component registration failed: {}", error.message);
+            maho_core::output_guard::maho_write_stderr(&format!("omo task component registration failed: {}\n", error.message));
         }
     })
 }

@@ -49,6 +49,13 @@ fn default_stderr_write() -> WriteSink {
     })
 }
 
+/// While stderr is taken over, the process-wide stderr writer (`maho_tui::process_stdio`, the
+/// sink extension crates use for diagnostics) is routed through [`maho_write_stderr`] as well, so
+/// no diagnostic reaches the terminal behind the renderer (senpi patches `process.stderr.write`).
+fn guarded_process_stderr() -> maho_tui::process_stdio::StreamWrite {
+    Arc::new(|text: &str| { maho_write_stderr(text); })
+}
+
 struct OutputGuardState {
     stdout_takeover: Option<StdoutTakeover>,
     stderr_takeover: Option<StderrTakeover>,
@@ -185,11 +192,26 @@ pub fn take_over_stderr(on_hidden_diagnostic: Option<HiddenDiagnostic>, format_h
         on_hidden_diagnostic,
         format_hidden_diagnostic_fallback,
     });
+    drop(guard);
+    let previous = maho_tui::process_stdio::set_stderr_writer(guarded_process_stderr());
+    *process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(previous);
+    // The default panic hook writes to fd 2 directly; route its report through the same guard.
+    std::panic::set_hook(Box::new(|info| { maho_write_stderr(&format!("{info}\n")); }));
+}
+
+fn process_stderr_before_takeover() -> &'static Mutex<Option<maho_tui::process_stdio::StreamWrite>> {
+    static PREVIOUS: Mutex<Option<maho_tui::process_stdio::StreamWrite>> = Mutex::new(None);
+    &PREVIOUS
 }
 
 pub fn restore_stderr() {
     let mut guard = state().lock().expect("output guard lock");
     guard.stderr_takeover = None;
+    drop(guard);
+    if let Some(previous) = process_stderr_before_takeover().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+        maho_tui::process_stdio::set_stderr_writer(previous);
+        drop(std::panic::take_hook());
+    }
 }
 
 /// Route one stderr chunk through the diagnostic redirect; a failing handler falls back to the
