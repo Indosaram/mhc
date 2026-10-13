@@ -570,6 +570,15 @@ impl AuthStorage {
             .contains_key(provider)
     }
 
+    /// The non-persistent runtime API key for a provider, if one is set.
+    pub fn runtime_api_key(&self, provider: &str) -> Option<String> {
+        self.runtime_overrides
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(provider)
+            .cloned()
+    }
+
     pub fn get(&self, provider: &str) -> Option<Value> {
         read_by_provider_id(&self.data.lock().unwrap_or_else(std::sync::PoisonError::into_inner), provider)
     }
