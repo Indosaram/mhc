@@ -189,6 +189,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             let initial = initial.initial_message.map(|text| (text, initial.initial_images.unwrap_or_default()));
             maho_rpc::print_mode::run_print_session(&session, mode == AppMode::Json, initial, &parsed.messages, tokio::io::stdout(), tokio::io::stderr())
                 .await.map_err(|error| error.to_string())
+                .inspect(|_| {
+                    // senpi main.ts:1385 `collectAuthDiagnostics(services.authStorage, "print mode")`.
+                    for error in session.model_runtime().credentials.drain_errors() {
+                        maho_core::output_guard::maho_write_stderr(&format!("Warning: (print mode, auth storage) {error}\n"));
+                    }
+                })
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, true, None).await?;
