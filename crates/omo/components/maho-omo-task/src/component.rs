@@ -133,9 +133,13 @@ impl TaskComponent {
                         let before_suspend = component.before_suspend.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         if let Some(before_suspend) = before_suspend { before_suspend(session)?; }
                         component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionShutdown, Some(session));
+                        // Upstream order (DAG pauseForShutdown ran first via before_suspend): taskRpc.dispose,
+                        // clearUi, statusUi.dispose, leadPollers.shutdown, awaited emitShutdown, then suspend.
+                        // `dispose()` runs rpc/status/pollers in that order, then joins the resumption worker,
+                        // whose exit awaits the zero-count `wake_source_state` emission before returning.
+                        component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
                         component.dispose();
                         component.engine.lifecycle.suspend_on_session_shutdown(&senpi_task::lifecycle::SuspendInput { parent_session_id: session.into(), reason: match shutdown.reason { maho_ext_api::SessionReason::Startup => "startup", maho_ext_api::SessionReason::Reload => "reload", maho_ext_api::SessionReason::New => "new", maho_ext_api::SessionReason::Resume => "resume", maho_ext_api::SessionReason::Fork => "fork", maho_ext_api::SessionReason::Quit => "quit" }.into() }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
                     }
                     ExtensionEvent::AgentEnd { .. } => {
                         // Upstream `queueMicrotask(() => coordinator.flushOnIdle())`: drain completions, team
@@ -249,8 +253,8 @@ impl TaskComponent {
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
         for waiter in waiters.values() { waiter.signal.abort(); }
         for waiter in waiters.into_values() { if waiter.thread.join().is_err() { maho_ext_api::diagnostic("task completion waiter panicked"); } }
-        self.status.dispose();
         if let Some(rpc) = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).take() { rpc.dispose(); }
+        self.status.dispose();
         if let Some(team)=self.team.lock().unwrap_or_else(PoisonError::into_inner).clone() { team.pollers.shutdown(); }
         self.channels.dispose();
     }
