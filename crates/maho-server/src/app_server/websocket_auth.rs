@@ -10,9 +10,9 @@ fn trim_token(token: &str) -> &str { maho_ai::utils::js::trim(token) }
 /// through this observer so a caller (or test) can capture it instead of the process stderr.
 pub type TokenReceiptWriter = Arc<dyn Fn(&str) + Send + Sync>;
 pub async fn resolve_websocket_listener_auth(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>) -> io::Result<ResolvedWebSocketListenerAuth> {
-    resolve_websocket_listener_auth_with_receipt(auth, default_path, None).await
+    resolve_websocket_listener_auth_with_receipt(auth, default_path, "app-server websocket token", None).await
 }
-pub async fn resolve_websocket_listener_auth_with_receipt(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>, receipt: Option<TokenReceiptWriter>) -> io::Result<ResolvedWebSocketListenerAuth> {
+pub async fn resolve_websocket_listener_auth_with_receipt(auth: Option<WebSocketListenerAuth>, default_path: Option<&Path>, token_log_label: &str, receipt: Option<TokenReceiptWriter>) -> io::Result<ResolvedWebSocketListenerAuth> {
     let (path, managed) = match auth {
         Some(WebSocketListenerAuth::Off) => return Ok(ResolvedWebSocketListenerAuth::Off),
         Some(WebSocketListenerAuth::TokenValue(token)) => return Ok(ResolvedWebSocketListenerAuth::Bearer { token, path:None }),
@@ -41,7 +41,7 @@ pub async fn resolve_websocket_listener_auth_with_receipt(auth: Option<WebSocket
         },
     };
     if token.is_empty() { return Err(io::Error::other(format!("app-server ws auth token file is empty: {}", path.display()))); }
-    let receipt_message = format!("app-server websocket token: {}",path.display());
+    let receipt_message = format!("{token_log_label}: {}",path.display());
     match &receipt { Some(writer) => writer(&receipt_message), None => eprintln!("{receipt_message}") }
     Ok(ResolvedWebSocketListenerAuth::Bearer { token, path:Some(path) })
 }

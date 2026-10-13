@@ -1,6 +1,6 @@
 //! Port of senpi `cli/app-server-command.ts` (`handleAppServerCommand`) and the process-entry half
-//! of `modes/app-server/index.ts` (`runAppServerMode`): argument parsing, daemon dispatch, the
-//! listening banner and the SIGINT/SIGTERM escalation.
+//! of `modes/app-server/index.ts` (`runAppServerMode`): argument parsing, daemon dispatch and the
+//! SIGINT/SIGTERM escalation.
 //!
 //! The transports, the runtime and the daemon lifecycle are owned by todo 37
 //! (`maho_server::app_server`); this module owns the CLI entry that mounts them.
@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use maho_server::app_server::cli_args::{format_usage, parse_cli_args, CliArgs, DaemonVerb, Listen, WsAuth};
+use maho_server::app_server::cli_args::{format_usage, parse_cli_args, CliArgs, DaemonVerb, WsAuth};
 use maho_server::app_server::daemon::{run_daemon_command, DaemonPaths};
 use maho_server::app_server::index::run_app_server_mode;
 use maho_server::app_server::runtime::AppServerRuntime;
@@ -121,20 +121,6 @@ fn write_stderr(message: &str) {
     }
 }
 
-/// senpi `runAppServerMode`'s listening banner, written to stderr before the shutdown wait.
-pub fn listening_banner(app_name: &str, listen: &Listen) -> String {
-    match listen {
-        Listen::Stdio { .. } => format!("{app_name} app-server listening on stdio://\n"),
-        Listen::Ws { host, port, .. } => format!(
-            "{app_name} app-server listening on ws://{host}:{port}\nreadyz http://127.0.0.1:{port}/readyz\n"
-        ),
-        Listen::Unix { path, url } => {
-            let socket = path.clone().unwrap_or_else(|| url.clone());
-            format!("{app_name} app-server listening on unix://{socket}\n")
-        }
-    }
-}
-
 /// senpi `handleAppServerCommand` plus the server-mode process entry.
 ///
 /// `shutdown_signal` is awaited once the first SIGINT/SIGTERM arrives; the caller installs the
@@ -203,7 +189,6 @@ pub async fn run_app_server_command(
                     &mut core.registry, config.agent_dir.clone(), config.cwd.clone(), runtime.threads.clone(), loader,
                 );
             }
-            write_stderr(&listening_banner(&app_name, &listen));
             let auth: Option<WsAuth> = ws_auth;
             let result = run_app_server_mode(&runtime, listen, auth, shutdown_signal).await;
             let exit_code = match result {

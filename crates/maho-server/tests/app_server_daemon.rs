@@ -17,6 +17,24 @@ async fn mode_startup_failure_disposes_loaded_native_sessions() {
     assert!(result.is_err());
     assert!(runtime.threads.list_loaded().await.is_empty());
 }
+#[tokio::test]
+async fn explicit_unix_socket_keeps_parent_mode_and_default_unix_needs_no_token() {
+    use maho_server::app_server::{cli_args::Listen,index::run_app_server_mode};
+    use std::os::unix::fs::PermissionsExt;
+    let directory=tempfile::tempdir().unwrap();
+    let agent_dir=directory.path().join("agent");
+    let shared=directory.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runtime=AppServerRuntime::new(agent_dir.display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let socket=shared.join("x.sock");
+    run_app_server_mode(&runtime,Listen::Unix {url:format!("unix://{}",socket.display()),path:Some(socket.display().to_string())},None,std::future::ready(())).await.unwrap();
+    assert_eq!(std::fs::metadata(&shared).unwrap().permissions().mode()&0o777,0o755);
+    let runtime=AppServerRuntime::new(agent_dir.display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    run_app_server_mode(&runtime,Listen::Unix {url:"unix://".into(),path:None},None,std::future::ready(())).await.unwrap();
+    assert_eq!(std::fs::metadata(agent_dir.join("app-server")).unwrap().permissions().mode()&0o777,0o700);
+    assert!(!agent_dir.join("app-server/ws-token").exists());
+}
 async fn send(client: &mut Client, value: Value) {
     client.send(Message::Text(value.to_string().into())).await.expect("client frame sent");
 }
