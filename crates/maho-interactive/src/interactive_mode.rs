@@ -2875,7 +2875,7 @@ impl InteractiveMode {
             context_window: model.context_window as f64, context_percent: usage.and_then(|usage| usage.percent),
             context_tokens: usage.and_then(|usage| usage.tokens).map(|tokens| tokens as f64),
             model_id: Some(model.id), provider: Some(model.provider), reasoning: model.reasoning,
-            thinking_level: Some(self.host_thinking_level().as_str().into()), ..Default::default()
+            thinking_level: Some(self.host_thinking_level().as_str().into()), subscription, ..Default::default()
         }
     }
 
@@ -2885,6 +2885,7 @@ impl InteractiveMode {
             AgentEvent::AgentEnd { .. } => { self.agent_idle = true; self.pending_tools.clear(); self.tool_partial_json.clear(); self.tool_args_reveal.stop(); self.tool_reveal.stop(); self.working_started_ms = None; }
             AgentEvent::MessageStart { message } => {
                 if message.role() == "user" {
+        let subscription = self.session.model_registry().model_runtime.is_using_subscription(&model.provider);
                     let value = serde_json::to_value(message).expect("serializable agent message");
                     let text = value["content"].as_str().map(str::to_owned).unwrap_or_else(|| value["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default());
                     if let Some(block) = maho_core::skill_invocation::parse_skill_block(&text) {
