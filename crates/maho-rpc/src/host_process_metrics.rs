@@ -1,7 +1,7 @@
 use std::fs;
 use serde::Serialize;
 use crate::host_process_table::{ProcessTableRow,linux_reader};
-#[cfg(unix)] use crate::host_process_table::darwin_reader;
+#[cfg(target_os="macos")] use crate::host_process_table::darwin_reader;
 #[derive(Debug,Serialize,PartialEq,Eq,Default)]
 pub struct HostProcessMetrics { pub rss_mb:Option<i64>,pub open_fds:Option<usize>,pub zombies:Option<usize> }
 pub fn descendants(rows:&[ProcessTableRow],root:u32) -> Vec<&ProcessTableRow> {
@@ -19,9 +19,13 @@ pub fn read_host_process_metrics(pid:u32,platform:&str) -> HostProcessMetrics {
         let Some(rows)=linux_reader() else{return HostProcessMetrics::default();};
         return metrics_from_rows(&rows,pid,Some(&mut |pid|fs::read_dir(format!("/proc/{pid}/fd")).ok().map(|entries|entries.count())));
     }
-    #[cfg(unix)] if platform=="darwin" {
+    #[cfg(target_os="macos")] if platform=="darwin" {
         let Some(rows)=darwin_reader() else{return HostProcessMetrics::default();};
-        return metrics_from_rows(&rows,pid,Some(&mut |process_pid|if process_pid==std::process::id(){fs::read_dir("/dev/fd").ok().map(|entries|entries.count())}else{None}));
+        return metrics_from_rows(&rows,pid,Some(&mut |process_pid|{
+            use libproc::{file_info::ListFDs,proc_pid::{listpidinfo,pidinfo},task_info::TaskAllInfo};
+            let info=pidinfo::<TaskAllInfo>(process_pid as i32,0).ok()?;
+            listpidinfo::<ListFDs>(process_pid as i32,info.pbsd.pbi_nfiles as usize).ok().map(|fds|fds.len())
+        }));
     }
     HostProcessMetrics::default()
 }
