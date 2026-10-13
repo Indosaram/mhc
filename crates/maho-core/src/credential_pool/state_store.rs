@@ -294,8 +294,13 @@ fn write_document(path: &str, document: &CredentialPoolStateDocument) -> Result<
 }
 
 fn set_file_mode_600(path: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
