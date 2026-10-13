@@ -524,6 +524,9 @@ impl Theme {
     }
 }
 fn style(t: &str, open: u8, close: u8) -> String {
+    if t.is_empty() {
+        return String::new();
+    }
     format!(
         "\x1b[{open}m{}\x1b[{close}m",
         t.replace(&format!("\x1b[{close}m"), &format!("\x1b[{open}m"))

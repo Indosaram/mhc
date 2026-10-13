@@ -1,36 +1,145 @@
 use super::theme::{Theme, ThemeColor};
+use std::sync::OnceLock;
 use syntect::{
     parsing::{ParseState, ScopeStack, SyntaxSet},
     util::LinesWithEndings,
 };
-fn token_color(scope: &str) -> Option<ThemeColor> {
-    if scope.contains("comment") {
+/// senpi's `utils/syntax-highlight.ts` registers 20 highlight.js languages eagerly, and
+/// `supportsLanguage` accepts only those names and their aliases (case-insensitive). Each maps to
+/// its highlight.js name and the two-face (bat) grammar that stands in for it here.
+fn eager_language(lang: &str) -> Option<(&'static str, &'static str)> {
+    let language = match lang.to_ascii_lowercase().as_str() {
+        "python" | "py" | "gyp" | "ipython" => ("python", "Python"),
+        "java" | "jsp" => ("java", "Java"),
+        "go" | "golang" => ("go", "Go"),
+        "javascript" | "js" | "jsx" | "mjs" | "cjs" => ("javascript", "JavaScript"),
+        "cpp" | "cc" | "c++" | "h++" | "hpp" | "hh" | "hxx" | "cxx" => ("cpp", "C++"),
+        "typescript" | "ts" | "tsx" | "mts" | "cts" => ("typescript", "TypeScript"),
+        "php" => ("php", "PHP Source"),
+        "ruby" | "rb" | "gemspec" | "podspec" | "thor" | "irb" => ("ruby", "Ruby"),
+        "c" | "h" => ("c", "C"),
+        "csharp" | "cs" | "c#" => ("csharp", "C#"),
+        "nix" | "nixos" => ("nix", "Nix"),
+        "bash" | "sh" | "zsh" => ("bash", "Bourne Again Shell (bash)"),
+        "rust" | "rs" => ("rust", "Rust"),
+        "scala" => ("scala", "Scala"),
+        "kotlin" | "kt" | "kts" | "ktm" | "ktx" => ("kotlin", "Kotlin"),
+        "swift" => ("swift", "Swift"),
+        "dart" => ("dart", "Dart"),
+        "groovy" => ("groovy", "Groovy"),
+        "perl" | "pl" | "pm" => ("perl", "Perl"),
+        "lua" | "pluto" => ("lua", "Lua"),
+        _ => return None,
+    };
+    Some(language)
+}
+fn syntax_set() -> &'static SyntaxSet {
+    static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SYNTAX_SET.get_or_init(two_face::syntax::extra_newlines)
+}
+const PRIMITIVE_TYPES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize",
+    "f32", "f64", "bool", "char", "str", "int", "long", "short", "float", "double", "void",
+    "unsigned", "signed", "byte", "boolean", "string", "auto", "size_t", "wchar_t", "uint",
+    "rune", "error",
+];
+/// highlight.js `meta` spans (attributes, decorators, annotations, preprocessor lines).
+fn is_meta(scope: &str) -> bool {
+    ["meta.annotation", "meta.decorator", "meta.attribute", "meta.preprocessor"]
+        .iter()
+        .any(|prefix| scope.starts_with(prefix))
+}
+/// Maps one TextMate scope onto the highlight.js class senpi's `buildCliHighlightTheme` would
+/// colour, returning that class's theme colour. `None` lets the enclosing scope decide.
+fn scope_color(scope: &str, text: &str, lang: &str) -> Option<ThemeColor> {
+    let word = text.trim();
+    let is_word = word.chars().any(char::is_alphanumeric);
+    let starts = |prefix: &str| scope.starts_with(prefix);
+    if starts("comment") {
         Some(ThemeColor::SyntaxComment)
-    } else if scope.contains("string") {
+    } else if starts("string") || starts("storage.type.string") {
         Some(ThemeColor::SyntaxString)
-    } else if scope.contains("constant.numeric") || scope.contains("constant.language") {
+    } else if starts("constant.numeric") || starts("constant.language") || starts("storage.type.numeric") {
         Some(ThemeColor::SyntaxNumber)
-    } else if scope.contains("entity.name.function") {
-        Some(ThemeColor::SyntaxFunction)
-    } else if scope.contains("variable.parameter") {
-        Some(ThemeColor::SyntaxVariable)
-    } else if scope.contains("storage.type")
-        || scope.contains("storage.modifier")
-        || scope.contains("keyword") && !scope.contains("operator")
-    {
+    } else if starts("keyword.operator") {
+        // Word operators (`as`, `new`, `typeof`) are keywords in highlight.js; symbolic operators
+        // carry the `operator` class only in the grammars that emit it.
+        if is_word {
+            Some(ThemeColor::SyntaxKeyword)
+        } else if matches!(lang, "swift" | "nix") {
+            Some(ThemeColor::SyntaxOperator)
+        } else {
+            None
+        }
+    } else if starts("keyword") || starts("storage.modifier") {
         Some(ThemeColor::SyntaxKeyword)
-    } else if scope.contains("support.type") || scope.contains("entity.name.class") {
+    } else if !is_word && starts("storage.type") {
+        None
+    } else if starts("storage.type") {
+        let primitive = ["storage.type.primitive", "storage.type.void", "storage.type.buildin"]
+            .iter()
+            .any(|prefix| scope.starts_with(prefix));
+        if primitive || PRIMITIVE_TYPES.contains(&word) || word.starts_with(char::is_uppercase) {
+            Some(ThemeColor::SyntaxType)
+        } else {
+            Some(ThemeColor::SyntaxKeyword)
+        }
+    } else if starts("support.function")
+        || starts("support.macro")
+        || starts("support.type")
+        || starts("support.class")
+        || starts("support.constant")
+        || starts("support.variable")
+    {
         Some(ThemeColor::SyntaxType)
+    } else if starts("entity.name.tag") {
+        Some(ThemeColor::SyntaxKeyword)
+    } else if starts("entity.name")
+        || starts("entity.other.inherited-class")
+        || (lang != "bash" && starts("variable.function"))
+    {
+        Some(ThemeColor::SyntaxFunction)
+    } else if starts("variable.parameter.option") {
+        None
+    } else if starts("entity.other.attribute-name")
+        || starts("variable.parameter")
+        || starts("variable.language")
+        || starts("variable.object.property")
+        || (lang == "bash" && starts("variable.other.readwrite"))
+    {
+        Some(ThemeColor::SyntaxVariable)
+    } else if starts("punctuation.definition.tag") || (lang == "rust" && word == "->") {
+        Some(ThemeColor::SyntaxPunctuation)
+    } else if is_meta(scope) {
+        Some(ThemeColor::Muted)
     } else {
         None
     }
 }
+/// Like highlight.js, the innermost scope with a colour wins; inside a `meta` span only strings,
+/// comments, literals and keywords keep their own colour.
+fn token_color(stack: &ScopeStack, text: &str, lang: &str) -> Option<ThemeColor> {
+    let scopes = stack.as_slice().iter().rev().map(|s| s.to_string()).collect::<Vec<_>>();
+    let color = scopes.iter().find_map(|scope| scope_color(scope, text, lang));
+    let keeps_color = matches!(
+        color,
+        Some(
+            ThemeColor::SyntaxString
+                | ThemeColor::SyntaxComment
+                | ThemeColor::SyntaxNumber
+                | ThemeColor::SyntaxKeyword
+        )
+    );
+    if !keeps_color && scopes.iter().any(|scope| is_meta(scope)) {
+        return Some(ThemeColor::Muted);
+    }
+    color
+}
 pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<String> {
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let syntax = lang
-        .filter(|l| !matches!(*l, "json" | "yaml" | "toml"))
-        .and_then(|lang| syntax_set.find_syntax_by_token(lang));
-    let Some(syntax) = syntax else {
+    let syntax_set = syntax_set();
+    let language = lang.and_then(eager_language);
+    let syntax = language.and_then(|(_, name)| syntax_set.find_syntax_by_name(name));
+    let (Some((language, _)), Some(syntax)) = (language, syntax) else {
         return code
             .split('\n')
             .map(|line| theme.fg(ThemeColor::MdCodeBlock, line))
@@ -41,20 +150,14 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
     let mut output = String::new();
     let mut runs: Vec<(Option<ThemeColor>, String)> = Vec::new();
     for line in LinesWithEndings::from(code) {
-        let Ok(ops) = parser.parse_line(line, &syntax_set) else {
+        let Ok(ops) = parser.parse_line(line, syntax_set) else {
             return code.split('\n').map(str::to_owned).collect();
         };
         let mut previous = 0;
         for (index, op) in ops {
             if index > previous {
-                let scopes = stack
-                    .as_slice()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let color = token_color(&scopes);
-                append_run(&mut runs, color, &line[previous..index]);
+                let text = &line[previous..index];
+                append_run(&mut runs, token_color(&stack, text, language), text);
             }
             if stack.apply(&op).is_err() {
                 return code.split('\n').map(str::to_owned).collect();
@@ -62,13 +165,8 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
             previous = index;
         }
         if previous < line.len() {
-            let scopes = stack
-                .as_slice()
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join(" ");
-            append_run(&mut runs, token_color(&scopes), &line[previous..]);
+            let text = &line[previous..];
+            append_run(&mut runs, token_color(&stack, text, language), text);
         }
     }
     for (color, text) in runs {
@@ -80,7 +178,9 @@ pub fn highlight_code(theme: &Theme, code: &str, lang: Option<&str>) -> Vec<Stri
             output.push_str(&text);
         }
     }
-    if lang == Some("rust")
+    // highlight.js's Rust grammar marks the binding after `let` as a variable; the TextMate
+    // grammar has no scope for it.
+    if language == "rust"
         && let Ok(re) = regex::Regex::new(r"let(?:\x1b\[[0-9;]*m)*\s+([a-zA-Z_][a-zA-Z0-9_]*)")
     {
         output = re
