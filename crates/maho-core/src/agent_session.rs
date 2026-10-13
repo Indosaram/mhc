@@ -4069,9 +4069,10 @@ impl AgentSession {
         }
     }
 
-    pub async fn reload(&self) -> Result<bool, String> {
+    pub async fn reload(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
         let _reload = self.reload_admission.lock().await;
-        if self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true) { return Ok(false); }
+        let veto = self.check_reload_veto().await?;
+        if veto.cancelled { return Ok(veto); }
         self.ensure_extension_recreation().await?;
         self.abort().await;
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
@@ -4097,11 +4098,14 @@ impl AgentSession {
             reason: maho_ext_api::SessionReason::Reload, initial_model_provenance: None, previous_session_file: self.session_file(),
         })).await;
         self.extend_resources_from_extensions(maho_ext_api::SessionReason::Reload).await;
-        Ok(true)
+        Ok(maho_ext_api::ReloadVetoDecision::default())
     }
 
-    pub async fn check_reload_veto(&self) -> Result<bool, String> {
-        Ok(self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?.cancel == Some(true))
+    /// senpi `checkReloadVeto`: `{ cancelled, reason? }`, the reason only when cancelled.
+    pub async fn check_reload_veto(&self) -> Result<maho_ext_api::ReloadVetoDecision, String> {
+        let result = self.session_before(maho_ext_api::ExtensionEvent::SessionBeforeReload).await?;
+        let cancelled = result.cancel == Some(true);
+        Ok(maho_ext_api::ReloadVetoDecision { cancelled, reason: if cancelled { result.reason } else { None } })
     }
 
     fn expand_input(&self, text: &str, templates: bool) -> Result<String, String> {
@@ -8412,7 +8416,7 @@ mod tests {
         let current = session.extension_runner.lock().await.as_ref().unwrap().create_context().unwrap();
         assert_eq!(current.session_manager.session_id(), session.session_id());
         current.ui.notify("new runtime", maho_ext_api::NotificationType::Info);
-        assert!(session.reload().await.unwrap());
+        assert!(!session.reload().await.unwrap().cancelled);
         assert!(current.actions().is_err());
         assert_eq!(lock(&runtimes).len(), 3);
         assert_eq!(session.get_commands().iter().find(|command| command.name == "generation").unwrap().description.as_deref(), Some("3"));
@@ -9226,8 +9230,8 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            assert!(first.await.expect("first task").expect("first reload"));
-            assert!(second.await.expect("second reload"));
+            assert!(!first.await.expect("first task").expect("first reload").cancelled);
+            assert!(!second.await.expect("second reload").cancelled);
         }).await.expect("bounded reloads");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         session.dispose().await;

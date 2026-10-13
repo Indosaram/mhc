@@ -742,7 +742,7 @@ impl InteractiveMode {
     }
 
     async fn host_reload(&self) -> Result<bool, String> {
-        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await }
+        match self.session_host.clone() { Some(host) => host.reload().await, None => self.session.reload().await.map(|decision| !decision.cancelled) }
     }
 
     fn host_clear_queue(&self, abort_will_follow: bool) -> Vec<maho_core::agent_session::QueuedInput> {
