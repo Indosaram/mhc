@@ -69,6 +69,7 @@ pub fn assembled_factories(widget_sender: tokio::sync::mpsc::UnboundedSender<mah
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     let fallback_parent = parent.clone();
     let help_widget_sender = widget_sender.clone();
+    let history_widget_sender = widget_sender.clone();
     let file_widget_sender = widget_sender.clone();
     let file_render: maho_ext_builtin_loose::files::RenderBinding = Arc::new(move |_| {
         let sender = file_widget_sender.clone();
@@ -164,11 +165,18 @@ pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interact
             factory("history-search", maho_ext_history_search::HistorySearch {
                 session_dir: Arc::new(|ctx| ctx.session_manager.get_session_dir().ok_or_else(|| ExtensionFailure::new("History search requires a session directory"))),
                 default_sessions_root: Arc::new(|| std::path::PathBuf::from(maho_core::config::get_agent_dir()).join("sessions")),
-                select: Arc::new(|ctx, entries| Box::pin(async move {
-                    let choices = entries.iter().enumerate().map(|(index, entry)| format!("{}: {}", index + 1, entry.text)).collect::<Vec<_>>();
-                    let selected = ctx.ui.select("Prompt history", &choices, Default::default()).await;
-                    Ok(selected.and_then(|selected| choices.iter().position(|choice| *choice == selected)).map(|index| entries[index].clone()))
-                })),
+                select: maho_ext_history_search::native_selection(maho_ext_history_search::HistoryUiBindings {
+                    render: Arc::new(move |_| {
+                        let widget_sender = history_widget_sender.clone();
+                        Rc::new(move || drop(widget_sender.send(maho_interactive::interactive_extension_ui::UiRequest::WidgetFrame)))
+                    }),
+                    theme: Arc::new(|theme| {
+                        maho_interactive::theme::Theme::builtin(
+                            theme.name.as_deref().unwrap_or("dark"),
+                            maho_interactive::theme::ColorMode::Truecolor,
+                        ).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))
+                    }),
+                }),
             }),
             factory("model-fallback", maho_ext_model_fallback::ModelFallback { is_using_oauth: Arc::new(move |model| {
                 fallback_parent.get().and_then(|parent| parent()).is_some_and(|parent| parent.model_registry().is_using_oauth(model))
