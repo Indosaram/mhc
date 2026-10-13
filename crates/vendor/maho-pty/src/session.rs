@@ -148,6 +148,11 @@ impl PtySession {
             .map_err(|error| PtyError::new(error.to_string()))?;
         let killer = child.clone_killer();
         let timeout_killer = child.clone_killer();
+        #[cfg(unix)]
+        let process_group = process_group(&*pair.master)
+            .filter(|process_group| *process_group != unsafe { libc::getpgrp() })
+            .or_else(|| child.process_id().map(|pid| pid as i32));
+        #[cfg(not(unix))]
         let process_group = process_group(&*pair.master).or_else(|| child.process_id().map(|pid| pid as i32));
         let finished = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::new(AtomicBool::new(false));
