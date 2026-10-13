@@ -1097,6 +1097,21 @@ async fn model_management_commands_cancel_without_consuming_provider_turn() {
 }
 
 #[tokio::test]
+async fn scoped_models_selector_refreshes_catalogs_while_open() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/scoped-models", Default::default()).await.expect("selector");
+    assert!(mode.render(80).join("\n").contains("Refreshing model catalogs…"));
+    let mut refreshed = false;
+    for _ in 0..100_000 {
+        if mode.render(80).join("\n").contains("Model catalogs refreshed.") { refreshed = true; break; }
+        tokio::task::yield_now().await;
+    }
+    assert!(refreshed, "the refresh outcome replaces the refreshing line");
+    mode.handle_input_at("\x1b", 0);
+}
+
+#[tokio::test]
 async fn scoped_model_selection_persists_and_restores_empty_enabled_set() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
