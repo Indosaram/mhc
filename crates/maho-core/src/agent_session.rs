@@ -4135,7 +4135,7 @@ impl AgentSession {
                     if let Some(callback) = &on_chunk { callback(chunk)?; }
                     session.emit(AgentSessionEvent::BashExecutionUpdate { id: id.clone(), delta: chunk.to_owned() });
                     Ok(())
-                })), on_chunk_async: None,
+                })), on_chunk_async: None, env: Some(crate::utils::shell::get_shell_env()),
             }).await.map_err(|error| error.to_string());
         self.state().bash_abort_signals.remove(&key);
         if let Ok(result) = &result { self.record_bash_result(command, result, exclude_from_context); }

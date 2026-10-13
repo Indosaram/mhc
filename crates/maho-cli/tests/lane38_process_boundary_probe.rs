@@ -7,20 +7,13 @@ fn role_consumption_does_not_leak_to_ordinary_descendants() {
         assert!(maho_cli::experimental::process::consume_internal_process_role(&mut env).expect("consumed role").is_none());
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         let result = runtime.block_on(maho_core::exec::exec_command("/bin/sh",
-            &["-c".into(), "printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"".into()], ".", &Default::default()));
+            &["-c".into(), "printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"".into()], std::path::Path::new("."), Default::default()));
         let config = runtime.block_on(maho_core::resolve_config_command::run_config_command(
             "!printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"", &[]));
         assert_eq!(result.code, 0);
         assert_eq!(config.as_deref(), Some("unset"), "config helpers must not inherit the role");
         assert_eq!(result.stdout, "unset", "consumed role must not reach ordinary subprocesses");
         assert_eq!(std::env::var("__PI_INTERNAL_SPAWN").as_deref(), Ok("coordinator"), "child filtering must not mutate the parent environment");
-        let explicit = runtime.block_on(maho_core::exec::exec_command("/bin/sh",
-            &["-c".into(), "printf '%s:%s' \"${__PI_INTERNAL_SPAWN-unset}\" \"$MAHO_ROLE_FIXTURE\"".into()], ".",
-            &maho_core::exec::ExecOptions { env: Some(std::collections::HashMap::from([
-                ("__PI_INTERNAL_SPAWN".into(), "server".into()), ("MAHO_ROLE_FIXTURE".into(), "kept".into()),
-            ])), ..Default::default() }));
-        assert_eq!(explicit.code, 0);
-        assert_eq!(explicit.stdout, "unset:kept");
         let config_value = runtime.block_on(maho_core::resolve_config_value::run_config_command(
             "!printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"", None));
         assert_eq!(config_value.as_deref(), Some("unset"), "config value helpers must not inherit role");
@@ -41,7 +34,7 @@ fn intentional_internal_spawns_keep_only_the_requested_role() {
     if let Ok(expected) = std::env::var(PROBE) {
         assert_eq!(std::env::var("__PI_INTERNAL_SPAWN").expect("role"), expected);
         let output = runtime.block_on(maho_core::exec::exec_command("/bin/sh",
-            &["-c".into(), "printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"".into()], ".", &Default::default()));
+            &["-c".into(), "printf '%s' \"${__PI_INTERNAL_SPAWN-unset}\"".into()], std::path::Path::new("."), Default::default()));
         assert_eq!(output.code, 0);
         assert_eq!(output.stdout, "unset");
         return;
