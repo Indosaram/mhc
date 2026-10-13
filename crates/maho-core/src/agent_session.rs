@@ -2164,6 +2164,11 @@ impl AgentSession {
         drop(readiness.take());
         if let Some(admitted) = &options.prompt_admitted { admitted(PromptDisposition::Started); }
         self.agent_run_active.store(true, Ordering::SeqCst);
+        // senpi `_promptAgent`: abort on a provider-side model substitution only when the setting
+        // allows it and a configured fallback chain can take over.
+        let abort_server_side_fallback = self.with_settings_manager(SettingsManager::get_abort_server_side_fallback)
+            && self.retry_fallback.lock().await.as_mut().is_some_and(|controller| controller.has_configured_chain());
+        self.agent.set_abort_server_side_fallback(Some(abort_server_side_fallback));
         self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
         self.finish_provider_turn().await?;
         self.flush_pending_bash_messages();
@@ -4077,6 +4082,7 @@ impl AgentSession {
         self.emit_session_shutdown(maho_ext_api::SessionReason::Reload).await;
         self.invalidate_extension_runtime().await;
         self.with_settings_manager_mut(|manager| manager.reload());
+        self.sync_queue_modes_from_settings();
         self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
         let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
             let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
@@ -5053,6 +5059,157 @@ impl AgentSession {
         Arc::new(move || inner.upgrade().map(|inner| Self { inner }))
     }
 
+    /// senpi `sdk.ts` `streamFn`: per request, read the live provider retry/timeout settings,
+    /// resolve the request service tier from the session, merge provider attribution headers and run
+    /// the extension `before_provider_headers` hook as the `transformHeaders` stage, then forward
+    /// the payload/response hooks to the extension runner.
+    pub(crate) fn install_default_stream_function(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        self.agent.set_stream_function(Arc::new(move |model, context, options| {
+            let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
+            let output = stream.clone();
+            let weak = weak.clone();
+            let model = model.clone();
+            let context = context.clone();
+            tokio::spawn(async move {
+                let Some(inner) = weak.upgrade() else {
+                    output.fail(maho_ai::utils::event_stream::StreamError::new("Session disposed")); return;
+                };
+                let session = AgentSession { inner };
+                let mut options = options.unwrap_or_default();
+                session.apply_stream_request_settings(&model, &mut options.simple);
+                let header_session = Arc::downgrade(&session.inner);
+                let header_model = model.clone();
+                let header_session_id = options.simple.stream.session_id.clone();
+                let transforms = maho_ai::models::ModelsRequestTransforms {
+                    transform_headers: Some(Arc::new(move |request_headers: ProviderHeaders| {
+                        let weak = header_session.clone();
+                        let model = header_model.clone();
+                        let session_id = header_session_id.clone();
+                        Box::pin(async move {
+                            let Some(inner) = weak.upgrade() else { return request_headers; };
+                            let session = AgentSession { inner };
+                            let headers = session.merge_request_attribution_headers(&model, session_id.as_deref(), request_headers);
+                            let mut runner = session.extension_runner.lock().await.clone();
+                            match runner.as_mut() {
+                                Some(runner) if runner.has_handlers(maho_ext_api::EventKind::BeforeProviderHeaders) =>
+                                    match runner.emit_before_provider_headers(headers.clone()).await {
+                                        Ok(headers) => headers,
+                                        // senpi gates the hook on `headerRunner.isActive`; a stale runner
+                                        // (the only error source) leaves the attributed headers as-is.
+                                        Err(_) => headers,
+                                    },
+                                _ => headers,
+                            }
+                        }) as maho_ai::types::BoxFuture<'static, ProviderHeaders>
+                    })),
+                };
+                let previous_payload = options.simple.stream.request.async_on_payload.take();
+                let payload_session = Arc::downgrade(&session.inner);
+                options.simple.stream.request.async_on_payload = Some(Arc::new(move |payload, model, metadata| {
+                    let previous = previous_payload.clone();
+                    let weak = payload_session.clone();
+                    Box::pin(async move {
+                        // The event carries the resolved request model. The direct API lanes pass it
+                        // as `model` and leave `metadata` unset, so fall back to it rather than
+                        // dropping the model when only the metadata is absent.
+                        let event_model = metadata.as_ref().map(|request| request.model.clone()).unwrap_or_else(|| model.clone());
+                        let payload = match previous {
+                            Some(previous) => previous(payload.clone(), model, metadata.clone()).await?.unwrap_or(payload),
+                            None => payload,
+                        };
+                        let inner = weak.upgrade().ok_or("Session disposed")?;
+                        let runner = AgentSession { inner }.extension_runner.lock().await.clone();
+                        match runner {
+                            Some(mut runner) => runner.emit_before_provider_request_with_metadata(payload,
+                                Some(event_model),
+                                metadata.map(|request| request.headers), None).await.map(Some).map_err(|error| error.message),
+                            None => Ok(Some(payload)),
+                        }
+                    })
+                }));
+                let previous_response = options.simple.stream.request.async_on_response.take();
+                let response_session = Arc::downgrade(&session.inner);
+                options.simple.stream.request.async_on_response = Some(Arc::new(move |response, model| {
+                    let previous = previous_response.clone();
+                    let weak = response_session.clone();
+                    Box::pin(async move {
+                        if let Some(previous) = previous { previous(response.clone(), model).await?; }
+                        let inner = weak.upgrade().ok_or("Session disposed")?;
+                        let runner = AgentSession { inner }.extension_runner.lock().await.clone();
+                        if let Some(mut runner) = runner {
+                            runner.emit(maho_ext_api::ExtensionEvent::AfterProviderResponse {
+                                status: response.status, headers: response.headers,
+                            }).await.map_err(|error| error.message)?;
+                        }
+                        Ok(())
+                    })
+                }));
+                let upstream = session.model_runtime().stream_simple_with_transforms(&model, &context, Some(options.simple), transforms);
+                loop {
+                    match upstream.next().await {
+                        Ok(Some(event)) => output.push(event),
+                        Ok(None) => { match upstream.result().await {
+                            Ok(message) => output.end(Some(message)), Err(error) => output.fail(error),
+                        }; return; }
+                        Err(error) => { output.fail(error); return; }
+                    }
+                }
+            });
+            stream
+        }));
+    }
+
+    /// The request-option half of senpi `sdk.ts` `streamFn`. Caller-pinned values win; otherwise
+    /// the live settings fill timeout, websocket connect timeout, the provider retry budget (a
+    /// provider-declared profile owns it), the retry delay cap and the request service tier.
+    fn apply_stream_request_settings(&self, model: &Model, options: &mut maho_ai::types::SimpleStreamOptions) {
+        let (provider_retry, http_idle_timeout_ms, websocket_connect_timeout_ms) = self.with_settings_manager(|manager| (
+            manager.get_provider_retry_settings(), manager.get_http_idle_timeout_ms(), manager.get_websocket_connect_timeout_ms(),
+        ));
+        // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout"; max int32 disables it.
+        let effective_timeout_ms = if http_idle_timeout_ms == 0 { i32::MAX as u64 } else { http_idle_timeout_ms };
+        let declared_policy = self.model_runtime().get_provider(&model.provider)
+            .and_then(|provider| maho_ai::models::Provider::retry_policy(provider.as_ref()).map(|policy| (policy.provider_request.enabled, policy.provider_request.max_retries)));
+        let profile_max_retries = match declared_policy {
+            None => provider_retry.max_retries,
+            Some((true, max_retries)) => Some(max_retries),
+            Some((false, _)) => Some(0),
+        };
+        let request = &mut options.stream.request;
+        request.timeout_ms = request.timeout_ms.or(provider_retry.timeout_ms).or(Some(effective_timeout_ms));
+        request.max_retries = request.max_retries.or(profile_max_retries);
+        request.max_retry_delay_ms = request.max_retry_delay_ms.or(Some(provider_retry.max_retry_delay_ms));
+        options.stream.websocket_connect_timeout_ms = options.stream.websocket_connect_timeout_ms.or(websocket_connect_timeout_ms);
+        if options.stream.session_id.is_none() { options.stream.session_id = Some(self.session_id()); }
+        options.service_tier = options.service_tier.or_else(|| self.resolve_request_service_tier(model));
+    }
+
+    /// senpi `sdk.ts` `resolveRequestServiceTier`: the session's effective tier for the active
+    /// model, else the request model's own catalog tier; only the OpenAI Responses family accepts it.
+    fn resolve_request_service_tier(&self, request_model: &Model) -> Option<ServiceTierPreference> {
+        if !matches!(request_model.api.as_str(), "openai-responses" | "openai-codex-responses") { return None; }
+        if models_are_equal(Some(&self.model()), Some(request_model)) {
+            return self.effective_service_tier().map(|tier| match tier {
+                ServiceTier::Auto => ServiceTierPreference::Auto,
+                ServiceTier::Flex => ServiceTierPreference::Flex,
+                ServiceTier::Priority => ServiceTierPreference::Priority,
+            });
+        }
+        self.model_runtime().get_compatibility_request_config(request_model).service_tier
+    }
+
+    /// senpi `mergeProviderAttributionHeaders(model, settingsManager, sessionId, requestHeaders)`:
+    /// session and attribution defaults first, the assembled request headers (including `None`
+    /// deletions) last.
+    fn merge_request_attribution_headers(&self, model: &Model, session_id: Option<&str>, request_headers: ProviderHeaders) -> ProviderHeaders {
+        let mut merged: ProviderHeaders = self.with_settings_manager(|manager|
+            crate::provider_attribution::merge_provider_attribution_headers(model, manager, session_id, &[]))
+            .unwrap_or_default().into_iter().map(|(name, value)| (name, Some(value))).collect();
+        merged.extend(request_headers);
+        merged
+    }
+
     async fn renew_extension_runtime(&self, reason: maho_ext_api::SessionReason) -> Result<(), String> {
         let old = self.extension_runner.lock().await.clone();
         let Some(mut old) = old else { return Ok(()); };
@@ -5198,85 +5355,7 @@ impl AgentSession {
         *self.extension_runner.lock().await = Some(runner);
         self.apply_extension_bindings().await;
         if self.state().uses_default_stream_function {
-            let weak = Arc::downgrade(&self.inner);
-            self.agent.set_stream_function(Arc::new(move |model, context, options| {
-                let stream = maho_ai::utils::event_stream::create_assistant_message_event_stream();
-                let output = stream.clone();
-                let weak = weak.clone();
-                let model = model.clone();
-                let context = context.clone();
-                tokio::spawn(async move {
-                    let Some(inner) = weak.upgrade() else {
-                        output.fail(maho_ai::utils::event_stream::StreamError::new("Session disposed")); return;
-                    };
-                    let session = AgentSession { inner };
-                    let mut options = options.unwrap_or_default();
-                    let headers = options.simple.stream.request.headers.take().unwrap_or_default();
-                    let transformed = {
-                        let mut runner = session.extension_runner.lock().await.clone();
-                        match runner.as_mut() {
-                            Some(runner) => runner.emit_before_provider_headers(headers).await,
-                            None => Ok(headers),
-                        }
-                    };
-                    match transformed {
-                        Ok(headers) => options.simple.stream.request.headers = Some(headers),
-                        Err(error) => { output.fail(maho_ai::utils::event_stream::StreamError::new(error.message)); return; }
-                    }
-                    let previous_payload = options.simple.stream.request.async_on_payload.take();
-                    let payload_session = Arc::downgrade(&session.inner);
-                    options.simple.stream.request.async_on_payload = Some(Arc::new(move |payload, model, metadata| {
-                        let previous = previous_payload.clone();
-                        let weak = payload_session.clone();
-                        Box::pin(async move {
-                            // The event carries the resolved request model. The direct API lanes pass it
-                            // as `model` and leave `metadata` unset, so fall back to it rather than
-                            // dropping the model when only the metadata is absent.
-                            let event_model = metadata.as_ref().map(|request| request.model.clone()).unwrap_or_else(|| model.clone());
-                            let payload = match previous {
-                                Some(previous) => previous(payload.clone(), model, metadata.clone()).await?.unwrap_or(payload),
-                                None => payload,
-                            };
-                            let inner = weak.upgrade().ok_or("Session disposed")?;
-                            let runner = AgentSession { inner }.extension_runner.lock().await.clone();
-                            match runner {
-                                Some(mut runner) => runner.emit_before_provider_request_with_metadata(payload,
-                                    Some(event_model),
-                                    metadata.map(|request| request.headers), None).await.map(Some).map_err(|error| error.message),
-                                None => Ok(Some(payload)),
-                            }
-                        })
-                    }));
-                    let previous_response = options.simple.stream.request.async_on_response.take();
-                    let response_session = Arc::downgrade(&session.inner);
-                    options.simple.stream.request.async_on_response = Some(Arc::new(move |response, model| {
-                        let previous = previous_response.clone();
-                        let weak = response_session.clone();
-                        Box::pin(async move {
-                            if let Some(previous) = previous { previous(response.clone(), model).await?; }
-                            let inner = weak.upgrade().ok_or("Session disposed")?;
-                            let runner = AgentSession { inner }.extension_runner.lock().await.clone();
-                            if let Some(mut runner) = runner {
-                                runner.emit(maho_ext_api::ExtensionEvent::AfterProviderResponse {
-                                    status: response.status, headers: response.headers,
-                                }).await.map_err(|error| error.message)?;
-                            }
-                            Ok(())
-                        })
-                    }));
-                    let upstream = session.model_runtime().stream_simple(&model, &context, Some(options.simple));
-                    loop {
-                        match upstream.next().await {
-                            Ok(Some(event)) => output.push(event),
-                            Ok(None) => { match upstream.result().await {
-                                Ok(message) => output.end(Some(message)), Err(error) => output.fail(error),
-                            }; return; }
-                            Err(error) => { output.fail(error); return; }
-                        }
-                    }
-                });
-                stream
-            }));
+            self.install_default_stream_function();
         }
         let weak = Arc::downgrade(&self.inner);
         self.agent.set_before_tool_call(Some(Arc::new(move |context, _| {
@@ -6724,14 +6803,9 @@ impl AgentSession {
 
     /// Apply the persisted steering/follow-up modes to the agent.
     pub fn sync_queue_modes_from_settings(&self) {
-        let steering = self.with_settings_manager(|manager| manager.get_string("steeringMode"));
-        let follow_up = self.with_settings_manager(|manager| manager.get_string("followUpMode"));
-        if let Some(mode) = steering.as_deref().and_then(queue_mode_from_str) {
-            self.agent.set_steering_mode(mode);
-        }
-        if let Some(mode) = follow_up.as_deref().and_then(queue_mode_from_str) {
-            self.agent.set_follow_up_mode(mode);
-        }
+        let (steering, follow_up) = self.with_settings_manager(|manager| (manager.get_steering_mode(), manager.get_follow_up_mode()));
+        self.agent.set_steering_mode(steering);
+        self.agent.set_follow_up_mode(follow_up);
     }
 
     fn get_compaction_settings(
@@ -6999,13 +7073,6 @@ fn queue_mode_str(mode: maho_agent::types::QueueMode) -> &'static str {
     }
 }
 
-fn queue_mode_from_str(value: &str) -> Option<maho_agent::types::QueueMode> {
-    match value {
-        "all" => Some(maho_agent::types::QueueMode::All),
-        "one-at-a-time" => Some(maho_agent::types::QueueMode::OneAtATime),
-        _ => None,
-    }
-}
 
 fn session_entry_from_value(entry: Value) -> maho_ext_api::SessionEntry {
     maho_ext_api::SessionEntry {
@@ -9930,6 +9997,60 @@ mod tests {
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }))
         .expect("model")
+    }
+
+    #[test]
+    fn stream_request_settings_fill_unpinned_timeouts_retries_and_service_tier() {
+        let session = test_session();
+        let mut model = test_model();
+        model.api = "openai-responses".to_owned();
+        session.agent.set_model(model.clone());
+        session.set_session_fast_mode(true);
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("httpIdleTimeoutMs".into(), serde_json::json!(0)),
+            ("websocketConnectTimeoutMs".into(), serde_json::json!(4_000)),
+            ("retry".into(), serde_json::json!({"provider": {"maxRetries": 4, "maxRetryDelayMs": 9_000}})),
+        ])));
+        let mut options = maho_ai::types::SimpleStreamOptions::default();
+        session.apply_stream_request_settings(&model, &mut options);
+        assert_eq!(options.stream.request.timeout_ms, Some(i32::MAX as u64));
+        assert_eq!(options.stream.request.max_retries, Some(4));
+        assert_eq!(options.stream.request.max_retry_delay_ms, Some(9_000));
+        assert_eq!(options.stream.websocket_connect_timeout_ms, Some(4_000));
+        assert_eq!(options.service_tier, Some(ServiceTierPreference::Priority));
+        let mut pinned = maho_ai::types::SimpleStreamOptions::default();
+        pinned.stream.request.timeout_ms = Some(5);
+        session.apply_stream_request_settings(&model, &mut pinned);
+        assert_eq!(pinned.stream.request.timeout_ms, Some(5));
+    }
+
+    #[test]
+    fn declared_provider_request_policy_owns_the_transport_retry_budget() {
+        let session = test_session();
+        session.agent.set_model(test_model());
+        session.with_settings_manager_mut(|manager| manager.apply_overrides(&Map::from_iter([
+            ("retry".into(), serde_json::json!({"provider": {"maxRetries": 4}})),
+        ])));
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            retry_policy: Some(maho_ai::utils::retry_profile::profiles::KIMI_CODE_RETRY_PROFILE.clone()),
+            ..Default::default()
+        }).expect("provider");
+        let mut options = maho_ai::types::SimpleStreamOptions::default();
+        session.apply_stream_request_settings(&test_model(), &mut options);
+        assert_eq!(options.stream.request.max_retries, Some(0));
+    }
+
+    #[test]
+    fn request_headers_merge_over_provider_attribution_headers() {
+        let session = test_session();
+        let mut model = test_model();
+        model.provider = "openrouter".to_owned();
+        let request: ProviderHeaders = [("HTTP-Referer".to_owned(), None), ("x-request".to_owned(), Some("1".to_owned()))].into_iter().collect();
+        let headers = session.merge_request_attribution_headers(&model, None, request);
+        assert_eq!(headers.get("X-OpenRouter-Categories"), Some(&Some("cli-agent".to_owned())));
+        assert_eq!(headers.get("HTTP-Referer"), Some(&None));
+        assert_eq!(headers.get("x-request"), Some(&Some("1".to_owned())));
     }
 
     #[test]

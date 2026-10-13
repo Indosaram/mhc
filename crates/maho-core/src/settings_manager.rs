@@ -711,6 +711,50 @@ impl SettingsManager {
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
     }
 
+    /// `getSteeringMode`: defaults to `all`.
+    pub fn get_steering_mode(&self) -> maho_agent::types::QueueMode {
+        match self.get_value("steeringMode").and_then(Value::as_str) {
+            Some("one-at-a-time") => maho_agent::types::QueueMode::OneAtATime,
+            _ => maho_agent::types::QueueMode::All,
+        }
+    }
+
+    /// `getFollowUpMode`: defaults to `one-at-a-time`.
+    pub fn get_follow_up_mode(&self) -> maho_agent::types::QueueMode {
+        match self.get_value("followUpMode").and_then(Value::as_str) {
+            Some("all") => maho_agent::types::QueueMode::All,
+            _ => maho_agent::types::QueueMode::OneAtATime,
+        }
+    }
+
+    /// `getTransport`: defaults to `auto`.
+    pub fn get_transport(&self) -> maho_ai::types::Transport {
+        self.get_value("transport").cloned().and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or(maho_ai::types::Transport::Auto)
+    }
+
+    /// `getAbortServerSideFallback`: defaults to enabled.
+    pub fn get_abort_server_side_fallback(&self) -> bool {
+        crate::retry_fallback::settings::resolve_abort_server_side_fallback(self.get_value("retry"))
+    }
+
+    /// `getHttpIdleTimeoutMs`. senpi throws on an invalid value; the port treats it as unset.
+    pub fn get_http_idle_timeout_ms(&self) -> u64 {
+        self.get_value("httpIdleTimeoutMs").and_then(crate::http_dispatcher::parse_http_idle_timeout_ms)
+            .unwrap_or(crate::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS)
+    }
+
+    /// `getProviderRetrySettings`.
+    pub fn get_provider_retry_settings(&self) -> ProviderRequestRetrySettings {
+        let provider = self.get_value("retry").and_then(|retry| retry.get("provider"));
+        let field = |key: &str| provider.and_then(|provider| provider.get(key)).and_then(settings_ms);
+        ProviderRequestRetrySettings {
+            timeout_ms: field("timeoutMs"),
+            max_retries: field("maxRetries").and_then(|value| u32::try_from(value).ok()),
+            max_retry_delay_ms: field("maxRetryDelayMs").unwrap_or(60_000),
+        }
+    }
+
     pub fn resolve_retry_profile(
         &self,
         provider: Option<&dyn maho_ai::models::Provider>,
@@ -768,6 +812,37 @@ impl SettingsManager {
         profile.turn.enabled = retry.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
             && overrides.and_then(|value| value.get("enabled")).and_then(Value::as_bool).unwrap_or(profile.turn.enabled);
         profile
+    }
+
+    /// `getAgentStreamIdleTimeoutMs`: `retry.provider.timeoutMs` wins; otherwise `httpIdleTimeoutMs`,
+    /// where 0 ("disabled") disables the reader guard as well.
+    pub fn get_agent_stream_idle_timeout_ms(&self) -> Option<u64> {
+        if let Some(provider_timeout_ms) = self.get_provider_retry_settings().timeout_ms {
+            return Some(provider_timeout_ms);
+        }
+        let http_idle_timeout_ms = self.get_http_idle_timeout_ms();
+        (http_idle_timeout_ms != 0).then_some(http_idle_timeout_ms)
+    }
+
+    /// `getAgentStreamStartTimeoutMs`: `retry.provider.streamStartTimeoutMs` (0 disables), else the
+    /// 300s default capped by the idle timeout and disabled together with it.
+    pub fn get_agent_stream_start_timeout_ms(&self) -> Option<u64> {
+        let explicit = self.get_value("retry").and_then(|retry| retry.get("provider"))
+            .and_then(|provider| provider.get("streamStartTimeoutMs")).and_then(settings_ms);
+        if let Some(explicit) = explicit {
+            return (explicit > 0).then_some(explicit);
+        }
+        self.get_agent_stream_idle_timeout_ms().map(|idle| DEFAULT_STREAM_START_TIMEOUT_MS.min(idle))
+    }
+
+    /// `getWebSocketConnectTimeoutMs`. senpi throws on an invalid value; the port treats it as unset.
+    pub fn get_websocket_connect_timeout_ms(&self) -> Option<u64> {
+        self.get_value("websocketConnectTimeoutMs").and_then(crate::http_dispatcher::parse_http_idle_timeout_ms)
+    }
+
+    /// `getThinkingBudgets`.
+    pub fn get_thinking_budgets(&self) -> Option<maho_ai::types::ThinkingBudgets> {
+        self.get_value("thinkingBudgets").cloned().and_then(|value| serde_json::from_value(value).ok())
     }
 
     /// Writes values into the given scope and recomputes the merged view.
@@ -834,6 +909,18 @@ fn values_into(base: &Settings, values: &Settings) -> Settings {
         }
     }
     result
+}
+
+/// The `getProviderRetrySettings` return shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRequestRetrySettings {
+    pub timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub max_retry_delay_ms: u64,
+}
+
+fn settings_ms(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_f64().filter(|value| value.is_finite() && *value >= 0.0).map(|value| value.floor() as u64))
 }
 
 pub fn serialize_settings(settings: &Settings) -> String {
@@ -1175,6 +1262,33 @@ mod tests {
         std::fs::write(format!("{agent}/settings.json"), "{\"a\":2}").expect("write");
         manager.reload();
         assert_eq!(manager.get_number("a"), Some(2.0));
+    }
+
+    #[test]
+    fn agent_stream_timeouts_follow_http_idle_and_provider_overrides() {
+        let manager = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Some(300_000));
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Some(300_000));
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":60000}"), false);
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Some(60_000));
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":\"disabled\"}"), false);
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (None, None));
+        let manager = SettingsManager::in_memory(settings(
+            "{\"retry\":{\"provider\":{\"timeoutMs\":1000,\"streamStartTimeoutMs\":0}}}"), false);
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Some(1_000), None));
+    }
+
+    #[test]
+    fn agent_option_getters_default_like_senpi() {
+        let manager = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(manager.get_steering_mode(), maho_agent::types::QueueMode::All);
+        assert_eq!(manager.get_follow_up_mode(), maho_agent::types::QueueMode::OneAtATime);
+        assert_eq!(manager.get_transport(), maho_ai::types::Transport::Auto);
+        assert!(manager.get_abort_server_side_fallback());
+        assert_eq!(manager.get_provider_retry_settings(),
+            ProviderRequestRetrySettings { timeout_ms: None, max_retries: None, max_retry_delay_ms: 60_000 });
+        assert_eq!(manager.get_websocket_connect_timeout_ms(), None);
+        assert_eq!(manager.get_thinking_budgets(), None);
     }
 
     #[test]
