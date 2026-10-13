@@ -153,7 +153,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         system_prompt: parsed.system_prompt.clone(), append_system_prompt: parsed.append_system_prompt.clone(),
         scoped_models: startup::session_model_entries(options.options.scoped_models)?, defer_extension_start: true,
         session_profile, ..Default::default()
-    }).await?;
+    }).await.map_err(|error| if mode != AppMode::Interactive && error == "No model available" { maho_core::auth_guidance::format_no_models_available_message() } else { error })?;
+    // senpi main.ts:1292-1295: print/json/rpc without a usable model exits 1 with the login help.
+    let created_model = created.session.model();
+    if mode != AppMode::Interactive && created_model.provider == "unknown" && created_model.id == "unknown" {
+        return Err(maho_core::auth_guidance::format_no_models_available_message());
+    }
     let session = Arc::new(created.session);
     let model_fallback_message = created.model_fallback_message;
     task_parent.set(session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
