@@ -69,6 +69,13 @@ async fn list_includes_dotfiles_and_directory_suffix() {
     let result = execute(&tool,json!({})).await.unwrap(); assert!(text(&result).contains(".hidden")); assert!(text(&result).contains("folder/"));
 }
 #[tokio::test]
+async fn list_sorts_like_locale_compare() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["b","ab","a.b","1x","_x","A"] { std::fs::write(dir.path().join(name),"").unwrap(); }
+    let tool = create_ls_tool_definition(dir.path().into(),LsToolOptions::default());
+    let result = execute(&tool,json!({})).await.unwrap(); assert_eq!(text(&result).trim_end(),"_x\n1x\nA\na.b\nab\nb");
+}
+#[tokio::test]
 async fn native_grep_searches_file_with_context() {
     let dir = tempfile::tempdir().unwrap(); std::fs::write(dir.path().join("a"),"before\nneedle\nafter\n").unwrap();
     let tool = create_grep_tool_definition(dir.path().into(),GrepToolOptions::default());
