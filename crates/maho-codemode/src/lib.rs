@@ -42,7 +42,10 @@ pub fn register(api: &mut ExtensionApi, options: CodemodeExtensionOptions) -> Re
     let ticker_context=Arc::downgrade(&state);
     let ticker=Arc::new(Mutex::new(extension::eval_status_ticker::EvalStatusTicker::new(Arc::new(move |status| {
         let context=ticker_context.upgrade().and_then(|state|state.lock().expect("extension state").context.clone());
-        if let Some(context)=context {context.ui.set_status(extension::eval_status::EVAL_CELLS_STATUS_KEY,status.as_deref());}
+        if let Some(context)=context {
+            let status=match status {Some(status) if context.mode==maho_ext_api::ExtensionMode::Tui => {let theme=context.ui.theme();Some(theme.bg("selectedBg",&theme.fg("text",&status)))}, status=>status};
+            context.ui.set_status(extension::eval_status::EVAL_CELLS_STATUS_KEY,status.as_deref());
+        }
     }),Arc::new(||std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0))));
     let notifier=Arc::new(Mutex::new(extension::eval_notifier::EvalNotifier::default()));
     let cells=create_extension_cells(&host,&state,&ticker,&notifier,&Default::default(),None);
