@@ -185,3 +185,45 @@ async fn native_server_aggregates_owned_listeners_and_reports_errors_to_the_obse
     test.server.close().await.unwrap();
     assert_eq!(closes.load(Ordering::SeqCst),1);
 }
+
+/// Records decoded server frames and announces each one, so tests can await exact messages.
+struct RecordingConnection {frames:std::sync::Mutex<Vec<serde_json::Value>>,decoder:std::sync::Mutex<maho_server::protocol::codec::MessageDecoder>,changed:tokio::sync::watch::Sender<usize>}
+impl RecordingConnection {
+    fn new()->Self {Self {frames:std::sync::Mutex::new(Vec::new()),decoder:std::sync::Mutex::new(maho_server::protocol::codec::MessageDecoder::server()),changed:tokio::sync::watch::channel(0).0}}
+    fn frames(&self)->Vec<serde_json::Value> {self.frames.lock().unwrap().clone()}
+    async fn wait_for(&self,predicate:impl Fn(&serde_json::Value)->bool) {
+        let mut changed=self.changed.subscribe();
+        tokio::time::timeout(Duration::from_secs(2),async {loop {
+            if self.frames().iter().any(&predicate) {return;}
+            changed.changed().await.unwrap();
+        }}).await.expect("expected server frame");
+    }
+}
+impl ByteConnection for RecordingConnection {
+    fn closed(&self)->bool {false}
+    fn send<'a>(&'a self,chunk:&'a [u8])->ServerFuture<'a,()> {Box::pin(async move {
+        let messages=self.decoder.lock().unwrap().push(chunk).unwrap();
+        let count={let mut frames=self.frames.lock().unwrap();frames.extend(messages);frames.len()};
+        self.changed.send_replace(count);Ok(())
+    })}
+    fn close<'a>(&'a self,_:Option<&'a [u8]>)->ServerFuture<'a,()> {Box::pin(async {Ok(())})}
+}
+fn client_frame(message:serde_json::Value)->Vec<u8> {maho_server::protocol::codec::encode_client_message(&message,maho_server::protocol::framing::DEFAULT_MAX_FRAME_LENGTH).unwrap()}
+
+#[tokio::test]
+async fn disconnect_releases_the_attachment_without_publishing_a_detach() {
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let test=create_test_server(TestServerOptions {host:Some(host.clone()),..Default::default()}).unwrap();
+    let id=test.server.server_id.clone();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(4);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    let serving=tokio::spawn(test.server.clone().serve(connection.clone(),inbound,signal));
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    sender.send(Ok(client_frame(json!({"type":"request","id":"a","target":{"serverId":id},"call":{"serviceId":"pi.session-management","member":"attach","args":["session-1"]}})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="response" && message["id"]=="a").await;
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
+    assert!(!connection.frames().iter().any(|message|message["type"]=="attachment" && message["attachment"].is_null()));
+    assert_eq!(host.latest_harness("session-1").await.unwrap().state.lock().await.attachment_release_count,1);
+    test.server.close().await.unwrap();
+}
