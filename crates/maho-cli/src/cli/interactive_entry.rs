@@ -161,9 +161,10 @@ async fn resolve_interactive_startup_theme(
     let cwd = session.cwd();
     let agent_dir = session.agent_dir();
     let mut diagnostics: Vec<String> = Vec::new();
-    // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first.
+    // senpi `loadStartupThemes(settingsManager)`: package-resolved theme resources first, unless
+    // `--no-themes` limits discovery to the explicit CLI theme paths (resource-loader.ts:758-760).
     let mut theme_paths: Vec<PathBuf> = Vec::new();
-    {
+    if !parsed.no_themes {
         let mut settings = startup_theme_settings_manager(session);
         let manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
             cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
