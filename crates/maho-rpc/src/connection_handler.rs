@@ -102,14 +102,43 @@ pub fn json_parse_error_response(input:&str)->String{
     response.push_str("\"}\n");response
 }
 pub type RpcRecordSink=std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>;
+/// The abort owner the connection last observed on `agent_end`, keyed by the session id it was
+/// seen on: `get_state` reports it as `lastAbortSource` until the session is replaced (senpi keeps
+/// `lastAbortSource` per handler and clears it in `rebindSession`; native replacement keeps the
+/// session object and changes its id).
+pub type LastAbortSource=std::sync::Arc<std::sync::Mutex<Option<(String,&'static str)>>>;
+/// senpi's subscribe-path enrichment inside `rebindSession`: `thinking_level_changed` and
+/// `model_changed` carry the session's `thinkingSelection`, and `agent_end` records its abort owner.
+pub fn rpc_session_event_record(session:&AgentSession,event:&maho_ext_api::AgentSessionEvent,last_abort_source:&LastAbortSource)->Result<serde_json::Value,serde_json::Error>{
+    let mut record=crate::session_binding::session_event_record(event)?;
+    match event{
+        maho_ext_api::AgentSessionEvent::ThinkingLevelChanged{..}|maho_ext_api::AgentSessionEvent::ModelChanged{..}=>{
+            if let Some(selection)=session.thinking_selection(){record["thinkingSelection"]=serde_json::to_value(selection)?;}
+        },
+        maho_ext_api::AgentSessionEvent::AgentEnd{abort_source:Some(source),..}=>{
+            let source=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"};
+            *last_abort_source.lock().unwrap_or_else(std::sync::PoisonError::into_inner)=Some((session.session_id(),source));
+        },
+        _=>{},
+    }
+    Ok(record)
+}
+fn current_abort_source(session:&AgentSession,last_abort_source:Option<&LastAbortSource>)->Option<&'static str>{
+    let stored=last_abort_source?.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()?;
+    (stored.0==session.session_id()).then_some(stored.1)
+}
 type ActiveLogins=std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String,maho_ai::utils::abort::AbortController>>>;
 pub async fn handle_input_line(session:&AgentSession,line:&str)->Result<Option<String>,serde_json::Error>{
     handle_input_line_with_sink(session,line,None).await
 }
 pub async fn handle_input_line_with_sink(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>)->Result<Option<String>,serde_json::Error>{
-    handle_input_line_with_login_state(session,line,sink,None,None).await
+    handle_input_line_with_login_state(session,line,sink,None,None,None).await
 }
-async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Result<Option<String>,serde_json::Error>{
+/// `handle_input_line_with_sink` for a connection that tracks `lastAbortSource` for `get_state`.
+pub async fn handle_input_line_with_abort_source(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,last_abort_source:&LastAbortSource)->Result<Option<String>,serde_json::Error>{
+    handle_input_line_with_login_state(session,line,sink,None,None,Some(last_abort_source)).await
+}
+async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Result<Option<String>,serde_json::Error>{
     let parsed=serde_json::from_str::<serde_json::Value>(line);
     if parsed.is_err(){return Ok(Some(json_parse_error_response(line)));}
     let error=match &parsed{Err(_)=>None,Ok(value)=>crate::rpc_input_validation::rpc_command_shape_error(value).map(str::to_owned)};
@@ -124,7 +153,7 @@ async fn handle_input_line_with_login_state(session:&AgentSession,line:&str,sink
         // `handleInputLine` catch); a malformed field must not end the command loop.
         Err(error)=>{let kind=value["type"].as_str().unwrap_or_default();return crate::jsonl::serialize_json_line(&RpcResponse{id:value.get("id").and_then(serde_json::Value::as_str).map(str::to_owned),record_type:ResponseRecordType::Response,command:kind.into(),session_id:value.get("sessionId").and_then(serde_json::Value::as_str).map(str::to_owned),result:RpcResponseResult::Error{error:error.to_string(),error_code:None,error_data:None}}).map(Some);},
     };
-    handle_session_command_with_sink(session,&command,sink,active_logins,ui).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
+    handle_session_command_with_sink(session,&command,sink,active_logins,ui,last_abort_source).await.map(|response|crate::jsonl::serialize_json_line(&response)).transpose()
 }
 /// The wire shape of one remembered model entry: the model plus its remembered thinking
 /// level/selection and service tier (senpi's `RpcSessionModelEntry` spread).
@@ -185,7 +214,7 @@ pub fn build_rpc_session_state(session:&AgentSession,last_abort_source:Option<&s
     state
 }
 pub async fn handle_session_command(session:&AgentSession,command:&RpcCommand)->Option<RpcResponse>{
-    handle_session_command_with_sink(session,command,None,None,None).await
+    handle_session_command_with_sink(session,command,None,None,None,None).await
 }
 fn edit_response(session:&AgentSession,result:Result<maho_core::agent_session::AssistantEditResult,String>,not_persisted:&str)->Result<Option<serde_json::Value>,String>{
     let result=result?;
@@ -217,7 +246,7 @@ fn reload_veto_json(decision:&maho_ext_api::ReloadVetoDecision)->serde_json::Val
     if let Some(reason)=&decision.reason{value["reason"]=reason.clone().into();}
     value
 }
-async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>)->Option<RpcResponse>{
+async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcCommand,sink:Option<RpcRecordSink>,active_logins:Option<ActiveLogins>,ui:Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,last_abort_source:Option<&LastAbortSource>)->Option<RpcResponse>{
     let (kind,result)=match &command.body{
         RpcCommandBody::Prompt{message,images,streaming_behavior,thinking_level,session_title_prompt,expand_prompt_templates}=>{
             let options=(||{
@@ -476,7 +505,7 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             let result=session.model_registry().remove_credential_account(provider,name,&session.agent_dir()).await.map(|()|None);
             ("account_remove",result)
         },
-        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,None)))),
+        RpcCommandBody::GetState=>("get_state",Ok(Some(build_rpc_session_state(session,current_abort_source(session,last_abort_source))))),
         RpcCommandBody::GetTree => {
             fn tree_node(node: maho_core::session_manager::SessionTreeNode) -> serde_json::Value {
                 let mut value = serde_json::json!({"entry":node.entry,"children":node.children.into_iter().map(tree_node).collect::<Vec<_>>()});
@@ -676,6 +705,7 @@ pub struct RpcConnectionHandler{
     active_logins:ActiveLogins,
     loaded_surfaces_subscription: std::sync::Mutex<Option<maho_ext_api::BusSubscription>>,
     loaded_surfaces_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) last_abort_source:LastAbortSource,
 }
 impl RpcConnectionHandler{
     /// Build a handler over `session` and install the RPC extension UI on it.
@@ -712,7 +742,7 @@ impl RpcConnectionHandler{
                 if changed { inventory_out(serde_json::json!({"type":"loaded_surfaces_changed"})); }
             }
         });
-        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task))}
+        Self{session,ui,pending,questions,shutdown_requested,active_logins:Default::default(),loaded_surfaces_subscription:std::sync::Mutex::new(loaded_surfaces_subscription),loaded_surfaces_task:tokio::sync::Mutex::new(Some(loaded_surfaces_task)),last_abort_source:Default::default()}
     }
     pub fn ui(&self)->&std::sync::Arc<RpcExtensionUi>{&self.ui}
     /// Feed one inbound JSONL line: a UI response settles a pending dialog; anything else is a command.
@@ -724,7 +754,7 @@ impl RpcConnectionHandler{
                 crate::connection_question_bridge::QuestionReply::Incomplete=>{},crate::connection_question_bridge::QuestionReply::Unknown=>{self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).resolve(value);}}
             return Ok(None);
         }
-        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone())).await
+        handle_input_line_with_login_state(&self.session,line,Some(self.ui.out.clone()),Some(self.active_logins.clone()),Some(self.ui.clone()),Some(&self.last_abort_source)).await
     }
     fn out_record(&self,record:serde_json::Value){(self.ui.out)(record);}
     pub fn is_shutdown_requested(&self)->bool{self.shutdown_requested.load(std::sync::atomic::Ordering::SeqCst)}
@@ -856,10 +886,21 @@ mod new_session_tests{
         let records=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));let observed=records.clone();
         let sink:RpcRecordSink=std::sync::Arc::new(move|record|observed.lock().unwrap().push(record));
         let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"bash","command":"printf rpc","sessionId":"route"})).unwrap();
-        let response=serde_json::to_value(handle_session_command_with_sink(&session(),&command,Some(sink),None,None).await.unwrap()).unwrap();
+        let response=serde_json::to_value(handle_session_command_with_sink(&session(),&command,Some(sink),None,None,None).await.unwrap()).unwrap();
         assert_eq!(response["success"],true);
         let kinds=records.lock().unwrap().iter().filter_map(|record|record["type"].as_str().map(str::to_owned)).filter(|kind|kind.starts_with("bash_")&&kind!="bash_execution_update").collect::<Vec<_>>();
         assert_eq!(kinds,["bash_start","bash_end"]);
+    }
+    #[tokio::test]
+    async fn agent_end_records_abort_source_for_get_state_and_omits_aborted_when_false(){
+        let session=session();let last:LastAbortSource=Default::default();
+        let clean=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:false,will_retry:false,abort_source:None},&last).unwrap();
+        assert!(clean.get("aborted").is_none());
+        let aborted=rpc_session_event_record(&session,&maho_ext_api::AgentSessionEvent::AgentEnd{messages:vec![],aborted:true,will_retry:false,abort_source:Some(maho_ext_api::AbortSource::User)},&last).unwrap();
+        assert_eq!(aborted["aborted"],true); assert_eq!(aborted["abortSource"],"user");
+        let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"get_state"})).unwrap();
+        let state=serde_json::to_value(handle_session_command_with_sink(&session,&command,None,None,None,Some(&last)).await.unwrap()).unwrap();
+        assert_eq!(state["data"]["lastAbortSource"],"user");
     }
     #[tokio::test]
     async fn get_loaded_surfaces_dispatches_inventory(){
