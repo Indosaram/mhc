@@ -5142,7 +5142,6 @@ name = "maho-senpi-task"
 version = "0.0.0"
 dependencies = [
  "chrono",
- "fancy-regex",
  "libc",
  "maho-ai",
  "maho-delegate-core",
