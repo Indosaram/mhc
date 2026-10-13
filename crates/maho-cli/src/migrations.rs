@@ -3,6 +3,12 @@ use std::path::Path;
 use serde_json::{Map, Value};
 pub struct MigrationResult { pub migrated_auth_providers: Vec<String>, pub deprecation_warnings: Vec<String> }
 pub fn run_migrations(cwd: &Path, home: &Path, agent: &Path) -> std::io::Result<MigrationResult> {
+    run_migrations_with_lock(cwd,home,agent,true)
+}
+pub fn run_migrations_with_lock(cwd: &Path, home: &Path, agent: &Path, acquire_lock:bool) -> std::io::Result<MigrationResult> {
+    if !acquire_lock {
+        return Ok(MigrationResult{migrated_auth_providers:Vec::new(),deprecation_warnings:Vec::new()});
+    }
     if maho_core::config::config_flat_layout() {
         let migration = crate::brand_dir_migration::migrate_engine_state_to_brand_dir(
             &home.join(".senpi/agent"), &home.join(maho_core::config::config_dir_name()),

@@ -32,9 +32,9 @@ impl ModelConfig {
         Self { providers, disabled_providers: config.disabled_providers.unwrap_or_default().iter().map(|id| normalize_provider_id(id)).collect(), ..Self::default() }
     }
 
-    fn parse_and_migrate(content: &str, path: &Path) -> Self {
+    fn parse_and_migrate(content: &str, path: &Path, allow_migration: bool) -> Self {
         let mut config = Self::parse(content, &path.to_string_lossy());
-        if config.error.is_some() { return config; }
+        if config.error.is_some() || !allow_migration { return config; }
         if let ModelsJsonMigration::Failed { renamed, reason } = migrate_models_json_provider_ids(path, content) {
             config.warnings.push(format!("models.json uses renamed provider ids ({}) and could not be updated automatically: {reason}. They still work, but update the file to the new ids.", renamed.join(", ")));
         }
@@ -42,18 +42,26 @@ impl ModelConfig {
     }
 
     pub fn load_sync(path: Option<&Path>) -> Self {
+        Self::load_sync_with_migration(path, true)
+    }
+
+    pub fn load_sync_with_migration(path: Option<&Path>, allow_migration: bool) -> Self {
         let Some(path) = path else { return Self::default(); };
         match std::fs::read_to_string(path) {
-            Ok(content) => Self::parse_and_migrate(&content, path),
+            Ok(content) => Self::parse_and_migrate(&content, path, allow_migration),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => Self { error: Some(format!("Failed to load models.json: {error}\n\nFile: {}", path.display())), ..Self::default() },
         }
     }
 
     pub async fn load(path: Option<&Path>) -> Self {
+        Self::load_with_migration(path, true).await
+    }
+
+    pub async fn load_with_migration(path: Option<&Path>, allow_migration: bool) -> Self {
         let Some(path) = path else { return Self::default(); };
         match tokio::fs::read_to_string(path).await {
-            Ok(content) => Self::parse_and_migrate(&content, path),
+            Ok(content) => Self::parse_and_migrate(&content, path, allow_migration),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => Self { error: Some(format!("Failed to load models.json: {error}\n\nFile: {}", path.display())), ..Self::default() },
         }

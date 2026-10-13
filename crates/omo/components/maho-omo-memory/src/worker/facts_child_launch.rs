@@ -10,8 +10,7 @@ pub async fn launch_facts_model_chain(cache:&mut ModelPreflight,input:FactsChild
     let options=&input.options;
     resolve_and_preflight_memory_launch(cache,MemoryLaunchPreflightInput{first:ReflectionModelCandidate{model:model.clone(),thinking:thinking.clone(), load_extensions: None },rest:fallbacks,launch:input.launch,env:input.env,env_flag:"SENPI_MEMORY_FACTS",config_sources:input.config_sources,surface_name:"facts",now_ms:options.launched_at},warn,|candidate,attempt,next_attempt|async move {
         let args=prepare_facts_spawn(PrepareFactsSpawnInput{run_id:input.run_id,run_dir:input.run_dir,payload:input.payload,model:&candidate.model,thinking:candidate.thinking.as_deref(),load_extensions:candidate.load_extensions,attempt:Some(u32::try_from(attempt).map_err(|error|error.to_string())?),hard_deadline_at:Some(input.hard_deadline_at),next_attempt,env:input.env.clone(),launch:input.launch.clone(),now_ms:options.launched_at as f64}).map_err(|error|error.to_string())?;
-        let args=match input.sandbox{Some(sandbox)=>sandbox(args)?,None=>args};
-        run_facts_child(&args,FactsChildOptions{termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,batch_id:options.batch_id,queued:options.queued,launched_at:options.launched_at}).await
+        run_facts_child(args,input.sandbox,FactsChildOptions{termination_grace_ms:options.termination_grace_ms,max_output_bytes:options.max_output_bytes,supervisor_command:options.supervisor_command,supervisor_args:options.supervisor_args,batch_id:options.batch_id,queued:options.queued,launched_at:options.launched_at}).await
     }).await
 }
 

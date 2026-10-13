@@ -231,13 +231,11 @@ impl FileAuthStorageBackend {
     pub fn with_lock<T>(&self, action: impl FnOnce(Option<&str>) -> Result<(T, Option<String>), String>) -> Result<T, String> {
         self.ensure_parent_dir()?;
         self.ensure_file_exists()?;
-        let _guard = acquire_lock_sync(&self.auth_path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+        let mut guard = acquire_lock_sync(&self.auth_path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let current = std::fs::read_to_string(&self.auth_path).ok();
         let (result, next) = action(current.as_deref())?;
-        if let Some(next) = next {
-            write_auth_file(&self.auth_path, &next)?;
-        }
+        if let Some(next) = next && !guard.broker_write(&next)? { write_auth_file(&self.auth_path, &next)?; }
         Ok(result)
     }
 
@@ -247,13 +245,17 @@ impl FileAuthStorageBackend {
     ) -> Result<T, String> {
         self.ensure_parent_dir()?;
         self.ensure_file_exists()?;
-        let _guard = acquire_lock_async(&self.auth_path, FILE_STORAGE_LOCK_RETRY_BUDGET_MS)
+        let mut guard = acquire_lock_async(&self.auth_path, FILE_STORAGE_LOCK_RETRY_BUDGET_MS)
             .await
             .map_err(|error: CredentialStoreBusyError| error.message())?;
         let current = std::fs::read_to_string(&self.auth_path).ok();
         let (result, next) = action(current.as_deref()).await?;
         if let Some(next) = next {
-            write_auth_file(&self.auth_path, &next)?;
+            let path = self.auth_path.clone();
+            tokio::task::spawn_blocking(move || {
+                if !guard.broker_write(&next)? { write_auth_file(&path, &next)?; }
+                Ok::<(), String>(())
+            }).await.map_err(|error| error.to_string())??;
         }
         Ok(result)
     }
@@ -472,6 +474,14 @@ impl AuthStorage {
         };
         storage.reload();
         storage
+    }
+
+    pub fn prepare_facts_auth_file(auth_path: &str) -> Result<(), String> {
+        let backend = FileAuthStorageBackend::new(auth_path);
+        backend.ensure_parent_dir()?;
+        let _guard = acquire_lock_sync(&backend.auth_path, FILE_STORAGE_SYNC_LOCK_BUDGET_MS)
+            .map_err(|error: CredentialStoreBusyError| error.message())?;
+        backend.ensure_file_exists()
     }
 
     pub fn create_default() -> Self {

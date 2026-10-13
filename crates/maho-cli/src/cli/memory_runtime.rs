@@ -326,8 +326,10 @@ impl MemoryRuntime {
             sandbox: Some(Arc::new(move |args| {
                 let settings = sandbox_host.settings()?;
                 let reflection = maho_omo_memory::reflection_settings::resolve_agent_reflection_settings(Some(&settings), &sandbox_identity)?;
+                let broker_endpoint=args.env.get("MAHO_FACTS_LOCK_BROKER").ok_or("facts broker endpoint missing")?;
+                let broker_dir=std::path::Path::new(broker_endpoint).parent().ok_or("facts broker directory missing")?.to_owned();
                 maho_omo_memory::sandbox::apply_facts_sandbox(args, maho_omo_memory::sandbox::FactsSpawnSandboxInput {
-                    policy: sandbox_policy(&reflection)?, agent_dir: &sandbox_host.host.agent_dir, foreign_roots: &[], platform: platform(),
+                    policy: sandbox_policy(&reflection)?, agent_dir: &sandbox_host.host.agent_dir, broker_dir: &broker_dir, foreign_roots: &[], platform: platform(),
                 }, sandbox_host.host.which.as_ref(), |message, _| (sandbox_host.host.warn)(message)).map_err(|error| error.to_string())
             })), warn: self.host.warn.clone(),
         };

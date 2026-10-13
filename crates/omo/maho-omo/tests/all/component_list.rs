@@ -19,19 +19,22 @@ fn slot(name: &'static str) -> OmoSenpiComponent {
 
 #[test]
 fn the_registration_order_is_the_full_upstream_list() {
-    let components = omo_components(slot("task"), slot("memory"), &options());
-
-    let names: Vec<&str> = components.iter().map(|component| component.name).collect();
-    assert_eq!(names, omo_component_names());
-    assert_eq!(names.len(), 24);
-    assert!(!names.contains(&"native-badge"));
-    assert_eq!(names[17], "x-search");
-    assert_eq!(names[18], "browser-bridge");
-    assert_eq!(names[19], "lsp");
-    assert_eq!(names[20], "task");
-    assert_eq!(names[21], "memory");
-    assert_eq!(names[22], "gateway");
-    assert_eq!(names[23], "config-watch");
+    for facts_read_only_bootstrap in [false, true] {
+        let mut options = options();
+        options.facts_read_only_bootstrap = facts_read_only_bootstrap;
+        let components = omo_components(slot("task"), slot("memory"), &options);
+        let names: Vec<&str> = components.iter().map(|component| component.name).collect();
+        assert_eq!(names, omo_component_names());
+        assert_eq!(names.len(), 24);
+        assert!(!names.contains(&"native-badge"));
+        assert_eq!(names[17], "x-search");
+        assert_eq!(names[18], "browser-bridge");
+        assert_eq!(names[19], "lsp");
+        assert_eq!(names[20], "task");
+        assert_eq!(names[21], "memory");
+        assert_eq!(names[22], "gateway");
+        assert_eq!(names[23], "config-watch");
+    }
 }
 
 #[test]
@@ -76,6 +79,7 @@ pub(crate) fn the_registered_loop_component_never_reports_itself_inactive() {
         skills_root: std::env::temp_dir().join("omo-skills"),
         state_dir: std::env::temp_dir().join("omo-state"),
         env: std::collections::BTreeMap::new(),
+        facts_read_only_bootstrap: false,
     };
     let loop_component = omo_components(slot("task"), slot("memory"), &loop_options)
         .into_iter()

@@ -45,7 +45,9 @@ impl OmoMount {
         // per-project hashes INSIDE), so a project-local dir would be a divergence. Do not override it
         // with `cwd`; `..Default::default()` keeps the library's own resolution.
         Ok(Self::shipped(task, memory, &maho_omo::OmoComponentOptions {
-            skills_root, env: environment, ..Default::default()
+            skills_root,
+            facts_read_only_bootstrap: environment.get("MAHO_FACTS_READ_ONLY_BOOTSTRAP").is_some_and(|value|value=="1")&&maho_core::lockfile_policy::facts_lock_broker_enabled(),
+            env: environment, ..Default::default()
         }, OmoRuntimeOptions {
             logger: Some(Arc::new(maho_omo::logger::SinkLogger::new(Arc::new(|level, message, details| {
                 let diagnostic = match details {

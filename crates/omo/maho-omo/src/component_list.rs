@@ -39,6 +39,7 @@ pub struct OmoComponentOptions {
     pub skills_root: PathBuf,
     pub state_dir: PathBuf,
     pub env: BTreeMap<String, String>,
+    pub facts_read_only_bootstrap: bool,
 }
 
 impl Default for OmoComponentOptions {
@@ -49,6 +50,7 @@ impl Default for OmoComponentOptions {
             skills_root: builtin_skills_root(),
             state_dir: maho_omo_telemetry::product_identity::get_omo_native_state_dir(&telemetry_env),
             env,
+            facts_read_only_bootstrap: false,
         }
     }
 }
@@ -109,7 +111,10 @@ pub fn omo_components(
 ) -> Vec<OmoSenpiComponent> {
     let skills_root = options.skills_root.clone();
     let mut components = Vec::with_capacity(24);
-    components.push(component("config-startup", maho_omo_config_startup::ConfigStartupComponent::default()));
+    let config_startup = if options.facts_read_only_bootstrap {
+        maho_omo_config_startup::ConfigStartupComponent { run_migration: Some(std::sync::Arc::new(|_| Default::default())), load_config: None }
+    } else { maho_omo_config_startup::ConfigStartupComponent::default() };
+    components.push(component("config-startup", config_startup));
     components.push(component("model-profile", maho_omo_model_profile::ModelProfileComponent::new(
         maho_omo_model_profile::ModelProfileComponentOptions { load_config: None, env: Some(options.env.iter().map(|(key, value)| (key.clone(), value.clone())).collect()) })));
     components.push(component("bundled-skills", maho_omo_bundled_skills::BundledSkillsComponent::new(
