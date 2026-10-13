@@ -94,3 +94,40 @@ async fn initialized_core_routes_user_input_responses_and_reports_unknown_ids() 
     assert_eq!(bridge.lock().unwrap().pending_count(),0);
     core.remove_connection("qa");
 }
+
+#[tokio::test]
+async fn non_stdio_connection_is_closed_as_slow_client_at_the_pending_notification_cap() {
+    use maho_server::app_server::server_core::OUTBOUND_QUEUE_LIMIT;
+    let mut core = ServerCore::new("/tmp/home".into(), "1".into(), "Linux".into(), "test".into(), "x64".into(), "linux".into());
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let all_pending = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let (count, ready, gate, close_flag) = (started.clone(), all_pending.clone(), release.clone(), closed.clone());
+    core.add_connection_input(ConnectionInput { id:"ws".into(), transport_kind:TransportKind::WebSocket,
+        send:Arc::new(move |message| {
+            let (count, ready, gate) = (count.clone(), ready.clone(), gate.clone());
+            Box::pin(async move {
+                if message.get("method").is_some() {
+                    if count.fetch_add(1, Ordering::SeqCst) + 1 == OUTBOUND_QUEUE_LIMIT { ready.notify_one(); }
+                    gate.notified().await;
+                }
+                Ok(())
+            })
+        }),
+        close:Some(Arc::new(move |reason| { assert_eq!(reason, "slow-client"); close_flag.store(true, Ordering::SeqCst); })) });
+    core.receive("ws", classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    let core = Arc::new(core);
+    let waiting = all_pending.notified();
+    let mut tasks = Vec::new();
+    for _ in 0..OUTBOUND_QUEUE_LIMIT {
+        let core = core.clone();
+        tasks.push(tokio::spawn(async move { core.send_notification_to_connection("ws", json!({"method":"turn/started"}), 1).await }));
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.expect("every notification pending");
+    assert!(!closed.load(Ordering::SeqCst));
+    core.send_notification_to_connection("ws", json!({"method":"turn/started"}), 2).await.unwrap();
+    assert!(closed.load(Ordering::SeqCst));
+    release.notify_waiters();
+    for task in tasks { task.abort(); }
+}
