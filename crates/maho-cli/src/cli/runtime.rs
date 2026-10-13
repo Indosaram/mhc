@@ -42,6 +42,12 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
     if mode == AppMode::Rpc && parsed.multi_session {
+        // senpi main.ts:1119 `resolveSessionRuntime`: stdio hosts default to one isolated worker per
+        // session. The native host has no worker session registry yet, so a worker runtime
+        // degrades to the in-process registry; say so rather than silently ignoring the request.
+        if super::args::resolve_session_runtime(&parsed) == super::args::SessionRuntime::Worker {
+            maho_core::output_guard::maho_write_stderr("Warning: --session-runtime worker is not supported by the native host; sessions run in-process.\n");
+        }
         // senpi main.ts:1112-1154: a multi-session RPC host serves every session in this process,
         // built from the CLI configuration, instead of the single-session command stream. Like
         // upstream it starts only after the stdout takeover and the migrations above, and never
