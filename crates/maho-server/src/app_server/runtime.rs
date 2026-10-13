@@ -97,6 +97,15 @@ fn bind_app_server_session_factory(inner: SessionFactory, sender: ThreadNotifica
     })
 }
 
+/// senpi `createMcpWireStatusAdapter` + `bindLiveUpdates`: the session-owned MCP inventory of a thread.
+async fn register_mcp_inventory(inventory: &Mutex<super::mcp_wire_status::McpWireStatusRegistry>, thread_id: &str, session: &maho_core::agent_session::AgentSession) {
+    if inventory.lock().await.resolve(Some(thread_id)).is_some() {return;}
+    let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
+    let handler_holder = holder.clone();
+    let subscription = session.bind_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
+    if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
+    inventory.lock().await.register_thread(thread_id.to_owned(),holder);
+}
 fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str, JsonRpcError> {
     params[key].as_str().filter(|value| !value.is_empty()).ok_or_else(|| JsonRpcError::new(-32603, format!("Invalid params: {key} is required")))
 }
@@ -169,6 +178,7 @@ impl AppServerRuntime {
         super::skills::register_skill_methods_with_loader(&mut core.registry, agent_dir, cwd.clone(), threads.clone(), super::skills::resource_skill_loader(Vec::new()));
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let lifecycle_slot=Arc::new(std::sync::OnceLock::<Arc<super::handlers::ThreadLifecycleController>>::new());
+        let turn_engine_slot=Arc::new(std::sync::OnceLock::<super::turns::TurnEngine>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
         let send_recipients = recipients.clone();
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
@@ -180,6 +190,23 @@ impl AppServerRuntime {
         let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
         let user_input = Arc::new(std::sync::Mutex::new(super::user_input_bridge::UserInputBridge::new(send)));
         core.approvals = Some(approvals.clone());core.user_input = Some(user_input.clone());
+        {
+            let (ui_approvals,ui_input,ui_dir) = (approvals.clone(),user_input.clone(),ui_agent_dir.clone());
+            let ui_factory: super::thread_registry::SessionUiFactory = Arc::new(move |thread_id: &str| -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
+                let turn_thread_id = thread_id.to_owned();
+                super::approval_ui_context::AppServerUiContext::new(ui_approvals.clone(),ui_input.clone(),thread_id.to_owned(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_dir))
+                    .map(|ui| Arc::new(ui) as Arc<dyn maho_ext_api::ExtensionUi>).map_err(|error| eprintln!("app-server UI context: {}",error.message)).ok()
+            });
+            let binder_inventory = mcp_inventory.clone();
+            let binder: super::thread_registry::SessionBinder = Arc::new(move |thread_id: String, session: maho_core::agent_session::AgentSession, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>| -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                let inventory = binder_inventory.clone();
+                Box::pin(async move {
+                    if let Some(ui) = ui && let Err(error) = session.rebind_extension_ui(ui).await {eprintln!("app-server UI binding: {error}");}
+                    register_mcp_inventory(&inventory,&thread_id,&session).await;
+                })
+            });
+            threads.bind_sessions(ui_factory,binder);
+        }
         let fuzzy_core = notification_core.clone();
         let fuzzy_search = super::fuzzy_search_service::FuzzyFileSearchService::new(Arc::new(move |notification| {
             if let Some(core) = fuzzy_core.get().and_then(std::sync::Weak::upgrade) {tokio::spawn(async move {if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fuzzy search notification: {}",error.message);}});}
@@ -197,14 +224,14 @@ impl AppServerRuntime {
         for method in ["thread/start", "thread/resume", "thread/read", "thread/unsubscribe", "thread/loaded/list", "thread/name/set"] {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
-            let lifecycle_slot=lifecycle_slot.clone();
+            let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register(method.into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let cwd = cwd.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
-                let lifecycle_slot=lifecycle_slot.clone();
+                let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
                 let ui_agent_dir = ui_agent_dir.clone();
@@ -229,6 +256,7 @@ impl AppServerRuntime {
                         // Pinned `resume`: `ThreadNotFoundError` surfaces as `no rollout found for thread id`.
                         threads.resume_thread(id).await.map_err(|error| if method == "thread/resume" && error == format!("Thread not found: {id}") {format!("no rollout found for thread id {id}")} else {error})
                     }.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    if requested_name.is_none() && let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(name) = requested_name {
                         entry.session.set_session_name(&name);
@@ -266,18 +294,12 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
                         }
-                        // Bind the live connection UI into the session runner first, then the MCP
-                        // inventory — the pinned `createBoundAppServerSession` order (bindExtensions
-                        // then createMcpWireStatusAdapter), so the inventory registration is a strict
-                        // post-rebind completion anchor.
-                        let turn_thread_id = thread_id.clone();
-                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                        // Sessions are bound at creation (UI, then MCP inventory); an entry whose
+                        // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
-                            let handler_holder = holder.clone();
-                            let subscription = mcp_session.bind_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
-                            if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
-                            mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                            let turn_thread_id = thread_id.clone();
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
                     Ok(response)
@@ -287,14 +309,14 @@ impl AppServerRuntime {
         {
             let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
             let notification_core = notification_core.clone();
-            let lifecycle_slot=lifecycle_slot.clone();
+            let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
             let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
             let mcp_inventory = mcp_inventory.clone();
             let ui_agent_dir = ui_agent_dir.clone();
             core.registry.register("thread/fork".into(), MethodRegistration { requires_init: true, experimental: false, scope: MethodScope::Thread, handler: Arc::new(move |context| {
                 let threads = threads.clone(); let turn_log = turn_log.clone(); let version = version.clone();
                 let notification_core = notification_core.clone();
-                let lifecycle_slot=lifecycle_slot.clone();
+                let lifecycle_slot=lifecycle_slot.clone();let turn_engine_slot=turn_engine_slot.clone();
                 let recipients = recipients.clone();let approvals = approvals.clone();let user_input = user_input.clone();
                 let mcp_inventory = mcp_inventory.clone();
                 let ui_agent_dir = ui_agent_dir.clone();
@@ -303,6 +325,7 @@ impl AppServerRuntime {
                     let source = required_string(params,"threadId")?.to_owned();
                     let requested_cwd = params["cwd"].as_str().map(str::to_owned);
                     let entry = threads.fork_thread(&source,requested_cwd).await.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    if let Some(engine) = turn_engine_slot.get() { engine.observe_thread(&entry).await; }
                     let mut entry = entry.lock().await;
                     if let Some(lifecycle)=lifecycle_slot.get() {lifecycle.clear_idle_timer(&entry.id);}
                     entry.subscribers.insert(context.connection.id.clone());
@@ -329,18 +352,12 @@ impl AppServerRuntime {
                             if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                             for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
                         }
-                        // Bind the live connection UI into the session runner first, then the MCP
-                        // inventory — the pinned `createBoundAppServerSession` order (bindExtensions
-                        // then createMcpWireStatusAdapter), so the inventory registration is a strict
-                        // post-rebind completion anchor.
-                        let turn_thread_id = thread_id.clone();
-                        if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                        // Sessions are bound at creation (UI, then MCP inventory); an entry whose
+                        // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let holder = Arc::new(std::sync::Mutex::new(super::mcp_wire_status::McpWireStatusAdapter::new(Default::default())));
-                            let handler_holder = holder.clone();
-                            let subscription = mcp_session.bind_mcp_wire_status::<maho_ext_mcp::service_types::McpWireStatusSnapshot>(Arc::new(move |snapshot| {handler_holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).update(snapshot.clone());})).await;
-                            if let Some(subscription) = subscription {holder.lock().unwrap_or_else(std::sync::PoisonError::into_inner).bind_live_updates(move || drop(subscription));}
-                            mcp_inventory.lock().await.register_thread(thread_id.clone(),holder);
+                            let turn_thread_id = thread_id.clone();
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
                     Ok(response)
@@ -361,7 +378,8 @@ impl AppServerRuntime {
         if thread_notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("thread notification core is initialized once");}
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
-        super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        let turn_engine = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        if turn_engine_slot.set(turn_engine).is_err() {unreachable!("turn engine initialized once");}
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));

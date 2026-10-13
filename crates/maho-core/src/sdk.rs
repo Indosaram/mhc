@@ -56,6 +56,8 @@ pub struct CreateAgentSessionOptions {
     /// The first `bind_extensions` call's bindings, built over the created session (pinned
     /// `createBoundAppServerSession` binding a mode's handlers before `session_start`).
     pub extension_bindings: Option<crate::agent_session::ExtensionBindingsFactory>,
+    /// senpi `bindExtensions({ uiContext })`: the UI a mode binds before `session_start` runs.
+    pub extension_ui: Option<std::sync::Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// `noTools` suppression mode.
@@ -331,7 +333,8 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
             } };
         session.set_extension_runner(runner).await;
         if !options.defer_extension_start {
-            let bindings = options.extension_bindings.as_ref().map(|factory| factory(&session)).unwrap_or_default();
+            let mut bindings = options.extension_bindings.as_ref().map(|factory| factory(&session)).unwrap_or_default();
+            if bindings.ui_context.is_none() { bindings.ui_context = options.extension_ui.clone(); }
             session.bind_extensions(bindings).await;
         }
         drop(construction.session.take());
