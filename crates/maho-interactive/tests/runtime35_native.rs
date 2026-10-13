@@ -620,6 +620,62 @@ fn question_answer_history_uses_existing_collapsed_answer_chip() {
 }
 
 #[tokio::test]
+async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/arminsayshi", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("ARMIN SAYS HI"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[tokio::test]
+async fn demented_delves_command_renders_the_earendil_announcement() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/dementedelves", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("pi has joined Earendil"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[test]
+fn startup_model_warnings_flag_a_risky_main_model() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode_with_provider(None, "qwen-cloud", "qwen-1", false);
+    mode.show_startup_model_warnings();
+    assert!(mode.render(80).join("\n").contains("Risky model warning"));
+    let (mut safe, _safe_directory) = native_mode();
+    safe.show_startup_model_warnings();
+    assert!(!safe.render(80).join("\n").contains("Risky model warning"));
+}
+
+fn continuity_assistant(kind: &str) -> maho_agent::types::AgentMessage {
+    serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"text","text":"reply"}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":0,
+        "diagnostics":[{"type":"claude_sdk_oauth_session_continuity","timestamp":0,"details":{"kind":kind}}]})).expect("message")
+}
+
+#[test]
+fn continuity_notice_renders_after_a_live_assistant_message_end() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message = continuity_assistant("flatten");
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message: message.clone() });
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageEnd { message });
+    assert!(mode.render(80).join("\n").contains("Session continuity lost - resent the full conversation"));
+}
+
+#[test]
+fn continuity_notice_is_rederived_on_history_replay_and_rebuild_resets_suppression() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.add_history_message(&continuity_assistant("disabled"));
+    mode.add_history_message(&continuity_assistant("disabled"));
+    assert_eq!(mode.render(80).join("\n").matches("Session continuity disabled").count(), 1, "the disabled notice renders once per transcript");
+    mode.rebuild_history();
+    mode.add_history_message(&continuity_assistant("disabled"));
+    assert_eq!(mode.render(80).join("\n").matches("Session continuity disabled").count(), 1, "rebuild resets the tracker so the notice reappears");
+}
+
+#[tokio::test]
 async fn new_command_replaces_native_session_and_clears_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
