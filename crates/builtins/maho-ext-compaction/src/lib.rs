@@ -252,7 +252,7 @@ impl maho_ext_api::Extension for CompactionExtension {
             let context_lane = std::sync::Arc::clone(&lane);
             api.on(maho_ext_api::EventKind::Context, std::sync::Arc::new(move |event, context| {
                 let result = (|| {
-                    let maho_ext_api::ExtensionEvent::Context { messages } = event else { return Ok(maho_ext_api::EventResult::None); };
+                    let maho_ext_api::ExtensionEvent::Context { messages, entry_ids } = event else { return Ok(maho_ext_api::EventResult::None); };
                     let lane_owns_compaction = lane_policy::live_disables_senpi_compaction(&context_lane, context);
                     let usage = context.get_context_usage()?;
                     let settings = extension_wiring::live_settings(context)?;
@@ -262,8 +262,9 @@ impl maho_ext_api::Extension for CompactionExtension {
                     let breaker_fallback = !lane_owns_compaction && circuit_breaker::is_tripped(&state, chrono::Utc::now().timestamp_millis() as f64)
                         && tokens.is_some_and(|tokens|tokens >= window as f64 * policy::compute_effective_threshold(window as f64, state.last_yield));
                     let raw = messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
+                    let branch_entries = speculative::branch_values(context);
                     let output = context_pipeline::build_compaction_context(context_pipeline::CompactionContextInput {
-                        messages: &raw, context_window: window,
+                        messages: &raw, entry_ids, model: context.model.as_ref(), branch_entries: &branch_entries, context_window: window,
                         prompt_context_window: extension_wiring::get_prompt_context_window(window as f64, context.model.as_ref().map(|model|model.max_tokens as f64)) as u64,
                         usage_tokens: tokens, provider_native_path: openai_remote_model::is_openai_remote_compaction_model(context.model.as_ref()),
                         tool_admission_enabled: settings.ideal.tool_admission_enabled != Some(false), breaker_fallback, lane_owns_compaction,
