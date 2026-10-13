@@ -227,3 +227,22 @@ async fn disconnect_releases_the_attachment_without_publishing_a_detach() {
     assert_eq!(host.latest_harness("session-1").await.unwrap().state.lock().await.attachment_release_count,1);
     test.server.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn unexpected_session_termination_publishes_a_detach_to_the_attached_client() {
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let test=create_test_server(TestServerOptions {host:Some(host.clone()),..Default::default()}).unwrap();
+    let id=test.server.server_id.clone();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(4);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    let serving=tokio::spawn(test.server.clone().serve(connection.clone(),inbound,signal));
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    sender.send(Ok(client_frame(json!({"type":"request","id":"a","target":{"serverId":id},"call":{"serviceId":"pi.session-management","member":"attach","args":["session-1"]}})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="response" && message["id"]=="a").await;
+    assert!(connection.frames().iter().any(|message|message["type"]=="attachment" && message["attachment"]["sessionId"]=="session-1"));
+    host.latest_harness("session-1").await.unwrap().terminate(ServerError::new("internal_error","session crashed")).await;
+    connection.wait_for(|message|message["type"]=="attachment" && message["attachment"].is_null()).await;
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
+    test.server.close().await.unwrap();
+}

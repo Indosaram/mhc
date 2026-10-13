@@ -1,6 +1,6 @@
 use super::{
     errors::ServerError,
-    types::{Context, Publisher, RoutedSessionAttachment, RoutedSessionHandle, ServerHost},
+    types::{Context, Publisher, RoutedSessionAttachment, RoutedSessionHandle, ServerFuture, ServerHost},
 };
 use serde_json::{Value, json};
 use std::{
@@ -14,6 +14,9 @@ use tokio::sync::{Mutex, RwLock, watch};
 
 /// Pinned `SessionRouterOptions.reportError`: router diagnostics go to the server's observer.
 pub type RouterErrorReporter = Arc<dyn Fn(ServerError) + Send + Sync>;
+/// Publishes `attachment:null` to the owning client after the router releases its attachment
+/// (pinned `clearAttachment` with publish=true).
+pub type DetachNotifier = Arc<dyn Fn() -> ServerFuture<'static, ()> + Send + Sync>;
 
 pub struct Attachment {
     pub target: Value,
@@ -23,8 +26,13 @@ pub struct Attachment {
     client_lock: RwLock<()>,
     released: AtomicBool,
     release_result: tokio::sync::OnceCell<Result<(),ServerError>>,
+    detach_notifier: std::sync::Mutex<Option<DetachNotifier>>,
 }
 impl Attachment {
+    /// Register the owning client's detach publisher for router-initiated releases.
+    pub fn set_detach_notifier(&self, notifier: DetachNotifier) {
+        *self.detach_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notifier);
+    }
     pub async fn invoke(
         &self,
         call: Value,
@@ -97,6 +105,7 @@ impl SessionRouter {
             client_lock: RwLock::new(()),
             released: AtomicBool::new(false),
             release_result: tokio::sync::OnceCell::new(),
+            detach_notifier: std::sync::Mutex::new(None),
         });
         let mut attachments = self.attachments.lock().await;
         if self.closing.load(Ordering::SeqCst) || !self.hosted.lock().await.get(session_id).is_some_and(|current|Arc::ptr_eq(current,&handle)) {
@@ -174,6 +183,13 @@ impl SessionRouter {
     /// Subscribe before triggering termination; the count increments once each watcher's
     /// invalidation (including a stale no-op) has fully processed. Test/monitor support.
     pub fn invalidation_events(&self) -> watch::Receiver<u64> { self.invalidations.subscribe() }
+    /// Tell the attachment's client it was detached; publish failures are reported.
+    async fn publish_detach(&self, attachment: &Attachment) {
+        let notifier = attachment.detach_notifier.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(notifier) = notifier && let Err(error) = notifier().await {
+            (self.report_error)(error);
+        }
+    }
     pub async fn remove(&self, session_id: &str) -> Result<(), ServerError> {
         if self.closing.load(Ordering::SeqCst) {
             return Err(ServerError::draining());
@@ -186,6 +202,7 @@ impl SessionRouter {
         let mut errors = Vec::new();
         for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
             if let Err(error) = lease.release().await { errors.push(error.message); }
+            self.publish_detach(&lease).await;
         }
         if let Some(handle) = handle && let Err(error) = handle.close().await {
             errors.push(error.message);
@@ -213,13 +230,14 @@ impl SessionRouter {
         if let Some(leases) = leases {
             for lease in leases.into_iter().filter_map(|lease| lease.upgrade()) {
                 if let Err(release) = lease.release().await { (self.report_error)(release); }
+                self.publish_detach(&lease).await;
             }
             if let Some(error) = error { (self.report_error)(error); }
         }
         self.invalidations.send_modify(|count| *count += 1);
     }
     async fn close_internal(&self) -> Result<(), ServerError> {
-        let _admissions=self.admissions.write().await;
+        let admissions=self.admissions.write().await;
         let attachments = std::mem::take(&mut *self.attachments.lock().await);
         let handles = std::mem::take(&mut *self.hosted.lock().await);
         let mut errors = Vec::new();
@@ -231,6 +249,12 @@ impl SessionRouter {
             if let Err(error) = result {
                 errors.push(error.message);
             }
+        }
+        // Publish after admissions reopen: a client attaching under its own presentation lock
+        // waits on admissions, and the publisher takes that same presentation lock.
+        drop(admissions);
+        for lease in &leases {
+            self.publish_detach(lease).await;
         }
         if errors.is_empty() {
             Ok(())
