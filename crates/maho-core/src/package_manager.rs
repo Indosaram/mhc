@@ -521,7 +521,7 @@ impl<'a> DefaultPackageManager<'a> {
         for attribute in attributes {
             let (program, args) = if cfg!(target_os = "macos") { ("xattr", vec!["-w".into(), (*attribute).into(), "1".into(), root.into()]) }
                 else { ("setfattr", vec!["-n".into(), (*attribute).into(), "-v".into(), "1".into(), root.into()]) };
-            if let Err(error) = self.runner.run_sync(self.command(program, args, None, true)) { eprintln!("Could not mark package storage ignored by cloud sync: {error}"); }
+            if let Err(error) = self.runner.run_sync(self.command(program, args, None, true)) { crate::output_guard::maho_write_stderr(&format!("Could not mark package storage ignored by cloud sync: {error}\n")); }
         }
         let manifest = join_path(root, "package.json");
         if !Path::new(&manifest).exists() { std::fs::write(manifest, "{\n  \"name\": \"pi-extensions\",\n  \"private\": true\n}")?; }
@@ -582,7 +582,7 @@ impl<'a> DefaultPackageManager<'a> {
             self.run("git", vec!["reset".into(), "--hard".into(), commit], Some(target), false).await?;
         }
         if let Err(error) = self.run("git", vec!["clean".into(), "-fdx".into()], Some(target), false).await {
-            if let Err(repair) = self.repair_git_dependencies(target).await { eprintln!("Failed to repair package dependencies: {repair}"); }
+            if let Err(repair) = self.repair_git_dependencies(target).await { crate::output_guard::maho_write_stderr(&format!("Failed to repair package dependencies: {repair}\n")); }
             return Err(error);
         }
         self.git_dependencies(target).await?;
@@ -598,7 +598,7 @@ impl<'a> DefaultPackageManager<'a> {
         {
             return Ok((vec!["fetch".into(), "--prune".into(), "--no-tags".into(), "origin".into(), format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")], "@{upstream}".into()));
         }
-        if let Err(error) = self.run("git", vec!["remote".into(), "set-head".into(), "origin".into(), "-a".into()], Some(target), false).await { eprintln!("Failed to refresh origin HEAD: {error}"); }
+        if let Err(error) = self.run("git", vec!["remote".into(), "set-head".into(), "origin".into(), "-a".into()], Some(target), false).await { crate::output_guard::maho_write_stderr(&format!("Failed to refresh origin HEAD: {error}\n")); }
         self.run("git", vec!["rev-parse".into(), "origin/HEAD".into()], Some(target), true).await?;
         let symbolic = self.run("git", vec!["symbolic-ref".into(), "refs/remotes/origin/HEAD".into()], Some(target), true).await.unwrap_or_default();
         let branch = symbolic.trim().strip_prefix("refs/remotes/origin/").unwrap_or("");
@@ -1223,7 +1223,7 @@ impl DefaultPackageManager<'_> {
                     } else if matches!(&parsed, ParsedSource::Git { reference: None, .. }) && resolved_scope == SourceScope::Temporary && !self.offline() {
                         self.emit(ProgressEventType::Start, ProgressAction::Pull, resolved_source, Some(format!("Refreshing {resolved_source}...")));
                         let result = self.install_parsed(&parsed, resolved_scope).await;
-                        if let Err(error) = self.finish_progress(ProgressAction::Pull, resolved_source, result) { eprintln!("Keeping cached temporary checkout: {error}"); }
+                        if let Err(error) = self.finish_progress(ProgressAction::Pull, resolved_source, result) { crate::output_guard::maho_write_stderr(&format!("Keeping cached temporary checkout: {error}\n")); }
                     }
                 }
             }
