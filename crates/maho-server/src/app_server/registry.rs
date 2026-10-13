@@ -42,6 +42,11 @@ impl RegistryConnection {
         for action in actions { tokio::task::yield_now().await; action().await; }
     }
 }
+tokio::task_local! {
+    /// Pinned `ServerCore.activeDispatch` (`AsyncLocalStorage`): the connection whose request is being
+    /// dispatched on this task, so events fired inside a handler defer until its response is sent.
+    pub static ACTIVE_DISPATCH: RegistryConnection;
+}
 #[derive(Clone)]
 pub struct HandlerContext {
     pub connection: RegistryConnection,
@@ -56,15 +61,16 @@ pub enum MethodScope {
     #[default]
     None,
 }
+#[derive(Clone)]
 pub struct MethodRegistration {
     pub handler: Handler,
     pub experimental: bool,
     pub requires_init: bool,
     pub scope: MethodScope,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MethodRegistry {
-    methods: BTreeMap<String, MethodRegistration>,
+    methods: Arc<BTreeMap<String, MethodRegistration>>,
 }
 pub type ExtensionThreadResolver=Arc<dyn Fn(&str)->Result<Arc<maho_ext_host::ExtensionRunner>,JsonRpcError>+Send+Sync>;
 pub fn register_extension_request_method(
@@ -107,7 +113,7 @@ pub fn register_extension_request_method(
 }
 impl MethodRegistry {
     pub fn register(&mut self, method: String, registration: MethodRegistration) {
-        self.methods.insert(method, registration);
+        Arc::make_mut(&mut self.methods).insert(method, registration);
     }
     pub async fn dispatch(&self, connection: RegistryConnection, request: Value) -> Value {
         let id = request["id"].clone();

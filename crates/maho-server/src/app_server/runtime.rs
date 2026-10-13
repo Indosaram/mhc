@@ -47,7 +47,8 @@ impl AppServerRuntime {
         let mcp_inventory = Arc::new(Mutex::new(super::mcp_wire_status::McpWireStatusRegistry::new(Some(process_inventory))));
         super::catalogs::register_catalog_methods(&mut core.registry,threads.clone(),mcp_inventory.clone(),agent_dir.clone(),cwd.clone());
         let ui_agent_dir = agent_dir.clone();
-        super::skills::register_skill_methods(&mut core.registry, agent_dir, cwd.clone(), threads.clone());
+        // Pinned runtime `resourceLoaderFactory`: a reloaded `DefaultResourceLoader` per cwd.
+        super::skills::register_skill_methods_with_loader(&mut core.registry, agent_dir, cwd.clone(), threads.clone(), super::skills::resource_skill_loader(Vec::new()));
         let notification_core = Arc::new(std::sync::OnceLock::<std::sync::Weak<RwLock<ServerCore>>>::new());
         let lifecycle_slot=Arc::new(std::sync::OnceLock::<Arc<super::handlers::ThreadLifecycleController>>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
@@ -96,7 +97,11 @@ impl AppServerRuntime {
                         let model = params["model"].as_str().and_then(|model| super::start_options::parse_model_reference(model,params["modelProvider"].as_str())).and_then(|(provider,id)| maho_ai::providers::all::get_builtin_models(provider).into_iter().find(|model|model.id == id));
                         let cwd = maho_core::paths::resolve_path(params["cwd"].as_str().unwrap_or(&cwd),&cwd,&Default::default());
                         threads.create_thread(cwd, model).await
-                    } else { threads.resume_thread(required_string(params, "threadId")?).await }.map_err(|error| JsonRpcError::new(-32603, error))?;
+                    } else {
+                        let id = required_string(params, "threadId")?;
+                        // Pinned `resume`: `ThreadNotFoundError` surfaces as `no rollout found for thread id`.
+                        threads.resume_thread(id).await.map_err(|error| if method == "thread/resume" && error == format!("Thread not found: {id}") {format!("no rollout found for thread id {id}")} else {error})
+                    }.map_err(|error| JsonRpcError::new(-32603, error))?;
                     let mut entry = entry.lock().await;
                     if let Some(name) = requested_name {
                         entry.session.set_session_name(&name);
@@ -242,7 +247,12 @@ impl AppServerRuntime {
         let provider_account_unsubscribe = maho_core::subscribe_provider_account_events(Arc::new(move |event| {
             let notification = super::account::provider_account_event_notification_native(&event);
             if let Some(core) = provider_core.upgrade() {
-                tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
+                let send = move || tokio::spawn(async move { if let Err(error) = core.read().await.broadcast_notification(notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server provider account notification: {}",error.message);} });
+                // Pinned `subscribeToProviderAccountEvents`: inside a dispatch, defer until its response.
+                match super::registry::ACTIVE_DISPATCH.try_with(|dispatch| dispatch.clone()) {
+                    Ok(dispatch) => dispatch.defer_task_until_responded(send),
+                    Err(_) => drop(send()),
+                }
             }
         }));
         Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)) }

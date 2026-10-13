@@ -61,10 +61,13 @@ where S: AsyncRead + AsyncWrite + Unpin + Send + 'static {
         while let Some(message) = source.next().await {
             let message = message.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
             if let Message::Text(text) = message {
-                let core = core.read().await;
+                // Pinned per-message dispatch holds no shared lock: snapshot under the read guard, drop
+                // it, then dispatch, so add/remove_connection writers and nested `core.read()` (turn
+                // `emit`) never queue behind a slow handler.
+                let (context, connection) = { let core = core.read().await; (core.receive_context(&id), core.get_connection(&id)) };
                 match serde_json::from_str::<serde_json::Value>(&text) {
-                    Ok(value) => core.receive(&id, classify_incoming(value)).await?,
-                    Err(_) => { if let Some(connection) = core.get_connection(&id) { (connection.send)(serde_json::json!({"id":null,"error":super::errors::parse_error()})).await?; } },
+                    Ok(value) => if let Some(context) = context { context.receive(classify_incoming(value)).await?; },
+                    Err(_) => { if let Some(connection) = connection { (connection.send)(serde_json::json!({"id":null,"error":super::errors::parse_error()})).await?; } },
                 }
             } else if message.is_close() { break; }
         }
