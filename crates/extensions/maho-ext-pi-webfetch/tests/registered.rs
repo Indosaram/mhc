@@ -281,6 +281,7 @@ async fn registered_timeout_disconnects() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture contract");
     let address = listener.local_addr().expect("fixture contract");
     let (request_received, request_seen) = tokio::sync::oneshot::channel();
+    let mut request_received = Some(request_received);
     let (disconnect_observed, disconnect_seen) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.expect("fixture contract");
@@ -290,7 +291,7 @@ async fn registered_timeout_disconnects() {
             let count = socket.read(&mut bytes).await.expect("fixture contract");
             if count == 0 { break; }
             total += count;
-            if total == count { let _ = request_received.send(()); }
+            if let Some(sender) = request_received.take() { let _ = sender.send(()); }
         }
         assert!(total > 0, "client sent no request before disconnecting");
         disconnect_observed.send(()).expect("disconnect signal");
