@@ -247,6 +247,7 @@ pub struct CliRuntimeRequest {
     pub mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>,
     /// Mode-specific bindings for the first `bind_extensions`; the mount still sets the mode.
     pub extension_bindings: Option<maho_core::agent_session::ExtensionBindingsFactory>,
+    pub extension_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -296,6 +297,7 @@ pub async fn mount_agent_session_runtime(
         session_profile,
         mcp_registry,
         extension_bindings,
+        extension_ui,
     } = request;
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
@@ -360,7 +362,8 @@ pub async fn mount_agent_session_runtime(
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
     let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&launch_config, settings));
     created.session.set_hook_sources(Some(hooks));
-    let bindings = extension_bindings.map(|factory| factory(&created.session)).unwrap_or_default();
+    let mut bindings = extension_bindings.map(|factory| factory(&created.session)).unwrap_or_default();
+    if extension_ui.is_some() { bindings.ui_context = extension_ui; }
     created.session.bind_extensions(maho_core::agent_session::ExtensionBindings {
         mode: Some(match config.app_mode {
             AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,

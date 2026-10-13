@@ -5,6 +5,12 @@ use tokio::sync::Mutex;
 use indexmap::IndexMap;
 
 pub type SessionFactory = Arc<dyn Fn(CreateAgentSessionOptions) -> Pin<Box<dyn Future<Output = Result<AgentSession, String>> + Send>> + Send + Sync>;
+/// senpi `createAppServerUIContext`: the thread's extension UI, handed to the session factory so it
+/// is bound before `session_start`.
+pub type SessionUiFactory = Arc<dyn Fn(&str) -> Option<Arc<dyn maho_ext_api::ExtensionUi>> + Send + Sync>;
+/// The rest of senpi `createBoundAppServerSession`: binds the UI and the MCP inventory of every newly
+/// registered session, whichever handler loaded it.
+pub type SessionBinder = Arc<dyn Fn(String, AgentSession, Option<Arc<dyn maho_ext_api::ExtensionUi>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// senpi `ThreadRegistry` default `createSession`: the SDK `createAgentSession`.
 pub fn default_session_factory() -> SessionFactory {
@@ -57,6 +63,17 @@ pub struct ThreadEntry {
     pub created_at: String,
     pub updated_at: String,
     pub tasks: Arc<Mutex<()>>,
+    /// senpi `pendingByThreadId`: the open turn awaiting `completeTurn`.
+    pub pending_turn: Option<super::turns::PendingTurn>,
+    /// senpi `projectorByThreadId`: the active turn's projector, keyed by its turn id.
+    pub projection: Option<(String, super::projection::EventProjector)>,
+    /// senpi `subscribedThreadIds`: the one session subscription feeding the turn engine.
+    pub observer: Option<maho_core::agent_session::AgentSessionSubscription>,
+    /// Ordered input of the observer task: session events plus completions queued behind them.
+    pub observer_events: Option<tokio::sync::mpsc::UnboundedSender<super::turns::ObservedEvent>>,
+    /// Held by `turn/start` until its initial notifications are out, so projected session events
+    /// never reach the wire before `turn/started`; the observer takes it per event.
+    pub emit_gate: Arc<Mutex<()>>,
 }
 impl ThreadEntry {
     pub fn wire(&self) -> Value {
@@ -72,10 +89,11 @@ pub struct ThreadRegistry {
     pub agent_dir: String,
     pub session_dir: Option<String>,
     factory: SessionFactory,
+    binding: std::sync::OnceLock<(SessionUiFactory, SessionBinder)>,
 }
 impl ThreadRegistry {
     pub fn new(agent_dir: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
-        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), initial_notifications: std::sync::Mutex::new(BTreeMap::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(default_session_factory) }
+        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), initial_notifications: std::sync::Mutex::new(BTreeMap::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(default_session_factory), binding: std::sync::OnceLock::new() }
     }
     /// Queue notifications for a session whose thread entry is registered next (marking it as
     /// awaiting registration even when empty); they become the
@@ -97,7 +115,18 @@ impl ThreadRegistry {
         if awaiting { self.queue_initial_notifications(id, [notification]); }
         None
     }
+    /// Install the app-server session binding used for every session this registry loads.
+    pub fn bind_sessions(&self, ui: SessionUiFactory, binder: SessionBinder) {
+        if self.binding.set((ui, binder)).is_err() { eprintln!("app-server session binding is installed once"); }
+    }
+    fn session_ui(&self, id: &str) -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
+        self.binding.get().and_then(|(ui, _)| ui(id))
+    }
     pub async fn register_session(&self, session: AgentSession, cwd: String, timestamps: Option<(String, String)>) -> Arc<Mutex<ThreadEntry>> {
+        let ui = self.session_ui(&session.session_id());
+        self.register_bound_session(session, cwd, timestamps, ui).await
+    }
+    async fn register_bound_session(&self, session: AgentSession, cwd: String, timestamps: Option<(String, String)>, ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>) -> Arc<Mutex<ThreadEntry>> {
         let id = session.session_id();
         let mut entries = self.entries.lock().await;
         let initial = self.initial_notifications.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id).unwrap_or_default();
@@ -108,8 +137,11 @@ impl ThreadRegistry {
         }
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (created_at, updated_at) = timestamps.unwrap_or_else(|| (now.clone(), now));
-        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())) }));
-        entries.insert(id, entry.clone());
+        let bound = session.clone();
+        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())) }));
+        entries.insert(id.clone(), entry.clone());
+        drop(entries);
+        if let Some((_, binder)) = self.binding.get() { binder(id, bound, ui).await; }
         entry
     }
     pub async fn create_thread(&self, cwd: String, model: Option<maho_ai::model::Model>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
@@ -119,18 +151,20 @@ impl ThreadRegistry {
             && let Some(header) = manager.header() {
             std::fs::write(path, format!("{}\n", serialize_entry(&header))).map_err(|error| error.to_string())?;
         }
-        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), model, ..Default::default() }).await?;
+        let ui = self.session_ui(manager.session_id());
+        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), model, extension_ui: ui.clone(), ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
-        Ok(self.register_session(session, cwd, None).await)
+        Ok(self.register_bound_session(session, cwd, None, ui).await)
     }
     pub async fn fork_thread(&self, thread_id: &str, cwd: Option<String>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         let source = self.resume_thread(thread_id).await?;
         let (source_cwd, source_file) = {let source = source.lock().await;(source.cwd.clone(),source.session.session_file())};
         let cwd = maho_core::paths::resolve_path(cwd.as_deref().unwrap_or(&source_cwd),&source_cwd,&Default::default());
         let manager = fork_session_manager(source_file.as_deref(),&cwd,self.session_dir.as_deref())?;
-        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), ..Default::default() }).await?;
+        let ui = self.session_ui(manager.session_id());
+        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
-        Ok(self.register_session(session, cwd, None).await)
+        Ok(self.register_bound_session(session, cwd, None, ui).await)
     }
     pub async fn get_loaded_thread(&self, id: &str) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         self.entries.lock().await.get(id).cloned().ok_or_else(|| format!("Thread not found: {id}"))
@@ -140,9 +174,10 @@ impl ThreadRegistry {
         if self.deleted.lock().await.contains(id) { return Err(format!("Thread not found: {id}")); }
         let info = self.list_session_infos().await.into_iter().find(|info| info.id == id).ok_or_else(|| format!("Thread not found: {id}"))?;
         let manager = SessionManager::open(&info.path, self.session_dir.as_deref(), Some(&info.cwd), None);
-        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(info.cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), ..Default::default() }).await?;
+        let ui = self.session_ui(manager.session_id());
+        let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(info.cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
         let timestamps = (info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), info.modified.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-        Ok(self.register_session(session, info.cwd, Some(timestamps)).await)
+        Ok(self.register_bound_session(session, info.cwd, Some(timestamps), ui).await)
     }
     pub async fn list_loaded(&self) -> Vec<Value> {
         let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();
