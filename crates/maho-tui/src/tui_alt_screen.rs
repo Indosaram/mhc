@@ -138,10 +138,24 @@ pub struct MouseTrackingSupport {
 /// Search-highlight column ranges for one screen row: `(start_col, end_col, is_current)`.
 type SearchHighlightRanges = (usize, Vec<(usize, usize, bool)>);
 
+/// senpi's `beforeTerminalStart` multiplexer test: tmux, zellij and GNU screen (by env presence or
+/// a `tmux*`/`screen*` `TERM`) get button-motion tracking because forwarding every pointer
+/// movement lags there.
+pub fn prefers_button_motion_mouse() -> bool {
+    let term = crate::process_env::var("TERM").unwrap_or_default().to_lowercase();
+    ["TMUX", "ZELLIJ", "STY"].iter().any(|name| crate::process_env::var(name).is_some())
+        || term.starts_with("tmux")
+        || term.starts_with("screen")
+}
+
 impl TuiAltScreen {
     pub fn new() -> Self {
+        let mut base = TuiBase::new();
+        // senpi's `handleTerminalInput` skips tmux focus consumption in fullscreen: the viewport
+        // input handler owns focus reports.
+        base.consume_tmux_focus_events = false;
         Self {
-            base: TuiBase::new(),
+            base,
             layout_root: None,
             current_layout: None,
             tracking_enabled: false,
@@ -1098,33 +1112,42 @@ impl TuiAltScreen {
     }
 
     pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
+        if !self.handle_viewport_input(data, is_key_release) {
+            self.base.handle_terminal_input(data, is_key_release);
+        }
+    }
+
+    /// senpi's `handleViewportInput` keyboard half (registered as an input listener ahead of the
+    /// focused component): focus reports and the `tui.altScreen.*` bindings. Returns `true` when
+    /// the input was consumed.
+    pub fn handle_viewport_input(&mut self, data: &str, is_key_release: bool) -> bool {
         if self.handle_focus_input(data) {
-            return;
+            return true;
         }
         let kb = get_keybindings();
         if kb.matches(data, "tui.altScreen.search") {
             if !is_key_release {
                 self.toggle_search(!self.search_visible);
             }
-            return;
+            return true;
         }
         if self.search_visible && kb.matches(data, "tui.altScreen.searchNext") {
             if !is_key_release {
                 self.navigate_search(1);
             }
-            return;
+            return true;
         }
         if self.search_visible && kb.matches(data, "tui.altScreen.searchPrevious") {
             if !is_key_release {
                 self.navigate_search(-1);
             }
-            return;
+            return true;
         }
         if self.search_visible && kb.matches(data, "tui.altScreen.searchClose") {
             if !is_key_release {
                 self.toggle_search(false);
             }
-            return;
+            return true;
         }
         if !self.search_visible && kb.matches(data, "tui.altScreen.top") {
             if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
@@ -1133,7 +1156,7 @@ impl TuiAltScreen {
                 primary.borrow_mut().scroll_to_start(0);
                 self.base.request_render(false, 0);
             }
-            return;
+            return true;
         }
         if !self.search_visible && kb.matches(data, "tui.altScreen.bottom") {
             if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
@@ -1142,7 +1165,7 @@ impl TuiAltScreen {
                 primary.borrow_mut().scroll_to_end(0);
                 self.base.request_render(false, 0);
             }
-            return;
+            return true;
         }
         if !self.search_visible && kb.matches(data, "tui.altScreen.lineUp") {
             if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
@@ -1151,7 +1174,7 @@ impl TuiAltScreen {
                 primary.borrow_mut().scroll_by(-1, 0);
                 self.base.request_render(false, 0);
             }
-            return;
+            return true;
         }
         if !self.search_visible && kb.matches(data, "tui.altScreen.lineDown") {
             if let Some(primary) = self.current_layout.as_ref().and_then(|f| f.primary_scroll_view.clone())
@@ -1160,9 +1183,9 @@ impl TuiAltScreen {
                 primary.borrow_mut().scroll_by(1, 0);
                 self.base.request_render(false, 0);
             }
-            return;
+            return true;
         }
-        self.base.handle_terminal_input(data, is_key_release);
+        false
     }
 }
 

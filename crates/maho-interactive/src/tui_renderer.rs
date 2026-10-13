@@ -51,6 +51,44 @@ impl InteractiveTui {
         if let Self::Fullscreen(tui) = self { tui.after_terminal_stop(terminal, preserve_screen); }
     }
 
+    /// senpi's `TuiBase.acquireMouseCapture(reason)`: takes a lease and, for the first lease,
+    /// applies tracking through the renderer's `applyMouseTracking`. Only the main screen
+    /// overrides `applyMouseTracking`; the alternate screen keeps the base no-op because its
+    /// tracking is owned by `beforeTerminalStart`. Returns the token for
+    /// [`InteractiveTui::release_mouse_capture`].
+    pub fn acquire_mouse_capture(&mut self, reason: &str, terminal: &mut dyn maho_tui::terminal::Terminal) -> u64 {
+        match self {
+            Self::Regular(tui) => {
+                let (token, should_apply) = tui.base.acquire_mouse_capture(reason);
+                if should_apply {
+                    let enabled = tui.base.mouse_capture_enabled();
+                    tui.apply_mouse_tracking(enabled, &main_screen_mouse_support(), terminal);
+                    tui.base.calibrate_mouse_anchor(terminal);
+                }
+                token
+            }
+            Self::Fullscreen(tui) => tui.base.acquire_mouse_capture(reason).0,
+        }
+    }
+
+    /// The release closure returned by senpi's `acquireMouseCapture`.
+    pub fn release_mouse_capture(&mut self, token: u64, terminal: &mut dyn maho_tui::terminal::Terminal) {
+        match self {
+            Self::Regular(tui) => {
+                if tui.base.release_mouse_capture(token) {
+                    tui.apply_mouse_tracking(false, &main_screen_mouse_support(), terminal);
+                }
+            }
+            Self::Fullscreen(tui) => {
+                tui.base.release_mouse_capture(token);
+            }
+        }
+    }
+
+    pub fn is_regular(&self) -> bool {
+        matches!(self, Self::Regular(_))
+    }
+
     pub fn base(&self) -> &TuiBase {
         match self {
             Self::Regular(t) => &t.base,
@@ -75,6 +113,17 @@ impl InteractiveTui {
         }
     }
 }
+/// senpi `TuiMainScreen.applyMouseTracking`'s support predicate: a TTY stdout, not Termux, and on
+/// Windows only inside Windows Terminal.
+fn main_screen_mouse_support() -> maho_tui::tui_main_screen::MouseTrackingSupport {
+    use std::io::IsTerminal;
+    maho_tui::tui_main_screen::MouseTrackingSupport {
+        is_tty: std::io::stdout().is_terminal(),
+        is_termux: std::env::var_os("TERMUX_VERSION").is_some_and(|value| !value.is_empty()),
+        is_windows_without_wt: cfg!(windows) && std::env::var_os("WT_SESSION").is_none_or(|value| value.is_empty()),
+    }
+}
+
 /// senpi `createInteractiveTui`'s default terminal: a `ProcessTerminal` whose stray stdout writes
 /// are diverted to the hidden-stdout debug log and whose stderr observation follows the visible
 /// stderr sink, so external writes cannot desynchronize the differential renderer.
