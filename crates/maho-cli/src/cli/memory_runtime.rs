@@ -399,6 +399,10 @@ impl MemoryRuntime {
         let this = self.clone(); let search = Arc::new(move || match this.settings() {
             Ok(settings) => settings["tool_exposure"] == "search", Err(error) => { (this.host.warn)(&error); false }
         });
+        let tool_exposure = match self.settings() {
+            Ok(settings) => (settings["tool_exposure"] == "search").then_some(maho_ext_api::ToolExposure::Search),
+            Err(error) => { (self.host.warn)(&error); None }
+        };
         let this = self.clone(); let tools = Arc::new(move || this.active_identity());
         let this = self.clone();
         let write_notice: maho_omo_memory::tools::WriteNoticeGate = Arc::new(move || {
@@ -445,7 +449,7 @@ impl MemoryRuntime {
                 resolve_context: resolve.clone(), create_repo: Some(Arc::new(|identity| GitMemoryRepo::open(&identity.identity_paths.repo, &identity.identity).map_err(|error| error.to_string()))),
                 search_exposure: Some(search), resolve_nudge_turns: Some(nudge), resolve_soul_notice: Some(soul),
             }, nudge: self.nudge.clone(), resolve_context: resolve, resolve_tool_context: tools,
-            write_notice: Some(write_notice), resolve_cwd: resolve_cwd.clone(),
+            write_notice: Some(write_notice), tool_exposure, resolve_cwd: resolve_cwd.clone(),
             captured_tools: self.host.captured_tools.clone(), warn: self.host.warn.clone(), edit_notice,
             theme: Arc::new(|theme| Arc::new(MemoryEntryTheme(theme.clone()))),
             memory_write: maho_omo_memory::wiring_memory_write::MemoryWriteOptions { resolve_session: writes, on_memory_write: on_write, refresh_status: refresh },

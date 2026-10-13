@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use maho_ext_api::{ExtensionApi, ToolDefinition, ToolError, ToolExecutionMode, ToolResult};
+use maho_ext_api::{ExtensionApi, ToolDefinition, ToolError, ToolExecutionMode, ToolExposure, ToolResult};
 use memory_core::tools::{memory::{MemoryToolParams, MemoryToolProvenanceInput, run_memory_tool}, memory_apply_patch::{MemoryApplyPatchParams, run_memory_apply_patch}};
 use crate::{context::MemoryIdentityContext, engine_session::{MemoryEngineSessionOptions, prepare_memory_engine_session}, tool_metadata::*};
 
@@ -15,6 +15,9 @@ pub struct MemoryToolsOptions {
     /// Read per call rather than latched at registration: the gate is presentation-only, so a
     /// config edit takes effect on the next write instead of at the next restart.
     pub write_notice: Option<WriteNoticeGate>,
+    /// `memory.tool_exposure`; `Search` registers both tools behind tool discovery
+    /// (pin `tools.ts` registerMemoryToolSurface exposure option).
+    pub exposure: Option<ToolExposure>,
 }
 
 fn result(message: String) -> ToolResult {
@@ -40,6 +43,7 @@ pub fn create_memory_tools(resolve: MemoryContextResolver) -> [ToolDefinition; 2
 }
 
 pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options: MemoryToolsOptions) -> [ToolDefinition; 2] {
+    let exposure = options.exposure;
     let memory_resolve = Arc::clone(&resolve);
     let memory_options = options.clone();
     let mut memory = ToolDefinition::new(MEMORY_TOOL_NAME, MEMORY_TOOL_DESCRIPTION, serde_json::json!({"type":"object","required":["command","reason"],"properties":{"command":{"enum":["create","str_replace","insert","delete","rename","update_description"]},"reason":{"type":"string"},"file_path":{"type":"string"},"old_path":{"type":"string"},"new_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"insert_line":{"type":"number"},"insert_text":{"type":"string"},"description":{"type":"string"},"file_text":{"type":"string"}}}), Arc::new(move |call| {
@@ -72,6 +76,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
         })
     }));
     memory.label = "Memory".into();
+    memory.exposure = exposure;
     memory.execution_mode = Some(ToolExecutionMode::Sequential);
     memory.prompt_snippet = Some("memory - edit omo memory blocks (create/str_replace/insert/delete/rename/update_description); auto-commits each change".into());
     memory.prompt_guidelines = Some(vec!["Record durable facts, preferences, and decisions with the memory tool as you learn them; every change is committed with the reason you provide.".into(), "Memory files are markdown with YAML frontmatter; keep each block's description accurate because the memory index surfaces it.".into(), "When creating, renaming, or deleting memory files, update [[path]] references in other memory files so they stay discoverable.".into()]);
@@ -92,6 +97,7 @@ pub fn create_memory_tools_with_options(resolve: MemoryContextResolver, options:
         })
     }));
     patch.label = "Memory Apply Patch".into();
+    patch.exposure = exposure;
     patch.execution_mode = Some(ToolExecutionMode::Sequential);
     patch.prompt_snippet = Some("memory_apply_patch - apply a codex-style patch to omo memory files; auto-commits the change".into());
     patch.prompt_guidelines = Some(vec!["Use memory_apply_patch for multi-file or multi-hunk memory edits; prefer the memory tool for single-block changes.".into(), "Patches may only target paths inside the memory repo, and read_only memory files cannot be modified.".into()]);
@@ -111,6 +117,7 @@ mod tests {
     use super::*;
     fn call(params: serde_json::Value) -> maho_ext_api::ToolCall<'static> { maho_ext_api::ToolCall { id: "call", params, signal: Default::default(), on_update: None, context: None } }
     #[test] fn definitions_are_sequential_with_schemas() { let tools = create_memory_tools(Arc::new(|| None)); assert_eq!(tools[0].name, "memory"); assert_eq!(tools[1].name, "memory_apply_patch"); for tool in tools { assert_eq!(tool.execution_mode, Some(ToolExecutionMode::Sequential)); assert!(tool.parameters.is_object()); assert!(tool.prompt_snippet.is_some()); assert!(!tool.prompt_guidelines.unwrap().is_empty()); } }
+    #[test] fn search_exposure_marks_both_tools() { for tool in create_memory_tools_with_options(Arc::new(|| None), MemoryToolsOptions { exposure: Some(ToolExposure::Search), ..Default::default() }) { assert_eq!(tool.exposure, Some(ToolExposure::Search)); } }
     #[tokio::test] async fn unbound_tools_fail_before_storage() { for tool in create_memory_tools(Arc::new(|| None)) { assert!((tool.execute)(call(serde_json::json!({}))).await.is_err()); } }
     #[tokio::test] async fn real_create_and_patch_commit_clean_repo() {
         let root = tempfile::tempdir().unwrap();
