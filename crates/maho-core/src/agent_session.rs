@@ -454,6 +454,7 @@ struct AgentSessionState {
     cumulative_hinted_wait_ms: f64,
     pending_model_switch: Option<PendingModelSwitch>,
     compaction_abort_controller: Option<crate::compaction::lifecycle::CompactionAbortController>,
+    compaction_signal_bridge: Option<CompactionSignalBridge>,
     pending_compaction_admission: Option<Arc<PendingCompactionAdmission>>,
     compaction_lifecycle: crate::compaction::lifecycle::CompactionLifecycleCoordinator,
     delegated_compaction_key: Option<(String, String)>,
@@ -722,6 +723,28 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
 }
 
 struct AbortSignalBridge(tokio::task::JoinHandle<()>);
+
+struct CompactionSignalBridge {
+    controller_signal: maho_ai::utils::abort::AbortSignal,
+    extension_signal: maho_ext_api::AbortSignal,
+    controller_listener: maho_ai::utils::abort::ListenerId,
+    extension_listener: maho_ai::utils::abort::ListenerId,
+}
+impl CompactionSignalBridge {
+    fn new(controller: crate::compaction::lifecycle::CompactionAbortController, signal: maho_ext_api::AbortSignal) -> Self {
+        let controller_signal = controller.signal();
+        let extension_abort = signal.clone();
+        let controller_listener = controller_signal.add_abort_listener(move |_| extension_abort.abort());
+        let extension_listener = signal.add_abort_listener(move |_| controller.abort());
+        Self { controller_signal, extension_signal: signal, controller_listener, extension_listener }
+    }
+}
+impl Drop for CompactionSignalBridge {
+    fn drop(&mut self) {
+        self.controller_signal.remove_abort_listener(self.controller_listener);
+        self.extension_signal.remove_abort_listener(self.extension_listener);
+    }
+}
 
 type BindingPromptReadiness = Arc<Mutex<Vec<tokio::sync::oneshot::Receiver<()>>>>;
 
@@ -1012,6 +1035,8 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             }, controller.clone());
             state.compaction_abort_controller = Some(controller);
             state.compaction_extension_signal = Some(signal.clone());
+            state.compaction_signal_bridge = state.compaction_abort_controller.clone()
+                .map(|controller| CompactionSignalBridge::new(controller, signal.clone()));
         }
         session.emit(AgentSessionEvent::CompactionStart { reason: options.reason, request_id: Some(request_id) });
         Some(signal)
@@ -1033,6 +1058,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
         });
         session.state().compaction_abort_controller = None;
         session.state().compaction_extension_signal = None;
+        session.state().compaction_signal_bridge = None;
         session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, result: None, aborted,
             will_retry: false, request_id: Some(operation.operation_id.clone()), accepted: None, rejection_cause: None, error_message: options.error_message });
     } }
@@ -1079,6 +1105,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
             });
             session.state().compaction_abort_controller = None;
             session.state().compaction_extension_signal = None;
+            session.state().compaction_signal_bridge = None;
             session.emit(AgentSessionEvent::CompactionEnd { reason: options.reason, request_id: Some(request_id),
                 result: applied.is_ok().then_some(result), aborted: false, will_retry: false,
                 accepted: Some(applied.is_ok()), rejection_cause: None,
@@ -1612,6 +1639,7 @@ impl AgentSession {
             cumulative_hinted_wait_ms: 0.0,
             pending_model_switch: None,
             compaction_abort_controller: None,
+            compaction_signal_bridge: None,
             pending_compaction_admission: None,
             compaction_lifecycle: Default::default(),
             delegated_compaction_key: None,
@@ -1905,7 +1933,14 @@ impl AgentSession {
                 if let Err(error_message) = self.append_extension_custom_message(message) { self.emit(AgentSessionEvent::ContinuationError { error_message }); }
             }
         }
-        self.emit(AgentSessionEvent::Agent(event.clone()));
+        if let Some(boundary) = &end_boundary {
+            self.emit(AgentSessionEvent::AgentEnd {
+                messages: boundary.messages.clone(), aborted: boundary.aborted,
+                will_retry: boundary.will_retry, abort_source: boundary.abort_source,
+            });
+        } else {
+            self.emit(AgentSessionEvent::Agent(event.clone()));
+        }
         if end_boundary.is_some() { self.emit_late_user_abort().await; }
         if let AgentEvent::MessageEnd { message } = &event {
             if let AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(custom)) = message {
@@ -2605,6 +2640,7 @@ impl AgentSession {
         if !owns_terminal { return execution; }
         self.state().compaction_abort_controller = None;
         self.state().compaction_extension_signal = None;
+        self.state().compaction_signal_bridge = None;
         match &execution {
             Ok(result) => {
                 self.state().delegated_compaction_key = None;
@@ -9722,6 +9758,49 @@ mod tests {
         drop(binding);
         assert!(lock(&session.binding_readiness).is_none());
         assert!(!session.work_barrier.has_active_work());
+    }
+
+    #[tokio::test]
+    async fn agent_end_publishes_the_session_envelope_with_will_retry() {
+        let session = retry_session(vec![maho_ai::providers::faux::faux_assistant_message("done", Default::default())], 0);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = session.subscribe(Arc::new(move |event| lock(&captured).push(event.clone())));
+        session.prompt("hello", PromptOptions::default()).await.expect("prompt");
+        let events = lock(&events);
+        let (messages, will_retry, aborted) = events.iter().find_map(|event| match event {
+            AgentSessionEvent::AgentEnd { messages, will_retry, aborted, .. } => Some((messages, *will_retry, *aborted)),
+            _ => None,
+        }).expect("session agent_end envelope");
+        assert_eq!((will_retry, aborted), (false, false));
+        assert!(messages.iter().any(|message| message.as_assistant().is_some()));
+        assert!(events.iter().all(|event| !matches!(event, AgentSessionEvent::Agent(
+            maho_agent::types::AgentEvent::AgentEnd { .. }
+        ))));
+    }
+
+    #[tokio::test]
+    async fn begin_compaction_bridges_the_controller_abort_to_the_extension_signal() {
+        let session = retry_session(Vec::new(), 0);
+        let signal = session.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
+            .expect("feedback signal");
+        let controller = session.state().compaction_abort_controller.clone().expect("controller");
+        controller.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(2), signal.cancelled()).await
+            .expect("controller abort propagates to extension signal");
+        assert!(signal.is_aborted());
+    }
+
+    #[tokio::test]
+    async fn an_extension_abort_reaches_the_compaction_controller() {
+        let session = retry_session(Vec::new(), 0);
+        let signal = session.begin_compaction(maho_ext_api::BeginCompactionOptions { reason: maho_ext_api::CompactionReason::Manual })
+            .expect("feedback signal");
+        let controller = session.state().compaction_abort_controller.clone().expect("controller");
+        signal.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(2), controller.signal().cancelled()).await
+            .expect("extension abort propagates to controller");
+        assert!(controller.aborted());
     }
 
     #[tokio::test]
