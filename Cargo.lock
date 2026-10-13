@@ -4258,6 +4258,7 @@ dependencies = [
  "maho-test-support",
  "maho-tools",
  "maho-tui",
+ "notify",
  "regex",
  "semver",
  "serde",

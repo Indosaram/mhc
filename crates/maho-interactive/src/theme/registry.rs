@@ -15,6 +15,9 @@ pub struct ThemeRegistry {
     registered: BTreeMap<String, Theme>,
     watched_name: Option<String>,
     reload_at: Option<u64>,
+    /// senpi `themeWatcher`: the OS watch on the custom themes directory and the file names it
+    /// reported, drained by [`ThemeRegistry::poll_theme_watcher`].
+    watcher: Option<(notify::RecommendedWatcher, std::sync::mpsc::Receiver<Option<PathBuf>>)>,
 }
 impl ThemeRegistry {
     pub fn new(custom_directory: PathBuf, name: &str, mode: ColorMode) -> Result<Self, ThemeError> {
@@ -26,6 +29,7 @@ impl ThemeRegistry {
             registered: BTreeMap::new(),
             watched_name: None,
             reload_at: None,
+            watcher: None,
         };
         registry.init_theme(name, false)?;
         Ok(registry)
@@ -125,11 +129,56 @@ impl ThemeRegistry {
             .exists()
         {
             self.watched_name = Some(self.current_name.clone());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let handler = move |event: notify::Result<notify::Event>| {
+                let Ok(event) = event else { return };
+                if !matches!(
+                    event.kind,
+                    notify::EventKind::Create(_)
+                        | notify::EventKind::Modify(_)
+                        | notify::EventKind::Remove(_)
+                ) {
+                    return;
+                }
+                if event.paths.is_empty() {
+                    let _ = sender.send(None);
+                }
+                for path in event.paths {
+                    let _ = sender.send(path.file_name().map(PathBuf::from));
+                }
+            };
+            // A directory that cannot be watched leaves hot reload off, as senpi's
+            // `watchWithErrorHandler` does.
+            if let Ok(mut watcher) = notify::recommended_watcher(handler)
+                && notify::Watcher::watch(
+                    &mut watcher,
+                    &self.custom_directory,
+                    notify::RecursiveMode::NonRecursive,
+                )
+                .is_ok()
+            {
+                self.watcher = Some((watcher, receiver));
+            }
         }
     }
     pub fn stop_theme_watcher(&mut self) {
         self.watched_name = None;
         self.reload_at = None;
+        self.watcher = None;
+    }
+    /// Feeds the file names the OS watcher reported into [`ThemeRegistry::on_file_change`], then
+    /// runs the debounced reload; `true` when the current theme was reloaded (senpi's
+    /// `onThemeChangeCallback`).
+    pub fn poll_theme_watcher(&mut self, now: u64) -> bool {
+        let changes: Vec<Option<PathBuf>> = self
+            .watcher
+            .as_ref()
+            .map(|(_, receiver)| receiver.try_iter().collect())
+            .unwrap_or_default();
+        for change in changes {
+            self.on_file_change(change.as_deref(), now);
+        }
+        self.reload_due(now)
     }
     pub fn on_file_change(&mut self, filename: Option<&Path>, now: u64) {
         let Some(name) = self.watched_name.as_deref() else {

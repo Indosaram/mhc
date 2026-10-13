@@ -203,6 +203,21 @@ fn theme_cache_roundtrips_and_rejects_invalid_documents() {
     assert_eq!(read_terminal_theme_hint(dir.path()), None);
 }
 #[test]
+fn theme_registry_reloads_watched_custom_theme_after_debounce() {
+    use maho_interactive::theme::registry::ThemeRegistry;
+    let dir = tempfile::tempdir().expect("valid test fixture and successful operation");
+    let source = include_str!("../src/theme/dark.json").replacen("\"name\": \"dark\"", "\"name\": \"custom\"", 1);
+    std::fs::write(dir.path().join("custom.json"), &source).expect("valid test fixture and successful operation");
+    let mut registry = ThemeRegistry::new(dir.path().to_path_buf(), "custom", ColorMode::Truecolor).expect("valid test fixture and successful operation");
+    registry.set_theme("custom", true).expect("valid test fixture and successful operation");
+    registry.on_file_change(Some(std::path::Path::new("other.json")), 0);
+    assert!(!registry.reload_due(1_000));
+    registry.on_file_change(Some(std::path::Path::new("custom.json")), 0);
+    assert!(!registry.reload_due(99));
+    assert!(registry.reload_due(100));
+    assert_eq!(registry.current.name, "custom");
+}
+#[test]
 fn renderer_reference_tracks_replacement() {
     use maho_interactive::tui_renderer::*;
     use std::{cell::RefCell, rc::Rc};
