@@ -1,5 +1,6 @@
 use std::{env, path::PathBuf};
 
+#[allow(dead_code)]
 pub fn node() -> String {
     env::split_paths(&env::var_os("PATH").expect("PATH must be set to locate node"))
         .map(|dir| dir.join("node"))
@@ -9,6 +10,7 @@ pub fn node() -> String {
         .into_owned()
 }
 
+#[allow(dead_code)]
 #[allow(dead_code)]
 pub fn senpi(rel: &str) -> String {
     let root = env::var_os("SENPI_SRC")
