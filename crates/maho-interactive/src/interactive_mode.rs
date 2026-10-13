@@ -1422,7 +1422,6 @@ impl InteractiveMode {
             let result = if path.as_deref().is_some_and(|path| path.ends_with(".jsonl")) {
                 self.host_export_jsonl(path.as_deref()).await
             } else {
-                if self.session_host.is_none() { return Err("HTML export is not integrated in the native interactive mode".into()); }
                 let theme_name = self.theme.name.clone();
                 self.host_export_html(path.as_deref(), &theme_name).await
             };
