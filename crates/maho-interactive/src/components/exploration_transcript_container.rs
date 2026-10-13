@@ -68,6 +68,11 @@ impl ExplorationTranscriptContainer {
         self.children.push(child);
     }
 
+    /// A plain component child (senpi `addChild` with a non-exploration component).
+    pub fn add_component(&mut self, child: Rc<RefCell<dyn Component>>) {
+        self.add_child(TranscriptChild::Other(child));
+    }
+
     pub fn children(&self) -> &[TranscriptChild] {
         &self.children
     }
