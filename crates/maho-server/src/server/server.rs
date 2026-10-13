@@ -455,7 +455,8 @@ impl Server {
                 Err(error) => self.report_error(&ServerError::new("internal_error", &error.to_string())),
             }
         }
-        let release = presentation.detach_session().await;
+        // Pinned `disconnect` releases with publish=false: never write to a departing peer.
+        let release = presentation.release_silently().await;
         let release_services = services.release().await;
         let close = if closed { Ok(()) } else { connection.close(None).await };
         result.and(release).and(release_services).and(close)
@@ -495,6 +496,16 @@ struct Presentation {
     connection: Arc<dyn ByteConnection>,
     attachment: Mutex<Option<Arc<Attachment>>>,
     max: u32,
+}
+impl Presentation {
+    /// Release the current attachment without publishing `attachment:null` (connection teardown).
+    async fn release_silently(&self) -> Result<(), ServerError> {
+        let previous = self.attachment.lock().await.take();
+        match previous {
+            Some(previous) => previous.release().await,
+            None => Ok(()),
+        }
+    }
 }
 impl RoutedServerPresentation for Presentation {
     fn attach_session<'a>(&'a self, session_id: &'a str) -> ServerFuture<'a, ()> {
