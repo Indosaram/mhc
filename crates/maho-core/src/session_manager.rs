@@ -40,6 +40,9 @@ pub struct UsageTotals {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionContext {
     pub messages: Vec<Value>,
+    /// senpi `getSessionContextEntryId`: the session entry each projected message came from,
+    /// index-aligned with `messages`. A typed side channel, never written into message JSON.
+    pub entry_ids: Vec<String>,
     pub thinking_level: String,
     pub thinking_selection: Option<Value>,
     pub configuration_update: Option<Value>,
@@ -384,12 +387,16 @@ pub fn build_context_entries(entries: &[Value], leaf_id: Option<&str>) -> Vec<Va
 pub fn build_session_context(entries: &[Value], leaf_id: Option<&str>) -> SessionContext {
     let path = build_session_path(entries, leaf_id);
     let settings = get_session_context_settings(&path);
-    let messages = build_context_entries(entries, leaf_id)
+    let (entry_ids, messages) = build_context_entries(entries, leaf_id)
         .iter()
-        .flat_map(session_entry_to_context_messages)
-        .collect();
+        .flat_map(|entry| {
+            let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            session_entry_to_context_messages(entry).into_iter().map(move |message| (entry_id.clone(), message))
+        })
+        .unzip();
     SessionContext {
         messages,
+        entry_ids,
         thinking_level: settings.thinking_level,
         thinking_selection: settings.thinking_selection,
         configuration_update: settings.configuration_update,
@@ -1843,6 +1850,19 @@ mod tests {
         assert_eq!(branch.len(), 2);
         assert_eq!(branch[0]["id"], "a");
         assert!(build_context_entries(&entries, Some("")).is_empty());
+    }
+
+    #[test]
+    fn build_session_context_stamps_each_message_with_its_entry_id() {
+        let entries = vec![
+            json!({ "type": "message", "id": "a", "parentId": null, "timestamp": "t1", "message": { "role": "user", "content": "one" } }),
+            json!({ "type": "model_change", "id": "b", "parentId": "a", "timestamp": "t2", "provider": "anthropic", "modelId": "opus" }),
+            json!({ "type": "compaction", "id": "c", "parentId": "b", "timestamp": "t3", "summary": "sum", "firstKeptEntryId": "a", "tokensBefore": 7 }),
+            json!({ "type": "message", "id": "d", "parentId": "c", "timestamp": "t4", "message": { "role": "user", "content": "two" } }),
+        ];
+        let context = build_session_context(&entries, None);
+        assert_eq!(context.entry_ids, vec!["c".to_owned(), "a".to_owned(), "d".to_owned()]);
+        assert!(context.messages.iter().all(|message| message.get("id").is_none()));
     }
 
     #[test]

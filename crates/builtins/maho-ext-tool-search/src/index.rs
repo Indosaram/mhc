@@ -68,7 +68,7 @@ pub fn register_session_hooks(api:&mut maho_ext_api::ExtensionApi,service:std::s
     api.on(maho_ext_api::EventKind::Context,std::sync::Arc::new(move |event,_ctx| {
         let service=service.clone();
         Box::pin(async move {
-            if let maho_ext_api::ExtensionEvent::Context{messages}=event {
+            if let maho_ext_api::ExtensionEvent::Context{messages,..}=event {
                 let messages=messages.iter().map(serde_json::to_value).collect::<Result<Vec<_>,_>>().map_err(|error|maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                 service.lock().await.maybe_rehydrate_from_history(&messages)?;
             }

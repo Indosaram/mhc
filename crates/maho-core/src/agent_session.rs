@@ -4849,6 +4849,18 @@ impl AgentSession {
         f(&lock(&self.session_manager))
     }
 
+    /// senpi `getSessionContextEntryId` for each live message: a message carries the id of the
+    /// session entry it was projected from while it still sits at its projected position in the
+    /// rebuilt session context. Messages not projected from session history stay unstamped.
+    fn session_context_entry_ids(&self, messages: &[AgentMessage]) -> Vec<Option<String>> {
+        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let projected = context.messages.into_iter().map(|message| session_message_from_value(message).ok());
+        let mut entry_ids: Vec<Option<String>> = messages.iter().zip(projected.zip(context.entry_ids))
+            .map(|(message, (projected, entry_id))| (projected.as_ref() == Some(message)).then_some(entry_id)).collect();
+        entry_ids.resize(messages.len(), None);
+        entry_ids
+    }
+
     pub fn with_session_manager_mut<T>(&self, f: impl FnOnce(&mut SessionManager) -> T) -> T {
         f(&mut lock(&self.session_manager))
     }
@@ -6040,8 +6052,11 @@ impl AgentSession {
                 } else { messages };
                 let mut runner = session.extension_runner.lock().await.clone();
                 let transformed = match runner.as_mut() {
-                    Some(runner) => match runner.emit_context(&messages, None).await {
-                        Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
+                    Some(runner) => {
+                        let entry_ids = session.session_context_entry_ids(&messages);
+                        match runner.emit_context(&messages, &entry_ids, None).await {
+                            Ok(messages) => messages, Err(error) => { session.emit(AgentSessionEvent::ContinuationError { error_message: error.message }); messages }
+                        }
                     }, None => messages,
                 };
                 session.admit_cursor_context(transformed)
@@ -8602,6 +8617,16 @@ mod tests {
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert!(invocation.take(&id, &input, std::path::Path::new(&session.cwd())).is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn session_context_entry_ids_stamp_projected_messages_only() {
+        let session = test_session();
+        let entry = session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({"role":"user","content":"root","timestamp":0})));
+        session.rebuild_session_context().expect("context");
+        let mut messages = session.messages();
+        messages.push(AgentMessage::Llm(maho_ai::types::Message::User(maho_ai::types::UserMessage { content: maho_ai::types::UserContent::Text("live".into()), timestamp: 1 })));
+        assert_eq!(session.session_context_entry_ids(&messages), vec![entry["id"].as_str().map(str::to_owned), None]);
     }
 
     #[tokio::test]
