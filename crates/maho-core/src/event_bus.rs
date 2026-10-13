@@ -37,7 +37,7 @@ impl EventBus {
         };
         for (_, handler) in handlers {
             if let Err(error) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(data))) {
-                eprintln!("Event handler error ({channel}): {error:?}");
+                crate::output_guard::maho_write_stderr(&format!("Event handler error ({channel}): {error:?}\n"));
             }
         }
     }

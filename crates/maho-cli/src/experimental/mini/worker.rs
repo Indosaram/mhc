@@ -321,8 +321,8 @@ async fn spawn_recoveries(harness: &WorkerHarness, context: &Context) -> Result<
         recoveries.push(tokio::spawn(async move {
             match lane.resume(&context).await {
                 Ok(Ok(_)) => {}
-                Ok(Err(error)) => eprintln!("Failed to resume {label}: {error}"),
-                Err(error) => eprintln!("Failed to resume {label}: {}", error.message),
+                Ok(Err(error)) => maho_core::output_guard::maho_write_stderr(&format!("Failed to resume {label}: {error}\n")),
+                Err(error) => maho_core::output_guard::maho_write_stderr(&format!("Failed to resume {label}: {}\n", error.message)),
             }
         }));
     }
