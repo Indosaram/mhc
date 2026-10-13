@@ -1272,6 +1272,127 @@ impl SessionManager {
         Ok(self.append_branch_summary(&from_id, summary, details, usage, from_hook))
     }
 
+    /// senpi `createBranchedSession`: replace this manager's session with a new one holding only
+    /// the root-to-`leaf_id` path. Label entries are dropped from the path (re-chaining the
+    /// retained entries and any compaction `firstKeptEntryId` that pointed at one) and the
+    /// resolved labels are re-appended at the tail. Returns the new session file when persisting.
+    pub fn create_branched_session(&mut self, leaf_id: &str) -> Result<Option<String>, String> {
+        let previous_session_file = self.session_file.clone();
+        if !self.by_id.contains_key(leaf_id) {
+            return Err(format!("Entry {leaf_id} not found"));
+        }
+        let path = self.branch(Some(leaf_id));
+        let mut path_without_labels: Vec<Value> = Vec::new();
+        let mut replacement_by_label_id: HashMap<String, String> = HashMap::new();
+        let mut pending_label_ids: Vec<String> = Vec::new();
+        let mut path_parent_id = Value::Null;
+        for mut entry in path {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
+            if entry_type(&entry) == "label" {
+                pending_label_ids.push(id);
+                continue;
+            }
+            for label_id in pending_label_ids.drain(..) {
+                replacement_by_label_id.insert(label_id, id.clone());
+            }
+            entry["parentId"] = path_parent_id;
+            if entry_type(&entry) == "compaction"
+                && let Some(replacement) = entry
+                    .get("firstKeptEntryId")
+                    .and_then(Value::as_str)
+                    .and_then(|first_kept| replacement_by_label_id.get(first_kept))
+            {
+                entry["firstKeptEntryId"] = Value::from(replacement.clone());
+            }
+            path_parent_id = Value::from(id);
+            path_without_labels.push(entry);
+        }
+
+        let new_session_id = create_session_id();
+        let timestamp = now_iso_millis();
+        let file_timestamp = timestamp.replace([':', '.'], "-");
+        let new_session_file = Path::new(&self.session_dir)
+            .join(format!("{file_timestamp}_{new_session_id}.jsonl"))
+            .to_string_lossy()
+            .into_owned();
+        let mut header = Map::new();
+        header.insert("type".to_owned(), Value::from("session"));
+        header.insert("version".to_owned(), Value::from(CURRENT_SESSION_VERSION));
+        header.insert("id".to_owned(), Value::from(new_session_id.clone()));
+        header.insert("timestamp".to_owned(), Value::from(timestamp));
+        header.insert("cwd".to_owned(), Value::from(self.cwd.clone()));
+        if self.persist
+            && let Some(previous) = &previous_session_file
+        {
+            header.insert("parentSession".to_owned(), Value::from(previous.clone()));
+        }
+
+        let mut path_entry_ids: HashMap<String, Value> = path_without_labels
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(|id| (id.to_owned(), Value::Null)))
+            .collect();
+        let mut labels_to_write: Vec<(String, String, Option<String>)> = self
+            .labels_by_id
+            .iter()
+            .filter(|(target_id, _)| path_entry_ids.contains_key(*target_id))
+            .map(|(target_id, label)| (target_id.clone(), label.clone(), self.label_timestamps_by_id.get(target_id).cloned()))
+            .collect();
+        // Map iteration order is unspecified; keep label entries in path order.
+        let order: HashMap<&str, usize> = path_without_labels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.get("id").and_then(Value::as_str).map(|id| (id, index)))
+            .collect();
+        labels_to_write.sort_by_key(|(target_id, _, _)| order.get(target_id.as_str()).copied());
+        let mut parent_id = path_without_labels.last().and_then(|entry| entry.get("id")).cloned().unwrap_or(Value::Null);
+        let mut label_entries = Vec::new();
+        for (target_id, label, label_timestamp) in labels_to_write {
+            let id = generate_id(&path_entry_ids);
+            path_entry_ids.insert(id.clone(), Value::Null);
+            label_entries.push(json!({
+                "type": "label",
+                "id": id,
+                "parentId": parent_id,
+                "timestamp": label_timestamp.unwrap_or_else(now_iso_millis),
+                "targetId": target_id,
+                "label": label,
+            }));
+            parent_id = Value::from(id);
+        }
+
+        let mut file_entries = vec![Value::Object(header)];
+        file_entries.extend(path_without_labels);
+        file_entries.extend(label_entries);
+
+        if self.persist {
+            crate::session_write_reservation::reserve_session_write(&new_session_file);
+            self.release_blobs_dir_unless_shared();
+            self.session_id = new_session_id;
+            self.session_file = Some(new_session_file.clone());
+            self.sync_session_file_ownership();
+            self.file_entries = file_entries;
+            self.build_index();
+            // Defer the write to the first assistant response when the branch has none, matching
+            // the new_session contract.
+            let has_assistant = self.file_entries.iter().any(|entry| {
+                entry_type(entry) == "message"
+                    && entry.get("message").and_then(|message| message.get("role")).and_then(Value::as_str) == Some("assistant")
+            });
+            if has_assistant {
+                self.rewrite_file();
+                self.flushed = true;
+            } else {
+                self.flushed = false;
+            }
+            return Ok(Some(new_session_file));
+        }
+
+        self.file_entries = file_entries;
+        self.session_id = new_session_id;
+        self.build_index();
+        Ok(None)
+    }
+
     /// senpi `getTree`: every root, with orphaned entries (broken parent chain) also returned as
     /// roots and children sorted by timestamp (oldest first). Built iteratively so deep sessions
     /// cannot overflow the stack.
@@ -1636,6 +1757,36 @@ mod tests {
         let at_root = manager.branch_with_summary(None, "t", None, None, None).expect("root summary");
         assert_eq!(at_root["fromId"], "root");
         assert_eq!(at_root["parentId"], Value::Null);
+    }
+
+    #[test]
+    fn branched_sessions_keep_only_the_leaf_path_and_rechain_labels() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let previous = manager.session_file().unwrap_or_default().to_owned();
+        let root = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        let root_id = root["id"].as_str().unwrap_or_default().to_owned();
+        let label = manager.append_label(&root_id, Some("start")).expect("label");
+        let answer = manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        let answer_id = answer["id"].as_str().unwrap_or_default().to_owned();
+        manager.set_leaf(Some(&root_id)).expect("leaf");
+        let abandoned = manager.append_message(json!({ "role": "user", "content": "x", "timestamp": 3 }));
+        assert!(manager.create_branched_session("missing").is_err());
+        let file = manager.create_branched_session(&answer_id).expect("branch").expect("file");
+        assert_eq!(manager.header().expect("header")["parentSession"], json!(previous));
+        assert!(manager.entry(abandoned["id"].as_str().unwrap_or_default()).is_none());
+        assert!(manager.entry(label["id"].as_str().unwrap_or_default()).is_none());
+        assert_eq!(manager.entry(&answer_id).expect("answer")["parentId"], json!(root_id));
+        assert_eq!(manager.label(&root_id), Some("start"));
+        assert_eq!(load_entries_from_file(&file).len(), 4);
+
+        let mut memory = SessionManager::in_memory("/tmp", None, None);
+        let kept = memory.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        memory.append_message(json!({ "role": "user", "content": "b", "timestamp": 2 }));
+        assert_eq!(memory.create_branched_session(kept["id"].as_str().unwrap_or_default()), Ok(None));
+        assert_eq!(memory.entries().len(), 1);
+        assert_eq!(memory.header().expect("header").get("parentSession"), None);
     }
 
     #[test]

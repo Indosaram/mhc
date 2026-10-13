@@ -201,49 +201,27 @@ impl AgentSessionRuntime {
                 return Err("This session has not been saved yet. Wait for the first assistant response before cloning or forking it.".to_owned());
             }
         }
-        let manager = self.session.with_session_manager(|current| {
+        let (manager, cwd) = self.session.with_session_manager(|current| -> Result<_, String> {
             let options = Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() });
-            let mut manager = if current.is_persisted() {
-                crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
-            } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
-            if let Some(leaf) = leaf {
-                let persisted;
-                let current = if current.is_persisted() {
-                    persisted = crate::session_manager::SessionManager::open(previous.as_deref().expect("validated session file"), Some(current.session_dir()), None, None);
-                    &persisted
-                } else { current };
-                let mut parent = serde_json::Value::Null;
-                let mut pending_labels = Vec::new();
-                let mut replacements = std::collections::BTreeMap::new();
-                let mut retained_ids = Vec::new();
-                for mut entry in current.branch(Some(leaf)) {
-                    if entry["type"] == "label" {
-                        if let Some(id) = entry["id"].as_str() { pending_labels.push(id.to_owned()); }
-                        continue;
-                    }
-                    for id in pending_labels.drain(..) { replacements.insert(id, entry["id"].clone()); }
-                    entry["parentId"] = parent;
-                    if entry["type"] == "compaction"
-                        && let Some(replacement) = entry["firstKeptEntryId"].as_str().and_then(|id| replacements.get(id))
-                    { entry["firstKeptEntryId"] = replacement.clone(); }
-                    parent = entry["id"].clone();
-                    if let Some(id) = parent.as_str() { retained_ids.push(id.to_owned()); }
-                    manager.append_entry_raw(entry);
-                }
-                for id in retained_ids {
-                    if let Some(label) = current.label(&id) {
-                        let mut entry = serde_json::json!({"type":"label", "id":uuid::Uuid::new_v4().to_string(),
-                            "parentId":manager.leaf_id(), "targetId":id, "label":label});
-                        if let Some(timestamp) = current.label_timestamp(&id) {
-                            entry["timestamp"] = timestamp.into();
-                        }
-                        manager.append_entry_raw(entry);
-                    }
-                }
+            let Some(leaf) = leaf else {
+                let manager = if current.is_persisted() {
+                    crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
+                } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
+                return Ok((manager, self.services.cwd.clone()));
+            };
+            if current.is_persisted() {
+                let file = previous.as_deref().ok_or("Persisted session is missing a session file")?;
+                let mut manager = crate::session_manager::SessionManager::open(file, Some(current.session_dir()), None, None);
+                manager.create_branched_session(leaf)?.ok_or("Failed to create forked session")?;
+                let cwd = manager.cwd().to_owned();
+                Ok((manager, cwd))
+            } else {
+                let mut manager = current.clone();
+                manager.create_branched_session(leaf)?;
+                Ok((manager, self.services.cwd.clone()))
             }
-            manager
-        });
-        self.apply_replacement(manager, self.services.cwd.clone(), maho_ext_api::SessionReason::Fork).await?;
+        })?;
+        self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Fork).await?;
         Ok(crate::agent_session::AssistantEditResult { editor_text: (!include_entry).then(|| extract_user_message_text(&entry["message"]["content"])),
             ..Default::default() })
     }
