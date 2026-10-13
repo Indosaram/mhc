@@ -439,6 +439,8 @@ pub trait ModelRegistry: Send + Sync {
             maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
         })
     }
+    /// senpi `model.promptPreset`: the per-model preset from models.json `modelOverrides` or a model definition.
+    fn prompt_preset(&self, _model: &Model) -> Option<String> { None }
     fn has_configured_auth(&self, model: &Model) -> bool;
     /// senpi `registry.getProviderAuthStatus(provider)`: the configured/source status. The default
     /// body reports an absent accessor; the production registry overrides it with the runtime source.

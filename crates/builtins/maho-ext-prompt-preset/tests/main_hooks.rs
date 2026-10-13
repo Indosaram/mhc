@@ -147,3 +147,24 @@ async fn session_start_and_model_select_refresh_the_preset_header() {
  api.registered.handlers[&EventKind::ModelSelect][0](&mut select, &ctx).await.unwrap();
  assert!(ui.0.lock().unwrap().take().expect("header refreshed").is_none());
 }
+
+struct PresetRegistry;
+impl ModelRegistry for PresetRegistry {
+    fn get_all(&self) -> Vec<Model> { Vec::new() }
+    fn get_available(&self) -> Vec<Model> { Vec::new() }
+    fn find(&self, _: &str, _: &str) -> Option<Model> { None }
+    fn prompt_preset(&self, _: &Model) -> Option<String> { Some("glm-5.3".into()) }
+    fn has_configured_auth(&self, _: &Model) -> bool { false }
+    fn get_api_key_for_provider<'a>(&'a self, _: &'a str) -> ExtensionFuture<'a, Option<String>> { Box::pin(async { Ok(None) }) }
+}
+#[tokio::test]
+async fn model_prompt_preset_override_selects_the_preset() {
+ let mut ctx = context(); ctx.model_registry = Arc::new(PresetRegistry); ctx.cwd = "/nonexistent/preset-override".into(); ctx.agent_dir = ctx.cwd.clone();
+ ctx.is_project_trusted_fn = Arc::new(|| false);
+ let model: Model = serde_json::from_value(serde_json::json!({"id":"local-llama","name":"local-llama","api":"openai-completions","provider":"custom","baseUrl":"","reasoning":false,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":100000,"maxTokens":1000})).unwrap();
+ let mut api = ExtensionApi::new(LoadedExtension::new("preset", ctx.cwd.clone(), SourceInfo::default()), ExtensionSessionProfile::default(), EventBus::default(), ExtensionRuntime::default());
+ maho_ext_prompt_preset::PromptPreset.register(&mut api);
+ let mut select = ExtensionEvent::ModelSelect(ModelSelectEvent { model, previous_model: None, source: ModelSelectSource::Set, system_prompt: "base".into(), system_prompt_options: BuildSystemPromptOptions::default() });
+ let EventResult::ModelSelect(result) = api.registered.handlers[&EventKind::ModelSelect][0](&mut select, &ctx).await.unwrap() else { panic!("expected model select result") };
+ assert_eq!(result.system_prompt_name.as_deref(), Some("glm-5.3"));
+}
