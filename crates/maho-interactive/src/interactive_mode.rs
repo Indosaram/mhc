@@ -901,14 +901,68 @@ impl InteractiveMode {
         }
     }
 
-    async fn host_switch_session(&mut self, path: String) -> Result<bool, String> {
+    async fn host_switch_session(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
         match self.session_host.clone() {
-            Some(host) => match host.switch_session(path.clone()).await? {
+            Some(host) => match host.switch_session_with_cwd(path.clone(), cwd_override.clone()).await? {
                 crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
                 crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
-                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.switch_session(&path).await,
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.switch_session_with_cwd(&path, cwd_override.as_deref()).await,
             },
-            None => self.session.switch_session(&path).await,
+            None => self.session.switch_session_with_cwd(&path, cwd_override.as_deref()).await,
+        }
+    }
+
+    /// senpi `runtimeHost.importFromJsonl(path, cwdOverride)`.
+    async fn host_import_from_jsonl(&mut self, path: String, cwd_override: Option<String>) -> Result<bool, String> {
+        match self.session_host.clone() {
+            Some(host) => match host.import_from_jsonl(path.clone(), cwd_override.clone()).await? {
+                crate::interactive_session::ReplacementOutcome::Replaced => { self.refresh_tool_renderer_snapshots().await; self.request_remote_history(); self.request_remote_models(); self.request_remote_stats(); Ok(true) }
+                crate::interactive_session::ReplacementOutcome::Cancelled => Ok(false),
+                crate::interactive_session::ReplacementOutcome::LocalHandoff => self.session.import_from_jsonl(&path, cwd_override.as_deref()).await,
+            },
+            None => self.session.import_from_jsonl(&path, cwd_override.as_deref()).await,
+        }
+    }
+
+    /// senpi `promptForMissingSessionCwd`: a Yes/No confirm; Yes queues `confirm_command`, No
+    /// queues `cancel_command`.
+    fn prompt_for_missing_session_cwd(&mut self, issue: &maho_core::session_cwd::SessionCwdIssue, path: &str, confirm_command: &str, cancel_command: &str) {
+        let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
+        let selected = self.ui_reply.clone(); let cancelled = selected.clone();
+        let submissions = self.submissions.clone(); let cancel_submissions = self.submissions.clone();
+        let confirm = format!("{confirm_command} \"{path}\""); let cancel = cancel_command.to_owned(); let dismissed = cancel.clone();
+        let title = format!("Session cwd not found\n{}", maho_core::session_cwd::format_missing_session_cwd_prompt(issue));
+        self.ui_dialog = Some(Box::new(crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
+            Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { confirm.clone() } else { cancel.clone() }); selected.borrow_mut().take(); }),
+            Box::new(move || { cancel_submissions.borrow_mut().push_back(dismissed.clone()); cancelled.borrow_mut().take(); }), Default::default())));
+    }
+
+    /// senpi `handleResumeSession`: switch, prompting to continue in the current cwd when the
+    /// session's recorded cwd no longer exists.
+    async fn handle_resume_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
+            self.prompt_for_missing_session_cwd(&issue, &path, "/resume-cwd", "/resume-cwd-cancel");
+            return Ok(());
+        }
+        let in_current_cwd = cwd_override.is_some();
+        if self.host_switch_session(path, cwd_override).await? {
+            self.rebuild_history(); self.editor.editor.set_text("");
+            self.show_status(if in_current_cwd { "Resumed session in current cwd" } else { "Resumed session" }.into());
+        }
+        Ok(())
+    }
+
+    /// senpi `handleImportCommand` after its confirm: import through the runtime host, prompting
+    /// to continue in the current cwd when the imported session's cwd no longer exists.
+    async fn handle_import_session(&mut self, path: String, cwd_override: Option<String>) -> Result<(), String> {
+        if cwd_override.is_none() && let Some(issue) = missing_session_cwd_issue(&path, &self.host_cwd()) {
+            self.prompt_for_missing_session_cwd(&issue, &path, "/import-cwd", "/import-cancel");
+            return Ok(());
+        }
+        match self.host_import_from_jsonl(path.clone(), cwd_override).await {
+            Ok(true) => { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status(format!("Session imported from: {path}")); Ok(()) }
+            Ok(false) => { self.show_status("Import cancelled".into()); Ok(()) }
+            Err(error) => Err(format!("Failed to import session: {error}")),
         }
     }
 
@@ -1277,22 +1331,16 @@ impl InteractiveMode {
         }
         if text.trim().starts_with("/import-confirm ") {
             let path = get_path_command_argument(text.trim(), "/import-confirm").ok_or("Usage: /import <path.jsonl>")?;
-            let resolved = std::path::PathBuf::from(&path);
-            if !resolved.exists() {
-                return Err(maho_core::agent_session_runtime::SessionImportFileNotFoundError { file_path: resolved.to_string_lossy().into_owned() }.to_string());
-            }
-            let session_dir = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
-            std::fs::create_dir_all(&session_dir).map_err(|error| format!("Failed to import session: {error}"))?;
-            let destination = prepare_import_destination(&resolved, std::path::Path::new(&session_dir)).map_err(|error| format!("Failed to import session: {error}"))?;
-            if destination != resolved {
-                std::fs::copy(&resolved, &destination).map_err(|error| format!("Failed to import session: {error}"))?;
-            }
-            if self.host_switch_session(destination.to_string_lossy().into_owned()).await? {
-                self.rebuild_history(); self.editor.editor.set_text("");
-                self.show_status(format!("Session imported from: {path}"));
-            } else { self.show_status("Import cancelled".into()); }
+            self.handle_import_session(path, None).await?;
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/import-cwd ") {
+            let path = get_path_command_argument(text.trim(), "/import-cwd").ok_or("Usage: /import <path.jsonl>")?;
+            let cwd = self.host_cwd();
+            self.handle_import_session(path, Some(cwd)).await?;
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/import-cancel" { self.show_status("Import cancelled".into()); return Ok(PromptDisposition::Handled); }
         if let Some(command) = text.strip_prefix('!') {
             let (command, excluded) = command.strip_prefix('!').map_or((command, false), |command| (command, true));
             let component = Rc::new(RefCell::new(crate::components::bash_execution::BashExecutionComponent::new(command, excluded, self.theme.clone())));
@@ -1368,9 +1416,16 @@ impl InteractiveMode {
         }
         if text.trim().starts_with("/resume ") {
             let path = get_path_command_argument(text.trim(), "/resume").ok_or("Missing session path")?;
-            if self.host_switch_session(path).await? { self.rebuild_history(); self.editor.editor.set_text(""); self.show_status("Resumed session".into()); }
+            self.handle_resume_session(path, None).await?;
             return Ok(PromptDisposition::Handled);
         }
+        if text.trim().starts_with("/resume-cwd ") {
+            let path = get_path_command_argument(text.trim(), "/resume-cwd").ok_or("Missing session path")?;
+            let cwd = self.host_cwd();
+            self.handle_resume_session(path, Some(cwd)).await?;
+            return Ok(PromptDisposition::Handled);
+        }
+        if text.trim() == "/resume-cwd-cancel" { self.show_status("Resume cancelled".into()); return Ok(PromptDisposition::Handled); }
         if let Some(id) = text.trim().strip_prefix("/fork ") {
             let result = self.host_fork(id.trim().to_owned(), false).await?;
             if !result.cancelled { self.rebuild_history(); self.editor.editor.set_text(result.editor_text.as_deref().unwrap_or("")); self.show_status("Forked to new session".into()); }
@@ -2109,12 +2164,12 @@ impl InteractiveMode {
         if text == "/import" || text.starts_with("/import ") {
             let path = get_path_command_argument(text, "/import").ok_or("Usage: /import <path.jsonl>")?;
             let (reply, receiver) = tokio::sync::oneshot::channel(); self.local_dialog_reply = Some(receiver); *self.ui_reply.borrow_mut() = Some(reply);
-            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone();
+            let selected = self.ui_reply.clone(); let cancelled = selected.clone(); let submissions = self.submissions.clone(); let cancel_submissions = self.submissions.clone();
             let confirm_path = path.clone();
             let title = format!("Import session\nReplace current session with {path}?");
             let component = crate::components::extension_selector::ExtensionSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), &title, vec!["Yes".into(), "No".into()],
-                Box::new(move |choice| { if choice == "Yes" { submissions.borrow_mut().push_back(format!("/import-confirm \"{confirm_path}\"")); } selected.borrow_mut().take(); }),
-                Box::new(move || { cancelled.borrow_mut().take(); }), Default::default());
+                Box::new(move |choice| { submissions.borrow_mut().push_back(if choice == "Yes" { format!("/import-confirm \"{confirm_path}\"") } else { "/import-cancel".to_owned() }); selected.borrow_mut().take(); }),
+                Box::new(move || { cancel_submissions.borrow_mut().push_back("/import-cancel".to_owned()); cancelled.borrow_mut().take(); }), Default::default());
             self.ui_dialog = Some(Box::new(component));
             return Ok(true);
         }
@@ -3343,6 +3398,16 @@ pub(crate) fn format_debug_log(timestamp: &str, width: usize, height: usize, lin
     data
 }
 
+/// senpi `getMissingSessionCwdIssue` for a session file not yet opened: the header's recorded cwd
+/// when it is set and no longer exists, read without opening (and possibly migrating) the file.
+pub fn missing_session_cwd_issue(path: &str, fallback_cwd: &str) -> Option<maho_core::session_cwd::SessionCwdIssue> {
+    if !std::path::Path::new(path).exists() { return None; }
+    let entries = maho_core::session_manager::load_entries_from_file(path);
+    let session_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(serde_json::Value::as_str)?.to_owned();
+    if session_cwd.is_empty() || std::path::Path::new(&session_cwd).exists() { return None; }
+    Some(maho_core::session_cwd::SessionCwdIssue { session_file: Some(path.to_owned()), session_cwd, fallback_cwd: fallback_cwd.to_owned() })
+}
+
 /// senpi `importFromJsonl` destination planning: imports are stored beside the
 /// current session, reusing the source path when it already lives there and
 /// otherwise taking the first free `<stem>[-N].<ext>` name so nothing is clobbered.
@@ -3403,6 +3468,21 @@ mod tests {
         let data = format_debug_log("t", 10, 10, &["\u{1b}[31mred\u{1b}[0m".into()], &[]);
         assert!(data.contains("(w=3)"));
         assert!(data.contains("\\u001b[31mred"));
+    }
+
+    #[test]
+    fn missing_session_cwd_issue_reports_only_a_vanished_recorded_cwd() {
+        let directory = tempfile::tempdir().expect("directory");
+        let fallback = directory.path().to_string_lossy().into_owned();
+        let gone = directory.path().join("gone").to_string_lossy().into_owned();
+        let missing = directory.path().join("missing.jsonl");
+        std::fs::write(&missing, format!("{}\n", serde_json::json!({"type":"session","id":"s","cwd":gone}))).expect("missing-cwd session");
+        let missing = missing.to_string_lossy().into_owned();
+        assert_eq!(missing_session_cwd_issue(&missing, &fallback), Some(maho_core::session_cwd::SessionCwdIssue { session_file: Some(missing.clone()), session_cwd: gone, fallback_cwd: fallback.clone() }));
+        let present = directory.path().join("present.jsonl");
+        std::fs::write(&present, format!("{}\n", serde_json::json!({"type":"session","id":"s","cwd":fallback}))).expect("present-cwd session");
+        assert_eq!(missing_session_cwd_issue(&present.to_string_lossy(), &fallback), None);
+        assert_eq!(missing_session_cwd_issue(&directory.path().join("absent.jsonl").to_string_lossy(), &fallback), None);
     }
 
     #[test]
