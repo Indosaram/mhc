@@ -3093,6 +3093,8 @@ impl AgentSession {
                     self.state().retry_abort_controller = None;
                     self.state().retry_attempt = 0;
                     self.reset_hint_tier_state();
+                    // senpi: abort during the retry sleep settles the run before auto_retry_end.
+                    self.emit_agent_settled().await;
                     self.emit(AgentSessionEvent::AutoRetryEnd { success: false, attempt, final_error: Some("Retry cancelled".to_owned()) });
                     return Ok(());
                 }
@@ -12102,13 +12104,20 @@ mod tests {
         });
         let session = retry_session(vec![failed], 2);
         let cancelling = session.clone();
+        let terminals = Arc::new(Mutex::new(Vec::new()));
+        let captured = terminals.clone();
         let _subscription = session.subscribe(Arc::new(move |event| {
             if matches!(event, AgentSessionEvent::AutoRetryStart { .. }) { cancelling.abort_retry(); }
+            if matches!(event, AgentSessionEvent::AgentSettled | AgentSessionEvent::AutoRetryEnd { .. }) { lock(&captured).push(event.clone()); }
         }));
         tokio::time::timeout(std::time::Duration::from_secs(5), session.prompt("input", Default::default()))
             .await.expect("bounded prompt").expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 2);
+        let terminals = lock(&terminals);
+        assert_eq!(terminals.len(), 2);
+        assert!(matches!(terminals[0], AgentSessionEvent::AgentSettled));
+        assert!(matches!(terminals[1], AgentSessionEvent::AutoRetryEnd { success: false, .. }));
     }
 
     #[tokio::test]
