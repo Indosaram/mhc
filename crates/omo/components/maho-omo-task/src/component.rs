@@ -117,7 +117,13 @@ impl TaskComponent {
                         drop(delivery);
                         component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         if let Some(team)=team && let Err(error)=team.pollers.tick() { maho_ext_api::diagnostic(&format!("task session-start lead poll failed: {error}")); }
+                        // Upstream order: statusUi.scheduleSync() then taskRpc.attach().
+                        component.status.schedule_sync();
                         if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.attach(); }
+                        // Native-only tail: arm completion waiters for still-running tasks. Its terminal
+                        // re-delivery cannot double-notify what reconcile_unnotified_notifications already
+                        // queued: the notifier skips notified_epoch >= run_epoch and in-flight `pending`
+                        // keys, and owned-member liveness is deduped by `terminal_epochs`.
                         component.sync();
                     }
                     ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.channels.emit_shutdown().await.map_err(maho_ext_api::ExtensionFailure::new)?; component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
