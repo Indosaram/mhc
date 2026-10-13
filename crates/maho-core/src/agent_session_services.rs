@@ -170,6 +170,7 @@ pub fn create_agent_session_services(mut options: CreateAgentSessionServicesOpti
             auth_path: Some(auth_path.clone()),
             credentials: Some(Arc::clone(&auth_storage)),
             providers: None,
+            ..Default::default()
         })
     });
     let auth_storage = model_runtime.credentials.clone();

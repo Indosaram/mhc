@@ -16,6 +16,8 @@ pub struct CreateModelRuntimeOptions {
     pub auth_path:Option<PathBuf>,
     pub credentials: Option<Arc<crate::auth_storage::AuthStorage>>,
     pub providers: Option<Vec<Arc<dyn Provider>>>,
+    /// senpi `agentDir`: where `credential-pool-state.json` lives (else beside `auth_path`).
+    pub agent_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -270,6 +272,8 @@ pub struct ModelRuntime {
     provider_semaphores: Arc<crate::provider_concurrency::ProviderSemaphores>,
     provider_settings: Arc<RwLock<Option<serde_json::Value>>>,
     provider_settings_subscription: Arc<std::sync::Mutex<Option<crate::settings_manager::ProviderSettingsSubscription>>>,
+    /// senpi `poolStatePath` repository: the credential-pool sidecar written by rotating requests.
+    pool_repository: Arc<crate::credential_pool::state_store::CredentialSlotRepository>,
 }
 
 /// senpi `CredentialSynchronizationError`: the credential change committed but recomposing or
@@ -285,6 +289,10 @@ impl ModelRuntime {
         let credentials = options.credentials.unwrap_or_else(|| Arc::new(options.auth_path.as_ref().map_or_else(||crate::auth_storage::AuthStorage::in_memory(Default::default()),|path|crate::auth_storage::AuthStorage::create(&path.to_string_lossy()))));
         let config = Arc::new(RwLock::new(ModelConfig::load_sync_with_migration(options.models_path.as_deref(),!crate::lockfile_policy::facts_lock_broker_enabled())));
         let extensions = Arc::new(RwLock::new(IndexMap::new()));
+        let pool_state_path = options.agent_dir.as_ref().map(|dir| dir.join("credential-pool-state.json"))
+            .or_else(|| options.auth_path.as_ref().and_then(|path| path.parent()).map(|dir| dir.join("credential-pool-state.json")));
+        let pool_repository = Arc::new(pool_state_path.map_or_else(crate::credential_pool::state_store::CredentialSlotRepository::default_path,
+            |path| crate::credential_pool::state_store::CredentialSlotRepository::new(&path.to_string_lossy())));
         let store: Arc<dyn CredentialStore> = Arc::new(AuthStorageCredentialStore {credentials:credentials.clone(),auth_path:options.auth_path});
         let auth = RuntimeAuth {config:config.clone(),extensions:extensions.clone(),credentials:credentials.clone(),store};
         let provider_settings: Arc<RwLock<Option<serde_json::Value>>> = Arc::new(RwLock::new(None));
@@ -298,6 +306,7 @@ impl ModelRuntime {
             native:IndexMap::new(), extensions, errors:Arc::new(RwLock::new(IndexMap::new())),models_path:options.models_path,credentials,
             credential_operations:Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             provider_semaphores, provider_settings, provider_settings_subscription:Arc::new(std::sync::Mutex::new(None)),
+            pool_repository,
         };
         runtime.rebuild_providers(); runtime
     }
@@ -565,22 +574,68 @@ impl ModelRuntime {
         if let Some(tier)=compatibility.service_tier {request_model.service_tier=Some(tier);}
         (request_model,config,extension)
     }
+    /// senpi `couldRotateCredentials`: rotation engages only when nothing pins the request to one
+    /// credential (an explicit or runtime key, `credentials.rotation: false`) and the provider can
+    /// hold more than one slot.
+    fn could_rotate_credentials(&self,model:&Model,request:&maho_ai::types::ProviderRequestOptions)->Option<RotationContext> {
+        if request.api_key.is_some() || self.credentials.has_runtime_api_key(&model.provider) {return None;}
+        let policy=self.config.read().unwrap_or_else(|p|p.into_inner()).get_provider(&model.provider).and_then(|provider|provider.credentials.clone());
+        if policy.as_ref().and_then(|policy|policy.rotation)==Some(false) {return None;}
+        let context=RotationContext {credentials:self.credentials.clone(),repository:self.pool_repository.clone(),policy,env:request.env.clone()};
+        if self.credentials.get(&model.provider).is_some() {return Some(context);}
+        let env=context.env_lookup();
+        let slots=crate::credential_pool::env_slots::discover_env_slots(&model.provider,&*env).len()+context.policy_slot_count();
+        (slots>1).then_some(context)
+    }
+    fn rotating_stream(model:&Model,rotation:Option<RotationContext>,affinity_key:Option<String>,models:Models,semaphores:Arc<crate::provider_concurrency::ProviderSemaphores>,
+        request:maho_ai::types::ProviderRequestOptions,call:ProviderCall)->impl std::future::Future<Output=Result<(AssistantMessageEventStream,Option<crate::provider_concurrency::ProviderPermit>),String>>+Send+'static {
+        let model=model.clone();
+        async move {
+            let sources=match rotation {Some(rotation)=>rotation.sources(&model.provider).await,None=>None};
+            if let Some(sources)=sources {
+                let attempt_model=model.clone();
+                let run:crate::credential_pool::rotation_stream::RunRotationAttempt=Arc::new(move |slot:crate::credential_pool::rotation_stream::RotationSlot| -> crate::credential_pool::rotation_stream::RotationAttemptFuture {
+                    let (models,semaphores,model,request,call)=(models.clone(),semaphores.clone(),attempt_model.clone(),request.clone(),call.clone());
+                    Box::pin(async move {
+                        let (provider,request_model,request)=prepare_slot_request(&models,&model,&slot,request).await.map_err(|message|serde_json::json!({"message":message}))?;
+                        let signal=request.signal.clone();
+                        let (stream,permit)=semaphores.bracket(&request_model.provider,signal.as_ref(),|| call(CallTarget::Provider(provider.clone()),&request_model,request)).await
+                            .map_err(|reason|serde_json::json!({"name":reason.name,"message":reason.message}))?;
+                        Ok(hold_permit(stream,permit))
+                    })
+                });
+                return Ok((crate::credential_pool::rotation_stream::stream_with_credential_rotation(&model,sources,affinity_key,run),None));
+            }
+            let signal=request.signal.clone();
+            semaphores.bracket(&model.provider,signal.as_ref(),|| call(CallTarget::Models(models.clone()),&model,request)).await.map_err(|reason| reason.message)
+        }
+    }
     pub fn stream(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options);
         let models=self.models.clone();let context=context.clone();let original=model.clone();let semaphores=self.provider_semaphores.clone();
+        let rotation=self.could_rotate_credentials(model,&options.request);
         Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options).await?;
-            let signal=options.request.signal.clone();
-            semaphores.bracket(&request_model.provider,signal.as_ref(),|| models.stream(&request_model,&context,Some(options),Default::default())).await.map_err(|reason| reason.message)
+            let request=options.request.clone();let affinity=options.session_id.clone();
+            let call:ProviderCall=Arc::new(move |target:CallTarget,model:&Model,request:maho_ai::types::ProviderRequestOptions| {
+                let mut options=options.clone();options.request=request;
+                match target {CallTarget::Provider(provider)=>provider.stream(model,&context,Some(options)),CallTarget::Models(models)=>models.stream(model,&context,Some(options),Default::default())}
+            });
+            Self::rotating_stream(&request_model,rotation,affinity,models,semaphores,request,call).await
         })
     }
     pub fn stream_simple(&self,model:&Model,context:&Context,options:Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
         let mut options=options.unwrap_or_default();let (request_model,config,extension)=self.prepare_request(model,&mut options.stream);
         let models=self.models.clone();let context=context.clone();let original=model.clone();let semaphores=self.provider_semaphores.clone();
+        let rotation=self.could_rotate_credentials(model,&options.stream.request);
         Self::lazy_request(model,async move {
             Self::apply_configured_headers(&original,config.as_ref(),extension.as_ref(),&mut options.stream).await?;
-            let signal=options.stream.request.signal.clone();
-            semaphores.bracket(&request_model.provider,signal.as_ref(),|| models.stream_simple(&request_model,&context,Some(options),Default::default())).await.map_err(|reason| reason.message)
+            let request=options.stream.request.clone();let affinity=options.stream.session_id.clone();
+            let call:ProviderCall=Arc::new(move |target:CallTarget,model:&Model,request:maho_ai::types::ProviderRequestOptions| {
+                let mut options=options.clone();options.stream.request=request;
+                match target {CallTarget::Provider(provider)=>provider.stream_simple(model,&context,Some(options)),CallTarget::Models(models)=>models.stream_simple(model,&context,Some(options),Default::default())}
+            });
+            Self::rotating_stream(&request_model,rotation,affinity,models,semaphores,request,call).await
         })
     }
     async fn apply_configured_headers(model:&Model,config:Option<&crate::model_config_schema::ModelsJsonProvider>,extension:Option<&ProviderConfigInput>,options:&mut StreamOptions)->Result<(),String> {
@@ -601,6 +656,124 @@ impl ModelRuntime {
         });stream
     }
     pub async fn complete(&self,model:&Model,context:&Context,options:Option<StreamOptions>) -> Result<AssistantMessage,maho_ai::utils::event_stream::StreamError> {self.stream(model,context,options).result().await}
+}
+
+/// Where a prepared request goes: straight to the provider (rotation already resolved the slot's
+/// auth) or through the collection, which resolves auth itself.
+enum CallTarget { Provider(Arc<dyn Provider>), Models(Models) }
+type ProviderCall = Arc<dyn Fn(CallTarget, &Model, maho_ai::types::ProviderRequestOptions) -> AssistantMessageEventStream + Send + Sync>;
+
+/// The inputs `credentialRotationSources` needs, captured synchronously at admission.
+struct RotationContext {
+    credentials: Arc<crate::auth_storage::AuthStorage>,
+    repository: Arc<crate::credential_pool::state_store::CredentialSlotRepository>,
+    policy: Option<crate::model_config_schema::ModelsJsonCredentialPolicy>,
+    env: Option<maho_ai::types::ProviderEnv>,
+}
+
+impl RotationContext {
+    /// senpi `(name) => options?.env?.[name] ?? process.env[name]`.
+    fn env_lookup(&self) -> Arc<dyn Fn(&str) -> Option<String> + Send + Sync> {
+        let env = self.env.clone();
+        Arc::new(move |name| env.as_ref().and_then(|env| env.get(name).cloned()).or_else(|| std::env::var(name).ok()))
+    }
+    fn policy_slot_count(&self) -> usize {
+        self.policy.as_ref().and_then(|policy| policy.slots.as_ref()).map_or(0, IndexMap::len)
+    }
+    fn rotation_policy(&self) -> crate::credential_pool::rotation_stream::RotationPolicy {
+        use crate::credential_pool::rotation_stream::{PolicySlotRef, RotationPolicy};
+        let Some(policy) = &self.policy else { return RotationPolicy::default() };
+        RotationPolicy {
+            affinity: policy.affinity,
+            cooldown_base_ms: policy.cooldown_base_ms.map(|ms| ms as u64),
+            cooldown_cap_ms: policy.cooldown_cap_ms.map(|ms| ms as u64),
+            slots: policy.slots.iter().flatten().map(|(name, slot)| (name.clone(), PolicySlotRef { env: slot.env.clone(), value: slot.value.clone() })).collect(),
+        }
+    }
+    /// senpi `credentialRotationSources`: `Some` only when the provider really holds more than one
+    /// rotation slot (`mightHoldCredentialPool`, then the leaseless slot listing).
+    async fn sources(&self, provider_id: &str) -> Option<crate::credential_pool::rotation_stream::OwnedRotationSources> {
+        let raw = self.credentials.get(provider_id);
+        let env = self.env_lookup();
+        let might_hold_pool = match &raw {
+            Some(raw) => raw.get("accounts").and_then(serde_json::Value::as_array).is_some_and(|accounts| accounts.len() > 1) || self.policy_slot_count() > 0,
+            None => crate::credential_pool::env_slots::discover_env_slots(provider_id, &*env).len() + self.policy_slot_count() > 1,
+        };
+        if !might_hold_pool { return None; }
+        let credential = match raw {
+            Some(mut raw) => {
+                // The pooled shape keeps an integer flat expiry; a fractional one only affects the
+                // flat fallback slot's metadata, never its material.
+                if let Some(object) = raw.as_object_mut() && object.get("expires").is_some_and(|expires| !expires.is_i64()) {
+                    object.remove("expires");
+                }
+                Some(serde_json::from_value::<crate::credential_pool::slots::PooledCredential>(raw).ok()?)
+            }
+            None => None,
+        };
+        let sources = crate::credential_pool::rotation_stream::OwnedRotationSources {
+            provider_id: provider_id.to_owned(), credential, env, repository: self.repository.clone(), policy: self.rotation_policy(),
+        };
+        let slots = sources.list_without_leases().await.ok()?;
+        (slots.len() > 1).then_some(sources)
+    }
+}
+
+/// senpi `prepareRequest(model, options, slotAuth)`: resolve one rotation slot's auth (env lane:
+/// its key; stored lane: its slot) and apply it to the request like the collection's `applyAuth`.
+async fn prepare_slot_request(
+    models: &Models,
+    model: &Model,
+    slot: &crate::credential_pool::rotation_stream::RotationSlot,
+    mut request: maho_ai::types::ProviderRequestOptions,
+) -> Result<(Arc<dyn Provider>, Model, maho_ai::types::ProviderRequestOptions), String> {
+    use crate::credential_pool::rotation_stream::RotationLane;
+    let provider = models.get_provider(&model.provider).ok_or_else(|| format!("Unknown provider: {}", model.provider))?;
+    let overrides = AuthResolutionOverrides {
+        api_key: (slot.lane == RotationLane::Env).then(|| slot.env_key.clone()).flatten(),
+        slot_name: (slot.lane == RotationLane::Stored).then(|| slot.slot.name.clone()),
+        env: request.env.clone(),
+        signal: request.signal.clone(),
+        ..Default::default()
+    };
+    let resolution = models.get_auth_for_model(model, &overrides).await.map_err(|error| error.message)?
+        .ok_or_else(|| maho_ai::models::provider_not_configured_message(&model.provider))?;
+    let mut headers = resolution.auth.headers.clone();
+    if let Some(overrides) = request.headers.take() {
+        let merged = headers.get_or_insert_with(Default::default);
+        for (name, value) in overrides {
+            merged.retain(|existing, _| !existing.eq_ignore_ascii_case(&name));
+            merged.insert(name, value);
+        }
+    }
+    let env = match (&resolution.env, &request.env) {
+        (None, None) => None,
+        (base, extra) => { let mut env = base.clone().unwrap_or_default(); env.extend(extra.clone().unwrap_or_default()); Some(env) }
+    };
+    let mut request_model = model.clone();
+    if let Some(base_url) = resolution.auth.base_url { request_model.base_url = base_url; }
+    request.api_key = overrides.api_key.or(resolution.auth.api_key);
+    request.headers = headers;
+    request.env = env;
+    Ok((provider, request_model, request))
+}
+
+/// Keeps a provider permit until the attempt's stream settles.
+fn hold_permit(source: AssistantMessageEventStream, permit: Option<crate::provider_concurrency::ProviderPermit>) -> AssistantMessageEventStream {
+    let Some(permit) = permit else { return source };
+    let target = AssistantMessageEventStream::assistant();
+    let forwarded = target.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        loop {
+            match source.next().await {
+                Ok(Some(event)) => target.push(event),
+                Ok(None) => { target.end(None); break; }
+                Err(error) => { target.fail(error); break; }
+            }
+        }
+    });
+    forwarded
 }
 
 #[cfg(test)]
@@ -789,6 +962,46 @@ mod tests {
         let options = maho_ai::auth::types::AuthOperationOptions { signal: Some(controller.signal()) };
         assert!(runtime.set_runtime_api_key("p", "k", options).await.is_err());
         assert!(!runtime.credentials.has_runtime_api_key("p"));
+    }
+
+    /// Fails with a 401 for the key "bad" and completes for any other key, recording the keys used.
+    struct KeyedStreams(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl maho_ai::types::ProviderStreams for KeyedStreams {
+        fn stream(&self, model: &Model, _: &Context, options: Option<StreamOptions>) -> AssistantMessageEventStream {
+            let key = options.and_then(|options| options.request.api_key).unwrap_or_default();
+            self.0.lock().expect("keys").push(key.clone());
+            if key == "bad" { return maho_ai::utils::lazy::error_stream(model, "401 invalid api key"); }
+            let mut message = maho_ai::utils::lazy::setup_error_message(model, "");
+            message.error_message = None;
+            message.stop_reason = maho_ai::types::StopReason::Stop;
+            let stream = AssistantMessageEventStream::assistant();
+            stream.push(maho_ai::types::AssistantMessageEvent::Done { reason: maho_ai::types::DoneReason::Stop, message: message.clone() });
+            stream.end(Some(message));
+            stream
+        }
+        fn stream_simple(&self, model: &Model, context: &Context, options: Option<SimpleStreamOptions>) -> AssistantMessageEventStream {
+            self.stream(model, context, options.map(|options| options.stream))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_api_key_pool_rotates_past_a_rejected_slot_and_records_the_block() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let keys = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let model = Model { id: "sol".into(), provider: "pool".into(), api: "openai-completions".into(), base_url: "http://localhost/v1".into(), ..maho_ai::providers::faux::faux_provider(Default::default()).get_model(None).expect("model") };
+        let provider = maho_ai::models::create_provider(maho_ai::models::CreateProviderOptions {
+            id: "pool".into(), name: None, base_url: None, headers: None, auth: None, models: vec![model.clone()],
+            fetch_models: None, restore_models: None, filter_models: None,
+            api: maho_ai::models::ProviderApi::Single(std::sync::Arc::new(KeyedStreams(keys.clone()))),
+        });
+        let runtime = ModelRuntime::create_sync(CreateModelRuntimeOptions { providers: Some(vec![provider]), agent_dir: Some(dir.path().to_path_buf()), ..Default::default() });
+        runtime.credentials.set("pool", Some(serde_json::json!({"type":"api_key","key":"bad","accounts":[
+            {"name":"a","key":"bad"},{"name":"b","key":"good"}],"pinned":"a"}))).expect("seed");
+        let result = runtime.complete(&model, &Context::default(), None).await.expect("rotated completion");
+        assert_eq!(result.stop_reason, maho_ai::types::StopReason::Stop);
+        assert_eq!(*keys.lock().expect("keys"), vec!["bad".to_owned(), "good".to_owned()]);
+        let sidecar = std::fs::read_to_string(dir.path().join("credential-pool-state.json")).expect("sidecar written");
+        assert!(sidecar.contains("auth_error"));
     }
 
     #[tokio::test]
