@@ -243,6 +243,8 @@ pub fn native_rpc_options(
     inherited_extensions: Vec<String>,
 ) -> RpcProcessRunnerOptions {
     parent_env.insert("MAHO_CODING_AGENT_DIR".into(), agent_dir.into());
+    // Upstream deletes the consumed prefill from process.env, so later children never inherit it.
+    if maho_ext_orca_prefill::process_prefill_taken() { parent_env.remove(maho_ext_orca_prefill::PREFILL_ENV); }
     let executable = executable.to_string_lossy().into_owned();
     let native = executable.clone();
     let runtime = RpcSpawnRuntime {
