@@ -86,6 +86,10 @@ impl Provider for DevinProvider {
         self.provider.retry_policy()
     }
 
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        self.provider.auth()
+    }
+
     fn get_models(&self) -> Vec<Model> {
         self.models.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
