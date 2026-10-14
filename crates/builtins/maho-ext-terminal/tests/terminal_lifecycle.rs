@@ -127,3 +127,20 @@ async fn a_context_without_a_session_dir_keeps_no_durable_terminal_state() {
     shutdown(&api,&ctx,SessionReason::Quit).await;
     assert!(!state_dir(dir.path()).exists(),"no session dir means no lease and no manifest");
 }
+
+#[tokio::test]
+async fn a_persistent_monitor_created_through_the_registered_tool_is_recorded_in_the_manifest() {
+    let dir=tempfile::tempdir().unwrap();let ctx=context(dir.path());
+    let manifest=state_dir(dir.path()).join(format!("{}.json",encoded()));
+    let api=api(dir.path());
+    start(&api,&ctx,SessionReason::Startup).await;
+    let monitor=api.registered.tools.iter().find(|tool|tool.definition.name=="monitor").expect("monitor tool");
+    let result=(monitor.definition.execute)(maho_tools::definition::ToolCall {id:"durable",params:serde_json::json!({"description":"stdin watch","command":"cat","persistent":true}),signal:Default::default(),on_update:None,context:None}).await.expect("persistent monitor starts");
+    let monitor_id=result.details.as_ref().and_then(|details|details["monitor_id"].as_str()).expect("monitor id").to_owned();
+    shutdown(&api,&ctx,SessionReason::Quit).await;
+    let saved:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).expect("manifest written")).expect("manifest json");
+    let monitors=saved["monitors"].as_array().expect("monitors");
+    assert_eq!(monitors.len(),1,"the tool-created durable monitor is recorded: {saved}");
+    assert_eq!(monitors[0]["monitorId"],monitor_id);
+    assert_eq!(monitors[0]["suspended"],true);
+}

@@ -52,7 +52,7 @@ type FactsReconcileReceipt=Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<
 struct WiredRootExtension{
     component:Arc<maho_omo_memory::index::MemoryComponent>,
     wiring:Arc<tokio::sync::Mutex<maho_omo_memory::wiring::MemoryWiring>>,
-    reconciled:Arc<Mutex<Vec<String>>>,
+    reconciled:Arc<Mutex<Vec<MemoryIdentityContext>>>,
     facts_reconciled:FactsReconcileReceipt,
 }
 struct TrackedFactsExtractor{
@@ -75,7 +75,7 @@ impl Extension for WiredRootExtension{
                 resolve_model:Arc::new(||Ok(maho_omo_memory::worker::resolve_model::ReflectionModelResolution::CategoryUnavailable{category:"quick".into(),cause:"no_registry",attempted_chain:None,missing_providers:None})),env:Default::default(),config_sources:vec![],launch:maho_omo_memory::worker::model_preflight::Launcher{command:"must-not-run".into(),prefix_args:vec![]},supervisor_command:"must-not-run".into(),supervisor_args:vec![],deadline_ms:900000,termination_grace_ms:5000,max_output_bytes:1024,people:memory_core::facts::person_routing::FactsPeopleRouting{enabled:true,max_entries:40,max_entry_chars:200},sandbox:None,warn:Arc::new(|error|panic!("{error}")),
             },Arc::new(||0));options.extractor=Some(Box::new(TrackedFactsExtractor{inner:options.extractor.take().unwrap_or_else(||panic!("native facts extractor missing")),reconciled:facts_reconciled.clone()}));Ok(options)}),
             initial_status:Arc::new(|_,_|{}),
-            reconcile:Arc::new(move|identity|{reconciled.lock().unwrap_or_else(|error|panic!("reconcile capture: {error}")).push(identity.identity);Box::pin(async{Ok(())})}),
+            reconcile:Arc::new(move|identity|{reconciled.lock().unwrap_or_else(|error|panic!("reconcile capture: {error}")).push(identity);Box::pin(async{Ok(())})}),
             now:Arc::new(||0.0),warn:Arc::new(|error|panic!("{error}")),
         },|api|assert!(api.registered.handlers.contains_key(&EventKind::AgentSettled),"settled journal handler must precede static trigger wiring")).unwrap_or_else(|error|panic!("native wiring registration: {error}"));
     }
@@ -92,8 +92,9 @@ async fn native_assembled_root_reconciles_and_enqueues_settled_journal(){
     tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5),facts_receipt).await.unwrap().unwrap().unwrap();
     let identities=reconciled.lock().unwrap().clone();assert_eq!(identities.len(),1);
-    let mut wiring=wiring.lock().await;let context=wiring.runtime.contexts.values().next().unwrap().clone();
-    let pending=wiring.runtime.existing_facts_wiring(&identities[0]).unwrap().reconcile_pending();assert_eq!(pending.len(),1);
+    // session_shutdown unbinds the session (pin `wiring-runtime.ts:51-52` resolves via the session state).
+    let mut wiring=wiring.lock().await;assert!(wiring.runtime.contexts.is_empty());let context=identities[0].clone();
+    let pending=wiring.runtime.existing_facts_wiring(&context.identity).unwrap().reconcile_pending();assert_eq!(pending.len(),1);
     let journal=memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(context.identity_paths.transcripts.join(&pending[0].conversation_id)));
     assert_eq!(journal.get_state().unwrap().total_completed_steps,1);assert!(!context.repo_path().exists());
 }

@@ -60,7 +60,8 @@ pub struct MemoryRuntime {
     /// Retained contexts bind member tools to an explicit session and are pruned on shutdown.
     contexts: Mutex<BTreeMap<String, ExtensionContext>>,
     workers: Mutex<BTreeMap<String, Arc<IdentityWorker>>>,
-    ledgers: Mutex<BTreeMap<String, Arc<Mutex<maho_omo_memory::context::MemoryPendingLedger>>>>,
+    /// Per-bind write latch (pin `wiring-memory-write.ts:20-38` reads `SessionState`, rebuilt at
+    /// `session_start`); entries are dropped on `session_start` and `session_shutdown`.
     write_sessions: Mutex<BTreeMap<String, Arc<Mutex<maho_omo_memory::wiring_memory_write::MemoryWriteSession>>>>,
     nudge: Arc<Mutex<maho_omo_memory::nudge_wiring::MemoryNudgeWiring>>,
     skills: maho_omo_memory::skills_usage_wiring::SkillsUsageTrackers,
@@ -82,8 +83,14 @@ impl MemoryRuntime {
             }));
         }
         let this = self.clone();
+        api.on(maho_ext_api::EventKind::SessionStart, Arc::new(move |_, context| {
+            this.write_sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(context.session_manager.session_id());
+            Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+        }));
+        let this = self.clone();
         api.on(maho_ext_api::EventKind::SessionShutdown, Arc::new(move |_, context| {
             this.contexts.lock().unwrap_or_else(PoisonError::into_inner).remove(context.session_manager.session_id());
+            this.write_sessions.lock().unwrap_or_else(PoisonError::into_inner).remove(context.session_manager.session_id());
             Box::pin(async { Ok(maho_ext_api::EventResult::None) })
         }));
         let this = self.clone(); let resolve_session = Arc::new(move |context: &ExtensionContext| {
@@ -207,7 +214,7 @@ impl MemoryRuntime {
             runtime: MemoryRuntimeWiring::default(), skills_usage: skills.clone(),
         })));
         Ok(Arc::new(Self { component, wiring, host, skills, current: Mutex::new(None), contexts: Mutex::new(BTreeMap::new()), workers: Mutex::new(BTreeMap::new()),
-            ledgers: Mutex::new(BTreeMap::new()), write_sessions: Mutex::new(BTreeMap::new()),
+            write_sessions: Mutex::new(BTreeMap::new()),
             nudge: Arc::new(Mutex::new(Default::default())), health_notices: Mutex::new(BTreeSet::new()),
             prompt: Arc::new(Default::default()), static_options: Mutex::new(None) }))
     }
@@ -479,8 +486,9 @@ impl MemoryRuntime {
     fn trigger_session(&self, session: &str, identity: &MemoryIdentityContext) -> Result<maho_omo_memory::trigger_wiring::ReflectionTriggerSession, String> {
         let worker = self.worker(identity)?;
         let enabled = maho_omo_memory::trigger_wiring::resolve_reflection_trigger_config(&self.settings()?, Some(&identity.identity))?.enabled;
-        let ledger = self.ledgers.lock().unwrap_or_else(PoisonError::into_inner).entry(session.into())
-            .or_insert_with(|| Arc::new(Mutex::new(identity.ledger.clone()))).clone();
+        // pin `context.ts:34-36`: the trigger mutates the bound context's shared ledger, the same
+        // object the RPC snapshot reads; a new bind starts with a fresh ledger.
+        let ledger = identity.ledger.clone();
         Ok(maho_omo_memory::trigger_wiring::ReflectionTriggerSession { conversation_id: session.into(), ledger, engine: worker.store.clone(), enabled })
     }
 

@@ -97,7 +97,13 @@ impl EvalDetachedCellManager {
     }
 
     pub fn fail(&mut self, cell: &ManagedCellHandle, error: &str) -> bool {
-        let result = detached_error_result(&cell.lock().expect("managed cell poisoned").source, error, None);
+        self.fail_with_code(cell, error, None)
+    }
+
+    /// Upstream `fail(cell, error)` forwards `error.code` for an `EvalKernelResetRefusedError`
+    /// (`detached-cell-snapshot.ts` detachedErrorResult); Rust callers pass that code explicitly.
+    pub fn fail_with_code(&mut self, cell: &ManagedCellHandle, error: &str, code: Option<&str>) -> bool {
+        let result = detached_error_result(&cell.lock().expect("managed cell poisoned").source, error, code);
         if Self::deadline_expired(cell) {
             // Expired before the kernel ran it: upstream cancels the queued cell with its state retained.
             let mut managed = cell.lock().expect("managed cell poisoned");
