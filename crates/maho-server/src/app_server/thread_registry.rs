@@ -74,8 +74,23 @@ pub struct ThreadEntry {
     /// Held by `turn/start` until its initial notifications are out, so projected session events
     /// never reach the wire before `turn/started`; the observer takes it per event.
     pub emit_gate: Arc<Mutex<()>>,
+    /// Synchronous mirror of `active_turn` for senpi `getTurnId` (`activeTurn?.turnId`).
+    active_turn_ids: ActiveTurnIds,
+}
+/// Thread id -> active turn id, readable from the synchronous extension UI context.
+pub type ActiveTurnIds = Arc<std::sync::Mutex<BTreeMap<String, String>>>;
+/// senpi runtime `getTurnId`: the thread's active turn id, or `"turn-user-input"`.
+pub fn active_turn_id_or_default(active: &ActiveTurnIds, thread_id: &str) -> String {
+    active.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(thread_id).cloned().unwrap_or_else(|| "turn-user-input".to_owned())
 }
 impl ThreadEntry {
+    /// Set `active_turn` and its synchronous mirror together.
+    pub fn set_active_turn(&mut self, turn_id: Option<String>) {
+        let mut active = self.active_turn_ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &turn_id { Some(turn_id) => { active.insert(self.id.clone(), turn_id.clone()); }, None => { active.remove(&self.id); } }
+        drop(active);
+        self.active_turn = turn_id;
+    }
     pub fn wire(&self) -> Value {
         json!({"id":self.id,"sessionId":self.session.session_id(),"sessionPath":self.session.session_file(),"cwd":self.cwd,"createdAt":self.created_at,"updatedAt":self.updated_at,"status":{"type":if self.active_turn.is_some() {"active"} else {"idle"}},"preview":self.session.get_user_messages_for_forking().first().map(|(_,text)|text),"name":self.session.session_name()})
     }
@@ -90,10 +105,11 @@ pub struct ThreadRegistry {
     pub session_dir: Option<String>,
     factory: SessionFactory,
     binding: std::sync::OnceLock<(SessionUiFactory, SessionBinder)>,
+    active_turn_ids: ActiveTurnIds,
 }
 impl ThreadRegistry {
     pub fn new(agent_dir: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
-        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), initial_notifications: std::sync::Mutex::new(BTreeMap::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(default_session_factory), binding: std::sync::OnceLock::new() }
+        Self { entries: Mutex::new(IndexMap::new()), deleted: Mutex::new(BTreeSet::new()), initial_notifications: std::sync::Mutex::new(BTreeMap::new()), agent_dir, session_dir, factory: factory.unwrap_or_else(default_session_factory), binding: std::sync::OnceLock::new(), active_turn_ids: ActiveTurnIds::default() }
     }
     /// Queue notifications for a session whose thread entry is registered next (marking it as
     /// awaiting registration even when empty); they become the
@@ -115,6 +131,8 @@ impl ThreadRegistry {
         if awaiting { self.queue_initial_notifications(id, [notification]); }
         None
     }
+    /// The shared active-turn mirror behind senpi `getTurnId`.
+    pub fn active_turn_ids(&self) -> ActiveTurnIds { self.active_turn_ids.clone() }
     /// Install the app-server session binding used for every session this registry loads.
     pub fn bind_sessions(&self, ui: SessionUiFactory, binder: SessionBinder) {
         if self.binding.set((ui, binder)).is_err() { eprintln!("app-server session binding is installed once"); }
@@ -138,7 +156,7 @@ impl ThreadRegistry {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let (created_at, updated_at) = timestamps.unwrap_or_else(|| (now.clone(), now));
         let bound = session.clone();
-        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())) }));
+        let entry = Arc::new(Mutex::new(ThreadEntry { id: id.clone(), session, cwd, subscribers: BTreeSet::new(), active_turn: None, interrupted: false, queued_terminal_notifications: initial, created_at, updated_at, tasks: Arc::new(Mutex::new(())), pending_turn: None, projection: None, observer: None, observer_events: None, emit_gate: Arc::new(Mutex::new(())), active_turn_ids: self.active_turn_ids.clone() }));
         entries.insert(id.clone(), entry.clone());
         drop(entries);
         if let Some((_, binder)) = self.binding.get() { binder(id, bound, ui).await; }

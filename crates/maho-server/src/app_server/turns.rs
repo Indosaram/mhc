@@ -118,7 +118,7 @@ impl TurnEngine {
         let started = now.timestamp_millis() as f64;
         let thread_id = {
             let mut guard = entry.lock().await;
-            guard.active_turn = Some(turn_id.clone());
+            guard.set_active_turn(Some(turn_id.clone()));
             guard.interrupted = false;
             guard.updated_at = now_iso(now);
             guard.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: None });
@@ -159,7 +159,7 @@ impl TurnEngine {
         };
         let wire_status = match status { CompleteTurnStatus::Completed => "completed", CompleteTurnStatus::Failed => "failed", CompleteTurnStatus::Interrupted => "interrupted" };
         let turn = build_turn(&pending.turn_id, wire_status, pending.started_at_ms, Some(completion.timestamp_millis() as f64), &items, message.as_deref());
-        { let mut guard = entry.lock().await; guard.active_turn = None; guard.interrupted = false; guard.updated_at = now_iso(completion); }
+        { let mut guard = entry.lock().await; guard.set_active_turn(None); guard.interrupted = false; guard.updated_at = now_iso(completion); }
         if let Some(core) = self.core.upgrade() {
             emit(&core, entry, json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}})).await;
             for notification in super::turn_terminal::turn_terminal_notifications(&thread_id, turn) { emit(&core, entry, notification).await; }
@@ -262,7 +262,7 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
             let (resolve, completion) = tokio::sync::oneshot::channel::<()>();
             {
                 let mut entry = entry.lock().await;
-                entry.active_turn = Some(turn_id.clone()); entry.interrupted = false; entry.updated_at = now_iso(now);
+                entry.set_active_turn(Some(turn_id.clone())); entry.interrupted = false; entry.updated_at = now_iso(now);
                 entry.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: Some(resolve) });
             }
             log.lock().await.record_turn(&id, RecordTurnOptions { turn_id:turn_id.clone(), started_at:now_iso(now), status:None, completed_at:None, error:None });
