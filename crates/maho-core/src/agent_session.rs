@@ -2442,6 +2442,8 @@ impl AgentSession {
         };
         if !additions.iter().any(|message| message.role() == "custom") && pending_queued_messages().is_empty() { return Ok(()); }
         let model = self.model();
+        // senpi `if (!model) return;`: the unset agent model carries a zero context window.
+        if model.context_window == 0 { return Ok(()); }
         let raw = self.with_settings_manager(|manager| manager.get_value("compaction").cloned());
         let settings = raw.map(serde_json::from_value::<crate::compaction_settings_access::CompactionSettings>)
             .transpose().map_err(|error| error.to_string())?;
