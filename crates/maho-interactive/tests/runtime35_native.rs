@@ -1451,12 +1451,13 @@ async fn mounted_terminal_renders_native_turn_and_restores_terminal_on_stop() {
 async fn extension_actions_expose_theme_catalog_and_live_working_indicator() {
     use maho_ext_api::ExtensionUi;
     use maho_tui::tui::Component;
-    let (mut mode,_directory) = native_mode();
+    let (mut mode,_directory,session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
     let ui = mode.extension_ui.clone();
     assert!(ui.get_all_themes().expect("themes").iter().any(|theme|theme.name=="light"));
     assert!(ui.set_theme(maho_ext_api::ThemeSelection::Name("light".into())).expect("theme result").success);
     mode.render(80);
     assert_eq!(ui.theme().name.as_deref(),Some("light"));
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")).as_deref(), Some("light"), "an extension theme switch is saved as the global setting");
     ui.set_working_indicator(Some(maho_ext_api::WorkingIndicatorOptions { frames:Some(vec!["frame-a".into(),"frame-b".into()]), interval_ms:Some(10) })).expect("indicator");
     mode.render(80);
     mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);

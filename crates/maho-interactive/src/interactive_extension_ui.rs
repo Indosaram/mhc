@@ -48,6 +48,8 @@ pub enum UiRequest {
     Title(String),
     /// senpi `setThemeInstance`: apply an in-memory theme handed over by an extension.
     ThemeInstance(maho_ext_api::Theme),
+    /// senpi `setTheme(name)`: `themeController.setThemeName`, then persist the global `theme` setting.
+    ThemeName(String),
     Paste(String),
     EditorText(String),
     WorkingMessage(Option<String>),
@@ -278,7 +280,7 @@ impl ExtensionUiActions for InteractiveExtensionUi {
         if let Err(error) = self.theme_registry(directory, "dark", crate::theme::ColorMode::Truecolor).and_then(|registry| registry.load_theme(&name)) {
             return SetThemeResult { success:false, error:Some(error.to_string()) };
         }
-        self.send(UiRequest::SettingChanged("theme".into(), serde_json::json!(name)));
+        self.send(UiRequest::ThemeName(name));
         SetThemeResult { success:true, error:None }
     }
     fn get_tools_expanded(&self) -> bool { self.tools_expanded.load(std::sync::atomic::Ordering::Relaxed) }

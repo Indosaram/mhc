@@ -4340,6 +4340,18 @@ impl InteractiveMode {
                     Err(error) => self.show_status(error.to_string()),
                 }
             }
+            // senpi extension `setTheme(name)`: `themeController.setThemeName` (auto-sync and pending
+            // detection stop) and, on success, `settingsManager.setTheme` when the saved value differs.
+            UiRequest::ThemeName(name) => {
+                self.theme_detection = None; self.pending_theme_setting = None; self.theme_auto_sync = None;
+                if self.apply_theme_name(&name, false) {
+                    self.current_theme_setting = Some(name.clone());
+                    if self.session.with_settings_manager(|settings| settings.get_string("theme")).as_deref() != Some(name.as_str()) {
+                        let values: maho_core::settings_manager::Settings = [("theme".to_owned(), serde_json::json!(name))].into_iter().collect();
+                        if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_error(&error); }
+                    }
+                }
+            }
             UiRequest::EditorText(text) => self.editor.editor.set_text(&text),
             UiRequest::Paste(text) => self.editor.editor.insert_text_at_cursor(&text),
             UiRequest::Header(factory) => {
