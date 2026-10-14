@@ -32,8 +32,9 @@ type TurnFuture = Pin<Box<dyn Future<Output = Result<PromptDisposition, String>>
 type AbortFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// A header slot in the document header container (senpi's `Component` children).
 type HeaderSlot = Rc<RefCell<dyn Component>>;
-/// The running `!` command: its card and the session's `executeBash`, polled by `poll_turn`.
-type PendingBash = (Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, Pin<Box<dyn Future<Output = Result<maho_tools::bash_executor::BashResult, String>>>>);
+/// The running `!` command: its card and senpi `handleBashCommand`'s `emitUserBash` + `executeBash`,
+/// polled by `poll_turn`. The flag marks a result an extension `user_bash` handler returned.
+type PendingBash = (Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, Pin<Box<dyn Future<Output = Result<(maho_tools::bash_executor::BashResult, bool), String>>>>);
 /// A running `flushCompactionQueue`; resolves to the failure notice it reported, if any.
 type CompactionFlush = Pin<Box<dyn Future<Output = Option<String>>>>;
 
@@ -2292,10 +2293,16 @@ impl InteractiveMode {
         if let maho_ext_api::AgentSessionEvent::BashExecutionUpdate { delta, .. } = event { component.borrow_mut().append_output(delta); } else { self.handle_session_event(event); }
     }
 
-    fn finish_bash(&mut self, component: Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, result: Result<maho_tools::bash_executor::BashResult, String>) {
+    /// senpi `handleBashCommand`'s completion: an extension-supplied result shows its output first
+    /// (a normal run streamed it already); a failure completes the card without an exit code and
+    /// reports `Bash command failed`.
+    fn finish_bash(&mut self, component: Rc<RefCell<crate::components::bash_execution::BashExecutionComponent>>, result: Result<(maho_tools::bash_executor::BashResult, bool), String>) {
         match result {
-            Ok(result) => component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned())),
-            Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); self.show_status(error); }
+            Ok((result, from_extension)) => {
+                if from_extension && !result.output.is_empty() { component.borrow_mut().append_output(&result.output); }
+                component.borrow_mut().set_complete(result.exit_code, result.cancelled, None, result.full_output_path.map(|path| path.to_string_lossy().into_owned()));
+            }
+            Err(error) => { component.borrow_mut().set_complete(None, false, None, None); self.show_error(&format!("Bash command failed: {error}")); }
         }
         self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
     }
@@ -2420,7 +2427,15 @@ impl InteractiveMode {
             // senpi shows a `!` started while streaming in the pending area until the next submission.
             if self.host_is_streaming() { self.pending_bash_components.push(component.clone()); } else { self.chat.add_component(component.clone()); }
             if let Some(host) = self.session_host.clone() {
-                let result = match host.execute_bash(command.to_owned(), excluded).await { Ok(result) => result, Err(error) => { component.borrow_mut().append_output(&error); component.borrow_mut().set_complete(Some(1), false, None, None); return Err(error); } };
+                let result = match host.execute_bash(command.to_owned(), excluded).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        component.borrow_mut().set_complete(None, false, None, None);
+                        self.show_error(&format!("Bash command failed: {error}"));
+                        self.history_expansion.push(Box::new(move |expanded| component.borrow_mut().set_expanded(expanded)));
+                        return Ok(PromptDisposition::Handled);
+                    }
+                };
                 let exit_code = result.get("exitCode").and_then(serde_json::Value::as_i64).map(|code| code as i32);
                 let cancelled = result.get("cancelled").and_then(serde_json::Value::as_bool).unwrap_or(false);
                 let full_output_path = result.get("fullOutputPath").and_then(serde_json::Value::as_str).map(str::to_owned);
@@ -2431,7 +2446,15 @@ impl InteractiveMode {
             // Run without blocking the frame loop: `poll_turn` drives it and streams its output.
             let session = self.session.clone();
             let command = command.to_owned();
-            self.pending_bash = Some((component, Box::pin(async move { session.execute_bash(&command, None, excluded, None, None).await })));
+            // senpi `handleBashCommand`: `emitUserBash` first; a returned result is recorded and shown
+            // instead of running, and returned operations replace the local shell.
+            self.pending_bash = Some((component, Box::pin(async move {
+                match session.user_bash_hook(&command, excluded).await? {
+                    maho_ext_api::EventResult::UserBash { result: Some(result), .. } => { session.record_bash_result(&command, &result, excluded); Ok((result, true)) }
+                    maho_ext_api::EventResult::UserBash { operations, result: None } => session.execute_bash(&command, None, excluded, None, operations).await.map(|result| (result, false)),
+                    _ => session.execute_bash(&command, None, excluded, None, None).await.map(|result| (result, false)),
+                }
+            })));
             return Ok(PromptDisposition::Handled);
         }
         if text.trim() == "/paste-clipboard" {

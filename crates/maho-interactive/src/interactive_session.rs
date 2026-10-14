@@ -226,7 +226,7 @@ impl InteractiveSession for LocalInteractiveSession {
     }
 
     fn execute_bash(&self, command: String, exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> {
-        Box::pin(async move { self.session.execute_bash(&command, None, exclude_from_context, None, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
+        Box::pin(async move { self.session.execute_user_bash(&command, None, exclude_from_context, None).await.map(|result| serde_json::to_value(result).unwrap_or(serde_json::Value::Null)) })
     }
 
     fn set_model(&self, provider: String, id: String) -> SessionFuture<'_, Result<(), String>> {
