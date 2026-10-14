@@ -43,8 +43,13 @@ impl MemoryComponent{
                 let state=sessions.get_mut(id).ok_or("Inserted memory session is missing")?;state.context=Some(bound.clone());this.supervisor.acquire();drop(sessions);
                 handle.append_entry(MEMORY_BINDING_CUSTOM_TYPE,Some(value)).map_err(|error|error.to_string())?;
                 Ok::<_,String>(Some((id.to_owned(),bound)))
-            })();let bind=bind.clone();let warn=warn.clone();Box::pin(async move{
-                if let Some((id,bound))=result.map_err(ExtensionFailure::new)?&&let Err(error)=bind(&id,&bound,context).await{warn(&format!("memory bind-time reconcile failed: {error}"));}
+            })();let bind=bind.clone();let warn=warn.clone();let context=context.clone();Box::pin(async move{
+                if let Some((id,bound))=result.map_err(ExtensionFailure::new)?{
+                    // pin `memory/index.ts:133-137`: bind-time reconcile floats past session_start by design;
+                    // run it inline up to its first await, then detach the rest with the same warn-on-error.
+                    let mut task=Box::pin(async move{if let Err(error)=bind(&id,&bound,&context).await{warn(&format!("memory bind-time reconcile failed: {error}"));}});
+                    if std::future::Future::poll(task.as_mut(),&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending(){tokio::spawn(task);}
+                }
                 Ok(EventResult::None)
             })
         }));

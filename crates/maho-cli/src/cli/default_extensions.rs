@@ -133,11 +133,6 @@ pub fn assembled_factories_with_mcp_registry(
     }
     let selection = BuiltinExtensionSelection::from_settings(settings);
     assembled.retain(|factory| builtin_id(&factory.path).is_none_or(|id| selection.is_active(id)));
-    // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports: both register the
-    // `no-nested-agents` flag and `/nested-agents`, so the linked port yields to an active builtin.
-    if selection.is_active("nested-agents-md") {
-        assembled.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
-    }
     // senpi `loadFinalExtensionSet` (resource-loader.ts:902-903, :933-949): builtin and inline
     // factories come first, then the path-loaded extensions, where the global defaults load through
     // their generated `<agentDir>/extensions/<id>` shims.
@@ -423,12 +418,14 @@ impl Extension for Task {
                 let process = super::task_runners::authenticated_rpc_options(super::task_runners::native_rpc_options(
                     std::env::current_exe().map_err(|error| ExtensionFailure::new(error.to_string()))?,
                     &maho_core::config::get_agent_dir(), environment.clone(), Vec::new()), weak.clone());
+                let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
+                // pin `engine-runners.ts:62`: the in-process cap derives from the resolved `task.max_depth` (default 1, as `engine.rs`).
+                let max_depth = config["task"]["max_depth"].as_u64().and_then(|depth| u32::try_from(depth).ok()).unwrap_or(1);
                 let runners = maho_omo_task::engine_runners::build_task_runners(maho_omo_task::engine_runners::TaskRunnerBuildOptions {
-                    shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth: 3,
+                    shared_parent_tools: Vec::new(), get_shared_parent_tools: Some(super::task_runners::live_parent_tools(weak, executor.clone())), max_depth,
                     create_session: super::task_session::factory_with_workpool_events(executor.clone(), parent.weak_accessor(), Some(workpool_events.clone())), parent_registry, rpc_options: process.clone(),
                 });
                 let registry: Arc<dyn senpi_task::host::SenpiModelRegistry> = Arc::new(Registry(ctx.model_registry.clone()));
-                let config = super::task_runners::resolved_omo_config(&ctx.cwd, &environment);
                 let engine = {
                     let mut slot = engine_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let stale = slot.as_ref().is_none_or(|(cwd, retained, _)| *cwd != ctx.cwd || *retained != config);

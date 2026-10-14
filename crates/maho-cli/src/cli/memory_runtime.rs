@@ -320,7 +320,7 @@ impl MemoryRuntime {
             resolve_model: Arc::new(move || worker::resolve_model::resolve_reflection_model("quick", &(this.host.load_config)()?, Some(&registry), None).map_err(|error| error.to_string())),
             env: self.child_env(), config_sources: (self.host.config_sources)(), launch: self.host.launcher.clone(),
             supervisor_command: self.host.supervisor_command.clone(), supervisor_args: self.host.supervisor_args.clone(),
-            deadline_ms: 15 * 60_000, termination_grace_ms: 5_000, max_output_bytes: 1024 * 1024,
+            deadline_ms: 15 * 60_000, termination_grace_ms: 5_000, max_output_bytes: 64 * 1024,
             people: memory_core::facts::person_routing::FactsPeopleRouting {
                 enabled: people["enabled"].as_bool().ok_or("people.enabled missing")?,
                 max_entries: people["max_entries"].as_u64().ok_or("people.max_entries missing")? as usize,
@@ -380,7 +380,18 @@ impl MemoryRuntime {
 
     fn static_options(self: &Arc<Self>) -> MemoryStaticOptions {
         let mut slot = self.static_options.lock().unwrap_or_else(PoisonError::into_inner);
-        slot.get_or_insert_with(|| self.build_static_options()).clone()
+        let mut options = slot.get_or_insert_with(|| self.build_static_options()).clone();
+        // pin `memory/index.ts:66,86`: every register re-reads the boot config for `toolExposure`;
+        // only the shared Arcs stay cached.
+        options.tool_exposure = self.tool_exposure();
+        options
+    }
+
+    fn tool_exposure(&self) -> Option<maho_ext_api::ToolExposure> {
+        match self.settings() {
+            Ok(settings) => (settings["tool_exposure"] == "search").then_some(maho_ext_api::ToolExposure::Search),
+            Err(error) => { (self.host.warn)(&error); None }
+        }
     }
 
     fn build_static_options(self: &Arc<Self>) -> MemoryStaticOptions {
@@ -406,10 +417,7 @@ impl MemoryRuntime {
         let this = self.clone(); let search = Arc::new(move || match this.settings() {
             Ok(settings) => settings["tool_exposure"] == "search", Err(error) => { (this.host.warn)(&error); false }
         });
-        let tool_exposure = match self.settings() {
-            Ok(settings) => (settings["tool_exposure"] == "search").then_some(maho_ext_api::ToolExposure::Search),
-            Err(error) => { (self.host.warn)(&error); None }
-        };
+        let tool_exposure = self.tool_exposure();
         let this = self.clone(); let tools = Arc::new(move || this.active_identity());
         let this = self.clone();
         let write_notice: maho_omo_memory::tools::WriteNoticeGate = Arc::new(move || {
@@ -559,7 +567,7 @@ impl MemoryRuntime {
             }, &mut cache, worker::runner::NativeReflectionExecutionOptions {
                 env: &env, sources: &sources, launcher: &self.host.launcher, parent_session_file: context.session_manager.session_file(), parent_cwd: Some(&self.host.cwd), route: route.as_ref(),
                 sandbox: Some(&sandbox), deadline_ms: None,
-                child: worker::spawn_supervisor::ReflectionChildOptions { termination_grace_ms: 5_000.0, max_output_bytes: 1024 * 1024, supervisor_command: &self.host.supervisor_command, supervisor_args: &self.host.supervisor_args, launched_at: now },
+                child: worker::spawn_supervisor::ReflectionChildOptions { termination_grace_ms: 5_000.0, max_output_bytes: 64 * 1024, supervisor_command: &self.host.supervisor_command, supervisor_args: &self.host.supervisor_args, launched_at: now },
                 callbacks: worker::runner::NativeReflectionCallbacks { ensure_renderer: &ensure_renderer, health_alert: &health_alert, append_launched: &append_launched, warn: self.host.warn.as_ref() },
             }, Some(&mut live), |operation| terminal_gate(&dir, &run.run_id, operation)).await?;
             drop(cache); drop(runner);
@@ -740,6 +748,15 @@ mod tests {
         assert_eq!(runtime.settings().unwrap()["soul"]["edit_notice"], serde_json::json!(false));
         *config.lock().unwrap_or_else(PoisonError::into_inner) = serde_json::json!({ "memory": { "soul": { "edit_notice": true } } });
         assert_eq!(runtime.settings().unwrap()["soul"]["edit_notice"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn options_reread_tool_exposure_on_every_build() {
+        let config = Arc::new(Mutex::new(serde_json::json!({ "memory": {} })));
+        let runtime = MemoryRuntime::new(host(config.clone())).unwrap();
+        assert_eq!(runtime.options().static_options.tool_exposure, None);
+        *config.lock().unwrap_or_else(PoisonError::into_inner) = serde_json::json!({ "memory": { "tool_exposure": "search" } });
+        assert_eq!(runtime.options().static_options.tool_exposure, Some(maho_ext_api::ToolExposure::Search));
     }
 
     #[test]
