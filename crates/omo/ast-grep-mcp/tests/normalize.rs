@@ -92,6 +92,12 @@ fn inside_outside_and_windows_paths_are_stable() {
         path_of("D:\\other\\a.ts", "C:\\repo"),
         json!("D:/other/a.ts")
     );
+    assert_eq!(path_of("c:\\x\\a.ts", "C:\\repo"), json!("c:/x/a.ts"));
+    assert_eq!(
+        path_of("\\\\srv\\share\\a\\b", "C:\\repo"),
+        json!("//srv/share/a/b")
+    );
+    assert_eq!(path_of("/x/a.ts", "C:\\repo"), json!("C:/x/a.ts"));
 }
 
 #[test]
