@@ -9089,7 +9089,9 @@ mod tests {
         let stream = registry.stream_simple(&model, &maho_ai::types::Context::default(), None).expect("configured stream creation");
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), stream.result()).await;
         session.dispose().await;
-        assert_eq!(auth.auth.api_key.as_deref(), Some("fixture-stored"));
+        // senpi faux auth resolves to `{ auth: {} }` regardless of the stored key (faux.ts:798); the
+        // stored credential is still reported through the shared credential-kind view.
+        assert!(auth.auth.api_key.is_none());
         assert_eq!(kind, Some(maho_ai::auth::types::CredentialType::ApiKey));
         assert_eq!(absent, None);
         assert_eq!(maho_ai::utils::text::content_text(&response.expect("bounded stream").expect("stream response").content, ""), "configured stream");
