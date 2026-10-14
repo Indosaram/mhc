@@ -58,7 +58,11 @@ async fn capacity_and_live_language_filters_are_shared() {
     assert!(!manager.detach(&javascript));
     assert_eq!(manager.live_cells(Some(EvalLanguage::Js), None).len(), 1);
     assert_eq!(manager.live_cells(None, Some("python")).len(), 1);
-    assert!(manager.fail(&python, "failure"));
+    assert!(manager.fail_with_code(&python, "failure", Some("eval_kernel_busy_reset_refused")));
+    let failed = manager.peek("python").unwrap();
+    assert_eq!(failed.state, EvalDetachedCellState::Failed);
+    assert_eq!(failed.result.details["isError"], true);
+    assert_eq!(failed.result.details["code"], "eval_kernel_busy_reset_refused");
     assert!(manager.detach(&javascript));
     assert!(manager.cancel_without_interrupt(&javascript));
     manager.flush_notifications().await.unwrap();

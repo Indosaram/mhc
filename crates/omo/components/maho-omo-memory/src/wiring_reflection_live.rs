@@ -68,6 +68,7 @@ impl MemoryReflectionLiveWiring{
     pub fn on_settled(&mut self,session:&str,api:&maho_ext_api::ExtensionApi,now:i64,ui:Option<&mut dyn MemoryFooterUi>)->Result<(),String>{let context=self.contexts.get(session);let active=context.is_some_and(|context|lock(&self.active_runs).is_active(&context.identity));self.footer.refresh(context,Some(session),active,now,ui);self.sync_rpc(api,now)}
     pub fn sync_rpc(&mut self,api:&maho_ext_api::ExtensionApi,now:i64)->Result<(),String>{let runs=lock(&self.active_runs);let mut rpc=lock(&self.rpc);rpc.sync_native(&Deps{contexts:&self.contexts,runs:&runs},api,now)}
     pub fn shutdown(&mut self,identity:Option<&str>){if let Some(identity)=identity{lock(&self.active_runs).clear(identity);}self.footer.dispose();lock(&self.rpc).detach();}
+    pub fn unbind(&mut self,session:&str){self.contexts.remove(session);}
     pub fn clear_status(&mut self){self.footer.stop();}
 }
 #[cfg(test)]mod tests{

@@ -15,11 +15,26 @@ pub struct GoalSeedOptions {
     pub success_criteria: Option<Vec<Value>>,
 }
 
+/// JS `\s` / `String.prototype.trim` whitespace: unlike Rust's White_Space it includes U+FEFF
+/// (BOM) and excludes U+0085 (NEL).
+const JS_WS: &str = r"[\t\n\x0B\x0C\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]";
+
+fn is_js_whitespace(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{A0}' | '\u{1680}' | '\u{2000}'..='\u{200A}' | '\u{2028}' | '\u{2029}' | '\u{202F}' | '\u{205F}' | '\u{3000}' | '\u{FEFF}')
+}
+
+/// JS `value.trim()`.
+fn js_trim(value: &str) -> &str {
+    value.trim_matches(is_js_whitespace)
+}
+
 /// `/^\s*(?:[-*+]\s+|\d+[.)]\s+)/`: a list marker must be followed by whitespace (JS `\d` is ASCII).
-const LIST_MARKER: &str = r"^\s*(?:[-*+]\s+|[0-9]+[.)]\s+)";
+fn list_marker_pattern() -> String {
+    format!(r"^{JS_WS}*(?:[-*+]{JS_WS}+|[0-9]+[.)]{JS_WS}+)")
+}
 
 fn list_marker() -> Regex {
-    Regex::new(LIST_MARKER).expect("valid list marker regex")
+    Regex::new(&list_marker_pattern()).expect("valid list marker regex")
 }
 
 /// JS `string.length`: UTF-16 code units.
@@ -41,12 +56,12 @@ fn slice_utf16_prefix(value: &str, end: usize) -> &str {
 }
 
 fn clean_line(line: &str) -> String {
-    list_marker().replace(line, "").trim().to_string()
+    js_trim(&list_marker().replace(line, "")).to_string()
 }
 
 fn normalize_objective(value: &str) -> String {
     let mut words = Vec::new();
-    for word in value.split_whitespace() {
+    for word in value.split(is_js_whitespace).filter(|word| !word.is_empty()) {
         words.push(word);
     }
     words.join(" ")
@@ -55,11 +70,11 @@ fn normalize_objective(value: &str) -> String {
 fn title_from_objective(objective: &str, fallback: &str) -> String {
     let first_line = objective
         .lines()
-        .map(|l| l.trim())
+        .map(js_trim)
         .find(|l| !l.is_empty())
         .unwrap_or(fallback);
     if utf16_len(first_line) > 72 {
-        let truncated = slice_utf16_prefix(first_line, 69).trim_end();
+        let truncated = slice_utf16_prefix(first_line, 69).trim_end_matches(is_js_whitespace);
         format!("{truncated}...")
     } else {
         first_line.to_string()
@@ -94,7 +109,7 @@ pub fn normalize_goal_id(title: &str, index: usize) -> String {
 }
 
 fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
-    let trimmed = value.trim();
+    let trimmed = js_trim(value);
     if trimmed.is_empty() {
         return Err(UlwLoopError::new(format!("Missing {label}."), "ULW_LOOP_ARGUMENT_MISSING"));
     }
@@ -103,7 +118,7 @@ fn assert_non_empty(value: &str, label: &str) -> Result<String, UlwLoopError> {
 
 fn truncate_objective(objective: &str) -> String {
     if utf16_len(objective) > 80 {
-        format!("{}...", slice_utf16_prefix(objective, 77).trim_end())
+        format!("{}...", slice_utf16_prefix(objective, 77).trim_end_matches(is_js_whitespace))
     } else {
         objective.to_string()
     }
@@ -180,7 +195,7 @@ pub fn derive_goal_candidates(brief: &str) -> Vec<(String, String)> {
         .collect();
 
     let mut paragraphs = Vec::new();
-    let paragraph_break = Regex::new(r"\n\s*\n").expect("valid paragraph regex");
+    let paragraph_break = Regex::new(&format!(r"\n{JS_WS}*\n")).expect("valid paragraph regex");
     for p in paragraph_break.split(brief) {
         let cleaned = normalize_objective(p);
         if !cleaned.is_empty() && !cleaned.starts_with('#') {

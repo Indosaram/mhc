@@ -107,7 +107,7 @@ fn relative_inside(
 fn windows_split(value: &str) -> (String, Vec<String>) {
     let value = value.replace('/', "\\");
     let (prefix, rest) = if value.len() >= 2 && value.as_bytes()[1] == b':' {
-        (value[..2].to_ascii_uppercase(), value[2..].to_owned())
+        (value[..2].to_owned(), value[2..].to_owned())
     } else if let Some(unc) = value.strip_prefix("\\\\") {
         let mut parts = unc.splitn(3, '\\');
         let server = parts.next().unwrap_or_default();
@@ -130,7 +130,8 @@ fn windows_stable_path(file: &str, workdir: &str) -> String {
         windows_split(file)
     } else {
         let (_, relative) = windows_split(file);
-        let mut joined = root.clone();
+        let rooted = file.starts_with('\\') || file.starts_with('/');
+        let mut joined = if rooted { Vec::new() } else { root.clone() };
         normalize_segments(relative.iter().map(String::as_str), &mut joined);
         (root_prefix.clone(), joined)
     };
@@ -140,7 +141,7 @@ fn windows_stable_path(file: &str, workdir: &str) -> String {
     {
         return relative;
     }
-    format!("{file_prefix}/{}", file_segments.join("/"))
+    format!("{}/{}", file_prefix.replace('\\', "/"), file_segments.join("/"))
 }
 
 fn stable_path(file: &str, workdir: &str) -> String {

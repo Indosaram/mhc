@@ -14,12 +14,14 @@ pub struct MemoryIdentityContext {
     pub identity: String,
     pub identity_paths: MemoryIdentityPaths,
     pub binding: MemorySessionBinding,
-    pub ledger: MemoryPendingLedger,
+    pub ledger: std::sync::Arc<std::sync::Mutex<MemoryPendingLedger>>,
 }
 
 impl MemoryIdentityContext {
+    /// Pin `context.ts:34-36`: every bind gets one fresh ledger object that the trigger wiring and
+    /// the RPC snapshot share; clones of this context share it too.
     pub fn new(identity: String, identity_paths: MemoryIdentityPaths, binding: MemorySessionBinding) -> Self {
-        Self { identity, identity_paths, binding, ledger: MemoryPendingLedger::default() }
+        Self { identity, identity_paths, binding, ledger: std::sync::Arc::new(std::sync::Mutex::new(MemoryPendingLedger::default())) }
     }
 
     pub fn repo_path(&self) -> &Path { &self.identity_paths.repo }
