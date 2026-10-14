@@ -226,10 +226,12 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                         if let Some(pending) = guard.pending_turn.as_mut() { pending.interrupted = true; }
                         guard.observer_events.clone()
                     };
-                    context.connection.defer_until_responded(move || {tokio::spawn(async move {
-                        session.abort().await;
+                    // senpi `interruptTurn` awaits `session.abort()` before answering; only the
+                    // terminal notifications are deferred until after the response.
+                    session.abort().await;
+                    context.connection.defer_until_responded(move || {
                         if let Some(observer) = observer && observer.send(ObservedEvent::Complete { turn_id:active, status:CompleteTurnStatus::Interrupted, message:None }).is_err() { eprintln!("app-server thread observer closed"); }
-                    });});
+                    });
                     return Ok(json!({}));
                 }
                 let params = input_params.ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
