@@ -656,6 +656,15 @@ async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
 }
 
 #[tokio::test]
+async fn selecting_opencode_kimi_k2_5_shows_the_daxnuts_card() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode_with_provider(None, "opencode", "kimi-k2.5", false);
+    mode.submit("/model-select opencode/kimi-k2.5", Default::default()).await.expect("select");
+    mode.tick(1_000_000.0);
+    assert!(mode.render(80).join("\n").contains("Free Kimi K2.5 via OpenCode Zen"));
+}
+
+#[tokio::test]
 async fn demented_delves_command_renders_the_earendil_announcement() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
