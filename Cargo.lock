@@ -5327,6 +5327,7 @@ dependencies = [
  "tiff",
  "unicode-segmentation",
  "unicode-width",
+ "x11rb",
 ]
 
 [[package]]

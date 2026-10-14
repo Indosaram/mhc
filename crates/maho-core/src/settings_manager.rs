@@ -537,10 +537,6 @@ pub fn is_terminal_mouse_mode(value: &str) -> bool {
 }
 
 /// senpi `envValue` over the process environment.
-fn process_env_value(suffix: &str) -> Option<String> {
-    crate::brand::env_value(suffix, &std::env::vars().collect())
-}
-
 pub struct SettingsManager {
     storage: Box<dyn SettingsStorage>,
     global_settings: Settings,
@@ -881,10 +877,15 @@ impl SettingsManager {
 
     /// senpi `getClearOnShrink`: the setting, then the brand `CLEAR_ON_SHRINK` env value, then false.
     pub fn get_clear_on_shrink(&self) -> bool {
+        self.get_clear_on_shrink_with_env(&std::env::vars().collect())
+    }
+
+    /// `get_clear_on_shrink` against an explicit environment.
+    pub fn get_clear_on_shrink_with_env(&self, env: &HashMap<String, String>) -> bool {
         if let Some(enabled) = self.terminal_setting("clearOnShrink").and_then(Value::as_bool) {
             return enabled;
         }
-        process_env_value("CLEAR_ON_SHRINK").as_deref() == Some("1")
+        crate::brand::env_value("CLEAR_ON_SHRINK", env).as_deref() == Some("1")
     }
 
     /// senpi `setClearOnShrink`.
@@ -959,8 +960,13 @@ impl SettingsManager {
 
     /// senpi `getShowHardwareCursor`: the setting, then the brand `HARDWARE_CURSOR` env value.
     pub fn get_show_hardware_cursor(&self) -> bool {
+        self.get_show_hardware_cursor_with_env(&std::env::vars().collect())
+    }
+
+    /// `get_show_hardware_cursor` against an explicit environment.
+    pub fn get_show_hardware_cursor_with_env(&self, env: &HashMap<String, String>) -> bool {
         self.settings.get("showHardwareCursor").and_then(Value::as_bool)
-            .unwrap_or_else(|| process_env_value("HARDWARE_CURSOR").as_deref() == Some("1"))
+            .unwrap_or_else(|| crate::brand::env_value("HARDWARE_CURSOR", env).as_deref() == Some("1"))
     }
 
     /// senpi `getAutocompleteMaxVisible`: default 5.
@@ -1725,6 +1731,21 @@ mod tests {
         assert_eq!(overrides.images, Some(None));
         assert_eq!(overrides.true_color, Some(true));
         assert_eq!(overrides.hyperlinks, Some(true));
+    }
+
+    #[test]
+    fn terminal_renderer_settings_prefer_settings_then_env_and_default_off() {
+        let env: HashMap<String, String> = [("PI_HARDWARE_CURSOR", "1"), ("PI_CLEAR_ON_SHRINK", "1")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        let unset = SettingsManager::in_memory(Settings::new(), false);
+        assert!(!unset.get_show_hardware_cursor_with_env(&HashMap::new()));
+        assert!(!unset.get_clear_on_shrink_with_env(&HashMap::new()));
+        assert!(!unset.get_show_terminal_progress());
+        assert!(unset.get_show_hardware_cursor_with_env(&env));
+        assert!(unset.get_clear_on_shrink_with_env(&env));
+        let configured = SettingsManager::in_memory(settings(r#"{"showHardwareCursor":false,"terminal":{"clearOnShrink":false,"showTerminalProgress":true}}"#), false);
+        assert!(!configured.get_show_hardware_cursor_with_env(&env));
+        assert!(!configured.get_clear_on_shrink_with_env(&env));
+        assert!(configured.get_show_terminal_progress());
     }
 
     #[test]
