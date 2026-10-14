@@ -20,7 +20,14 @@ async fn real_faux_session_accounts_existing_goal_through_native_factory() {
     let result=tokio::time::timeout(std::time::Duration::from_secs(10),session.run_native()).await.unwrap().unwrap();
     assert!(result["messages"].as_array().unwrap().iter().any(|message|message["role"]=="assistant"));
     let goal=maho_ext_goal::store::read_goal(&reference).unwrap().unwrap();
-    let actual_usage=result["messages"].as_array().unwrap().iter().filter(|message|message["role"]=="assistant").map(|message|message["usage"]["totalTokens"].as_u64().unwrap()).sum::<u64>();
-    assert!(actual_usage>0); assert_eq!(goal.tokens_used,actual_usage);
+    // senpi prompt() waits for the settled session_start continuation run before starting the "work" turn
+    // (agent-session.ts:3930-3955); goal/index.ts:225-231 charges that completing run in activeOrComplete mode,
+    // and goal/store.ts:210-214 refuses usage on a goal that is already complete when the "work" run ends.
+    let messages=result["messages"].as_array().unwrap();
+    let prompt_index=messages.iter().position(|message|message["role"]=="user"&&message["content"][0]["text"]=="work").unwrap();
+    let usage=|range:&[serde_json::Value]|range.iter().filter(|message|message["role"]=="assistant").map(|message|message["usage"]["totalTokens"].as_u64().unwrap()).sum::<u64>();
+    let completing_run_usage=usage(&messages[..prompt_index]);
+    assert!(completing_run_usage>0); assert_eq!(goal.tokens_used,completing_run_usage);
+    assert!(usage(&messages[prompt_index..])>0,"the post-completion run used tokens that must not be charged");
     assert_eq!(goal.status,GoalStatus::Complete);
 }
