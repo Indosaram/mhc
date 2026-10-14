@@ -23,6 +23,8 @@ fn ensure_managed_tool(tool: maho_tools::managed_tools::ManagedTool, on_status: 
 }
 fn run() -> Result<(), String> {
     use std::path::PathBuf;
+    // senpi main.ts `main()`: `resetTimings()` opens the startup phase timeline (`PI_TIMING=1`).
+    maho_core::timings::reset_timings(maho_core::timings::TimingLabel::Main);
     maho_cli::valid_cwd::ensure_valid_cwd().map_err(|e| e.to_string())?;
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // senpi rpc-entry.ts: the `<app>-rpc` entry is `main(["--mode", "rpc", ...argv])`; the single native
@@ -255,6 +257,7 @@ fn run() -> Result<(), String> {
     if parsed.version { println!("{}", maho_core::config::display_version(env!("CARGO_PKG_VERSION"))); return Ok(()); }
     for diagnostic in &parsed.diagnostics { eprintln!("{}: {}", if diagnostic.error { "Error" } else { "Warning" }, diagnostic.message); }
     if parsed.diagnostics.iter().any(|d| d.error) { return Err("Invalid CLI arguments".to_owned()); }
+    maho_core::timings::time("parseArgs", maho_core::timings::TimingLabel::Main);
     if let Some(input) = parsed.export.as_deref() {
         // senpi main.ts `parsed.export`: export the session file before any session startup.
         // `exportFromFile` resolves the default (terminal-detected) theme's colors.
@@ -295,6 +298,7 @@ fn run() -> Result<(), String> {
             let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
             let scope = help_fast_path::help_flags_scope(&parsed, &cwd, &agent, trusted);
             maho_cli::cli::help_flags_cache::write_help_flags_cache(&scope, &resolved.flags, &resolved.extension_paths, version);
+            maho_core::timings::print_timings();
         }
         return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
     }
