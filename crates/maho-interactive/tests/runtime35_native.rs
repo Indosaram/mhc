@@ -605,6 +605,16 @@ async fn extension_editor_returns_prefill_through_real_multiline_component() {
     assert_eq!(result.await.expect("editor"), Some("prefill".into()));
 }
 
+#[tokio::test]
+async fn extension_editor_ctrl_g_requests_a_terminal_hand_off() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    use maho_interactive::interactive_mode::TerminalRequest;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let _result = ui.editor("Edit", Some("prefill")); mode.render(80);
+    mode.handle_input_at("\x07", 0);
+    assert_eq!(mode.take_terminal_request(), Some(TerminalRequest::ExternalEditor));
+}
+
 #[test]
 fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
     use maho_ext_api::{ExtensionUi, TerminalInputResult};

@@ -111,15 +111,18 @@ pub fn significant_changed_paths(paths: &[PathBuf], snapshot: &BTreeMap<PathBuf,
     for path in &significant { if !config.contains(path) { logger.log(LogLevel::Debug, LogEvent::GeneratedShimChangeSuppressed { path: &path.to_string_lossy() }); } }
     config
 }
+/// senpi `resolvePath(path, cwd, { trim: true })`: trim, expand `~`, map `file://`, resolve
+/// against `cwd` and collapse `.`/`..`.
+pub fn resolve_watch_path(path: &str, cwd: &Path) -> PathBuf {
+    let options = maho_core::paths::PathInputOptions { trim: true, ..Default::default() };
+    PathBuf::from(maho_core::paths::resolve_path(path, &cwd.to_string_lossy(), &options))
+}
 pub fn build_external_watch_targets(cwd: &Path, registrations: &[crate::protocol::ConfigWatchRegistration]) -> Vec<ActiveTarget> {
     use crate::protocol::{ConfigWatchTargetKind, matches_config_watch_filter};
     let mut targets = Vec::new();
     for registration in registrations {
         for (index, target) in registration.targets.iter().enumerate() {
-            let raw = Path::new(target.path.trim());
-            let absolute = if raw.is_absolute() { raw.to_path_buf() } else { cwd.join(raw) };
-            let mut path = PathBuf::new();
-            for component in absolute.components() { match component { std::path::Component::ParentDir => { path.pop(); }, std::path::Component::CurDir => {}, other => path.push(other.as_os_str()) } }
+            let path = resolve_watch_path(&target.path, cwd);
             let filters = target.filter_globs.clone().unwrap_or_default();
             let (path, kind, allow_list, filter) = if target.kind == ConfigWatchTargetKind::File {
                 let name = path.file_name().unwrap_or_default().to_owned();
@@ -185,7 +188,7 @@ pub fn build_builtin_watch_targets(cwd: &Path, agent_dir: &Path, project_trusted
     }
     if settings.watch["skills"] {
         for (index, path) in skill_paths.iter().enumerate() {
-            let path = if path.is_absolute() { path.clone() } else { cwd.join(path) };
+            let path = resolve_watch_path(&path.to_string_lossy(), cwd);
             let id = format!("builtin-skill-{index}");
             if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
                 if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) { targets.push(active(&id, parent, WatchKind::Dir, Some(vec![name.into()]), None, None)); }
