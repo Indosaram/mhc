@@ -793,7 +793,7 @@ impl maho_ext_api::SessionManager for ExtensionSessionManagerView {
     }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
         self.session.upgrade().map_or_else(Vec::new, |inner| AgentSession { inner }.with_session_manager(|manager|
-            manager.branch(manager.leaf_id()).into_iter().map(session_entry_from_value).collect()))
+            manager.current_branch().into_iter().map(session_entry_from_value).collect()))
     }
     fn get_leaf_id(&self) -> Option<String> {
         self.session.upgrade().and_then(|inner| AgentSession { inner }.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)))
@@ -1157,7 +1157,7 @@ impl maho_ext_api::ExtensionContextActions for SessionExtensionActions {
                     first_kept_entry_id: anchor.first_kept_entry_id, prefix_entry_ids: anchor.prefix_entry_ids,
                     latest_compaction_entry_id: anchor.latest_compaction_entry_id,
                 };
-                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&snapshot, &manager.branch(manager.leaf_id().or(Some(""))))) {
+                if !session.with_session_manager(|manager| crate::compaction::warm_anchor::is_warm_summary_anchor_valid(&snapshot, &manager.current_branch())) {
                     return Ok(maho_ext_api::ApplyCompactionResult::Stale);
                 }
             }
@@ -1527,7 +1527,7 @@ impl maho_ext_api::SessionManager for SessionContextManager {
         self.session.with_session_manager(|manager| manager.entries()).into_iter().map(session_entry_from_value).collect()
     }
     fn get_branch(&self) -> Vec<maho_ext_api::SessionEntry> {
-        self.session.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some("")))).into_iter().map(session_entry_from_value).collect()
+        self.session.with_session_manager(|manager| manager.current_branch()).into_iter().map(session_entry_from_value).collect()
     }
     fn get_leaf_id(&self) -> Option<String> { self.session.with_session_manager(|manager| manager.leaf_id().map(str::to_owned)) }
     fn get_session_name(&self) -> Option<String> { self.session.session_name() }
@@ -2248,7 +2248,7 @@ impl AgentSession {
         }
         if let Some(pending) = self.pending_model_switch() {
             self.compact_for_model(None, &pending.model, "pre-prompt").await?;
-            let measured = self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+            let measured = self.with_session_manager(|manager| manager.current_context()).messages.iter()
                 .map(crate::compaction::compaction::estimate_tokens).sum();
             let admitted = self.reduce_for_switch_target(&pending.model, measured)?;
             self.state().pending_model_switch = None;
@@ -2373,7 +2373,7 @@ impl AgentSession {
             let messages = crate::messages::filter_context_excluded_messages(messages);
             let estimate = crate::compaction::estimate_context_tokens(&messages);
             let compacted = self.with_session_manager(|manager|
-                crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id())).is_some());
+                crate::session_manager::get_latest_compaction_entry(&manager.current_branch()).is_some());
             let tokens = if compacted { messages.iter().map(crate::compaction::estimate_tokens).sum() } else { estimate.tokens };
             Ok(tokens > model.context_window.saturating_sub(reserve))
         };
@@ -2615,7 +2615,7 @@ impl AgentSession {
             resolved.keep_recent_tokens = keep.min(((window as f64 * (1.0 - ratio - 0.05)).floor() as i64).max(1_024)).max(1);
         }
         if let Some(keep_recent_tokens) = keep_recent_tokens_override { resolved.keep_recent_tokens = keep_recent_tokens; }
-        let entries = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        let entries = self.with_session_manager(|manager| manager.current_branch());
         let settings = maho_ai::utils::overflow::cursor_overflow_compaction_settings(crate::compaction::settings::CompactionSettings {
             enabled: resolved.enabled, reserve_tokens: resolved.reserve_tokens, keep_recent_tokens: resolved.keep_recent_tokens,
             restoration_enabled: Some(resolved.restoration_enabled),
@@ -2754,7 +2754,7 @@ impl AgentSession {
                 if error == "Compaction rejected: summary-would-overflow" { rejection = Some(maho_ext_api::CompactionRejectionCause::WouldOverflow); }
                 error
             })?;
-            result.estimated_tokens_after = Some(self.with_session_manager(|manager| manager.build_context(manager.leaf_id()))
+            result.estimated_tokens_after = Some(self.with_session_manager(|manager| manager.current_context())
                 .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64);
             let mut messages = self.messages();
             if !diagnostic_messages.is_empty() {
@@ -2841,7 +2841,7 @@ impl AgentSession {
     }
 
     fn apply_compaction_internal(&self, result: &crate::compaction::compaction::CompactionResult, from_hook: Option<bool>) -> Result<Value, String> {
-        let mut branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        let mut branch = self.with_session_manager(|manager| manager.current_branch());
         if !branch.iter().any(|entry| entry.get("id").and_then(Value::as_str) == Some(result.first_kept_entry_id.as_str())) {
             return Err("Compaction first kept entry is not on the current branch".to_owned());
         }
@@ -2877,7 +2877,7 @@ impl AgentSession {
         {
             self.with_session_manager_mut(|manager| manager.append_configuration_update(&effort));
         }
-        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = self.with_session_manager(|manager| manager.current_context());
         let mut messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         messages.extend(self.state().messages_awaiting_persistence.iter().map(|(_, message)| message.clone()));
@@ -3037,7 +3037,7 @@ impl AgentSession {
         if messages.last().and_then(AgentMessage::as_assistant) != Some(failed) { return Ok(()); }
         let failed_value = serde_json::to_value(messages.last().expect("assistant tail")).map_err(|error| error.to_string())?;
         self.with_session_manager_mut(|manager| {
-            let branch = manager.branch(manager.leaf_id().or(Some("")));
+            let branch = manager.current_branch();
             if let Some(entry) = branch.last().filter(|entry| entry.get("message") == Some(&failed_value)) {
                 return manager.set_leaf(entry.get("parentId").and_then(Value::as_str));
             }
@@ -3062,7 +3062,7 @@ impl AgentSession {
     }
 
     fn consume_post_compaction_usage_exemption(&self) -> bool {
-        let latest_entry = self.with_session_manager(|manager| manager.branch(manager.leaf_id()).iter().rev()
+        let latest_entry = self.with_session_manager(|manager| manager.current_branch().iter().rev()
             .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
             .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
         let mut state = self.state();
@@ -3115,7 +3115,7 @@ impl AgentSession {
         if self.state().messages_awaiting_persistence.iter()
             .any(|(_, pending)| pending.as_assistant() == Some(assistant)) { return false; }
         self.with_session_manager(|manager| {
-            let Some(compaction) = crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id())) else {
+            let Some(compaction) = crate::session_manager::get_latest_compaction_entry(&manager.current_branch()) else {
                 return false;
             };
             let compaction_order = compaction.get("id").and_then(Value::as_str).and_then(|id| manager.entry_order(id));
@@ -3593,7 +3593,7 @@ impl AgentSession {
                 ..crate::compaction::settings::default_compaction_settings()
             };
             let context_tokens = crate::compaction::estimate_context_tokens(&crate::messages::filter_context_excluded_messages(
-                self.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages))).tokens;
+                self.with_session_manager(|manager| manager.current_context().messages))).tokens;
             if compaction_settings.enabled && crate::compaction::should_compact(context_tokens as f64, model.context_window as f64, &compaction_settings) {
                 let pre_retry_compaction = if self.is_compaction_delegated() { None }
                     else { Some(self.compact_for_model_with_retry(None, &model, "threshold", true, true, None).await) };
@@ -3798,8 +3798,8 @@ impl AgentSession {
     }
 
     fn reduce_for_switch_target(&self, model: &Model, live: u64) -> Result<u64, String> {
-        let entries = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
-        let measured = self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+        let entries = self.with_session_manager(|manager| manager.current_branch());
+        let measured = self.with_session_manager(|manager| manager.current_context()).messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         let (budget, repairable) = self.model_budget(model, measured, false)?;
         if budget.shortfall_tokens == 0 || !repairable { return Ok(live); }
@@ -3832,7 +3832,7 @@ impl AgentSession {
                     if after.saturating_add(overhead) <= model.context_window {
                         self.with_session_manager_mut(|manager| manager.append_compaction(&summary, id, measured as i64,
                             Some(serde_json::json!({"schema":"senpi.compaction.resume-slice.v1","origin":"resume-admission"})), None, None));
-                        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+                        let context = self.with_session_manager(|manager| manager.current_context());
                         self.agent.set_messages(context.messages.into_iter().map(session_message_from_value)
                             .collect::<Result<_, _>>().map_err(|error| error.to_string())?);
                         self.state().message_revision += 1;
@@ -4079,7 +4079,7 @@ impl AgentSession {
             let model = only.model.clone();
             let live = downswitch_live(&model)?;
             let (budget, repairable) = self.model_budget(&model, live, false)?;
-            let has_context = self.with_session_manager(|manager| !manager.build_context(manager.leaf_id()).messages.is_empty());
+            let has_context = self.with_session_manager(|manager| !manager.current_context().messages.is_empty());
             if model.context_window > 0 && has_context && budget.shortfall_tokens > 0 && repairable {
                 let notice = format!("{} needs {} fewer tokens than this conversation holds. It is compacted on your next message, and the switch applies after that.", model.id, budget.shortfall_tokens);
                 self.state().pending_model_switch = Some(PendingModelSwitch { model: model.clone(), budget: budget.clone(), persist_default: true, notice: notice.clone() });
@@ -4127,7 +4127,7 @@ impl AgentSession {
     }
 
     fn rebuild_session_context(&self) -> Result<(), String> {
-        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = self.with_session_manager(|manager| manager.current_context());
         let messages = context.messages.into_iter().map(session_message_from_value).collect::<Result<_, _>>()
             .map_err(|error| error.to_string())?;
         if let Some((provider, id)) = context.model
@@ -4146,7 +4146,7 @@ impl AgentSession {
     pub fn admit_sdk_model(&self, resumed: bool) -> Result<(), String> {
         let model = self.model();
         if model.context_window == 0 { return Ok(()); }
-        let live = if resumed { self.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter().map(crate::compaction::compaction::estimate_tokens).sum() } else { 0 };
+        let live = if resumed { self.with_session_manager(|manager| manager.current_context()).messages.iter().map(crate::compaction::compaction::estimate_tokens).sum() } else { 0 };
         let (budget, reducible) = self.model_budget(&model, live, !resumed)?;
         let admission = if resumed { "resume" } else { "start" };
         if budget.required_tokens <= budget.context_window { return Ok(()); }
@@ -5256,7 +5256,7 @@ impl AgentSession {
     /// session entry it was projected from while it still sits at its projected position in the
     /// rebuilt session context. Messages not projected from session history stay unstamped.
     fn session_context_entry_ids(&self, messages: &[AgentMessage]) -> Vec<Option<String>> {
-        let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = self.with_session_manager(|manager| manager.current_context());
         let projected = context.messages.into_iter().map(|message| session_message_from_value(message).ok());
         let mut entry_ids: Vec<Option<String>> = messages.iter().zip(projected.zip(context.entry_ids))
             .map(|(message, (projected, entry_id))| (projected.as_ref() == Some(message)).then_some(entry_id)).collect();
@@ -6579,7 +6579,7 @@ impl AgentSession {
 
     async fn revalidate_continuation_admission(&self, proactive: bool) -> Result<(), String> {
         let model = self.model();
-        let latest_assistant_entry = self.with_session_manager(|manager| manager.branch(manager.leaf_id()).iter().rev()
+        let latest_assistant_entry = self.with_session_manager(|manager| manager.current_branch().iter().rev()
             .find(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
             .and_then(|entry| entry["id"].as_str()).map(str::to_owned));
         if latest_assistant_entry.is_some_and(|id| self.state().post_compaction_usage_exempt_entries.contains(&id)) {
@@ -6592,11 +6592,11 @@ impl AgentSession {
             crate::compaction_settings_access::CompactionModelSelector { provider: &model.provider, id: &model.id },
         ))?;
         if !resolved.enabled || self.is_compaction_delegated() { return Ok(()); }
-        let messages = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages);
+        let messages = self.with_session_manager(|manager| manager.current_context().messages);
         let messages = crate::messages::filter_context_excluded_messages(messages);
         let estimate = crate::compaction::estimate_context_tokens(&messages);
         let stale_usage = proactive && self.with_session_manager(|manager| {
-            let branch = manager.branch(manager.leaf_id());
+            let branch = manager.current_branch();
             let Some(boundary) = branch.iter().rposition(|entry| entry["type"] == "compaction") else { return false; };
             crate::compaction::get_last_assistant_usage(&branch[boundary + 1..]).is_none()
         });
@@ -6787,7 +6787,7 @@ impl AgentSession {
             return Ok(false);
         }
         let latest_compaction = || self.with_session_manager(|manager|
-            crate::session_manager::get_latest_compaction_entry(&manager.branch(manager.leaf_id()))
+            crate::session_manager::get_latest_compaction_entry(&manager.current_branch())
                 .and_then(|entry| entry.get("id").cloned()));
         let before = latest_compaction();
         if self.revalidate_continuation_admission(false).await.is_err() {
@@ -7268,7 +7268,7 @@ impl AgentSession {
     pub fn append_session_entry(&self, entry: Value) {
         let entry_id = entry.get("id").and_then(Value::as_str).map(str::to_owned);
         self.with_session_manager_mut(|manager| manager.append_entry_raw(entry));
-        let messages = self.with_session_manager(|manager| manager.build_context(None).messages);
+        let messages = self.with_session_manager(|manager| manager.current_context().messages);
         let agent_messages: Vec<AgentMessage> =
             messages.iter().filter_map(|message| serde_json::from_value(message.clone()).ok()).collect();
         self.agent.set_messages(agent_messages);
@@ -7455,7 +7455,7 @@ impl AgentSession {
                 .collect()
         } else {
             self.with_session_manager(|manager| {
-                manager.build_context(manager.leaf_id()).messages
+                manager.current_context().messages
             })
         };
         let filtered = crate::messages::filter_context_excluded_messages(values);
@@ -8010,7 +8010,7 @@ impl AgentSession {
             .filter_map(|message| serde_json::to_value(message).ok())
             .collect();
         let messages = crate::messages::filter_context_excluded_messages(messages);
-        let branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        let branch = self.with_session_manager(|manager| manager.current_branch());
         if let Some(latest) = crate::session_manager::get_latest_compaction_entry(&branch) {
             let compaction_index = branch.iter().rposition(|entry| entry == &latest).unwrap_or(0);
             let has_post_compaction_usage = branch[compaction_index + 1..].iter().rev().any(|entry| {
@@ -8062,7 +8062,7 @@ impl AgentSession {
             "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             "cwd": self.with_session_manager(|manager| manager.cwd().to_owned()),
         });
-        let branch = self.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        let branch = self.with_session_manager(|manager| manager.current_branch());
         let mut lines = vec![header.to_string()];
         let mut previous: Option<String> = None;
         for entry in branch {
@@ -8290,7 +8290,7 @@ impl AgentSession {
                 self.with_session_manager_mut(|manager| {
                     manager.append_configuration_update(effective.as_str());
                 });
-                let context = self.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+                let context = self.with_session_manager(|manager| manager.current_context());
                 match context.messages.into_iter().map(session_message_from_value).collect::<Result<Vec<_>, _>>() {
                     Ok(messages) => {
                         self.agent.set_messages(messages);
@@ -12226,7 +12226,7 @@ mod tests {
         assert_eq!(result.summary, "digest\n\n---\n\n**Turn Context (split turn):**\n\nprefix digest");
         assert!(result.details.expect("file details")["readFiles"].is_array());
         assert!(result.usage.is_some());
-        assert_eq!(result.estimated_tokens_after, Some(session.with_session_manager(|manager| manager.build_context(manager.leaf_id()))
+        assert_eq!(result.estimated_tokens_after, Some(session.with_session_manager(|manager| manager.current_context())
             .messages.iter().map(crate::compaction::compaction::estimate_tokens).sum::<u64>() as i64));
         assert!(!session.is_compacting());
         assert_eq!(session.compaction_state().status(), "completed");
@@ -13827,7 +13827,7 @@ mod tests {
         reapplied.expect("repeated compaction");
         prompted.expect("prompt completion");
         assert_eq!(retained, 1, "pending assistant remains in runtime context");
-        let branch = session.with_session_manager(|manager| manager.branch(manager.leaf_id()));
+        let branch = session.with_session_manager(|manager| manager.current_branch());
         let compacted = branch.iter().rposition(|entry| entry["type"] == "compaction").expect("compaction entry");
         let assistants: Vec<_> = branch.iter().enumerate().filter(|(_, entry)| entry["message"]["role"] == "assistant").collect();
         assert_eq!(assistants.len(), 1);
@@ -14123,7 +14123,7 @@ mod tests {
             .await.expect("bounded prompt").expect("prompt");
         assert!(!session.is_retrying());
         assert_eq!(session.with_session_manager(|manager| manager.entries().len()), 4);
-        let branch = session.with_session_manager(|manager| manager.branch(manager.leaf_id().or(Some(""))));
+        let branch = session.with_session_manager(|manager| manager.current_branch());
         assert_eq!(branch.len(), 2);
         assert_eq!(branch[0]["message"]["role"], "user");
         assert_eq!(branch[1]["message"]["stopReason"], "error");
@@ -14229,11 +14229,11 @@ mod tests {
         });
         let mut target = test_model();
         target.id = "fallback-small".to_owned();
-        let measured = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+        let measured = session.with_session_manager(|manager| manager.current_context()).messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         let reduced = session.reduce_for_switch_target(&target, measured).expect("fallback reduction");
         session.assert_model_usable(&target, reduced).expect("reduced budget");
-        let actual: u64 = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+        let actual: u64 = session.with_session_manager(|manager| manager.current_context()).messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         assert_eq!(actual, reduced);
         assert!(session.with_session_manager(|manager| manager.entries()).iter().any(|entry| entry["details"]["schema"] == "senpi.compaction.resume-slice.v1"));
@@ -14264,7 +14264,7 @@ mod tests {
         assert_eq!(entries.iter().filter(|entry| entry["type"] == "message").count(), 20);
         assert!(entries.iter().any(|entry| entry["details"]["schema"] == "senpi.compaction.resume-slice.v1"));
         assert!(entries.iter().any(|entry| entry["type"] == "model_change" && entry["reason"] == "fallback"));
-        let live = session.with_session_manager(|manager| manager.build_context(manager.leaf_id())).messages.iter()
+        let live = session.with_session_manager(|manager| manager.current_context()).messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         session.assert_model_usable(&target, live).unwrap();
     }
@@ -15005,7 +15005,7 @@ mod tests {
             session.with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
                 "role":"user", "content":[{"type":"text","text":"persisted payload ".repeat(40)}], "timestamp":0
             })));
-            let persisted = session.with_session_manager(|manager| manager.build_context(manager.leaf_id()).messages);
+            let persisted = session.with_session_manager(|manager| manager.current_context().messages);
             let expected = crate::compaction::estimate_context_tokens(&crate::messages::filter_context_excluded_messages(persisted)).tokens;
             start(&session, "rollback", maho_ext_api::CompactionReason::Overflow);
             session.emit(AgentSessionEvent::CompactionEnd {

@@ -125,11 +125,11 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     runtime.set_settings_manager(&settings);
     let mut manager = options.session_manager.take().unwrap_or_else(|| SessionManager::create(&cwd, None, None));
     crate::session_cwd::assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
-    let context = manager.build_context(manager.leaf_id());
+    let context = manager.current_context();
     let model = options.model.take().or_else(|| context.model.as_ref().and_then(|(provider, id)| registry.find(provider, id)))
         .or_else(|| settings.get_string("defaultProvider").zip(settings.get_string("defaultModel")).and_then(|(provider,id)| registry.find(&provider,&id)))
         .or_else(|| registry.get_available().into_iter().next()).ok_or("No model available")?;
-    let has_thinking_entry = manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change");
+    let has_thinking_entry = manager.current_branch().iter().any(|entry| entry["type"] == "thinking_level_change");
     let configured_thinking = settings.get_value("modelThinkingLevels")
         .and_then(|levels| levels.get(format!("{}/{}", model.provider, model.id))).and_then(serde_json::Value::as_str)
         .and_then(ModelThinkingLevel::parse)
@@ -437,7 +437,7 @@ mod tests {
             session_manager: Some(SessionManager::in_memory(&cwd, None, None)),
             tools: Some(Vec::new()), ..Default::default()
         }).await.expect("SDK session");
-        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = created.session.with_session_manager(|manager| manager.current_context());
         let entries = created.session.with_session_manager(|manager| manager.entries());
         created.session.dispose().await;
         assert_eq!(context.model, Some(("faux".to_owned(), "faux-1".to_owned())));
@@ -461,7 +461,7 @@ mod tests {
                 model: Some(test_model()), thinking_level: Some(ThinkingLevel::Low),
                 session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
             }).await.expect("existing SDK conversation");
-            let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+            let context = created.session.with_session_manager(|manager| manager.current_context());
             let entries = created.session.with_session_manager(|manager| manager.entries());
             let effective = created.session.thinking_level();
             created.session.dispose().await;
@@ -525,7 +525,7 @@ mod tests {
                 "content":[{"type":"text","text":"restored context ".repeat(2500)}],"timestamp":index}));
         }
         let before = manager.entries().into_iter().filter(|entry| entry["type"] == "message").collect::<Vec<_>>();
-        let live_before: u64 = manager.build_context(manager.leaf_id()).messages.iter()
+        let live_before: u64 = manager.current_context().messages.iter()
             .map(crate::compaction::compaction::estimate_tokens).sum();
         let mut model = test_model();
         model.context_window = 128000;
@@ -536,7 +536,7 @@ mod tests {
             model: Some(model.clone()), session_manager: Some(manager),
             tools: Some(Vec::new()), ..Default::default()
         })).await.expect("bounded oversized SDK resume").expect("repairable resume");
-        let context = created.session.with_session_manager(|manager| manager.build_context(manager.leaf_id()));
+        let context = created.session.with_session_manager(|manager| manager.current_context());
         let entries = created.session.with_session_manager(|manager| manager.entries());
         let live_after: u64 = context.messages.iter().map(crate::compaction::compaction::estimate_tokens).sum();
         let admission = created.session.assert_model_usable(&model, live_after);
