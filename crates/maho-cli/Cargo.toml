@@ -59,6 +59,9 @@ maho-ext-loop = { path = "../builtins/maho-ext-loop" }
 maho-ext-ttsr = { path = "../builtins/maho-ext-ttsr" }
 maho-ext-config-reload = { path = "../builtins/maho-ext-config-reload" }
 maho-ext-pi-webfetch = { path = "../extensions/maho-ext-pi-webfetch" }
+maho-ext-pi-rules = { path = "../extensions/maho-ext-pi-rules" }
+maho-ext-pi-websearch = { path = "../extensions/maho-ext-pi-websearch" }
+maho-ext-pi-goal = { path = "../extensions/maho-ext-pi-goal" }
 maho-ext-pi-comment-checker = { path = "../extensions/maho-ext-pi-comment-checker" }
 maho-ext-pi-ast-grep = { path = "../extensions/maho-ext-pi-ast-grep" }
 maho-ext-pi-nested-agents-md = { path = "../extensions/maho-ext-pi-nested-agents-md" }

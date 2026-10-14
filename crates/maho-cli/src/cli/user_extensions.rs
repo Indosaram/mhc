@@ -70,14 +70,12 @@ fn async_factory(resource: &ResolvedResource, extension: Box<dyn Extension>) -> 
     }
 }
 
-/// Packages a native builtin already ports; an installed copy is provided by that builtin.
-const BUILTIN_PORTED_PACKAGES: [&str; 4] = ["pi-rules", "pi-websearch", "pi-webfetch", "pi-goal"];
-
 enum NativeResolution { Port(&'static extension_registry::NativeExtension), Provided, Unresolved }
 
 /// Map one resolved extension path to the linked port that replaces its TypeScript entry: the file
 /// (or `<id>/index.*` directory) name, then the nearest package name. Generated global-default shims
-/// and packages a builtin ports are already provided natively.
+/// are already provided natively. senpi shadows only `VENDORED_BUILTIN_EXTENSION_PACKAGES`
+/// (`resource-loader.ts:114-122`), so standalone packages a builtin also vendors still load.
 fn native_resolution(path: &str) -> NativeResolution {
     let file = Path::new(path);
     if std::fs::read_to_string(file).is_ok_and(|content| maho_core::generated_shim_banner::has_generated_shim_banner(&content)) {
@@ -90,7 +88,6 @@ fn native_resolution(path: &str) -> NativeResolution {
     if let Some(native) = extension_registry::user_extensions().iter().find(|native| native.id == named || Some(native.id) == package) {
         return NativeResolution::Port(native);
     }
-    if package.is_some_and(|package| BUILTIN_PORTED_PACKAGES.contains(&package)) { return NativeResolution::Provided; }
     NativeResolution::Unresolved
 }
 
@@ -219,10 +216,6 @@ pub async fn resolve_and_discover(
     paths.extensions.extend(resolve_cli_extension_paths(&manager, &sources).await?);
     shadow_vendored_builtin_extensions(&mut paths.extensions, &selection);
     let mut discovery = discover(&paths);
-    // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports; the port yields to it.
-    if selection.is_active("nested-agents-md") {
-        discovery.factories.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
-    }
     // `builtin:<id>` specifiers are linked entries, not filesystem paths.
     discovery.errors.extend(missing_extension_path_errors(cwd, &sources));
     Ok(merge_discovery(discovery, builtins))

@@ -120,11 +120,6 @@ pub fn assembled_factories_with_mcp_registry(
     assembled.extend(async_factories(native));
     let selection = BuiltinExtensionSelection::from_settings(settings);
     assembled.retain(|factory| builtin_id(&factory.path).is_none_or(|id| selection.is_active(id)));
-    // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports: both register the
-    // `no-nested-agents` flag and `/nested-agents`, so the linked port yields to an active builtin.
-    if selection.is_active("nested-agents-md") {
-        assembled.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
-    }
     // senpi `loadFinalExtensionSet` (resource-loader.ts:902-903, :933-949): builtin and inline
     // factories come first, then the path-loaded extensions, where the global defaults load through
     // their generated `<agentDir>/extensions/<id>` shims.
