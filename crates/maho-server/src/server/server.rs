@@ -393,7 +393,7 @@ impl Server {
                             let server=self.clone(); let connection=connection.clone(); let services=services.clone(); let presentation=presentation.clone(); let active=active.clone(); let encoders=encoders.clone();
                             let subscriptions=subscriptions.clone();
                             requests.spawn(async move {
-                                let context=Context { cancelled:signal.clone() }; let mut cancelled=signal;
+                                let context=Context { cancelled:signal.clone() }; let cancelled=signal;
                                 let publisher_connection=connection.clone(); let max=server.max_frame_length;
                                 let queued=Arc::new(Mutex::new(Some(Vec::<(String,Value)>::new())));
                                 let pending=queued.clone();let publishing_encoders=encoders.clone();let subscribing_id=subscribing.clone();
@@ -416,7 +416,9 @@ impl Server {
                                         attachment.invoke(message["call"].clone(),publish,context).await
                                     } else { services.invoke_service(message["call"].clone(),publish,context).await }
                                 };
-                                let result=tokio::select! { result=invoke=>result,_=cancelled.wait_for(|v| *v)=>Err(ServerError::new("cancelled","RPC request cancelled")) };
+                                // Pinned `handleCancel` only aborts the context signal: the call
+                                // runs to completion and the host decides how to honor it.
+                                let result=invoke.await;
                                 let result=match result {
                                     Ok(result) if subscribing.is_some()=>{
                                         let subscription_id=subscribing.as_ref().expect("subscription branch");
