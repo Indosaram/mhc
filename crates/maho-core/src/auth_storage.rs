@@ -22,7 +22,6 @@ use maho_ai::compat::extension_oauth_types::{
 use maho_ai::utils::abort::{AbortController, AbortSignal};
 
 use crate::config::get_agent_dir;
-use crate::credential_pool::slots::{CredentialSlot, PooledCredential};
 use crate::lockfile_policy::{FILE_STORAGE_LOCK_RETRY_BUDGET_MS, CredentialStoreBusyError, acquire_lock_async, acquire_lock_sync, FILE_STORAGE_SYNC_LOCK_BUDGET_MS};
 use crate::paths::{get_file_content_revision, normalize_path};
 use crate::resolve_config_value::{is_command_config_value, resolve_config_value};
@@ -126,43 +125,30 @@ pub fn repair_poisoned_pool_slots(data: &AuthStorageData) -> (AuthStorageData, b
     }
 }
 
-/// A generated slot that carries the flat sentinel material is dropped: the flat fields already hold
-/// that material, so the slot is redundant and poisonous.
+/// A slot carrying the provider's `<providerId>-managed` sentinel as both access and refresh can
+/// never authenticate; drop it and clear a pin that named it (senpi `repairManagedSentinelSlots`).
+/// The raw JSON object is filtered in place so every other byte of the credential survives.
 fn repair_managed_sentinel_slots(provider_id: &str, credential: &Value) -> Option<Value> {
     let object = credential.as_object()?;
     let accounts = object.get("accounts")?.as_array()?;
-    let flat = PooledCredential {
-        credential_type: object.get("type").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        key: credential_key(credential).map(str::to_owned),
-        access: object.get("access").and_then(Value::as_str).map(str::to_owned),
-        refresh: object.get("refresh").and_then(Value::as_str).map(str::to_owned),
-        expires: object.get("expires").and_then(Value::as_i64),
-        accounts: None,
-        pinned: object.get("pinned").and_then(Value::as_str).map(str::to_owned),
-    };
-    let flat_slots: Vec<CredentialSlot> = flat.list_slots();
-    let sentinel = flat_slots.first().cloned().unwrap_or_default();
-    let mut healed: Vec<Value> = Vec::new();
-    let mut changed = false;
-    for account in accounts {
-        let name = account.get("name").and_then(Value::as_str).unwrap_or_default();
-        let is_generated = name == "default" || name.strip_prefix("login-").map(|index| index.chars().all(|c| c.is_ascii_digit())).unwrap_or(false);
-        let carries_sentinel = account.get("key").and_then(Value::as_str) == sentinel.key.as_deref()
-            && account.get("access").and_then(Value::as_str) == sentinel.access.as_deref()
-            && account.get("refresh").and_then(Value::as_str) == sentinel.refresh.as_deref()
-            && sentinel.key.is_some();
-        if is_generated && carries_sentinel {
-            changed = true;
-            continue;
-        }
-        healed.push(account.clone());
-    }
-    if !changed {
+    let kept: Vec<Value> = accounts
+        .iter()
+        .filter(|account| {
+            !serde_json::from_value::<maho_ai::auth::pool::slots::CredentialSlot>((*account).clone())
+                .is_ok_and(|slot| maho_ai::auth::pool::slots::is_managed_sentinel_slot(provider_id, &slot))
+        })
+        .cloned()
+        .collect();
+    if kept.len() == accounts.len() {
         return None;
     }
-    let _ = provider_id;
     let mut updated = object.clone();
-    updated.insert("accounts".to_owned(), Value::Array(healed));
+    if let Some(pinned) = object.get("pinned").and_then(Value::as_str)
+        && !kept.iter().any(|slot| slot.get("name").and_then(Value::as_str) == Some(pinned))
+    {
+        updated.remove("pinned");
+    }
+    updated.insert("accounts".to_owned(), Value::Array(kept));
     Some(Value::Object(updated))
 }
 
@@ -962,16 +948,18 @@ mod tests {
     }
 
     #[test]
-    fn heals_a_poisoned_pool_slot_that_duplicates_the_flat_sentinel() {
+    fn heals_a_poisoned_pool_slot_carrying_the_managed_sentinel() {
         let data = parse_auth_json(
-            "{\"anthropic\":{\"type\":\"api_key\",\"key\":\"flat\",\"accounts\":[{\"name\":\"login-1\",\"key\":\"flat\"},{\"name\":\"login-2\",\"key\":\"real\"}]}}",
+            "{\"anthropic-subscription\":{\"type\":\"oauth\",\"access\":\"anthropic-subscription-managed\",\"refresh\":\"anthropic-subscription-managed\",\"expires\":0,\"pinned\":\"login-1\",\"accounts\":[{\"name\":\"login-1\",\"access\":\"anthropic-subscription-managed\",\"refresh\":\"anthropic-subscription-managed\"},{\"name\":\"login-2\",\"access\":\"real\",\"refresh\":\"r\"}]},\"anthropic\":{\"type\":\"api_key\",\"key\":\"flat\",\"accounts\":[{\"name\":\"default\",\"key\":\"flat\"}]}}",
         )
         .expect("data");
         let (repaired, flag) = repair_poisoned_pool_slots(&data);
         assert!(flag);
-        let accounts = repaired["anthropic"]["accounts"].as_array().expect("accounts");
+        let accounts = repaired["anthropic-subscription"]["accounts"].as_array().expect("accounts");
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0]["name"], "login-2");
+        assert!(repaired["anthropic-subscription"].get("pinned").is_none());
+        assert_eq!(repaired["anthropic"]["accounts"].as_array().expect("accounts").len(), 1);
         let (_again, flag) = repair_poisoned_pool_slots(&repaired);
         assert!(!flag);
     }
