@@ -127,6 +127,7 @@ fn node_platform() -> &'static str {
 impl AppServerRuntime {
     pub async fn new(agent_dir: String, cwd: String, version: String, session_dir: Option<String>, factory: Option<SessionFactory>) -> Self {
         let (thread_notification_sender, mut thread_notifications) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+        let bridge_notification_sender = thread_notification_sender.clone();
         let shutdown_request = Arc::new(AppServerShutdownRequest::default());
         let registry_slot = Arc::new(std::sync::OnceLock::<std::sync::Weak<ThreadRegistry>>::new());
         let factory = bind_app_server_session_factory(factory.unwrap_or_else(super::thread_registry::default_session_factory), thread_notification_sender, shutdown_request.clone(), registry_slot.clone());
@@ -183,10 +184,17 @@ impl AppServerRuntime {
         let turn_engine_slot=Arc::new(std::sync::OnceLock::<super::turns::TurnEngine>::new());
         let recipients = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<String,std::collections::BTreeMap<String,super::notifications::SendMessage>>::new()));
         let send_recipients = recipients.clone();
+        // senpi `sendToSubscribers`: `notifications.toThread`. Notifications (`serverRequest/resolved`)
+        // take the ordered thread consumer, which applies the opt-out/experimental filter and the
+        // enqueue accounting; id-bearing requests bypass the filter like `NotificationRouter.enqueue`.
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
             let sends = send_recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map(|clients|clients.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
             let count = sends.len();
-            for send in sends {let delivery = send(super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64));tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
+            if message.get("id").is_none() {
+                if count > 0 && bridge_notification_sender.send((id.to_owned(),message)).is_err() {eprintln!("app-server request delivery: thread notification consumer closed");}
+                return count;
+            }
+            for send in sends {let delivery = send(message.clone());tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
             count
         });
         let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
