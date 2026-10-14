@@ -4178,6 +4178,13 @@ impl InteractiveMode {
             // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
             AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
+            // senpi `model_change_skipped`.
+            AgentSessionEvent::ModelChangeSkipped { model, budget, .. } => {
+                use crate::components::compaction_summary_message::format_count;
+                let name = if model.name.is_empty() { &model.id } else { &model.name };
+                self.show_warning(&format!("Skipped {name}: current context needs {} more tokens for its {}-token window ({} usability budget).",
+                    format_count(budget.shortfall_tokens), format_count(budget.context_window), budget.safety_margin_profile.as_deref().unwrap_or_default()));
+            }
             AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
             AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
             AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
