@@ -8822,6 +8822,18 @@ mod tests {
         Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream_fn), ..Default::default() })
     }
 
+    /// senpi test/suite/harness.ts:150-175: a session whose faux provider carries a configured key, so
+    /// `checkAuth` admits model switches (agent-session.ts:5148).
+    fn keyed_test_session() -> AgentSession {
+        let session = test_session_with_stream_function(false);
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
+            config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".into()), ..Default::default() },
+            ..Default::default()
+        }).expect("configured faux provider");
+        session
+    }
+
     fn test_session() -> AgentSession {
         test_session_with_stream_function(true)
     }
@@ -13454,7 +13466,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_switch_persists_only_after_admission() {
-        let session = test_session_with_stream_function(false);
+        let session = keyed_test_session();
         let mut model = test_model();
         model.id = "second".to_owned();
         session.set_session_model(model).await.expect("switch");
@@ -13505,7 +13517,7 @@ mod tests {
 
     #[tokio::test]
     async fn fallback_switch_reduces_context_without_losing_recorded_transcript() {
-        let session = test_session_with_stream_function(false);
+        let session = keyed_test_session();
         let mut primary = test_model();
         primary.context_window = 1_000_000;
         session.agent.set_model(primary);
@@ -13605,7 +13617,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_transcript_holds_repairable_switch_without_durable_change() {
-        let session = test_session_with_stream_function(false);
+        let session = keyed_test_session();
         session.agent.set_model(test_model());
         session.agent.set_messages(vec![make_user_message(&"x".repeat(200_000), None)]);
         let mut model = test_model();
@@ -13621,7 +13633,7 @@ mod tests {
 
     #[tokio::test]
     async fn equal_window_switch_accounts_for_smaller_usable_context() {
-        let session = test_session_with_stream_function(false);
+        let session = keyed_test_session();
         session.agent.set_model(test_model());
         let (budget, _) = session.model_budget(&session.model(), 0, false).expect("budget");
         let available = budget.context_window - budget.required_tokens;
