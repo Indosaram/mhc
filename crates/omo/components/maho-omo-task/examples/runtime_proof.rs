@@ -44,10 +44,12 @@ impl ManagedRunner for Runner {
         *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child.clone()); Ok(child)
     }
 }
-struct ImmediateRunner(Mutex<Option<mpsc::Receiver<()>>>);
+// Optional start gate: `.1` reports that a start reached the gate, `.0` releases it.
+struct ImmediateRunner(Mutex<Option<mpsc::Receiver<()>>>, Mutex<Option<mpsc::Sender<()>>>);
 impl ManagedRunner for ImmediateRunner {
     fn start(&self,spec:&ManagedStartSpec)->ManagedRunnerResult {
         if let Some(first_event) = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            if let Some(entered) = self.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() { entered.send(()).map_err(|error| senpi_task::manager::types::ManagedRunnerError::Other(error.to_string()))?; }
             first_event.recv_timeout(Duration::from_secs(10)).map_err(|error| senpi_task::manager::types::ManagedRunnerError::Other(error.to_string()))?;
         }
         Ok(Arc::new(Child { id:spec.task_id.clone(), outcome:Mutex::new(Some(RunnerOutcome::completed("dag native result"))), ready:Condvar::new(), listeners:Arc::default(), activity_on_subscribe:true }))
@@ -187,8 +189,8 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     assert!(child.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty());
     drop(subscription); drop(api); drop(component); drop(child);
     let (entered, first_event) = mpsc::channel();
-    let runner = Arc::new(ImmediateRunner(Mutex::new(Some(first_event))));
-    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
+    let runner = Arc::new(ImmediateRunner(Mutex::new(Some(first_event)), Mutex::new(None)));
+    let dag_task_engine = compose_task_engine(ComposeTaskEngineDeps { cwd:root.path().into(), config:json!({"task":{"dag":{"subscriber_ring":1}}}), runners:ManagedRunners { in_process:runner.clone(), process:runner.clone() }, actions:Arc::new(Actions(mpsc::channel().0)), coordinator:None, resolve_registry:Arc::new(|| None),host_transport:None });
     let dag = maho_omo_task::dag_engine::TaskDagEngine::compose(&dag_task_engine, None)?;
     let started = dag.manager.start(senpi_task::dag::manager::DagStartParams {
         definition: senpi_task::dag::graph::DagDefinition { key:"configured-ring".into(), name:"configured ring".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
@@ -234,6 +236,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     context.ui = dag_ui.clone();
     context.mode = ExtensionMode::Tui;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::New, initial_model_provenance:None, previous_session_file:None }), &context).await?;
+    // The next session_start schedules this core-started run (TS recoverPausedRuns -> ensureScheduled).
+    // Hold its child start so the run stays live and its scheduler quiescent across the rebind below;
+    // otherwise its checkpoint writes race the rebind attach and arm a debounce beside the refresh.
+    let (release_pending, pending_gate) = mpsc::channel();
+    let (pending_entered, pending_started) = mpsc::channel();
+    *runner.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending_gate);
+    *runner.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending_entered);
     let pending = dag.manager.start(senpi_task::dag::manager::DagStartParams {
         definition: senpi_task::dag::graph::DagDefinition { key:"lifecycle".into(), name:"lifecycle".into(), nodes:vec![senpi_task::dag::graph::DagNodeInput {
             id:"pending".into(), prompt:"pending".into(), target:senpi_task::dag::types::DagNodeTarget::SubagentType { subagent_type:"explore".into(), model:Some("faux/native".into()) },
@@ -241,6 +250,7 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
         }] }, parent_session_id:context.session_manager.session_id().into(), root_session_id:context.session_manager.session_id().into(),
     })?;
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
+    pending_started.recv_timeout(Duration::from_secs(10))?;
     // The start's store checkpoint armed the 250ms debounce; this SessionStart's sync_now armed the
     // 1000ms live refresh. Both live is the pinned debounce+refresh behavior, not a single timer.
     let mut kinds=status_timers.kinds(); kinds.sort();
@@ -255,6 +265,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     dispatch(&api, EventKind::SessionStart, &mut ExtensionEvent::SessionStart(SessionStartEvent { reason:SessionReason::Resume, initial_model_provenance:None, previous_session_file:None }), &context).await?;
     assert_eq!(status_timers.count(), 1, "rebind must restore exactly one refresh timer (kinds={:?})", status_timers.kinds());
     assert!(dag.manager.snapshot(&pending.snapshot.run_id, context.session_manager.session_id()).is_ok());
+    release_pending.send(())?;
+    // Settle the released run and flush its coalesced activity before the native-run observers below
+    // subscribe, so they see only the run they assert on.
+    let settle_dag = dag.clone(); let settle_run = pending.snapshot.run_id.clone(); let settle_session = context.session_manager.session_id().to_owned();
+    let settled_pending = tokio::task::spawn_blocking(move || settle_dag.wait(&settle_run, &settle_session)).await??;
+    assert_eq!(settled_pending["status"], "completed");
+    rpc_timers.fire_delay(150);
     let dag_channels = Arc::new(Mutex::new(Vec::<Value>::new()));
     let captured_channels = dag_channels.clone();
     let wake_subscription = api.events.on("wake_source_state", Arc::new(move |event| {
@@ -271,12 +288,13 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
             if event["data"]["type"] == "dag.run.completed" && let Err(error) = terminal.send(event["data"].clone()) { eprintln!("DAG proof terminal delivery failed: {error}"); }
         }
     }));
-    let tool = &api.registered.tools.iter().find(|tool| tool.definition.name == "dag").ok_or("dag missing")?.definition;
+    let tool = &api.registered.tools.iter().find(|tool| tool.definition.name == maho_omo_task::dag_tool::WORKFLOW_TOOL_NAME).ok_or("workflow tool missing")?.definition;
     let result = tokio::time::timeout(Duration::from_secs(10), (tool.execute)(ToolCall { id:"native-dag", params:json!({"action":"start","definition":{"key":"native-proof","name":"native","nodes":[{"id":"one","prompt":"one","subagent_type":"explore","model":"faux/native"},{"id":"two","prompt":"two","subagent_type":"explore","model":"faux/native","dependsOn":["one"]}]}}), signal:Default::default(), on_update:None, context:Some(&context) })).await??;
     let run = result.details.as_ref().and_then(|details| details["run_id"].as_str()).ok_or("dag run missing")?;
     let scheduler = dag.scheduler(run, "s")?;
-    let record = scheduler.snapshot();
     let terminal = settled.recv_timeout(Duration::from_secs(10))?;
+    // TS start only ensureScheduled()s the run; the snapshot is read after the forwarded terminal event.
+    let record = scheduler.snapshot();
     rpc_timers.fire_delay(150);
     let activity = observed_activity.recv_timeout(Duration::from_secs(10))?;
     assert_eq!(activity["runId"], run);
@@ -284,9 +302,8 @@ pub async fn main()->Result<(),Box<dyn std::error::Error>> {
     assert!(activity["currentTool"].as_str().is_some_and(|tool| tool.contains("task44-activity")));
     assert!(activity.get("seq").is_none(), "activity must stay off the durable sequence ledger");
     println!("PASS registered DAG child progress reaches unsequenced RPC activity");
-    // register_tool awaits the scheduler.run() oneshot and joins its worker before
-    // returning; run_waves commits RunCompleted/RunFailed before returning.
-    // This snapshot is causally after terminal commit, not a timing assumption.
+    // `record` was read after the forwarded dag.run.completed event, which the journal publishes
+    // only after committing it: causally after the terminal commit, not a timing assumption.
     drop(cleanup);
     dispatch(&api, EventKind::SessionShutdown, &mut ExtensionEvent::SessionShutdown(SessionShutdownEvent { reason:SessionReason::Quit, target_session_file:None, signal:None }), &context).await?;
     assert_eq!(status_timers.count(), 0, "shutdown must cancel registered status timers");

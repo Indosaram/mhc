@@ -563,7 +563,12 @@ impl DagSchedulerContext {
     pub fn run(&self) -> Result<DagRunRecordV1, crate::dag::store::DagStoreError> {
         {
             let mut running = self.state.running.lock().unwrap_or_else(PoisonError::into_inner);
-            if *running { return Err(crate::dag::store::DagStoreError::Message("DAG scheduler is already running".into())); }
+            // TS `run: () => running ??= runFrontier(context)`: a concurrent caller joins the
+            // in-flight frontier loop and settles with it instead of failing.
+            if *running {
+                while *running { running = self.state.run_idle.wait(running).unwrap_or_else(PoisonError::into_inner); }
+                return Ok(self.journal.snapshot());
+            }
             if admission_stopped(self) { return Ok(self.journal.snapshot()); }
             *running = true;
         }
