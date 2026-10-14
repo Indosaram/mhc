@@ -968,11 +968,9 @@ impl Agent {
     pub async fn emit_external_event(&self, event: AgentEvent, run_signal: Option<AbortSignal>) {
         let active_signal = self.signal();
         let Some(active_signal) = active_signal else { return };
-        // TS also drops the event when `runSignal !== activeSignal`. AbortSignal carries no
-        // identity in this port, so a caller-supplied signal is accepted as belonging to the
-        // active run; the active-run check above is the guard that matters.
-        let _ = run_signal;
-        let _ = active_signal;
+        if run_signal.is_some_and(|signal| !signal.same_signal(&active_signal)) {
+            return;
+        }
         self.process_events(event).await;
     }
 
