@@ -4603,7 +4603,7 @@ impl AgentSession {
             extra_body: self.model_runtime().get_compatibility_request_config(&model).extra_body,
             max_tokens: Some(if model.max_tokens == 0 { 4096 } else { model.max_tokens.min(4096) }),
             ..Default::default()
-        }), Some(&callbacks)).await.map_err(|error| error.to_string())?;
+        }), Some(&callbacks), None).await.map_err(|error| error.to_string())?;
         if response.stop_reason == maho_ai::types::StopReason::Aborted { return Ok(serde_json::json!({"aborted":true})); }
         if let Some(error) = crate::compaction::compaction::get_summarization_failure(&response, "Branch summarization") { return Err(error); }
         if response.content.iter().any(|content| matches!(content, maho_ai::types::ContentBlock::ToolCall(_))) {
@@ -5144,13 +5144,15 @@ impl AgentSession {
         Err(crate::auth_guidance::format_no_api_key_found_message(&model.provider))
     }
 
+    /// senpi `completeSummarization` over the session's `agent.streamFunction`;
+    /// `summarization_max_duration_ms_override` is senpi's `summarizationMaxDurationMsOverride`.
     async fn complete_summary_stream(&self, model: &Model, context: &maho_ai::types::Context,
-        options: Option<maho_ai::types::StreamOptions>, callbacks: Option<&maho_ai::utils::retry::RetryCallbacks<'_>>)
+        options: Option<maho_ai::types::StreamOptions>, callbacks: Option<&maho_ai::utils::retry::RetryCallbacks<'_>>,
+        summarization_max_duration_ms_override: Option<f64>)
         -> Result<maho_ai::types::AssistantMessage, maho_ai::utils::event_stream::StreamError> {
         use crate::compaction::stream_watchdog;
         let mut options = options.unwrap_or_default();
-        let override_ms = self.with_settings_manager(|settings| settings.get_value("compaction")
-            .and_then(|value| value.get("summarizationMaxDurationMs")).and_then(Value::as_f64));
+        let override_ms = summarization_max_duration_ms_override;
         let tokens = maho_ai::utils::estimate::estimate_context_tokens(context).tokens;
         let duration = std::time::Duration::from_secs_f64(stream_watchdog::summarization_max_duration_ms(tokens as f64, override_ms) / 1000.0);
         let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
@@ -5159,6 +5161,7 @@ impl AgentSession {
         options.session_id = Some(uuid::Uuid::new_v4().to_string());
         options.cache_retention.get_or_insert(maho_ai::types::CacheRetention::None);
         let policy = self.summarization_retry_policy();
+        let stream_fn = self.agent.stream_function();
         // senpi `completeSummarization`: error-terminated responses retry through `retryAssistantCall`
         // and the final error response is returned, so the caller labels the failure.
         let failure: Mutex<Option<String>> = Mutex::new(None);
@@ -5166,6 +5169,7 @@ impl AgentSession {
         let response = maho_ai::utils::retry::retry_assistant_call(|| {
             let mut options = options.clone();
             let caller = caller.clone();
+            let stream_fn = stream_fn.clone();
             async move {
                 let controller = maho_ai::utils::abort::AbortController::new();
                 let listener = caller.as_ref().map(|signal| {
@@ -5175,7 +5179,9 @@ impl AgentSession {
                     listener
                 });
                 options.request.signal = Some(controller.signal());
-                let stream = self.model_runtime().stream(model, context, Some(options));
+                let stream = stream_fn(model, context, Some(maho_agent::types::AgentStreamOptions {
+                    simple: maho_ai::types::SimpleStreamOptions { stream: options, ..Default::default() }, ..Default::default()
+                }));
                 let result = stream_watchdog::consume_stream_with_idle_timeout(&stream,
                     u64::try_from(stream_watchdog::DEFAULT_SUMMARIZATION_IDLE_TIMEOUT_MS).unwrap_or_default(),
                     Some(duration_ms), caller.as_ref(), || controller.abort(None)).await;
@@ -5287,8 +5293,10 @@ impl AgentSession {
                 })
             })
         });
-        let stream_fn = |model: &Model, context: &maho_ai::types::Context, options: maho_ai::types::SimpleStreamOptions|
-            self.model_runtime().stream_simple(model, context, Some(options));
+        // senpi passes `this.agent.streamFunction` (the SDK's settings-aware stream function).
+        let agent_stream_fn = self.agent.stream_function();
+        let stream_fn = move |model: &Model, context: &maho_ai::types::Context, options: maho_ai::types::SimpleStreamOptions|
+            agent_stream_fn(model, context, Some(maho_agent::types::AgentStreamOptions { simple: options, ..Default::default() }));
         let retry = self.summarization_retry_policy();
         let callbacks = self.summarization_retry_callbacks("compaction", Some(reason));
         let request = library::SummarizationRequest {
@@ -9504,6 +9512,13 @@ mod tests {
         Agent::new(maho_agent::AgentOptions { stream_fn: Some(stream_fn), ..Default::default() })
     }
 
+    /// Summaries run through `agent.streamFunction`; route it to the session's model runtime.
+    fn route_agent_stream_to_model_runtime(session: &AgentSession) {
+        let runtime = session.model_runtime().clone();
+        session.agent.set_stream_function(Arc::new(move |model, context, options|
+            runtime.stream_simple(model, context, options.map(|options| options.simple))));
+    }
+
     /// senpi test/suite/harness.ts:150-175: a session whose faux provider carries a configured key, so
     /// `checkAuth` admits model switches (agent-session.ts:5148).
     fn keyed_test_session() -> AgentSession {
@@ -12220,6 +12235,7 @@ mod tests {
         let provider = faux_provider(RegisterFauxProviderOptions { tokens_per_second: Some(0.0), ..Default::default() });
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("branch digest", Default::default()).into()]);
         let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -12242,19 +12258,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_branch_summary_aborts_request_without_changing_session() {
+    async fn stalled_summary_aborts_request_under_its_duration_override() {
         struct StalledStreams(std::sync::Mutex<Option<maho_ai::utils::abort::AbortSignal>>);
         impl maho_ai::types::ProviderStreams for StalledStreams {
-            fn stream(&self, _: &Model, _: &maho_ai::types::Context, options: Option<maho_ai::types::StreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
-                *self.0.lock().expect("signal") = options.and_then(|options| options.request.signal);
-                maho_ai::types::AssistantMessageEventStream::assistant()
+            fn stream(&self, _: &Model, _: &maho_ai::types::Context, _: Option<maho_ai::types::StreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+                panic!("summary runs through the agent stream function")
             }
-            fn stream_simple(&self, _: &Model, _: &maho_ai::types::Context, _: Option<maho_ai::types::SimpleStreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
-                panic!("summary uses full options")
+            fn stream_simple(&self, _: &Model, _: &maho_ai::types::Context, options: Option<maho_ai::types::SimpleStreamOptions>) -> maho_ai::types::AssistantMessageEventStream {
+                *self.0.lock().expect("signal") = options.and_then(|options| options.stream.request.signal);
+                maho_ai::types::AssistantMessageEventStream::assistant()
             }
         }
         let streams = Arc::new(StalledStreams(std::sync::Mutex::new(None)));
         let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
         let mut model = test_model();
         model.provider = "stalled-summary".to_owned();
         session.agent.set_model(model.clone());
@@ -12269,14 +12286,14 @@ mod tests {
             config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("stalled-fixture".to_owned()), ..Default::default() },
             ..Default::default()
         }).expect("fixture auth");
-        session.with_settings_manager_mut(|settings| settings.apply_overrides(&Map::from_iter([
-            ("compaction".to_owned(), serde_json::json!({"summarizationMaxDurationMs":1})),
-        ])));
         let controller = maho_ai::utils::abort::AbortController::new();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), session.generate_branch_summary_with_signal(
-            &[serde_json::json!({"type":"message","id":"fixture","message":{"role":"user","content":"summarize","timestamp":0}})],
-            None, false, controller.signal())).await.expect("summary deadline");
-        let error = result.expect_err("stalled provider");
+        // senpi `completeSummarization(..., summarizationMaxDurationMsOverride)`: compaction passes
+        // the `compaction.summarizationMaxDurationMs` setting; branch summaries pass none.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), session.complete_summary_stream(&session.model(),
+            &maho_ai::types::Context::default(), Some(maho_ai::types::StreamOptions {
+                request: maho_ai::types::ProviderRequestOptions { signal: Some(controller.signal()), ..Default::default() }, ..Default::default()
+            }), None, Some(1.0))).await.expect("summary deadline");
+        let error = result.expect_err("stalled provider").to_string();
         assert!(error.contains("wall-clock budget"), "{error}");
         assert!(streams.0.lock().expect("signal").as_ref().expect("request signal").aborted());
         assert!(!controller.signal().aborted());
@@ -12307,6 +12324,7 @@ mod tests {
             stop_reason: Some(StopReason::Aborted), ..Default::default()
         }).into()]);
         let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -12341,6 +12359,7 @@ mod tests {
             maho_ai::providers::faux::faux_assistant_message("prefix digest", Default::default()).into(),
         ]);
         let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
@@ -12448,6 +12467,7 @@ mod tests {
         };
         provider.set_responses(vec![make_response(true), make_response(false)]);
         let session = test_session();
+        route_agent_stream_to_model_runtime(&session);
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
@@ -12461,7 +12481,7 @@ mod tests {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), session.complete_summary_stream(&model,
             &maho_ai::types::Context::default(), Some(maho_ai::types::StreamOptions {
                 session_id: Some("caller-affinity".into()), ..Default::default()
-            }), None)).await;
+            }), None, None)).await;
         session.dispose().await;
         let response = result.expect("bounded retries").expect("retried summary");
         assert_eq!(maho_ai::utils::text::content_text(&response.content, ""), "summary");
@@ -12490,6 +12510,7 @@ mod tests {
             }) })
         }))]);
         let session = test_session();
+        route_agent_stream_to_model_runtime(&session);
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
@@ -12506,7 +12527,7 @@ mod tests {
                 session_id: Some("caller".into()), request: maho_ai::types::ProviderRequestOptions {
                     affinity_session_id: Some("explicit-affinity".into()), ..Default::default()
                 }, ..Default::default()
-            }), None)).await;
+            }), None, None)).await;
         session.dispose().await;
         let response = result.expect("bounded deterministic error").expect("error response returned");
         assert_eq!(response.stop_reason, maho_ai::types::StopReason::Error);
@@ -12539,6 +12560,7 @@ mod tests {
             })
         }))]);
         let session = test_session_with_stream_function(false);
+        route_agent_stream_to_model_runtime(&session);
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
