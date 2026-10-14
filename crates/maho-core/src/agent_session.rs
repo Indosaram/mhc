@@ -4350,7 +4350,9 @@ impl AgentSession {
             let session = weak().expect("Session retained during tool execution");
             Arc::new(crate::sdk::extension_context::create(&session))
         });
-        for (name, definition) in maho_tools::index::create_all_tool_definitions(Path::new(&cwd), Default::default()) {
+        // senpi `createRuntime` -> `_buildRuntime`: the rebuilt built-ins keep the composed options.
+        let options = self.with_settings_manager(|settings| crate::sdk::built_in_tools_options(settings, self.weak_accessor()));
+        for (name, definition) in maho_tools::index::create_all_tool_definitions(Path::new(&cwd), options) {
             let tool = maho_tools::tool_definition_wrapper::wrap_tool_definition(definition.clone(), Some(context.clone()));
             let mut state = self.state();
             if state.custom_tools.iter().any(|custom| custom.name == name) { continue; }
