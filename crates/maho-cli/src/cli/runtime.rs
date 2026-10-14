@@ -69,7 +69,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let trust_mode = trust_config.trust_prompt_mode();
     let startup_ui = {
         let bootstrap = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), false);
-        (bootstrap.get_string("theme"), bootstrap.get_bool("showHardwareCursor").unwrap_or(false), bootstrap.get_bool("clearOnShrink").unwrap_or(false))
+        (bootstrap.get_string("theme"), bootstrap.get_show_hardware_cursor(), bootstrap.get_clear_on_shrink())
     };
     let selector: Box<super::project_trust::Selector> = Box::new(move |title: &str, options: &[String]| {
         match super::startup_ui::show_startup_selector(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, options) {
@@ -152,7 +152,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if let Some(issue) = maho_core::session_cwd::get_missing_session_cwd_issue(&manager, &cwd_text) {
         if mode != AppMode::Interactive { return Err(maho_core::session_cwd::format_missing_session_cwd_error(&issue)); }
         let options = vec!["Continue".to_owned(), "Cancel".to_owned()];
-        let (theme, hardware_cursor, clear_on_shrink) = (settings.get_string("theme"), settings.get_bool("showHardwareCursor").unwrap_or(false), settings.get_bool("clearOnShrink").unwrap_or(false));
+        let (theme, hardware_cursor, clear_on_shrink) = (settings.get_string("theme"), settings.get_show_hardware_cursor(), settings.get_clear_on_shrink());
         let prompt = maho_core::session_cwd::format_missing_session_cwd_prompt(&issue);
         let choice = indicator.during_surface_write(|| super::startup_ui::show_startup_selector(theme.as_deref(), hardware_cursor, clear_on_shrink, &prompt, &options))?;
         let session_file = issue.session_file.clone().filter(|_| choice.as_deref() == Some("Continue"));
