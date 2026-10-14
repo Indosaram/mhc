@@ -387,7 +387,7 @@ pub enum ResolvedSession {
 
 /// senpi `findLocalSessionByExactId`.
 pub fn find_local_session_by_exact_id(session_id: &str, cwd: &str, session_dir: Option<&str>) -> Option<String> {
-    let sessions = if session_dir.is_some() { SessionManager::list_all(session_dir) } else { SessionManager::list(cwd, None) };
+    let sessions = if session_dir.is_some() { SessionManager::list_all(session_dir, None) } else { SessionManager::list(cwd, None, None) };
     sessions.into_iter().find(|session| session.id == session_id).map(|session| session.path)
 }
 
@@ -402,8 +402,8 @@ pub fn resolve_session_path(session_arg: &str, cwd: &str, session_dir: Option<&s
             .or_else(|| sessions.iter().find(|session| session.id.starts_with(session_arg)))
             .map(|session| (session.path.clone(), session.cwd.clone()))
     };
-    if let Some((path, _)) = matching(SessionManager::list(cwd, session_dir).as_slice()) { return ResolvedSession::Local(path); }
-    if let Some((path, cwd)) = matching(SessionManager::list_all(session_dir).as_slice()) { return ResolvedSession::Global { path, cwd }; }
+    if let Some((path, _)) = matching(SessionManager::list(cwd, session_dir, None).as_slice()) { return ResolvedSession::Local(path); }
+    if let Some((path, cwd)) = matching(SessionManager::list_all(session_dir, None).as_slice()) { return ResolvedSession::Global { path, cwd }; }
     ResolvedSession::NotFound(session_arg.to_owned())
 }
 

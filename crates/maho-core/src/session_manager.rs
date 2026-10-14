@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
@@ -563,6 +563,8 @@ pub struct SessionManager {
     resident_store: crate::session_resident_store::ResidentStringStore,
     resident_blobs_dir: Arc<Mutex<Option<String>>>,
     mirror_trimmed: bool,
+    /// senpi `fullEntryCount`: non-header entries in the full history, kept across mirror trims.
+    full_entry_count: usize,
 }
 
 impl SessionManager {
@@ -596,6 +598,7 @@ impl SessionManager {
             resident_store,
             resident_blobs_dir,
             mirror_trimmed: false,
+            full_entry_count: 0,
         };
         if persist && !manager.session_dir.is_empty() {
             let _ = std::fs::create_dir_all(&manager.session_dir);
@@ -854,6 +857,7 @@ impl SessionManager {
         }
         self.file_entries = vec![Value::Object(header)];
         self.mirror_trimmed = false;
+        self.full_entry_count = 0;
         self.resident_store.clear();
         if let Some(previous_blobs_dir) = previous_blobs_dir {
             let _ = std::fs::remove_dir_all(previous_blobs_dir);
@@ -876,10 +880,12 @@ impl SessionManager {
         self.session_name_cache = None;
         self.usage_totals = UsageTotals::default();
         let entries = self.file_entries.clone();
+        let mut full_entry_count = 0;
         for (order, entry) in entries.iter().enumerate() {
             if entry_type(entry) == "session" {
                 continue;
             }
+            full_entry_count += 1;
             let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_owned) else { continue };
             self.by_id.insert(id.clone(), order);
             self.leaf_id = Some(id.clone());
@@ -902,6 +908,10 @@ impl SessionManager {
                     }
                 }
             }
+        }
+        // A trimmed mirror cannot replace the full-history count.
+        if !self.mirror_trimmed {
+            self.full_entry_count = full_entry_count;
         }
     }
 
@@ -973,6 +983,7 @@ impl SessionManager {
             self.by_id.insert(id.clone(), self.file_entries.len() - 1);
             self.leaf_id = Some(id);
         }
+        self.full_entry_count += 1;
         self.accumulate_usage(&entry);
         if entry_type(&entry) == "session_info" {
             self.session_name_cache = entry.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned);
@@ -1203,6 +1214,12 @@ impl SessionManager {
 
     pub fn cwd(&self) -> &str {
         &self.cwd
+    }
+
+    /// senpi `getEntryCount`: the maintained non-header entry count without loading or
+    /// materializing history.
+    pub fn get_entry_count(&self) -> usize {
+        self.full_entry_count
     }
 
     pub fn session_dir(&self) -> &str {
@@ -1600,12 +1617,12 @@ impl SessionManager {
 impl SessionManager {
     /// senpi `SessionManager.list(cwd, sessionDir)`: one project's sessions, newest first. A custom
     /// session dir that is not this cwd's default dir is filtered to sessions started in `cwd`.
-    pub fn list(cwd: &str, session_dir: Option<&str>) -> Vec<crate::session_discovery::SessionInfo> {
+    pub fn list(cwd: &str, session_dir: Option<&str>, on_progress: Option<crate::session_discovery::SessionListProgress<'_>>) -> Vec<crate::session_discovery::SessionInfo> {
         let options = PathInputOptions::default();
         let dir = session_dir.map(|dir| normalize_path(dir, &options)).unwrap_or_else(|| get_default_session_dir(cwd));
         let filter_cwd = session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
         let resolved_cwd = resolve_path(cwd, cwd, &options);
-        let mut sessions: Vec<_> = crate::session_discovery::list_sessions_from_dir(&dir, None, 0, None)
+        let mut sessions: Vec<_> = crate::session_discovery::list_sessions_from_dir(&dir, on_progress, 0, None)
             .into_iter()
             .filter(|session| !filter_cwd || (!session.cwd.is_empty() && resolve_path(&session.cwd, &session.cwd, &options) == resolved_cwd))
             .collect();
@@ -1615,14 +1632,26 @@ impl SessionManager {
 
     /// senpi `SessionManager.listAll(sessionDir)`: every session in a custom dir, or across every
     /// project directory under the agent sessions dir, newest first.
-    pub fn list_all(session_dir: Option<&str>) -> Vec<crate::session_discovery::SessionInfo> {
+    /// `on_progress` reports `(loaded, total)` across every directory, counted up front as upstream does.
+    pub fn list_all(session_dir: Option<&str>, mut on_progress: Option<crate::session_discovery::SessionListProgress<'_>>) -> Vec<crate::session_discovery::SessionInfo> {
         let mut sessions = Vec::new();
         match session_dir {
-            Some(dir) => sessions = crate::session_discovery::list_sessions_from_dir(&normalize_path(dir, &PathInputOptions::default()), None, 0, None),
+            Some(dir) => sessions = crate::session_discovery::list_sessions_from_dir(&normalize_path(dir, &PathInputOptions::default()), on_progress, 0, None),
             None => {
                 if let Ok(entries) = std::fs::read_dir(get_sessions_dir()) {
-                    for entry in entries.filter_map(Result::ok).filter(|entry| entry.path().is_dir()) {
-                        sessions.extend(crate::session_discovery::list_sessions_from_dir(&entry.path().to_string_lossy(), None, 0, None));
+                    let dirs: Vec<PathBuf> = entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.is_dir()).collect();
+                    // senpi: count total files first for accurate progress.
+                    let total_files: usize = dirs.iter().map(|dir| {
+                        std::fs::read_dir(dir).map(|files| files.filter_map(Result::ok).filter(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("jsonl")).count()).unwrap_or(0)
+                    }).sum();
+                    let mut loaded = 0usize;
+                    for dir in dirs {
+                        let offset = loaded;
+                        let mut forward = |done: usize, total: usize| {
+                            loaded = done;
+                            if let Some(progress) = on_progress.as_deref_mut() { progress(done, total); }
+                        };
+                        sessions.extend(crate::session_discovery::list_sessions_from_dir(&dir.to_string_lossy(), Some(&mut forward), offset, Some(total_files)));
                     }
                 }
             }
@@ -1684,6 +1713,26 @@ mod tests {
         assert_eq!(entries.len(), 5);
         let reserialized: String = entries.iter().map(|entry| format!("{}\n", serialize_entry(entry))).collect();
         assert_eq!(reserialized, content);
+    }
+
+    #[test]
+    fn entry_count_tracks_non_header_entries_and_list_reports_progress() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        assert_eq!(manager.get_entry_count(), 0);
+        manager.append_message(json!({ "role": "user", "content": "hi", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [{"type": "text", "text": "hello"}], "stopReason": "stop", "timestamp": 2 }));
+        assert_eq!(manager.get_entry_count(), 2);
+        let path = manager.session_file().expect("session file").to_owned();
+        assert_eq!(SessionManager::open(&path, Some(&dir), None, None).get_entry_count(), 2);
+        let mut updates = Vec::new();
+        let sessions = SessionManager::list(&dir, Some(&dir), Some(&mut |loaded, total| updates.push((loaded, total))));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(updates, vec![(1, 1)]);
+        let mut all_updates = Vec::new();
+        SessionManager::list_all(Some(&dir), Some(&mut |loaded, total| all_updates.push((loaded, total))));
+        assert_eq!(all_updates, vec![(1, 1)]);
     }
 
     #[test]
