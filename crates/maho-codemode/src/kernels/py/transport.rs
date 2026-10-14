@@ -61,7 +61,7 @@ pub struct PythonTransportOptions {
 pub fn spawn_python_transport(options: &PythonTransportOptions, prelude: &Path) -> Result<tokio::process::Child, std::io::Error> {
     let (command, mut args) = split_command(&options.interpreter_path).map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     args.extend(["-u".into(), prelude.to_string_lossy().into_owned()]);
-    let mut env = apply_session_environment(&std::env::vars().collect(), options.session_env.as_ref());
+    let mut env = apply_session_environment(&maho_ext_api::process_env::vars().into_iter().collect(), options.session_env.as_ref());
     if let Some(overrides) = &options.env { env.extend(overrides.clone()); }
     env.insert("PYTHONUNBUFFERED".into(), "1".into());
     env.insert("PYTHONIOENCODING".into(), "utf-8".into());

@@ -120,7 +120,8 @@ async fn spawn_process_with_signal(options: &SubprocessKernelOptions, signal:&ma
 }
 async fn spawn_owned_process(options: &SubprocessKernelOptions, signal:&maho_ai::utils::abort::AbortSignal) -> Result<SubprocessProcess, ProcessError> {
     if signal.aborted() {return Err(ProcessError::Startup("Kernel startup was cancelled".into()));}
-    let inherited = std::env::vars().collect();
+    // senpi subprocess-kernel.ts:166: `globalThis.process.env`, extension writes included.
+    let inherited = maho_ext_api::process_env::vars().into_iter().collect();
     let env = options.env.clone().unwrap_or_else(|| apply_session_environment(&inherited, options.session_env.as_ref()));
     let mut process = SubprocessProcess::spawn(&options.command, &options.args, &options.cwd, &env)?;
     if let Err(error)=process.send(&json!({"type":"init","sessionId":options.session_id,"connection":options.connection})).await {process.terminate("TERM",Duration::from_millis(1500)).await?;return Err(error);}
