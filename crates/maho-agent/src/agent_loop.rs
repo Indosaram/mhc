@@ -378,6 +378,25 @@ async fn run_loop(
                 Some(prepare) => prepare(next_turn_context).await,
                 None => None,
             };
+            if let Some(error_message) = next_turn_snapshot.as_ref().and_then(|snapshot| snapshot.failure.clone()) {
+                if let Some(queue) = drained_terminating_queue
+                    && let Some(restore) = config.restore_pending_messages.as_ref()
+                {
+                    restore(queue, pending_messages.clone()).await;
+                }
+                // senpi `handleRunFailure(error, aborted=false)`.
+                let failure = assistant_event(&create_terminal_failure_assistant_message(
+                    &config.model,
+                    StopReason::Error,
+                    &AgentStreamError::Other { message: error_message },
+                    None,
+                ));
+                send(&emit, AgentEvent::MessageStart { message: failure.clone() }).await;
+                send(&emit, AgentEvent::MessageEnd { message: failure.clone() }).await;
+                send(&emit, AgentEvent::TurnEnd { message: failure.clone(), tool_results: Vec::new() }).await;
+                send(&emit, AgentEvent::AgentEnd { messages: vec![failure] }).await;
+                return;
+            }
             if let Some(snapshot) = next_turn_snapshot {
                 current_context = snapshot.context.unwrap_or(current_context);
                 config.model = snapshot.model.unwrap_or(config.model.clone());
