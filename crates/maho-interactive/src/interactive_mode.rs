@@ -2527,7 +2527,7 @@ impl InteractiveMode {
             // senpi `handleCompactCommand`: fewer than two message entries is "no messages yet" - a
             // warning with no core call, not the core "session too small" error.
             let message_count = self.session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("message")).count());
-            if message_count < 2 { self.show_status("Nothing to compact (no messages yet)".into()); return Ok(PromptDisposition::Handled); }
+            if message_count < 2 { self.show_warning("Nothing to compact (no messages yet)"); return Ok(PromptDisposition::Handled); }
             if self.session_host.is_some() {
                 self.host_compact(text.trim().strip_prefix("/compact ").map(str::to_owned)).await?;
                 self.rebuild_history();
