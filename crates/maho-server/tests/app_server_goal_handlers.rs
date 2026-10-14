@@ -251,6 +251,15 @@ impl ProbeHarness {
             if message.get("id").is_some_and(|value| *value == id) { return message; }
         }
     }
+    /// senpi `ThreadRegistry.createThread` only calls `SessionManager.create` (threads/registry.ts:110-127);
+    /// the session file appears on the first assistant flush, so a thread must run a turn before it
+    /// can be unloaded and found again on disk.
+    async fn persist(&self, id: &str) {
+        let disposition = self.session(id).prompt("hello", maho_core::agent_session::PromptOptions::default()).await.expect("faux turn runs");
+        assert_eq!(disposition, maho_core::agent_session::PromptDisposition::Started);
+        let file = self.session(id).session_file().expect("session file path");
+        assert!(std::path::Path::new(&file).exists(), "the first assistant flush persists the session");
+    }
     async fn anchor(&self) -> Arc<tokio::sync::Notify> { self.runtime.mcp_inventory.lock().await.ready_signal() }
     async fn await_anchor(&self, anchor: &Arc<tokio::sync::Notify>) { tokio::time::timeout(std::time::Duration::from_secs(5), anchor.notified()).await.expect("post-rebind inventory anchor within deadline"); }
     fn session(&self, id: &str) -> maho_core::agent_session::AgentSession { self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).cloned().expect("factory captured the session") }
@@ -292,6 +301,7 @@ async fn runtime_rebinds_the_connection_ui_into_the_session_runner_on_thread_res
     let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
     let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
     harness.await_anchor(&anchor).await;
+    harness.persist(&thread).await;
     // Make the thread non-loaded (its inventory holder would be removed by the idle-unload lifecycle).
     assert!(harness.runtime.threads.unload_thread(&thread).await);
     harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
@@ -379,6 +389,7 @@ async fn runtime_binds_ui_and_mcp_inventory_for_a_thread_loaded_by_thread_read()
     let started = harness.call(json!({"id":2,"method":"thread/start","params":{}})).await;
     let thread = started["result"]["thread"]["id"].as_str().unwrap().to_owned();
     harness.await_anchor(&anchor).await;
+    harness.persist(&thread).await;
     assert!(harness.runtime.threads.unload_thread(&thread).await);
     harness.runtime.mcp_inventory.lock().await.remove_thread(&thread);
     let read = harness.call(json!({"id":3,"method":"thread/read","params":{"threadId":thread}})).await;
