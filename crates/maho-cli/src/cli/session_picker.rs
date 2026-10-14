@@ -47,8 +47,11 @@ pub fn select_session(
     screen.base_mut().set_clear_on_shrink(settings.get_clear_on_shrink());
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
+    // senpi `startStartupTui` -> `ui.start()`.
+    screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         // senpi `startStartupTui`: `applyDetectedStartupTheme` once the terminal is up.
@@ -73,9 +76,13 @@ pub fn select_session(
         }
         Ok(())
     })();
+    // senpi `ui.stop()` (the session picker does not clear first).
+    screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, false);
+    screen.base_mut().finish_stop_output(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     result.and(stopped)?;
     if *exited.borrow() { std::process::exit(0); }
     let selected = outcome.borrow_mut().take().flatten();
