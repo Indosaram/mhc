@@ -16,7 +16,8 @@ impl WorkerHost {
             "import {{ Worker }} from 'node:worker_threads'; import {{ createInterface }} from 'node:readline'; const worker = new Worker({}, {{ workerData: {{ cwd: {}, parallelPoolWidth: {} }} }}); worker.on('message', message => process.stdout.write(JSON.stringify(message)+'\\n')); worker.on('error', error => {{ process.stdout.write(JSON.stringify({{type:'init-failed',error:{{message:error.message,name:error.name,stack:error.stack}}}})+'\\n'); process.exitCode=1; }}); worker.on('exit', code => process.exit(code)); const input=createInterface({{input:process.stdin}}); input.on('line', line => worker.postMessage(JSON.parse(line))); input.on('close', () => worker.terminate());",
             serde_json::to_string(&entry.to_string_lossy())?, serde_json::to_string(&cwd.to_string_lossy())?, parallel_pool_width,
         );
-        let env = std::env::vars().collect();
+        // A senpi worker thread inherits the host `process.env`, extension writes included.
+        let env = maho_ext_api::process_env::vars().into_iter().collect();
         let process = SubprocessProcess::spawn("bun", &["-e".into(),relay], cwd, &env)?;
         Ok(Self { mode, process })
     }
