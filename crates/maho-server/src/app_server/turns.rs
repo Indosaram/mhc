@@ -361,6 +361,14 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 }),
             };
             let response = preflight.as_ref().map(|_| json!({"turn":turn.clone()})).map_err(|error| JsonRpcError::new(-32603, error.clone()));
+            if preflight.is_err() {
+                // senpi `preflightResult(false)`: `completeTurn("failed")` runs before the request
+                // rejects, and the deferred initial notifications are dropped with the error response.
+                engine.complete_turn(&entry, Some(turn_id.as_str()), CompleteTurnStatus::Failed, Some(PREFLIGHT_FAILED.to_owned())).await;
+                drop(gate);
+                drop(guard);
+                return response;
+            }
             let initial_entry = entry.clone(); let initial_engine = engine.clone(); let initial_id = id.clone(); let initial_turn = turn_id.clone();
             context.connection.defer_until_responded(move || { tokio::spawn(async move {
                 let _guard = guard;
@@ -370,10 +378,6 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 }
                 initial_engine.emit_user_message(&initial_entry, &initial_id, &initial_turn, started, user).await;
                 drop(gate);
-                if preflight.is_err() {
-                    let sender = initial_entry.lock().await.observer_events.clone();
-                    if let Some(sender) = sender && sender.send(ObservedEvent::Complete { turn_id:initial_turn, status:CompleteTurnStatus::Failed, message:Some(PREFLIGHT_FAILED.to_owned()) }).is_err() { eprintln!("app-server thread observer closed"); }
-                }
                 let _ = completion.await;
             }); });
             response
