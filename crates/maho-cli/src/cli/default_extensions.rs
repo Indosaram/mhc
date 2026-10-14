@@ -150,8 +150,9 @@ pub fn retain_no_extensions_factories(factories: &mut Vec<NativeAsyncExtensionFa
 
 /// senpi resource-loader order after the builtins: discovered user/settings/`-e` extensions are
 /// appended last. `--no-extensions` keeps only the `-e` paths (senpi `noExtensions` skips user and
-/// settings paths, never builtins). Extensions that cannot load are returned beside the factories:
-/// senpi `collectExtensionLoadDiagnostics` (main.ts:129-136) reports them as warnings and continues.
+/// settings paths, never builtins; explicit `-e` entries, including `builtin:<id>` linked entries
+/// such as `builtin:task-member`, still load). Extensions that cannot load are returned beside the
+/// factories: senpi `collectExtensionLoadDiagnostics` (main.ts:129-136) reports them as warnings and continues.
 pub async fn with_user_extensions(
     mut factories: Vec<NativeAsyncExtensionFactory>,
     settings: &mut maho_core::settings_manager::SettingsManager,
