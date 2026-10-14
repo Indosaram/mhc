@@ -27,8 +27,8 @@ pub trait WriteOperations: Send + Sync {
 }
 pub struct LocalWriteOperations;
 impl WriteOperations for LocalWriteOperations {
-    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> ToolFuture<'a, ()> { Box::pin(async move { Ok(tokio::fs::write(path, content).await?) }) }
-    fn mkdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { Ok(tokio::fs::create_dir_all(path).await?) }) }
+    fn write_file<'a>(&'a self, path: &'a Path, content: &'a str) -> ToolFuture<'a, ()> { Box::pin(async move { Ok(tokio::fs::write(path, content).await.map_err(|e| node_fs_error(e, "open", path))?) }) }
+    fn mkdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, ()> { Box::pin(async move { Ok(tokio::fs::create_dir_all(path).await.map_err(|e| node_fs_error(e, "mkdir", path))?) }) }
 }
 #[derive(Clone, Default)]
 pub struct WriteToolOptions { pub operations: Option<Arc<dyn WriteOperations>>, pub filesystem_policy: Option<FilesystemPolicyChecker> }
