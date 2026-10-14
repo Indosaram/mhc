@@ -164,11 +164,6 @@ impl ThreadRegistry {
     }
     pub async fn create_thread(&self, cwd: String, model: Option<maho_ai::model::Model>) -> Result<Arc<Mutex<ThreadEntry>>, String> {
         let manager = SessionManager::create(&cwd, self.session_dir.as_deref(), None);
-        if let Some(path) = manager.session_file()
-            && !std::path::Path::new(path).exists()
-            && let Some(header) = manager.header() {
-            std::fs::write(path, format!("{}\n", serialize_entry(&header))).map_err(|error| error.to_string())?;
-        }
         let ui = self.session_ui(manager.session_id());
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), model, extension_ui: ui.clone(), ..Default::default() }).await?;
         self.deleted.lock().await.remove(&session.session_id());
