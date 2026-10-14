@@ -74,8 +74,9 @@ pub async fn load_inline_extensions(factories: Vec<NativeInlineExtension>, cwd: 
         if extension.hidden { hidden_paths.insert(path.clone()); }
         NativeAsyncExtensionFactory { source_info: SourceInfo { path: path.clone(), source: "inline".into(), ..Default::default() }, path, factory: extension.factory }
     }).collect();
-    let loaded = load_extensions_async(factories, cwd, profile).await;
+    let mut loaded = load_extensions_async(factories, cwd, profile).await;
     hidden_paths.retain(|path| loaded.extensions.iter().any(|extension| extension.identity.path == *path));
+    for extension in &mut loaded.extensions { extension.hidden = hidden_paths.contains(&extension.identity.path); }
     LoadInlineExtensionsResult { loaded, hidden_paths }
 }
 pub async fn load_extensions_async(factories: Vec<NativeAsyncExtensionFactory>, cwd: &std::path::Path, profile: ExtensionSessionProfile) -> LoadExtensionsResult {

@@ -1662,7 +1662,8 @@ impl InteractiveMode {
     }
 
     pub fn use_registered_markdown_transformers(&mut self, extensions: &[maho_ext_api::LoadedExtension]) {
-        self.loaded_extensions = extensions.iter().map(|extension| {
+        // senpi interactive-mode.ts:2398 `filter((extension) => !extension.hidden)`.
+        self.loaded_extensions = extensions.iter().filter(|extension| !extension.hidden).map(|extension| {
             let info = &extension.source_info;
             let scope = match info.scope { maho_ext_api::SourceScope::User => maho_core::source_info::SourceScope::User, maho_ext_api::SourceScope::Project => maho_core::source_info::SourceScope::Project, maho_ext_api::SourceScope::Temporary => maho_core::source_info::SourceScope::Temporary, maho_ext_api::SourceScope::System => maho_core::source_info::SourceScope::System };
             let origin = match info.origin { maho_ext_api::SourceOrigin::Package => maho_core::source_info::SourceOrigin::Package, maho_ext_api::SourceOrigin::TopLevel => maho_core::source_info::SourceOrigin::TopLevel };
