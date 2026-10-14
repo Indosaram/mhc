@@ -878,12 +878,12 @@ impl InteractiveMode {
             skills: skills_result.skills.into_iter().map(|skill| LoadedSkill { name: skill.name, file_path: skill.file_path, source_info: Some(skill.source_info) }).collect(),
             skill_diagnostics: skills_result.diagnostics,
             prompts: self.session.prompt_templates().into_iter().map(|template| LoadedPrompt { name: template.name, file_path: template.file_path, source_info: Some(template.source_info) }).collect(),
-            prompt_diagnostics: Vec::new(),
+            prompt_diagnostics: self.session.prompt_diagnostics(),
             extensions: self.loaded_extensions.clone(),
             // senpi: extension issues include built-in command conflicts.
             extension_diagnostics: get_built_in_command_conflict_diagnostics(&self.session.extension_registered_commands()),
             themes,
-            theme_diagnostics: Vec::new(),
+            theme_diagnostics: self.session.theme_diagnostics(),
         };
         let view = build_loaded_resources(&resources, show_listing, show_diagnostics, self.get_startup_expansion_state(), self.tools_expanded, &self.theme);
         for child in view.children { self.loaded_resources_container.add_child(child); }
