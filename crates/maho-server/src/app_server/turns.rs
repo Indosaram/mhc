@@ -230,11 +230,16 @@ impl TurnEngine {
         if let Some(item) = user.as_object() && let Err(error) = self.log.lock().await.append_item(thread_id, turn_id, item.clone()) { eprintln!("app-server turn log: {error}"); }
     }
 
+    /// senpi `EventProjector.completed`: every `item/completed` reaches the wire, while the TurnLog
+    /// append is deduplicated per turn by item id (`completedItemIds`).
     async fn emit_projected(&self, entry: &Arc<Mutex<ThreadEntry>>, thread_id: &str, turn_id: &str, notifications: Vec<Value>) {
         let Some(core) = self.core.upgrade() else { return; };
         for notification in notifications {
-            if notification["method"] == "item/completed" && let Some(item) = notification["params"]["item"].as_object()
-                && let Err(error) = self.log.lock().await.append_item(thread_id, turn_id, item.clone()) { eprintln!("app-server turn log: {error}"); }
+            if notification["method"] == "item/completed" && let Some(item) = notification["params"]["item"].as_object() {
+                let mut log = self.log.lock().await;
+                let logged = super::turn_runtime::read_logged_items(&mut log, thread_id, turn_id).iter().any(|logged| logged["id"] == item["id"]);
+                if !logged && let Err(error) = log.append_item(thread_id, turn_id, item.clone()) { eprintln!("app-server turn log: {error}"); }
+            }
             emit(&core, entry, notification).await;
         }
     }
