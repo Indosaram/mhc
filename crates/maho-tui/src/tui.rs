@@ -1126,6 +1126,9 @@ pub struct TuiBase {
     pending_osc11_background_replies: usize,
     pending_osc11_background_queries: std::collections::VecDeque<PendingTerminalQuery<Option<RgbColor>>>,
     pending_terminal_color_scheme_queries: Vec<PendingTerminalQuery<Option<TerminalColorScheme>>>,
+    /// senpi's `#muxDetector` (`TuiConstructorOptions.muxDetector`, default
+    /// [`crate::mux::is_multiplexer_session`]).
+    mux_detector: Box<dyn Fn() -> bool>,
 }
 
 impl TuiBase {
@@ -1144,7 +1147,14 @@ impl TuiBase {
             pending_osc11_background_replies: 0,
             pending_osc11_background_queries: std::collections::VecDeque::new(),
             pending_terminal_color_scheme_queries: Vec::new(),
+            mux_detector: Box::new(crate::mux::is_multiplexer_session),
         }
+    }
+
+    /// senpi's `muxDetector` constructor option: overrides multiplexer detection for the
+    /// scrollback-preserving render policy.
+    pub fn set_mux_detector(&mut self, detector: Box<dyn Fn() -> bool>) {
+        self.mux_detector = detector;
     }
 
     /// The renderer-state half of senpi's `start()` that precedes `beforeTerminalStart`.
@@ -2608,14 +2618,13 @@ impl TuiBase {
         let width = terminal.columns() as usize;
         let height = terminal.rows() as usize;
 
-        let (previous_width, previous_height, previous_viewport_top, previous_height_i, mux_preserve) = {
+        let (previous_width, previous_height, previous_viewport_top, previous_height_i) = {
             let state = self.state.borrow();
             (
                 state.previous_width,
                 state.previous_height,
                 state.previous_viewport_top,
                 state.previous_height,
-                false,
             )
         };
         let width_changed = previous_width != 0 && previous_width != width as i64;
@@ -2644,7 +2653,7 @@ impl TuiBase {
         let cursor_pos = self.extract_cursor_position(&mut new_lines, height);
         let raw_lines = new_lines.clone();
 
-        let preserve_mux_scrollback = mux_preserve;
+        let preserve_mux_scrollback = self.should_preserve_mux_scrollback();
         let normalized = {
             let mut state = self.state.borrow_mut();
             Self::apply_viewport_line_resets(
@@ -2671,7 +2680,13 @@ impl TuiBase {
         }
 
         if height_changed {
-            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, true);
+            if preserve_mux_scrollback {
+                if !self.render_mux_viewport_repaint(terminal, &new_lines, &raw_lines, cursor_pos, width, height, None) {
+                    self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                }
+            } else {
+                self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, true);
+            }
             return;
         }
 
@@ -2806,10 +2821,19 @@ impl TuiBase {
 
             let Some(first_visible_changed) = first_visible_changed else {
                 if line_count_delta != 0 {
-                    self.render_scrollback_replay(
-                        terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
-                        hardware_cursor_row,
-                    );
+                    if preserve_mux_scrollback {
+                        // Above-viewport scrollback may stay stale in mux panes; only the visible viewport is repainted.
+                        if !self.render_mux_viewport_repaint(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        ) {
+                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                        }
+                    } else {
+                        self.render_scrollback_replay(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            hardware_cursor_row,
+                        );
+                    }
                     return;
                 }
                 let mut state = self.state.borrow_mut();
@@ -2825,10 +2849,18 @@ impl TuiBase {
 
             if viewport_top != prev_viewport_top {
                 if line_count_delta != 0 {
-                    self.render_scrollback_replay(
-                        terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
-                        hardware_cursor_row,
-                    );
+                    if preserve_mux_scrollback {
+                        if !self.render_mux_viewport_repaint(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        ) {
+                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                        }
+                    } else {
+                        self.render_scrollback_replay(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            hardware_cursor_row,
+                        );
+                    }
                     return;
                 }
                 self.render_viewport_shift(
@@ -2896,6 +2928,11 @@ impl TuiBase {
         (0..height)
             .map(|row| lines.get(viewport_top + row).cloned().unwrap_or_default())
             .collect()
+    }
+
+    /// senpi's `shouldPreserveMuxScrollback`.
+    fn should_preserve_mux_scrollback(&self) -> bool {
+        (self.mux_detector)() && !crate::mux::use_legacy_mux_render()
     }
 
     fn create_viewport_insert_scroll_plan(
@@ -3021,7 +3058,9 @@ impl TuiBase {
         let mut buffer = FRAME_BEGIN.to_string();
         let previous_kitty_ids = self.state.borrow().previous_kitty_image_ids.clone();
         buffer += &Self::delete_kitty_images(previous_kitty_ids);
-        buffer += "\x1b[3J";
+        if !self.should_preserve_mux_scrollback() {
+            buffer += "\x1b[3J";
+        }
 
         let current_screen_row = hardware_cursor_row
             .saturating_sub(prev_viewport_top)
@@ -3052,6 +3091,67 @@ impl TuiBase {
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
+    }
+
+    /// senpi's `renderMuxViewportRepaint`: repaint only the visible rows (no `2J`/`3J`) so a
+    /// multiplexer pane keeps its scrollback. `viewport_top` defaults to the bottom of
+    /// `new_lines`. Returns `false` without writing when a visible row is an image line.
+    #[allow(clippy::too_many_arguments)]
+    fn render_mux_viewport_repaint(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        new_lines: &[String],
+        raw_lines: &[String],
+        cursor_pos: Option<(usize, usize)>,
+        width: usize,
+        height: usize,
+        viewport_top: Option<usize>,
+    ) -> bool {
+        let viewport_top = viewport_top.unwrap_or_else(|| new_lines.len().saturating_sub(height));
+        let (previous_viewport_top, hardware_cursor_row) = {
+            let state = self.state.borrow();
+            let previous_visible = Self::get_viewport_rows(&state.previous_lines, state.previous_viewport_top, height);
+            let next_visible = Self::get_viewport_rows(new_lines, viewport_top, height);
+            if previous_visible.iter().any(|line| is_image_line(line))
+                || next_visible.iter().any(|line| is_image_line(line))
+            {
+                return false;
+            }
+            (state.previous_viewport_top, state.hardware_cursor_row)
+        };
+
+        let mut buffer = FRAME_BEGIN.to_string();
+        let current_screen_row = hardware_cursor_row
+            .saturating_sub(previous_viewport_top)
+            .min(height.saturating_sub(1));
+        if current_screen_row > 0 {
+            buffer += &format!("\x1b[{current_screen_row}A");
+        }
+
+        for row in 0..height {
+            if row > 0 {
+                buffer += "\r\n";
+            }
+            buffer += &format!("\r\x1b[2K{SEGMENT_RESET}");
+            buffer += new_lines.get(viewport_top + row).map(String::as_str).unwrap_or("");
+        }
+
+        let final_cursor_row = viewport_top + height.saturating_sub(1);
+        buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
+        write_bounded(terminal, &buffer);
+
+        let mut state = self.state.borrow_mut();
+        state.mux_viewport_repaint_count += 1;
+        state.cursor_row = new_lines.len().saturating_sub(1);
+        state.max_lines_rendered = new_lines.len();
+        state.previous_viewport_top = viewport_top;
+        state.previous_lines = new_lines.to_vec();
+        state.previous_raw_lines = raw_lines.to_vec();
+        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_width = width as i64;
+        state.previous_height = height as i64;
+        state.placement_epoch += 1;
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
