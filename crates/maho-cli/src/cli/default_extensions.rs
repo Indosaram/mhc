@@ -11,6 +11,9 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
     let config_theme = session.with_settings_manager(|manager| manager.get_string("theme")).unwrap_or_else(|| "dark".into());
     let colorfgbg = std::env::var("COLORFGBG").ok();
     let session_ref = session.weak_accessor();
+    // senpi builds the export renderer with `getToolDefinition`, whose built-in `grep`/`find`
+    // definitions carry their renderers.
+    session.set_html_built_in_tool_renderers(Arc::new(|name: &str| maho_interactive::tools::renderers::built_in_export_renderers(name)));
     session.set_html_theme_resolver(Arc::new(move |requested| {
         let terminal_theme = maho_interactive::theme::detection::detect_terminal_background_from_env(colorfgbg.as_deref()).theme;
         let mut registry = maho_interactive::theme::registry::ThemeRegistry::new(
