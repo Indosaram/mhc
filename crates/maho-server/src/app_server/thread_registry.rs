@@ -233,13 +233,6 @@ impl ThreadRegistry {
         for entry in entries {let mut entry=entry.lock().await;if entry.subscribers.remove(id) {affected.push(entry.id.clone());}}
         affected
     }
-    pub async fn abort_active_turns(&self) {
-        let entries = self.entries.lock().await.values().cloned().collect::<Vec<_>>();
-        futures_util::future::join_all(entries.into_iter().map(|entry|async move {
-            let session = {let mut entry = entry.lock().await; if entry.active_turn.is_some() {entry.interrupted = true;Some(entry.session.clone())} else {None}};
-            if let Some(session) = session {session.abort().await;}
-        })).await;
-    }
     pub async fn unload_thread(&self, id: &str) -> bool {
         let entry = self.entries.lock().await.shift_remove(id);
         if let Some(entry) = entry { entry.lock().await.session.dispose().await; true } else { false }

@@ -167,6 +167,28 @@ impl TurnEngine {
         if let Some(resolve) = pending.resolve.take() { let _ = resolve.send(()); }
     }
 
+    /// senpi `index.ts` `interruptActiveTurns`: `interruptTurn` (abort, then `completeTurn` as
+    /// interrupted, emitting its terminal notifications) for every loaded thread's active turn.
+    pub async fn interrupt_active_turns(&self, threads: &ThreadRegistry) {
+        let mut entries = Vec::new();
+        for thread in threads.list_loaded().await {
+            if let Some(id) = thread["id"].as_str() && let Ok(entry) = threads.get_loaded_thread(id).await { entries.push(entry); }
+        }
+        futures_util::future::join_all(entries.iter().map(|entry| async move {
+            let (session, active) = {
+                let mut guard = entry.lock().await;
+                let Some(active) = guard.active_turn.clone() else { return; };
+                guard.interrupted = true;
+                if let Some(pending) = guard.pending_turn.as_mut() && pending.turn_id == active { pending.interrupted = true; }
+                (guard.session.clone(), active)
+            };
+            session.abort().await;
+            let gate = entry.lock().await.emit_gate.clone();
+            let _gate = gate.lock().await;
+            self.complete_turn(entry, Some(active.as_str()), CompleteTurnStatus::Interrupted, None).await;
+        })).await;
+    }
+
     async fn emit_user_message(&self, entry: &Arc<Mutex<ThreadEntry>>, thread_id: &str, turn_id: &str, started_ms: f64, user: Value) {
         if let Some(core) = self.core.upgrade() {
             emit(&core, entry, json!({"method":"item/started","params":{"threadId":thread_id,"turnId":turn_id,"item":user,"startedAtMs":started_ms}})).await;
