@@ -396,6 +396,8 @@ fn fullscreen_scrollbar(session: &maho_core::agent_session::AgentSession) -> mah
 fn mount_screen(session: &maho_core::agent_session::AgentSession, tui_mode: maho_interactive::tui_renderer::TuiMode, theme: maho_interactive::theme::Theme, show_hardware_cursor: bool, right_click_paste: &Rc<Cell<bool>>, document_lines: &Rc<RefCell<Vec<String>>>, dock_lines: &Rc<RefCell<Vec<String>>>, rendered: &Rc<RefCell<RenderedMode>>) -> MountedScreen {
     use maho_interactive::tui_renderer::{create_interactive_tui, InteractiveTuiOptions, TuiMode};
     let mut screen = create_interactive_tui(InteractiveTuiOptions { tui_mode, show_hardware_cursor, bottom_shortcut: String::new() }, theme);
+    // senpi interactive-mode.ts `logDirectory: getAgentDir()`.
+    screen.base_mut().set_log_directory(PathBuf::from(maho_core::config::get_agent_dir()));
     // senpi tui-renderer.ts: fullscreen opens OSC 8 links in the browser, copies selections
     // through the platform clipboard (flashing the real outcome) and honors fullscreenCopyOnSelect.
     if let maho_interactive::tui_renderer::InteractiveTui::Fullscreen(alt) = &mut screen {
