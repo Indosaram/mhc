@@ -70,7 +70,8 @@ fn builtin_id(path: &str) -> Option<&str> {
 }
 
 /// Every builtin factory a runtime mounts, OAuth provider lanes included, filtered by the settings
-/// selection and sorted into senpi's `builtinExtensions` order (global defaults first, MCP last).
+/// selection and sorted into senpi's resource-loader order: `builtinExtensions` (MCP last), the bundled
+/// and inline factories, then the global defaults senpi loads through `<agentDir>/extensions` shims.
 pub fn assembled_factories(
     widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>,
     parent: TaskParent,
@@ -122,22 +123,33 @@ pub fn assembled_factories_with_mcp_registry(
     if selection.is_active("nested-agents-md") {
         assembled.retain(|factory| factory.path != "<user:pi-nested-agents-md>");
     }
+    // senpi `loadFinalExtensionSet` (resource-loader.ts:902-903, :933-949): builtin and inline
+    // factories come first, then the path-loaded extensions, where the global defaults load through
+    // their generated `<agentDir>/extensions/<id>` shims.
     assembled.sort_by_key(|factory| {
         let id = builtin_id(&factory.path);
-        if let Some(position) = id.and_then(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.iter().position(|candidate| *candidate == id)) {
-            position
+        let builtin_count = super::extension_registry::BUILTIN_EXTENSION_IDS.len();
+        if id.is_some_and(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.contains(&id)) {
+            builtin_count + 1
         } else {
-            super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.len()
-                + id.and_then(|id| super::extension_registry::BUILTIN_EXTENSION_IDS.iter().position(|candidate| *candidate == id))
-                    .unwrap_or(super::extension_registry::BUILTIN_EXTENSION_IDS.len())
+            id.and_then(|id| super::extension_registry::BUILTIN_EXTENSION_IDS.iter().position(|candidate| *candidate == id))
+                .unwrap_or(builtin_count)
         }
     });
     assembled
 }
 
+/// senpi `noExtensions` (resource-loader.ts:701-703): only CLI paths load, so the auto-discovered
+/// global default shims and the linked user ports are dropped; builtins and inline factories stay.
+pub fn retain_no_extensions_factories(factories: &mut Vec<NativeAsyncExtensionFactory>) {
+    factories.retain(|factory| factory.source_info.source != "user"
+        && !builtin_id(&factory.path).is_some_and(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.contains(&id)));
+}
+
 /// senpi resource-loader order after the builtins: discovered user/settings/`-e` extensions are
-/// appended last. `--no-extensions` skips discovery and the linked user ports (senpi `noExtensions`
-/// only skips user and settings paths, never builtins).
+/// appended last. `--no-extensions` keeps only the `-e` paths (senpi `noExtensions` skips user and
+/// settings paths, never builtins). Extensions that cannot load are returned beside the factories:
+/// senpi `collectExtensionLoadDiagnostics` (main.ts:129-136) reports them as warnings and continues.
 pub async fn with_user_extensions(
     mut factories: Vec<NativeAsyncExtensionFactory>,
     settings: &mut maho_core::settings_manager::SettingsManager,
@@ -145,20 +157,21 @@ pub async fn with_user_extensions(
     agent_dir: &str,
     cli_extension_paths: &[String],
     no_extensions: bool,
-) -> Result<Vec<NativeAsyncExtensionFactory>, String> {
+) -> Result<(Vec<NativeAsyncExtensionFactory>, Vec<super::user_extensions::UserExtensionError>), String> {
     if no_extensions {
-        factories.retain(|factory| factory.source_info.source != "user");
-        return Ok(factories);
+        retain_no_extensions_factories(&mut factories);
     }
-    let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths).await.map_err(|error| error.to_string())?;
-    if !discovery.errors.is_empty() {
-        return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-    }
+    let discovery = super::user_extensions::resolve_and_discover(settings, cwd, agent_dir, cli_extension_paths, no_extensions).await.map_err(|error| error.to_string())?;
     // A discovered port replaces its linked default so it registers once, with the discovered
     // source provenance, after the builtins.
     factories.retain(|factory| !discovery.factories.iter().any(|discovered| discovered.path == factory.path));
     factories.extend(discovery.factories);
-    Ok(factories)
+    Ok((factories, discovery.errors))
+}
+
+/// senpi `collectExtensionLoadDiagnostics` message for one extension that could not load.
+pub fn extension_load_failure_message(path: &str, error: &str) -> String {
+    format!("Failed to load extension \"{path}\": {error}")
 }
 
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {

@@ -187,10 +187,10 @@ pub fn to_project_trust_mode(mode: AppMode) -> AppMode {
 }
 
 /// senpi `createCliRuntimeFactory`'s project-trust decision for one runtime cwd: a cached decision
-/// wins, then `resolveProjectTrusted` (override, no trust-requiring resources, saved `trust.json`,
-/// global `defaultProjectTrust`, then the prompt when `has_ui`). A decision reached through the
-/// resolver is cached per cwd. Extension `project_trust` handlers are not consulted here: the native
-/// runner exists only after the session is built.
+/// wins, then `resolveProjectTrusted` (override, no trust-requiring resources, the pre-trust
+/// extensions' `project_trust` handlers, saved `trust.json`, global `defaultProjectTrust`, then the
+/// prompt when `has_ui`). A decision reached through the resolver is cached per cwd. Extension load
+/// and handler failures are reported on stderr as warnings.
 pub async fn resolve_runtime_project_trust(
     config: &CliRuntimeConfiguration,
     cwd: &str,
@@ -198,23 +198,61 @@ pub async fn resolve_runtime_project_trust(
     has_ui: bool,
     selector: Box<super::project_trust::Selector>,
 ) -> bool {
+    let (trusted, warnings) = resolve_runtime_project_trust_with_warnings(config, cwd, mode, has_ui, selector).await;
+    for warning in warnings { maho_core::output_guard::maho_write_stderr(&format!("Warning: {warning}\n")); }
+    trusted
+}
+
+/// [`resolve_runtime_project_trust`] returning senpi's `projectTrustDiagnostics` (main.ts:769-775)
+/// for the caller to report with its runtime diagnostics.
+pub async fn resolve_runtime_project_trust_with_warnings(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+) -> (bool, Vec<String>) {
     let cached = config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(cwd).copied();
-    if let Some(trusted) = cached { return trusted; }
+    if let Some(trusted) = cached { return (trusted, Vec::new()); }
     let should_resolve = config.project_trust_override.is_none()
         && maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
-    let default_project_trust = SettingsManager::create(cwd, &config.agent_dir, &maho_core::config::home_dir(), false)
-        .get_global().get("defaultProjectTrust").and_then(serde_json::Value::as_str)
+    let bootstrap = SettingsManager::create(cwd, &config.agent_dir, &maho_core::config::home_dir(), false);
+    let default_project_trust = bootstrap.get_global().get("defaultProjectTrust").and_then(serde_json::Value::as_str)
         .and_then(maho_core::project_trust::DefaultProjectTrust::parse);
     let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
-    let context = super::project_trust::CliProjectTrustContext { cwd: cwd.to_owned(), mode, ui_available: has_ui, selector };
+    let selector: Arc<super::project_trust::Selector> = Arc::from(selector);
+    let mut warnings = Vec::new();
+    let extension_trust = if should_resolve {
+        let startup_ui = (bootstrap.get_string("theme"), bootstrap.get_bool("showHardwareCursor").unwrap_or(false), bootstrap.get_bool("clearOnShrink").unwrap_or(false));
+        let ui = Arc::new(super::project_trust::ProjectTrustUi {
+            mode, has_ui, select: selector.clone(),
+            input: Arc::new(move |title: &str, placeholder: Option<&str>| {
+                match super::startup_ui::show_startup_input(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, placeholder) {
+                    Ok(value) => value,
+                    Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                }
+            }),
+        });
+        let resolved = super::project_trust::resolve_extension_project_trust(
+            cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions, mode, ui,
+        ).await;
+        warnings.extend(resolved.load_warnings);
+        warnings.extend(resolved.trust_warnings);
+        resolved.result
+    } else { None };
+    let emit = move |_: &str| -> Result<Option<maho_ext_api::ProjectTrustEventResult>, maho_ext_api::ExtensionFailure> { Ok(extension_trust.clone()) };
+    let context_selector = selector.clone();
+    let context = super::project_trust::CliProjectTrustContext {
+        cwd: cwd.to_owned(), mode, ui_available: has_ui, selector: Box::new(move |title, options| context_selector(title, options)),
+    };
     let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
         cwd, trust_store: &trust_store, trust_override: config.project_trust_override, default_project_trust,
-        emit_project_trust: None, project_trust_context: &context, on_extension_error: None,
+        emit_project_trust: Some(&emit), project_trust_context: &context, on_extension_error: None,
     }).await;
     if should_resolve {
         config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(cwd.to_owned(), trusted);
     }
-    trusted
+    (trusted, warnings)
 }
 
 /// senpi `resolvePath`/`normalizePath` for a CLI path: absolute paths are returned as given and
@@ -302,10 +340,12 @@ pub async fn mount_agent_session_runtime(
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
     launch_config.cwd = cwd.clone();
+    let mut trust_warnings = Vec::new();
     let settings_manager = match settings_manager {
         Some(settings_manager) => settings_manager,
         None => {
-            let trusted = resolve_runtime_project_trust(config, &cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            let (trusted, warnings) = resolve_runtime_project_trust_with_warnings(config, &cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            trust_warnings = warnings;
             SettingsManager::create(&cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted)
         }
     };
@@ -321,9 +361,18 @@ pub async fn mount_agent_session_runtime(
     let extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(
         widget_sender, task_parent.clone(), mcp_registry, &services.settings_manager, Path::new(&cwd), &config.agent_dir,
     );
-    let extension_factories = super::default_extensions::with_user_extensions(
+    let (extension_factories, extension_errors) = super::default_extensions::with_user_extensions(
         extension_factories, &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions,
     ).await?;
+    // senpi main.ts:129-136 `collectExtensionLoadDiagnostics`: a failed extension load is a warning
+    // and the session still opens. senpi main.ts:769-775 `projectTrustDiagnostics` lead the list.
+    services.diagnostics.splice(0..0, trust_warnings.into_iter().map(|message| AgentSessionRuntimeDiagnostic {
+        kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning, message,
+    }));
+    services.diagnostics.extend(extension_errors.into_iter().map(|error| AgentSessionRuntimeDiagnostic {
+        kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning,
+        message: super::default_extensions::extension_load_failure_message(&error.path, &error.message),
+    }));
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {
