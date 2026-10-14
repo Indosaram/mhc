@@ -12,6 +12,9 @@ use maho_interactive::theme::{
 pub struct StartupThemeResolution {
     pub theme: Theme,
     pub diagnostics: Vec<String>,
+    /// The diagnostic for the configured theme failing to load (also in `diagnostics`); the
+    /// interactive mode reports it in the TUI instead (senpi `applyThemeName(themeSetting, true)`).
+    pub load_error: Option<String>,
 }
 
 /// senpi `loadThemes(paths)` + `dedupeThemes` (resource-loader.ts): a missing path or a non-json
@@ -104,10 +107,12 @@ pub fn resolve_startup_theme_with_registered(
     if let Err(error) = registry.set_registered_themes(registered) {
         diagnostics.push(error.to_string());
     }
+    let mut load_error = None;
     if let Err(error) = registry.set_theme(&name, false) {
         diagnostics.push(error.to_string());
+        load_error = Some(error.to_string());
     }
-    Ok(StartupThemeResolution { theme: registry.current, diagnostics })
+    Ok(StartupThemeResolution { theme: registry.current, diagnostics, load_error })
 }
 
 /// senpi `showStartupSelector`: a one-shot startup TUI holding an extension selector; resolves the
