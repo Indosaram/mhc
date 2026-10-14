@@ -404,6 +404,8 @@ pub async fn mount_agent_session_runtime(
         model_runtime,
     }).await;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
+    let reload_widget_sender = widget_sender.clone();
+    let reload_mcp_registry = mcp_registry.clone();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     let extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(
         widget_sender, task_parent.clone(), mcp_registry, &services.settings_manager, Path::new(&cwd), &config.agent_dir,
@@ -436,7 +438,7 @@ pub async fn mount_agent_session_runtime(
             custom_tools,
             auto_title_sessions,
             extension_factories,
-            session_profile,
+            session_profile: session_profile.clone(),
             extension_flag_values,
             defer_extension_start: true,
             resource_inputs: launch_config.resource_loader_inputs(),
@@ -456,6 +458,9 @@ pub async fn mount_agent_session_runtime(
     theme_paths.extend(config.resolved_theme_paths().into_iter().map(PathBuf::from));
     super::default_extensions::configure_rpc_html_theme_with_paths(&created.session, theme_paths);
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
+    created.session.set_extension_runtime_factory(super::default_extensions::reloading_runtime_factory(
+        reload_widget_sender, task_parent.clone(), reload_mcp_registry, config.resolved_extension_paths(), config.no_extensions, session_profile,
+    )).await;
     let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&launch_config, settings));
     created.session.set_hook_sources(Some(hooks));
     let mut bindings = extension_bindings.map(|factory| factory(&created.session)).unwrap_or_default();

@@ -188,6 +188,38 @@ pub fn extension_load_failure_message(path: &str, error: &str) -> String {
     format!("Failed to load extension \"{path}\": {error}")
 }
 
+/// senpi `with_user_extensions` failures as runner load errors (reload has no startup warning list).
+fn user_extension_load_error(error: super::user_extensions::UserExtensionError) -> maho_ext_api::ExtensionError {
+    maho_ext_api::ExtensionError { error: extension_load_failure_message(&error.path, &error.message), extension_path: error.path, event: "load".into(), stack: None }
+}
+
+/// senpi `AgentSession.reload` -> `_resourceLoader.reload()` (resource-loader.ts:613-708) ->
+/// `_buildRuntime`: every extension-runner recreate re-reads settings, re-applies the builtin
+/// selection and global-default shims, re-resolves packages and user extensions, then loads the
+/// final set. The factory list captured at startup is never reused.
+pub fn reloading_runtime_factory(
+    widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>,
+    parent: TaskParent,
+    mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>,
+    cli_extension_paths: Vec<String>,
+    no_extensions: bool,
+    profile: maho_ext_api::ExtensionSessionProfile,
+) -> maho_ext_host::runner::RuntimeFactory {
+    Arc::new(move |context| {
+        let cwd = context.cwd.to_string_lossy().into_owned();
+        let agent_dir = context.agent_dir.to_string_lossy().into_owned();
+        let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd, &agent_dir, &maho_core::config::home_dir(), (context.is_project_trusted_fn)());
+        let factories = assembled_factories_with_mcp_registry(widget_sender.clone(), parent.clone(), mcp_registry.clone(), &settings, std::path::Path::new(&cwd), &agent_dir);
+        let (cli_extension_paths, profile) = (cli_extension_paths.clone(), profile.clone());
+        Box::pin(async move {
+            let (factories, errors) = with_user_extensions(factories, &mut settings, &cwd, &agent_dir, &cli_extension_paths, no_extensions).await.map_err(ExtensionFailure::new)?;
+            let mut runner = maho_ext_host::runner::ExtensionRunner::from_async_factories(factories, context, profile).await?;
+            for error in errors { runner.emit_error(user_extension_load_error(error)); }
+            Ok(runner)
+        })
+    })
+}
+
 pub fn factories(widget_sender: tokio::sync::mpsc::UnboundedSender<maho_interactive::interactive_extension_ui::UiRequest>, parent: TaskParent) -> Vec<NativeAsyncExtensionFactory> {
     factories_with_mcp_registry(widget_sender, parent, None)
 }
