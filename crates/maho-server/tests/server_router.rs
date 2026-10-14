@@ -240,8 +240,9 @@ async fn cancelled_leader_releases_waiter_which_then_opens() {
 }
 
 #[tokio::test]
-async fn client_service_calls_serialize_on_one_attachment() {
+async fn client_service_calls_run_concurrently_and_release_waits_for_them() {
     use maho_server::server::testing::TestServerHost;
+    tokio::time::timeout(std::time::Duration::from_secs(2),async {
     let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
     let router=SessionRouter::new(host.clone(),"00000000-0000-4000-8000-000000000001".into(),Arc::new(|_: ServerError| {}));
     let attachment=router.attach("session-1").await.unwrap();
@@ -251,15 +252,19 @@ async fn client_service_calls_serialize_on_one_attachment() {
     let publish:Publisher=Arc::new(|_,_|Box::pin(async {Ok(())}));
     let first={let attachment=attachment.clone();let context=Context {cancelled:cancelled.clone()};let publish=publish.clone();tokio::spawn(async move {attachment.invoke(json!({"n":1}),publish,context).await})};
     gate.entered.wait().await;
-    let mut second=Box::pin(attachment.invoke(json!({"n":2}),publish.clone(),Context {cancelled:cancelled.clone()}));
-    assert!(futures_util::FutureExt::now_or_never(second.as_mut()).is_none());
-    assert_eq!(harness.state.lock().await.service_calls.len(),1);
+    // Pinned session-router.ts startServiceCall: a second call is not queued behind the first.
+    attachment.invoke(json!({"n":2}),publish.clone(),Context {cancelled:cancelled.clone()}).await.unwrap();
+    assert_eq!(harness.state.lock().await.service_calls.len(),2);
+    // Pinned releaseAttachment: `allSettled(operations)` waits for the in-flight call.
+    let mut release=Box::pin(attachment.release());
+    assert!(futures_util::poll!(release.as_mut()).is_pending());
+    assert_eq!(harness.state.lock().await.attachment_release_count,0);
     gate.release.resolve(());
     first.await.unwrap().unwrap();
-    second.await.unwrap().unwrap();
-    assert_eq!(harness.state.lock().await.service_calls.len(),2);
-    attachment.release().await.unwrap();
+    release.await.unwrap();
+    assert_eq!(harness.state.lock().await.attachment_release_count,1);
     router.close().await.unwrap();
+    }).await.unwrap();
 }
 
 #[tokio::test]
