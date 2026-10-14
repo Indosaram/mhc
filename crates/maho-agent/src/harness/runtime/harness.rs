@@ -71,8 +71,8 @@ pub struct Harness<TContext = ()> {
     tools: Mutex<Vec<Arc<crate::harness::types::AgentHarnessTool<TContext>>>>,
     /// The runner every lane reads at tool time, replaced by `set_tools`.
     tool_runner: Arc<Mutex<Arc<dyn super::tools::ToolBatchRunner>>>,
-    /// The pinned `toolContext` handed to every tool invocation.
-    tool_context: Option<TContext>,
+    /// The pinned `toolContext` (value or lazy source) resolved for every tool batch.
+    tool_context: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
     seed: LaneConfiguration,
     closed_error: Arc<Mutex<Option<SessionError>>>,
     close_lock: tokio::sync::Mutex<()>,
@@ -508,8 +508,8 @@ pub async fn create_agent_harness(
         hooks: Arc::new(HookRegistry::new(hook_error_reporter(events))),
         lanes_by_name: Arc::new(Mutex::new(BTreeMap::new())),
         tools: Mutex::new(Vec::new()),
-        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::<()>::new(Vec::new(), None)) as Arc<dyn super::tools::ToolBatchRunner>)),
-        tool_context: None,
+        tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::ToolRunner::<()>::new(Vec::new(), Some(crate::harness::agent_harness::ToolContextSource::Value(())))) as Arc<dyn super::tools::ToolBatchRunner>)),
+        tool_context: Some(crate::harness::agent_harness::ToolContextSource::Value(())),
         seed,
         closed_error: Arc::new(Mutex::new(None)),
         close_lock: tokio::sync::Mutex::new(()),
@@ -571,6 +571,27 @@ fn retry_policy_value(policy: &maho_ai::utils::retry::RetryPolicy) -> serde_json
     value
 }
 
+/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): resolve the configured `toolContext` for
+/// each request and hand it to the typed `systemPrompt` callback. The lane config is context-free,
+/// so the typed callback is captured here with its tool context source.
+fn resolve_system_prompt<TContext: Clone + Send + Sync + 'static>(
+    prompt: crate::harness::agent_harness::AgentHarnessSystemPromptFn<TContext>,
+    source: Option<crate::harness::agent_harness::ToolContextSource<TContext>>,
+) -> super::types::SystemPromptFn {
+    Arc::new(move |context: &Context| {
+        let prompt = prompt.clone();
+        let source = source.clone();
+        let context = context.clone();
+        Box::pin(async move {
+            let tool_context = match &source {
+                Some(source) => Some(source.resolve(&context).await),
+                None => None,
+            };
+            prompt(tool_context, &context).await
+        })
+    })
+}
+
 /// Pinned `createAgentHarness(options, context)`: attach the durable harness to one open session,
 /// installing the full process-local `Config` (tools, resources, stream options, retry, compaction,
 /// queue modes, tool execution, system prompt) and restoring every durable lane.
@@ -605,7 +626,7 @@ pub async fn create_agent_harness_with_options<TContext: Clone + Send + Sync + '
         follow_up_mode: options.follow_up_mode.unwrap_or(crate::types::QueueMode::All),
         tool_execution: options.tool_execution.unwrap_or(crate::harness::session::types::ToolExecutionMode::Parallel),
         tool_context: None,
-        system_prompt: options.system_prompt.clone(),
+        system_prompt: options.system_prompt.clone().map(|prompt| resolve_system_prompt(prompt, options.tool_context.clone())),
         to_provider_messages: options.to_provider_messages.clone().unwrap_or_else(|| default_drive_config().to_provider_messages),
         entry_projectors: options.entry_projectors.clone().unwrap_or_default(),
     };

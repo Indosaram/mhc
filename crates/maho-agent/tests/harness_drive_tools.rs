@@ -130,13 +130,13 @@ async fn publishes_intent_before_effect_and_persists_arguments() {
     };
     use maho_agent::harness::session::values::operation_tool_args;
     let lane = lane(Control::Running);
-    let call = DurableCall::Planned {
+    let planned = DurableCall::Planned {
         source_index: 0,
         result_entry_id: "result".into(),
     };
     let result = publish_tool_intent(
         &lane,
-        call,
+        planned,
         &call(),
         serde_json::json!({"path": "saved"}),
         ToolCallReplay::Safe,

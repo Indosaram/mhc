@@ -10,12 +10,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use maho_agent::harness::agent_harness::AgentHarnessOptions;
+use maho_agent::harness::agent_harness::{AgentHarnessOptions, AgentHarnessSystemPromptFn, ToolContextSource};
 use maho_agent::harness::context::{Context, BACKGROUND_CONTEXT};
 use maho_agent::harness::env::nodejs::NodeExecutionEnv;
 use maho_agent::harness::runtime::harness::{create_agent_harness_with_options, Harness};
 use maho_agent::harness::runtime::lane::Lane;
-use maho_agent::harness::runtime::types::SystemPromptFn;
 use maho_agent::harness::session::jsonl::{JsonlSessionCreateOptions, JsonlSessionRepo, JsonlSessionRepoOptions};
 use maho_agent::harness::session::types::Session;
 use maho_agent::harness::tools::{create_bash_tool, create_edit_tool, create_read_tool, create_write_tool, BashToolOptions, ExecutionToolContext, ReadToolOptions};
@@ -284,7 +283,7 @@ async fn open_harness(
     let execution_env: Arc<dyn ExecutionEnv> = env;
     let tool_context = ExecutionToolContext { env: execution_env, post_mutate: None };
     let prompt = system_prompt(cwd);
-    let system_prompt_fn: SystemPromptFn = Arc::new(move |_context: &Context| {
+    let system_prompt_fn: AgentHarnessSystemPromptFn<ExecutionToolContext> = Arc::new(move |_tool_context, _context: &Context| {
         let prompt = prompt.clone();
         Box::pin(async move { prompt })
     });
@@ -295,7 +294,7 @@ async fn open_harness(
         thinking_level: Some(thinking_level),
         active_tool_names: None,
         tools,
-        tool_context: Some(tool_context),
+        tool_context: Some(ToolContextSource::Value(tool_context)),
         system_prompt: Some(system_prompt_fn),
         resources: None,
         stream_options: None,
