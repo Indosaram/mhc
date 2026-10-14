@@ -102,6 +102,39 @@ impl Drop for PendingSessionConstruction {
     }
 }
 
+/// senpi agent-session.ts `_buildRuntime`: the built-in tool options. The extensions' filesystem
+/// policies are composed into the file tools (re-read per call, since native extensions may
+/// register theirs at bind time), and the tools honour `images.autoResize`, `shellCommandPrefix`
+/// and `shellPath` from settings. A cwd-changing switch rebuilds the tools with the same options.
+pub fn built_in_tools_options(
+    settings: &SettingsManager,
+    session: std::sync::Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>,
+) -> maho_tools::index::ToolsOptions {
+    use std::sync::Arc;
+    let filesystem_policy: maho_tools::FilesystemPolicyChecker = Arc::new(move |request| {
+        let session = session();
+        Box::pin(async move {
+            let policies = match session { Some(session) => session.filesystem_policies().await, None => Vec::new() };
+            match maho_tools::filesystem_policy::compose_filesystem_policies(policies) {
+                Some(check) => check(request).await,
+                None => Ok(maho_tools::FilesystemPolicyDecision::Allow),
+            }
+        })
+    });
+    let shell_env: maho_tools::bash::ShellEnvProvider = Arc::new(crate::utils::shell::get_shell_env);
+    maho_tools::index::ToolsOptions {
+        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
+        bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
+            shell_path: settings.get_string("shellPath"), shell_env: Some(shell_env.clone()), ..Default::default() },
+        powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },
+        write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
+        find: maho_tools::find::FindToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
+        ls: maho_tools::ls::LsToolOptions { filesystem_policy: Some(filesystem_policy), ..Default::default() },
+    }
+}
+
 pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Result<CreateAgentSessionResult, String> {
     use std::{collections::BTreeMap, sync::Arc};
     if options.minimal_resources {
@@ -154,33 +187,11 @@ pub async fn create_agent_session(mut options: CreateAgentSessionOptions) -> Res
     }
     if let Some(selection) = thinking_selection.as_mut() { selection.level = thinking_level; }
     let session_accessor = Arc::new(std::sync::OnceLock::<Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync>>::new());
-    // senpi `_buildRuntime` composes the extensions' filesystem policies into the file tools.
-    // Native extensions may register theirs at bind time, so the composition is re-read per call.
+    // senpi `_buildRuntime`: the built-in tools carry the composed filesystem policy and settings.
     let policy_accessor = session_accessor.clone();
-    let filesystem_policy: maho_tools::FilesystemPolicyChecker = Arc::new(move |request| {
-        let session = policy_accessor.get().and_then(|accessor| accessor());
-        Box::pin(async move {
-            let policies = match session { Some(session) => session.filesystem_policies().await, None => Vec::new() };
-            match maho_tools::filesystem_policy::compose_filesystem_policies(policies) {
-                Some(check) => check(request).await,
-                None => Ok(maho_tools::FilesystemPolicyDecision::Allow),
-            }
-        })
-    });
-    let shell_env: maho_tools::bash::ShellEnvProvider = Arc::new(crate::utils::shell::get_shell_env);
-    // senpi agent-session.ts `_buildRuntime`: the built-in tools honour `images.autoResize`,
-    // `shellCommandPrefix` and `shellPath` from settings.
-    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), maho_tools::index::ToolsOptions {
-        read: maho_tools::read::ReadToolOptions { filesystem_policy: Some(filesystem_policy.clone()), auto_resize_images: Some(settings.get_image_auto_resize()), ..Default::default() },
-        bash: maho_tools::bash::BashToolOptions { command_prefix: settings.get_string("shellCommandPrefix"),
-            shell_path: settings.get_string("shellPath"), shell_env: Some(shell_env.clone()), ..Default::default() },
-        powershell: maho_tools::bash::BashToolOptions { shell_env: Some(shell_env), ..Default::default() },
-        write: maho_tools::write::WriteToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
-        edit: maho_tools::edit::EditToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
-        grep: maho_tools::grep::index::GrepToolOptions { filesystem_policy: Some(filesystem_policy.clone()) },
-        find: maho_tools::find::FindToolOptions { filesystem_policy: Some(filesystem_policy.clone()), ..Default::default() },
-        ls: maho_tools::ls::LsToolOptions { filesystem_policy: Some(filesystem_policy), ..Default::default() },
-    });
+    let options_session: Arc<dyn Fn() -> Option<crate::agent_session::AgentSession> + Send + Sync> =
+        Arc::new(move || policy_accessor.get().and_then(|accessor| accessor()));
+    let mut definitions = maho_tools::index::create_all_tool_definitions(std::path::Path::new(&cwd), built_in_tools_options(&settings, options_session));
     for definition in &options.custom_tools { definitions.insert(definition.name.clone(), definition.clone()); }
     let registered_definitions = definitions.clone();
     let context_accessor = session_accessor.clone();
