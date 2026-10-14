@@ -5,6 +5,10 @@ use crate::boulder_eligibility::{find_continuable_boulder_work_in,ContinuableWor
 pub const ULW_EXECUTE_STEERING_REMINDER:&str="<omo-senpi-ulw-execute>\nAn active ulw-execute work plan is present in this working directory.\nBefore continuing, read `.omo/boulder.json` and the active plan file to determine what remains; use the ledger and plan as the source of truth.\nContinue the current work with evidence-bound execution; do not start unrelated work until every top-level checkbox is `- [x]`.\n</omo-senpi-ulw-execute>";
 const CONTINUATION_INJECTION_KEY:&str="omo-senpi-ulw-execute-continuation";
 const CONTINUATION_CUSTOM_TYPE:&str="omo-senpi:ulw-execute-continuation";
+/// Pin `77f3067f1` registers this component as `start-work-continuation` (`index.ts:38`), so
+/// `compose.ts` gives it the flag `omo-senpi-start-work-continuation-disabled`. The latest rename keeps
+/// the pinned flag working as an alias of `omo-senpi-ulw-execute-continuation-disabled`.
+pub const START_WORK_CONTINUATION_DISABLED_FLAG:&str="omo-senpi-start-work-continuation-disabled";
 fn log_info(logger:&Option<Arc<dyn ComponentLogger>>,message:&str,details:Option<JsonValue>){if let Some(logger)=logger{logger.info(message,details.as_ref());}}
 fn log_warn(logger:&Option<Arc<dyn ComponentLogger>>,message:&str,details:Option<JsonValue>){if let Some(logger)=logger{logger.warn(message,details.as_ref());}}
 struct PendingRun { payload:JsonValue, session_id:Option<String>, cwd:std::path::PathBuf }
@@ -14,6 +18,8 @@ pub struct StartWorkContinuationComponent { pub continuation_limit:usize }
 impl Default for StartWorkContinuationComponent { fn default()->Self { Self{continuation_limit:8} } }
 impl Extension for StartWorkContinuationComponent {
     fn register(&self,api:&mut ExtensionApi) {
+        api.register_flag(START_WORK_CONTINUATION_DISABLED_FLAG,FlagType::Boolean{default:Some(false)},Some("Disable the omo-senpi start-work-continuation component.".to_owned()));
+        if api.get_flag(START_WORK_CONTINUATION_DISABLED_FLAG)==Some(FlagValue::Boolean(true)) { return; }
         let state=Arc::new(Mutex::new(State::default()));let input_state=Arc::clone(&state);
         api.on(EventKind::Input,Arc::new(move |event,ctx| { let state=Arc::clone(&input_state);Box::pin(async move {
             let ExtensionEvent::Input(input)=event else { return Ok(EventResult::None); };
