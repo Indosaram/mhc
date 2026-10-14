@@ -7,8 +7,10 @@ use super::{detached_cell_contract::{EvalDetachedCellSnapshot, EvalDetachedCellS
 pub struct EvalBackgroundCapacityError { pub code: &'static str, pub message: String }
 
 impl EvalBackgroundCapacityError {
+    pub const CODE: &'static str = "eval_background_capacity_reached";
+
     pub fn new(cap: usize, cell_id: &str, foreground_ms: f64, live_cell_ids: &[String]) -> Self {
-        Self { code: "eval_background_capacity_reached", message: format!("Background capacity ({cap}) reached: cell {cell_id} ran {}s in the foreground and was cancelled when the foreground window elapsed. Live cells: {}. Stop one with eval({{ action: \"stop\", cell_id }}) or wait for a notification, then re-run this step.", (foreground_ms / 1000.0).floor(), live_cell_ids.join(", ")) }
+        Self { code: Self::CODE, message: format!("Background capacity ({cap}) reached: cell {cell_id} ran {}s in the foreground and was cancelled when the foreground window elapsed. Live cells: {}. Stop one with eval({{ action: \"stop\", cell_id }}) or wait for a notification, then re-run this step.", (foreground_ms / 1000.0).floor(), live_cell_ids.join(", ")) }
     }
 }
 
