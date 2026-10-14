@@ -2744,6 +2744,13 @@ impl InteractiveMode {
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                     // senpi `restoreChatBeforeSessionStart`: `hideThinkingBlock` is re-read before the rebuild.
                     self.reveal.hide_thinking = self.session.with_settings_manager(|settings| settings.get_bool("hideThinkingBlock").unwrap_or(false));
+                    // senpi `applyRuntimeSettings`: terminal capability overrides and the smooth-streaming
+                    // settings the reveal controllers read live, plus `applySmoothStreamingRenderFps`.
+                    maho_tui::terminal_image::set_capability_overrides(self.session.with_settings_manager(|settings| settings.get_terminal_capability_overrides(&maho_core::config::current_env())));
+                    let (smooth, fps) = self.session.with_settings_manager(|settings| (settings.get_bool("smoothStreaming").unwrap_or(true), settings.get_number("smoothStreamingFps").unwrap_or(60.0)));
+                    self.reveal.smooth = smooth; self.tool_args_reveal.smooth = smooth; self.tool_reveal.smooth = smooth;
+                    self.reveal.fps = fps; self.tool_args_reveal.fps = fps; self.tool_reveal.fps = fps;
+                    self.apply_smooth_streaming_render_fps();
                     self.rebuild_history();
                     // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
                     // senpi reload: `keybindings.reload()` then `setupExtensionShortcuts(runner)`.
