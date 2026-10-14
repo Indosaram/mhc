@@ -787,6 +787,27 @@ async fn reload_reports_the_upstream_resource_message() {
 }
 
 #[tokio::test]
+async fn reload_status_survives_the_live_loop_theme_detection_settling() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/reload", Default::default()).await.expect("reload");
+    mode.submit_editor().await.expect("queued reload");
+    // The live loop polls the terminal theme every frame; `/reload` re-requested detection, so the
+    // next poll queries OSC 11 and the reply settles it on the already-active dark theme.
+    let theme = maho_interactive::theme::Theme::builtin("dark", maho_interactive::theme::ColorMode::Truecolor).expect("theme");
+    let mut ui = maho_interactive::tui_renderer::create_interactive_tui(maho_interactive::tui_renderer::InteractiveTuiOptions { tui_mode: maho_interactive::tui_renderer::TuiMode::Regular, show_hardware_cursor: false, bottom_shortcut: String::new() }, theme);
+    let mut terminal = ScreenTerminal { writes: String::new(), screen: maho_test_support::vterm::VirtualTerminal::new(120, 36), input: None, stopped: false };
+    mode.poll_terminal_theme(&mut ui, &mut terminal);
+    assert!(terminal.writes.contains("\x1b]11;?"), "the reload re-queries the terminal background");
+    ui.base_mut().handle_terminal_input("\x1b]11;rgb:0000/0000/0000\x07", false);
+    mode.poll_terminal_theme(&mut ui, &mut terminal);
+    mode.drain_events();
+    let rendered = mode.render(120).join("\n");
+    assert!(!rendered.contains("Reloading keybindings"), "the reload box is dismissed");
+    assert!(rendered.contains("Reloaded keybindings, extensions, skills, prompts, themes, and context files"), "senpi keeps the reload status visible: {rendered}");
+}
+
+#[tokio::test]
 async fn empty_compact_shows_the_pinned_no_messages_warning() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
