@@ -38,8 +38,8 @@ pub async fn run_print_session(
     // session never settles a turn, so no `agent_idle` is expected and the runner must not wait.
     let ran_prompt=initial.is_some()||!messages.is_empty();
     let prompts=async{
-        if let Some((text,images))=initial{session.prompt(&text,maho_core::agent_session::PromptOptions{images:Some(images),..Default::default()}).await?;}
-        for text in messages{session.prompt(text,Default::default()).await?;}
+        if let Some((text,images))=initial{session.prompt(&text,maho_core::agent_session::PromptOptions{images:Some(images),session_title_prompt:Some(maho_core::agent_session::SessionTitlePrompt::Disabled),..Default::default()}).await?;}
+        for text in messages{session.prompt(text,maho_core::agent_session::PromptOptions{session_title_prompt:Some(maho_core::agent_session::SessionTitlePrompt::Disabled),..Default::default()}).await?;}
         session.wait_for_idle().await;Ok::<(),String>(())
     };
     tokio::pin!(prompts);
