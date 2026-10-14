@@ -7378,7 +7378,7 @@ impl AgentSession {
             if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) { return Ok(false); }
             self.apply_before_agent_start_result(&mut messages, before)?;
             self.enforce_final_provider_admission(&messages).await?;
-            Ok(user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst))
+            Ok::<bool, String>(user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst))
         }.await;
         self.state().trigger_turn_admission_abort_generation = None;
         match admitted {
