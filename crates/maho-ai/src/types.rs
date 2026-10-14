@@ -279,13 +279,18 @@ pub type AsyncOnPayload = std::sync::Arc<dyn Fn(Value, Model, Option<ProviderReq
 pub type AsyncOnResponse = std::sync::Arc<dyn Fn(ProviderResponse, Model)
     -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
-/// `ProviderRequestOptions`. `fetch` and `telemetryContext` are host concerns of the wire lanes
-/// and are carried as the reqwest client / opaque JSON respectively.
+/// `telemetryContext`: the explicit telemetry parent for this logical request. The harness
+/// `TelemetryContext` lives above this crate, so it is carried as an opaque shared handle that
+/// telemetry-aware providers downcast.
+pub type ProviderTelemetryContext = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+/// `ProviderRequestOptions`. `fetch` is a host concern of the wire lanes and is carried as the
+/// reqwest client.
 #[derive(Clone, Default)]
 pub struct ProviderRequestOptions {
     pub signal: Option<crate::utils::abort::AbortSignal>,
     pub abort_server_side_fallback: Option<bool>,
-    pub telemetry_context: Option<Value>,
+    pub telemetry_context: Option<ProviderTelemetryContext>,
     pub api_key: Option<String>,
     pub affinity_session_id: Option<String>,
     pub stream_kind: Option<StreamKind>,

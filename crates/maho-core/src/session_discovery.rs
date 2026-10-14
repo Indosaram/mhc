@@ -7,7 +7,8 @@ use serde_json::Value;
 
 use crate::session_summary_cache::read_cached_session_summary;
 
-pub type SessionListProgress = std::sync::Arc<dyn Fn(usize, usize) + Send + Sync>;
+/// senpi `SessionListProgress`: `(loaded, total)` as each session file is read.
+pub type SessionListProgress<'a> = &'a mut dyn FnMut(usize, usize);
 
 pub const MAX_CONCURRENT_SESSION_INFO_LOADS: usize = 10;
 
@@ -82,7 +83,7 @@ pub fn list_session_infos(files: &[String], mut on_loaded: impl FnMut()) -> Vec<
 /// Builds picker rows for every .jsonl file in one session directory.
 pub fn list_sessions_from_dir(
     dir: &str,
-    on_progress: Option<SessionListProgress>,
+    mut on_progress: Option<SessionListProgress<'_>>,
     progress_offset: usize,
     progress_total: Option<usize>,
 ) -> Vec<SessionInfo> {
@@ -101,7 +102,7 @@ pub fn list_sessions_from_dir(
     let mut loaded = 0usize;
     list_session_infos(&files, || {
         loaded += 1;
-        if let Some(progress) = &on_progress {
+        if let Some(progress) = on_progress.as_deref_mut() {
             progress(progress_offset + loaded, total);
         }
     })

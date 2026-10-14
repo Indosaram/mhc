@@ -26,8 +26,10 @@ fn real_entry_rejects_session_conflicts_before_mode_dispatch() {
 async fn real_rpc_entry_dispatches_message_query_and_preserves_correlation() {
     use tokio::io::AsyncWriteExt;
     let dir = tempfile::tempdir().expect("isolated CLI directory");
-    std::fs::create_dir_all(dir.path().join(".maho")).expect("isolated omo state");
-    std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("onboarding already complete");
+    // Onboarding state lives under the agent home (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`).
+    let state = dir.path().join("agent").join("omo-senpi").join("omo-native");
+    std::fs::create_dir_all(&state).expect("isolated omo state");
+    std::fs::write(state.join("onboarding-completed"), "{}\n").expect("onboarding already complete");
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mhc"))
         .current_dir(dir.path()).env("HOME", dir.path())
         .env("MAHO_CODING_AGENT_DIR", dir.path().join("agent"))

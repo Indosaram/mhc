@@ -1,5 +1,5 @@
 use maho_cli::cli::shared_host::{
-    is_truthy_env_flag, session_profile, should_join_shared_host, shared_host_socket, EXPERIMENTAL_SHARED_HOST_SETTING,
+    is_truthy_env_flag, session_profile, should_join_shared_host, shared_host_setting_enabled, shared_host_socket,
     SHARED_HOST_ENABLE_ENV_SUFFIX,
 };
 use maho_core::project_trust::AppMode;
@@ -40,7 +40,17 @@ fn socket_falls_back_to_the_agent_rpc_socket() {
 #[test]
 fn shared_host_constants_match_the_pinned_names() {
     assert_eq!(SHARED_HOST_ENABLE_ENV_SUFFIX, "ENABLE_SHARED_HOST");
-    assert_eq!(EXPERIMENTAL_SHARED_HOST_SETTING, "experimentalSharedHost");
+}
+
+#[test]
+fn shared_host_setting_reads_the_nested_experimental_key() {
+    let enabled = |settings: serde_json::Value| {
+        let settings = serde_json::from_value(settings).expect("settings object");
+        shared_host_setting_enabled(&maho_core::settings_manager::SettingsManager::in_memory(settings, false))
+    };
+    assert!(enabled(serde_json::json!({"experimental": {"sharedHost": true}})));
+    assert!(!enabled(serde_json::json!({"experimental": {"sharedHost": "true"}})));
+    assert!(!enabled(serde_json::json!({"experimentalSharedHost": true})));
 }
 
 #[test]

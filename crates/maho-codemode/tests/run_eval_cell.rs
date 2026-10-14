@@ -165,8 +165,8 @@ async fn real_python_deadline_reports_preserved_state_and_cleans_worker() {
     eprintln!("cleanup: timeout-state Python worker closed");
     ready.unwrap().unwrap();
     initialized.unwrap();
-    let timed=timed.unwrap().unwrap();
-    assert_eq!(timed.details["isError"],true);
+    let timed=timed.unwrap().unwrap_err();
+    assert!(timed.contains("The kernel remains running; its existing variables are preserved."),"{timed}");
     let retained=retained.unwrap();
     assert_eq!(retained.details["isError"],serde_json::Value::Null);
     assert!(retained.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.trim()=="42")));
@@ -207,8 +207,8 @@ async fn real_js_deadline_reports_restarted_state_and_recovery() {
     let recovered=run_eval_cell(options.clone(),next).await;
     kernel.close().await.unwrap();assert!(kernel.pid().is_none());
     eprintln!("cleanup: timeout-state JS worker closed; pid None");
-    let timed=timed.unwrap().unwrap();
-    assert_eq!(timed.details["isError"],true);
+    let timed=timed.unwrap().unwrap_err();
+    assert!(timed.starts_with("test deadline"),"{timed}");
     let recovered=recovered.unwrap();
     assert!(recovered.content.iter().any(|part|matches!(part,maho_ext_api::ContentBlock::Text(text) if text.text.contains("undefined"))));
     assert_eq!(options.cell_manager.lock().unwrap().peek("timeout-js-state").unwrap().state_retained,Some(false));
@@ -250,7 +250,9 @@ async fn timeout_interrupt_error_does_not_claim_retained_state() {
     let mut call=invocation("failed-interrupt","unused");call.signal=caller.signal();
     let trigger=async {events.recv().await.unwrap();caller.abort(Some(maho_ai::utils::abort::AbortReason::new("TimeoutError","test deadline")));};
     let (result,())=tokio::join!(run_eval_cell(options.clone(),call),trigger);
-    assert_eq!(result.unwrap().details["isError"],true);
+    let error=result.unwrap_err();
+    assert_eq!(error,"interrupt transport failed");
+    assert!(!error.contains("preserved"),"{error}");
     assert_eq!(options.cell_manager.lock().unwrap().peek("failed-interrupt").unwrap().state_retained,None);
 }
 impl EvalKernelManager for FinalFrameManager {
@@ -361,17 +363,16 @@ async fn caller_abort_settles_while_host_tool_remains_pending() {
     let run=tokio::spawn(run_eval_cell(options,input));
     tokio::time::timeout(std::time::Duration::from_secs(2),events.recv()).await.unwrap().unwrap();
     controller.abort(Some(maho_ai::utils::abort::AbortReason::new("AbortError","caller cancelled")));
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),run).await.expect("caller abort must not wait for host tool").unwrap().unwrap();
-    assert_eq!(result.details["isError"],true);
+    let result=tokio::time::timeout(std::time::Duration::from_secs(2),run).await.expect("caller abort must not wait for host tool").unwrap();
+    assert_eq!(result.unwrap_err(),"caller cancelled");
 }
 
 #[tokio::test]
 async fn invalid_final_frame_cannot_settle_as_success() {
     let options=Arc::new(CreateEvalToolOptions {completion_handles:std::sync::Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(FinalFrameManager),executor:Arc::new(Executor),list_tools:None,complete:None,settings:Default::default(),artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:Arc::new(Mutex::new(EvalDetachedCellManager::new(Default::default()))),on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None});
-    let result=run_eval_cell(options.clone(),invocation("invalid-final","42")).await.unwrap();
-    assert_eq!(result.details["isError"],true);
-    assert_ne!(result.details["cells"][0]["status"],"complete");
-    assert!(result.details["cells"][0]["output"].as_str().unwrap().contains("Unhandled kernel message"));
+    let error=run_eval_cell(options.clone(),invocation("invalid-final","42")).await.unwrap_err();
+    assert!(error.contains("Unhandled kernel message"),"{error}");
+    assert_eq!(options.cell_manager.lock().unwrap().peek("invalid-final").unwrap().state,maho_codemode::tool::detached_cell_contract::EvalDetachedCellState::Failed);
 }
 
 #[tokio::test(start_paused = true)]
@@ -383,8 +384,8 @@ async fn deadline_expiry_records_limit_metadata_before_terminal_snapshot() {
         let run=tokio::spawn(run_eval_cell(options,invocation("expired","await tool.park()")));
         events.recv().await.unwrap();
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
-        let result=run.await.unwrap().unwrap();
-        assert_eq!(result.details["isError"],true);
+        let error=run.await.unwrap().unwrap_err();
+        assert!(error.contains(if hard==1.0 {"was killed at the 1s hard limit"} else {"exhausted its 1s run budget"}),"{error}");
         let snapshot=cells.lock().unwrap().peek("expired").unwrap();
         assert_eq!(snapshot.hard_limit_seconds,(hard==1.0).then_some(hard));
         assert_eq!(snapshot.run_budget_seconds,(budget==1.0).then_some(budget));

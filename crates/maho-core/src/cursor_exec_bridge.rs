@@ -92,10 +92,17 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
     let Some(args_object) = args.as_object() else {
         return error_result(id, name.to_owned(), "Tool arguments must be an object");
     };
-    let args = Value::Object(args_object.iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k.clone(), v.clone())).collect());
+    // Exec-frame translators produce absent optionals as nulls; a present null fails schema
+    // validation on optional fields even though omitting the key is valid.
+    let clean_args = maho_ai::api::cursor_agent::pi_args::omit_undefined_args(args_object.clone());
+    let tool_call = maho_ai::types::ToolCall { id: id.clone(), name: name.to_owned(), arguments: clean_args.clone(), ..Default::default() };
+    let args = Value::Object(clean_args);
+    let prepared = match maho_ai::utils::validation::validate_tool_arguments(&tool.tool, &tool_call) {
+        Ok(params) => tool.prepare_arguments.as_ref().map(|prepare| prepare(params.clone())).unwrap_or(params),
+        Err(error) => return error_result(id, name.to_owned(), error.to_string()),
+    };
     (options.emit_event)(AgentEvent::ToolExecutionStart { tool_call_id: id.clone(), tool_name: name.to_owned(), args: args.clone() }, signal.clone()).await;
     let result = async {
-        let prepared = tool.prepare_arguments.as_ref().map(|prepare| prepare(args.clone())).unwrap_or(args.clone());
         if !is_record(&prepared) { return error_result(id.clone(), name.to_owned(), format!("Tool \"{name}\" prepared non-object arguments")); }
         if let Some(preflight) = &options.preflight_tool_call
             && let Some(reason) = preflight(id.clone(), name.to_owned(), prepared.clone()).await {
@@ -108,12 +115,23 @@ async fn execute_tool(options: &CursorExecBridgeOptions, name: &str, id: String,
     }.await;
     (options.emit_event)(AgentEvent::ToolExecutionEnd { tool_call_id: id.clone(), tool_name: name.to_owned(), result: serde_json::to_value(&result).unwrap_or(Value::Null), is_error: result.is_error }, signal.clone()).await;
     if let Some(emit) = &options.emit_tool_result {
-        emit(id, name.to_owned(), args, maho_agent::types::AgentToolResult {
+        emit(id, name.to_owned(), prepared, maho_agent::types::AgentToolResult {
             content: result.content.clone(), details: result.details.clone().unwrap_or(Value::Null), usage: result.usage,
             is_error: Some(result.is_error), added_tool_names: result.added_tool_names.clone(), terminate: None,
         }, result.is_error).await;
     }
     result
+}
+
+/// `args.fileText ?? decode(args.fileBytes)`: mirrors the `write` display block the API
+/// synthesizes, which falls back to the raw bytes when no text is present.
+fn write_content(file_text: &str, file_bytes: &[u8]) -> String {
+    if file_text.is_empty() { String::from_utf8_lossy(file_bytes).into_owned() } else { file_text.to_owned() }
+}
+
+/// `cursorPiLimit` over an `optional int32` frame field.
+fn pi_limit_i32(limit: Option<i32>) -> Option<i32> {
+    maho_ai::api::cursor_agent::pi_args::pi_limit(limit.map(f64::from)).map(|value| value as i32)
 }
 
 fn handler_result<T>(result: ToolResultMessage) -> CursorExecHandlerResult<T> {
@@ -134,8 +152,8 @@ pub fn create_cursor_exec_bridge(options: CursorExecBridgeOptions) -> CursorExec
     CursorExecHandlers {
         read: Some(Arc::new({ let shared = shared.clone(); move |a: ReadArgs| handler!(&shared, ReadResult, "read", a.tool_call_id, object([("path", a.path.into()), ("offset", a.offset.map(Value::from).unwrap_or(Value::Null)), ("limit", a.limit.map(Value::from).unwrap_or(Value::Null))])) })),
         ls: Some(Arc::new({ let shared = shared.clone(); move |a: LsArgs| handler!(&shared, LsResult, "ls", a.tool_call_id, object([("path", maho_ai::api::cursor_agent::pi_args::pi_ls_path(Some(&a.path)).into())])) })),
-        grep: Some(Arc::new({ let shared = shared.clone(); move |a: GrepArgs| handler!(&shared, GrepResult, "grep", a.tool_call_id, object([("pattern", a.pattern.into()), ("path", a.path.map(Value::from).unwrap_or(Value::Null)), ("glob", a.glob.map(Value::from).unwrap_or(Value::Null)), ("ignoreCase", a.case_insensitive.map(Value::from).unwrap_or(Value::Null))])) })),
-        write: Some(Arc::new({ let shared = shared.clone(); move |a: WriteArgs| handler!(&shared, WriteResult, "write", a.tool_call_id, object([("path", a.path.into()), ("content", a.file_text.into())])) })),
+        grep: Some(Arc::new({ let shared = shared.clone(); move |a: GrepArgs| handler!(&shared, GrepResult, "grep", a.tool_call_id, object([("pattern", a.pattern.into()), ("path", a.path.filter(|path| !path.is_empty()).map(Value::from).unwrap_or(Value::Null)), ("glob", a.glob.filter(|glob| !glob.is_empty()).map(Value::from).unwrap_or(Value::Null)), ("ignoreCase", (a.case_insensitive == Some(true)).then_some(true).map(Value::from).unwrap_or(Value::Null))])) })),
+        write: Some(Arc::new({ let shared = shared.clone(); move |a: WriteArgs| handler!(&shared, WriteResult, "write", a.tool_call_id, object([("path", a.path.into()), ("content", write_content(&a.file_text, &a.file_bytes).into())])) })),
         delete: None, shell: Some(Arc::new({ let shared = shared.clone(); move |a: ShellArgs| handler!(&shared, ShellResult, "bash", a.tool_call_id, object([("command", maho_ai::api::cursor_agent::pi_args::compose_shell_command(&a.command, Some(&a.working_directory)).into()), ("timeout", (a.timeout > 0).then_some(a.timeout).map(Value::from).unwrap_or(Value::Null))])) })),
         shell_stream: None, diagnostics: None,
         mcp: Some(Arc::new({ let shared = shared.clone(); move |a: CursorMcpCall| { let name = if a.tool_name.is_empty() { a.name } else { a.tool_name }; handler!(&shared, McpResult, name, a.tool_call_id, Value::Object(a.args)) } })),
@@ -144,9 +162,9 @@ pub fn create_cursor_exec_bridge(options: CursorExecBridgeOptions) -> CursorExec
         pi_bash: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiBashExecArgs>| handler!(&shared, PiBashExecResult, "bash", a.tool_call_id, object([("command", a.args.command.into()), ("timeout", a.args.timeout.filter(|v| *v >= 0.0).map(Value::from).unwrap_or(Value::Null))])) })),
         pi_edit: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiEditExecArgs>| handler!(&shared, PiEditExecResult, "edit", a.tool_call_id, object([("path", a.args.path.into()), ("edits", serde_json::Value::Array(a.args.edits.into_iter().map(|e| serde_json::json!({"oldText":e.old_text,"newText":e.new_text})).collect()))])) })),
         pi_write: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiWriteExecArgs>| handler!(&shared, PiWriteExecResult, "write", a.tool_call_id, object([("path", a.args.path.into()), ("content", a.args.content.into())])) })),
-        pi_grep: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiGrepExecArgs>| handler!(&shared, PiGrepExecResult, "grep", a.tool_call_id, map_cursor_pi_grep_args(&a.args)) })),
-        pi_find: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiFindExecArgs>| handler!(&shared, PiFindExecResult, "find", a.tool_call_id, object([("pattern", a.args.pattern.into()), ("path", a.args.path.map(Value::from).unwrap_or(Value::Null)), ("limit", a.args.limit.map(Value::from).unwrap_or(Value::Null))])) })),
-        pi_ls: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiLsExecArgs>| handler!(&shared, PiLsExecResult, "ls", a.tool_call_id, object([("path", a.args.path.unwrap_or_else(|| ".".into()).into()), ("limit", a.args.limit.map(Value::from).unwrap_or(Value::Null))])) })),
+        pi_grep: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiGrepExecArgs>| handler!(&shared, PiGrepExecResult, "grep", a.tool_call_id, map_cursor_pi_grep_args(&PiGrepExecArgs { ignore_case: (a.args.ignore_case == Some(true)).then_some(true), literal: (a.args.literal == Some(true)).then_some(true), limit: pi_limit_i32(a.args.limit), ..a.args.clone() })) })),
+        pi_find: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiFindExecArgs>| handler!(&shared, PiFindExecResult, "find", a.tool_call_id, object([("pattern", a.args.pattern.into()), ("path", a.args.path.filter(|path| !path.is_empty()).map(Value::from).unwrap_or(Value::Null)), ("limit", pi_limit_i32(a.args.limit).map(Value::from).unwrap_or(Value::Null))])) })),
+        pi_ls: Some(Arc::new({ let shared = shared.clone(); move |a: CursorPiCall<PiLsExecArgs>| handler!(&shared, PiLsExecResult, "ls", a.tool_call_id, object([("path", maho_ai::api::cursor_agent::pi_args::pi_ls_path(a.args.path.as_deref()).into()), ("limit", pi_limit_i32(a.args.limit).map(Value::from).unwrap_or(Value::Null))])) })),
         on_tool_result: None,
     }
 }
@@ -228,6 +246,74 @@ mod tests {
         assert!(!results[0].4);
     }
 
+
+    #[test]
+    fn write_content_falls_back_to_file_bytes_when_text_is_empty() {
+        assert_eq!(write_content("", b"from bytes"), "from bytes");
+        assert_eq!(write_content("from text", b"ignored"), "from text");
+    }
+
+    #[test]
+    fn pi_limit_floors_present_limits_and_keeps_absent_unset() {
+        assert_eq!(pi_limit_i32(Some(0)), Some(1));
+        assert_eq!(pi_limit_i32(Some(-4)), Some(1));
+        assert_eq!(pi_limit_i32(Some(25)), Some(25));
+        assert_eq!(pi_limit_i32(None), None);
+    }
+
+    #[tokio::test]
+    async fn bridge_rejects_schema_invalid_arguments_before_execution() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = executed.clone();
+        let tool = AgentTool {
+            label: "grep".into(), prepare_arguments: None, replay: None, execution_mode: None,
+            tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(),
+                parameters: json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}),
+                freeform: None, constrained_sampling: None },
+            execute: Arc::new(move |_, _, _, _| { flag.store(true, std::sync::atomic::Ordering::SeqCst); Box::pin(async { maho_agent::types::AgentToolResult::text("ran") }) }),
+        };
+        let options = CursorExecBridgeOptions {
+            get_tool: Arc::new(move |name| (name == "grep").then(|| tool.clone())),
+            emit_event: Arc::new(|_, _| Box::pin(async {})),
+            emit_tool_result: None, preflight_tool_call: None,
+            get_abort_signal: Arc::new(move || Some(controller.signal())),
+        };
+        let result = execute_tool(&options, "grep", "bad-call".into(), json!({"path":"src"})).await;
+        assert!(result.is_error);
+        assert!(matches!(&result.content[0], ContentBlock::Text(text) if text.text.starts_with("Validation failed for tool \"grep\"")));
+        assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn bridge_grep_drops_empty_path_and_glob_and_reports_prepared_params() {
+        let controller = maho_ai::utils::abort::AbortController::new();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let results = observed.clone();
+        let tool = AgentTool {
+            label: "grep".into(), replay: None, execution_mode: None,
+            prepare_arguments: Some(Arc::new(|mut args: Value| { args["prepared"] = json!(true); args })),
+            tool: maho_ai::types::Tool { name: "grep".into(), description: String::new(), parameters: json!({"type":"object"}), freeform: None, constrained_sampling: None },
+            execute: Arc::new(|_, args, _, _| Box::pin(async move {
+                assert_eq!(args, json!({"pattern":"needle","prepared":true}));
+                maho_agent::types::AgentToolResult::text("")
+            })),
+        };
+        let handlers = create_cursor_exec_bridge(CursorExecBridgeOptions {
+            get_tool: Arc::new(move |name| (name == "grep").then(|| tool.clone())),
+            emit_event: Arc::new(|_, _| Box::pin(async {})),
+            emit_tool_result: Some(Arc::new(move |_, _, args, _, _| {
+                let results = results.clone();
+                Box::pin(async move { results.lock().expect("results").push(args); })
+            })),
+            preflight_tool_call: None,
+            get_abort_signal: Arc::new(move || Some(controller.signal())),
+        });
+        let args = GrepArgs { pattern: "needle".into(), path: Some(String::new()), glob: Some(String::new()), case_insensitive: Some(false), tool_call_id: "grep-empty".into(), ..Default::default() };
+        let CursorExecHandlerResult::ToolResult(result) = handlers.grep.expect("grep handler")(args).await else { panic!("expected tool result") };
+        assert!(!result.is_error);
+        assert_eq!(*observed.lock().expect("results"), vec![json!({"pattern":"needle","prepared":true})]);
+    }
 
     #[test]
     fn bridge_registers_each_supported_handler_kind() {

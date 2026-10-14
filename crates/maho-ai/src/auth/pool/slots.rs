@@ -57,6 +57,11 @@ pub struct PooledCredential {
     pub accounts: Option<Vec<CredentialSlot>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned: Option<String>,
+    /// Provider-specific credential fields (`enterpriseUrl`, `availableModelIds`, `accountId`,
+    /// `scope`, ...). senpi spreads the credential object, so every such field survives a pool
+    /// write; this keeps them on the native struct.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,10 +87,20 @@ impl From<Credential> for PooledCredential {
                 env: env_from_extra(&c.extra),
                 accounts: accounts_from_extra(&c.extra),
                 pinned: pinned_from_extra(&c.extra),
+                extra: provider_fields(c.extra),
                 ..Default::default()
             },
         }
     }
+}
+
+/// The credential's provider-specific fields: its flattened extra minus the keys this struct
+/// models itself.
+fn provider_fields(mut extra: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    for key in ["env", "accounts", "pinned"] {
+        extra.remove(key);
+    }
+    extra
 }
 
 fn env_from_extra(extra: &serde_json::Map<String, serde_json::Value>) -> Option<ProviderEnv> {
@@ -116,6 +131,7 @@ impl PooledCredential {
             }
             PooledCredentialType::OAuth => {
                 let mut cred = OAuthCredential::new(self.access.clone()?, self.refresh.clone()?, self.expires?);
+                cred.extra = self.extra.clone();
                 if let Some(env) = &self.env {
                     cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
                 }
@@ -138,6 +154,7 @@ impl PooledCredential {
                     self.refresh.clone().unwrap_or_default(),
                     self.expires.unwrap_or(0.0),
                 );
+                cred.extra = self.extra.clone();
                 if let Some(env) = &self.env {
                     cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
                 }
@@ -492,6 +509,7 @@ pub fn project_slot(credential: Option<&PooledCredential>, name: &str) -> Option
         PooledCredentialType::OAuth => {
             let (access, refresh, expires) = (slot.access?, slot.refresh?, slot.expires?);
             let mut cred = OAuthCredential::new(access, refresh, expires);
+            cred.extra = credential.extra.clone();
             if let Some(env) = env {
                 cred = cred.with_extra("env", serde_json::to_value(env).unwrap_or_default());
             }
@@ -807,6 +825,42 @@ mod tests {
         let merged = merge_refreshed(&current, &refreshed);
         assert_eq!(merged.access, Some("new-a".into()));
         assert_eq!(merged.accounts.unwrap()[0].access, Some("new-a".into()));
+    }
+
+    fn copilot_enterprise(access: &str, refresh: &str) -> Credential {
+        Credential::OAuth(
+            OAuthCredential::new(access, refresh, 1.0)
+                .with_extra("enterpriseUrl", serde_json::json!("company.ghe.com"))
+                .with_extra("availableModelIds", serde_json::json!(["gpt-4o"])),
+        )
+    }
+
+    fn assert_copilot_enterprise_fields(credential: &Credential) {
+        let oauth = credential.as_oauth().expect("oauth");
+        assert_eq!(oauth.get_extra_str("enterpriseUrl"), Some("company.ghe.com"));
+        assert_eq!(oauth.get_extra("availableModelIds"), Some(&serde_json::json!(["gpt-4o"])));
+    }
+
+    #[test]
+    fn provider_specific_oauth_fields_survive_refresh_login_and_slot_projection() {
+        // Flat refresh: senpi returns the refreshed credential whole.
+        let current: PooledCredential = copilot_enterprise("old-a", "old-r").into();
+        let refreshed = merge_refreshed(&current, &copilot_enterprise("new-a", "new-r"));
+        assert_copilot_enterprise_fields(&refreshed.to_stored_credential());
+
+        // Pooled refresh: senpi spreads the current credential, so its fields stay.
+        let pooled = upsert_slot(Some(current.clone()), slot("default", "old-a", "old-r")).expect("upsert");
+        let refreshed = merge_refreshed(&pooled, &Credential::OAuth(OAuthCredential::new("new-a", "new-r", 2.0)));
+        let stored = refreshed.to_stored_credential();
+        assert_copilot_enterprise_fields(&stored);
+        assert_eq!(PooledCredential::from(stored), refreshed);
+
+        // First and second login keep the fields; a slot projection carries them too.
+        let first = append_login_slot(None, current.clone(), |_, _| {}).expect("first login");
+        assert_copilot_enterprise_fields(&first.to_stored_credential());
+        let second = append_login_slot(Some(first), copilot_enterprise("a2", "r2").into(), |_, _| {}).expect("second login");
+        assert_copilot_enterprise_fields(&second.to_stored_credential());
+        assert_copilot_enterprise_fields(&project_slot(Some(&second), "login-2").expect("projected"));
     }
 
     #[test]
@@ -1421,13 +1475,16 @@ mod pool_resolution_tests {
 
     async fn resolve(provider_id: &str, provider_auth: &ProviderAuth, store: &Arc<dyn CredentialStore>, slot_name: Option<&str>) -> Option<crate::auth::types::AuthResult> {
         let ctx = EmptyCtx;
+        let overrides = crate::auth::resolve::AuthResolutionOverrides {
+            slot_name: slot_name.map(str::to_owned),
+            ..Default::default()
+        };
         resolve_provider_auth(
             provider_id,
             provider_auth,
             store,
             &ctx,
-            slot_name,
-            None,
+            Some(&overrides),
             &AbortController::new().signal(),
         )
         .await

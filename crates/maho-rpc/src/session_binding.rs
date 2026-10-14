@@ -7,7 +7,8 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
     macro_rules! optional{($record:ident,$key:literal,$value:expr)=>{if let Some(value)=$value{$record[$key]=serde_json::to_value(value)?;}};}
     Ok(match event{
         E::Agent(event)=>serde_json::to_value(event)?,
-        E::AgentEnd{messages,aborted,will_retry,abort_source}=>{let mut record=json!({"type":"agent_end","messages":messages,"aborted":aborted,"willRetry":will_retry});if let Some(source)=abort_source{record["abortSource"]=match source{maho_ext_api::AbortSource::User=>"user",maho_ext_api::AbortSource::System=>"system",maho_ext_api::AbortSource::Provider=>"provider"}.into();}record},
+        // senpi agent-session.ts: subscribers get `{ ...agent_end, willRetry }`; abort provenance is RPC enrichment.
+        E::AgentEnd{messages,will_retry,..}=>json!({"type":"agent_end","messages":messages,"willRetry":will_retry}),
         E::MessageUpdate{message,assistant_message_event}=>json!({"type":"message_update","message":message,"assistantMessageEvent":assistant_message_event}),
         E::AgentSettled=>json!({"type":"agent_settled"}),E::AgentIdle=>json!({"type":"agent_idle"}),E::SessionAbort=>json!({"type":"session_abort"}),
         E::ResumeCompactionRequired{projection,notice}=>json!({"type":"resume_compaction_required","projection":projection,"notice":notice}),
@@ -32,7 +33,8 @@ pub fn session_event_record(event:&maho_ext_api::AgentSessionEvent)->Result<serd
         E::ModelChangeRejected{model,reason,detail,budget:b}=>{let mut record=b.as_ref().map_or_else(||json!({}),budget);record["type"]="model_change_rejected".into();record["model"]=json!(model);record["reason"]=json!(reason);record["detail"]=json!(detail);record},
         E::ModelChangeSkipped{model,budget:b,direction}=>{let mut record=budget(b);record["type"]="model_change_skipped".into();record["model"]=json!(model);record["direction"]=json!(direction);record},
         E::ServiceTierChanged{tier,fast_mode}=>{let mut record=json!({"type":"service_tier_changed","fastMode":fast_mode});if let Some(tier)=tier{record["tier"]=match tier{maho_ext_api::ServiceTier::Auto=>"auto",maho_ext_api::ServiceTier::Flex=>"flex",maho_ext_api::ServiceTier::Priority=>"priority"}.into();}record},
-        E::ThinkingLevelChanged{level}=>json!({"type":"thinking_level_changed","level":level}),
+        // senpi: core emits `{ type, level }`; `thinkingSelection` is RPC enrichment.
+        E::ThinkingLevelChanged{level,..}=>json!({"type":"thinking_level_changed","level":level}),
         E::HighReasoningWarning{model_id,provider,thinking_level}=>json!({"type":"high_reasoning_warning","modelId":model_id,"provider":provider,"thinkingLevel":thinking_level}),
         E::ServerFallbackAborted{from,to,chain_configured}=>json!({"type":"server_fallback_aborted","from":from,"to":to,"chainConfigured":chain_configured}),
         E::SessionSettingsChanged{steering_mode,follow_up_mode,auto_compaction_enabled}=>json!({"type":"session_settings_changed","steeringMode":steering_mode,"followUpMode":follow_up_mode,"autoCompactionEnabled":auto_compaction_enabled}),
@@ -82,28 +84,37 @@ impl BindingRecords{
 }
 /// A session-owned adapter around the classic command loop and extension-UI wiring: the
 /// classic handler stays the single source of command semantics, and its records are routed
-/// through the session writer (senpi `createRpcSessionBinding`).
-pub struct RpcSessionBinding{session_id:String,handler:crate::connection_handler::RpcConnectionHandler,writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>,subscription:std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>}
+/// through the host's session record router (senpi `createRpcSessionBinding`).
+pub struct RpcSessionBinding{session_id:String,handler:crate::connection_handler::RpcConnectionHandler,sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,subscription:std::sync::Mutex<Option<maho_core::agent_session::AgentSessionSubscription>>}
 /// Builds an RPC binding for one live session: input lines route through the handler and every
-/// produced record goes to the session's writer, tagged with its routing id.
-pub async fn create_rpc_session_binding(session_id:String,session:maho_core::agent_session::AgentSession,writer:std::sync::Arc<crate::session_event_writer::SessionWriterActor>,capabilities:Vec<String>)->RpcSessionBinding{
-    let tag=session_id.clone();let sink_writer=writer.clone();
-    let sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>=std::sync::Arc::new(move|value:serde_json::Value|{let _=sink_writer.enqueue(&tag,value);});
+/// produced record goes to `sink`, which tags it with the routing id and fans it out to the
+/// connections attached to the session (senpi `SessionEventWriter.enqueue`).
+pub async fn create_rpc_session_binding(session_id:String,session:maho_core::agent_session::AgentSession,sink:std::sync::Arc<dyn Fn(serde_json::Value)+Send+Sync>,capabilities:Vec<String>)->RpcSessionBinding{
     let event_sink=sink.clone();
-    let subscription=session.subscribe(std::sync::Arc::new(move|event|{match session_event_record(event){Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}}));
-    let handler=crate::connection_handler::RpcConnectionHandler::create(session,sink,capabilities).await;
-    RpcSessionBinding{session_id,handler,writer,subscription:std::sync::Mutex::new(Some(subscription))}
+    let last_abort_source:crate::connection_handler::LastAbortSource=Default::default();
+    let (event_session,event_abort_source)=(session.weak_accessor(),last_abort_source.clone());
+    let subscription=session.subscribe(std::sync::Arc::new(move|event|{
+        let record=match event_session(){Some(session)=>crate::connection_handler::rpc_session_event_record(&session,event,&event_abort_source),None=>session_event_record(event)};
+        match record{Ok(record)=>event_sink(record),Err(error)=>event_sink(serde_json::json!({"type":"rpc_error","error":error.to_string()}))}
+    }));
+    // A hosted session keeps the native `ctx.shutdown()` effect (dispose this session); it never
+    // ends the multi-session host process.
+    let shutdown_session=session.weak_accessor();
+    let shutdown:std::sync::Arc<dyn Fn()+Send+Sync>=std::sync::Arc::new(move||{if let Some(session)=shutdown_session(){tokio::spawn(async move{session.dispose().await;});}});
+    let mut handler=crate::connection_handler::RpcConnectionHandler::create_with_shutdown_handler(session,sink.clone(),capabilities,Some(shutdown)).await;
+    handler.last_abort_source=last_abort_source;
+    RpcSessionBinding{session_id,handler,sink,subscription:std::sync::Mutex::new(Some(subscription))}
 }
 impl RpcSessionBinding{
     pub fn session_id(&self)->&str{&self.session_id}
     pub fn ui(&self)->&std::sync::Arc<crate::connection_handler::RpcExtensionUi>{self.handler.ui()}
-    /// Feed one inbound command; a response the handler produced is written tagged to this session.
+    /// Feed one inbound command; a response the handler produced is routed tagged to this session.
     pub async fn handle(&self,command:&serde_json::Value)->Result<(),String>{
         let line=serde_json::to_string(command).map_err(|error|error.to_string())?;
         if let Some(response)=self.handler.handle_input_line(&line).await.map_err(|error|error.to_string())?{
             for record in response.split('\n').filter(|record|!record.is_empty()){
                 let value:serde_json::Value=serde_json::from_str(record).map_err(|error|error.to_string())?;
-                self.writer.enqueue(&self.session_id,value)?;
+                (self.sink)(value);
             }
         }
         Ok(())

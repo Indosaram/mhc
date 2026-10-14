@@ -13,6 +13,16 @@ async fn caller_cancellation_rejects_wait_and_fences_late_results() {
 }
 
 #[tokio::test]
+async fn bare_caller_abort_is_normalized_to_eval_interrupted() {
+    let caller=AbortController::new();
+    let (sender,mut aborts)=tokio::sync::mpsc::unbounded_channel();
+    let execution=CellExecution::new(caller.signal(),"cell".into(),None,Arc::new(move |reason|{sender.send(reason).expect("abort receiver");}));
+    caller.abort(None);
+    assert_eq!(aborts.recv().await.expect("abort event"),AbortReason::new("AbortError","Eval interrupted"));
+    assert_eq!(execution.wait(async {Ok(42)}).await,Err("Eval interrupted".into()));
+}
+
+#[tokio::test]
 async fn detach_resolves_without_aborting_and_finish_removes_caller_listener() {
     let caller=AbortController::new();
     let (sender,mut aborts)=tokio::sync::mpsc::unbounded_channel();

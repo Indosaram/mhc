@@ -116,6 +116,18 @@ async fn given_suppression_conditions_when_the_component_flag_is_disabled_then_n
 }
 
 #[tokio::test]
+async fn given_suppression_conditions_when_the_pinned_mass_ulw_flag_is_disabled_then_only_the_mass_ulw_pointer_is_suppressed() {
+    let harness = setup_harness("/skills/");
+    harness.api.runtime.set_flag(MASS_ULW_DISABLED_FLAG, FlagValue::Boolean(true));
+    let result = dispatch_input(&harness, "mass ulw", InputSource::Interactive, None, "test-session").await;
+    expect_no_injection(&harness, &result);
+    let result = dispatch_input(&harness, "run ulw-loop", InputSource::Interactive, None, "test-session").await;
+    expect_pointer_injections(&harness, &result, &[
+        ExpectedPointer { custom_type: ULW_LOOP_CUSTOM_TYPE, skill_name: "ulw-loop" },
+    ]);
+}
+
+#[tokio::test]
 async fn given_suppression_conditions_when_the_text_has_no_keyword_then_nothing_is_injected() {
     let harness = setup_harness("/skills/");
     let result = dispatch_input(&harness, "ordinary follow-up", InputSource::Interactive, None, "test-session").await;

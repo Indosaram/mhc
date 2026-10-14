@@ -122,7 +122,26 @@ pub trait ModelsAuth: Send + Sync {
         stored: Option<&'a Credential>,
         signal: &'a AbortSignal,
     ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>>;
+
+    /// Side-effect-free availability check (`checkProviderAuth`). The default treats a successful
+    /// resolution as configured, which is senpi's behavior for an api-key auth without `check`.
+    fn check<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<crate::auth::types::AuthCheck>, ModelsError>> {
+        Box::pin(async move {
+            let overrides = AuthResolutionOverrides { signal: Some(signal.clone()), ..AuthResolutionOverrides::default() };
+            Ok(self.resolve(provider, &overrides).await?.map(|_| crate::auth::types::AuthCheck {
+                source: None,
+                auth_type: crate::auth::types::AuthType::ApiKey,
+            }))
+        })
+    }
 }
+
+/// `get_env_api_key`'s value for ambient (non-key) credentials such as AWS profiles or Vertex ADC.
+pub const AMBIENT_AUTH_MARKER: &str = "<authenticated>";
 
 /// Env-var-only auth: an explicit API key override wins, then the provider's known env vars.
 #[derive(Debug, Default, Clone, Copy)]
@@ -136,8 +155,13 @@ impl ModelsAuth for EnvModelsAuth {
     ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
         Box::pin(async move {
             let api_key = overrides.api_key.clone().or_else(|| get_env_api_key(provider.id(), overrides.env.as_ref()));
+            // senpi's ambient providers (Bedrock SigV4/bearer env, Vertex ADC) resolve to `auth: {}`;
+            // the `<authenticated>` marker means "configured" and is never a request key.
             Ok(api_key.map(|api_key| AuthResolution {
-                auth: ProviderAuthResult { api_key: Some(api_key), ..ProviderAuthResult::default() },
+                auth: ProviderAuthResult {
+                    api_key: (api_key != AMBIENT_AUTH_MARKER).then_some(api_key),
+                    ..ProviderAuthResult::default()
+                },
                 env: overrides.env.clone(),
             }))
         })
@@ -150,7 +174,158 @@ impl ModelsAuth for EnvModelsAuth {
         _signal: &'a AbortSignal,
     ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
         Box::pin(async move {
-            Ok(get_env_api_key(provider.id(), None).map(|key| serde_json::json!({ "type": "api_key", "key": key })))
+            Ok(get_env_api_key(provider.id(), None)
+                .filter(|key| key != AMBIENT_AUTH_MARKER)
+                .map(|key| serde_json::json!({ "type": "api_key", "key": key })))
+        })
+    }
+}
+
+/// senpi `ModelsImpl`'s default auth: every provider resolves through its own declared
+/// `provider.auth` (`resolveProviderAuth`) against an in-memory credential store and the default
+/// auth context. A provider registered without declared auth keeps the env-var lookup.
+pub struct ProviderModelsAuth {
+    credentials: Arc<dyn crate::auth::types::CredentialStore>,
+    auth_context: Arc<dyn crate::auth::types::AuthContext>,
+}
+
+impl Default for ProviderModelsAuth {
+    fn default() -> Self {
+        Self {
+            credentials: Arc::new(crate::auth::credential_store::InMemoryCredentialStore::new()),
+            auth_context: Arc::new(crate::auth::context::default_provider_auth_context()),
+        }
+    }
+}
+
+impl ProviderModelsAuth {
+    pub fn new(
+        credentials: Arc<dyn crate::auth::types::CredentialStore>,
+        auth_context: Arc<dyn crate::auth::types::AuthContext>,
+    ) -> Self {
+        Self { credentials, auth_context }
+    }
+
+    async fn read_stored(&self, provider_id: &str, signal: &AbortSignal) -> Result<Option<crate::auth::types::Credential>, ModelsError> {
+        self.credentials
+            .read(provider_id, Some(crate::auth::types::AuthOperationOptions { signal: Some(signal.clone()) }))
+            .await
+            .map_err(|error| {
+                ModelsError::with_cause(ModelsErrorCode::Auth, format!("Credential store read failed for {provider_id}"), &error.to_string())
+            })
+    }
+}
+
+fn auth_models_error(error: crate::auth::resolve::ModelsError) -> ModelsError {
+    let code = if error.code == "oauth" { ModelsErrorCode::OAuth } else { ModelsErrorCode::Auth };
+    ModelsError::new(code, error.message)
+}
+
+impl ModelsAuth for ProviderModelsAuth {
+    fn resolve<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        overrides: &'a AuthResolutionOverrides,
+    ) -> BoxFuture<'a, Result<Option<AuthResolution>, ModelsError>> {
+        Box::pin(async move {
+            let Some(provider_auth) = provider.auth() else { return EnvModelsAuth.resolve(provider, overrides).await };
+            let signal = operation_signal(overrides.signal.clone());
+            let result = crate::auth::resolve::resolve_provider_auth(
+                provider.id(),
+                provider_auth,
+                &self.credentials,
+                self.auth_context.as_ref(),
+                Some(overrides),
+                &signal,
+            )
+            .await
+            .map_err(auth_models_error)?;
+            Ok(result.map(|result| AuthResolution {
+                auth: ProviderAuthResult {
+                    api_key: result.auth.api_key,
+                    headers: result.auth.headers,
+                    base_url: result.auth.base_url,
+                },
+                env: result.env,
+            }))
+        })
+    }
+
+    fn read_credential<'a>(
+        &'a self,
+        provider_id: &'a str,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
+        Box::pin(async move {
+            self.read_stored(provider_id, signal)
+                .await?
+                .map(|credential| {
+                    serde_json::to_value(credential).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))
+                })
+                .transpose()
+        })
+    }
+
+    fn refresh_credential<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        stored: Option<&'a Credential>,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<Credential>, ModelsError>> {
+        Box::pin(async move {
+            let Some(provider_auth) = provider.auth() else {
+                return EnvModelsAuth.refresh_credential(provider, stored, signal).await;
+            };
+            let stored = match stored {
+                Some(_) => self.read_stored(provider.id(), signal).await?,
+                None => None,
+            };
+            let credential = crate::auth::refresh_credential::resolve_refresh_credential(
+                provider.id(),
+                provider_auth,
+                &self.credentials,
+                self.auth_context.as_ref(),
+                stored.as_ref(),
+                signal,
+            )
+            .await
+            .map_err(auth_models_error)?;
+            credential
+                .map(|credential| {
+                    serde_json::to_value(credential).map_err(|error| ModelsError::new(ModelsErrorCode::Auth, error.to_string()))
+                })
+                .transpose()
+        })
+    }
+
+    /// senpi `checkProviderAuth`: side-effect-free; never refreshes OAuth.
+    fn check<'a>(
+        &'a self,
+        provider: &'a dyn Provider,
+        signal: &'a AbortSignal,
+    ) -> BoxFuture<'a, Result<Option<crate::auth::types::AuthCheck>, ModelsError>> {
+        Box::pin(async move {
+            let Some(provider_auth) = provider.auth() else { return EnvModelsAuth.check(provider, signal).await };
+            let id = provider.id();
+            let ctx = self.auth_context.as_ref();
+            let credential = self.read_stored(id, signal).await?;
+            let check_error = |kind: &str, error: anyhow::Error| {
+                ModelsError::with_cause(ModelsErrorCode::Auth, format!("{kind} auth check failed for provider {id}"), &error.to_string())
+            };
+            if let Some(crate::auth::types::Credential::OAuth(credential)) = &credential {
+                let Some(oauth) = &provider_auth.oauth else { return Ok(None) };
+                return oauth.check(ctx, Some(credential), signal).await.map_err(|error| check_error("OAuth", error));
+            }
+            if let Some(api_key) = &provider_auth.api_key {
+                let stored = credential.as_ref().and_then(crate::auth::types::Credential::as_api_key);
+                if let Some(check) = api_key.check(ctx, stored, signal).await.map_err(|error| check_error("API key", error))? {
+                    return Ok(Some(check));
+                }
+            }
+            match &provider_auth.oauth {
+                Some(oauth) => oauth.check(ctx, None, signal).await.map_err(|error| check_error("OAuth", error)),
+                None => Ok(None),
+            }
         })
     }
 }
@@ -216,6 +391,10 @@ pub trait Provider: Send + Sync {
     fn headers(&self) -> Option<&ProviderHeaders> {
         None
     }
+    /// `Provider.auth`: the provider's api-key and OAuth auth methods.
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        None
+    }
     /// Provider-owned retry policy; omission selects the shipped default profile.
     fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
         None
@@ -279,6 +458,7 @@ pub struct CreateProviderOptions {
     pub name: Option<String>,
     pub base_url: Option<String>,
     pub headers: Option<ProviderHeaders>,
+    pub auth: Option<crate::auth::types::ProviderAuth>,
     pub models: Vec<Model>,
     pub fetch_models: Option<FetchModels>,
     pub restore_models: Option<RestoreModels>,
@@ -321,6 +501,10 @@ impl Provider for CreatedProvider {
 
     fn headers(&self) -> Option<&ProviderHeaders> {
         self.input.headers.as_ref()
+    }
+
+    fn auth(&self) -> Option<&crate::auth::types::ProviderAuth> {
+        self.input.auth.as_ref()
     }
 
     fn retry_policy(&self) -> Option<&crate::utils::retry_profile::types::RetryPolicyProfile> {
@@ -491,7 +675,7 @@ pub fn create_models(options: Option<CreateModelsOptions>) -> Models {
         inner: Arc::new(ModelsInner {
             providers: RwLock::new(IndexMap::new()),
             models_store: options.models_store.unwrap_or_else(|| Arc::new(InMemoryModelsStore::new())),
-            auth: options.auth.unwrap_or_else(|| Arc::new(EnvModelsAuth)),
+            auth: options.auth.unwrap_or_else(|| Arc::new(ProviderModelsAuth::default())),
             refresh: Mutex::new(RefreshState::default()),
             publication_locks: Mutex::new(HashMap::new()),
         }),
@@ -718,14 +902,26 @@ impl Models {
         let signal = AbortController::new().signal();
         let mut available = Vec::new();
         for provider in providers {
-            let overrides = AuthResolutionOverrides::default();
-            if !matches!(self.inner.auth.resolve(provider.as_ref(), &overrides).await, Ok(Some(_))) {
+            if !matches!(self.inner.auth.check(provider.as_ref(), &signal).await, Ok(Some(_))) {
                 continue;
             }
             let credential = self.inner.auth.read_credential(provider.id(), &signal).await.ok().flatten();
             available.extend(provider.filter_models(provider.get_models(), credential.as_ref()));
         }
         available
+    }
+
+    /// `checkAuth(providerId, options)`: side-effect-free availability of the provider's auth.
+    pub async fn check_auth(
+        &self,
+        provider_id: &str,
+        signal: &AbortSignal,
+    ) -> Result<Option<crate::auth::types::AuthCheck>, ModelsError> {
+        let Some(provider) = self.get_provider(provider_id) else { return Ok(None) };
+        match race_with_abort_signal(self.inner.auth.check(provider.as_ref(), signal), signal).await {
+            Ok(result) => result,
+            Err(reason) => Err(ModelsError::new(ModelsErrorCode::Auth, reason.message)),
+        }
     }
 
     pub async fn get_auth(&self, provider_id: &str, overrides: &AuthResolutionOverrides) -> Result<Option<AuthResolution>, ModelsError> {

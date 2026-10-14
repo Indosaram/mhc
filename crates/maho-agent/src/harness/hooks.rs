@@ -71,6 +71,8 @@ pub struct HookInvocation {
     pub stream_options: AgentHarnessStreamOptions,
     pub payload: Option<Value>,
     pub message: Option<SettledAssistantMessage>,
+    pub status: Option<u16>,
+    pub headers: Option<BTreeMap<String, String>>,
     pub tool_call_id: Option<String>,
     pub tool_name: Option<String>,
     pub args: Map<String, Value>,
@@ -99,6 +101,8 @@ impl HookInvocation {
             stream_options: AgentHarnessStreamOptions::default(),
             payload: None,
             message: None,
+            status: None,
+            headers: None,
             tool_call_id: None,
             tool_name: None,
             args: Map::new(),
@@ -144,6 +148,38 @@ pub enum HookResult {
     BeforeTool { args: Option<Map<String, Value>>, block: Option<BlockDecision> },
     AfterTool(AfterToolPatch),
     Structural { decline: Option<bool>, value: Option<Value> },
+}
+
+/// The gate-guarded `before_payload` runner every provider request installs as its `onPayload`
+/// (pinned `beforePayload`/`onPayload` closures in drive/generation.ts, deferred.ts, structural.ts).
+pub fn before_payload_hook(
+    hooks: Arc<HookRegistry>,
+    gate: Gate,
+    context: Context,
+    lane: String,
+    run_id: String,
+) -> maho_ai::types::AsyncOnPayload {
+    let hook: maho_ai::types::AsyncOnPayload = Arc::new(
+        move |payload: Value, model: Model, _metadata: Option<maho_ai::types::ProviderRequestMetadata>| {
+            let hooks = hooks.clone();
+            let gate = gate.clone();
+            let context = context.clone();
+            let lane = lane.clone();
+            let run_id = run_id.clone();
+            let future: BoxFuture<'static, Result<Option<Value>, String>> = Box::pin(async move {
+                let mut invocation = HookInvocation::new(lane, run_id);
+                invocation.model = Some(model);
+                invocation.payload = Some(payload);
+                match hooks.run_with_gate(HookName::BeforePayload, invocation, &gate, &context).await {
+                    Ok(HookResult::BeforePayload { payload }) => Ok(Some(payload)),
+                    Ok(_) => Ok(None),
+                    Err(error) => Err(error.to_string()),
+                }
+            });
+            future
+        },
+    );
+    hook
 }
 
 pub type HookHandler =

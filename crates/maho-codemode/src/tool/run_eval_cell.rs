@@ -1,10 +1,10 @@
 use std::sync::{Arc,Mutex};
 use maho_ai::utils::abort::{AbortController,AbortReason};
 use maho_ext_api::AgentToolResult;
-use super::{eval_tool_options::{CreateEvalToolOptions,EvalCellInvocation},types::{EvalKernelRunInput,TimeoutBehavior},cell_execution::CellExecution,cell_runtime::{CellState,CellResultBuilder},cell_handler::{CellHandler,CellBridgeRuntime},image::EvalOutputOptions,eval_request::eval_timeout_behavior,detached_eval_result::{result_after_detach,EvalBackgroundCapacityError},eval_kernel_reset_refused_error::EvalKernelResetRefusedError};
+use super::{eval_tool_options::{CreateEvalToolOptions,EvalCellInvocation},types::{EvalKernelRunInput,TimeoutBehavior},cell_execution::CellExecution,cell_runtime::{CellState,CellResultBuilder},cell_handler::{CellHandler,CellBridgeRuntime},image::EvalOutputOptions,eval_request::eval_timeout_behavior,detached_eval_result::{result_after_detach,result_for_detached_state,EvalBackgroundCapacityError},detached_cell_contract::EvalDetachedCellState,eval_kernel_reset_refused_error::EvalKernelResetRefusedError};
 
 pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCellInvocation) -> Result<AgentToolResult,String> {
-    invocation.signal.throw_if_aborted().map_err(|error|error.to_string())?;
+    invocation.signal.throw_if_aborted().map_err(|reason|super::cell_execution::abort_error(reason).message)?;
     let detaches=eval_timeout_behavior(&invocation.input,&invocation.mode)==TimeoutBehavior::Detach;
     let manager=options.cell_manager.clone();
     let cell=manager.lock().expect("cell manager lock").create(invocation.cell_id.clone(),invocation.input.clone())?;
@@ -13,8 +13,17 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     let bridge_signal=controller.signal();
     let active=Arc::new(std::sync::atomic::AtomicBool::new(true));
     let active_abort=active.clone();
+    // senpi catches `EvalBackgroundCapacityError` by type; the native abort reason carries its name.
+    let capacity_cancelled=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let capacity_abort=capacity_cancelled.clone();
+    // senpi settles `CodemodeSessionDisposedError` through `finalizeCancellation`; every other
+    // cancellation (timeouts, caller aborts, deadlines) is rethrown as a tool error.
+    let session_disposed=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let disposed_abort=session_disposed.clone();
     let execution=CellExecution::new(invocation.signal.clone(),invocation.cell_id.clone(),None,Arc::new(move |reason| {
         active_abort.store(false,std::sync::atomic::Ordering::SeqCst);
+        if reason.name=="EvalBackgroundCapacityError" {capacity_abort.store(true,std::sync::atomic::Ordering::SeqCst);}
+        if reason.name=="CodemodeSessionDisposedError" {disposed_abort.store(true,std::sync::atomic::Ordering::SeqCst);}
         controller.abort(Some(reason));
     }));
     let weak=Arc::downgrade(&execution);
@@ -70,6 +79,21 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     };
     let kernel=match acquired {
         Ok(kernel)=>kernel,
+        Err(error) if capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst)=>{
+            execution.finish();
+            let details=manager.lock().expect("cell manager lock").peek(&invocation.cell_id)?.result.details;
+            let mut result=AgentToolResult::text(error.clone());
+            result.details=details;
+            let result=capacity_result(&result,0.0);
+            if let Some(callback)=&options.on_cell_settled {
+                let completed_at=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("system clock").as_secs_f64()*1000.0;
+                callback(super::eval_execution_event::build_eval_execution_event_payload(super::eval_execution_event::BuildEvalExecutionEventOptions {
+                    cell_id:&invocation.cell_id,language:invocation.input.language,started_at,completed_at,queued_ms:(completed_at-started_at).max(0.0),detached:false,metrics:&[],tool_calls:&[],state_error:None,outcome:super::eval_execution_event::EvalExecutionSettleOutcome::Result(&result),
+                }));
+            }
+            manager.lock().expect("cell manager lock").complete(&cell,result.clone());
+            return Ok(result);
+        }
         Err(mut error)=>{
             if execution.timed_out() {error=super::interrupt_note::describe_timeout_state(error.as_str(),None::<std::future::Ready<(bool,Option<String>)>>).await;}
             execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
@@ -98,8 +122,9 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     if invocation.input.reset==Some(true) {
         let busy=manager.lock().expect("cell manager lock").live_cells(Some(invocation.input.language),Some(&invocation.cell_id));
         if !busy.is_empty() {
-            let error=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>()).to_string();
-            execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);
+            let refused=EvalKernelResetRefusedError::new(invocation.input.language,&busy.into_iter().map(|cell|cell.cell_id).collect::<Vec<_>>());
+            let error=refused.to_string();
+            execution.finish();manager.lock().expect("cell manager lock").fail_with_code(&cell,&error,Some(refused.code));
             emit_early_failure(&options,&invocation,started_at,&error);return Err(error);
         }
         if let Err(error)=execution.wait(kernel.reset()).await {execution.finish();manager.lock().expect("cell manager lock").fail(&cell,&error);emit_early_failure(&options,&invocation,started_at,&error);return Err(error);}
@@ -239,7 +264,13 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                 cell.source.interrupt_note=note;
             }
         }
-        let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
+        let settles_as_result=capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst)||session_disposed.load(std::sync::atomic::Ordering::SeqCst);
+        let final_result=match result {
+            Ok(result)=>handler.builder.finalize(&result).await,
+            Err(error) if settles_as_result=>handler.builder.finalize_cancellation(&error).await,
+            Err(error)=>Err(error),
+        };
+        let final_result=if capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst) {final_result.map(|result|capacity_result(&result,handler.builder.state.duration_ms))} else {final_result};
         handler.builder.state.active=false;
         active.store(false,std::sync::atomic::Ordering::SeqCst);
         work_execution.finish();
@@ -274,6 +305,15 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
             if !invocation.signal.aborted() && steering_active.load(std::sync::atomic::Ordering::SeqCst) && manager.lock().expect("cell manager lock").detach(&cell) {execution.detach();}
         }
     }}
+}
+
+/// senpi's `EvalBackgroundCapacityError` catch: the refused cell settles `cancelled` with the
+/// machine-readable capacity code on an error result.
+fn capacity_result(result:&AgentToolResult,duration_ms:f64) -> AgentToolResult {
+    let mut result=result_for_detached_state(result,EvalDetachedCellState::Cancelled,duration_ms,None);
+    result.details["isError"]=serde_json::json!(true);
+    result.details["code"]=serde_json::json!(EvalBackgroundCapacityError::CODE);
+    result
 }
 
 fn emit_early_failure(options:&CreateEvalToolOptions,invocation:&EvalCellInvocation,started_at:f64,error:&str) {

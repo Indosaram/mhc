@@ -20,6 +20,10 @@ use crate::image_stub::{
     is_image_line,
 };
 use crate::terminal::Terminal;
+use crate::terminal_colors::{
+    is_osc11_background_color_response, parse_osc11_background_color,
+    parse_terminal_color_scheme_report, RgbColor, TerminalColorScheme,
+};
 use crate::utils::{
     extract_segments, normalize_terminal_output, slice_by_column, slice_with_width, visible_width,
 };
@@ -35,6 +39,64 @@ pub const CURSOR_MARKER: &str = "\x1b_pi:c\x07";
 const FAKE_CURSOR_START: &str = "\x1b[7m";
 const FAKE_CURSOR_END: &str = "\x1b[27m";
 const FAKE_CURSOR_RESET: &str = "\x1b[0m";
+const ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031h";
+const DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS: &str = "\x1b[?2031l";
+const QUERY_CELL_SIZE: &str = "\x1b[16t";
+const QUERY_OSC11_BACKGROUND_COLOR: &str = "\x1b]11;?\x07";
+const QUERY_TERMINAL_COLOR_SCHEME: &str = "\x1b[?996n";
+
+/// senpi checks `process.env.TMUX` (any non-empty value) before toggling tmux focus reporting.
+fn in_tmux() -> bool {
+    crate::process_env::var("TMUX").is_some_and(|value| !value.is_empty())
+}
+
+/// senpi's `isTermuxSession`: `Boolean(process.env.TERMUX_VERSION)`.
+fn is_termux_session() -> bool {
+    crate::process_env::var("TERMUX_VERSION").is_some_and(|value| !value.is_empty())
+}
+
+/// senpi's `CSI 6 ; height ; width t` cell-size reply (`/^\x1b\[6;(\d+);(\d+)t$/`), as
+/// `(height_px, width_px)`.
+fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
+    let body = data.strip_prefix("\x1b[6;")?.strip_suffix('t')?;
+    let (height, width) = body.split_once(';')?;
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    if !digits(height) || !digits(width) {
+        return None;
+    }
+    Some((height.parse().unwrap_or(u32::MAX), width.parse().unwrap_or(u32::MAX)))
+}
+
+/// Resolution of a terminal protocol query (senpi's `queryTerminalBackgroundColor` /
+/// `queryTerminalColorScheme` promises). `result()` is `None` while pending and `Some(value)`
+/// once the reply arrives or the query times out (then `value` is `None`); the driver loop
+/// advances timeouts through [`TuiBase::poll_terminal_queries`].
+#[derive(Clone)]
+pub struct TerminalQueryTicket<T>(Rc<RefCell<Option<T>>>);
+
+impl<T: Copy> TerminalQueryTicket<T> {
+    fn pending() -> Self {
+        Self(Rc::new(RefCell::new(None)))
+    }
+
+    pub fn result(&self) -> Option<T> {
+        *self.0.borrow()
+    }
+
+    fn settle(&self, value: T) {
+        let mut slot = self.0.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(value);
+        }
+    }
+}
+
+struct PendingTerminalQuery<T> {
+    ticket: TerminalQueryTicket<T>,
+    deadline_ms: u64,
+}
+
+pub type TerminalColorSchemeListener = Box<dyn FnMut(TerminalColorScheme)>;
 
 fn write_bounded(terminal: &mut dyn Terminal, data: &str) {
     let bytes = data.as_bytes();
@@ -233,6 +295,159 @@ pub trait Component {
     fn render_virtual_row(&mut self, _width: usize, _index: usize) -> String {
         String::new()
     }
+
+    /// senpi `component.constructor.name`: the implementing type's name, used by render
+    /// containment to label a component whose render panicked.
+    fn component_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+}
+
+/// senpi `DIAGNOSTIC_LOG_MODE`: diagnostic logs hold rendered conversation text, so they are
+/// private to the owner.
+#[cfg(unix)]
+const DIAGNOSTIC_LOG_MODE: u32 = 0o600;
+
+/// senpi `renderErrorLoggedClasses`: component names whose render error was already logged.
+static RENDER_ERROR_LOGGED_CLASSES: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
+/// senpi `renderErrorLogDirectory`: render containment logs from module scope because
+/// `Container` has no TUI instance, so the host-resolved log directory is published here.
+static RENDER_ERROR_LOG_DIRECTORY: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`.
+fn default_diagnostic_log_directory() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".senpi").join("agent"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"))
+}
+
+/// senpi `new Date().toISOString()`.
+fn diagnostic_timestamp() -> String {
+    format!("{:.3}", jiff::Timestamp::now())
+}
+
+/// senpi `componentRenderErrorName`: the type name without its module path or generics.
+fn component_render_error_name(component: &Rc<RefCell<dyn Component>>) -> String {
+    let Ok(component) = component.try_borrow() else {
+        return "AnonymousComponent".to_owned();
+    };
+    let full = component.component_name();
+    let base = full.split('<').next().unwrap_or(full);
+    match base.rsplit("::").next() {
+        Some(name) if !name.is_empty() => name.to_owned(),
+        _ => "AnonymousComponent".to_owned(),
+    }
+}
+
+/// senpi `logRenderErrorOnce`: append one `render error` line per component name to
+/// `<logDir>/senpi-debug.log`.
+fn log_render_error_once(component: &Rc<RefCell<dyn Component>>, error: &(dyn std::any::Any + Send)) {
+    let component_name = component_render_error_name(component);
+    {
+        let mut logged = RENDER_ERROR_LOGGED_CLASSES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !logged.get_or_insert_with(HashSet::new).insert(component_name.clone()) {
+            return;
+        }
+    }
+    let error_text = error
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| error.downcast_ref::<String>().cloned())
+        .map_or_else(|| "panic".to_owned(), |message| format!("panic: {message}"));
+    let log_directory = RENDER_ERROR_LOG_DIRECTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(default_diagnostic_log_directory);
+    let log_path = log_directory.join("senpi-debug.log");
+    let msg = format!("[{}] render error: {component_name}: {error_text}\n", diagnostic_timestamp());
+    append_render_error_log_best_effort(&log_path, &msg);
+}
+
+/// `fs.appendFileSync`/`fs.writeFileSync` with `{ mode: DIAGNOSTIC_LOG_MODE }`.
+fn open_diagnostic_log(log_path: &std::path::Path, append: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(DIAGNOSTIC_LOG_MODE);
+    }
+    options.open(log_path)
+}
+
+/// senpi `appendRenderErrorLogBestEffort`.
+fn append_render_error_log_best_effort(log_path: &std::path::Path, msg: &str) {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    if let Ok(mut file) = open_diagnostic_log(log_path, true)
+        && file.write_all(msg.as_bytes()).is_ok()
+    {
+        chmod_diagnostic_log_best_effort(log_path);
+    }
+}
+
+/// senpi `writeRenderDiagnosticBestEffort`.
+fn write_render_diagnostic_best_effort(log_path: &std::path::Path, data: &str) -> bool {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let written = open_diagnostic_log(log_path, false).and_then(|mut file| file.write_all(data.as_bytes()));
+    if written.is_err() {
+        return false;
+    }
+    chmod_diagnostic_log_best_effort(log_path);
+    true
+}
+
+/// senpi `formatOverWideRenderDiagnostic`.
+fn format_over_wide_render_diagnostic(lines: &[String], terminal_width: usize, line_index: usize, line_width: usize) -> String {
+    let mut parts = vec![
+        format!("Crash at {}", diagnostic_timestamp()),
+        format!("Terminal width: {terminal_width}"),
+        format!("Line {line_index} visible width: {line_width}"),
+        String::new(),
+        "=== All rendered lines ===".to_owned(),
+    ];
+    parts.extend(lines.iter().enumerate().map(|(index, line)| format!("[{index}] (w={}) {line}", visible_width(line))));
+    parts.push(String::new());
+    parts.join("\n")
+}
+
+/// senpi `chmodDiagnosticLogBestEffort`: tighten a pre-existing file the open mode did not touch.
+fn chmod_diagnostic_log_best_effort(log_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(log_path, std::fs::Permissions::from_mode(DIAGNOSTIC_LOG_MODE));
+    }
+    #[cfg(not(unix))]
+    let _ = log_path;
+}
+
+/// The renderer locals senpi's `PI_TUI_DEBUG` dump reports for one differential frame.
+struct TuiDebugFrame {
+    first_changed: usize,
+    viewport_top: usize,
+    height: usize,
+    line_diff: i64,
+    hardware_cursor_row: usize,
+    render_end: usize,
+    final_cursor_row: usize,
+    cursor_pos: Option<(usize, usize)>,
 }
 
 /// Interface for components that can receive focus and display a hardware cursor.
@@ -352,7 +567,16 @@ impl Component for Container {
         let mut lines = Vec::new();
         let mut mouse_children = Vec::with_capacity(self.children.len());
         for child in &self.children {
-            let child_lines = child.borrow_mut().render(width);
+            let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| child.borrow_mut().render(width)));
+            let child_lines = match rendered {
+                Ok(child_lines) => child_lines,
+                Err(error) => {
+                    log_render_error_once(child, error.as_ref());
+                    let component_name = component_render_error_name(child);
+                    // Focus ownership stays unchanged; render containment must not steal or clear focus implicitly.
+                    vec![format!("[render error: {component_name}]")]
+                }
+            };
             mouse_children.push((Rc::clone(child), child_lines.len()));
             lines.extend(child_lines);
         }
@@ -669,6 +893,7 @@ pub struct TuiBaseState {
     pub previous_viewport_top: usize,
     full_redraw_count: u64,
     mux_viewport_repaint_count: u64,
+    reset_render_state_pending: bool,
     over_wide_crash_dump_written: bool,
     pub stopped: bool,
     last_cursor_visibility: Option<bool>,
@@ -782,6 +1007,7 @@ impl Default for TuiBaseState {
             previous_viewport_top: 0,
             full_redraw_count: 0,
             mux_viewport_repaint_count: 0,
+            reset_render_state_pending: false,
             over_wide_crash_dump_written: false,
             stopped: false,
             last_cursor_visibility: None,
@@ -1058,6 +1284,21 @@ pub struct TuiBase {
     /// sets this to its single layout root once one is assigned - there is no virtual dispatch
     /// from `TuiBase` back onto a subclass override in this port.
     mounted_roots_override: Option<Vec<Rc<RefCell<dyn Component>>>>,
+    /// senpi's `mode !== "fullscreen"` guard: main-screen renderers consume tmux focus events to
+    /// refresh capabilities; the alt screen owns focus reports itself and clears this.
+    pub(crate) consume_tmux_focus_events: bool,
+    terminal_color_scheme_notifications_enabled: bool,
+    terminal_color_scheme_listeners: Vec<(u64, TerminalColorSchemeListener)>,
+    next_terminal_color_scheme_listener_id: u64,
+    pending_osc11_background_replies: usize,
+    pending_osc11_background_queries: std::collections::VecDeque<PendingTerminalQuery<Option<RgbColor>>>,
+    pending_terminal_color_scheme_queries: Vec<PendingTerminalQuery<Option<TerminalColorScheme>>>,
+    /// senpi's `#muxDetector` (`TuiConstructorOptions.muxDetector`, default
+    /// [`crate::mux::is_multiplexer_session`]).
+    mux_detector: Box<dyn Fn() -> bool>,
+    /// senpi `logDirectory`: directory for debug/crash logs (`PI_DEBUG_REDRAW`, render errors),
+    /// defaulting to `~/.senpi/agent`.
+    log_directory: std::path::PathBuf,
 }
 
 impl TuiBase {
@@ -1069,7 +1310,247 @@ impl TuiBase {
             input_listeners: Vec::new(),
             next_input_listener_id: 0,
             mounted_roots_override: None,
+            consume_tmux_focus_events: true,
+            terminal_color_scheme_notifications_enabled: false,
+            terminal_color_scheme_listeners: Vec::new(),
+            next_terminal_color_scheme_listener_id: 0,
+            pending_osc11_background_replies: 0,
+            pending_osc11_background_queries: std::collections::VecDeque::new(),
+            pending_terminal_color_scheme_queries: Vec::new(),
+            mux_detector: Box::new(crate::mux::is_multiplexer_session),
+            log_directory: default_diagnostic_log_directory(),
         }
+    }
+
+    /// senpi's `logDirectory` constructor argument: the host-resolved log directory, also
+    /// published for module-scope render containment (`renderErrorLogDirectory`).
+    pub fn set_log_directory(&mut self, log_directory: std::path::PathBuf) {
+        *RENDER_ERROR_LOG_DIRECTORY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(log_directory.clone());
+        self.log_directory = log_directory;
+    }
+
+    /// senpi `doRender`'s `logRedraw` (`PI_DEBUG_REDRAW=1`): append each full-render reason to
+    /// `<logDirectory>/pi-debug.log`.
+    fn log_redraw(&self, reason: &str, new_lines_len: usize, height: usize) {
+        if crate::process_env::var("PI_DEBUG_REDRAW").as_deref() != Some("1") {
+            return;
+        }
+        let previous_lines_len = self.state.borrow().previous_lines.len();
+        let log_path = self.log_directory.join("pi-debug.log");
+        let msg = format!(
+            "[{}] fullRender: {reason} (prev={previous_lines_len}, new={new_lines_len}, height={height})\n",
+            diagnostic_timestamp(),
+        );
+        append_render_error_log_best_effort(&log_path, &msg);
+    }
+
+    /// senpi's `muxDetector` constructor option: overrides multiplexer detection for the
+    /// scrollback-preserving render policy.
+    pub fn set_mux_detector(&mut self, detector: Box<dyn Fn() -> bool>) {
+        self.mux_detector = detector;
+    }
+
+    /// The renderer-state half of senpi's `start()` that precedes `beforeTerminalStart`.
+    pub fn prepare_start(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.stopped = false;
+        state.render_requested = false;
+        state.input_render_pending = false;
+        state.last_cursor_visibility = None;
+    }
+
+    /// The output half of senpi's `start()` that follows `terminal.start(...)`: tmux focus
+    /// reporting, hidden cursor, color-scheme notifications, the cell-size query, and a render.
+    pub fn after_terminal_start(&mut self, terminal: &mut dyn Terminal) {
+        if in_tmux() {
+            terminal.write(crate::tmux_focus::ENABLE_FOCUS_REPORTING);
+        }
+        self.set_cursor_visibility(false, terminal);
+        if self.terminal_color_scheme_notifications_enabled {
+            terminal.write(ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
+        }
+        self.query_cell_size(terminal);
+        self.request_render(false, 0);
+    }
+
+    /// senpi's `#setCursorVisibility`.
+    fn set_cursor_visibility(&mut self, visible: bool, terminal: &mut dyn Terminal) {
+        {
+            let mut state = self.state.borrow_mut();
+            if state.last_cursor_visibility == Some(visible) {
+                return;
+            }
+            state.last_cursor_visibility = Some(visible);
+        }
+        if visible {
+            terminal.show_cursor();
+        } else {
+            terminal.hide_cursor();
+        }
+    }
+
+    /// senpi's `queryCellSize`: only terminals with an image protocol need the pixel cell size.
+    fn query_cell_size(&mut self, terminal: &mut dyn Terminal) {
+        if crate::terminal_image::get_capabilities().images.is_none() {
+            return;
+        }
+        terminal.write(QUERY_CELL_SIZE);
+    }
+
+    /// The part of senpi's `stop()` that precedes `beforeTerminalStop`.
+    pub fn begin_stop(&mut self, terminal: &mut dyn Terminal) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.stopped = true;
+            state.render_requested = false;
+            state.input_render_pending = false;
+            state.render_due_at_ms = None;
+        }
+        if self.terminal_color_scheme_notifications_enabled {
+            terminal.write(DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS);
+        }
+    }
+
+    /// The part of senpi's `stop()` between `beforeTerminalStop` and `terminal.stop()`: drop
+    /// mouse leases, move the cursor below the last frame (unless another renderer keeps the
+    /// screen), show the cursor, and disable tmux focus reporting.
+    pub fn finish_stop_output(&mut self, terminal: &mut dyn Terminal, preserve_screen: bool) {
+        self.reset_mouse_capture_state();
+        let (line_count, hardware_cursor_row, cursor_hidden) = {
+            let state = self.state.borrow();
+            (state.previous_lines.len(), state.hardware_cursor_row, state.last_cursor_visibility == Some(false))
+        };
+        if !preserve_screen && line_count > 0 {
+            if cursor_hidden {
+                terminal.write(" ");
+            }
+            let line_diff = line_count as i64 - hardware_cursor_row as i64;
+            if line_diff > 0 {
+                terminal.write(&format!("\x1b[{line_diff}B"));
+            } else if line_diff < 0 {
+                terminal.write(&format!("\x1b[{}A", -line_diff));
+            }
+            terminal.write("\r\n");
+        }
+        self.state.borrow_mut().last_cursor_visibility = None;
+        self.set_cursor_visibility(true, terminal);
+        if in_tmux() {
+            terminal.write(crate::tmux_focus::DISABLE_FOCUS_REPORTING);
+        }
+    }
+
+    /// senpi's `resetMouseCaptureState`.
+    fn reset_mouse_capture_state(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.mouse_leases.clear();
+        state.mouse_blockers.clear();
+        state.placement_epoch += 1;
+    }
+
+    /// senpi's `onTerminalColorSchemeChange`; returns the id for
+    /// [`TuiBase::remove_terminal_color_scheme_listener`].
+    pub fn on_terminal_color_scheme_change(&mut self, listener: TerminalColorSchemeListener) -> u64 {
+        let id = self.next_terminal_color_scheme_listener_id;
+        self.next_terminal_color_scheme_listener_id += 1;
+        self.terminal_color_scheme_listeners.push((id, listener));
+        id
+    }
+
+    pub fn remove_terminal_color_scheme_listener(&mut self, id: u64) {
+        self.terminal_color_scheme_listeners.retain(|(listener_id, _)| *listener_id != id);
+    }
+
+    /// senpi's `setTerminalColorSchemeNotifications` (`CSI ? 2031 h/l`).
+    pub fn set_terminal_color_scheme_notifications(&mut self, enabled: bool, terminal: &mut dyn Terminal) {
+        if self.terminal_color_scheme_notifications_enabled == enabled {
+            return;
+        }
+        self.terminal_color_scheme_notifications_enabled = enabled;
+        if !self.state.borrow().stopped {
+            terminal.write(if enabled {
+                ENABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS
+            } else {
+                DISABLE_TERMINAL_COLOR_SCHEME_NOTIFICATIONS
+            });
+        }
+    }
+
+    /// senpi's `queryTerminalBackgroundColor` (OSC 11). The ticket settles with the parsed color,
+    /// or `None` once `now_ms + timeout_ms` passes in [`TuiBase::poll_terminal_queries`].
+    pub fn query_terminal_background_color(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<RgbColor>> {
+        let ticket = TerminalQueryTicket::pending();
+        self.pending_osc11_background_queries.push_back(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
+        self.pending_osc11_background_replies += 1;
+        terminal.write(QUERY_OSC11_BACKGROUND_COLOR);
+        ticket
+    }
+
+    /// senpi's `queryTerminalColorScheme` (DSR 996): settles with the next color-scheme report,
+    /// or `None` on timeout.
+    pub fn query_terminal_color_scheme(&mut self, terminal: &mut dyn Terminal, timeout_ms: u64, now_ms: u64) -> TerminalQueryTicket<Option<TerminalColorScheme>> {
+        let ticket = TerminalQueryTicket::pending();
+        self.pending_terminal_color_scheme_queries.push(PendingTerminalQuery { ticket: ticket.clone(), deadline_ms: now_ms.saturating_add(timeout_ms) });
+        terminal.write(QUERY_TERMINAL_COLOR_SCHEME);
+        ticket
+    }
+
+    /// Settles every terminal query whose timeout has passed (senpi's per-query `setTimeout`);
+    /// call once per driver loop iteration.
+    pub fn poll_terminal_queries(&mut self, now_ms: u64) {
+        for query in &self.pending_osc11_background_queries {
+            if query.deadline_ms <= now_ms {
+                query.ticket.settle(None);
+            }
+        }
+        self.pending_terminal_color_scheme_queries.retain(|query| {
+            if query.deadline_ms <= now_ms {
+                query.ticket.settle(None);
+                return false;
+            }
+            true
+        });
+    }
+
+    /// senpi's `consumeOsc11BackgroundResponse`: a reply is consumed while any OSC 11 query is
+    /// outstanding, even after that query timed out.
+    fn consume_osc11_background_response(&mut self, data: &str) -> bool {
+        if self.pending_osc11_background_replies == 0 || !is_osc11_background_color_response(data) {
+            return false;
+        }
+        let rgb = parse_osc11_background_color(data);
+        self.pending_osc11_background_replies -= 1;
+        if let Some(query) = self.pending_osc11_background_queries.pop_front() {
+            query.ticket.settle(rgb);
+        }
+        true
+    }
+
+    /// senpi's `consumeTerminalColorSchemeReport`.
+    fn consume_terminal_color_scheme_report(&mut self, data: &str) -> bool {
+        let Some(scheme) = parse_terminal_color_scheme_report(data) else {
+            return false;
+        };
+        for query in self.pending_terminal_color_scheme_queries.drain(..) {
+            query.ticket.settle(Some(scheme));
+        }
+        for (_, listener) in &mut self.terminal_color_scheme_listeners {
+            listener(scheme);
+        }
+        true
+    }
+
+    /// senpi's `consumeCellSizeResponse`.
+    fn consume_cell_size_response(&mut self, data: &str) -> bool {
+        let Some((height_px, width_px)) = parse_cell_size_response(data) else {
+            return false;
+        };
+        if height_px == 0 || width_px == 0 {
+            return true;
+        }
+        crate::terminal_image::set_cell_dimensions(crate::terminal_capabilities::CellDimensions { width_px, height_px });
+        self.invalidate();
+        self.request_render(false, 0);
+        true
     }
 
     /// Renders the mounted roots (senpi's `TuiBase.render`); the alt screen needs it for its
@@ -1618,6 +2099,17 @@ impl TuiBase {
             .any(|entry| TuiBaseState::is_overlay_visible(entry, 0, 0))
     }
 
+    /// `true` when keyboard focus sits on a visible overlay (senpi's protected `isOverlayFocused`).
+    pub fn is_overlay_focused(&self) -> bool {
+        let state = self.state.borrow();
+        state.focused_component.as_ref().is_some_and(|focused| {
+            state
+                .overlay_stack
+                .iter()
+                .any(|entry| Rc::ptr_eq(&entry.component, focused) && TuiBaseState::is_overlay_visible(entry, 0, 0))
+        })
+    }
+
     pub fn invalidate(&mut self) {
         for root in self.mounted_roots() {
             root.borrow_mut().invalidate();
@@ -1632,11 +2124,29 @@ impl TuiBase {
     /// (immediate, next poll tick); otherwise the request is throttled to
     /// `min_render_interval_ms` after the last render, mirroring the 16ms `setTimeout` cap.
     pub fn request_render(&mut self, force: bool, now_ms: u64) {
+        self.request_render_from(force, "unknown", now_ms);
+    }
+
+    /// senpi's `requestRender(force, source)`. An `"input"`/`"editor.input"` source is
+    /// expedited: the frame is due immediately instead of after the throttle interval, so
+    /// keystrokes echo without waiting for the next throttled frame.
+    pub fn request_render_from(&mut self, force: bool, source: &str, now_ms: u64) {
+        if force {
+            self.reset_forced_render_state();
+        }
         let mut state = self.state.borrow_mut();
         if force {
             state.input_render_pending = false;
             state.render_requested = true;
             state.render_due_at_ms = Some(now_ms);
+            return;
+        }
+        if source == "input" || source == "editor.input" {
+            if !state.input_render_pending {
+                state.input_render_pending = true;
+                state.render_requested = true;
+                state.render_due_at_ms = Some(now_ms);
+            }
             return;
         }
         if state.render_requested {
@@ -1648,11 +2158,40 @@ impl TuiBase {
         state.render_due_at_ms = Some(now_ms + delay);
     }
 
+    /// senpi's `setMaxRenderFps`: cap the render scheduler at `fps` frames per second, clamped
+    /// to 30-120fps (120fps yields an 8ms minimum interval). Never calling this keeps the
+    /// historic 16ms (~60fps) throttle.
+    pub fn set_max_render_fps(&mut self, fps: f64) {
+        let clamped = fps.round().clamp(30.0, 120.0);
+        self.state.borrow_mut().min_render_interval_ms = (1000.0 / clamped).floor() as u64;
+    }
+
     /// `true` once [`TuiBase::request_render`] has a due frame at or before `now_ms`; the
     /// caller's poll loop then calls [`TuiBase::render_now`].
     pub fn render_due(&self, now_ms: u64) -> bool {
         let state = self.state.borrow();
         state.render_requested && state.render_due_at_ms.is_some_and(|due| due <= now_ms)
+    }
+
+    /// senpi's `scheduleRender`/`commitExpeditedRender` timer callback: when a frame is due at
+    /// `now_ms`, clear the request and record `now_ms` as the last render so the next
+    /// non-input request is throttled to `min_render_interval_ms`. Returns whether the caller
+    /// should render now.
+    pub fn take_due_render(&mut self, now_ms: u64) -> bool {
+        if !self.render_due(now_ms) {
+            return false;
+        }
+        let mut state = self.state.borrow_mut();
+        state.render_requested = false;
+        state.input_render_pending = false;
+        state.render_due_at_ms = None;
+        state.last_render_at_ms = now_ms;
+        true
+    }
+
+    /// The current throttle interval (16ms unless [`TuiBase::set_max_render_fps`] changed it).
+    pub fn min_render_interval_ms(&self) -> u64 {
+        self.state.borrow().min_render_interval_ms
     }
 
     pub fn get_show_hardware_cursor(&self) -> bool {
@@ -1690,6 +2229,12 @@ impl TuiBase {
         self.state.borrow().mux_viewport_repaint_count
     }
 
+    /// Takes the pending renderer `resetRenderState()` request left by
+    /// [`TuiBase::reset_forced_render_state`].
+    pub fn take_reset_render_state_pending(&mut self) -> bool {
+        std::mem::take(&mut self.state.borrow_mut().reset_render_state_pending)
+    }
+
     /// Reset renderer-side state for the next `start()`; mirrors senpi's `stop()` clearing the
     /// diff cache so a stopped-then-restarted (or handed-off) renderer starts clean.
     pub fn reset_for_stop(&mut self) {
@@ -1709,8 +2254,12 @@ impl TuiBase {
     }
 
     /// Force the next render to repaint from a clean slate (senpi's `resetForcedRenderState`).
+    /// senpi's first step, the renderer's `resetRenderState()` override, is deferred through
+    /// `reset_render_state_pending`: there is no virtual dispatch from `TuiBase` back onto
+    /// [`crate::tui_alt_screen::TuiAltScreen`], which consumes the flag before its next frame.
     pub fn reset_forced_render_state(&mut self) {
         let mut state = self.state.borrow_mut();
+        state.reset_render_state_pending = true;
         state.previous_lines.clear();
         state.previous_raw_lines.clear();
         state.previous_width = -1;
@@ -1721,19 +2270,38 @@ impl TuiBase {
         state.previous_viewport_top = 0;
     }
 
-    /// Route input to the focused component, applying the same global handling order as
-    /// senpi's `handleTerminalInput` (debug key, overlay-visibility redirect, focus-restore,
-    /// then the focused component). Terminal-protocol response consumption (tmux focus, OSC 11,
-    /// color-scheme reports, cell-size replies) is the caller's responsibility before this is
-    /// reached, matching `terminal.rs`'s poll-driven protocol handling from todo 6.
-    pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
-        if crate::keys::matches_key(data, "shift+ctrl+d")
-            && let Some(on_debug) = &mut self.on_debug
-        {
-            on_debug();
-            return;
+    /// The terminal-protocol head of senpi's `handleTerminalInput`: tmux focus events (main
+    /// screen only) refresh capabilities and repaint, and OSC 11 background replies,
+    /// color-scheme reports and cell-size replies are consumed. Returns the input left for the
+    /// renderer and focused component, or `None` when the chunk was fully consumed.
+    pub fn consume_terminal_protocol_input(&mut self, data: &str) -> Option<String> {
+        let mut data = data.to_string();
+        if self.consume_tmux_focus_events {
+            let focus = crate::tmux_focus::consume_tmux_focus_event(&data);
+            if focus.event.is_some() {
+                crate::terminal_image::reset_capabilities_cache();
+                self.invalidate();
+                self.request_render(true, 0);
+                if focus.data.is_empty() {
+                    return None;
+                }
+                data = focus.data;
+            }
         }
+        if self.consume_osc11_background_response(&data)
+            || self.consume_terminal_color_scheme_report(&data)
+            || self.consume_cell_size_response(&data)
+        {
+            return None;
+        }
+        Some(data)
+    }
 
+    /// The focus half of senpi's `handleTerminalInput` that runs before input is delivered:
+    /// redirect focus away from a hidden overlay, and restore focus to an eligible overlay.
+    /// Hosts that deliver input to their own root (instead of through
+    /// [`TuiBase::handle_terminal_input`]) call this first, then check the focused component.
+    pub fn apply_input_focus_rules(&mut self) {
         {
             let state = self.state.borrow_mut();
             let focused_overlay_visible = state
@@ -1817,6 +2385,24 @@ impl TuiBase {
                 }
             }
         }
+    }
+
+    /// Route input to the focused component, applying the same global handling order as
+    /// senpi's `handleTerminalInput` (terminal-protocol replies, debug key, overlay-visibility
+    /// redirect, focus-restore, then the focused component).
+    pub fn handle_terminal_input(&mut self, data: &str, is_key_release: bool) {
+        let Some(data) = self.consume_terminal_protocol_input(data) else {
+            return;
+        };
+        let data = data.as_str();
+        if crate::keys::matches_key(data, "shift+ctrl+d")
+            && let Some(on_debug) = &mut self.on_debug
+        {
+            on_debug();
+            return;
+        }
+
+        self.apply_input_focus_rules();
 
         let mut owned_data = data.to_string();
         if !self.input_listeners.is_empty() {
@@ -1847,7 +2433,7 @@ impl TuiBase {
                 return;
             }
             focused.borrow_mut().handle_input(data);
-            self.request_render(false, 0);
+            self.request_render_from(false, "input", 0);
         }
     }
 
@@ -2225,14 +2811,13 @@ impl TuiBase {
         let width = terminal.columns() as usize;
         let height = terminal.rows() as usize;
 
-        let (previous_width, previous_height, previous_viewport_top, previous_height_i, mux_preserve) = {
+        let (previous_width, previous_height, previous_viewport_top, previous_height_i) = {
             let state = self.state.borrow();
             (
                 state.previous_width,
                 state.previous_height,
                 state.previous_viewport_top,
                 state.previous_height,
-                false,
             )
         };
         let width_changed = previous_width != 0 && previous_width != width as i64;
@@ -2261,7 +2846,7 @@ impl TuiBase {
         let cursor_pos = self.extract_cursor_position(&mut new_lines, height);
         let raw_lines = new_lines.clone();
 
-        let preserve_mux_scrollback = mux_preserve;
+        let preserve_mux_scrollback = self.should_preserve_mux_scrollback();
         let normalized = {
             let mut state = self.state.borrow_mut();
             Self::apply_viewport_line_resets(
@@ -2278,17 +2863,29 @@ impl TuiBase {
 
         // First render: emit everything without clearing.
         if previous_lines_len == 0 && !width_changed && !height_changed {
+            self.log_redraw("first render", new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, false, false);
             return;
         }
 
         if width_changed {
+            self.log_redraw(&format!("terminal width changed ({previous_width} -> {width})"), new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
 
-        if height_changed {
-            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, true);
+        // Height changes normally need a full re-render to keep the visible viewport aligned,
+        // but Termux changes height when the software keyboard shows or hides; there a full
+        // redraw would replay the entire history on every toggle, so fall through to the diff.
+        if height_changed && !is_termux_session() {
+            self.log_redraw(&format!("terminal height changed ({previous_height} -> {height})"), new_lines.len(), height);
+            if preserve_mux_scrollback {
+                if !self.render_mux_viewport_repaint(terminal, &new_lines, &raw_lines, cursor_pos, width, height, None) {
+                    self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                }
+            } else {
+                self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, true);
+            }
             return;
         }
 
@@ -2299,6 +2896,8 @@ impl TuiBase {
                 && state.overlay_stack.is_empty()
         };
         if clear_on_shrink_needed {
+            let max_lines_rendered = self.state.borrow().max_lines_rendered;
+            self.log_redraw(&format!("clearOnShrink (maxLinesRendered={max_lines_rendered})"), new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
@@ -2423,10 +3022,19 @@ impl TuiBase {
 
             let Some(first_visible_changed) = first_visible_changed else {
                 if line_count_delta != 0 {
-                    self.render_scrollback_replay(
-                        terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
-                        hardware_cursor_row,
-                    );
+                    if preserve_mux_scrollback {
+                        // Above-viewport scrollback may stay stale in mux panes; only the visible viewport is repainted.
+                        if !self.render_mux_viewport_repaint(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        ) {
+                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                        }
+                    } else {
+                        self.render_scrollback_replay(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            hardware_cursor_row,
+                        );
+                    }
                     return;
                 }
                 let mut state = self.state.borrow_mut();
@@ -2442,10 +3050,18 @@ impl TuiBase {
 
             if viewport_top != prev_viewport_top {
                 if line_count_delta != 0 {
-                    self.render_scrollback_replay(
-                        terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
-                        hardware_cursor_row,
-                    );
+                    if preserve_mux_scrollback {
+                        if !self.render_mux_viewport_repaint(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, Some(viewport_top),
+                        ) {
+                            self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
+                        }
+                    } else {
+                        self.render_scrollback_replay(
+                            terminal, &new_lines, &raw_lines, cursor_pos, width, height, prev_viewport_top,
+                            hardware_cursor_row,
+                        );
+                    }
                     return;
                 }
                 self.render_viewport_shift(
@@ -2513,6 +3129,11 @@ impl TuiBase {
         (0..height)
             .map(|row| lines.get(viewport_top + row).cloned().unwrap_or_default())
             .collect()
+    }
+
+    /// senpi's `shouldPreserveMuxScrollback`.
+    fn should_preserve_mux_scrollback(&self) -> bool {
+        (self.mux_detector)() && !crate::mux::use_legacy_mux_render()
     }
 
     fn create_viewport_insert_scroll_plan(
@@ -2638,7 +3259,9 @@ impl TuiBase {
         let mut buffer = FRAME_BEGIN.to_string();
         let previous_kitty_ids = self.state.borrow().previous_kitty_image_ids.clone();
         buffer += &Self::delete_kitty_images(previous_kitty_ids);
-        buffer += "\x1b[3J";
+        if !self.should_preserve_mux_scrollback() {
+            buffer += "\x1b[3J";
+        }
 
         let current_screen_row = hardware_cursor_row
             .saturating_sub(prev_viewport_top)
@@ -2669,6 +3292,67 @@ impl TuiBase {
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.placement_epoch += 1;
+    }
+
+    /// senpi's `renderMuxViewportRepaint`: repaint only the visible rows (no `2J`/`3J`) so a
+    /// multiplexer pane keeps its scrollback. `viewport_top` defaults to the bottom of
+    /// `new_lines`. Returns `false` without writing when a visible row is an image line.
+    #[allow(clippy::too_many_arguments)]
+    fn render_mux_viewport_repaint(
+        &mut self,
+        terminal: &mut dyn Terminal,
+        new_lines: &[String],
+        raw_lines: &[String],
+        cursor_pos: Option<(usize, usize)>,
+        width: usize,
+        height: usize,
+        viewport_top: Option<usize>,
+    ) -> bool {
+        let viewport_top = viewport_top.unwrap_or_else(|| new_lines.len().saturating_sub(height));
+        let (previous_viewport_top, hardware_cursor_row) = {
+            let state = self.state.borrow();
+            let previous_visible = Self::get_viewport_rows(&state.previous_lines, state.previous_viewport_top, height);
+            let next_visible = Self::get_viewport_rows(new_lines, viewport_top, height);
+            if previous_visible.iter().any(|line| is_image_line(line))
+                || next_visible.iter().any(|line| is_image_line(line))
+            {
+                return false;
+            }
+            (state.previous_viewport_top, state.hardware_cursor_row)
+        };
+
+        let mut buffer = FRAME_BEGIN.to_string();
+        let current_screen_row = hardware_cursor_row
+            .saturating_sub(previous_viewport_top)
+            .min(height.saturating_sub(1));
+        if current_screen_row > 0 {
+            buffer += &format!("\x1b[{current_screen_row}A");
+        }
+
+        for row in 0..height {
+            if row > 0 {
+                buffer += "\r\n";
+            }
+            buffer += &format!("\r\x1b[2K{SEGMENT_RESET}");
+            buffer += new_lines.get(viewport_top + row).map(String::as_str).unwrap_or("");
+        }
+
+        let final_cursor_row = viewport_top + height.saturating_sub(1);
+        buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
+        write_bounded(terminal, &buffer);
+
+        let mut state = self.state.borrow_mut();
+        state.mux_viewport_repaint_count += 1;
+        state.cursor_row = new_lines.len().saturating_sub(1);
+        state.max_lines_rendered = new_lines.len();
+        state.previous_viewport_top = viewport_top;
+        state.previous_lines = new_lines.to_vec();
+        state.previous_raw_lines = raw_lines.to_vec();
+        state.previous_kitty_image_ids = Self::collect_kitty_image_ids(new_lines);
+        state.previous_width = width as i64;
+        state.previous_height = height as i64;
+        state.placement_epoch += 1;
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2740,11 +3424,13 @@ impl TuiBase {
         if previous_lines_len > new_lines.len() {
             let target_row = new_lines.len().saturating_sub(1);
             if target_row < prev_viewport_top {
+                self.log_redraw(&format!("deleted lines moved viewport up ({target_row} < {prev_viewport_top})"), new_lines.len(), height);
                 self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
                 return;
             }
             let extra_lines = previous_lines_len - new_lines.len();
             if extra_lines > height {
+                self.log_redraw(&format!("extraLines > height ({extra_lines} > {height})"), new_lines.len(), height);
                 self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
                 return;
             }
@@ -2786,6 +3472,47 @@ impl TuiBase {
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.previous_viewport_top = prev_viewport_top;
+    }
+
+    /// The `PI_TUI_DEBUG` frame dump of senpi `doRender`.
+    fn write_tui_debug_dump(&self, frame: TuiDebugFrame, new_lines: &[String], buffer: &str) {
+        use std::hash::{BuildHasher, Hasher};
+        let debug_dir = std::path::Path::new("/tmp/tui");
+        if std::fs::create_dir_all(debug_dir).is_err() {
+            return;
+        }
+        let suffix = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let debug_path = debug_dir.join(format!("render-{}-{suffix:x}.log", jiff::Timestamp::now().as_millisecond()));
+        let state = self.state.borrow();
+        let cursor_pos = frame.cursor_pos.map_or_else(
+            || "null".to_owned(),
+            |(row, col)| serde_json::json!({ "row": row, "col": col }).to_string(),
+        );
+        let pretty = |lines: &[String]| serde_json::to_string_pretty(lines).unwrap_or_default();
+        let debug_data = [
+            format!("firstChanged: {}", frame.first_changed),
+            format!("viewportTop: {}", frame.viewport_top),
+            format!("cursorRow: {}", state.cursor_row),
+            format!("height: {}", frame.height),
+            format!("lineDiff: {}", frame.line_diff),
+            format!("hardwareCursorRow: {}", frame.hardware_cursor_row),
+            format!("renderEnd: {}", frame.render_end),
+            format!("finalCursorRow: {}", frame.final_cursor_row),
+            format!("cursorPos: {cursor_pos}"),
+            format!("newLines.length: {}", new_lines.len()),
+            format!("previousLines.length: {}", state.previous_lines.len()),
+            String::new(),
+            "=== newLines ===".to_owned(),
+            pretty(new_lines),
+            String::new(),
+            "=== previousLines ===".to_owned(),
+            pretty(&state.previous_lines),
+            String::new(),
+            "=== buffer ===".to_owned(),
+            serde_json::Value::String(buffer.to_owned()).to_string(),
+        ]
+        .join("\n");
+        write_render_diagnostic_best_effort(&debug_path, &debug_data);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2888,6 +3615,15 @@ impl TuiBase {
         }
 
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
+
+        // senpi `PI_TUI_DEBUG=1`: dump each differential frame to `/tmp/tui/render-*.log`.
+        if crate::process_env::var("PI_TUI_DEBUG").as_deref() == Some("1") {
+            self.write_tui_debug_dump(TuiDebugFrame {
+                first_changed, viewport_top: *viewport_top, height, line_diff,
+                hardware_cursor_row: *hardware_cursor_row, render_end, final_cursor_row, cursor_pos,
+            }, new_lines, &buffer);
+        }
+
         write_bounded(terminal, &buffer);
 
         let mut state = self.state.borrow_mut();
@@ -2921,7 +3657,10 @@ impl TuiBase {
             let previous_kitty_ids = self.state.borrow().previous_kitty_image_ids.clone();
             buffer += &Self::delete_kitty_images(previous_kitty_ids);
             buffer += "\x1b[2J\x1b[H";
-            if clear_scrollback {
+            if clear_scrollback
+                && !self.should_preserve_mux_scrollback()
+                && crate::native_platform::node_platform() != "win32"
+            {
                 buffer += "\x1b[3J";
             }
         } else {
@@ -3039,19 +3778,9 @@ impl TuiBase {
         if !strict && already_written {
             return;
         }
-        let mut body = format!(
-            "Terminal width: {terminal_width}\nLine {line_index} visible width: {line_width}\n\n=== All rendered lines ===\n",
-        );
-        for (index, line) in lines.iter().enumerate() {
-            body.push_str(&format!("[{index}] (w={}) {line}\n", visible_width(line)));
-        }
-        let log_dir = dirs::home_dir()
-            .map(|home| home.join(".senpi").join("agent"))
-            .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"));
-        let log_path = log_dir.join("senpi-crash.log");
-        if std::fs::create_dir_all(&log_dir).is_ok() {
-            let _ = std::fs::write(&log_path, body);
-        }
+        let body = format_over_wide_render_diagnostic(lines, terminal_width, line_index, line_width);
+        let crash_log_path = default_diagnostic_log_directory().join("senpi-crash.log");
+        write_render_diagnostic_best_effort(&crash_log_path, &body);
         self.state.borrow_mut().over_wide_crash_dump_written = true;
     }
 

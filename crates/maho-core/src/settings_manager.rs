@@ -19,6 +19,7 @@ use crate::lockfile_policy::{
 };
 use crate::nearest_parent_config::find_nearest_parent_config_dir;
 use crate::paths::{PathInputOptions, resolve_path};
+use crate::settings_overrides::without_override;
 use crate::text::strip_bom;
 
 pub const DEFAULT_STREAM_START_TIMEOUT_MS: u64 = 300_000;
@@ -71,6 +72,27 @@ pub struct SettingsSourceSubscription {
     listener: SettingsSourceListener,
 }
 impl Drop for SettingsSourceSubscription {
+    fn drop(&mut self) {
+        self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|listener| !Arc::ptr_eq(listener, &self.listener));
+    }
+}
+
+/// senpi `getProviderConcurrencyLimit` over a `providers` settings block.
+pub fn provider_concurrency_limit(providers: Option<&Value>, provider_id: &str) -> Option<i64> {
+    let providers: Option<std::collections::BTreeMap<String, Value>> = providers
+        .and_then(Value::as_object).map(|providers| providers.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    maho_ai::legacy_provider_ids::read_by_provider_id(providers.as_ref(), provider_id)
+        .and_then(|settings| settings.get("maxConcurrency")).and_then(Value::as_i64).filter(|value| *value > 0)
+}
+
+/// senpi `subscribeToProviderSettings` listener: called after every settings recomputation.
+pub type ProviderSettingsListener = Arc<dyn Fn(&SettingsManager) + Send + Sync>;
+pub struct ProviderSettingsSubscription {
+    listeners: Arc<Mutex<Vec<ProviderSettingsListener>>>,
+    listener: ProviderSettingsListener,
+}
+impl Drop for ProviderSettingsSubscription {
     fn drop(&mut self) {
         self.listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|listener| !Arc::ptr_eq(listener, &self.listener));
@@ -321,6 +343,8 @@ pub trait SettingsStorage: Send + Sync {
     fn select_source(&self, _scope: SettingsScope) -> Option<SettingsSourceSelection> {
         None
     }
+    /// Point a cwd-bound storage at another project directory; storage without a cwd ignores it.
+    fn rebind_cwd(&mut self, _cwd: &str) {}
 }
 
 pub struct FileSettingsStorage {
@@ -354,6 +378,10 @@ impl FileSettingsStorage {
 }
 
 impl SettingsStorage for FileSettingsStorage {
+    fn rebind_cwd(&mut self, cwd: &str) {
+        *self = Self::new(cwd, &self.agent_dir, &self.home_dir);
+    }
+
     fn select_source(&self, scope: SettingsScope) -> Option<SettingsSourceSelection> {
         let source = resolve_settings_source(&self.cwd, &self.agent_dir, scope, &self.home_dir);
         let path = source.as_ref().map(|source| source.path.clone()).unwrap_or_else(|| {
@@ -458,10 +486,8 @@ pub fn is_mergeable_object(value: &Value) -> bool {
 
 pub fn deep_merge_objects(base: &Settings, overrides: &Settings) -> Settings {
     let mut result = base.clone();
+    // senpi skips only `undefined`, which JSON cannot express: an explicit `null` replaces the base.
     for (key, override_value) in overrides {
-        if override_value.is_null() {
-            continue;
-        }
         let merged = match (base.get(key), override_value) {
             (Some(Value::Object(base_object)), Value::Object(override_object)) => {
                 Value::Object(deep_merge_objects(base_object, override_object))
@@ -474,10 +500,54 @@ pub fn deep_merge_objects(base: &Settings, overrides: &Settings) -> Settings {
 }
 
 /// Deep merge settings: project/overrides take precedence, nested objects merge recursively.
+/// `retry.fallbackChains` is the exception: an override's chain map replaces the base map wholesale.
 pub fn deep_merge_settings(base: &Settings, overrides: &Settings) -> Settings {
-    deep_merge_objects(base, overrides)
+    let mut result = deep_merge_objects(base, overrides);
+    if let Some(chains) = overrides.get("retry").and_then(|retry| retry.get("fallbackChains"))
+        && let Some(Value::Object(retry)) = result.get_mut("retry")
+    {
+        retry.insert("fallbackChains".to_owned(), chains.clone());
+    }
+    result
 }
 
+/// senpi `ASK_USER_DEFAULT_TIMEOUT_MINUTES` / `ASK_USER_MIN_TIMEOUT_MINUTES` / `ASK_USER_MAX_TIMEOUT_MINUTES`.
+pub const ASK_USER_DEFAULT_TIMEOUT_MINUTES: f64 = 30.0;
+pub const ASK_USER_MIN_TIMEOUT_MINUTES: f64 = 1.0;
+pub const ASK_USER_MAX_TIMEOUT_MINUTES: f64 = 120.0;
+
+fn resolve_ask_user_timeout_minutes(value: Option<&Value>) -> f64 {
+    match value.and_then(Value::as_f64).filter(|value| value.is_finite()) {
+        Some(value) => value.floor().clamp(ASK_USER_MIN_TIMEOUT_MINUTES, ASK_USER_MAX_TIMEOUT_MINUTES),
+        None => ASK_USER_DEFAULT_TIMEOUT_MINUTES,
+    }
+}
+
+/// senpi `parseTimeoutSetting`: an unset value is `None`; a present value that is not a valid
+/// timeout is an error naming the setting.
+fn parse_timeout_setting(value: Option<&Value>, setting_name: &str) -> Result<Option<u64>, String> {
+    let Some(value) = value else { return Ok(None) };
+    if let Some(timeout_ms) = crate::http_dispatcher::parse_http_idle_timeout_ms(value) {
+        return Ok(Some(timeout_ms));
+    }
+    let shown = value.as_str().map_or_else(|| value.to_string(), str::to_owned);
+    Err(format!("Invalid {setting_name} setting: {shown}"))
+}
+
+/// senpi `getAskUserSettings` return shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AskUserSettings {
+    pub enabled: bool,
+    pub timeout_minutes: f64,
+    pub bell: bool,
+}
+
+/// senpi `isTerminalMouseMode`.
+pub fn is_terminal_mouse_mode(value: &str) -> bool {
+    matches!(value, "off" | "whilePending" | "always")
+}
+
+/// senpi `envValue` over the process environment.
 pub struct SettingsManager {
     storage: Box<dyn SettingsStorage>,
     global_settings: Settings,
@@ -491,6 +561,7 @@ pub struct SettingsManager {
     selected_sources: HashMap<SettingsScope, SettingsSourceSelection>,
     overrides: Settings,
     source_listeners: Arc<Mutex<Vec<SettingsSourceListener>>>,
+    provider_settings_listeners: Arc<Mutex<Vec<ProviderSettingsListener>>>,
 }
 
 impl SettingsManager {
@@ -539,6 +610,7 @@ impl SettingsManager {
             selected_sources,
             overrides: Settings::new(),
             source_listeners: Arc::default(),
+            provider_settings_listeners: Arc::default(),
         }
     }
 
@@ -554,6 +626,7 @@ impl SettingsManager {
     /// settings, so unsaved in-memory overrides are honoured instead of being lost to a fresh disk
     /// reload; project settings stay excluded (`projectTrusted: false`).
     pub fn in_memory(global_settings: Settings, project_trusted: bool) -> SettingsManager {
+        let global_settings = migrate_settings(global_settings);
         let storage = InMemorySettingsStorage::default();
         // `with_lock` takes `&mut dyn FnMut` and may call the update closure more than once (a lost
         // write race re-runs it), so the closure must yield the seeded content on every call instead
@@ -579,7 +652,7 @@ impl SettingsManager {
                     loaded = Settings::new();
                 }
                 Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => loaded = parsed,
+                    Ok(parsed) => loaded = migrate_settings(parsed),
                     Err(parse_error) => error = Some(parse_error),
                 },
             }
@@ -606,6 +679,44 @@ impl SettingsManager {
 
     pub fn is_project_trusted(&self) -> bool {
         self.project_trusted
+    }
+
+    /// senpi `getAskUserSettings`.
+    pub fn get_ask_user_settings(&self) -> AskUserSettings {
+        let configured = self.settings.get("askUser");
+        let field = |key: &str| configured.and_then(|configured| configured.get(key));
+        AskUserSettings {
+            enabled: field("enabled").and_then(Value::as_bool).unwrap_or(true),
+            timeout_minutes: resolve_ask_user_timeout_minutes(field("timeoutMinutes")),
+            bell: field("bell").and_then(Value::as_bool).unwrap_or(true),
+        }
+    }
+
+    /// senpi `setProjectTrusted`: an untrusted project drops its scope; a newly trusted project
+    /// selects and loads its settings source.
+    pub fn set_project_trusted(&mut self, trusted: bool) {
+        if self.project_trusted == trusted {
+            return;
+        }
+        self.project_trusted = trusted;
+        if !trusted {
+            self.project_settings = Settings::new();
+            self.project_settings_load_error = None;
+            self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+            return;
+        }
+        self.select_and_publish_source(SettingsScope::Project);
+        let (project_settings, error) = Self::try_load_from_storage(self.storage.as_ref(), SettingsScope::Project, true);
+        self.project_settings = project_settings;
+        self.project_settings_load_error = error.clone();
+        if let Some(error) = error {
+            self.errors.push(SettingsError {
+                scope: SettingsScope::Project,
+                path: self.settings_paths.get(&SettingsScope::Project).cloned(),
+                error,
+            });
+        }
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
     }
 
     pub fn errors(&self) -> &[SettingsError] {
@@ -639,6 +750,28 @@ impl SettingsManager {
     pub fn subscribe_to_source_selection(&self, listener: SettingsSourceListener) -> SettingsSourceSubscription {
         self.source_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
         SettingsSourceSubscription { listeners: self.source_listeners.clone(), listener }
+    }
+
+    /// senpi `getProviderConcurrencyLimit`: `providers.<id>.maxConcurrency` (canonical id first,
+    /// then legacy spellings); `None` = unlimited.
+    pub fn get_provider_concurrency_limit(&self, provider_id: &str) -> Option<i64> {
+        provider_concurrency_limit(self.settings.get("providers"), provider_id)
+    }
+
+    /// The raw `providers` settings block, for callers that snapshot it (`ModelRuntime`).
+    pub fn get_provider_settings(&self) -> Option<Value> {
+        self.settings.get("providers").cloned()
+    }
+
+    pub fn subscribe_to_provider_settings(&self, listener: ProviderSettingsListener) -> ProviderSettingsSubscription {
+        self.provider_settings_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(listener.clone());
+        ProviderSettingsSubscription { listeners: self.provider_settings_listeners.clone(), listener }
+    }
+
+    /// senpi `updateSettings`: the merged settings changed, so provider-settings listeners re-read.
+    fn notify_provider_settings(&self) {
+        let listeners = self.provider_settings_listeners.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        for listener in listeners { listener(self); }
     }
 
     fn select_and_publish_source(&mut self, scope: SettingsScope) {
@@ -676,8 +809,122 @@ impl SettingsManager {
         self.settings.get(key).and_then(Value::as_str).map(str::to_owned)
     }
 
+    /// senpi `getExperimentalSharedHost`: `experimental.sharedHost === true`.
+    pub fn get_experimental_shared_host(&self) -> bool {
+        self.settings.get("experimental").and_then(|experimental| experimental.get("sharedHost"))
+            .and_then(Value::as_bool) == Some(true)
+    }
+
+    /// senpi `getShellPath`: a non-empty `shellPath` goes through `normalizePath` (`~` expansion,
+    /// `file://` URLs, Windows shell paths).
+    pub fn get_shell_path(&self) -> Option<String> {
+        self.get_string("shellPath").map(|shell_path| if shell_path.is_empty() { shell_path }
+            else { crate::paths::normalize_path(&shell_path, &PathInputOptions::default()) })
+    }
+
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.settings.get(key).and_then(Value::as_bool)
+    }
+
+    /// senpi `getDisabledBuiltinExtensions`: builtin extension ids to skip loading.
+    pub fn get_disabled_builtin_extensions(&self) -> Vec<String> {
+        string_list(self.settings.get("disabledBuiltinExtensions")).unwrap_or_default()
+    }
+
+    /// senpi `getEnabledBuiltinExtensions`: optional allowlist of builtin extension ids (default: all).
+    pub fn get_enabled_builtin_extensions(&self) -> Option<Vec<String>> {
+        string_list(self.settings.get("enabledBuiltinExtensions"))
+    }
+
+    /// senpi `getTerminalCapabilityOverrides`: `terminal.images`/`trueColor`/`hyperlinks`, falling back
+    /// to the brand-prefixed `IMAGE_PROTOCOL`/`TRUE_COLOR`/`HYPERLINKS` env values.
+    pub fn get_terminal_capability_overrides(&self, env: &HashMap<String, String>) -> maho_tui::terminal_image::CapabilityOverrides {
+        use maho_tui::terminal_capabilities::ImageProtocol;
+        let terminal = self.settings.get("terminal");
+        let setting = |key: &str| terminal.and_then(|terminal| terminal.get(key)).filter(|value| !value.is_null()).cloned();
+        let env_value = |suffix: &str| crate::brand::env_value(suffix, env).map(Value::String);
+        let images = match setting("images").or_else(|| env_value("IMAGE_PROTOCOL").map(|value| Value::String(value.as_str().unwrap_or_default().to_lowercase()))) {
+            Some(Value::String(value)) if value == "kitty" => Some(Some(ImageProtocol::Kitty)),
+            Some(Value::String(value)) if value == "iterm2" => Some(Some(ImageProtocol::Iterm2)),
+            Some(Value::Bool(false)) => Some(None),
+            Some(Value::String(value)) if value == "none" || value == "0" => Some(None),
+            _ => None,
+        };
+        let boolean = |key: &str, suffix: &str| match setting(key).or_else(|| env_value(suffix)) {
+            Some(Value::Bool(value)) => Some(value),
+            Some(Value::String(value)) if value == "1" || value == "0" => Some(value == "1"),
+            _ => None,
+        };
+        maho_tui::terminal_image::CapabilityOverrides { images, true_color: boolean("trueColor", "TRUE_COLOR"), hyperlinks: boolean("hyperlinks", "HYPERLINKS") }
+    }
+
+    fn terminal_setting(&self, key: &str) -> Option<&Value> {
+        self.settings.get("terminal").and_then(|terminal| terminal.get(key))
+    }
+
+    /// senpi `getShowImages`: `terminal.showImages`, default true.
+    pub fn get_show_images(&self) -> bool {
+        self.terminal_setting("showImages").and_then(Value::as_bool).unwrap_or(true)
+    }
+
+    /// senpi `setShowImages`.
+    pub fn set_show_images(&mut self, show: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("showImages".into(), Value::Bool(show))]))
+    }
+
+    /// senpi `getImageWidthCells`: `terminal.imageWidthCells` floored to at least 1, default 60.
+    pub fn get_image_width_cells(&self) -> u32 {
+        match self.terminal_setting("imageWidthCells").and_then(Value::as_f64).filter(|width| width.is_finite()) {
+            Some(width) => width.floor().max(1.0).min(f64::from(u32::MAX)) as u32,
+            None => 60,
+        }
+    }
+
+    /// senpi `setImageWidthCells`.
+    pub fn set_image_width_cells(&mut self, width: u32) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("imageWidthCells".into(), Value::from(width.max(1)))]))
+    }
+
+    /// senpi `getTerminalMouse`: `terminal.mouse`, default `whilePending`.
+    pub fn get_terminal_mouse(&self) -> String {
+        self.terminal_setting("mouse").and_then(Value::as_str).filter(|value| is_terminal_mouse_mode(value))
+            .unwrap_or("whilePending").to_owned()
+    }
+
+    /// senpi `setTerminalMouse`.
+    pub fn set_terminal_mouse(&mut self, mouse: &str) -> Result<(), String> {
+        if !is_terminal_mouse_mode(mouse) {
+            return Err("Invalid terminal.mouse".to_owned());
+        }
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("mouse".into(), Value::String(mouse.to_owned()))]))
+    }
+
+    /// senpi `getClearOnShrink`: the setting, then the brand `CLEAR_ON_SHRINK` env value, then false.
+    pub fn get_clear_on_shrink(&self) -> bool {
+        self.get_clear_on_shrink_with_env(&std::env::vars().collect())
+    }
+
+    /// `get_clear_on_shrink` against an explicit environment.
+    pub fn get_clear_on_shrink_with_env(&self, env: &HashMap<String, String>) -> bool {
+        if let Some(enabled) = self.terminal_setting("clearOnShrink").and_then(Value::as_bool) {
+            return enabled;
+        }
+        crate::brand::env_value("CLEAR_ON_SHRINK", env).as_deref() == Some("1")
+    }
+
+    /// senpi `setClearOnShrink`.
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("clearOnShrink".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `getShowTerminalProgress`: `terminal.showTerminalProgress`, default false.
+    pub fn get_show_terminal_progress(&self) -> bool {
+        self.terminal_setting("showTerminalProgress").and_then(Value::as_bool).unwrap_or(false)
+    }
+
+    /// senpi `setShowTerminalProgress`.
+    pub fn set_show_terminal_progress(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "terminal", &Settings::from_iter([("showTerminalProgress".into(), Value::Bool(enabled))]))
     }
 
     pub fn get_image_auto_resize(&self) -> bool {
@@ -688,12 +935,120 @@ impl SettingsManager {
             .unwrap_or(true)
     }
 
+    /// senpi `getCodeBlockIndent`: `markdown.codeBlockIndent`, defaulting to two spaces.
+    pub fn get_code_block_indent(&self) -> String {
+        self.settings.get("markdown").and_then(|markdown| markdown.get("codeBlockIndent")).and_then(Value::as_str).unwrap_or("  ").to_owned()
+    }
+
+    /// senpi `setImageAutoResize`.
+    pub fn set_image_auto_resize(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "images", &Settings::from_iter([("autoResize".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `getMermaidRenderingMode`: `markdown.mermaid`, with anything but `off`/`final` read as
+    /// `streaming`.
+    pub fn get_mermaid_rendering_mode(&self) -> crate::settings_shapes::MermaidRenderingMode {
+        use crate::settings_shapes::MermaidRenderingMode;
+        match self.settings.get("markdown").and_then(|markdown| markdown.get("mermaid")).and_then(Value::as_str) {
+            Some("off") => MermaidRenderingMode::Off,
+            Some("final") => MermaidRenderingMode::Final,
+            _ => MermaidRenderingMode::Streaming,
+        }
+    }
+
+    /// senpi `setMermaidRenderingMode`: writes global `markdown.mermaid`, keeping the other
+    /// `markdown` keys.
+    pub fn set_mermaid_rendering_mode(&mut self, mode: crate::settings_shapes::MermaidRenderingMode) -> Result<(), String> {
+        let mut markdown = self.global_settings.get("markdown").and_then(Value::as_object).cloned().unwrap_or_default();
+        markdown.insert("mermaid".into(), Value::String(mode.as_str().to_owned()));
+        self.set(SettingsScope::Global, &Settings::from_iter([("markdown".into(), Value::Object(markdown))]))
+    }
+
+    pub fn get_block_images(&self) -> bool {
+        self.settings
+            .get("images")
+            .and_then(|images| images.get("blockImages"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// senpi `setBlockImages`.
+    pub fn set_block_images(&mut self, blocked: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "images", &Settings::from_iter([("blockImages".into(), Value::Bool(blocked))]))
+    }
+
+    /// senpi `setCompactionEnabled`: writes only `compaction.enabled`.
+    pub fn set_compaction_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "compaction", &Settings::from_iter([("enabled".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `getShowHardwareCursor`: the setting, then the brand `HARDWARE_CURSOR` env value.
+    pub fn get_show_hardware_cursor(&self) -> bool {
+        self.get_show_hardware_cursor_with_env(&std::env::vars().collect())
+    }
+
+    /// `get_show_hardware_cursor` against an explicit environment.
+    pub fn get_show_hardware_cursor_with_env(&self, env: &HashMap<String, String>) -> bool {
+        self.settings.get("showHardwareCursor").and_then(Value::as_bool)
+            .unwrap_or_else(|| crate::brand::env_value("HARDWARE_CURSOR", env).as_deref() == Some("1"))
+    }
+
+    /// senpi `getAutocompleteMaxVisible`: default 5.
+    pub fn get_autocomplete_max_visible(&self) -> usize {
+        self.settings.get("autocompleteMaxVisible").and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0).map_or(5, |value| value as usize)
+    }
+
+    /// senpi accepts only a non-negative integer (`Number.isInteger(value) && value >= 0`).
+    pub fn get_max_historical_images(&self) -> Option<usize> {
+        let value = self.settings.get("images")?.get("maxHistoricalImages")?;
+        value.as_u64().or_else(|| value.as_f64().filter(|number| *number >= 0.0 && number.fract() == 0.0).map(|number| number as u64))
+            .and_then(|number| usize::try_from(number).ok())
+    }
+
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.settings.get(key).and_then(Value::as_f64)
     }
 
     pub fn get_raw_fallback_chains(&self) -> Option<&Value> {
         self.settings.get("retry").and_then(|retry| retry.get("fallbackChains"))
+    }
+
+    /// senpi `setFallbackChain`: replaces one key of the GLOBAL chain map.
+    pub fn set_fallback_chain(&mut self, key: &str, entries: &[String]) -> Result<(), String> {
+        let mut chains = self.get_global_fallback_chains();
+        chains.insert(key.to_owned(), Value::Array(entries.iter().cloned().map(Value::String).collect()));
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackChains".into(), Value::Object(chains))]))
+    }
+
+    /// senpi `removeFallbackChain`.
+    pub fn remove_fallback_chain(&mut self, key: &str) -> Result<(), String> {
+        let mut chains = self.get_global_fallback_chains();
+        if chains.remove(key).is_none() {
+            return Ok(());
+        }
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackChains".into(), Value::Object(chains))]))
+    }
+
+    /// senpi `setModelFallbackEnabled`.
+    pub fn set_model_fallback_enabled(&mut self, enabled: bool) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("modelFallback".into(), Value::Bool(enabled))]))
+    }
+
+    /// senpi `setFallbackRevertPolicy`: `cooldown-expiry` or `never`.
+    pub fn set_fallback_revert_policy(&mut self, policy: &str) -> Result<(), String> {
+        self.set_nested(SettingsScope::Global, "retry", &Settings::from_iter([("fallbackRevertPolicy".into(), Value::String(policy.to_owned()))]))
+    }
+
+    /// senpi `getGlobalFallbackChains`: only well-formed string-array chains of the global scope.
+    fn get_global_fallback_chains(&self) -> Map<String, Value> {
+        let Some(Value::Object(chains)) = self.global_settings.get("retry").and_then(|retry| retry.get("fallbackChains")) else {
+            return Map::new();
+        };
+        chains.iter()
+            .filter(|(_, entries)| entries.as_array().is_some_and(|entries| entries.iter().all(Value::is_string)))
+            .map(|(key, entries)| (key.clone(), entries.clone()))
+            .collect()
     }
 
     pub fn get_fallback_chains_scope(&self) -> Option<SettingsScope> {
@@ -709,6 +1064,79 @@ impl SettingsManager {
     pub fn apply_overrides(&mut self, overrides: &Settings) {
         self.overrides = deep_merge_settings(&self.overrides, overrides);
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
+    }
+
+    /// `getSteeringMode`: defaults to `all`.
+    pub fn get_steering_mode(&self) -> maho_agent::types::QueueMode {
+        match self.get_value("steeringMode").and_then(Value::as_str) {
+            Some("one-at-a-time") => maho_agent::types::QueueMode::OneAtATime,
+            _ => maho_agent::types::QueueMode::All,
+        }
+    }
+
+    /// senpi `getTreeFilterMode`: one of the five tree filters, else `default`.
+    pub fn get_tree_filter_mode(&self) -> String {
+        self.get_value("treeFilterMode").and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "default" | "no-tools" | "user-only" | "labeled-only" | "all"))
+            .unwrap_or("default").to_owned()
+    }
+
+    /// senpi `getOutputPad`: `0` only when explicitly `0`, otherwise `1`.
+    pub fn get_output_pad(&self) -> u8 {
+        u8::from(self.get_value("outputPad").and_then(Value::as_f64) != Some(0.0))
+    }
+
+    /// `getFollowUpMode`: defaults to `one-at-a-time`.
+    pub fn get_follow_up_mode(&self) -> maho_agent::types::QueueMode {
+        match self.get_value("followUpMode").and_then(Value::as_str) {
+            Some("all") => maho_agent::types::QueueMode::All,
+            _ => maho_agent::types::QueueMode::OneAtATime,
+        }
+    }
+
+    /// `getTransport`: defaults to `auto`.
+    pub fn get_transport(&self) -> maho_ai::types::Transport {
+        self.get_value("transport").cloned().and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or(maho_ai::types::Transport::Auto)
+    }
+
+    /// `getAbortServerSideFallback`: defaults to enabled.
+    pub fn get_abort_server_side_fallback(&self) -> bool {
+        crate::retry_fallback::settings::resolve_abort_server_side_fallback(self.get_value("retry"))
+    }
+
+    /// `getHttpIdleTimeoutMs`: an invalid value is an error (`Invalid httpIdleTimeoutMs setting: <v>`).
+    pub fn get_http_idle_timeout_ms(&self) -> Result<u64, String> {
+        Ok(parse_timeout_setting(self.get_value("httpIdleTimeoutMs"), "httpIdleTimeoutMs")?
+            .unwrap_or(crate::http_dispatcher::DEFAULT_HTTP_IDLE_TIMEOUT_MS))
+    }
+
+    /// `getRetrySettings`. The `maxRetries` default is derived from the shipped profile so the one
+    /// `retry.maxRetries` key means the same budget on every consumer.
+    pub fn get_retry_settings(&self) -> maho_ai::utils::retry::RetryPolicy {
+        let retry = self.get_value("retry");
+        let field = |key: &str| retry.and_then(|retry| retry.get(key));
+        maho_ai::utils::retry::RetryPolicy {
+            enabled: field("enabled").and_then(Value::as_bool).unwrap_or(true),
+            max_retries: field("maxRetries").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(maho_ai::utils::retry_profile::profiles::SENPI_DEFAULT_RETRY_PROFILE.turn.max_retries),
+            base_delay_ms: field("baseDelayMs").and_then(Value::as_u64).unwrap_or(2_000),
+            max_agent_delay_ms: Some(field("maxAgentDelayMs").and_then(Value::as_u64)
+                .unwrap_or(maho_ai::utils::retry::DEFAULT_MAX_AGENT_RETRY_DELAY_MS)),
+            random: None,
+        }
+    }
+
+    /// `getProviderRetrySettings`.
+    pub fn get_provider_retry_settings(&self) -> ProviderRequestRetrySettings {
+        let provider = self.get_value("retry").and_then(|retry| retry.get("provider"));
+        let field = |key: &str| provider.and_then(|provider| provider.get(key)).and_then(settings_ms);
+        ProviderRequestRetrySettings {
+            timeout_ms: field("timeoutMs"),
+            max_retries: field("maxRetries").and_then(|value| u32::try_from(value).ok()),
+            max_retry_delay_ms: field("maxRetryDelayMs").unwrap_or(60_000),
+        }
     }
 
     pub fn resolve_retry_profile(
@@ -770,20 +1198,86 @@ impl SettingsManager {
         profile
     }
 
-    /// Writes values into the given scope and recomputes the merged view.
+    /// `getAgentStreamIdleTimeoutMs`: `retry.provider.timeoutMs` wins; otherwise `httpIdleTimeoutMs`,
+    /// where 0 ("disabled") disables the reader guard as well.
+    pub fn get_agent_stream_idle_timeout_ms(&self) -> Result<Option<u64>, String> {
+        if let Some(provider_timeout_ms) = self.get_provider_retry_settings().timeout_ms {
+            return Ok(Some(provider_timeout_ms));
+        }
+        let http_idle_timeout_ms = self.get_http_idle_timeout_ms()?;
+        Ok((http_idle_timeout_ms != 0).then_some(http_idle_timeout_ms))
+    }
+
+    /// `getAgentStreamStartTimeoutMs`: `retry.provider.streamStartTimeoutMs` (0 disables), else the
+    /// 300s default capped by the idle timeout and disabled together with it.
+    pub fn get_agent_stream_start_timeout_ms(&self) -> Result<Option<u64>, String> {
+        let explicit = self.get_value("retry").and_then(|retry| retry.get("provider"))
+            .and_then(|provider| provider.get("streamStartTimeoutMs")).and_then(settings_ms);
+        if let Some(explicit) = explicit {
+            return Ok((explicit > 0).then_some(explicit));
+        }
+        Ok(self.get_agent_stream_idle_timeout_ms()?.map(|idle| DEFAULT_STREAM_START_TIMEOUT_MS.min(idle)))
+    }
+
+    /// `getWebSocketConnectTimeoutMs`: an invalid value is an error
+    /// (`Invalid websocketConnectTimeoutMs setting: <v>`).
+    pub fn get_websocket_connect_timeout_ms(&self) -> Result<Option<u64>, String> {
+        parse_timeout_setting(self.get_value("websocketConnectTimeoutMs"), "websocketConnectTimeoutMs")
+    }
+
+    /// `getThinkingBudgets`.
+    pub fn get_thinking_budgets(&self) -> Option<maho_ai::types::ThinkingBudgets> {
+        self.get_value("thinkingBudgets").cloned().and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    /// senpi `markModified(field, nestedKey)` + `persistScopedSettings` for nested fields: writes only
+    /// the given keys of `field`, merged into the scope file's current object, so sibling keys
+    /// (on disk and in memory) survive. A `null` value removes that nested key. The written keys stop
+    /// being overridden for this session.
+    pub fn set_nested(&mut self, scope: SettingsScope, field: &str, nested: &Settings) -> Result<(), String> {
+        let mut write_error: Option<String> = None;
+        let mut apply = |current: Option<&str>| -> Option<String> {
+            let mut parsed = match parse_current_settings(current) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    write_error = Some(error);
+                    return None;
+                }
+            };
+            let object = nested_into(parsed.get(field), nested);
+            parsed.insert(field.to_owned(), Value::Object(object));
+            Some(serialize_settings(&parsed))
+        };
+        self.storage.with_lock(scope, &mut apply)?;
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+        for key in nested.keys() {
+            self.overrides = without_override(&self.overrides, field, Some(key));
+        }
+        let target = match scope {
+            SettingsScope::Global => &mut self.global_settings,
+            SettingsScope::Project => &mut self.project_settings,
+        };
+        let object = nested_into(target.get(field), nested);
+        target.insert(field.to_owned(), Value::Object(object));
+        self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
+        Ok(())
+    }
+
+    /// Writes values into the given scope and recomputes the merged view. Each written field stops
+    /// being overridden for this session (senpi `markModified` -> `withoutOverride`).
     pub fn set(&mut self, scope: SettingsScope, values: &Settings) -> Result<(), String> {
         let values = values.clone();
         let mut write_error: Option<String> = None;
         let mut apply = |current: Option<&str>| -> Option<String> {
-            let mut parsed = match current {
-                Some(content) => match parse_settings_json(content) {
-                    Ok(parsed) => parsed,
-                    Err(error) => {
-                        write_error = Some(error);
-                        return None;
-                    }
-                },
-                None => Settings::new(),
+            let mut parsed = match parse_current_settings(current) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    write_error = Some(error);
+                    return None;
+                }
             };
             for (key, value) in &values {
                 if value.is_null() {
@@ -798,17 +1292,31 @@ impl SettingsManager {
         if let Some(error) = write_error {
             return Err(error);
         }
+        for key in values.keys() {
+            self.overrides = without_override(&self.overrides, key, None);
+        }
         match scope {
             SettingsScope::Global => {
                 self.global_settings = values_into(&self.global_settings, &values);
                 self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+                self.notify_provider_settings();
             }
             SettingsScope::Project => {
                 self.project_settings = values_into(&self.project_settings, &values);
                 self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+                self.notify_provider_settings();
             }
         }
         Ok(())
+    }
+
+    /// senpi recreates settings for a switched session's cwd; the native manager keeps its
+    /// identity (listeners, overrides) and re-reads the project scope from the new cwd.
+    pub fn rebind_cwd(&mut self, cwd: &str) {
+        self.storage.rebind_cwd(cwd);
+        self.settings_paths.remove(&SettingsScope::Project);
+        self.selected_sources.remove(&SettingsScope::Project);
+        self.reload();
     }
 
     pub fn reload(&mut self) {
@@ -821,7 +1329,165 @@ impl SettingsManager {
         self.global_settings_load_error = global_load.1;
         self.project_settings_load_error = project_load.1;
         self.settings = deep_merge_settings(&deep_merge_settings(&self.global_settings, &self.project_settings), &self.overrides);
+        self.notify_provider_settings();
     }
+}
+
+/// senpi `SettingsManager.migrateSettings`: rewrite old settings shapes to the current ones.
+pub fn migrate_settings(mut settings: Settings) -> Settings {
+    // queueMode -> steeringMode
+    if settings.contains_key("queueMode") && !settings.contains_key("steeringMode")
+        && let Some(queue_mode) = settings.remove("queueMode")
+    {
+        settings.insert("steeringMode".to_owned(), queue_mode);
+    }
+
+    // legacy websockets boolean -> transport enum
+    if !settings.contains_key("transport")
+        && let Some(Value::Bool(websockets)) = settings.get("websockets").cloned()
+    {
+        settings.insert("transport".to_owned(), Value::from(if websockets { "websocket" } else { "sse" }));
+        settings.remove("websockets");
+    }
+
+    // old skills object format -> array format
+    if let Some(Value::Object(skills)) = settings.get("skills").cloned() {
+        if let Some(enable) = skills.get("enableSkillCommands")
+            && !settings.contains_key("enableSkillCommands")
+        {
+            settings.insert("enableSkillCommands".to_owned(), enable.clone());
+        }
+        match skills.get("customDirectories") {
+            Some(Value::Array(directories)) if !directories.is_empty() => {
+                settings.insert("skills".to_owned(), Value::Array(directories.clone()));
+            }
+            _ => {
+                settings.remove("skills");
+            }
+        }
+    }
+
+    // retry.maxDelayMs -> retry.provider.maxRetryDelayMs
+    if let Some(Value::Object(retry)) = settings.get_mut("retry") {
+        if let Some(max_delay) = retry.get("maxDelayMs").filter(|value| value.is_number()).cloned() {
+            let provider = match retry.get("provider") {
+                Some(Value::Object(provider)) => Some(provider.clone()),
+                _ => None,
+            };
+            let configured = provider.as_ref().and_then(|provider| provider.get("maxRetryDelayMs")).is_some_and(|value| !value.is_null());
+            if !configured {
+                let mut provider = provider.unwrap_or_default();
+                provider.insert("maxRetryDelayMs".to_owned(), max_delay);
+                retry.insert("provider".to_owned(), Value::Object(provider));
+            }
+        }
+        retry.remove("maxDelayMs");
+    }
+
+    migrate_renamed_provider_ids(&mut settings);
+    settings
+}
+
+/// camelCase provider-settings block key, e.g. `claude-sdk-oauth` -> `claudeSdkOauthProvider`.
+fn provider_settings_key(provider_id: &str) -> String {
+    let mut key = String::new();
+    for (index, part) in provider_id.split('-').enumerate() {
+        if index == 0 {
+            key.push_str(part);
+            continue;
+        }
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            key.extend(first.to_uppercase());
+            key.push_str(characters.as_str());
+        }
+    }
+    key.push_str("Provider");
+    key
+}
+
+/// senpi `migrateRenamedProviderIds`: idempotent, and an unrecognised shape is left untouched.
+fn migrate_renamed_provider_ids(settings: &mut Settings) {
+    use maho_ai::legacy_provider_ids::{LEGACY_PROVIDER_IDS, normalize_model_ref, normalize_provider_id};
+
+    for (legacy_id, canonical_id) in LEGACY_PROVIDER_IDS {
+        let legacy_key = provider_settings_key(legacy_id);
+        let canonical_key = provider_settings_key(canonical_id);
+        if settings.contains_key(&legacy_key) && !settings.contains_key(&canonical_key)
+            && let Some(block) = settings.remove(&legacy_key)
+        {
+            settings.insert(canonical_key, block);
+        }
+    }
+
+    if let Some(Value::String(provider)) = settings.get("defaultProvider") {
+        let provider = normalize_provider_id(provider);
+        settings.insert("defaultProvider".to_owned(), Value::String(provider));
+    }
+    if let Some(Value::String(model)) = settings.get("defaultModel") {
+        let model = normalize_model_ref(model);
+        settings.insert("defaultModel".to_owned(), Value::String(model));
+    }
+    if let Some(Value::Array(favorites)) = settings.get_mut("favoriteModels") {
+        for entry in favorites.iter_mut() {
+            if let Value::String(model) = entry {
+                *model = normalize_model_ref(model);
+            }
+        }
+    }
+
+    for field in ["modelThinkingLevels", "modelServiceTiers", "modelLastOnThinkingLevels"] {
+        if let Some(Value::Object(map)) = settings.get(field) {
+            let rekeyed = rekey_by_model_ref(map);
+            settings.insert(field.to_owned(), Value::Object(rekeyed));
+        }
+    }
+
+    if let Some(Value::Object(retry)) = settings.get_mut("retry")
+        && let Some(Value::Object(chains)) = retry.get("fallbackChains")
+    {
+        let mut rekeyed = Map::new();
+        for (key, rungs) in chains {
+            let next_rungs = match rungs {
+                Value::Array(rungs) => Value::Array(rungs.iter().map(|rung| match rung {
+                    Value::String(rung) => Value::String(normalize_model_ref(rung)),
+                    other => other.clone(),
+                }).collect()),
+                other => other.clone(),
+            };
+            rekeyed.insert(normalize_model_ref(key), next_rungs);
+        }
+        retry.insert("fallbackChains".to_owned(), Value::Object(rekeyed));
+    }
+}
+
+/// Rewrite every `${provider}/${id}` key of a model map through `normalize_model_ref`.
+fn rekey_by_model_ref(map: &Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in map {
+        out.insert(maho_ai::legacy_provider_ids::normalize_model_ref(key), value.clone());
+    }
+    out
+}
+
+fn parse_current_settings(current: Option<&str>) -> Result<Settings, String> {
+    match current {
+        Some(content) => parse_settings_json(content).map(migrate_settings),
+        None => Ok(Settings::new()),
+    }
+}
+
+/// `{ ...base[field], ...nested }` with `null` removing a nested key.
+fn nested_into(base: Option<&Value>, nested: &Settings) -> Map<String, Value> {
+    let mut object = base.and_then(Value::as_object).cloned().unwrap_or_default();
+    for (key, value) in nested {
+        if value.is_null() {
+            object.remove(key);
+        } else {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    object
 }
 
 fn values_into(base: &Settings, values: &Settings) -> Settings {
@@ -836,6 +1502,23 @@ fn values_into(base: &Settings, values: &Settings) -> Settings {
     result
 }
 
+/// The `getProviderRetrySettings` return shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRequestRetrySettings {
+    pub timeout_ms: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub max_retry_delay_ms: u64,
+}
+
+fn settings_ms(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_f64().filter(|value| value.is_finite() && *value >= 0.0).map(|value| value.floor() as u64))
+}
+
+/// A settings string array; non-string entries are skipped (senpi reads the typed field verbatim).
+fn string_list(value: Option<&Value>) -> Option<Vec<String>> {
+    value.and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+}
+
 pub fn serialize_settings(settings: &Settings) -> String {
     let mut serialized = serde_json::to_string_pretty(&Value::Object(settings.clone())).unwrap_or_else(|_| "{}".to_owned());
     serialized.push('\n');
@@ -846,6 +1529,16 @@ pub fn serialize_settings(settings: &Settings) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn builtin_extension_allowlist_and_denylist_read_merged_settings() {
+        let unset = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(unset.get_enabled_builtin_extensions(), None);
+        assert!(unset.get_disabled_builtin_extensions().is_empty());
+        let configured = SettingsManager::in_memory(settings(r#"{"enabledBuiltinExtensions":["mcp","help"],"disabledBuiltinExtensions":["tps"]}"#), false);
+        assert_eq!(configured.get_enabled_builtin_extensions(), Some(vec!["mcp".to_owned(), "help".to_owned()]));
+        assert_eq!(configured.get_disabled_builtin_extensions(), vec!["tps".to_owned()]);
+    }
 
     fn settings(json_text: &str) -> Settings {
         parse_settings_json(json_text).expect("settings")
@@ -923,6 +1616,25 @@ mod tests {
         assert_eq!(source.format, SettingsFormat::Jsonc);
         assert_eq!(source.reason, SettingsSourceReason::ExplicitJsonc);
         assert_eq!(get_settings_path(&project, &agent, SettingsScope::Global, &home), format!("{agent}/settings.jsonc"));
+    }
+
+    #[test]
+    fn rebinding_the_cwd_reads_the_new_project_settings() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = tmp.path().join("agent");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        let mut projects = Vec::new();
+        for name in ["first", "second"] {
+            let project = tmp.path().join(name);
+            std::fs::create_dir_all(project.join(config_dir_name())).expect("mkdir");
+            std::fs::write(project.join(config_dir_name()).join("settings.json"), format!("{{\"marker\":\"{name}\"}}")).expect("settings");
+            projects.push(project.to_string_lossy().into_owned());
+        }
+        let mut manager = SettingsManager::create(&projects[0], &agent.to_string_lossy(), &home.to_string_lossy(), true);
+        assert_eq!(manager.get_string("marker").as_deref(), Some("first"));
+        manager.rebind_cwd(&projects[1]);
+        assert_eq!(manager.get_string("marker").as_deref(), Some("second"));
     }
 
     #[test]
@@ -1036,12 +1748,93 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_rendering_mode_defaults_to_streaming_and_reads_markdown_mermaid() {
+        use crate::settings_shapes::MermaidRenderingMode;
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Streaming);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"final"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Final);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"off"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Off);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"mermaid":"bogus"}}"#), false).get_mermaid_rendering_mode(), MermaidRenderingMode::Streaming);
+    }
+
+    #[test]
+    fn code_block_indent_defaults_to_two_spaces() {
+        assert_eq!(SettingsManager::in_memory(settings("{}"), false).get_code_block_indent(), "  ");
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"markdown":{"codeBlockIndent":"    "}}"#), false).get_code_block_indent(), "    ");
+    }
+
+    #[test]
+    fn set_mermaid_rendering_mode_keeps_other_markdown_keys() {
+        use crate::settings_shapes::MermaidRenderingMode;
+        let mut manager = SettingsManager::in_memory(settings(r#"{"markdown":{"codeBlockIndent":"    "}}"#), false);
+        manager.set_mermaid_rendering_mode(MermaidRenderingMode::Off).expect("set mermaid");
+        assert_eq!(manager.get_mermaid_rendering_mode(), MermaidRenderingMode::Off);
+        assert_eq!(manager.get_value("markdown"), Some(&json!({"codeBlockIndent":"    ","mermaid":"off"})));
+    }
+
+    #[test]
+    fn terminal_capability_overrides_prefer_settings_then_env() {
+        use maho_tui::terminal_capabilities::ImageProtocol;
+        let env: HashMap<String, String> = [("PI_IMAGE_PROTOCOL", "KITTY"), ("PI_TRUE_COLOR", "0"), ("PI_HYPERLINKS", "maybe")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        let from_env = SettingsManager::in_memory(Settings::new(), false).get_terminal_capability_overrides(&env);
+        assert_eq!(from_env.images, Some(Some(ImageProtocol::Kitty)));
+        assert_eq!(from_env.true_color, Some(false));
+        assert_eq!(from_env.hyperlinks, None);
+        let configured = SettingsManager::in_memory(settings(r#"{"terminal":{"images":false,"trueColor":true,"hyperlinks":true}}"#), false);
+        let overrides = configured.get_terminal_capability_overrides(&env);
+        assert_eq!(overrides.images, Some(None));
+        assert_eq!(overrides.true_color, Some(true));
+        assert_eq!(overrides.hyperlinks, Some(true));
+    }
+
+    #[test]
+    fn terminal_renderer_settings_prefer_settings_then_env_and_default_off() {
+        let env: HashMap<String, String> = [("PI_HARDWARE_CURSOR", "1"), ("PI_CLEAR_ON_SHRINK", "1")].into_iter().map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
+        let unset = SettingsManager::in_memory(Settings::new(), false);
+        assert!(!unset.get_show_hardware_cursor_with_env(&HashMap::new()));
+        assert!(!unset.get_clear_on_shrink_with_env(&HashMap::new()));
+        assert!(!unset.get_show_terminal_progress());
+        assert!(unset.get_show_hardware_cursor_with_env(&env));
+        assert!(unset.get_clear_on_shrink_with_env(&env));
+        let configured = SettingsManager::in_memory(settings(r#"{"showHardwareCursor":false,"terminal":{"clearOnShrink":false,"showTerminalProgress":true}}"#), false);
+        assert!(!configured.get_show_hardware_cursor_with_env(&env));
+        assert!(!configured.get_clear_on_shrink_with_env(&env));
+        assert!(configured.get_show_terminal_progress());
+    }
+
+    #[test]
     fn image_auto_resize_defaults_to_true_and_reads_false() {
         let missing = SettingsManager::in_memory(Settings::new(), false);
         assert!(missing.get_image_auto_resize());
 
         let configured = SettingsManager::in_memory(settings(r#"{"images":{"autoResize":false}}"#), false);
         assert!(!configured.get_image_auto_resize());
+    }
+
+    #[test]
+    fn block_images_defaults_to_false_and_reads_true() {
+        assert!(!SettingsManager::in_memory(Settings::new(), false).get_block_images());
+        assert!(SettingsManager::in_memory(settings(r#"{"images":{"blockImages":true}}"#), false).get_block_images());
+    }
+
+    #[test]
+    fn max_historical_images_accepts_only_non_negative_integers() {
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_max_historical_images(), None);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":3}}"#), false).get_max_historical_images(), Some(3));
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":-1}}"#), false).get_max_historical_images(), None);
+        assert_eq!(SettingsManager::in_memory(settings(r#"{"images":{"maxHistoricalImages":1.5}}"#), false).get_max_historical_images(), None);
+    }
+
+    #[test]
+    fn provider_concurrency_limit_reads_positive_values_and_notifies_on_change() {
+        let mut manager = SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), true);
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let _subscription = manager.subscribe_to_provider_settings(Arc::new(move |_| { counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }));
+        manager.apply_overrides(&settings(r#"{"providers":{"p":{"maxConcurrency":3},"z":{"maxConcurrency":0}}}"#));
+        assert_eq!(manager.get_provider_concurrency_limit("p"), Some(3));
+        assert_eq!(manager.get_provider_concurrency_limit("z"), None);
+        assert_eq!(manager.get_provider_concurrency_limit("missing"), None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -1178,14 +1971,186 @@ mod tests {
     }
 
     #[test]
-    fn merge_ignores_null_overrides_and_keeps_nested_objects() {
+    fn migrate_renames_queue_mode_websockets_skills_and_retry_max_delay() {
+        let migrated = migrate_settings(settings(r#"{"queueMode":"all","websockets":true,"skills":{"enableSkillCommands":false,"customDirectories":["/s"]},"retry":{"maxDelayMs":5}}"#));
+        assert_eq!(migrated["steeringMode"], "all");
+        assert!(!migrated.contains_key("queueMode"));
+        assert_eq!(migrated["transport"], "websocket");
+        assert!(!migrated.contains_key("websockets"));
+        assert_eq!(migrated["enableSkillCommands"], false);
+        assert_eq!(migrated["skills"], json!(["/s"]));
+        assert_eq!(migrated["retry"], json!({"provider":{"maxRetryDelayMs":5}}));
+    }
+
+    #[test]
+    fn migrate_rewrites_legacy_provider_ids() {
+        let migrated = migrate_settings(settings(r#"{"claudeSdkOauthProvider":{"x":1},"defaultProvider":"openai-codex","defaultModel":"claude-sdk-oauth/opus","favoriteModels":["openai-codex/gpt",1],"modelServiceTiers":{"openai-codex/gpt":"flex"},"retry":{"fallbackChains":{"claude-sdk-oauth/opus":["openai-codex/gpt"]}}}"#));
+        assert_eq!(migrated["anthropicSubscriptionProvider"], json!({"x":1}));
+        assert!(!migrated.contains_key("claudeSdkOauthProvider"));
+        assert_eq!(migrated["defaultProvider"], "chatgpt-subscription");
+        assert_eq!(migrated["defaultModel"], "anthropic-subscription/opus");
+        assert_eq!(migrated["favoriteModels"], json!(["chatgpt-subscription/gpt", 1]));
+        assert_eq!(migrated["modelServiceTiers"], json!({"chatgpt-subscription/gpt":"flex"}));
+        assert_eq!(migrated["retry"]["fallbackChains"], json!({"anthropic-subscription/opus":["chatgpt-subscription/gpt"]}));
+    }
+
+    #[test]
+    fn a_loaded_file_is_migrated() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let agent = tmp.path().to_string_lossy().into_owned();
+        std::fs::write(tmp.path().join("settings.json"), r#"{"queueMode":"one-at-a-time","defaultModel":"openai-codex/gpt"}"#).expect("write");
+        let manager = SettingsManager::create(&agent, &agent, &agent, false);
+        assert_eq!(manager.get_string("steeringMode").as_deref(), Some("one-at-a-time"));
+        assert_eq!(manager.get_string("defaultModel").as_deref(), Some("chatgpt-subscription/gpt"));
+    }
+
+    #[test]
+    fn set_project_trusted_loads_and_drops_the_project_scope() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let agent = home.join(".maho/agent");
+        let project = tmp.path().join("proj");
+        std::fs::create_dir_all(&agent).expect("mkdir");
+        std::fs::create_dir_all(project.join(".maho")).expect("mkdir");
+        std::fs::write(agent.join("settings.json"), "{\"theme\":\"dark\"}").expect("write");
+        std::fs::write(project.join(".maho/settings.json"), "{\"theme\":\"light\"}").expect("write");
+        let mut manager = SettingsManager::create(&project.to_string_lossy(), &agent.to_string_lossy(), &home.to_string_lossy(), false);
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        manager.set_project_trusted(true);
+        assert!(manager.is_project_trusted());
+        assert_eq!(manager.get_string("theme").as_deref(), Some("light"));
+        assert!(manager.selected_source(SettingsScope::Project).is_some());
+        manager.set_project_trusted(false);
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+        assert!(manager.get_project().is_empty());
+    }
+
+    #[test]
+    fn agent_stream_timeouts_follow_http_idle_and_provider_overrides() {
+        let manager = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Ok(Some(300_000)));
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Ok(Some(300_000)));
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":60000}"), false);
+        assert_eq!(manager.get_agent_stream_start_timeout_ms(), Ok(Some(60_000)));
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":\"disabled\"}"), false);
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Ok(None), Ok(None)));
+        let manager = SettingsManager::in_memory(settings(
+            "{\"retry\":{\"provider\":{\"timeoutMs\":1000,\"streamStartTimeoutMs\":0}}}"), false);
+        assert_eq!((manager.get_agent_stream_idle_timeout_ms(), manager.get_agent_stream_start_timeout_ms()), (Ok(Some(1_000)), Ok(None)));
+    }
+
+    #[test]
+    fn invalid_timeout_settings_are_errors_like_senpi() {
+        let manager = SettingsManager::in_memory(settings("{\"httpIdleTimeoutMs\":\"5m\",\"websocketConnectTimeoutMs\":-1}"), false);
+        assert_eq!(manager.get_http_idle_timeout_ms(), Err("Invalid httpIdleTimeoutMs setting: 5m".to_owned()));
+        assert_eq!(manager.get_agent_stream_idle_timeout_ms(), Err("Invalid httpIdleTimeoutMs setting: 5m".to_owned()));
+        assert_eq!(manager.get_websocket_connect_timeout_ms(), Err("Invalid websocketConnectTimeoutMs setting: -1".to_owned()));
+    }
+
+    #[test]
+    fn agent_option_getters_default_like_senpi() {
+        let manager = SettingsManager::in_memory(Settings::new(), false);
+        assert_eq!(manager.get_steering_mode(), maho_agent::types::QueueMode::All);
+        assert_eq!(manager.get_follow_up_mode(), maho_agent::types::QueueMode::OneAtATime);
+        assert_eq!(manager.get_transport(), maho_ai::types::Transport::Auto);
+        assert!(manager.get_abort_server_side_fallback());
+        assert_eq!(manager.get_provider_retry_settings(),
+            ProviderRequestRetrySettings { timeout_ms: None, max_retries: None, max_retry_delay_ms: 60_000 });
+        assert_eq!(manager.get_websocket_connect_timeout_ms(), Ok(None));
+        assert_eq!(manager.get_thinking_budgets(), None);
+    }
+
+    #[test]
+    fn merge_lets_null_overrides_replace_and_keeps_nested_objects() {
         let base = settings("{\"a\":1,\"nested\":{\"x\":1,\"y\":2}}");
         let overrides = settings("{\"a\":null,\"nested\":{\"y\":3}}");
         let merged = deep_merge_settings(&base, &overrides);
-        assert_eq!(merged["a"], 1);
+        assert_eq!(merged["a"], Value::Null);
         assert_eq!(merged["nested"]["x"], 1);
         assert_eq!(merged["nested"]["y"], 3);
         assert!(is_mergeable_object(&merged["nested"]));
         assert!(!is_mergeable_object(&merged["a"]));
+    }
+
+    #[test]
+    fn override_fallback_chains_replace_the_base_chain_map_wholesale() {
+        let base = settings(r#"{"retry":{"modelFallback":true,"fallbackChains":{"a":["x/1"],"b":["x/2"]}}}"#);
+        let overrides = settings(r#"{"retry":{"fallbackChains":{"c":["x/3"]}}}"#);
+        let merged = deep_merge_settings(&base, &overrides);
+        assert_eq!(merged["retry"], json!({"modelFallback":true,"fallbackChains":{"c":["x/3"]}}));
+    }
+
+    #[test]
+    fn set_compaction_enabled_keeps_sibling_compaction_keys_on_disk_and_in_memory() {
+        let mut manager = SettingsManager::in_memory(settings(r#"{"compaction":{"reserveTokens":100,"keepRecentTokens":200}}"#), false);
+        manager.set_compaction_enabled(false).expect("set compaction");
+        let expected = json!({"reserveTokens":100,"keepRecentTokens":200,"enabled":false});
+        assert_eq!(manager.get_value("compaction"), Some(&expected));
+        manager.reload();
+        assert_eq!(manager.get_value("compaction"), Some(&expected));
+    }
+
+    #[test]
+    fn an_explicit_setter_wins_over_a_session_override() {
+        let mut manager = SettingsManager::from_storage(Box::new(InMemorySettingsStorage::default()), true);
+        manager.apply_overrides(&settings(r#"{"retry":{"modelFallback":false,"maxRetries":1},"theme":"light"}"#));
+        manager.set_model_fallback_enabled(true).expect("model fallback");
+        assert_eq!(manager.get_value("retry"), Some(&json!({"modelFallback":true,"maxRetries":1})));
+        manager.set(SettingsScope::Global, &settings(r#"{"theme":"dark"}"#)).expect("theme");
+        assert_eq!(manager.get_string("theme").as_deref(), Some("dark"));
+    }
+
+    #[test]
+    fn retry_setters_write_only_their_global_nested_key() {
+        let storage = InMemorySettingsStorage::with_global_content(r#"{"retry":{"maxRetries":4,"fallbackChains":{"a":["x/1"],"bad":[1]}}}"#);
+        let mut manager = SettingsManager::from_storage(Box::new(storage), true);
+        manager.apply_overrides(&settings(r#"{"retry":{"modelFallback":false}}"#));
+        manager.set_fallback_chain("b", &["x/2".to_owned()]).expect("set chain");
+        manager.remove_fallback_chain("a").expect("remove chain");
+        manager.set_fallback_revert_policy("never").expect("policy");
+        assert_eq!(manager.get_global()["retry"], json!({"maxRetries":4,"fallbackChains":{"b":["x/2"]},"fallbackRevertPolicy":"never"}));
+        assert_eq!(manager.get_value("retry").and_then(|retry| retry.get("modelFallback")), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn terminal_and_image_getters_read_nested_keys_with_senpi_defaults() {
+        let defaults = SettingsManager::in_memory(Settings::new(), false);
+        assert!(defaults.get_show_images());
+        assert_eq!(defaults.get_image_width_cells(), 60);
+        assert_eq!(defaults.get_terminal_mouse(), "whilePending");
+        assert!(!defaults.get_show_terminal_progress());
+        assert_eq!(defaults.get_autocomplete_max_visible(), 5);
+        let configured = SettingsManager::in_memory(settings(r#"{"terminal":{"showImages":false,"imageWidthCells":12.7,"mouse":"always","clearOnShrink":true,"showTerminalProgress":true},"autocompleteMaxVisible":9,"showHardwareCursor":true}"#), false);
+        assert!(!configured.get_show_images());
+        assert_eq!(configured.get_image_width_cells(), 12);
+        assert_eq!(configured.get_terminal_mouse(), "always");
+        assert!(configured.get_clear_on_shrink());
+        assert!(configured.get_show_terminal_progress());
+        assert_eq!(configured.get_autocomplete_max_visible(), 9);
+        assert!(configured.get_show_hardware_cursor());
+    }
+
+    #[test]
+    fn terminal_and_image_setters_merge_into_their_nested_objects() {
+        let mut manager = SettingsManager::in_memory(settings(r#"{"terminal":{"images":false},"images":{"maxHistoricalImages":2}}"#), false);
+        manager.set_show_images(false).expect("show images");
+        manager.set_image_width_cells(0).expect("width");
+        manager.set_terminal_mouse("off").expect("mouse");
+        assert!(manager.set_terminal_mouse("bogus").is_err());
+        manager.set_clear_on_shrink(true).expect("shrink");
+        manager.set_show_terminal_progress(true).expect("progress");
+        manager.set_image_auto_resize(false).expect("auto resize");
+        manager.set_block_images(true).expect("block images");
+        assert_eq!(manager.get_global()["terminal"], json!({"images":false,"showImages":false,"imageWidthCells":1,"mouse":"off","clearOnShrink":true,"showTerminalProgress":true}));
+        assert_eq!(manager.get_global()["images"], json!({"maxHistoricalImages":2,"autoResize":false,"blockImages":true}));
+        assert!(!manager.get_image_auto_resize());
+        assert!(manager.get_block_images());
+    }
+
+    #[test]
+    fn ask_user_settings_default_bell_on_and_clamp_the_timeout() {
+        assert_eq!(SettingsManager::in_memory(Settings::new(), false).get_ask_user_settings(), AskUserSettings { enabled: true, timeout_minutes: 30.0, bell: true });
+        let configured = SettingsManager::in_memory(settings(r#"{"askUser":{"enabled":false,"timeoutMinutes":0.5,"bell":false}}"#), false);
+        assert_eq!(configured.get_ask_user_settings(), AskUserSettings { enabled: false, timeout_minutes: 1.0, bell: false });
     }
 }

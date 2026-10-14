@@ -293,6 +293,11 @@ pub trait ApiKeyAuth: Send + Sync {
         false
     }
 
+    /// Whether `check` is implemented (TS `apiKey.check !== undefined`).
+    fn has_check(&self) -> bool {
+        false
+    }
+
     async fn check(
         &self,
         _ctx: &dyn AuthContext,
@@ -341,10 +346,26 @@ pub trait OAuthAuth: Send + Sync {
 
     /// Side-effect-free derivation of request auth from a valid credential.
     async fn to_auth(&self, credential: &OAuthCredential) -> anyhow::Result<ModelAuth>;
+
+    /// Whether `resolve_ambient` is implemented (senpi `typeof oauth.resolveAmbient === "function"`).
+    fn has_resolve_ambient(&self) -> bool {
+        false
+    }
+
+    /// senpi `resolveAmbient`: auth from credentials that live outside auth.json (a CLI login, a
+    /// token env var); `env` is the request's explicit env.
+    async fn resolve_ambient(
+        &self,
+        _ctx: &dyn AuthContext,
+        _env: Option<&ProviderEnv>,
+        _signal: &crate::utils::abort::AbortSignal,
+    ) -> anyhow::Result<Option<AuthResult>> {
+        Ok(None)
+    }
 }
 
 /// Provider auth. At least one of `api_key`/`oauth` must be present.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProviderAuth {
     pub api_key: Option<Arc<dyn ApiKeyAuth>>,
     pub oauth: Option<Arc<dyn OAuthAuth>>,

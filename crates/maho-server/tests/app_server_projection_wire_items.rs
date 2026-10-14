@@ -3,13 +3,13 @@ use serde_json::json;
 #[test]
 fn provider_native_items_join_renderer_summary_and_body() {
     let message = json!({"provider":"anthropic"});
-    let content = json!({"kind":"tool_search_tool_result","raw":{"content":{"tool_references":[{"tool_name":"bash"},{"tool_name":"bash"},{"tool_name":"read"}]}}});
+    let content = json!({"subtype":"tool_search_tool_result","raw":{"content":{"tool_references":[{"tool_name":"bash"},{"tool_name":"bash"},{"tool_name":"read"}]}}});
     let item = provider_native_item("id", &message, &content);
     assert_eq!(item["type"], "webSearch");
     assert_eq!(item["query"], "▾ anthropic · tool_search results\n2 tools\nbash\nread");
     assert!(item["action"].is_null());
     assert!(item["results"].is_null());
-    let web = json!({"kind":"web_search_call","raw":{"action":{"type":"search","query":"rust"}}});
+    let web = json!({"subtype":"web_search_call","raw":{"action":{"type":"search","query":"rust"}}});
     let item = provider_native_item("id", &message, &web);
     assert_eq!(item["type"], "webSearch");
     assert_eq!(item["query"], "rust");

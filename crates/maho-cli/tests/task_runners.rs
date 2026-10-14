@@ -63,7 +63,7 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
     let path = locator.session_file().to_path_buf();
     let options = build_child_session_options(&spec, locator, &[], &[]);
 
-    let mut manager = maho_cli::cli::task_runners::native_child_session_manager(&options);
+    let mut manager = maho_cli::cli::task_runners::native_child_session_manager(&options).expect("child manager");
     manager.append_message(serde_json::json!({"role":"user","content":"child task","timestamp":1}));
     manager.append_message(serde_json::json!({"role":"assistant","content":[],"stopReason":"stop","timestamp":2}));
     let session_id = manager.session_id().to_owned();
@@ -71,12 +71,12 @@ fn native_child_transcript_preserves_exact_locator_on_create_and_resume() {
     let resumed_options = build_child_session_options(&spec,
         ChildSessionManager::open(&path, &session_dir, &cwd), &[], &[]);
 
-    let resumed = maho_cli::cli::task_runners::native_child_session_manager(&resumed_options);
+    let resumed = maho_cli::cli::task_runners::native_child_session_manager(&resumed_options).expect("child manager");
 
     assert_eq!(manager.session_file(), Some(path.to_string_lossy().as_ref()));
     assert_eq!(resumed.session_file(), manager.session_file());
     assert_eq!(resumed.session_id(), session_id);
-    assert_eq!(resumed.build_context(resumed.leaf_id()).messages.len(), 2);
+    assert_eq!(resumed.current_context().messages.len(), 2);
     assert_eq!(std::fs::read(&path).expect("retained transcript"), before);
     assert_eq!(std::fs::read_dir(&session_dir).expect("child directory").count(), 1);
 }
@@ -243,12 +243,12 @@ async fn converted_child_options_drive_native_provider_and_restore_exact_transcr
     created.session.dispose().await;
     prompt.expect("bounded native provider turn").expect("child turn");
     let restored_child = build_child_session_options(&spec, ChildSessionManager::open(&path, &session_dir, &cwd), &[], &[]);
-    let restored = maho_cli::cli::task_runners::native_child_session_manager(&restored_child);
+    let restored = maho_cli::cli::task_runners::native_child_session_manager(&restored_child).expect("child manager");
 
     assert_eq!(text.as_deref(), Some("native child response"));
     assert_eq!(provider.get_call_log().len(), 1);
     assert_eq!(restored.session_file(), Some(path.to_string_lossy().as_ref()));
-    assert_eq!(restored.build_context(restored.leaf_id()).messages.len(), 2);
+    assert_eq!(restored.current_context().messages.len(), 2);
 }
 
 #[test]

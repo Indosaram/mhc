@@ -112,6 +112,21 @@ fn tool_lifecycle_updates_one_card_and_replaces_partial_result() {
 }
 
 #[test]
+fn terminal_title_follows_the_running_tool_then_returns_to_the_normal_title() {
+    use maho_agent::types::AgentEvent;
+    let (mut mode, directory) = native_mode();
+    let app_title = maho_core::config::app_title();
+    let cwd_basename = directory.path().file_name().expect("cwd basename").to_string_lossy().into_owned();
+    let normal = format!("{app_title} - {cwd_basename}");
+    assert_eq!(mode.terminal_window_title(), normal);
+    assert!(!mode.terminal_progress_active(), "showTerminalProgress defaults to off");
+    mode.handle_event(&AgentEvent::ToolExecutionStart { tool_call_id: "call-1".into(), tool_name: "bash".into(), args: serde_json::json!({"command":"ls"}) });
+    assert_eq!(mode.terminal_window_title(), format!("{app_title} - Running bash: ls"));
+    mode.handle_event(&AgentEvent::ToolExecutionEnd { tool_call_id: "call-1".into(), tool_name: "bash".into(), result: serde_json::json!({"content":[]}), is_error: false });
+    assert_eq!(mode.terminal_window_title(), normal);
+}
+
+#[test]
 fn tool_end_without_start_still_renders_final_result() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
@@ -160,7 +175,7 @@ async fn login_api_key_saves_credential_and_logout_removes_it() {
     let (mut mode, directory) = native_mode();
     let auth_path = directory.path().join("auth.json");
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider faux api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider faux api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -192,7 +207,7 @@ async fn login_cached_default_is_selected_before_catalog_refresh_completes() {
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
     let session_id = session.session_id();
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider anthropic api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -215,7 +230,7 @@ async fn login_catalog_completion_does_not_replace_a_new_session_model() {
     use maho_tui::tui::Component;
     let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "anthropic", "claude-opus-4-8", true);
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider anthropic api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider anthropic api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("test-key");
@@ -240,7 +255,7 @@ async fn login_cancel_shows_neutral_status_and_leaves_auth_unchanged() {
     let auth_path = directory.path().join("auth.json");
     let before = std::fs::read_to_string(&auth_path).ok();
     let mut events = mode.subscribe_auth_lifecycle();
-    mode.enqueue_submission("/login-provider faux api_key", None);
+    mode.enqueue_submission(&maho_interactive::interactive_mode::internal_command("/login-provider faux api_key"), None);
     assert_eq!(mode.dispatch_submission().await.expect("login"), Some(maho_core::agent_session::PromptDisposition::Handled));
     assert_eq!(next_auth_lifecycle_event(&mut mode, &mut events, |event| matches!(event, AuthLifecycleEvent::PromptReady)).await, AuthLifecycleEvent::PromptReady);
     mode.handle_input("\u{1b}");
@@ -285,6 +300,19 @@ async fn rename_without_argument_opens_real_input_and_commits_enter() {
     mode.handle_input("dialog-name"); mode.handle_input("\r");
     assert!(mode.render(80).join("\n").contains("dialog-name"));
     assert!(mode.editor.editor.get_text().is_empty());
+}
+
+#[tokio::test]
+async fn rename_warns_when_the_session_normalizes_the_name_and_skips_an_unchanged_commit() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.submit("/rename a\nb", Default::default()).await.expect("rename");
+    assert!(mode.render(80).join("\n").contains(r#"Session name was normalized from "a\nb" to "a b""#));
+    let entries = || session.with_session_manager(|manager| manager.entries().iter().filter(|entry| entry.get("type").and_then(serde_json::Value::as_str) == Some("session_info")).count());
+    let before = entries();
+    mode.submit("/rename", Default::default()).await.expect("dialog");
+    mode.handle_input("\r");
+    assert_eq!(entries(), before, "confirming the unchanged name appends no session_info entry");
 }
 
 #[tokio::test]
@@ -577,6 +605,16 @@ async fn extension_editor_returns_prefill_through_real_multiline_component() {
     assert_eq!(result.await.expect("editor"), Some("prefill".into()));
 }
 
+#[tokio::test]
+async fn extension_editor_ctrl_g_requests_a_terminal_hand_off() {
+    use maho_ext_api::ExtensionUi; use maho_tui::tui::Component;
+    use maho_interactive::interactive_mode::TerminalRequest;
+    let (mut mode, _directory) = native_mode(); let ui = mode.extension_ui.clone();
+    let _result = ui.editor("Edit", Some("prefill")); mode.render(80);
+    mode.handle_input_at("\x07", 0);
+    assert_eq!(mode.take_terminal_request(), Some(TerminalRequest::ExternalEditor));
+}
+
 #[test]
 fn extension_terminal_input_transforms_consumes_and_unsubscribes() {
     use maho_ext_api::{ExtensionUi, TerminalInputResult};
@@ -594,8 +632,22 @@ async fn unintegrated_builtin_does_not_silently_become_provider_input() {
     let (mut mode, _directory) = native_mode();
     assert_eq!(mode.submit("/compact", Default::default()).await.expect("compact is handled with the pinned warning"), maho_core::agent_session::PromptDisposition::Handled);
     assert!(mode.render(80).join("\n").contains("Nothing to compact (no messages yet)"));
-    assert!(mode.submit("/export session.html", Default::default()).await.is_err(), "an unintegrated command errors instead of reaching the provider");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "no command became a provider turn");
+}
+
+#[tokio::test]
+async fn html_export_writes_the_document_without_a_shared_host() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode_with_session(None, |cwd| {
+        let session_dir = std::path::Path::new(cwd).join("sessions");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        maho_core::session_manager::SessionManager::create(cwd, Some(&session_dir.to_string_lossy()), None)
+    });
+    mode.submit("hi", Default::default()).await.expect("prompt");
+    let path = directory.path().join("session.html");
+    assert_eq!(mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("html export"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(std::fs::read_to_string(&path).expect("html document").contains("id=\"session-data\""));
+    assert!(mode.render(80).join("\n").contains("Session exported to:"));
 }
 
 #[test]
@@ -620,6 +672,71 @@ fn question_answer_history_uses_existing_collapsed_answer_chip() {
 }
 
 #[tokio::test]
+async fn armin_says_hi_command_renders_the_easter_egg_instead_of_prompting() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/arminsayshi", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("ARMIN SAYS HI"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[tokio::test]
+async fn selecting_opencode_kimi_k2_5_shows_the_daxnuts_card() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode_with_provider(None, "opencode", "kimi-k2.5", false);
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/model-select opencode/kimi-k2.5"), Default::default()).await.expect("select");
+    mode.tick(1_000_000.0);
+    assert!(mode.render(80).join("\n").contains("Free Kimi K2.5 via OpenCode Zen"));
+}
+
+#[tokio::test]
+async fn demented_delves_command_renders_the_earendil_announcement() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/dementedelves", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("pi has joined Earendil"));
+    assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0), "the command never became a provider turn");
+}
+
+#[test]
+fn startup_model_warnings_flag_a_risky_main_model() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode_with_provider(None, "qwen-cloud", "qwen-1", false);
+    mode.show_startup_model_warnings();
+    assert!(mode.render(80).join("\n").contains("Risky model warning"));
+    let (mut safe, _safe_directory) = native_mode();
+    safe.show_startup_model_warnings();
+    assert!(!safe.render(80).join("\n").contains("Risky model warning"));
+}
+
+fn continuity_assistant(kind: &str) -> maho_agent::types::AgentMessage {
+    serde_json::from_value(serde_json::json!({"role":"assistant", "content":[{"type":"text","text":"reply"}], "api":"faux", "provider":"faux", "model":"faux-1", "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0.0,"output":0.0,"cacheRead":0.0,"cacheWrite":0.0,"total":0.0}},"stopReason":"stop","timestamp":0,
+        "diagnostics":[{"type":"claude_sdk_oauth_session_continuity","timestamp":0,"details":{"kind":kind}}]})).expect("message")
+}
+
+#[test]
+fn continuity_notice_renders_after_a_live_assistant_message_end() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let message = continuity_assistant("flatten");
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageStart { message: message.clone() });
+    mode.handle_event(&maho_agent::types::AgentEvent::MessageEnd { message });
+    assert!(mode.render(80).join("\n").contains("Session continuity lost - resent the full conversation"));
+}
+
+#[test]
+fn continuity_notice_is_rederived_on_history_replay_and_rebuild_resets_suppression() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.add_history_message(&continuity_assistant("disabled"));
+    mode.add_history_message(&continuity_assistant("disabled"));
+    assert_eq!(mode.render(80).join("\n").matches("Session continuity disabled").count(), 1, "the disabled notice renders once per transcript");
+    mode.rebuild_history();
+    mode.add_history_message(&continuity_assistant("disabled"));
+    assert_eq!(mode.render(80).join("\n").matches("Session continuity disabled").count(), 1, "rebuild resets the tracker so the notice reappears");
+}
+
+#[tokio::test]
 async fn new_command_replaces_native_session_and_clears_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
@@ -630,12 +747,67 @@ async fn new_command_replaces_native_session_and_clears_transcript() {
 }
 
 #[tokio::test]
+async fn new_command_confirms_with_the_accent_started_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/new", Default::default()).await.expect("new");
+    assert!(mode.render(80).join("\n").contains("✓ New session started"));
+}
+
+#[tokio::test]
+async fn copy_without_agent_messages_renders_an_error_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/copy", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Error: No agent messages to copy yet."));
+}
+
+#[tokio::test]
+async fn session_info_does_not_replace_the_previous_status_line() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.set_tools_expanded(true);
+    mode.submit("/session", Default::default()).await.expect("session info");
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Tool output: expanded"), "the previous status survives: {rendered}");
+    assert!(rendered.contains("Session Info"));
+}
+
+#[tokio::test]
+async fn reload_reports_the_upstream_resource_message() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/reload", Default::default()).await.expect("reload"), maho_core::agent_session::PromptDisposition::Handled);
+    // senpi `Text(msg, 1, 0)` pads one column per side, so the 80-column message only fits unwrapped at >= 82.
+    assert!(mode.render(120).join("\n").contains("Reloading keybindings, extensions, skills, prompts, themes, and context files..."), "the reload box replaces the editor first");
+    assert_eq!(mode.submit_editor().await.expect("queued reload"), Some(maho_core::agent_session::PromptDisposition::Handled));
+    let rendered = mode.render(80).join("\n");
+    assert!(!rendered.contains("Reloading keybindings"), "the reload box is dismissed");
+    assert!(rendered.contains("Reloaded keybindings, extensions, skills, prompts, themes, and context files"));
+}
+
+#[tokio::test]
 async fn empty_compact_shows_the_pinned_no_messages_warning() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
     assert_eq!(mode.submit("/compact", Default::default()).await.expect("handled"), maho_core::agent_session::PromptDisposition::Handled);
     assert!(mode.render(80).join("\n").contains("Nothing to compact (no messages yet)"), "the pinned interactive warning replaces the core error");
     assert_eq!(mode.footer_snapshot().context_tokens, Some(0.0));
+}
+
+#[tokio::test]
+async fn compaction_and_retry_events_mount_status_indicators() {
+    use maho_ext_api::{AgentSessionEvent, CompactionReason};
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_session_event(&AgentSessionEvent::CompactionStart { reason: CompactionReason::Threshold, request_id: None });
+    assert!(mode.render(120).join("\n").contains("Auto-compacting... ("), "compaction shows the reasoned loader with its interrupt hint");
+    mode.handle_session_event(&AgentSessionEvent::CompactionEnd { reason: CompactionReason::Threshold, result: None, aborted: false, will_retry: false, request_id: None, accepted: Some(true), rejection_cause: None, error_message: None });
+    assert!(!mode.render(120).join("\n").contains("Auto-compacting"), "compaction end clears the indicator");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryStart { attempt: 1, max_attempts: 3, delay_ms: 2000, error_message: "boom".into() });
+    assert!(mode.render(120).join("\n").contains("Retrying (1/3) in 2s..."), "auto-retry shows the countdown indicator in the editor border");
+    mode.handle_session_event(&AgentSessionEvent::AutoRetryEnd { success: true, attempt: 1, final_error: None });
+    assert!(!mode.render(120).join("\n").contains("Retrying (1/3)"), "auto-retry end clears the indicator");
 }
 
 #[tokio::test]
@@ -657,6 +829,28 @@ async fn bare_model_selector_cancels_and_releases_native_composer() {
 }
 
 #[tokio::test]
+async fn model_command_switches_on_a_bare_exact_id() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model faux-1", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    assert!(mode.render(80).join("\n").contains("Model: faux-1"));
+}
+
+#[tokio::test]
+async fn model_command_miss_refreshes_then_opens_a_prefiltered_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    assert_eq!(mode.submit("/model no-such-model", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
+    let rendered = mode.render(80).join("\n");
+    assert!(rendered.contains("Refreshing model catalogs…"), "the catalog refresh precedes the selector: {rendered}");
+    // The focused search input draws its cursor (reverse video) on the first cell, so match plain text.
+    let plain = maho_tools::ansi::strip_ansi(&rendered);
+    assert!(plain.contains("> no-such-model"), "the selector opens with the term as its search: {plain}");
+    mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
+    assert_eq!(mode.editor.editor.get_text(), "draft");
+}
+
+#[tokio::test]
 async fn resume_path_restores_exported_native_transcript() {
     use maho_tui::tui::Component;
     let (mut mode, directory) = native_mode();
@@ -664,7 +858,7 @@ async fn resume_path_restores_exported_native_transcript() {
     let path = directory.path().join("resume.jsonl");
     mode.submit(&format!("/export {}", path.display()), Default::default()).await.expect("export");
     mode.submit("/new", Default::default()).await.expect("new");
-    mode.submit(&format!("/resume {}", path.display()), Default::default()).await.expect("resume");
+    mode.submit(&maho_interactive::interactive_mode::internal_command(format!("/resume {}", path.display())), Default::default()).await.expect("resume");
     assert!(mode.render(80).join("\n").contains("saved-message"));
 }
 
@@ -688,6 +882,39 @@ fn native_editor_completes_builtin_command_from_canonical_catalog() {
     assert!(mode.editor.editor.is_showing_autocomplete());
     mode.handle_input_at("\t", 1);
     assert!(mode.editor.editor.get_text().starts_with("/thinking"));
+}
+
+#[test]
+fn native_autocomplete_offers_skill_commands_only_while_enable_skill_commands_is_on() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    session.set_prompt_resources(Vec::new(), vec![maho_core::skills::Skill {
+        name: "guide".into(), description: "guide skill".into(), file_path: "/tmp/guide/SKILL.md".into(), base_dir: "/tmp/guide".into(),
+        source_info: maho_core::source_info::create_synthetic_source_info("/tmp/guide/SKILL.md", Default::default()),
+        disable_model_invocation: false,
+    }]);
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("enableSkillCommands".into(), serde_json::json!(true)));
+    mode.editor.editor.set_text("/skill:gu"); mode.render(80); mode.handle_input_at("\t", 0);
+    assert!(mode.editor.editor.is_showing_autocomplete());
+    mode.handle_input_at("\t", 1);
+    assert!(mode.editor.editor.get_text().starts_with("/skill:guide"), "{}", mode.editor.editor.get_text());
+
+    session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &[("enableSkillCommands".to_owned(), serde_json::json!(false))].into_iter().collect())).expect("setting");
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("enableSkillCommands".into(), serde_json::json!(false)));
+    mode.editor.editor.set_text("/skill:gu"); mode.render(80); mode.handle_input_at("\t", 2);
+    mode.handle_input_at("\t", 3);
+    assert!(!mode.editor.editor.get_text().starts_with("/skill:guide"), "{}", mode.editor.editor.get_text());
+}
+
+#[test]
+fn extension_select_counts_down_its_timeout_in_the_title_from_the_mode_tick() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, _session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::Select { title: "Pick".into(), options: vec!["a".into(), "b".into()], timeout_ms: Some(2_000), reply });
+    assert!(mode.render(80).join("\n").contains("Pick (2s)"));
+    mode.tick(1_000_000.0);
+    assert_eq!(answer.try_recv().expect("expired selector answers"), None, "expiry cancels the selector");
 }
 
 #[tokio::test]
@@ -1050,6 +1277,21 @@ async fn model_management_commands_cancel_without_consuming_provider_turn() {
 }
 
 #[tokio::test]
+async fn scoped_models_selector_refreshes_catalogs_while_open() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.submit("/scoped-models", Default::default()).await.expect("selector");
+    assert!(mode.render(80).join("\n").contains("Refreshing model catalogs…"));
+    let mut refreshed = false;
+    for _ in 0..100_000 {
+        if mode.render(80).join("\n").contains("Model catalogs refreshed.") { refreshed = true; break; }
+        tokio::task::yield_now().await;
+    }
+    assert!(refreshed, "the refresh outcome replaces the refreshing line");
+    mode.handle_input_at("\x1b", 0);
+}
+
+#[tokio::test]
 async fn scoped_model_selection_persists_and_restores_empty_enabled_set() {
     use maho_tui::tui::Component;
     let (mut mode, _directory) = native_mode();
@@ -1248,12 +1490,13 @@ async fn mounted_terminal_renders_native_turn_and_restores_terminal_on_stop() {
 async fn extension_actions_expose_theme_catalog_and_live_working_indicator() {
     use maho_ext_api::ExtensionUi;
     use maho_tui::tui::Component;
-    let (mut mode,_directory) = native_mode();
+    let (mut mode,_directory,session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
     let ui = mode.extension_ui.clone();
     assert!(ui.get_all_themes().expect("themes").iter().any(|theme|theme.name=="light"));
     assert!(ui.set_theme(maho_ext_api::ThemeSelection::Name("light".into())).expect("theme result").success);
     mode.render(80);
     assert_eq!(ui.theme().name.as_deref(),Some("light"));
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")).as_deref(), Some("light"), "an extension theme switch is saved as the global setting");
     ui.set_working_indicator(Some(maho_ext_api::WorkingIndicatorOptions { frames:Some(vec!["frame-a".into(),"frame-b".into()]), interval_ms:Some(10) })).expect("indicator");
     mode.render(80);
     mode.handle_event(&maho_agent::types::AgentEvent::AgentStart);
@@ -1330,7 +1573,7 @@ async fn import_command_reports_a_missing_file_before_any_session_change() {
     assert_eq!(mode.submit(&format!("/import {}",missing.display()),Default::default()).await.expect("confirm dialog"),maho_core::agent_session::PromptDisposition::Handled);
     mode.handle_input_at("\r",0);
     let error = mode.submit_editor().await.expect_err("missing import file");
-    assert_eq!(error,format!("File not found: {}",missing.display()));
+    assert_eq!(error,format!("Failed to import session: File not found: {}",missing.display()));
 }
 
 #[tokio::test]
@@ -1376,23 +1619,23 @@ async fn tree_edit_prefills_assistant_text_and_rejects_other_entries() {
         maho_core::session_manager::SessionManager::in_memory(cwd, None, Some(entries))
     });
     // senpi `editAssistantMessageFromTree`: a non-assistant entry is refused.
-    mode.submit("/tree-edit u1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit u1"), Default::default()).await.expect("command");
     assert!(mode.render(80).join("\n").contains("Only assistant responses can be edited here"), "non-assistant entries are rejected");
     // An assistant entry opens the editor prefilled with its text.
-    mode.submit("/tree-edit a1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit a1"), Default::default()).await.expect("command");
     assert!(mode.render(80).join("\n").contains("assistant reply"), "the editor is prefilled with the assistant text");
 }
 
 #[tokio::test]
 async fn tree_edit_apply_without_a_pending_edit_is_a_noop() {
     let (mut mode,_directory) = native_mode();
-    mode.submit("/tree-edit-apply", Default::default()).await.expect("no-op");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-edit-apply"), Default::default()).await.expect("no-op");
 }
 
 #[tokio::test]
 async fn tree_navigate_without_a_pending_choice_is_a_noop() {
     let (mut mode,_directory) = native_mode();
-    mode.submit("/tree-navigate", Default::default()).await.expect("no-op");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree-navigate"), Default::default()).await.expect("no-op");
 }
 
 #[tokio::test]
@@ -1407,7 +1650,7 @@ async fn tree_navigation_prompts_for_a_branch_summary_unless_skipped() {
         maho_core::session_manager::SessionManager::in_memory(cwd, None, Some(entries))
     });
     // senpi `runTreeNavigation(entryId, { promptForSummary: true })`: the summary choice is asked.
-    mode.submit("/tree u1", Default::default()).await.expect("command");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/tree u1"), Default::default()).await.expect("command");
     let text = mode.render(80).join("\n");
     assert!(text.contains("Summarize branch?"), "the branch summary selector mounts: {text}");
     assert!(text.contains("Summarize with custom prompt"), "the custom option is offered: {text}");
@@ -1504,7 +1747,7 @@ async fn replacement_commands_route_through_the_mounted_session_host() {
     mode.set_session_host(Arc::new(SpyHost { calls: calls.clone() }));
     mode.submit("/new", Default::default()).await.expect("new");
     assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session"], "the mounted host receives /new instead of the local session");
-    mode.submit("/fork entry-1", Default::default()).await.expect("fork");
+    mode.submit(&maho_interactive::interactive_mode::internal_command("/fork entry-1"), Default::default()).await.expect("fork");
     assert_eq!(calls.lock().expect("calls").as_slice(), ["new_session", "fork:entry-1:false"], "the mounted host receives /fork");
     assert_eq!(mode.editor.editor.get_text(), "selected", "the host fork's selected text prefills the editor");
     mode.submit("/export remote.html", Default::default()).await.expect("remote export");
@@ -1763,7 +2006,7 @@ async fn turn_and_session_mutations_route_to_the_mounted_host() {
         fn compact(&self, _instructions: Option<String>) -> SessionFuture<'_, Result<(), String>> { Box::pin(async { Ok(()) }) }
         fn navigate_tree(&self, _entry_id: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
         fn edit_assistant_message(&self, _entry_id: String, _text: String, _options: maho_core::agent_session::TreeNavigationOptions) -> SessionFuture<'_, Result<maho_core::agent_session::AssistantEditResult, String>> { Box::pin(async { Ok(maho_core::agent_session::AssistantEditResult::default()) }) }
-        fn reload(&self) -> SessionFuture<'_, Result<bool, String>> { Box::pin(async { Ok(true) }) }
+        fn reload(&self) -> SessionFuture<'_, Result<maho_ext_api::ReloadVetoDecision, String>> { Box::pin(async { Ok(maho_ext_api::ReloadVetoDecision::default()) }) }
         fn execute_bash(&self, _command: String, _exclude_from_context: bool) -> SessionFuture<'_, Result<serde_json::Value, String>> { Box::pin(async { Ok(serde_json::json!({})) }) }
         fn set_model(&self, _provider: String, _id: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_model".into()); Ok(()) }) }
         fn set_session_name(&self, _name: String) -> SessionFuture<'_, Result<(), String>> { let calls = self.calls.clone(); Box::pin(async move { calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("set_session_name".into()); Ok(()) }) }
@@ -2014,3 +2257,103 @@ async fn real_loop_pumps_startup_initial_prompt_without_freezing_the_first_frame
     assert!(captured.last().is_some_and(is_terminal_session_event), "exact terminal event: {captured:?}");
 }
 
+
+#[test]
+fn double_escape_on_empty_editor_opens_tree_within_the_window() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    let opened = |frame: String| frame.contains("Session Tree") || frame.contains("No entries in session");
+    mode.handle_input_at("\x1b", 1000);
+    assert!(!opened(mode.render(80).join("\n")), "a single escape only arms the window");
+    mode.handle_input_at("\x1b", 1499);
+    assert!(opened(mode.render(80).join("\n")), "the second escape inside 500ms runs /tree");
+}
+
+#[test]
+fn escape_clears_a_bash_mode_draft() {
+    let (mut mode, _directory) = native_mode();
+    mode.editor.editor.set_text("!ls");
+    mode.handle_input_at("\x1b", 0);
+    assert!(mode.editor.editor.get_text().is_empty());
+}
+
+#[tokio::test]
+async fn alt_enter_when_idle_submits_like_enter() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_input("hi");
+    mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    assert!(mode.editor.editor.get_text().is_empty(), "the draft is cleared");
+    assert_eq!(mode.submit_editor().await.expect("submit"), Some(maho_core::agent_session::PromptDisposition::Started));
+    assert!(mode.render(80).join("\n").contains("hello"));
+}
+
+#[tokio::test]
+async fn alt_enter_while_streaming_queues_a_follow_up() {
+    use maho_tui::tui::Component;
+    let mut gated = gated_native_mode();
+    gated.mode.handle_input("hi");
+    gated.mode.handle_input("\r");
+    pump_until(&mut gated, |gated| gated.entered.load(std::sync::atomic::Ordering::SeqCst)).await;
+    gated.mode.handle_input("later");
+    gated.mode.handle_runtime_input("\x1b\r", 0).await.expect("follow-up key");
+    assert!(gated.mode.editor.editor.get_text().is_empty(), "the draft is cleared");
+    assert_eq!(gated.session.get_follow_up_messages(), ["later"]);
+    let _ = gated.gate.send(true);
+    pump_until(&mut gated, |gated| !gated.mode.has_pending_turn()).await;
+}
+
+#[tokio::test]
+async fn suspend_and_external_editor_keys_request_a_terminal_hand_off() {
+    use maho_interactive::interactive_mode::TerminalRequest;
+    let (mut mode, _directory) = native_mode();
+    mode.handle_runtime_input("\x07", 0).await.expect("ctrl+g");
+    assert_eq!(mode.take_terminal_request(), Some(TerminalRequest::ExternalEditor));
+    mode.handle_runtime_input("\x1a", 1).await.expect("ctrl+z");
+    assert_eq!(mode.take_terminal_request(), if cfg!(windows) { None } else { Some(TerminalRequest::Suspend) });
+    assert_eq!(mode.take_terminal_request(), None, "a request is consumed once");
+}
+
+#[tokio::test]
+async fn configured_resume_shortcut_opens_session_selector() {
+    use maho_tui::tui::Component;
+    let (mut mode, directory) = native_mode();
+    std::fs::write(directory.path().join("keybindings.json"), r#"{"app.session.resume":"ctrl+k"}"#).expect("configuration");
+    mode.handle_input_at("\x0b", 0);
+    assert!(mode.render(80).join("\n").contains("Resume Session"));
+}
+
+#[test]
+fn settings_theme_preview_swaps_the_live_theme_without_persisting_it() {
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let before = session.with_settings_manager(|settings| settings.get_string("theme"));
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::ThemePreview("light".into()));
+    assert_eq!(mode.active_theme().name, "light");
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("theme")), before);
+}
+
+#[test]
+fn unloadable_theme_setting_falls_back_to_dark_and_shows_an_error() {
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, _session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    mode.handle_ui_request(maho_interactive::interactive_extension_ui::UiRequest::SettingChanged("theme".into(), serde_json::json!("no-such-theme")));
+    assert_eq!(mode.active_theme().name, "dark");
+    assert!(mode.render(80).join("\n").contains("Failed to load theme \"no-such-theme\""));
+}
+
+#[test]
+fn tui_mode_change_is_saved_only_when_the_host_accepts_it() {
+    use maho_interactive::tui_renderer::TuiMode;
+    use maho_tui::tui::Component;
+    let (mut mode, _directory, session) = native_mode_with_session_and_provider_retaining_session(None, |cwd| maho_core::session_manager::SessionManager::in_memory(cwd, None, None), "faux", "faux-1", false);
+    let request = || maho_interactive::interactive_extension_ui::UiRequest::TerminalSetting("tuiMode".into(), serde_json::json!("fullscreen"));
+    mode.handle_ui_request(request());
+    assert_eq!(mode.pending_terminal_setting(TuiMode::Regular).map(|(next, _)| next), Some(TuiMode::Fullscreen));
+    mode.reject_terminal_setting(TuiMode::Regular);
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("tuiMode")), None);
+    assert!(mode.render(80).join("\n").contains("Close active overlays before changing TUI mode"));
+    mode.handle_ui_request(request());
+    assert!(mode.commit_terminal_setting());
+    assert_eq!(session.with_settings_manager(|settings| settings.get_string("tuiMode")).as_deref(), Some("fullscreen"));
+    assert!(mode.render(80).join("\n").contains("TUI mode: fullscreen"));
+}

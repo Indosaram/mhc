@@ -12,7 +12,7 @@ pub fn built_in_provider_display_names() -> &'static Map<String, Value> {
             ("anthropic-subscription", "Anthropic Subscription"),
             ("amazon-bedrock", "Amazon Bedrock"),
             ("ant-ling", "Ant Ling"),
-            ("azure-openai-responses", "Azure [OI] Responses"),
+            ("azure-openai-responses", "Azure OpenAI Responses"),
             ("cerebras", "Cerebras"),
             ("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
             ("cloudflare-workers-ai", "Cloudflare Workers AI"),
@@ -32,7 +32,7 @@ pub fn built_in_provider_display_names() -> &'static Map<String, Value> {
             ("nvidia", "NVIDIA NIM"),
             ("opencode", "OpenCode Zen"),
             ("opencode-go", "OpenCode Go"),
-            ("openai", "[OI]"),
+            ("openai", "OpenAI"),
             ("chatgpt-subscription", "ChatGPT Subscription"),
             ("opengateway", "OpenGateway"),
             ("ollama", "Ollama Cloud"),
@@ -61,7 +61,7 @@ mod tests {
     fn known_providers_have_display_names() {
         let names = built_in_provider_display_names();
         assert_eq!(names.get("anthropic"), Some(&Value::String("Anthropic".into())));
-        assert_eq!(names.get("openai"), Some(&Value::String("[OI]".into())));
+        assert_eq!(names.get("openai"), Some(&Value::String("OpenAI".into())));
         assert_eq!(names.get("xiaomi-token-plan-sgp"), Some(&Value::String("Xiaomi MiMo Token Plan (Singapore)".into())));
     }
 

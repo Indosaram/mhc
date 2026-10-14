@@ -3,7 +3,7 @@
 use std::io;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde::ser::Serializer;
 
 use crate::manager::manager::TaskManager;
@@ -36,7 +36,7 @@ pub enum TranscriptEntry {
     Error { message: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TranscriptSource {
     #[serde(rename = "event-log")]
     EventLog,
@@ -74,7 +74,7 @@ pub struct TranscriptReaderInput<'a> {
 pub type TranscriptReader =
     Arc<dyn Fn(&TranscriptReaderInput<'_>) -> io::Result<TranscriptReadResult> + Send + Sync>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LostBreadcrumbs {
     pub explanation: String,
     pub session_dir: String,
@@ -82,7 +82,7 @@ pub struct LostBreadcrumbs {
     pub pid: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuspendedDetails {
     pub explanation: String,
 }
@@ -91,7 +91,7 @@ pub fn serialize_residency_state<S: Serializer>(state: &ResidencyState, serializ
     serializer.serialize_str(state.as_str())
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskSnapshot {
     pub task_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,7 +131,7 @@ pub struct TaskSnapshot {
     pub lost: Option<LostBreadcrumbs>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TranscriptMode {
     Tail,
@@ -147,7 +147,7 @@ impl TranscriptMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskOutputDetails {
     Status {

@@ -1,5 +1,7 @@
 //! Port of senpi packages/ai/src/providers/vercel-ai-gateway.ts.
 
+use crate::auth::types::ProviderAuth;
+use crate::auth::helpers::env_api_key_auth;
 use crate::models::{CreateProviderOptions, Provider, ProviderApi, create_provider};
 use crate::providers::builtin_api_streams;
 use std::sync::Arc;
@@ -10,6 +12,7 @@ pub fn vercel_ai_gateway_provider() -> Arc<dyn Provider> {
         name: Some("Vercel AI Gateway".into()),
         base_url: Some("https://ai-gateway.vercel.sh".into()),
         headers: None,
+        auth: Some(ProviderAuth { api_key: Some(Arc::new(env_api_key_auth("Vercel AI Gateway API key", &["AI_GATEWAY_API_KEY"]))), oauth: None }),
         models: super::vercel_ai_gateway_models::vercel_ai_gateway_models(),
         fetch_models: None,
         restore_models: None,

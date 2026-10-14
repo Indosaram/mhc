@@ -66,7 +66,7 @@ fn round_trips_a_real_omo_session_byte_for_byte() {
     let entries = load_entries_from_file(&copy.to_string_lossy());
     assert!(entries.len() > 1, "the copied session parses into header + entries");
 
-    let manager = SessionManager::open(&copy.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None);
+    let manager = SessionManager::open(&copy.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None).expect("open");
     let rewritten = std::fs::read(&copy).expect("read");
     assert_eq!(
         rewritten,
@@ -92,7 +92,7 @@ fn migrates_a_version_2_session_exactly_like_senpi() {
     ];
     std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("write");
 
-    let manager = SessionManager::open(&path.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None);
+    let manager = SessionManager::open(&path.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None).expect("open");
     let rewritten = std::fs::read_to_string(&path).expect("read");
     let expected = concat!(
         "{\"type\":\"session\",\"version\":3,\"id\":\"sess\",\"timestamp\":\"2026-09-24T01:00:00.000Z\",\"cwd\":\"/w\"}\n",

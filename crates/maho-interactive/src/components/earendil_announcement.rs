@@ -70,12 +70,12 @@ pub fn build_notice_box(spec: &NoticeSpec, expanded: bool, theme: &Theme) -> Rc<
     Rc::new(RefCell::new(box_component))
 }
 
+/// senpi `getBundledInteractiveAssetPath(IMAGE_FILENAME)`: the asset is embedded in the binary so
+/// installed or relocated builds still carry it.
+const IMAGE_BYTES: &[u8] = include_bytes!("../../assets/clankolas.png");
+
 fn load_image_base64() -> Option<String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("assets")
-        .join(IMAGE_FILENAME);
-    let bytes = std::fs::read(path).ok()?;
-    Some(base64_encode(&bytes))
+    Some(base64_encode(IMAGE_BYTES))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

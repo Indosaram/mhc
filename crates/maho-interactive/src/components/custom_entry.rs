@@ -5,6 +5,31 @@ use maho_tui::{components::{box_::Box as TuiBox, spacer::Spacer, text::Text}, tu
 
 pub type EntryRenderer = Rc<dyn Fn(&Value, bool, &Theme) -> Result<Option<Rc<RefCell<dyn Component>>>, String>>;
 pub type Replaces = Rc<dyn Fn(&Value, &Value) -> bool>;
+
+/// The session entry as an extension sees it (`SessionEntry` with the raw JSON as `data`).
+fn extension_session_entry(entry: &Value) -> maho_ext_api::SessionEntry {
+    maho_ext_api::SessionEntry {
+        id: entry["id"].as_str().unwrap_or_default().to_owned(),
+        parent_id: entry["parentId"].as_str().map(str::to_owned),
+        timestamp: entry["timestamp"].as_str().unwrap_or_default().to_owned(),
+        kind: entry["type"].as_str().unwrap_or_default().to_owned(),
+        data: entry.clone(),
+    }
+}
+
+/// Adapt an extension-registered `maho_ext_api::EntryRenderer` to this component's callback.
+pub fn from_extension_entry_renderer(renderer: maho_ext_api::EntryRenderer) -> EntryRenderer {
+    Rc::new(move |entry: &Value, expanded: bool, theme: &Theme| {
+        let options = maho_ext_api::EntryRenderOptions { expanded };
+        let theme = crate::interactive_extension_ui::extension_theme(theme);
+        Ok::<_, String>(renderer(&extension_session_entry(entry), &options, &theme).map(|component| Rc::new(RefCell::new(crate::interactive_ui_host::BoxedComponent(component))) as Rc<RefCell<dyn Component>>))
+    })
+}
+
+/// Adapt the renderer options' `replaces` predicate to this module's [`Replaces`].
+pub fn from_extension_entry_replaces(replaces: maho_ext_api::EntryReplaces) -> Replaces {
+    Rc::new(move |previous: &Value, next: &Value| replaces(&extension_session_entry(previous), &extension_session_entry(next)))
+}
 pub struct CustomEntryComponent {
     pub custom_entry: Value,
     renderer: EntryRenderer,

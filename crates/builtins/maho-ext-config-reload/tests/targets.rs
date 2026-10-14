@@ -43,3 +43,14 @@ fn symlink_resource_uses_presence_target_instead_of_following_directory() {
     let prompts = targets.iter().find(|target| target.target.id == "builtin-global-prompts-presence").unwrap();
     assert_eq!(prompts.rearm_on_creation, Some(root.path().join("prompts")));
 }
+#[test]
+#[cfg(unix)]
+fn skill_and_external_paths_resolve_like_senpi_resolve_path() {
+    use maho_ext_config_reload::index::resolve_watch_path;
+    let root = tempfile::tempdir().unwrap();
+    let home = maho_core::config::home_dir();
+    assert_eq!(resolve_watch_path("  ./skills ", root.path()), root.path().join("skills"));
+    assert_eq!(resolve_watch_path("~/my-skills", root.path()), std::path::Path::new(&home).join("my-skills"));
+    assert_eq!(resolve_watch_path("file:///tmp/skills", root.path()), std::path::PathBuf::from("/tmp/skills"));
+    assert_eq!(resolve_watch_path("a/../b", root.path()), root.path().join("b"));
+}

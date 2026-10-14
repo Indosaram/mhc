@@ -1,6 +1,6 @@
 use super::{projection_message_items::{MessageItemNotifier, MessageItemProjector}, projection_turn_diff::TurnDiffTracker, projection_types::{ProjectionResult, ProjectionTurnCompletion, message_id_from_message}, projection_wire_items::*};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::{Arc, Mutex}};
+use std::sync::{Arc, Mutex};
 
 pub struct EventProjector {
     thread_id: String,
@@ -10,29 +10,35 @@ pub struct EventProjector {
     message_counter: usize,
     message_items: MessageItemProjector,
     tool_items: Vec<ActiveToolItem>,
-    completed_ids: BTreeSet<String>,
     turn_diff: TurnDiffTracker,
     compaction_id: Option<String>,
     finalized: bool,
+    now_ms: NowMs,
 }
+/// senpi `EventProjectorOptions.nowMs`: the clock stamped on `item/started`/`item/completed`.
+pub type NowMs = Arc<dyn Fn() -> i64 + Send + Sync>;
 fn notification(thread: &str, turn: &str, method: &str, mut params: Value) -> Value {
     params["threadId"] = json!(thread); params["turnId"] = json!(turn);
     json!({"method":method,"params":params})
 }
 impl EventProjector {
     pub fn new(thread_id: String, turn_id: String, cwd: String) -> Self {
+        Self::with_clock(thread_id, turn_id, cwd, Arc::new(|| chrono::Utc::now().timestamp_millis()))
+    }
+    pub fn with_clock(thread_id: String, turn_id: String, cwd: String, now_ms: NowMs) -> Self {
         let active_message_id = Arc::new(Mutex::new(None::<String>));
+        let started_now = now_ms.clone(); let completed_now = now_ms.clone();
         let active = active_message_id.clone();
         let thread = thread_id.clone(); let turn = turn_id.clone();
         let started_thread = thread_id.clone(); let started_turn = turn_id.clone();
         let completed_thread = thread_id.clone(); let completed_turn = turn_id.clone();
         let message_items = MessageItemProjector::new(MessageItemNotifier {
             item_id: Arc::new(move |index| { let active = active.lock().unwrap_or_else(std::sync::PoisonError::into_inner); format!("{}:{index}", active.as_deref().unwrap_or("message-1")) }),
-            started: Arc::new(move |item| notification(&started_thread, &started_turn, "item/started", json!({"item":item}))),
-            completed: Arc::new(move |item| notification(&completed_thread, &completed_turn, "item/completed", json!({"item":item}))),
+            started: Arc::new(move |item| notification(&started_thread, &started_turn, "item/started", json!({"item":build_wire_item(item),"startedAtMs":started_now()}))),
+            completed: Arc::new(move |item| notification(&completed_thread, &completed_turn, "item/completed", json!({"item":build_wire_item(item),"completedAtMs":completed_now()}))),
             notification: Arc::new(move |method, params| notification(&thread, &turn, method, params)),
         });
-        Self { thread_id, turn_id, cwd, active_message_id, message_counter: 0, message_items, tool_items: Vec::new(), completed_ids: BTreeSet::new(), turn_diff: TurnDiffTracker::default(), compaction_id: None, finalized: false }
+        Self { thread_id, turn_id, cwd, active_message_id, message_counter: 0, message_items, tool_items: Vec::new(), turn_diff: TurnDiffTracker::default(), compaction_id: None, finalized: false, now_ms }
     }
     fn note_message(&mut self, message: &Value, replace: bool) {
         let mut active = self.active_message_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -40,6 +46,8 @@ impl EventProjector {
         else if replace || active.is_none() { self.message_counter += 1; *active = Some(format!("message-{}", self.message_counter)); }
     }
     fn notify(&self, method: &str, params: Value) -> Value { notification(&self.thread_id, &self.turn_id, method, params) }
+    fn started(&self, item: Value) -> Value { self.notify("item/started", json!({"item":build_wire_item(item),"startedAtMs":(self.now_ms)()})) }
+    fn completed(&self, item: Value) -> Value { self.notify("item/completed", json!({"item":build_wire_item(item),"completedAtMs":(self.now_ms)()})) }
     fn complete_tool(&mut self, id: &str, is_error: bool, result: &Value) -> Vec<Value> {
         let Some(tool) = self.tool_items.iter_mut().find(|tool| tool.id == id && !tool.completed) else { return Vec::new(); };
         tool.completed = true;
@@ -49,8 +57,7 @@ impl EventProjector {
         let (item, diff) = tool_wire_projection(tool, status, &self.cwd, result, is_error);
         let id = tool.id.clone();
         let cumulative = self.turn_diff.update(&id, &diff, self.tool_items.iter().map(|tool| tool.id.as_str()));
-        let mut notifications = Vec::new();
-        if self.completed_ids.insert(id) { notifications.push(self.notify("item/completed", json!({"item":build_wire_item(item)}))); }
+        let mut notifications = vec![self.completed(item)];
         if let Some(diff) = cumulative { notifications.push(self.notify("turn/diff/updated", json!({"diff":diff}))); }
         notifications
     }
@@ -77,7 +84,7 @@ impl EventProjector {
                         let tool = ActiveToolItem { id:call["id"].as_str().unwrap_or_default().into(), name:call["name"].as_str().unwrap_or_default().into(), args:call["arguments"].clone(), output:String::new(), completed:false };
                         let item = tool_wire_projection(&tool, ToolExecutionStatus::InProgress, &self.cwd, &Value::Null, false).0;
                         if let Some(position) = self.tool_items.iter().position(|previous| previous.id == tool.id) { self.tool_items[position] = tool; } else { self.tool_items.push(tool); }
-                        notifications.push(self.notify("item/started", json!({"item":build_wire_item(item)})));
+                        notifications.push(self.started(item));
                     },
                     Some("done") => { notifications = self.message_items.close_dangling_items(); completion = Some(ProjectionTurnCompletion { status:"completed".into(), error_message:None }); },
                     Some("error") => completion = Some(ProjectionTurnCompletion { status:if update["reason"] == "aborted" { "interrupted" } else { "failed" }.into(), error_message:update["error"]["errorMessage"].as_str().map(str::to_owned) }),
@@ -90,8 +97,8 @@ impl EventProjector {
                 for (index, content) in event["message"]["content"].as_array().into_iter().flatten().enumerate().filter(|(_, content)| content["type"] == "providerNative") {
                     let message_id = self.active_message_id.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or_default();
                     let item = provider_native_item(&format!("{message_id}:providerNative:{index}"), &event["message"], content);
-                    notifications.push(self.notify("item/started", json!({"item":item})));
-                    if self.completed_ids.insert(item["id"].as_str().unwrap_or_default().into()) { notifications.push(self.notify("item/completed", json!({"item":item}))); }
+                    notifications.push(self.started(item.clone()));
+                    notifications.push(self.completed(item));
                 }
             },
             Some("tool_execution_start") => {
@@ -106,12 +113,12 @@ impl EventProjector {
             },
             Some("tool_execution_end") => notifications = self.complete_tool(event["toolCallId"].as_str().unwrap_or_default(), event["isError"] == true, &event["result"]),
             Some("compaction_start") => {
-                let id = format!("{}:compaction", self.turn_id); self.compaction_id = Some(id.clone());
-                notifications.push(self.notify("item/started", json!({"item":{"type":"contextCompaction","id":id}})));
+                let id = format!("context-compaction:{}", self.message_counter + 1); self.compaction_id = Some(id.clone());
+                notifications.push(self.started(json!({"type":"contextCompaction","id":id})));
             },
             Some("compaction_end") => {
-                let id = self.compaction_id.take().unwrap_or_else(|| format!("{}:compaction", self.turn_id));
-                if self.completed_ids.insert(id.clone()) { notifications.push(self.notify("item/completed", json!({"item":{"type":"contextCompaction","id":id}}))); }
+                let id = self.compaction_id.take().unwrap_or_else(|| format!("context-compaction:{}", self.message_counter + 1));
+                notifications.push(self.completed(json!({"type":"contextCompaction","id":id})));
             },
             _ => {},
         }
@@ -122,7 +129,7 @@ impl EventProjector {
         self.finalized = true;
         let mut notifications = self.message_items.close_dangling_items();
         let pending = self.tool_items.iter().filter(|tool| !tool.completed).map(|tool| tool.id.clone()).collect::<Vec<_>>();
-        for id in pending { notifications.extend(self.complete_tool(&id, true, &json!({"content":[{"type":"text","text":"Tool execution interrupted"}]}))); }
+        for id in pending { notifications.extend(self.complete_tool(&id, false, &Value::Null)); }
         notifications
     }
 }

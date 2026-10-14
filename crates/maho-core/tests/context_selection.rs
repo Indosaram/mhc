@@ -28,5 +28,11 @@ async fn context_selection_survives_rebuild_and_reaches_extension_options() {
     let options = actions.get_system_prompt_options();
     assert!(options.context_files.iter().any(|file| file.content == "CONTEXT_SELECTION_CHANGED"));
     assert!(session.system_prompt().contains("CONTEXT_SELECTION_CHANGED"));
+
+    // senpi keeps the loaded context files until `/reload`; a rebuild does not re-read them.
+    std::fs::write(&source, "CONTEXT_SELECTION_EDITED").expect("edited context input");
+    session.rebuild_system_prompt();
+    assert!(session.system_prompt().contains("CONTEXT_SELECTION_CHANGED"));
+    assert!(!session.system_prompt().contains("CONTEXT_SELECTION_EDITED"));
     session.dispose().await;
 }

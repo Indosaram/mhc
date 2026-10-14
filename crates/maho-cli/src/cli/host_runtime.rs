@@ -51,6 +51,12 @@ pub struct CliRuntimeConfiguration {
     pub themes: Vec<String>,
     pub hooks: Vec<String>,
     pub additional_hook_paths: Vec<PathBuf>,
+    /// senpi `parsed.projectTrustOverride` (`--approve` / `--no-approve`).
+    pub project_trust_override: Option<bool>,
+    /// senpi `projectTrustByCwd`: one decision per cwd for every runtime this factory creates.
+    pub project_trust_by_cwd: Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
+    /// senpi `parsed.unknownFlags`: extension flag values every mounted session applies.
+    pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
 }
 
 impl Default for CliRuntimeConfiguration {
@@ -75,6 +81,9 @@ impl Default for CliRuntimeConfiguration {
             themes: Vec::new(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            project_trust_override: None,
+            project_trust_by_cwd: Arc::default(),
+            extension_flag_values: None,
         }
     }
 }
@@ -101,12 +110,66 @@ impl CliRuntimeConfiguration {
             themes: parsed.themes.clone(),
             hooks: Vec::new(),
             additional_hook_paths: Vec::new(),
+            project_trust_override: parsed.project_trust_override,
+            project_trust_by_cwd: Arc::default(),
+            extension_flag_values: (!parsed.unknown_flags.is_empty()).then(|| parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+                super::args::FlagValue::Boolean(value) => FlagValue::Boolean(*value),
+                super::args::FlagValue::String(value) => FlagValue::String(value.clone()),
+            })).collect()),
         }
+    }
+
+    /// The configuration a session worker receives in its \`prepare\` (senpi posts the
+    /// \`CliRuntimeConfiguration\` object; a structured clone keeps no shared trust cache, so the
+    /// worker starts its own per-cwd decisions).
+    pub fn to_worker_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cwd": self.cwd, "agentDir": self.agent_dir, "appMode": self.app_mode.as_str(),
+            "provider": self.provider, "model": self.model, "models": self.models, "thinking": self.thinking,
+            "autoTitleSessions": self.auto_title_sessions, "help": self.help, "listModels": self.list_models, "listTips": self.list_tips,
+            "sessionDir": self.session_dir, "extensions": self.extensions, "noExtensions": self.no_extensions,
+            "skills": self.skills, "promptTemplates": self.prompt_templates, "themes": self.themes, "hooks": self.hooks,
+            "additionalHookPaths": self.additional_hook_paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            "projectTrustOverride": self.project_trust_override,
+            "extensionFlagValues": self.extension_flag_values.as_ref().map(|flags| flags.iter().map(|(name, value)| (name.clone(), match value {
+                FlagValue::Boolean(value) => serde_json::json!(value),
+                FlagValue::String(value) => serde_json::json!(value),
+            })).collect::<serde_json::Map<_, _>>()),
+        })
+    }
+
+    pub fn from_worker_json(value: &serde_json::Value) -> Result<Self, String> {
+        let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+        let list = |key: &str| value.get(key).and_then(serde_json::Value::as_array).map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default();
+        let flag = |key: &str| value.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let app_mode = match text("appMode").as_deref() {
+            Some("interactive") => AppMode::Interactive, Some("print") => AppMode::Print, Some("json") => AppMode::Json,
+            Some("rpc") => AppMode::Rpc, Some("app-server") => AppMode::AppServer,
+            other => return Err(format!("Invalid worker configuration appMode: {other:?}")),
+        };
+        Ok(Self {
+            cwd: text("cwd").ok_or("Invalid worker configuration: cwd")?,
+            agent_dir: text("agentDir").ok_or("Invalid worker configuration: agentDir")?,
+            app_mode,
+            provider: text("provider"), model: text("model"), models: list("models"), thinking: text("thinking"),
+            auto_title_sessions: value.get("autoTitleSessions").and_then(serde_json::Value::as_bool),
+            help: flag("help"), list_models: flag("listModels"), list_tips: flag("listTips"),
+            session_dir: text("sessionDir"), extensions: list("extensions"), no_extensions: flag("noExtensions"),
+            skills: list("skills"), prompt_templates: list("promptTemplates"), themes: list("themes"), hooks: list("hooks"),
+            additional_hook_paths: list("additionalHookPaths").into_iter().map(PathBuf::from).collect(),
+            project_trust_override: value.get("projectTrustOverride").and_then(serde_json::Value::as_bool),
+            project_trust_by_cwd: Arc::default(),
+            extension_flag_values: value.get("extensionFlagValues").and_then(serde_json::Value::as_object).map(|flags| flags.iter().filter_map(|(name, value)| Some((name.clone(), match value {
+                serde_json::Value::Bool(value) => FlagValue::Boolean(*value),
+                serde_json::Value::String(value) => FlagValue::String(value.clone()),
+                _ => return None,
+            }))).collect()),
+        })
     }
 
     /// senpi `trustPromptMode`: metadata-only launches resolve trust as a print run.
     pub fn trust_prompt_mode(&self) -> AppMode {
-        if self.help || self.list_models || self.list_tips { AppMode::Print } else { self.app_mode }
+        if self.help || self.list_models || self.list_tips { AppMode::Print } else { to_project_trust_mode(self.app_mode) }
     }
 
     /// senpi `resolveCliPaths`.
@@ -133,6 +196,17 @@ impl CliRuntimeConfiguration {
         self.resolve_cli_paths(&self.themes)
     }
 
+    /// senpi `DefaultResourceLoader` CLI inputs: `-e` sources, `--skill`, `--prompt-template` and hook
+    /// paths, resolved against the launch cwd.
+    pub fn resource_loader_inputs(&self) -> maho_core::resource_loader::ResourceLoaderInputs {
+        maho_core::resource_loader::ResourceLoaderInputs {
+            additional_extension_paths: self.resolved_extension_paths(),
+            additional_skill_paths: self.resolved_skill_paths(),
+            additional_prompt_template_paths: self.resolved_prompt_template_paths(),
+            ..Default::default()
+        }
+    }
+
     /// senpi `cliExtensionPaths.hooks` resolved against the launch cwd.
     pub fn resolved_hook_paths(&self) -> Vec<PathBuf> {
         self.resolve_cli_paths(&self.hooks).into_iter().map(PathBuf::from).collect()
@@ -155,12 +229,85 @@ impl CliRuntimeConfiguration {
     }
 }
 
-/// senpi `resolvePath`/`normalizePath` for a CLI path: absolute paths are returned as given and
-/// relative paths resolve against the launch cwd.
+/// senpi `toProjectTrustMode`.
+pub fn to_project_trust_mode(mode: AppMode) -> AppMode {
+    if mode == AppMode::AppServer { AppMode::Print } else { mode }
+}
+
+/// senpi `createCliRuntimeFactory`'s project-trust decision for one runtime cwd: a cached decision
+/// wins, then `resolveProjectTrusted` (override, no trust-requiring resources, the pre-trust
+/// extensions' `project_trust` handlers, saved `trust.json`, global `defaultProjectTrust`, then the
+/// prompt when `has_ui`). A decision reached through the resolver is cached per cwd. Extension load
+/// and handler failures are reported on stderr as warnings.
+pub async fn resolve_runtime_project_trust(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+) -> bool {
+    let (trusted, warnings) = resolve_runtime_project_trust_with_warnings(config, cwd, mode, has_ui, selector).await;
+    for warning in warnings { maho_core::output_guard::maho_write_stderr(&format!("Warning: {warning}\n")); }
+    trusted
+}
+
+/// [`resolve_runtime_project_trust`] returning senpi's `projectTrustDiagnostics` (main.ts:769-775)
+/// for the caller to report with its runtime diagnostics.
+pub async fn resolve_runtime_project_trust_with_warnings(
+    config: &CliRuntimeConfiguration,
+    cwd: &str,
+    mode: AppMode,
+    has_ui: bool,
+    selector: Box<super::project_trust::Selector>,
+) -> (bool, Vec<String>) {
+    let cached = config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(cwd).copied();
+    if let Some(trusted) = cached { return (trusted, Vec::new()); }
+    let should_resolve = config.project_trust_override.is_none()
+        && maho_core::trust_manager::has_trust_requiring_project_resources(cwd, None);
+    let bootstrap = SettingsManager::create(cwd, &config.agent_dir, &maho_core::config::home_dir(), false);
+    let default_project_trust = bootstrap.get_global().get("defaultProjectTrust").and_then(serde_json::Value::as_str)
+        .and_then(maho_core::project_trust::DefaultProjectTrust::parse);
+    let trust_store = maho_core::trust_manager::ProjectTrustStore::new(&config.agent_dir);
+    let selector: Arc<super::project_trust::Selector> = Arc::from(selector);
+    let mut warnings = Vec::new();
+    let extension_trust = if should_resolve {
+        let startup_ui = (bootstrap.get_string("theme"), bootstrap.get_show_hardware_cursor(), bootstrap.get_clear_on_shrink());
+        let ui = Arc::new(super::project_trust::ProjectTrustUi {
+            mode, has_ui, select: selector.clone(),
+            input: Arc::new(move |title: &str, placeholder: Option<&str>| {
+                match super::startup_ui::show_startup_input(startup_ui.0.as_deref(), startup_ui.1, startup_ui.2, title, placeholder) {
+                    Ok(value) => value,
+                    Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
+                }
+            }),
+        });
+        let resolved = super::project_trust::resolve_extension_project_trust(
+            cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions, mode, ui,
+        ).await;
+        warnings.extend(resolved.load_warnings);
+        warnings.extend(resolved.trust_warnings);
+        resolved.result
+    } else { None };
+    let emit = move |_: &str| -> Result<Option<maho_ext_api::ProjectTrustEventResult>, maho_ext_api::ExtensionFailure> { Ok(extension_trust.clone()) };
+    let context_selector = selector.clone();
+    let context = super::project_trust::CliProjectTrustContext {
+        cwd: cwd.to_owned(), mode, ui_available: has_ui, selector: Box::new(move |title, options| context_selector(title, options)),
+    };
+    let trusted = maho_core::project_trust::resolve_project_trusted(maho_core::project_trust::ResolveProjectTrustedOptions {
+        cwd, trust_store: &trust_store, trust_override: config.project_trust_override, default_project_trust,
+        emit_project_trust: Some(&emit), project_trust_context: &context, on_extension_error: None,
+    }).await;
+    if should_resolve {
+        config.project_trust_by_cwd.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(cwd.to_owned(), trusted);
+    }
+    (trusted, warnings)
+}
+
+/// senpi `resolveCliPaths` entry: package sources and remote URLs (`isLocalPath` false) are kept
+/// verbatim; local values go through `resolvePath` (`~` and `file://` expansion) against the cwd.
 pub fn resolve_cli_path(cwd: &str, path: &str) -> String {
-    let candidate = Path::new(path);
-    if candidate.is_absolute() { return path.to_owned(); }
-    PathBuf::from(cwd).join(candidate).to_string_lossy().into_owned()
+    if !maho_core::paths::is_local_path(path) { return path.to_owned(); }
+    maho_core::paths::resolve_path(path, cwd, &maho_core::paths::PathInputOptions::default())
 }
 
 /// The per-runtime inputs a mode supplies when it mounts a session runtime.
@@ -181,6 +328,11 @@ pub struct CliRuntimeRequest {
     pub extension_flag_values: Option<BTreeMap<String, FlagValue>>,
     pub auto_title_sessions: Option<bool>,
     pub session_profile: maho_ext_api::ExtensionSessionProfile,
+    /// senpi `mcpRegistry`: the multi-session host's one shared MCP registry.
+    pub mcp_registry: Option<Arc<maho_ext_mcp::host_registry::HostMcpRegistry>>,
+    /// Mode-specific bindings for the first `bind_extensions`; the mount still sets the mode.
+    pub extension_bindings: Option<maho_core::agent_session::ExtensionBindingsFactory>,
+    pub extension_ui: Option<Arc<dyn maho_ext_api::ExtensionUi>>,
 }
 
 /// The mounted session runtime plus the diagnostics senpi reports before the first turn.
@@ -228,29 +380,48 @@ pub async fn mount_agent_session_runtime(
         extension_flag_values,
         auto_title_sessions,
         session_profile,
+        mcp_registry,
+        extension_bindings,
+        extension_ui,
     } = request;
     let cwd = cwd.unwrap_or_else(|| config.cwd.clone());
     let mut launch_config = config.clone();
     launch_config.cwd = cwd.clone();
+    let mut trust_warnings = Vec::new();
+    let settings_manager = match settings_manager {
+        Some(settings_manager) => settings_manager,
+        None => {
+            let (trusted, warnings) = resolve_runtime_project_trust_with_warnings(config, &cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            trust_warnings = warnings;
+            SettingsManager::create(&cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted)
+        }
+    };
+    let settings_manager = Some(settings_manager);
     let mut services = create_agent_session_services(CreateAgentSessionServicesOptions {
         cwd: cwd.clone(),
         agent_dir: Some(config.agent_dir.clone()),
         settings_manager,
         model_runtime,
-        extension_flag_values,
-    });
+    }).await;
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
+    let reload_widget_sender = widget_sender.clone();
+    let reload_mcp_registry = mcp_registry.clone();
     let task_parent = Arc::new(std::sync::OnceLock::new());
-    let mut extension_factories = super::default_extensions::assembled_factories(widget_sender, task_parent.clone());
-    if !config.no_extensions {
-        let discovery = super::user_extensions::resolve_and_discover(
-            &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(),
-        ).await.map_err(|error| error.to_string())?;
-        if !discovery.errors.is_empty() {
-            return Err(discovery.errors.into_iter().map(|error| format!("{}: {}", error.path, error.message)).collect::<Vec<_>>().join("\n"));
-        }
-        extension_factories.extend(discovery.factories);
-    }
+    let extension_factories = super::default_extensions::assembled_factories_with_mcp_registry(
+        widget_sender, task_parent.clone(), mcp_registry, &services.settings_manager, Path::new(&cwd), &config.agent_dir,
+    );
+    let (extension_factories, extension_errors) = super::default_extensions::with_user_extensions(
+        extension_factories, &mut services.settings_manager, &cwd, &config.agent_dir, &config.resolved_extension_paths(), config.no_extensions,
+    ).await?;
+    // senpi main.ts:129-136 `collectExtensionLoadDiagnostics`: a failed extension load is a warning
+    // and the session still opens. senpi main.ts:769-775 `projectTrustDiagnostics` lead the list.
+    services.diagnostics.splice(0..0, trust_warnings.into_iter().map(|message| AgentSessionRuntimeDiagnostic {
+        kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning, message,
+    }));
+    services.diagnostics.extend(extension_errors.into_iter().map(|error| AgentSessionRuntimeDiagnostic {
+        kind: maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Warning,
+        message: super::default_extensions::extension_load_failure_message(&error.path, &error.message),
+    }));
     let created = maho_core::agent_session_services::create_agent_session_from_services(
         services,
         maho_core::agent_session_services::CreateAgentSessionFromServicesOptions {
@@ -267,8 +438,10 @@ pub async fn mount_agent_session_runtime(
             custom_tools,
             auto_title_sessions,
             extension_factories,
-            session_profile,
+            session_profile: session_profile.clone(),
+            extension_flag_values,
             defer_extension_start: true,
+            resource_inputs: launch_config.resource_loader_inputs(),
             ..Default::default()
         },
     )
@@ -285,8 +458,13 @@ pub async fn mount_agent_session_runtime(
     theme_paths.extend(config.resolved_theme_paths().into_iter().map(PathBuf::from));
     super::default_extensions::configure_rpc_html_theme_with_paths(&created.session, theme_paths);
     task_parent.set(created.session.weak_accessor()).map_err(|_| "Task parent already bound".to_owned())?;
+    created.session.set_extension_runtime_factory(super::default_extensions::reloading_runtime_factory(
+        reload_widget_sender, task_parent.clone(), reload_mcp_registry, config.resolved_extension_paths(), config.no_extensions, session_profile,
+    )).await;
     let hooks = created.session.with_settings_manager(|settings| super::hook_sources::build_loaded_hook_sources(&launch_config, settings));
     created.session.set_hook_sources(Some(hooks));
+    let mut bindings = extension_bindings.map(|factory| factory(&created.session)).unwrap_or_default();
+    if extension_ui.is_some() { bindings.ui_context = extension_ui; }
     created.session.bind_extensions(maho_core::agent_session::ExtensionBindings {
         mode: Some(match config.app_mode {
             AppMode::Interactive => maho_ext_api::ExtensionMode::Tui,
@@ -295,7 +473,7 @@ pub async fn mount_agent_session_runtime(
             AppMode::Json => maho_ext_api::ExtensionMode::Json,
             AppMode::Print => maho_ext_api::ExtensionMode::Print,
         }),
-        ..Default::default()
+        ..bindings
     }).await;
     let diagnostics = created.services.diagnostics.clone();
     let model_fallback_message = created.model_fallback_message.clone();
@@ -351,6 +529,7 @@ pub fn create_cli_runtime_factory(config: CliRuntimeConfiguration) -> CliSession
                 session_manager: request.session_manager,
                 session_start_event: request.session_start_event,
                 auto_title_sessions: config.auto_title_sessions,
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
             mount_agent_session_runtime(&config, mount_request, model_runtime, settings_manager).await
@@ -365,7 +544,7 @@ pub fn create_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Opti
     // the sessions share one agent dir, so a per-open rebuild would pay the same catalog load once
     // per open instead of once per host.
     let model_runtime = host_model_runtime(&config);
-    let create_runtime = host_runtime_factory(config.clone(), model_runtime);
+    let create_runtime = host_runtime_factory_with_mcp_registry(config.clone(), model_runtime, Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()));
     // A socket host answers each connection through its own writer, so its fallback writer is a
     // sink; the stdio host answers on stdout (senpi `runSocketHost` vs `runStdioHost`).
     let writer = match listen {
@@ -384,6 +563,61 @@ pub fn create_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Opti
         },
         writer,
     ))
+}
+
+/// senpi main.ts:1112-1154 with \`resolveSessionRuntime(parsed) === "worker"\`: the host passes its
+/// configuration as \`workerConfiguration\`, so \`createHostCore\` selects the worker registry and every
+/// session runs in its own isolated worker process. No shared model runtime is built: each worker
+/// builds its own (an object cannot cross the process boundary).
+pub fn create_worker_host_core(config: CliRuntimeConfiguration, cwd: &str, listen: Option<&str>, executable: PathBuf) -> std::sync::Arc<maho_rpc::multi_session_host::HostCore> {
+    let create_runtime: maho_rpc::multi_session_host::HostRuntimeFactory = Arc::new(|_profile: maho_rpc::session_registry::RpcSessionLaunchProfile| {
+        Box::pin(async { Err("a worker-runtime host opens every session in its own worker".to_owned()) })
+            as Pin<Box<dyn Future<Output = Result<AgentSessionRuntime, String>> + Send>>
+    });
+    let writer = match listen {
+        None | Some("stdio://") => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::stdout())),
+        Some(_) => std::sync::Arc::new(maho_rpc::session_event_writer::SessionWriterActor::new(tokio::io::sink())),
+    };
+    let close_grace_ms = host_close_grace_ms();
+    let workers = maho_rpc::worker_session_registry::WorkerSessionRegistry::new(config.to_worker_json(), session_worker_spawner(executable), close_grace_ms);
+    std::sync::Arc::new(maho_rpc::multi_session_host::HostCore::new(
+        maho_rpc::multi_session_host::HostCoreOptions {
+            agent_dir: PathBuf::from(&config.agent_dir),
+            cwd: cwd.to_owned(),
+            create_runtime,
+            capabilities: maho_rpc::custom_capability::parse_client_capabilities(
+                maho_core::brand::env_value("RPC_CLIENT_CAPABILITIES", &maho_core::config::current_env()).as_deref(),
+            ),
+            close_grace_ms,
+        },
+        writer,
+    ).with_worker_registry(workers))
+}
+
+/// One isolated session worker: this binary re-entered under the internal rpc-session-worker role
+/// (senpi \`new Worker(session-worker.ts)\`), speaking the worker protocol on stdin/stdout.
+pub fn session_worker_spawner(executable: PathBuf) -> maho_rpc::session_worker_client::SpawnSessionWorker {
+    Arc::new(move || {
+        let mut command = tokio::process::Command::new(&executable);
+        command
+            .env(crate::experimental::process::INTERNAL_PROCESS_ENV, crate::experimental::process::RPC_SESSION_WORKER_ROLE)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        command.spawn()
+    })
+}
+
+/// senpi \`session-worker.ts\` \`commit\`: \`createCliRuntimeFactory(prepared.configuration)\` inside the worker.
+pub fn session_worker_configuration(value: &serde_json::Value) -> Result<maho_rpc::session_worker::SessionWorkerConfiguration, String> {
+    let config = CliRuntimeConfiguration::from_worker_json(value)?;
+    let model_runtime = host_model_runtime(&config);
+    Ok(maho_rpc::session_worker::SessionWorkerConfiguration {
+        agent_dir: config.agent_dir.clone(),
+        session_dir: config.session_dir.clone(),
+        create_runtime: host_runtime_factory(config, model_runtime),
+    })
 }
 
 /// senpi's shared host model runtime (`hostModelRuntime`): one catalog and one auth store behind
@@ -407,6 +641,8 @@ pub async fn serve_multi_session_host(
     core: std::sync::Arc<maho_rpc::multi_session_host::HostCore>,
     listen: Option<String>,
 ) -> std::io::Result<()> {
+    #[cfg(unix)]
+    { maho_rpc::multi_session_host::set_host_signal_cleanup(crate::utils::shell::kill_tracked_detached_children); }
     maho_rpc::multi_session_host::run_multi_session_host(core, listen).await
 }
 
@@ -414,20 +650,30 @@ pub async fn serve_multi_session_host(
 /// per `open_session`, built by the same CLI mount path every other mode uses (the seam
 /// `maho_rpc::multi_session_host::HostRuntimeFactory` exists for).
 pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: ModelRuntime) -> maho_rpc::multi_session_host::HostRuntimeFactory {
+    host_runtime_factory_with_mcp_registry(config, model_runtime, Arc::new(maho_ext_mcp::host_registry::HostMcpRegistry::default()))
+}
+
+/// `host_runtime_factory` over the host's one `HostMcpRegistry` (senpi `createHostCore`
+/// `mcpRegistry: new HostMcpRegistry()`), injected into every session's `mcp` builtin.
+pub fn host_runtime_factory_with_mcp_registry(config: CliRuntimeConfiguration, model_runtime: ModelRuntime, mcp_registry: Arc<maho_ext_mcp::host_registry::HostMcpRegistry>) -> maho_rpc::multi_session_host::HostRuntimeFactory {
     std::sync::Arc::new(move |profile: maho_rpc::session_registry::RpcSessionLaunchProfile| {
         let config = config.clone();
         let model_runtime = model_runtime.clone();
+        let mcp_registry = mcp_registry.clone();
         Box::pin(async move {
-            let session_manager = open_profile_session_manager(&config, &profile);
+            let session_manager = open_profile_session_manager(&config, &profile)?;
             // The profile's per-session startup choices feed the same resolver as
             // `--provider/--model/--thinking`: an open that names none keeps the CLI's own
             // (senpi `runtimeParsed` inside `createCliRuntimeFactory`).
             let thinking = profile.runtime.initial_thinking_level.clone().or_else(|| config.thinking.clone())
                 .and_then(|level| maho_ai::types::ThinkingLevel::parse(&level));
             let creation_model = profile.runtime.creation_model.clone().or_else(|| config.provider.clone().zip(config.model.clone()));
-            let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &model_runtime.get_models(None));
-            let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), false);
-            let is_continuing = !session_manager.build_context(session_manager.leaf_id()).messages.is_empty();
+            // senpi `resolveModelScope`: scope patterns resolve against authenticated models.
+            let scope_models = if config.models.is_empty() { Vec::new() } else { model_runtime.get_available(None).await };
+            let scoped = maho_core::model_resolver::resolve_model_scope_from_models(&config.models, &scope_models);
+            let trusted = resolve_runtime_project_trust(&config, &profile.runtime.cwd, to_project_trust_mode(config.app_mode), false, Box::new(|_, _| None)).await;
+            let settings = SettingsManager::create(&profile.runtime.cwd, &config.agent_dir, &maho_core::config::home_dir(), trusted);
+            let is_continuing = !session_manager.current_context().messages.is_empty();
             let initial = resolve_cli_initial_model(creation_model, thinking, is_continuing, &settings, &model_runtime, &scoped.scoped_models).await;
             let session_start_event = initial.provenance.map(|provenance| SessionStartEvent {
                 reason: maho_ext_api::SessionReason::Startup,
@@ -448,9 +694,11 @@ pub fn host_runtime_factory(config: CliRuntimeConfiguration, model_runtime: Mode
                     session_kind: profile.session_kind.unwrap_or_default(),
                     session_context: profile.session_context.clone().unwrap_or_default(),
                 },
+                mcp_registry: Some(mcp_registry),
+                extension_flag_values: config.extension_flag_values.clone(),
                 ..Default::default()
             };
-            let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), None).await?;
+            let mounted = mount_agent_session_runtime(&config, request, Some(model_runtime), Some(settings)).await?;
             Ok(mounted.runtime)
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<AgentSessionRuntime, String>> + Send>>
     })
@@ -515,10 +763,10 @@ pub async fn resolve_cli_initial_model(
 }
 
 /// senpi's per-open session manager: an explicit `sessionPath` opens it with the profile's cwd.
-pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> SessionManager {
+pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> Result<SessionManager, String> {
     let identity = profile.durable_session_id.clone().map(|id| maho_core::session_manager::NewSessionOptions { id: Some(id), parent_session: None });
     match profile.session_path.as_deref() {
         Some(path) => SessionManager::open(path, config.session_dir.as_deref(), Some(profile.runtime.cwd.as_str()), identity),
-        None => SessionManager::create(&profile.runtime.cwd, config.session_dir.as_deref(), identity),
+        None => Ok(SessionManager::create(&profile.runtime.cwd, config.session_dir.as_deref(), identity)),
     }
 }

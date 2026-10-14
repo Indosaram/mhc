@@ -288,6 +288,22 @@ fn detects_and_reaps_stale_lock_entries() {
     assert!(fs::read_to_string(&lock_path).is_err());
 }
 
+/// Pin `locks.ts:95-104`: an EPERM probe (pid 1 belongs to root) reads as not alive, so an old
+/// lock held by another user's pid is reclaimable once `stale_after_ms` passes.
+#[cfg(unix)]
+#[test]
+fn detects_a_stale_lock_whose_owner_pid_denies_the_liveness_probe() {
+    use std::os::unix::fs::MetadataExt;
+    let root = temp("locks-eperm-");
+    // The temp dir is owned by this process's uid; root can signal pid 1, so the probe would succeed.
+    if fs::metadata(root.path()).expect("metadata").uid() == 0 {
+        return;
+    }
+    let lock_path = root.path().join("lock");
+    fs::write(&lock_path, format!("other-user-owner\n1\n{}\n", now() - 600_000)).expect("lock");
+    assert!(detect_stale_lock(&lock_path, 300_000));
+}
+
 // --- store.test.ts ---------------------------------------------------------------------------
 
 fn store_config(base: &Path) -> TeamModeConfig {

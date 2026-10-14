@@ -10,11 +10,31 @@ pub trait LsOperations: Send + Sync {
 pub struct LocalLsOperations;
 impl LsOperations for LocalLsOperations {
     fn exists<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await.is_ok()) }) }
-    fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await?.is_dir()) }) }
+    fn is_directory<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, bool> { Box::pin(async move { Ok(tokio::fs::metadata(path).await.map_err(|e| node_fs_error(e, "stat", path))?.is_dir()) }) }
     fn readdir<'a>(&'a self, path: &'a Path) -> ToolFuture<'a, Vec<String>> { Box::pin(async move {
-        let mut entries = tokio::fs::read_dir(path).await?; let mut names = Vec::new();
+        let mut entries = tokio::fs::read_dir(path).await.map_err(|e| node_fs_error(e, "scandir", path))?; let mut names = Vec::new();
         while let Some(entry) = entries.next_entry().await? { names.push(entry.file_name().to_string_lossy().into_owned()); } Ok(names)
     }) }
+}
+const ASCII_PUNCTUATION_ORDER: &str = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+fn collation_elements(text: &str) -> (Vec<(u8, u32)>, Vec<u32>) {
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+    let (mut primary, mut secondary) = (Vec::new(), Vec::new());
+    for c in text.nfd() {
+        if is_combining_mark(c) { if let Some(last) = secondary.last_mut() { *last = u32::from(c); } continue; }
+        let weight = if let Some(index) = ASCII_PUNCTUATION_ORDER.find(c) { (0, u32::try_from(index).unwrap_or(u32::MAX)) }
+            else if c.is_alphabetic() { (3, u32::from(c)) }
+            else if let Some(digit) = c.to_digit(10) { (2, digit) }
+            else { (1, u32::from(c)) };
+        primary.push(weight); secondary.push(0);
+    }
+    (primary, secondary)
+}
+/// Approximates JS `String.prototype.localeCompare` (ICU root collation): punctuation and symbols
+/// sort before digits, digits before letters, and accents only break ties between equal base letters.
+pub fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    let (left, right) = (collation_elements(a), collation_elements(b));
+    left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)).then_with(|| a.cmp(b))
 }
 #[derive(Default, Clone)]
 pub struct LsToolOptions { pub operations: Option<Arc<dyn LsOperations>>, pub filesystem_policy: Option<FilesystemPolicyChecker> }
@@ -34,7 +54,7 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
                 if !ops.exists(&path).await? { return Err(ToolError::Message(format!("Path not found: {}", path.display()))); }
                 if !ops.is_directory(&path).await? { return Err(ToolError::Message(format!("Not a directory: {}", path.display()))); }
                 let mut entries = ops.readdir(&path).await.map_err(|e| ToolError::Message(format!("Cannot read directory: {e}")))?;
-                entries.sort_by_key(|a| a.to_lowercase());
+                entries.sort_by(|a, b| locale_compare(&a.to_lowercase(), &b.to_lowercase()));
                 let mut results = Vec::new(); let mut limited = false;
                 for entry in entries {
                     if results.len() >= limit { limited = true; break; }
@@ -52,6 +72,6 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })
     });
-    let mut tool = ToolDefinition::new("ls", "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).", json!({"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number"}}}), execute);
+    let mut tool = ToolDefinition::new("ls", "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).", json!({"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: current directory)"},"limit":{"type":"number","description":"Maximum number of entries to return (default: 500)"}}}), execute);
     tool.prompt_snippet = Some("List directory contents".into()); tool
 }

@@ -13,14 +13,13 @@ use maho_rpc::host_daemon_env::{daemon_env_keys, daemon_env_overrides};
 use maho_rpc::host_daemon_paths::create_host_daemon_paths;
 use maho_rpc::host_daemon_state::HostDaemonSettings;
 use maho_rpc::host_decision::{HostDecisionClient, HostDecisionPolicy, HOST_PROTOCOL_VERSION, REQUIRED_HOST_CAPABILITIES};
-use maho_rpc::host_ensure::{ensure_supervisor_args, host_env, HostStartOptions};
+use maho_rpc::host_ensure::{ensure_supervisor_args, host_child_argv, host_env, HostStartOptions};
 use maho_rpc::host_handoff::HandoffOptions;
 use maho_rpc::host_launch::{default_host_launch, PINNED_HOST_CLIENT_CAPABILITIES};
 use maho_rpc::host_launch_spec::{load_host_launch_spec, HostLaunchSpecError, ResolvedHostLaunchSpec};
 use maho_rpc::host_lifecycle::{HostLifecyclePolicy, DEFAULT_HOST_IDLE_EXIT_MS};
-use maho_rpc::host_protocol_info::{RpcLaunchProfileCore, SessionRuntimeKind};
 use maho_rpc::host_runner::{run_host_request, EnsureRequest, HostOutcome, HostRequest, HostTarget};
-use maho_rpc::protocol_identity::{launch_profile_from_core, resolve_instance_id, HOST_INSTANCE_ID_ENV};
+use maho_rpc::protocol_identity::{host_launch_profile, resolve_instance_id, HOST_INSTANCE_ID_ENV};
 
 use super::host_command::{HostSubcommand, ParsedHostArgs};
 
@@ -74,22 +73,6 @@ fn process_env() -> BTreeMap<String, Option<String>> {
     std::env::vars().map(|(name, value)| (name, Some(value))).collect()
 }
 
-fn extension_paths(host_args: &[String]) -> Vec<String> {
-    let mut paths = Vec::new();
-    let mut index = 0;
-    while index < host_args.len() {
-        if host_args[index] == "--extension" {
-            if let Some(value) = host_args.get(index + 1) {
-                paths.push(value.clone());
-            }
-            index += 2;
-        } else {
-            index += 1;
-        }
-    }
-    paths
-}
-
 pub fn host_target(socket: &str, agent_dir: &Path) -> HostTarget {
     HostTarget { socket: socket.to_owned(), agent_dir: agent_dir.to_path_buf() }
 }
@@ -100,12 +83,10 @@ fn ensure_request(target: &HostTarget, spec: &ResolvedHostLaunchSpec, policy: Ho
     let instance_id = resolve_instance_id(std::env::var(HOST_INSTANCE_ID_ENV).ok().as_deref());
     let generation = 0u64;
     let build = maho_core::engine_build_identity::engine_build_identity().clone();
-    let launch_profile = launch_profile_from_core(RpcLaunchProfileCore {
-        extensions: extension_paths(&spec.host_args),
-        multi_session: true,
-        session_runtime: SessionRuntimeKind::InProcess,
-    })
-    .ok();
+    // senpi host-ensure.ts:292 `hostLaunchProfile(hostChildArgv(hostArgs), process.cwd())`: the profile
+    // describes the host child's argv, so its session runtime is resolved exactly as that host resolves it.
+    let cwd = std::env::current_dir().map_err(|error| HostCommandError::Host(error.to_string()))?;
+    let launch_profile = host_launch_profile(&host_child_argv(&spec.host_args), &cwd.to_string_lossy()).ok();
     let client = HostDecisionClient {
         protocol_version: HOST_PROTOCOL_VERSION,
         required_capabilities: REQUIRED_HOST_CAPABILITIES.iter().map(|value| (*value).into()).collect(),

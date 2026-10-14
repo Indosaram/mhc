@@ -74,6 +74,30 @@ async fn runtime_subscribes_to_provider_account_events_and_unsubscribes_on_dispo
 }
 
 #[tokio::test]
+async fn provider_account_pin_response_precedes_the_updated_notification() {
+    use maho_server::app_server::runtime::AppServerRuntime;
+    let directory = tempfile::tempdir().unwrap();
+    let storage = maho_core::auth_storage::AuthStorage::create(&directory.path().join("auth.json").to_string_lossy());
+    storage.set("app-server-pin-fixture", Some(json!({"type":"api_key","key":"faux-test-only"}))).unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),Some(directory.path().display().to_string()),None).await;
+    let (send,mut receive) = tokio::sync::mpsc::unbounded_channel();
+    runtime.core.write().await.add_connection("qa".into(),Arc::new(move |message| {send.send(message).unwrap();Box::pin(async {Ok(())})}));
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    receive.try_recv().unwrap();
+    runtime.core.read().await.receive("qa",classify_incoming(json!({"id":2,"method":"account/providerAccounts/pin","params":{"provider":"app-server-pin-fixture","name":null}}))).await.unwrap();
+    let ordered = tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        let mut seen = Vec::new();
+        loop {
+            let message = receive.recv().await.expect("connection alive");
+            if message["id"] == 2 { seen.push("response"); }
+            if message["method"] == "account/providerAccounts/updated" && message["params"]["provider"] == "app-server-pin-fixture" { seen.push("updated"); break seen; }
+        }
+    }).await.expect("updated notification within deadline");
+    assert_eq!(ordered, ["response","updated"]);
+    runtime.dispose().await;
+}
+
+#[tokio::test]
 async fn initialized_core_routes_user_input_responses_and_reports_unknown_ids() {
     use maho_server::app_server::user_input_bridge::UserInputBridge;
     use maho_ext_api::{QuestionRequest,QuestionOptions};
@@ -93,4 +117,41 @@ async fn initialized_core_routes_user_input_responses_and_reports_unknown_ids() 
     assert_eq!(receive.try_recv().unwrap()["error"]["code"],-32600);
     assert_eq!(bridge.lock().unwrap().pending_count(),0);
     core.remove_connection("qa");
+}
+
+#[tokio::test]
+async fn non_stdio_connection_is_closed_as_slow_client_at_the_pending_notification_cap() {
+    use maho_server::app_server::server_core::OUTBOUND_QUEUE_LIMIT;
+    let mut core = ServerCore::new("/tmp/home".into(), "1".into(), "Linux".into(), "test".into(), "x64".into(), "linux".into());
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let all_pending = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let (count, ready, gate, close_flag) = (started.clone(), all_pending.clone(), release.clone(), closed.clone());
+    core.add_connection_input(ConnectionInput { id:"ws".into(), transport_kind:TransportKind::WebSocket,
+        send:Arc::new(move |message| {
+            let (count, ready, gate) = (count.clone(), ready.clone(), gate.clone());
+            Box::pin(async move {
+                if message.get("method").is_some() {
+                    if count.fetch_add(1, Ordering::SeqCst) + 1 == OUTBOUND_QUEUE_LIMIT { ready.notify_one(); }
+                    gate.notified().await;
+                }
+                Ok(())
+            })
+        }),
+        close:Some(Arc::new(move |reason| { assert_eq!(reason, "slow-client"); close_flag.store(true, Ordering::SeqCst); })) });
+    core.receive("ws", classify_incoming(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"qa","version":"1"}}}))).await.unwrap();
+    let core = Arc::new(core);
+    let waiting = all_pending.notified();
+    let mut tasks = Vec::new();
+    for _ in 0..OUTBOUND_QUEUE_LIMIT {
+        let core = core.clone();
+        tasks.push(tokio::spawn(async move { core.send_notification_to_connection("ws", json!({"method":"turn/started"}), 1).await }));
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(10), waiting).await.expect("every notification pending");
+    assert!(!closed.load(Ordering::SeqCst));
+    core.send_notification_to_connection("ws", json!({"method":"turn/started"}), 2).await.unwrap();
+    assert!(closed.load(Ordering::SeqCst));
+    release.notify_waiters();
+    for task in tasks { task.abort(); }
 }

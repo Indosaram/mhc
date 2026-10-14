@@ -84,8 +84,15 @@ async fn resolved_file_and_environment_capacity_is_enforced_by_callable() {
             assert_eq!(admitted.recv().await.unwrap(),format!("capacity-{index}"));
             tokio::time::advance(Duration::from_secs(1)).await;
             let result=call.await.unwrap().unwrap();
-            if index<capacity {assert_eq!(result.details.as_ref().unwrap()["cells"][0]["status"],"detached");} else {assert_eq!(result.details.as_ref().unwrap()["isError"],true);}
+            let details=result.details.as_ref().unwrap();
+            if index<capacity {assert_eq!(details["cells"][0]["status"],"detached");} else {
+                assert_eq!(details["isError"],true);
+                assert_eq!(details["code"],"eval_background_capacity_reached");
+                assert_eq!(details["cells"][0]["status"],"cancelled");
+            }
         }
+        let refused=cells.lock().unwrap().peek(&format!("capacity-{capacity}")).unwrap();
+        assert_eq!(refused.state,maho_codemode::tool::detached_cell_contract::EvalDetachedCellState::Cancelled);
         assert_eq!(cells.lock().unwrap().list().0.len(),capacity);
         EvalDetachedCellManager::dispose(&cells).await.unwrap();
         assert!(cells.lock().unwrap().list().0.is_empty());
@@ -124,4 +131,30 @@ async fn callable_eval_is_cancelled_by_session_replacement_before_worker_retirem
     assert!(listed.details.is_some());
     let rejected=(tool.execute)(ToolCall {id:"run-after-dispose", params:json!({"language":"js","code":"42","summary":"reject stale session"}), signal:AbortSignal::default(), on_update:None, context:None}).await.unwrap_err();
     assert!(rejected.to_string().contains("disposed"));
+}
+
+fn capacity_tool(settings:maho_codemode::config::settings::CodemodeSettings,max_detached_cells:usize)->maho_tools::definition::ToolDefinition {
+    use maho_codemode::tool::detached_cell_manager::DetachedCellManagerOptions;
+    let (admitted,_admitted)=tokio::sync::mpsc::unbounded_channel();
+    let (host,_host)=tokio::sync::mpsc::unbounded_channel();
+    let kernel=Arc::new(CapacityKernel {admitted,pending:Mutex::new(HashMap::new())});
+    let cells=Arc::new(Mutex::new(EvalDetachedCellManager::new(DetachedCellManagerOptions {max_detached_cells,..Default::default()})));
+    create_eval_tool(Arc::new(CreateEvalToolOptions {completion_handles:Arc::new(Default::default()),eval_handle_host:None,owner_session_id:None,kernel_manager:Arc::new(CapacityManager(kernel)),executor:Arc::new(Executor(host)),list_tools:None,complete:None,settings,artifacts_dir:None,image_sdk:Arc::new(Images),cell_manager:cells,on_cell_settled:None,prompt:Default::default(),runtimes:HashMap::new(),mode:"print".into(),active_kernel_preludes:None})).expect("eval tool")
+}
+
+#[test]
+fn description_teaches_resolved_run_budget_and_detached_capacity() {
+    let settings=maho_codemode::config::settings::CodemodeSettings{run_budget_seconds:42.0,..Default::default()};
+    let tool=capacity_tool(settings,4);
+    assert!(tool.description.contains("capped at 42s"),"{}",tool.description);
+    assert!(tool.description.contains("up to 4 background cells per session"),"{}",tool.description);
+}
+
+#[tokio::test]
+async fn disabled_language_error_names_language_and_enabled_list() {
+    let mut settings=maho_codemode::config::settings::CodemodeSettings::default();
+    settings.languages=maho_codemode::config::settings::Languages {py:true,js:false,rb:false,jl:true};
+    let tool=capacity_tool(settings,1);
+    let error=(tool.execute)(ToolCall {id:"disabled-js",params:json!({"language":"js","code":"1","summary":"disabled"}),signal:AbortSignal::default(),on_update:None,context:None}).await.unwrap_err();
+    assert_eq!(error.to_string(),"Unsupported eval language \"js\". Enabled languages: py, jl");
 }

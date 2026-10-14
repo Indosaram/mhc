@@ -1,6 +1,6 @@
 //! Port of senpi packages/ai/src/providers/all.ts.
 
-use crate::images_models::{ImagesModels, ImagesProvider, create_images_models};
+use crate::images_models::{CreateImagesModelsOptions, ImagesModels, ImagesProvider, create_images_models};
 use crate::models::{CreateModelsOptions, Models, Provider, create_models};
 use crate::models_generated::MODELS;
 use crate::types::{Model, ModelThinkingLevel};
@@ -146,8 +146,8 @@ pub fn builtin_images_providers() -> Vec<Arc<dyn ImagesProvider>> {
 }
 
 /// An ImagesModels collection with every built-in image-generation provider registered.
-pub fn builtin_images_models() -> ImagesModels {
-    let models = create_images_models();
+pub fn builtin_images_models(options: Option<CreateImagesModelsOptions>) -> ImagesModels {
+    let models = create_images_models(options);
     for provider in builtin_images_providers() {
         models.set_provider(provider);
     }

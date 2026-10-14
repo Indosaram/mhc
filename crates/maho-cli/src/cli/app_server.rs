@@ -1,6 +1,6 @@
 //! Port of senpi `cli/app-server-command.ts` (`handleAppServerCommand`) and the process-entry half
-//! of `modes/app-server/index.ts` (`runAppServerMode`): argument parsing, daemon dispatch, the
-//! listening banner and the SIGINT/SIGTERM escalation.
+//! of `modes/app-server/index.ts` (`runAppServerMode`): argument parsing, daemon dispatch and the
+//! SIGINT/SIGTERM escalation.
 //!
 //! The transports, the runtime and the daemon lifecycle are owned by todo 37
 //! (`maho_server::app_server`); this module owns the CLI entry that mounts them.
@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use maho_server::app_server::cli_args::{format_usage, parse_cli_args, CliArgs, DaemonVerb, Listen, WsAuth};
+use maho_server::app_server::cli_args::{format_usage, parse_cli_args, CliArgs, DaemonVerb, WsAuth};
 use maho_server::app_server::daemon::{run_daemon_command, DaemonPaths};
 use maho_server::app_server::index::run_app_server_mode;
 use maho_server::app_server::runtime::AppServerRuntime;
@@ -77,6 +77,7 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
         let config = config.clone();
         Box::pin(async move {
             let maho_core::sdk::CreateAgentSessionOptions {
+                cwd,
                 session_manager,
                 model_runtime,
                 settings_manager,
@@ -91,9 +92,12 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 custom_tools,
                 session_start_event,
                 auto_title_sessions,
+                extension_bindings,
+                extension_ui,
                 ..
             } = options;
             let request = CliRuntimeRequest {
+                cwd,
                 session_manager,
                 session_start_event,
                 model,
@@ -106,6 +110,9 @@ pub fn session_factory(config: CliRuntimeConfiguration) -> SessionFactory {
                 no_tools,
                 custom_tools,
                 auto_title_sessions,
+                extension_flag_values: config.extension_flag_values.clone(),
+                extension_bindings,
+                extension_ui,
                 ..Default::default()
             };
             let mounted = mount_agent_session_runtime(&config, request, model_runtime, settings_manager).await?;
@@ -118,20 +125,6 @@ fn write_stderr(message: &str) {
     use std::io::Write;
     if let Err(error) = std::io::stderr().lock().write_all(message.as_bytes()) {
         eprintln!("{error}");
-    }
-}
-
-/// senpi `runAppServerMode`'s listening banner, written to stderr before the shutdown wait.
-pub fn listening_banner(app_name: &str, listen: &Listen) -> String {
-    match listen {
-        Listen::Stdio { .. } => format!("{app_name} app-server listening on stdio://\n"),
-        Listen::Ws { host, port, .. } => format!(
-            "{app_name} app-server listening on ws://{host}:{port}\nreadyz http://127.0.0.1:{port}/readyz\n"
-        ),
-        Listen::Unix { path, url } => {
-            let socket = path.clone().unwrap_or_else(|| url.clone());
-            format!("{app_name} app-server listening on unix://{socket}\n")
-        }
     }
 }
 
@@ -177,6 +170,12 @@ pub async fn run_app_server_command(
         }
         CliArgs::Server { listen, ws_auth, json_logs } => {
             let _ = json_logs;
+            let session_dir = session_dir.or_else(|| {
+                std::env::var(maho_core::config::env_session_dir_var())
+                    .ok()
+                    .filter(|dir| !dir.is_empty())
+                    .map(|dir| maho_core::paths::normalize_path(&dir, &Default::default()))
+            });
             let runtime = AppServerRuntime::new(
                 config.agent_dir.clone(),
                 config.cwd.clone(),
@@ -186,24 +185,18 @@ pub async fn run_app_server_command(
             )
             .await;
             // The installed OMO packaged skills root reaches the shipped consumer through the
-            // existing `skills/list` loader seam: the runtime's default loader reads only
-            // `<agent_dir>/skills`, so the packaged root (`OMO_SENPI_SKILLS_ROOT`, else the `skills/`
-            // directory beside the executable) is appended as an extra skill path here. No new RPC
-            // method is added - `MethodRegistry::register` replaces the default registration.
+            // existing `skills/list` loader seam: the runtime's resource loader (settings skill paths,
+            // installed packages, auto-discovered dirs) gets the packaged root (`OMO_SENPI_SKILLS_ROOT`,
+            // else the `skills/` directory beside the executable) as an extra skill path here. No new
+            // RPC method is added - `MethodRegistry::register` replaces the default registration.
             let packaged_skills_root = maho_omo::builtin_skills_root();
             if packaged_skills_root.is_dir() {
-                let skill_paths = vec![packaged_skills_root.to_string_lossy().into_owned()];
-                let loader: maho_server::app_server::skills::SkillLoader = Arc::new(move |cwd: &str, agent_dir: &str| {
-                    Ok(maho_core::skills::load_skills(&maho_core::skills::LoadSkillsOptions {
-                        cwd: cwd.to_owned(), agent_dir: agent_dir.to_owned(), skill_paths: skill_paths.clone(), include_defaults: true,
-                    }))
-                });
+                let loader = maho_server::app_server::skills::resource_skill_loader(vec![packaged_skills_root.to_string_lossy().into_owned()]);
                 let mut core = runtime.core.write().await;
                 maho_server::app_server::skills::register_skill_methods_with_loader(
                     &mut core.registry, config.agent_dir.clone(), config.cwd.clone(), runtime.threads.clone(), loader,
                 );
             }
-            write_stderr(&listening_banner(&app_name, &listen));
             let auth: Option<WsAuth> = ws_auth;
             let result = run_app_server_mode(&runtime, listen, auth, shutdown_signal).await;
             let exit_code = match result {
@@ -236,6 +229,12 @@ pub async fn run_app_server_with_signals(
     executable: &Path,
     prefix_args: &[String],
 ) -> Result<i32, String> {
+    // Pinned `index.ts:60-61` installs the SIGINT/SIGTERM handlers inside `runAppServerMode` only;
+    // the daemon verbs and usage errors keep the default signal disposition.
+    if !(is_app_server_command(args) && matches!(parse_cli_args(&args[1..]), CliArgs::Server { .. })) {
+        let outcome = run_app_server_command(args, config, version, session_dir, executable, prefix_args, std::future::pending()).await?;
+        return Ok(if outcome.handled { outcome.exit_code } else { 0 });
+    }
     let mut signals = ShutdownSignals::new();
     let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
     let mut sender = Some(sender);

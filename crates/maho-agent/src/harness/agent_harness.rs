@@ -13,7 +13,40 @@ use crate::harness::tools::tool_context::ExecutionToolContext;
 use crate::types::QueueMode;
 
 use super::runtime::lane::OperationMismatch;
-use super::runtime::types::SystemPromptFn;
+use crate::harness::context::Context;
+
+/// Lazy form of pinned `toolContext`: `(context: Context) => TContext | Promise<TContext>`.
+pub type ToolContextResolver<TContext> = Arc<dyn Fn(&Context) -> maho_ai::types::BoxFuture<'static, TContext> + Send + Sync>;
+
+/// Pinned `toolContext?: TContext | ((context: Context) => TContext | Promise<TContext>)`.
+pub enum ToolContextSource<TContext> {
+    Value(TContext),
+    Resolve(ToolContextResolver<TContext>),
+}
+
+impl<TContext: Clone> Clone for ToolContextSource<TContext> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Value(value) => Self::Value(value.clone()),
+            Self::Resolve(resolve) => Self::Resolve(resolve.clone()),
+        }
+    }
+}
+
+impl<TContext: Clone> ToolContextSource<TContext> {
+    /// Pinned `typeof source === "function" ? await source(context) : source`.
+    pub async fn resolve(&self, context: &Context) -> TContext {
+        match self {
+            Self::Value(value) => value.clone(),
+            Self::Resolve(resolve) => resolve(context).await,
+        }
+    }
+}
+
+/// Pinned `systemPrompt: (toolContext: TContext, context: Context) => string | Promise<string>`;
+/// the tool context is `None` when the host configured no `toolContext` (pinned `undefined`).
+pub type AgentHarnessSystemPromptFn<TContext> =
+    Arc<dyn Fn(Option<TContext>, &Context) -> maho_ai::types::BoxFuture<'static, String> + Send + Sync>;
 
 pub type Resources = crate::harness::types::AgentHarnessResources;
 
@@ -88,8 +121,11 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     pub thinking_level: Option<maho_ai::types::ModelThinkingLevel>,
     pub active_tool_names: Option<Vec<String>>,
     pub tools: Vec<Arc<AgentHarnessTool<TContext>>>,
-    pub tool_context: Option<TContext>,
-    pub system_prompt: Option<SystemPromptFn>,
+    /// Pinned `toolContext?: TContext | ((context) => TContext | Promise<TContext>)`; `None` is
+    /// the pinned `undefined`.
+    pub tool_context: Option<ToolContextSource<TContext>>,
+    /// Pinned `systemPrompt?: (toolContext, context) => string | Promise<string>`.
+    pub system_prompt: Option<AgentHarnessSystemPromptFn<TContext>>,
     pub resources: Option<Resources>,
     pub stream_options: Option<AgentHarnessStreamOptions>,
     pub retry: Option<maho_ai::utils::retry::RetryPolicy>,
@@ -97,6 +133,10 @@ pub struct AgentHarnessOptions<TContext = ExecutionToolContext> {
     pub steering_mode: Option<QueueMode>,
     pub follow_up_mode: Option<QueueMode>,
     pub tool_execution: Option<ToolExecutionMode>,
+    /// Pinned `toProviderMessages`; defaults to `convertToLlm`.
+    pub to_provider_messages: Option<super::runtime::types::ToProviderMessagesFn>,
+    /// Pinned `entryProjectors`, keyed by custom entry type; defaults to none.
+    pub entry_projectors: Option<std::collections::BTreeMap<String, crate::harness::session::types::EntryProjector>>,
 }
 
 /// Failure of one `Lane::drive` call: the pinned `Result<DriveOutcome, OperationMismatch | Closed>`.

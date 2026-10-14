@@ -1,4 +1,4 @@
-use super::{errors::JsonRpcError, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::{serve_websocket, DEFAULT_OUTBOUND_QUEUE_BYTES}};
+use super::{connection::TransportKind, errors::JsonRpcError, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::{serve_websocket, DEFAULT_OUTBOUND_QUEUE_BYTES}};
 use std::{os::unix::{ffi::OsStrExt, fs::PermissionsExt}, path::PathBuf, sync::Arc};
 use tokio::{net::{UnixListener, UnixStream}, sync::{RwLock, watch}, task::JoinHandle};
 
@@ -42,7 +42,7 @@ pub async fn start_unix_socket_listener(socket_path: PathBuf, enforce_owner_only
                 accepted = listener.accept() => {
                     let (stream, _) = accepted.map_err(|error| JsonRpcError::new(-32603, error.to_string()))?;
                     let id = format!("unix-{next_id}"); next_id += 1;
-                    connections.spawn(serve_websocket(stream, running_core.clone(), auth.clone(), id, outbound_queue_bytes.unwrap_or(DEFAULT_OUTBOUND_QUEUE_BYTES)));
+                    connections.spawn(serve_websocket(stream, running_core.clone(), auth.clone(), id, TransportKind::Unix, outbound_queue_bytes.unwrap_or(DEFAULT_OUTBOUND_QUEUE_BYTES)));
                 },
             }
         }

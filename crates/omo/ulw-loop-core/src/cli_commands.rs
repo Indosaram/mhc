@@ -4,7 +4,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use crate::cli_arg_parser::{has_flag, read_value};
-use crate::cli_output::{print_json_error, subcommand_help, ULW_LOOP_HELP};
+use crate::cli_output::{print_json_error, ULW_LOOP_HELP};
 use crate::cli_subcommands::{
     add_goal, capture_evidence, checkpoint_cli, complete_goals, create_goals, criteria,
     review_blockers, status, steer,
@@ -88,11 +88,6 @@ pub fn ulw_loop_command(argv: &[String]) -> i32 {
         }
         println!("{ULW_LOOP_HELP}");
         return 1;
-    }
-
-    if command != "help" && (has_flag(rest, "--help") || has_flag(rest, "-h")) {
-        println!("{}", subcommand_help(command));
-        return 0;
     }
 
     if command == "help" {

@@ -4,7 +4,16 @@ use super::context::{TerminalToolResult,text_result,error_result,resolve_termina
 
 pub const DEFAULT_MONITOR_TIMEOUT_MS:u64=300_000;
 pub const MAX_MONITOR_TIMEOUT_MS:u64=3_600_000;
-pub fn monitor_schema()->Value {json!({"type":"object","properties":{"action":{"type":"string","enum":["create","rearm"]},"description":{"type":"string","minLength":1,"maxLength":200},"command":{"type":"string"},"path":{"type":"string","minLength":1},"event":{"type":"string","enum":["create","modify"]},"filter":{"type":"string"},"timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS},"persistent":{"type":"boolean"},"bash_id":{"type":"string"}}})}
+pub fn monitor_schema()->Value {json!({"type":"object","properties":{
+    "action":{"type":"string","enum":["create","rearm"],"description":"Defaults to create. rearm resumes a monitor paused by the wake budget."},
+    "description":{"type":"string","minLength":1,"maxLength":200,"description":"Create (required): specific label shown with every event, e.g. 'errors in deploy.log'."},
+    "command":{"type":"string","description":"Create, command branch (XOR path): shell command to run and watch in a PTY-backed monitor session."},
+    "path":{"type":"string","minLength":1,"description":"Create, file branch (XOR command): one regular file to watch natively, whose parent directory must already exist; takes no filter."},
+    "event":{"type":"string","enum":["create","modify"],"description":"File branch only: which file event fires the watch (defaults to create)."},
+    "filter":{"type":"string","description":"Only PTY output lines matching this regex become monitor events."},
+    "timeout_ms":{"type":"number","minimum":1,"maximum":MAX_MONITOR_TIMEOUT_MS,"description":"Watcher deadline in milliseconds (default 300000; ignored when persistent)."},
+    "persistent":{"type":"boolean","description":"Standing watch: no deadline, and it survives a session restart (command re-run once, file rescanned and any detached change reported). Expires 7 days after creation; max 5 per session; stop one with kill_bash."},
+    "bash_id":{"type":"string","description":"Rearm: paused monitor id (mon_ or bash_id) to resume; omit for all paused."}}})}
 pub fn execute_monitor(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>)->TerminalToolResult {
     execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS)
 }
@@ -59,31 +68,46 @@ pub fn execute_configured_monitor(manager:&mut TerminalManager,registry:&mut Mon
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
     let timeout=input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64).trunc().clamp(1.0,MAX_MONITOR_TIMEOUT_MS as f64) as u64;
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
-    let mut options=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
+    let (mut options,stdin)=match super::spawn::command_options(command,Some(cwd),shell) {Ok(options)=>options,Err(error)=>return error_result(error.to_string())};
     options=options.size(settings.default_cols as u16,settings.default_rows as u16);
     if !persistent {options=options.timeout(std::time::Duration::from_millis(timeout));}
     let monitor_id=match allocate_monitor_id() {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
     let id=match manager.create(command,options) {Ok(id)=>id,Err(error)=>return error_result(error.to_string())};
+    if let Some(stdin)=&stdin&&let Err(error)=manager.get(&id).expect("created runtime").write(stdin.as_bytes()) {return error_result(error.to_string());}
     let record=CommandMonitor::new(MonitorSnapshotEntry {id:id.clone(),monitor_id:Some(monitor_id.clone()),description:description.to_owned(),command:Some(command.to_owned()),filter:filter.map(str::to_owned),persistent:Some(persistent),deadline_ms:(!persistent).then_some(now+timeout as f64),expires_at:persistent.then_some(now+DURABLE_MONITOR_EXPIRY_MS as f64),fire_window:persistent.then_some(MonitorFireWindow {start_ms:now,count:0}),..Default::default()},filter_regex);
     if let Err(error)=registry.register(manager.get(&id).expect("created runtime"),record) {return error_result(error.to_string());}
     manager.bind_monitor_id(&monitor_id,&id);
     let mut result=text_result(format!("Monitor started with ID: {monitor_id}"));result.details=json!({"monitor_id":monitor_id,"bash_id":id,"monitor":true}).as_object().cloned();result
 }
 
-pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>)->TerminalToolResult {
-    use crate::terminal_manifest_model::{MonitorRegistration,MonitorSpec,FileEvent};
-    let Some(writer)=writer else {return execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);};
+/// Upstream `durableAdmissionError`: refuse a durable create once the session's bound writer
+/// already holds MAX_DURABLE_MONITORS restart-surviving monitors, before any spawn or registration.
+pub fn durable_admission_error(input:&Value,writer:Option<&crate::terminal_manifest::TerminalManifestWriter>)->Option<TerminalToolResult> {
+    let create=input.get("command").and_then(Value::as_str).is_some()||input.get("path").and_then(Value::as_str).is_some();
     let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
-    if input.get("action").and_then(Value::as_str)!=Some("rearm")&&persistent&&writer.durable_count()>=MAX_DURABLE_MONITORS {
-        return error_result(format!("Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first."));
-    }
+    if input.get("action").and_then(Value::as_str)==Some("rearm")||!persistent||!create||writer.is_none_or(|writer|writer.durable_count()<MAX_DURABLE_MONITORS) {return None;}
+    Some(error_result(format!("Cannot start another persistent monitor: this session already holds {MAX_DURABLE_MONITORS} durable monitors (the maximum). Stop one with kill_bash first.")))
+}
+/// Upstream `handMonitorSpec` input: the spec captured at the monitor call site for a successful create.
+pub fn monitor_registration(input:&Value,result:&TerminalToolResult,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>)->Option<(crate::terminal_manifest_model::MonitorRegistration,String)> {
+    use crate::terminal_manifest_model::{MonitorRegistration,MonitorSpec,FileEvent};
+    if result.is_error.is_some()||input.get("action").and_then(Value::as_str)==Some("rearm") {return None;}
+    let details=result.details.as_ref()?;let monitor_id=details.get("monitor_id").and_then(Value::as_str)?;let bash_id=details.get("bash_id").and_then(Value::as_str)?;
+    let persistent=input.get("persistent").and_then(Value::as_bool)==Some(true);
+    let description=input.get("description").and_then(Value::as_str)?.to_owned();
+    let spec=if let Some(command)=input.get("command").and_then(Value::as_str) {MonitorSpec::Command {description,command:command.to_owned(),filter:input.get("filter").and_then(Value::as_str).map(str::to_owned),cwd:Some(cwd.to_string_lossy().into_owned()),persistent}} else {MonitorSpec::File {description,path:input.get("path").and_then(Value::as_str)?.to_owned(),event:if input.get("event").and_then(Value::as_str)==Some("modify") {FileEvent::Modify} else {FileEvent::Create},timeout_ms:input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64),cwd:cwd.to_string_lossy().into_owned(),approved_parent:approved_parent.map(|parent|parent.to_string_lossy().into_owned()),persistent}};
+    Some((MonitorRegistration {monitor_id:monitor_id.to_owned(),spec},bash_id.to_owned()))
+}
+
+pub async fn execute_monitor_recorded(manager:&mut TerminalManager,registry:&mut MonitorRegistry,input:&Value,cwd:&std::path::Path,approved_parent:Option<&std::path::Path>,writer:Option<&mut crate::terminal_manifest::TerminalManifestWriter>)->TerminalToolResult {
+    let Some(writer)=writer else {return execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);};
+    if let Some(refused)=durable_admission_error(input,Some(&*writer)) {return refused;}
     let result=execute_configured_monitor(manager,registry,input,cwd,approved_parent,None,&crate::settings::TERMINAL_SETTINGS_DEFAULTS);
     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("epoch").as_secs_f64()*1000.0;
-    if result.is_error.is_none()&&input.get("action").and_then(Value::as_str)!=Some("rearm")&&let Some(details)=&result.details&&let Some(monitor_id)=details.get("monitor_id").and_then(Value::as_str) {
-        let description=input["description"].as_str().expect("registered description").to_owned();
-        let spec=if let Some(command)=input.get("command").and_then(Value::as_str) {MonitorSpec::Command {description,command:command.to_owned(),filter:input.get("filter").and_then(Value::as_str).map(str::to_owned),cwd:Some(cwd.to_string_lossy().into_owned()),persistent}} else {MonitorSpec::File {description,path:input["path"].as_str().expect("registered path").to_owned(),event:if input.get("event").and_then(Value::as_str)==Some("modify") {FileEvent::Modify} else {FileEvent::Create},timeout_ms:input.get("timeout_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_MONITOR_TIMEOUT_MS as f64),cwd:cwd.to_string_lossy().into_owned(),approved_parent:approved_parent.map(|parent|parent.to_string_lossy().into_owned()),persistent}};
-        writer.record_register(MonitorRegistration {monitor_id:monitor_id.to_owned(),spec},now).await;
-        if let Some(id)=details.get("bash_id").and_then(Value::as_str)&&let Some(checkpoint)=registry.file_checkpoint(id) {writer.schedule_checkpoint(monitor_id,checkpoint);}
+    if let Some((registration,id))=monitor_registration(input,&result,cwd,approved_parent) {
+        let monitor_id=registration.monitor_id.clone();
+        writer.record_register(registration,now).await;
+        if let Some(checkpoint)=registry.file_checkpoint(&id) {writer.schedule_checkpoint(&monitor_id,checkpoint);}
     }
     if let Err(error)=writer.observe_monitor_state(&registry.snapshot(),now).await {return error_result(error);}
     result

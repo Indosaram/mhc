@@ -1,6 +1,6 @@
 use serde_json::Value;
 use crate::kernels::shared::subprocess_process::ProcessError;
-use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, resolve_js_worker_entry_path}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS}};
+use super::{worker_host::{WorkerHost, JavaScriptKernelMode}, worker_startup::{WorkerStartupOptions, explicit_or_resolved_worker_entry}, interrupt_bounds::{WorkerRetirement, WORKER_TERMINATE_DEADLINE_MS, retire_worker}};
 
 pub struct WorkerSlot {
     worker: Option<WorkerHost>,
@@ -23,14 +23,15 @@ impl WorkerSlot {
         if self.generation == 0 { self.generation = 1; }
         options.generation = self.generation;
         if signal.aborted() {return Err(ProcessError::Startup("JavaScript worker startup was cancelled".into()));}
-        let primary=resolve_js_worker_entry_path(options.worker_entry,&options.environment).map_err(|error|ProcessError::Startup(error.to_string())).and_then(|entry|WorkerHost::spawn(&entry,options.cwd,options.parallel_pool_width,JavaScriptKernelMode::Worker));
+        let primary=explicit_or_resolved_worker_entry(&options).and_then(|entry|WorkerHost::spawn(&entry,options.cwd,options.parallel_pool_width,JavaScriptKernelMode::Worker));
         if let Ok(worker)=primary {
             self.worker=Some(worker);
             let initialized=self.worker.as_mut().expect("published worker").initialize(&options,signal).await;
             if initialized.is_ok() {self.mode=JavaScriptKernelMode::Worker;return Ok(());}
-            self.retire().await?;
+            // senpi worker-startup.ts:40 `hooks.retire(worker)` only unpublishes the failed worker; the
+            // kernel generation is kept so the inline fallback continues the same generation.
+            if let Some(mut failed)=self.worker.take() { let _ = failed.terminate().await; }
             if signal.aborted() {return initialized;}
-            options.generation=self.generation;
         }
         self.worker=Some(super::inline_worker::create_inline_worker(options.cwd,options.parallel_pool_width,&options.environment)?);
         self.mode=JavaScriptKernelMode::Inline;
@@ -60,9 +61,14 @@ impl WorkerSlot {
         if let Some(owner)=worker.pid() {
             super::process_tree_host::terminate_process_trees(&children,super::process_tree_host::TerminateProcessTreesOptions {grace_ms:1000,kill_wait_ms:None,owner_pid:Some(owner)}).await;
         }
-        match tokio::time::timeout(std::time::Duration::from_millis(WORKER_TERMINATE_DEADLINE_MS), worker.terminate()).await {
-            Ok(result) => { result?; Ok(WorkerRetirement::Terminated) },
-            Err(_) => { worker.terminate().await?; Ok(WorkerRetirement::Terminated) },
+        // A worker blocked in a synchronous call is abandoned at the deadline; its termination keeps running detached.
+        let termination = tokio::spawn(async move { worker.terminate().await });
+        let mut outcome = None;
+        let retirement = retire_worker(async { outcome = Some(termination.await); }, WORKER_TERMINATE_DEADLINE_MS).await;
+        match outcome {
+            Some(Ok(result)) => { result?; Ok(WorkerRetirement::Terminated) },
+            Some(Err(error)) => Err(ProcessError::Startup(format!("JavaScript worker termination failed: {error}"))),
+            None => Ok(retirement),
         }
     }
 }

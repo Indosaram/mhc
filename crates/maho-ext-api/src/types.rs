@@ -171,6 +171,12 @@ impl<TState, TArgs: Clone> ToolRendererSession<TState, TArgs> {
 pub trait ErasedToolRenderers: Send + Sync {
     fn render_call(&self, args: &JsonValue, theme: &Theme, width: usize) -> Option<Vec<String>>;
     fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>>;
+    /// senpi export `renderResult` with explicit `{ expanded, isPartial }` options and the
+    /// context's `isError`; implementors without context state render as `render_result`.
+    fn render_result_with(&self, args: &JsonValue, result: &AgentToolResult, options: ToolRenderResultOptions, is_error: bool, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        let _ = (options, is_error);
+        self.render_result(args, result, theme, width)
+    }
 }
 struct TypedErasedToolRenderers<TState, TArgs> {
     renderers: Arc<ToolRenderers<TState, TArgs>>,
@@ -195,11 +201,16 @@ where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwn
         Some(lines)
     }
     fn render_result(&self, args: &JsonValue, result: &AgentToolResult, theme: &Theme, width: usize) -> Option<Vec<String>> {
+        self.render_result_with(args, result, ToolRenderResultOptions::default(), false, theme, width)
+    }
+    fn render_result_with(&self, args: &JsonValue, result: &AgentToolResult, options: ToolRenderResultOptions, is_error: bool, theme: &Theme, width: usize) -> Option<Vec<String>> {
         let renderer = self.renderers.render_result.as_ref()?;
         let typed: TArgs = serde_json::from_value(args.clone()).ok()?;
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut context = erased_render_context(typed.clone(), state.take().unwrap_or_default(), self.cwd.clone());
-        let options = ToolRenderResultOptions { expanded: context.expanded, is_partial: context.is_partial };
+        context.expanded = options.expanded;
+        context.is_partial = options.is_partial;
+        context.is_error = is_error;
         let mut component = renderer(result, options, theme, &mut context);
         let lines = component.render(width);
         *state = Some(context.state);
@@ -213,6 +224,8 @@ where TState: Default + Send + 'static, TArgs: Clone + serde::de::DeserializeOwn
 }
 
 pub type LazyToolActivator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+/// Consumes the tool-search service's pending native-injection failure (`takeNativeInjectionFailure`).
+pub type NativeToolSearchInjectionFailureSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 pub type ShortcutHandler = Arc<dyn for<'a> Fn(&'a ExtensionContext) -> ExtensionFuture<'a, ()> + Send + Sync>;
 #[derive(Clone)]
 pub struct ExtensionShortcut { pub shortcut: String, pub description: Option<String>, pub handler: ShortcutHandler, pub extension_path: String }
@@ -265,6 +278,13 @@ pub trait ExtensionOAuthConfig: Send + Sync {
     fn refresh_token<'a>(&'a self, credentials: &'a maho_ai::oauth::OAuthCredentials, signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, maho_ai::oauth::OAuthCredentials>;
     fn get_api_key(&self, credentials: &maho_ai::oauth::OAuthCredentials) -> String;
     fn modify_models(&self, models: Vec<Model>, _: &maho_ai::oauth::OAuthCredentials) -> Vec<Model> { models }
+    /// Whether `resolve_ambient` is implemented (senpi optional `resolveAmbient`).
+    fn has_resolve_ambient(&self) -> bool { false }
+    /// senpi `resolveAmbient`: request auth for credentials that live outside auth.json (an env
+    /// token, a CLI login); never consulted once a credential is stored.
+    fn resolve_ambient<'a>(&'a self, _ctx: &'a dyn maho_ai::auth::types::AuthContext, _signal: &'a maho_ai::utils::abort::AbortSignal) -> ExtensionFuture<'a, Option<maho_ai::auth::types::AuthResult>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 #[derive(Clone)]
 pub enum ProviderRegistration { Config { name: String, config: Box<ProviderConfig> }, ConfigOptions { name: String, options: Box<ProviderConfigOptions> }, Native(Arc<dyn maho_ai::models::Provider>) }
@@ -439,6 +459,8 @@ pub trait ModelRegistry: Send + Sync {
             maho_ai::types::ServiceTierPreference::Priority => ServiceTier::Priority,
         })
     }
+    /// senpi `model.promptPreset`: the per-model preset from models.json `modelOverrides` or a model definition.
+    fn prompt_preset(&self, _model: &Model) -> Option<String> { None }
     fn has_configured_auth(&self, model: &Model) -> bool;
     /// senpi `registry.getProviderAuthStatus(provider)`: the configured/source status. The default
     /// body reports an absent accessor; the production registry overrides it with the runtime source.
@@ -993,6 +1015,7 @@ impl ToolContext for ExtensionContext {
     fn session_manager(&self) -> &dyn ToolSessionManager { self.assert_active_or_panic(); self.session_manager.as_ref() }
     fn goal_store_file(&self) -> Option<&Path> { self.assert_active_or_panic(); self.goal_store_file.as_deref() }
     fn get_steering_signal(&self) -> Option<AbortSignal> { self.current_steering_signal().ok().flatten() }
+    fn get_prompt_cache_safe_wait_seconds(&self) -> Option<f64> { ExtensionContext::get_prompt_cache_safe_wait_seconds(self).ok().flatten() }
     fn take_approved_monitor_parent(
         &self, tool_call_id: &str, input: &JsonValue,
     ) -> Result<Option<PathBuf>, maho_tools::definition::ToolError> {
@@ -1002,7 +1025,7 @@ impl ToolContext for ExtensionContext {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile> }
+pub struct BuildSystemPromptOptions { pub cwd: PathBuf, pub custom_prompt: Option<String>, pub append_system_prompt: Option<String>, pub tools: Vec<String>, pub tool_snippets: BTreeMap<String, String>, pub prompt_guidelines: Vec<String>, pub skills: Vec<Skill>, pub context_files: Vec<ContextFile> }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextFile { pub path: String, pub content: String }
 #[derive(Clone, Debug, PartialEq)]
@@ -1119,7 +1142,10 @@ pub enum ExtensionEvent {
     SessionExtensionsRemoved { reason: SessionReason, removed: Vec<ExtensionIdentity> },
     SessionBeforeTree { preparation: TreePreparation, signal: AbortSignal },
     SessionTree { new_leaf_id: Option<String>, old_leaf_id: Option<String>, summary_entry: Option<SessionEntry>, from_extension: Option<bool> },
-    Context { messages: Vec<AgentMessage> }, BeforeProviderRequest { payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>> },
+    /// `entry_ids` is senpi's request-local `SESSION_CONTEXT_ENTRY_ID` stamp as a typed side
+    /// channel: index-aligned with `messages`, `Some(id)` for a message projected from that session
+    /// entry. It is never written into message JSON.
+    Context { messages: Vec<AgentMessage>, entry_ids: Vec<Option<String>> }, BeforeProviderRequest { payload: JsonValue, model: Option<Model>, headers: Option<BTreeMap<String, Option<String>>> },
     BeforeProviderHeaders { headers: BTreeMap<String, Option<String>> }, AfterProviderResponse { status: u16, headers: BTreeMap<String, String> },
     BeforeAgentStart(BeforeAgentStartEvent), AgentStart,
     AgentEnd { messages: Vec<AgentMessage>, aborted: Option<bool>, will_retry: Option<bool>, abort_source: Option<AbortSource> }, AgentSettled,
@@ -1130,7 +1156,7 @@ pub enum ExtensionEvent {
     ToolExecutionUpdate { tool_call_id: String, tool_name: String, args: JsonValue, partial_result: JsonValue },
     ToolExecutionEnd { tool_call_id: String, tool_name: String, result: JsonValue, is_error: bool },
     ModelSelect(ModelSelectEvent), SystemPromptChange { system_prompt: String, previous_system_prompt: String, system_prompt_name: Option<String>, model: Model, previous_model: Option<Model> },
-    ThinkingLevelSelect { level: ThinkingLevel, previous_level: ThinkingLevel }, ToolCall(ToolCallEvent), ToolResult(ToolResultEvent),
+    ThinkingLevelSelect { level: ModelThinkingLevel, previous_level: ModelThinkingLevel }, ToolCall(ToolCallEvent), ToolResult(ToolResultEvent),
     UserBash { command: String, exclude_from_context: bool, cwd: PathBuf }, Input(InputEvent), InputDisposition { input_id: String, disposition: InputDisposition },
 }
 impl ExtensionEvent {
@@ -1397,6 +1423,9 @@ pub trait ExtensionSessionActions: Send + Sync {
     fn install_registered_tool(&self, _tool: RegisteredTool) -> Result<(), ExtensionFailure> { self.refresh_tools() }
     fn register_removed_tool_hint(&self, name: &str, hint: &str) -> Result<(), ExtensionFailure>;
     fn register_lazy_tool_activator(&self, activator: LazyToolActivator) -> Result<(), ExtensionFailure>;
+    /// Lets the session consume a rejected native tool-search request (upstream
+    /// `getToolSearchService().takeNativeInjectionFailure()`). Hosts without retry ignore it.
+    fn register_native_tool_search_injection_failure_source(&self, _source: NativeToolSearchInjectionFailureSource) -> Result<(), ExtensionFailure> { Ok(()) }
     fn get_commands(&self) -> Result<Vec<SlashCommandInfo>, ExtensionFailure>;
     fn set_model(&self, model: Model) -> ExtensionFuture<'_, bool>;
     fn get_thinking_level(&self) -> Result<ThinkingLevel, ExtensionFailure>;
@@ -1559,12 +1588,16 @@ pub struct EventBusCheckpoint(BusState);
 pub trait Extension: Send + Sync { fn register(&self, api: &mut ExtensionApi); }
 #[derive(Clone)]
 pub struct LoadedExtension {
-    pub identity: ExtensionIdentity, pub source_info: SourceInfo, pub registration_cwd: PathBuf,
+    pub identity: ExtensionIdentity,
+    /// senpi `Extension.hidden` (extensions/types.ts:2573): omitted from the startup Extensions list.
+    pub hidden: bool,
+    pub source_info: SourceInfo, pub registration_cwd: PathBuf,
     pub handlers: BTreeMap<EventKind, Vec<ExtensionHandler>>, pub tools: Vec<RegisteredTool>,
     pub commands: Vec<RegisteredCommand>, pub flags: Vec<ExtensionFlag>, pub message_renderers: BTreeMap<String, MessageRenderer>,
     pub entry_renderers: BTreeMap<String, EntryRenderer>, pub entry_renderer_options: BTreeMap<String, EntryRendererOptions>,
     pub mcp_servers: Vec<RegisteredMcpServerDeclaration>, pub removed_tool_hints: BTreeMap<String, String>, pub filesystem_policies: Vec<FilesystemPolicy>,
     pub shortcuts: BTreeMap<String, ExtensionShortcut>, pub lazy_tool_activators: Vec<LazyToolActivator>,
+    pub native_tool_search_injection_failure_sources: Vec<NativeToolSearchInjectionFailureSource>,
     pub markdown_transformer: Option<MarkdownTransformer>, pub rpc_handlers: BTreeMap<String, ExtensionRpcRequestHandler>,
     pub command_context_handlers: BTreeMap<String, CommandContextHandler>,
     pub command_argument_completions: BTreeMap<String, CommandArgumentCompletions>,
@@ -1575,10 +1608,10 @@ pub struct LoadedExtension {
 }
 impl LoadedExtension {
     pub fn new(path: &str, cwd: PathBuf, source_info: SourceInfo) -> Self {
-        Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, source_info, registration_cwd: cwd,
+        Self { identity: ExtensionIdentity { path: path.into(), resolved_path: path.into() }, hidden: false, source_info, registration_cwd: cwd,
             handlers: BTreeMap::new(), tools: Vec::new(), commands: Vec::new(), flags: Vec::new(), message_renderers: BTreeMap::new(),
             entry_renderers: BTreeMap::new(), entry_renderer_options: BTreeMap::new(), mcp_servers: Vec::new(), removed_tool_hints: BTreeMap::new(), filesystem_policies: Vec::new(),
-            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
+            shortcuts: BTreeMap::new(), lazy_tool_activators: Vec::new(), native_tool_search_injection_failure_sources: Vec::new(), markdown_transformer: None, rpc_handlers: BTreeMap::new(), command_context_handlers: BTreeMap::new(), command_argument_completions: BTreeMap::new(), tool_renderers: BTreeMap::new(), erased_tool_renderers: BTreeMap::new(), config_watch_registrations: Vec::new(), fast_mode_action: None }
     }
 }
 #[derive(Clone, Default)]
@@ -1863,6 +1896,8 @@ impl ExtensionRuntime {
         existing.or_else(|| self.registration_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|pending| pending.flags.get(name).cloned()))
     }
     pub fn set_flag(&self, name: &str, value: FlagValue) { self.assert_active_or_panic(); self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.insert(name.into(), value); }
+    /// Snapshot of `runtime.flagValues`: every committed flag value (registered defaults and CLI overrides).
+    pub fn flag_values(&self) -> BTreeMap<String, FlagValue> { self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flags.clone() }
 }
 pub struct ExtensionApi {
     pub cwd: PathBuf, pub profile: ExtensionSessionProfile, pub events: EventBus, pub runtime: ExtensionRuntime, pub registered: LoadedExtension,
@@ -1915,6 +1950,13 @@ impl ExtensionApi {
         if let Some(actions) = actions
             && let Err(error) = actions.register_lazy_tool_activator(Arc::clone(&activator)) { std::panic::panic_any(error); }
         self.registered.lazy_tool_activators.push(activator);
+    }
+    pub fn register_native_tool_search_injection_failure_source(&mut self, source: NativeToolSearchInjectionFailureSource) {
+        self.runtime.assert_active_or_panic();
+        let actions = self.runtime.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).session_actions.clone();
+        if let Some(actions) = actions
+            && let Err(error) = actions.register_native_tool_search_injection_failure_source(Arc::clone(&source)) { std::panic::panic_any(error); }
+        self.registered.native_tool_search_injection_failure_sources.push(source);
     }
     pub fn register_markdown_transformer(&mut self, transformer: MarkdownTransformer) {
         self.runtime.assert_active_or_panic(); self.registered.markdown_transformer = Some(transformer.clone());
@@ -2211,7 +2253,7 @@ pub enum AgentSessionEvent {
     CompactionStart { reason: CompactionReason, request_id: Option<String> }, CompactionProgress { reason: CompactionReason, delta: Option<String>, text: Option<String> },
     EntryAppended { entry: SessionEntry }, SessionInfoChanged { name: Option<String> }, ToolHookStatus(ToolHookLifecycleEvent),
     SystemPromptChange { system_prompt: String, previous_system_prompt: String, system_prompt_name: Option<String>, model: Model, previous_model: Option<Model> },
-    ThinkingLevelChanged { level: ThinkingLevel }, HighReasoningWarning { model_id: String, provider: String, thinking_level: ThinkingLevel },
+    ThinkingLevelChanged { level: ThinkingLevel, thinking_selection: Option<maho_ai::types::ThinkingSelection> }, HighReasoningWarning { model_id: String, provider: String, thinking_level: ThinkingLevel },
     SettingsSourceSelected { selection: JsonValue }, ModelChanged { model: Model, thinking_level: ThinkingLevel, source: ModelSelectSource },
     ModelChangeRejected { model: Model, reason: String, detail: String, budget: Option<ModelBudget> },
     ModelChangeSkipped { model: Model, budget: ModelBudget, direction: String }, ModelChangePending { model: Model, budget: ModelBudget, notice: String },

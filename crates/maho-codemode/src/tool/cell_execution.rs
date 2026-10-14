@@ -69,6 +69,7 @@ impl CellExecution {
             self.cleanup(&mut state);
             state.kernel.clone()
         };
+        let reason=abort_error(reason);
         (self.on_abort)(reason.clone());
         let Some(kernel)=kernel else {self.aborted.send_replace(Some(reason));return;};
         let execution=Arc::clone(self);
@@ -122,3 +123,11 @@ impl CellExecution {
     }
 }
 impl Drop for CellExecution {fn drop(&mut self) {let mut state=self.state.lock().expect("execution lock");self.cleanup(&mut state);}}
+
+/// senpi `abortError`: a bare `controller.abort()` (the DOM `AbortError` default) becomes
+/// "Eval interrupted"; any other reason keeps its name and message. A native `AbortReason` named
+/// `AbortError` with a custom message is the port of senpi's string reason, which is kept.
+pub fn abort_error(reason:AbortReason) -> AbortReason {
+    let bare_abort=reason.name=="AbortError" && (reason.message==AbortReason::dom_default().message || reason.message=="The operation was aborted");
+    if bare_abort {AbortReason::new("AbortError","Eval interrupted")} else {reason}
+}

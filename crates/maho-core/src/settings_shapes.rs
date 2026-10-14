@@ -64,6 +64,16 @@ pub enum MermaidRenderingMode {
     Streaming,
 }
 
+impl MermaidRenderingMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Final => "final",
+            Self::Streaming => "streaming",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MarkdownSettings {

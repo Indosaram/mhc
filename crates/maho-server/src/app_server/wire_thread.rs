@@ -5,11 +5,19 @@ use serde_json::{Value, json};
 fn iso_seconds(value: &str) -> f64 {
     super::js_semantics::date_parse_ms(value).map_or(0.0, |millis| millis as f64 / 1000.0)
 }
+/// Pinned `wire-thread.ts` `toGeneratedStatus`: an active registry status gains `activeFlags: []`.
+fn to_generated_status(status: &Value) -> Value {
+    match status["type"].as_str() {
+        Some("active") => json!({"type":"active","activeFlags":[]}),
+        Some("idle") => json!({"type":"idle"}),
+        _ => status.clone(),
+    }
+}
 pub async fn build_disk_wire_thread(wire: &Value,version: &str) -> Result<Value,MetadataStateError> {
     let git_info = match wire["sessionPath"].as_str() {Some(path)=>ThreadMetadataState.read_git_info(std::path::Path::new(path)).await?,None=>None};
     let created = iso_seconds(wire["createdAt"].as_str().unwrap_or_default());
     let updated = iso_seconds(wire["updatedAt"].as_str().unwrap_or_default());
-    Ok(json!({"id":wire["id"],"sessionId":wire["sessionId"],"forkedFromId":null,"parentThreadId":null,"preview":wire["preview"].as_str().unwrap_or_default(),"ephemeral":false,"modelProvider":"unknown","createdAt":created,"updatedAt":updated,"recencyAt":updated,"status":wire["status"],"path":wire["sessionPath"],"cwd":wire["cwd"],"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":wire["name"],"turns":[]}))
+    Ok(json!({"id":wire["id"],"sessionId":wire["sessionId"],"forkedFromId":null,"parentThreadId":null,"preview":wire["preview"].as_str().unwrap_or_default(),"ephemeral":false,"modelProvider":"unknown","createdAt":created,"updatedAt":updated,"recencyAt":updated,"status":to_generated_status(&wire["status"]),"path":wire["sessionPath"],"cwd":wire["cwd"],"cliVersion":version,"source":"appServer","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":git_info,"name":wire["name"],"turns":[]}))
 }
 pub fn logged_turn_to_wire_turn(turn: &LoggedTurn) -> Value {
     logged_turn_with_view(turn,"full")

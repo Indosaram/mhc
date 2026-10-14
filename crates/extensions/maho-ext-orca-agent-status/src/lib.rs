@@ -16,6 +16,25 @@ pub fn parse_endpoint(contents: &str) -> BTreeMap<String, String> {
     output
 }
 
+/// Env var the status owner publishes so inherited child processes stand down (upstream sets
+/// `process.env.ORCA_PI_STATUS_OWNED = selfPid`).
+pub const STATUS_OWNER_ENV: &str = "ORCA_PI_STATUS_OWNED";
+
+/// Process-global owner pid. Mutating the process environment is `unsafe` in Rust, so the claim is
+/// latched here and published through `maho_ext_api::process_env`, which every child spawner applies.
+static STATUS_OWNER: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// Claim status reporting for `pid` unless the inherited `owner` names another process.
+pub fn claim_status_owner(owner: Option<&str>, pid: u32) -> bool {
+    if owner.is_some_and(|owner| !owner.is_empty() && owner != pid.to_string()) { return false; }
+    let claimed = *STATUS_OWNER.get_or_init(|| pid) == pid;
+    if claimed { maho_ext_api::process_env::set(STATUS_OWNER_ENV, &pid.to_string()); }
+    claimed
+}
+
+/// The pid that owns Orca status reporting in this process, for injection into child environments.
+pub fn status_owner() -> Option<u32> { STATUS_OWNER.get().copied() }
+
 pub fn is_omp_runtime(names: &[&str]) -> bool {
     names.iter().any(|value| {
         let name = value.rsplit(['/', '\\']).next().unwrap_or("").to_lowercase();
@@ -52,6 +71,13 @@ mod tests {
     #[test] fn last_when_duplicate_key() { assert_eq!(parse_endpoint("ENV=a\nENV=b").get("ENV").map(String::as_str), Some("b")); }
     #[test] fn omp_when_windows_executable() { assert!(is_omp_runtime(&["C:\\bin\\OMP.EXE"])); }
     #[test] fn pi_when_other_executable() { assert!(!is_omp_runtime(&["/bin/senpi"])); }
+    #[test] fn status_owner_claim_rules() {
+        assert!(!claim_status_owner(Some("1"), 2));
+        assert!(claim_status_owner(Some(""), 7));
+        assert!(claim_status_owner(Some("7"), 7));
+        assert_eq!(status_owner(), Some(7));
+        assert_eq!(maho_ext_api::process_env::vars().get(STATUS_OWNER_ENV).map(String::as_str), Some("7"));
+    }
     #[test] fn text_when_content_parts() { assert_eq!(extract_assistant_text(&json!({"content":[{"type":"text","text":"a"},{"type":"thinking","text":"hidden"},{"type":"text","text":"b"}]})), "ab"); }
     #[test] fn extra_when_payload_key_overridden() { let envelope = HookEnvelope { pane_key:"pane",launch_token:"",tab_id:"",worktree_id:"",env:"",version:"" }; let extra = json!({"hook_event_name":"override"}); let payload = status_payload(&envelope, "start", &Map::new(), extra.as_object().unwrap()); assert_eq!(payload["payload"]["hook_event_name"], "override"); }
 }

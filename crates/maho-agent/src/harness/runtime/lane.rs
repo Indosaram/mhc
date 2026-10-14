@@ -1,5 +1,6 @@
 //! Port of senpi `runtime/lane.ts`: serialized commands and durable lane publication.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 pub use super::types::{CommitDecision, ContinueOperationResult, Drive, FinishDecision, LaneCommand, LaneState, OperationCommand, ProcedureResult};
@@ -227,6 +228,9 @@ pub(crate) fn durable_lane_state(state: &LaneState) -> crate::harness::session::
     }
 }
 
+/// Pinned `FaultHandler`: fault the owning harness and return the error every caller sees.
+pub type FaultHandler = Arc<dyn Fn(SessionError, &Context) -> SessionError + Send + Sync>;
+
 pub struct Lane {
     pub name: String,
     pub session: Arc<dyn Session>,
@@ -236,13 +240,17 @@ pub struct Lane {
     pub hooks: Arc<HookRegistry>,
     state: Mutex<LaneState>,
     closed_error: Mutex<Option<SessionError>>,
+    /// Pinned `closedError instanceof HarnessFault`: the first seal came from a harness fault.
+    faulted: AtomicBool,
+    /// Pinned `onFault`, installed by the harness; a standalone lane only seals itself.
+    pub(crate) on_fault: Option<FaultHandler>,
     idle_owner: tokio::sync::RwLock<()>,
     state_change: tokio::sync::Notify,
     /// Shared process-local drive configuration (the pinned `Config<TContext>` store).
     pub(crate) drive_config: Arc<Mutex<Config<()>>>,
     /// The typed built-in tools + `toolContext` for this lane (pinned `Config<TContext>`), kept as
     /// a trait object so `Lane` stays non-generic while the tools keep their real context type.
-    pub tool_runner: Arc<dyn super::tools::ToolBatchRunner>,
+    pub tool_runner: Arc<Mutex<Arc<dyn super::tools::ToolBatchRunner>>>,
     /// Weak self, installed by `drive`/the harness so `RuntimeDriveLane` can hand out `Arc<Lane>`.
     self_ref: Mutex<Weak<Lane>>,
     /// The single installed drive pass for this lane (pinned `activeDrive`).
@@ -264,10 +272,12 @@ impl Lane {
             hooks: Arc::new(HookRegistry::new(Arc::new(|_, _, _, _| Box::pin(async {})))),
             state: Mutex::new(state),
             closed_error: Mutex::new(None),
+            faulted: AtomicBool::new(false),
+            on_fault: None,
             idle_owner: tokio::sync::RwLock::new(()),
             state_change: tokio::sync::Notify::new(),
             drive_config: Arc::new(Mutex::new(super::harness::default_drive_config())),
-            tool_runner: Arc::new(super::tools::EmptyToolRunner),
+            tool_runner: Arc::new(Mutex::new(Arc::new(super::tools::EmptyToolRunner) as Arc<dyn super::tools::ToolBatchRunner>)),
             self_ref: Mutex::new(Weak::new()),
             active_drive: Mutex::new(None),
         }
@@ -322,9 +332,43 @@ impl Lane {
     }
 
     pub fn seal(&self, error: SessionError) {
+        self.seal_as(error, false);
+    }
+
+    /// Seal this lane with the harness fault, so its snapshot reports `faulted: true`.
+    pub fn seal_faulted(&self, error: SessionError) {
+        self.seal_as(error, true);
+    }
+
+    /// Pinned `closedError instanceof HarnessFault`.
+    pub fn faulted(&self) -> bool {
+        self.faulted.load(Ordering::SeqCst)
+    }
+
+    /// Pinned `throw this.onFault(error, context)`, preferring an existing close error.
+    fn fault(&self, error: SessionError, context: &Context) -> SessionError {
+        let closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(closed) = closed {
+            return closed;
+        }
+        match &self.on_fault {
+            Some(on_fault) => {
+                let fault = on_fault(error, context);
+                self.seal_faulted(fault.clone());
+                fault
+            }
+            None => {
+                self.seal(error.clone());
+                error
+            }
+        }
+    }
+
+    fn seal_as(&self, error: SessionError, faulted: bool) {
         let mut closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner());
         if closed.is_none() {
             *closed = Some(error.clone());
+            self.faulted.store(faulted, Ordering::SeqCst);
             self.state_change.notify_waiters();
             // Pinned `seal` also closes the installed drive gate so a live observation rejects.
             if let Some(drive) = self.active_drive.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
@@ -633,7 +677,11 @@ impl Lane {
                             lane.state_change.notify_waiters();
                             match outcome {
                                 Ok(outcome) => running.settle(outcome),
-                                Err(error) => running.fail(error.message),
+                                // Pinned drive rejection: `closedError ?? onFault(error, drive.context)`.
+                                Err(error) => {
+                                    let failure = if lane.on_fault.is_some() { lane.fault(error, &running.context) } else { error };
+                                    running.fail(failure.message)
+                                }
                             }
                         });
                     }
@@ -946,9 +994,7 @@ impl Lane {
             }
         }
         .await;
-        if let Err(error) = &outcome {
-            self.seal(error.clone());
-        }
+        let outcome = outcome.map_err(|error| self.fault(error, context));
         mutation.end(context).await;
         drop(owner);
         let (result, delivery) = outcome?;
@@ -1388,6 +1434,9 @@ impl Lane {
 /// the live projection and `publish_state` writes it back after a drive commit (not a no-op);
 /// `emit` forwards through the lane's own event bus so watchers see exactly one copy.
 impl RuntimeLane for Lane {
+    fn faulted(&self) -> bool {
+        Lane::faulted(self)
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -1424,8 +1473,8 @@ impl RuntimeDriveLane for Lane {
         self.read_config()
     }
 
-    fn hooks(&self) -> &HookRegistry {
-        self.hooks.as_ref()
+    fn hooks(&self) -> Arc<HookRegistry> {
+        self.hooks.clone()
     }
 
     fn models(&self) -> &maho_ai::models::Models {
@@ -1473,7 +1522,8 @@ impl RuntimeDriveLane for Lane {
     fn run_tools<'a>(&'a self, drive: &'a Drive, state: OperationState) -> BoxFuture<'a, Result<ProcedureResult, SessionError>> {
         Box::pin(async move {
             let lane = self.arc()?;
-            self.tool_runner.run(&lane, drive, state).await
+            let runner = self.tool_runner.lock().unwrap_or_else(|error| error.into_inner()).clone();
+            runner.run(&lane, drive, state).await
         })
     }
 

@@ -392,6 +392,26 @@ impl Agent {
         lock(&self.inner.state).thinking_level = level;
     }
 
+    /// Assign `state.thinkingSelection`.
+    pub fn set_thinking_selection(&self, selection: Option<ThinkingSelection>) {
+        lock(&self.inner.state).thinking_selection = selection;
+    }
+
+    /// `state.reasoningBaseline` alone.
+    pub fn reasoning_baseline(&self) -> Option<String> {
+        lock(&self.inner.state).reasoning_baseline.clone()
+    }
+
+    /// Assign `state.reasoningBaseline`.
+    pub fn set_reasoning_baseline(&self, baseline: Option<String>) {
+        lock(&self.inner.state).reasoning_baseline = baseline;
+    }
+
+    /// `state.reasoningBaseline ??= level`: keep the first pre-update reasoning level.
+    pub fn init_reasoning_baseline(&self, level: &str) {
+        lock(&self.inner.state).reasoning_baseline.get_or_insert_with(|| level.to_owned());
+    }
+
     pub fn steering_mode(&self) -> QueueMode {
         lock(&self.inner.steering_queue).mode
     }
@@ -948,11 +968,9 @@ impl Agent {
     pub async fn emit_external_event(&self, event: AgentEvent, run_signal: Option<AbortSignal>) {
         let active_signal = self.signal();
         let Some(active_signal) = active_signal else { return };
-        // TS also drops the event when `runSignal !== activeSignal`. AbortSignal carries no
-        // identity in this port, so a caller-supplied signal is accepted as belonging to the
-        // active run; the active-run check above is the guard that matters.
-        let _ = run_signal;
-        let _ = active_signal;
+        if run_signal.is_some_and(|signal| !signal.same_signal(&active_signal)) {
+            return;
+        }
         self.process_events(event).await;
     }
 
@@ -965,7 +983,8 @@ impl Agent {
         build_provider_context(context, &config, signal.as_ref()).await
     }
 
-    fn stream_function(&self) -> StreamFn {
+    /// `Agent.streamFunction`.
+    pub fn stream_function(&self) -> StreamFn {
         lock(&self.inner.settings).stream_function.clone()
     }
 
@@ -977,6 +996,26 @@ impl Agent {
     /// `Agent.convertToLlm`.
     pub fn set_convert_to_llm(&self, convert_to_llm: ConvertToLlm) {
         lock(&self.inner.settings).convert_to_llm = convert_to_llm;
+    }
+
+    /// `Agent.convertToLlm` (read side of the public TS field).
+    pub fn convert_to_llm(&self) -> ConvertToLlm {
+        lock(&self.inner.settings).convert_to_llm.clone()
+    }
+
+    /// `Agent.transformContext` (read side of the public TS field).
+    pub fn transform_context(&self) -> Option<TransformContext> {
+        lock(&self.inner.settings).transform_context.clone()
+    }
+
+    /// `Agent.onPayload` (read side of the public TS field).
+    pub fn on_payload(&self) -> Option<OnPayload> {
+        lock(&self.inner.settings).on_payload.clone()
+    }
+
+    /// `Agent.onResponse` (read side of the public TS field).
+    pub fn on_response(&self) -> Option<OnResponse> {
+        lock(&self.inner.settings).on_response.clone()
     }
 
     /// `Agent.transformContext`.
@@ -1002,6 +1041,16 @@ impl Agent {
     /// `Agent.shouldStopAfterTurn`.
     pub fn set_should_stop_after_turn(&self, callback: Option<ShouldStopAfterTurnWithSignal>) {
         lock(&self.inner.settings).should_stop_after_turn = callback;
+    }
+
+    /// `Agent.prepareNextTurn` (getter).
+    pub fn prepare_next_turn(&self) -> Option<PrepareNextTurnWithoutContext> {
+        lock(&self.inner.settings).prepare_next_turn.clone()
+    }
+
+    /// `Agent.prepareNextTurnWithContext` (getter).
+    pub fn prepare_next_turn_with_context(&self) -> Option<PrepareNextTurnWithContext> {
+        lock(&self.inner.settings).prepare_next_turn_with_context.clone()
     }
 
     /// `Agent.prepareNextTurn`.

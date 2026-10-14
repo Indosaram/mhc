@@ -44,6 +44,10 @@ pub trait RuntimeLane: Send + Sync {
     fn state(&self) -> LaneState;
     fn publish_state(&self, state: LaneState);
     fn emit<'a>(&'a self, events: Vec<HarnessEvent>, context: &'a Context) -> BoxFuture<'a, ()>;
+    /// Pinned `closedError instanceof HarnessFault` for `LaneSnapshot.faulted`.
+    fn faulted(&self) -> bool {
+        false
+    }
 }
 
 pub struct StructuralPreparation {
@@ -54,7 +58,7 @@ pub struct StructuralPreparation {
 pub trait RuntimeDriveLane: RuntimeLane {
     fn progress_lane(&self) -> Arc<dyn RuntimeLane>;
     fn config(&self) -> Arc<Config<()>>;
-    fn hooks(&self) -> &crate::harness::hooks::HookRegistry;
+    fn hooks(&self) -> Arc<crate::harness::hooks::HookRegistry>;
     fn models(&self) -> &maho_ai::models::Models;
     fn cancel_deferred<'a>(&'a self, model: &'a maho_ai::model::Model, handle: &'a maho_ai::types::DeferredHandle, options: maho_ai::types::ProviderRequestOptions) -> BoxFuture<'a, Result<(), String>>;
     fn prepare_compaction_threshold<'a>(&'a self, drive: &'a Drive, state: &'a OperationState) -> BoxFuture<'a, Result<ContinueOperationResult<Option<StructuralPreparation>>, crate::harness::session::session::SessionError>>;

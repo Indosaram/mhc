@@ -52,7 +52,7 @@ impl TaskComponent {
         let session = Arc::new(move || state.lock().unwrap_or_else(PoisonError::into_inner).session_id().map(str::to_owned));
         let channels = OwnedResumptionChannels::new(api.events.clone(), Arc::new(TaskResumptionChannelManager { manager: engine.manager.clone(), ownership }), session).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
         let dag_status_timers = status_timers;
-        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| None));
+        let status = TaskStatusUi::new(engine.manager.clone(), engine.runtime.clone(), timers, Arc::new(|| chrono::Utc::now().timestamp_millis()), Arc::new(|| { use maho_tui::terminal::TerminalIo; maho_tui::terminal::ProcessIo.size().map(|(columns, _)| usize::from(columns)) }));
         let transitions = SessionTransitionBridge::new(engine.runtime.clone(), engine.notifier.clone());
         let component = Arc::new(Self { engine, status, channels, transitions: Mutex::new(transitions), waiters: Mutex::new(BTreeMap::new()), rpc: Mutex::new(None), terminal: Mutex::new(None), delivery: Mutex::new(()), terminal_epochs: Mutex::new(std::collections::BTreeSet::new()), team:Mutex::new(None), team_routing: Arc::new(Mutex::new(None)), mutation_sync:Mutex::new(None), eval_handles: Mutex::new(None), before_suspend:Mutex::new(None), dag:Mutex::new(None) });
         let eval_handles = Arc::new(crate::eval_handle_host::TaskMutationObserver::default());
@@ -62,6 +62,11 @@ impl TaskComponent {
         component.engine.store.set_mutation_listener(Some(Arc::new(move || {
             mutation_eval_handles.notify();
             if let Some(component) = weak.upgrade() {
+                // pin `task/index.ts:112-120` statusUi.scheduleSync() and `event-bridge.ts:36` taskRpc.sync()
+                // run on every store mutation, so child subscriptions attach before a fast first tool event.
+                component.status.schedule_sync();
+                let rpc = component.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                if let Some(rpc) = rpc { rpc.sync(); }
                 let mut pending = component.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(handle) = pending.take() { component.status.timers.clear(handle); }
                 let weak = Arc::downgrade(&component);
@@ -118,25 +123,44 @@ impl TaskComponent {
                         drop(delivery);
                         component.engine.lifecycle.cleanup_expired_records().map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
                         if let Some(team)=team && let Err(error)=team.pollers.tick() { maho_ext_api::diagnostic(&format!("task session-start lead poll failed: {error}")); }
+                        // Upstream order: statusUi.scheduleSync() then taskRpc.attach().
+                        component.status.schedule_sync();
                         if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.attach(); }
+                        // Native-only tail: arm completion waiters for still-running tasks. Its terminal
+                        // re-delivery cannot double-notify what reconcile_unnotified_notifications already
+                        // queued: the notifier skips notified_epoch >= run_epoch and in-flight `pending`
+                        // keys, and owned-member liveness is deduped by `terminal_epochs`.
                         component.sync();
                     }
-                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.channels.emit_shutdown().await.map_err(maho_ext_api::ExtensionFailure::new)?; component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
+                    ExtensionEvent::SessionBeforeSwitch { .. } => { if let Some(rpc) = &*component.rpc.lock().unwrap_or_else(PoisonError::into_inner) { rpc.detach(); } component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionSwitching, Some(session)); component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui(); }
                     ExtensionEvent::SessionBeforeCompact(_) => component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::Compacting, Some(session)),
                     ExtensionEvent::SessionCompact(_) => { component.transitions.lock().unwrap_or_else(PoisonError::into_inner).resolve(Some(session)).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?; component.sync(); }
                     ExtensionEvent::SessionShutdown(shutdown) => {
                         let before_suspend = component.before_suspend.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         if let Some(before_suspend) = before_suspend { before_suspend(session)?; }
                         component.transitions.lock().unwrap_or_else(PoisonError::into_inner).mark(TransitionReason::SessionShutdown, Some(session));
+                        // Upstream order (DAG pauseForShutdown ran first via before_suspend): taskRpc.dispose,
+                        // clearUi, statusUi.dispose, leadPollers.shutdown, awaited emitShutdown, then suspend.
+                        // `dispose()` runs rpc/status/pollers in that order, then joins the resumption worker,
+                        // whose exit awaits the zero-count `wake_source_state` emission before returning.
+                        component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
                         component.dispose();
                         component.engine.lifecycle.suspend_on_session_shutdown(&senpi_task::lifecycle::SuspendInput { parent_session_id: session.into(), reason: match shutdown.reason { maho_ext_api::SessionReason::Startup => "startup", maho_ext_api::SessionReason::Reload => "reload", maho_ext_api::SessionReason::New => "new", maho_ext_api::SessionReason::Resume => "resume", maho_ext_api::SessionReason::Fork => "fork", maho_ext_api::SessionReason::Quit => "quit" }.into() }).map_err(|error| maho_ext_api::ExtensionFailure::new(error.to_string()))?;
-                        component.engine.runtime.lock().unwrap_or_else(PoisonError::into_inner).clear_ui();
                     }
                     ExtensionEvent::AgentEnd { .. } => {
+                        // Upstream `queueMicrotask(() => coordinator.flushOnIdle())`: drain completions, team
+                        // mail and DAG summaries that arrived mid-turn on the idle edge, after this handler.
+                        if let Some(coordinator) = context.idle_coordinator.clone() {
+                            match &context.defer_macrotask {
+                                Some(defer) => defer(Box::new(move || { coordinator.flush_on_idle(); })),
+                                None => { coordinator.flush_on_idle(); }
+                            }
+                        }
                         let team=component.team.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         if let Some(team)=team { let runtime=component.engine.runtime.clone(); team.liveness.acknowledge_persisted(Arc::new(move || runtime.lock().unwrap_or_else(PoisonError::into_inner).session_file().map(ToOwned::to_owned))); }
                         component.sync();
                     }
+                    ExtensionEvent::ModelSelect(_) => component.status.schedule_sync(),
                     _ => component.sync(),
                 }
                 Ok(EventResult::None)
@@ -255,8 +279,8 @@ impl TaskComponent {
         let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(PoisonError::into_inner));
         for waiter in waiters.values() { waiter.signal.abort(); }
         for waiter in waiters.into_values() { if waiter.thread.join().is_err() { maho_ext_api::diagnostic("task completion waiter panicked"); } }
-        self.status.dispose();
         if let Some(rpc) = self.rpc.lock().unwrap_or_else(PoisonError::into_inner).take() { rpc.dispose(); }
+        self.status.dispose();
         if let Some(team)=self.team.lock().unwrap_or_else(PoisonError::into_inner).clone() { team.pollers.shutdown(); }
         self.channels.dispose();
     }

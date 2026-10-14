@@ -17,6 +17,24 @@ async fn mode_startup_failure_disposes_loaded_native_sessions() {
     assert!(result.is_err());
     assert!(runtime.threads.list_loaded().await.is_empty());
 }
+#[tokio::test]
+async fn explicit_unix_socket_keeps_parent_mode_and_default_unix_needs_no_token() {
+    use maho_server::app_server::{cli_args::Listen,index::run_app_server_mode};
+    use std::os::unix::fs::PermissionsExt;
+    let directory=tempfile::tempdir().unwrap();
+    let agent_dir=directory.path().join("agent");
+    let shared=directory.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared,std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runtime=AppServerRuntime::new(agent_dir.display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let socket=shared.join("x.sock");
+    run_app_server_mode(&runtime,Listen::Unix {url:format!("unix://{}",socket.display()),path:Some(socket.display().to_string())},None,std::future::ready(())).await.unwrap();
+    assert_eq!(std::fs::metadata(&shared).unwrap().permissions().mode()&0o777,0o755);
+    let runtime=AppServerRuntime::new(agent_dir.display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    run_app_server_mode(&runtime,Listen::Unix {url:"unix://".into(),path:None},None,std::future::ready(())).await.unwrap();
+    assert_eq!(std::fs::metadata(agent_dir.join("app-server")).unwrap().permissions().mode()&0o777,0o700);
+    assert!(!agent_dir.join("app-server/ws-token").exists());
+}
 async fn send(client: &mut Client, value: Value) {
     client.send(Message::Text(value.to_string().into())).await.expect("client frame sent");
 }
@@ -42,7 +60,7 @@ fn factory() -> SessionFactory {
         let streams = faux_streams(provider.core.clone());
         let stream_fn: maho_agent::types::StreamFn = Arc::new(move |model, context, options| streams.stream_simple(model,context,options.map(|options|options.simple)));
         let credentials=Arc::new(maho_core::auth_storage::AuthStorage::in_memory([("faux".into(),json!({"type":"api_key","key":"faux-test"}))].into_iter().collect()));
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()])});
+        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {credentials:Some(credentials),models_path:Some(std::path::Path::new(&cwd).join("models.json")),auth_path:Some(std::path::Path::new(&cwd).join("auth.json")),providers:Some(vec![provider.provider.clone()]), ..Default::default() });
         AgentSession::new(AgentSessionConfig {
             agent:maho_agent::Agent::new(maho_agent::AgentOptions {initial_state:Some(maho_agent::agent::PartialAgentState {model:Some(model),..Default::default()}),stream_fn:Some(stream_fn),..Default::default()}),
             session_manager:options.session_manager.ok_or("Missing session manager")?,settings_manager:maho_core::settings_manager::SettingsManager::from_storage(Box::new(maho_core::settings_manager::InMemorySettingsStorage::default()),false),
@@ -77,9 +95,10 @@ async fn daemon_socket_faux_turn_detach_and_reattach_retains_transcript() {
     client.close(None).await.unwrap(); drop(client);
     let mut client = attach(&path).await;
     send(&mut client,json!({"id":5,"method":"thread/resume","params":{"threadId":id}})).await;
+    // senpi threads/handlers.ts resume: the idle `thread/status/changed` broadcast precedes the response.
+    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
     let resumed = read(&mut client).await;
     assert_eq!(resumed["result"]["thread"]["turns"][0]["items"],items);
-    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
     send(&mut client,json!({"id":6,"method":"thread/turns/list","params":{"threadId":id,"itemsView":"full"}})).await;
     let history = read(&mut client).await;
     assert_eq!(history["result"]["data"][0]["items"],items);
@@ -115,7 +134,11 @@ async fn thread_settings_validate_before_mutation_and_respond_before_notificatio
     let id = response["result"]["thread"]["id"].as_str().unwrap().to_owned();
     assert_eq!(read(&mut client).await["method"],"thread/started");
     send(&mut client,json!({"id":3,"method":"thread/settings/update","params":{"threadId":id,"effort":"unrecognized"}})).await;
-    assert_eq!(read(&mut client).await["error"]["code"],-32603);
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
+    send(&mut client,json!({"id":31,"method":"thread/settings/update","params":{"threadId":id,"model":""}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
+    send(&mut client,json!({"id":32,"method":"thread/settings/update","params":{"threadId":id,"effort":1}})).await;
+    assert_eq!(read(&mut client).await["error"]["code"],-32602);
     let entry = runtime.threads.get_loaded_thread(&id).await.unwrap();
     assert_eq!(serde_json::to_value(entry.lock().await.session.thinking_level()).unwrap(),"off");
     send(&mut client,json!({"id":4,"method":"thread/settings/update","params":{"threadId":id,"effort":"minimal"}})).await;
@@ -308,4 +331,33 @@ async fn idle_lifecycle_unloads_only_unsubscribed_inactive_threads_and_dispose_c
     assert!(runtime.threads.get_loaded_thread(&id).await.is_ok());
     let result=runtime.core.read().await.registry.dispatch(RegistryConnection {initialized:true,id:"observer".into(),..Default::default()},json!({"id":1,"method":"thread/read","params":{"threadId":id}})).await;assert!(result.get("result").is_some());
     runtime.core.write().await.remove_connection("observer");runtime.dispose().await;
+}
+
+#[tokio::test]
+async fn daemon_exit_is_described_with_code_or_signal_and_stderr_is_appended() {
+    use maho_server::app_server::daemon::{DaemonPaths, append_daemon_stderr, describe_daemon_exit};
+    let status = tokio::process::Command::new("sh").args(["-c","exit 3"]).status().await.unwrap();
+    assert_eq!(describe_daemon_exit(&Ok(status)),"exited with code 3");
+    let mut child = tokio::process::Command::new("sleep").arg("600").kill_on_drop(true).spawn().unwrap();
+    child.start_kill().unwrap();
+    assert_eq!(describe_daemon_exit(&child.wait().await),"was terminated by SIGKILL");
+    assert_eq!(describe_daemon_exit(&Err(std::io::Error::other("boom"))),"failed to launch (boom)");
+    let directory = tempfile::tempdir().unwrap();
+    let paths = DaemonPaths::new(directory.path());
+    assert_eq!(append_daemon_stderr(&paths,"message").await.unwrap(),"message");
+    std::fs::create_dir_all(&paths.dir).unwrap();
+    std::fs::write(&paths.stderr_log,"\n  bind failed  \n").unwrap();
+    assert_eq!(append_daemon_stderr(&paths,"message").await.unwrap(),"message\nbind failed");
+}
+
+#[tokio::test]
+async fn runtime_reports_the_host_os_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = AppServerRuntime::new(directory.path().display().to_string(),directory.path().display().to_string(),"1".into(),None,Some(factory())).await;
+    let core = runtime.core.read().await;
+    let platform = match std::env::consts::OS { "macos" => "darwin", other => other };
+    let arch = match std::env::consts::ARCH { "x86_64" => "x64", "aarch64" => "arm64", other => other };
+    assert_eq!(core.platform, platform);
+    assert_eq!(core.arch, arch);
+    assert!(!core.os_release.is_empty());
 }

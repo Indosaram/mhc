@@ -42,11 +42,11 @@ pub fn live_parent_registry(
 
 pub fn native_child_session_manager(
     child: &senpi_task::runners::in_process::child_options::ChildSessionOptions,
-) -> maho_core::session_manager::SessionManager {
+) -> Result<maho_core::session_manager::SessionManager, senpi_task::host::HostError> {
     maho_core::session_manager::SessionManager::open(
         &child.session_manager.session_file().to_string_lossy(),
         Some(child.session_manager.session_dir()), Some(&child.cwd), None,
-    )
+    ).map_err(|message| senpi_task::host::HostError { message })
 }
 
 pub(crate) fn workpool_yield_tool(identity: &senpi_task::runners::in_process::child_options::WorkpoolChildIdentity, cwd: &str) -> maho_ext_api::ToolDefinition {
@@ -120,7 +120,7 @@ pub fn native_child_sdk_options(
     Ok(maho_core::sdk::CreateAgentSessionOptions {
         cwd: Some(child.cwd.clone()), agent_dir: child.agent_dir.clone(), auth_storage, model_runtime,
         model_registry, model, thinking_selection, custom_tools, minimal_resources,
-        session_manager: Some(native_child_session_manager(child)), settings_manager: Some(native_child_settings(&child.settings)),
+        session_manager: Some(native_child_session_manager(child)?), settings_manager: Some(native_child_settings(&child.settings)),
         tools: child.tools.clone(), exclude_tools: child.exclude_tools.clone(),
         system_prompt: child.system_prompt.clone(),
         ..Default::default()
@@ -243,6 +243,9 @@ pub fn native_rpc_options(
     inherited_extensions: Vec<String>,
 ) -> RpcProcessRunnerOptions {
     parent_env.insert("MAHO_CODING_AGENT_DIR".into(), agent_dir.into());
+    // Upstream extensions write process.env (Orca deletes the consumed prefill and publishes the
+    // status owner pid), so later children inherit those writes.
+    maho_ext_api::process_env::apply(&mut parent_env);
     let executable = executable.to_string_lossy().into_owned();
     let native = executable.clone();
     let runtime = RpcSpawnRuntime {

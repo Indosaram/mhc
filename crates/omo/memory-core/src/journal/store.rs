@@ -350,21 +350,29 @@ impl TranscriptJournal {
     }
 }
 
+/// Kinds Windows raises for a directory handle, plus the absent-file case
+/// (upstream `SKIPPABLE_SYNC_CODES`: ENOENT, EISDIR, EPERM, EACCES, EINVAL).
+fn is_skippable_sync_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::IsADirectory
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::InvalidInput
+    )
+}
+
 fn sync_path(path: &Path) -> Result<(), JournalError> {
     let file = match File::open(path) {
         Ok(f) => f,
-        Err(err) => match err.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => return Ok(()),
-            _ => return Ok(()),
-        },
+        Err(err) if is_skippable_sync_error(err.kind()) => return Ok(()),
+        Err(err) => return Err(JournalError::Io(err)),
     };
-    if let Err(err) = file.sync_all() {
-        match err.kind() {
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied => return Ok(()),
-            _ => return Ok(()),
-        }
+    match file.sync_all() {
+        Ok(()) => Ok(()),
+        Err(err) if is_skippable_sync_error(err.kind()) => Ok(()),
+        Err(err) => Err(JournalError::Io(err)),
     }
-    Ok(())
 }
 
 /// Fsync a journal file if it exists.

@@ -3,7 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use maho_tui::autocomplete::{AutocompleteProvider, CombinedAutocompleteProvider, CommandSpec};
+use maho_tui::autocomplete::{
+    AutocompleteProvider, AutocompleteSignal, CombinedAutocompleteProvider, CommandSpec, SuggestionRequest,
+};
 use maho_tui::dollar_invocation_autocomplete::find_dollar_skill_mentions;
 
 fn commands() -> Vec<CommandSpec> {
@@ -497,4 +499,25 @@ fn applies_quoted_completion_without_duplicating_the_closing_quote() {
 
     let applied = provider.apply_completion(&[line.to_string()], 0, cursor_col, item, &result.prefix);
     assert_eq!(applied.lines[0], "\"my folder/test.txt\"");
+}
+
+#[test]
+fn resolves_at_file_requests_off_thread_and_slash_requests_immediately() {
+    let mut provider = CombinedAutocompleteProvider::new(commands(), "/tmp", Some("fd".to_string()));
+    let signal = AutocompleteSignal::new();
+    // Aborted before the worker runs, so no fd process is ever spawned.
+    signal.abort();
+    match provider.request_suggestions(&["@src".to_string()], 0, 4, false, &signal) {
+        SuggestionRequest::Pending(receiver) => {
+            let answer = receiver
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("worker answers");
+            assert!(answer.is_none(), "an aborted walk yields no suggestions");
+        }
+        SuggestionRequest::Ready(_) => panic!("the @ file search must not block the caller"),
+    }
+    assert!(matches!(
+        provider.request_suggestions(&["/mod".to_string()], 0, 4, false, &AutocompleteSignal::new()),
+        SuggestionRequest::Ready(Some(_))
+    ));
 }

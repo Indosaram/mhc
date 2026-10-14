@@ -201,7 +201,7 @@ async fn ask_about_person(
                 config: deps.full_config_value(),
                 registry,
                 env: deps.environment(),
-                launcher: None,
+                launcher: deps.launcher.clone(),
                 deadline_ms: None,
             })
         }

@@ -339,11 +339,21 @@ async fn provider_payload_transform_chains_and_supports_null() {
 async fn provider_payload_excluded_extension_does_not_run() { assert_eq!(runner(vec![extension("a", EventKind::BeforeProviderRequest, failure())]).emit_before_provider_request(JsonValue::Null, Some("a")).await.unwrap(), JsonValue::Null); }
 #[tokio::test]
 async fn context_clones_and_isolates_original_messages() {
-    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::Context { messages } = event else { panic!() }; messages.clear(); Ok(EventResult::None) }));
-    let messages = vec![AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }))]; assert!(runner(vec![extension("a", EventKind::Context, handler)]).emit_context(&messages, None).await.unwrap().is_empty()); assert_eq!(messages.len(), 1);
+    let handler: ExtensionHandler = Arc::new(|event, _| Box::pin(async move { let ExtensionEvent::Context { messages, .. } = event else { panic!() }; messages.clear(); Ok(EventResult::None) }));
+    let messages = vec![AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("original".into()), timestamp: 1 }))]; assert!(runner(vec![extension("a", EventKind::Context, handler)]).emit_context(&messages, &[], None).await.unwrap().is_empty()); assert_eq!(messages.len(), 1);
 }
 #[tokio::test]
-async fn context_excludes_originating_extension() { let mut runner = runner(vec![extension("a", EventKind::Context, failure())]); runner.emit_context(&[], Some("a")).await.unwrap(); assert!(runner.errors.is_empty()); }
+async fn context_entry_ids_drop_for_replaced_messages() {
+    let user = |text: &str| AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text(text.into()), timestamp: 1 }));
+    let replace: ExtensionHandler = Arc::new(move |event, _| { let ExtensionEvent::Context { messages, .. } = event else { panic!() }; let next = vec![AgentMessage::Llm(Message::User(UserMessage { content: UserContent::Text("changed".into()), timestamp: 1 })), messages[1].clone()]; Box::pin(async move { Ok(EventResult::Context { messages: Some(next) }) }) });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let captured = seen.clone();
+    let observe: ExtensionHandler = Arc::new(move |event, _| { let ExtensionEvent::Context { entry_ids, .. } = event else { panic!() }; *captured.lock().unwrap() = entry_ids.clone(); Box::pin(async { Ok(EventResult::None) }) });
+    runner(vec![extension("a", EventKind::Context, replace), extension("b", EventKind::Context, observe)]).emit_context(&[user("one"), user("two")], &[Some("e1".into()), Some("e2".into())], None).await.unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![None, Some("e2".to_owned())]);
+}
+#[tokio::test]
+async fn context_excludes_originating_extension() { let mut runner = runner(vec![extension("a", EventKind::Context, failure())]); runner.emit_context(&[], &[], Some("a")).await.unwrap(); assert!(runner.errors.is_empty()); }
 #[tokio::test]
 async fn project_trust_first_decision_after_undecided_wins() {
     let handler = |trusted| -> ExtensionHandler { Arc::new(move |_, _| Box::pin(async move { Ok(EventResult::ProjectTrust(ProjectTrustEventResult { trusted, remember: Some(true) })) })) };
@@ -475,7 +485,7 @@ async fn retained_api_event_registration_updates_an_existing_runner() {
 async fn invalidated_empty_dispatch_and_handled_input_reject_stale_results() {
     let mut empty = runner(vec![]);
     empty.invalidate("stale");
-    assert_eq!(empty.emit_context(&[], None).await.unwrap_err().message, "stale");
+    assert_eq!(empty.emit_context(&[], &[], None).await.unwrap_err().message, "stale");
     assert_eq!(empty.emit_input(input()).await.unwrap_err().message, "stale");
     assert_eq!(empty.emit_resources_discover("/tmp".into(), SessionReason::Startup).await.unwrap_err().message, "stale");
     assert_eq!(empty.emit_user_bash("true".into(), false, "/tmp".into()).await.err().unwrap().message, "stale");
@@ -798,7 +808,24 @@ fn native_loader_preserves_factory_identity_profile_and_order() {
     let factories = ["first", "second"].into_iter().map(|path| NativeExtensionFactory { path: path.into(), source_info: SourceInfo::default(), extension: Box::new(Register) }).collect();
     let loaded = load_extensions(factories, Path::new("/tmp"), ExtensionSessionProfile { session_kind: SessionKind::Worker, ..Default::default() });
     assert_eq!(loaded.extensions.iter().map(|extension| extension.identity.path.as_str()).collect::<Vec<_>>(), ["first", "second"]);
-    assert_eq!(loaded.runtime.get_flag("test"), Some(FlagValue::String("first".into()))); assert!(loaded.errors.is_empty());
+    assert_eq!(loaded.runtime.get_flag("test"), Some(FlagValue::String("first".into())));
+    assert_eq!(loaded.errors.iter().map(|error| (error.extension_path.as_str(), error.error.as_str())).collect::<Vec<_>>(),
+        [("second", "Flag \"--test\" conflicts with first")]);
+}
+#[test]
+fn native_loader_reports_tool_conflicts_except_with_builtins() {
+    use maho_ext_host::loader::*;
+    struct Tool;
+    impl Extension for Tool {
+        fn register(&self, api: &mut ExtensionApi) {
+            api.register_tool(ToolDefinition::new("shared", "shared", JsonValue::Object(Default::default()), Arc::new(|_| Box::pin(async { Ok(ToolResult::text("ok")) }))));
+        }
+    }
+    let factories = ["<user:a>", "<user:b>", "<builtin:base>"].into_iter().map(|path| NativeExtensionFactory { path: path.into(), source_info: SourceInfo::default(), extension: Box::new(Tool) }).collect();
+    let loaded = load_extensions(factories, Path::new("/tmp"), ExtensionSessionProfile::default());
+    assert_eq!(loaded.extensions.len(), 3, "conflicting extensions stay loaded");
+    assert_eq!(loaded.errors.iter().map(|error| (error.extension_path.as_str(), error.error.as_str())).collect::<Vec<_>>(),
+        [("<user:b>", "Tool \"shared\" conflicts with <user:a>")]);
 }
 #[tokio::test]
 async fn registered_tool_wrapper_supplies_context_and_reports_new_active_tools() {

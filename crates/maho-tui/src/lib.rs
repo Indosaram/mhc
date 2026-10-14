@@ -21,6 +21,12 @@ pub mod mux; // todo 6
 pub mod native_modifiers; // todo 6
 pub mod native_module_path; // todo 6
 pub mod native_platform; // todo 6
+#[cfg(target_os = "macos")]
+pub mod native_platform_darwin;
+#[cfg(target_os = "linux")]
+pub mod native_platform_linux_x11;
+#[cfg(windows)]
+pub mod native_platform_win32;
 pub mod paste_markers; // todo 8
 pub mod process_env; // todo 6
 pub mod process_stdio; // todo 6
@@ -39,6 +45,7 @@ pub mod tmux_image_probe; // todo 9
 pub mod tui; // todo 7
 pub mod tui_alt_screen; // todo 7
 pub mod tui_main_screen; // todo 7
+pub mod ui_intervals;
 pub mod undo_stack; // todo 8
 pub mod unicode_tables; // todo 6
 pub mod utils; // todo 6

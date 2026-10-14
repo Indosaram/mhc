@@ -2,7 +2,7 @@ use maho_interactive::{
     components::footer::{FooterComponent, FooterSnapshot},
     streaming_reveal::StreamingRevealController,
     streaming_reveal_content::{BlockUnitCounter, build_display_message, visible_units},
-    theme::{ColorMode, Theme},
+    theme::{ColorMode, Theme, ThemeColor},
     tool_args_reveal::ToolArgsRevealController,
     tool_result_reveal::ToolResultRevealController,
 };
@@ -44,6 +44,23 @@ fn footer_matches_pinned_output_at_all_widths_and_themes() {
             assert_eq!(maho_tui::utils::visible_width(&actual), width);
         }
     }
+}
+#[test]
+fn text_styles_leave_empty_text_unchanged() {
+    let t = theme();
+    for styled in [t.bold(""), t.italic(""), t.underline(""), t.inverse(""), t.strikethrough("")] {
+        assert_eq!(styled, "");
+    }
+}
+#[test]
+fn highlight_colors_operator_punctuation_and_type_classes() {
+    let t = theme();
+    let swift = maho_interactive::theme::highlight_code(&t, "let x = a + 1", Some("swift")).join("\n");
+    assert!(swift.contains(&t.fg(ThemeColor::SyntaxOperator, "+")), "{swift:?}");
+    let rust = maho_interactive::theme::highlight_code(&t, "fn main() -> i32 { 0 }", Some("rust")).join("\n");
+    assert!(rust.contains(&t.fg(ThemeColor::SyntaxPunctuation, "->")), "{rust:?}");
+    let ts = maho_interactive::theme::highlight_code(&t, "let n: number = 1;", Some("ts")).join("\n");
+    assert!(ts.contains(&t.fg(ThemeColor::SyntaxType, "number")), "{ts:?}");
 }
 #[test]
 fn highlight_matches_pinned_token_colors() {
@@ -201,6 +218,21 @@ fn theme_cache_roundtrips_and_rejects_invalid_documents() {
     )
     .expect("valid test fixture and successful operation");
     assert_eq!(read_terminal_theme_hint(dir.path()), None);
+}
+#[test]
+fn theme_registry_reloads_watched_custom_theme_after_debounce() {
+    use maho_interactive::theme::registry::ThemeRegistry;
+    let dir = tempfile::tempdir().expect("valid test fixture and successful operation");
+    let source = include_str!("../src/theme/dark.json").replacen("\"name\": \"dark\"", "\"name\": \"custom\"", 1);
+    std::fs::write(dir.path().join("custom.json"), &source).expect("valid test fixture and successful operation");
+    let mut registry = ThemeRegistry::new(dir.path().to_path_buf(), "custom", ColorMode::Truecolor).expect("valid test fixture and successful operation");
+    registry.set_theme("custom", true).expect("valid test fixture and successful operation");
+    registry.on_file_change(Some(std::path::Path::new("other.json")), 0);
+    assert!(!registry.reload_due(1_000));
+    registry.on_file_change(Some(std::path::Path::new("custom.json")), 0);
+    assert!(!registry.reload_due(99));
+    assert!(registry.reload_due(100));
+    assert_eq!(registry.current.name, "custom");
 }
 #[test]
 fn renderer_reference_tracks_replacement() {

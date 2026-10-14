@@ -34,7 +34,10 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
                 let results = ops.glob(&input.pattern, &root, &["**/node_modules/**", "**/.git/**"], limit).await?;
                 call.signal.check()?; results
             } else {
-                let mut command = tokio::process::Command::new("fd");
+                let fd_path = crate::managed_tools::ensure_tool(crate::managed_tools::ManagedTool::Fd).await;
+                call.signal.check()?;
+                let fd_path = fd_path.ok_or_else(|| ToolError::Message("fd is not available and could not be downloaded".into()))?;
+                let mut command = tokio::process::Command::new(fd_path);
                 command.kill_on_drop(true).args(["--glob", "--color=never", "--hidden"]);
                 let mut inside_git = false;
                 for parent in root.ancestors() { if crate::path_utils::path_exists(&parent.join(".git")).await { inside_git = true; break; } }
@@ -74,6 +77,6 @@ pub fn create_find_tool_definition(cwd: PathBuf, options: FindToolOptions) -> To
             Ok(ToolResult { content, details: if details.is_empty() { None } else { Some(details.into()) } })
         })
     });
-    let mut tool = ToolDefinition::new("find", "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).", json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"limit":{"type":"number"}},"required":["pattern"]}), execute);
+    let mut tool = ToolDefinition::new("find", "Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to 1000 results or 50KB (whichever is hit first).", json!({"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'"},"path":{"type":"string","description":"Directory to search in (default: current directory)"},"limit":{"type":"number","description":"Maximum number of results (default: 1000)"}},"required":["pattern"]}), execute);
     tool.prompt_snippet = Some("Find files by glob pattern (respects .gitignore)".into()); tool
 }

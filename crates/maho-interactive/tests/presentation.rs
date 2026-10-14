@@ -24,7 +24,7 @@ fn version_matches_generated_reference() {
 fn retry_countdown_stops_after_dispose() {
     use maho_interactive::components::status_indicator::StatusIndicator;
     use maho_tui::tui::Component;
-    let mut s = StatusIndicator::retry(1, 3, 3000, false, "Esc", theme(), 0);
+    let mut s = StatusIndicator::retry(1, 3, 3000, None, false, "Esc", theme(), 0);
     s.tick(1000);
     assert!(maho_tui::utils::strip_terminal_sequences(&s.render(120).join("\n")).contains("in 2s"));
     s.dispose();

@@ -119,6 +119,13 @@ impl Focusable for CustomEditor {
 impl EditorComponent for CustomEditor {
     fn get_text(&self) -> String { self.editor.get_text() }
     fn set_text(&mut self, text: &str) { self.editor.set_text(text); }
+    fn set_on_submit(&mut self, callback: Option<maho_tui::components::editor::SubmitCallback>) { self.editor.on_submit = callback; }
+    fn set_on_change(&mut self, callback: Option<maho_tui::components::editor::ChangeCallback>) { self.editor.on_change = callback; }
+    fn set_on_image_markers_changed(&mut self, callback: Option<maho_tui::components::editor::ImageMarkersChangedCallback>) { self.editor.on_image_markers_changed = callback; }
+    fn set_snapshot_attachment_state(&mut self, callback: Option<maho_tui::components::editor::SnapshotAttachmentCallback>) { self.editor.snapshot_attachment_state = callback; }
+    fn set_restore_attachment_state(&mut self, callback: Option<maho_tui::components::editor::RestoreAttachmentCallback>) { self.editor.restore_attachment_state = callback; }
+    fn border_color(&self) -> Option<maho_tui::components::editor::StyleFn> { Some(self.editor.border_color.clone()) }
+    fn set_border_color(&mut self, color: maho_tui::components::editor::StyleFn) { self.editor.border_color = color; }
     fn add_to_history(&mut self, text: &str) { self.editor.add_to_history(text); }
     fn insert_text_at_cursor(&mut self, text: &str) { self.editor.insert_text_at_cursor(text); }
     fn get_expanded_text(&self) -> Option<String> { Some(self.editor.get_expanded_text()) }
@@ -132,12 +139,14 @@ impl EditorComponent for CustomEditor {
     fn set_autocomplete_provider(&mut self, provider: Box<dyn maho_tui::autocomplete::AutocompleteProvider>) {
         self.editor.set_autocomplete_provider(Rc::new(RefCell::new(BoxedAutocomplete(provider))));
     }
+    fn poll_autocomplete(&mut self) -> bool { self.editor.poll_autocomplete() }
 }
 
 struct BoxedAutocomplete(Box<dyn maho_tui::autocomplete::AutocompleteProvider>);
 impl maho_tui::autocomplete::AutocompleteProvider for BoxedAutocomplete {
     fn trigger_characters(&self) -> Vec<String> { self.0.trigger_characters() }
     fn get_suggestions(&mut self, lines: &[String], cursor_line: usize, cursor_col: usize, force: bool) -> Option<maho_tui::autocomplete::AutocompleteSuggestions> { self.0.get_suggestions(lines, cursor_line, cursor_col, force) }
+    fn request_suggestions(&mut self, lines: &[String], cursor_line: usize, cursor_col: usize, force: bool, signal: &maho_tui::autocomplete::AutocompleteSignal) -> maho_tui::autocomplete::SuggestionRequest { self.0.request_suggestions(lines, cursor_line, cursor_col, force, signal) }
     fn apply_completion(&self, lines: &[String], cursor_line: usize, cursor_col: usize, item: &maho_tui::autocomplete::AutocompleteItem, prefix: &str) -> maho_tui::autocomplete::ApplyCompletionResult { self.0.apply_completion(lines, cursor_line, cursor_col, item, prefix) }
     fn get_mention_ranges(&self, text: &str) -> Vec<maho_tui::autocomplete::MentionRange> { self.0.get_mention_ranges(text) }
     fn should_trigger_file_completion(&self, lines: &[String], cursor_line: usize, cursor_col: usize) -> bool { self.0.should_trigger_file_completion(lines, cursor_line, cursor_col) }

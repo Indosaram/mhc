@@ -27,6 +27,12 @@ async fn executor_sanitizes_and_flushes_split_utf8() {
 }
 
 #[tokio::test]
+async fn executor_strips_every_ansi_sequence_like_upstream() {
+    let result = execute_bash_with_operations("ignored", Path::new("."), &Chunks(vec!["\x1bcdone \u{9b}31mred\x1b]52;c;data\x07!".as_bytes().to_vec()]), BashExecutorOptions::default()).await.unwrap();
+    assert_eq!(result.output, "done red!");
+}
+
+#[tokio::test]
 async fn shell_flushes_final_update_and_full_spill() {
     let data = "x".repeat(60_000);
     let updates = Arc::new(Mutex::new(Vec::new()));
@@ -110,4 +116,19 @@ async fn executor_awaits_async_observer_signal() {
     assert!(!execution.is_finished());
     sender.send(()).unwrap();
     assert_eq!(execution.await.unwrap().unwrap().output, "output");
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn powershell_config_is_windows_only() {
+    let error = maho_tools::powershell::get_powershell_config().await.unwrap_err();
+    assert_eq!(error.to_string(), "The powershell tool is only available on Windows.");
+}
+
+#[test]
+fn spawn_context_starts_from_the_injected_shell_env() {
+    let shell_env: ShellEnvProvider = Arc::new(|| [("PATH".to_owned(), "/agent/bin:/usr/bin".to_owned()), ("PI_SESSION_ID".to_owned(), "stale".to_owned())].into_iter().collect());
+    let context = resolve_spawn_context("true".into(), ".".into(), None, true, None, Some(&shell_env)).unwrap();
+    assert_eq!(context.env.get("PATH").map(String::as_str), Some("/agent/bin:/usr/bin"));
+    assert!(!context.env.contains_key("PI_SESSION_ID"));
 }

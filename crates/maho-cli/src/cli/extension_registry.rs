@@ -11,6 +11,7 @@
 //! `register` -> `commit_registration` path a disk-loaded factory takes, with failure isolation per
 //! factory.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -230,25 +231,27 @@ pub fn builtin_extensions() -> &'static [NativeExtension] {
     &BUILTIN_FACTORIES
 }
 
-/// Pinned builtin ids whose constructor needs host state the CLI cannot build at registration.
+/// Pinned builtin ids this registry cannot construct without host state. Every runtime, and
+/// `--list-models`, mounts them through `default_extensions::assembled_factories`; the requirement
+/// names the real constructor site.
 static DEFERRED_BUILTINS: [DeferredExtension; 17] = [
-    DeferredExtension { id: "ask-user", crate_name: "maho-ext-ask-user", requirement: "host-constructed UI state" },
-    DeferredExtension { id: "gpt-apply-patch", crate_name: "maho-ext-gpt-apply-patch", requirement: "host-constructed patch state" },
-    DeferredExtension { id: "imagegen", crate_name: "maho-ext-imagegen", requirement: "host-constructed image state" },
-    DeferredExtension { id: "openai-image-gen", crate_name: "maho-ext-openai-image-gen", requirement: "host-constructed image state" },
-    DeferredExtension { id: "todowrite", crate_name: "maho-ext-todotools", requirement: "host-constructed todo state" },
-    DeferredExtension { id: "redraws", crate_name: "maho-ext-redraws", requirement: "host-constructed renderer state" },
-    DeferredExtension { id: "service-tier", crate_name: "maho-ext-service-tier", requirement: "host-constructed service state" },
-    DeferredExtension { id: "reasoning", crate_name: "maho-ext-reasoning", requirement: "host-constructed reasoning state" },
-    DeferredExtension { id: "history-search", crate_name: "maho-ext-history-search", requirement: "host-constructed history state" },
-    DeferredExtension { id: "import-repro", crate_name: "maho-ext-import-repro", requirement: "host-constructed import state" },
-    DeferredExtension { id: "look-at", crate_name: "maho-ext-look-at", requirement: "host-constructed image state" },
-    DeferredExtension { id: "cache-keepalive", crate_name: "maho-ext-cache-keepalive", requirement: "host-constructed cache state" },
-    DeferredExtension { id: "gpt-account", crate_name: "maho-ext-gpt-account", requirement: "host-constructed account state" },
-    DeferredExtension { id: "claude-sdk-oauth", crate_name: "maho-ext-anthropic-subscription", requirement: "host-constructed OAuth state" },
-    DeferredExtension { id: "cursor-cli-oauth", crate_name: "maho-ext-cursor-cli-oauth", requirement: "host-constructed cursor state" },
-    DeferredExtension { id: "tool-search", crate_name: "maho-ext-tool-search", requirement: "host-constructed shared service" },
-    DeferredExtension { id: "mcp", crate_name: "maho-ext-mcp", requirement: "host-constructed shared service" },
+    DeferredExtension { id: "ask-user", crate_name: "maho-ext-ask-user", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "gpt-apply-patch", crate_name: "maho-ext-gpt-apply-patch", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "imagegen", crate_name: "maho-ext-imagegen", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "openai-image-gen", crate_name: "maho-ext-openai-image-gen", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "todowrite", crate_name: "maho-ext-todotools", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "redraws", crate_name: "maho-ext-builtin-loose", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "service-tier", crate_name: "maho-ext-builtin-loose", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "reasoning", crate_name: "maho-ext-reasoning", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "history-search", crate_name: "maho-ext-history-search", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "import-repro", crate_name: "maho-ext-builtin-loose", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "look-at", crate_name: "maho-ext-look-at", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "cache-keepalive", crate_name: "maho-ext-cache-keepalive", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "gpt-account", crate_name: "maho-ext-builtin-loose", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "claude-sdk-oauth", crate_name: "maho-ext-anthropic-subscription", requirement: "constructed by oauth_providers::runtime_oauth_factories with settings, credential store and environment" },
+    DeferredExtension { id: "cursor-cli-oauth", crate_name: "maho-ext-cursor-cli-oauth", requirement: "constructed by oauth_providers::runtime_oauth_factories with settings, credential store and environment" },
+    DeferredExtension { id: "tool-search", crate_name: "maho-ext-tool-search", requirement: "constructed by default_extensions::factories with per-session host state" },
+    DeferredExtension { id: "mcp", crate_name: "maho-ext-mcp", requirement: "constructed by default_extensions::factories with per-session host state" },
 ];
 
 pub fn deferred_builtin_extensions() -> &'static [DeferredExtension] {
@@ -267,6 +270,20 @@ pub fn inline_extensions() -> &'static [NativeExtension] {
     &INLINE_FACTORIES
 }
 
+/// senpi `src/extensions/index.ts:4` (`{ name: "llama.cpp", ..., hidden: true }`): inline extensions
+/// omitted from the startup Extensions list.
+static HIDDEN_INLINE_EXTENSION_IDS: [&str; 1] = ["llama.cpp"];
+
+/// senpi resource-loader.ts:1438 `extension.hidden = isNamed && input.hidden`: marks the loaded
+/// hidden inline extensions.
+pub fn mark_hidden_inline_extensions(extensions: &mut [maho_ext_api::LoadedExtension]) {
+    for extension in extensions {
+        if HIDDEN_INLINE_EXTENSION_IDS.iter().any(|id| extension.identity.path == format!("<inline:{id}>")) {
+            extension.hidden = true;
+        }
+    }
+}
+
 fn ferryx_agent_state() -> Box<dyn Extension> {
     Box::new(maho_ext_ferryx_agent_state::FerryxAgentState)
 }
@@ -280,35 +297,74 @@ fn orca_titlebar_spinner() -> Box<dyn Extension> {
     Box::new(maho_ext_orca_titlebar_spinner::OrcaTitlebarSpinner)
 }
 fn pi_ast_grep() -> Box<dyn Extension> {
-    Box::new(maho_ext_pi_ast_grep::AstGrep)
+    Box::new(maho_ext_pi_ast_grep::AstGrep { package_entry: Some(installed_git_package_entry("code-yeongyu", "pi-ast-grep")) })
 }
 fn pi_nested_agents_md() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)
 }
+fn pi_rules() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_rules::RulesExtension)
+}
+fn pi_websearch() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_websearch::WebsearchExtension { native_registry: None })
+}
+fn pi_webfetch() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_webfetch::WebfetchExtension)
+}
+/// pi-goal `src/index.ts` `goalExtension`: lifecycle, tools and command over `goalStoreRef`, with the
+/// hidden continuation sent through `pi.sendMessage` (`goal/lifecycle.ts` `queueHiddenGoalPrompt`).
+fn pi_goal() -> Box<dyn Extension> {
+    struct PiGoal;
+    impl Extension for PiGoal {
+        fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+            let handle = maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone());
+            let resolve: maho_ext_pi_goal::goal::lifecycle::GoalStoreResolver = Arc::new(|context: &maho_ext_api::ExtensionContext| {
+                let session_dir = context.session_manager.session_file().and_then(|_| context.session_manager.get_session_dir());
+                maho_ext_pi_goal::index::goal_store_ref(&context.agent_dir, session_dir.as_deref(), &context.cwd.to_string_lossy(), context.session_manager.session_id())
+            });
+            let send: maho_ext_pi_goal::goal::lifecycle::GoalContinuationSender = Arc::new(move |content: String| handle.send_message(
+                maho_ext_api::CustomMessage { custom_type: "pi-goal-continuation".into(), content: vec![maho_ext_api::ToolContent::text(content)], display: false, details: None },
+                maho_ext_api::SendMessageOptions { trigger_turn: true, deliver_as: Some(maho_ext_api::DeliverAs::FollowUp) },
+            ));
+            if let Err(error) = maho_ext_pi_goal::index::register_goal_extension(api, resolve, send) { std::panic::panic_any(error); }
+        }
+    }
+    Box::new(PiGoal)
+}
 fn omo_zcode_oauth() -> Box<dyn Extension> {
     Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
 }
+/// Installed package entry for a `git:github.com/<owner>/<repo>` user package; the native port
+/// resolves the package's own `node_modules` from here, as the TS entry does via `import.meta.url`.
+fn installed_git_package_entry(owner: &str, repo: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(maho_core::config::get_agent_dir())
+        .join("git").join("github.com").join(owner).join(repo).join("src").join("index.ts")
+}
 fn pi_comment_checker() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_comment_checker::CommentChecker {
-        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from).unwrap_or_default(),
+        source_path: std::env::var_os("PI_COMMENT_CHECKER_SOURCE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| installed_git_package_entry("code-yeongyu", "pi-comment-checker")),
     })
 }
 fn orca_prefill() -> Box<dyn Extension> {
     struct Environment;
     impl maho_ext_orca_prefill::PrefillEnvironment for Environment {
         fn pane_key(&self) -> Option<String> { std::env::var("ORCA_PANE_KEY").ok() }
-        fn take_prefill(&self) -> Option<String> { std::env::var("ORCA_PREFILL").ok() }
+        fn take_prefill(&self) -> Option<String> {
+            maho_ext_orca_prefill::take_process_prefill(|| std::env::var(maho_ext_orca_prefill::PREFILL_ENV).ok())
+        }
     }
     Box::new(maho_ext_orca_prefill::OrcaPrefill { environment: Arc::new(Environment) })
 }
-fn quiet_model_profile() -> Box<dyn Extension> {
-    Box::new(maho_ext_quiet_model_profile::QuietModelProfile::new(Default::default()))
-}
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 10] = [
+static USER_FACTORIES: [NativeExtension; 13] = [
     NativeExtension { id: "pi-ast-grep", crate_name: "maho-ext-pi-ast-grep", factory: pi_ast_grep },
     NativeExtension { id: "pi-nested-agents-md", crate_name: "maho-ext-pi-nested-agents-md", factory: pi_nested_agents_md },
+    NativeExtension { id: "pi-rules", crate_name: "maho-ext-pi-rules", factory: pi_rules },
+    NativeExtension { id: "pi-websearch", crate_name: "maho-ext-pi-websearch", factory: pi_websearch },
+    NativeExtension { id: "pi-webfetch", crate_name: "maho-ext-pi-webfetch", factory: pi_webfetch },
+    NativeExtension { id: "pi-goal", crate_name: "maho-ext-pi-goal", factory: pi_goal },
     NativeExtension { id: "ferryx-agent-state", crate_name: "maho-ext-ferryx-agent-state", factory: ferryx_agent_state },
     NativeExtension { id: "herdr-agent-state", crate_name: "maho-ext-herdr-agent-state", factory: herdr_agent_state },
     NativeExtension { id: "orca-agent-status", crate_name: "maho-ext-orca-agent-status", factory: orca_agent_status },
@@ -316,7 +372,6 @@ static USER_FACTORIES: [NativeExtension; 10] = [
     NativeExtension { id: "omo-zcode-oauth", crate_name: "maho-ext-omo-zcode-oauth", factory: omo_zcode_oauth },
     NativeExtension { id: "pi-comment-checker", crate_name: "maho-ext-pi-comment-checker", factory: pi_comment_checker },
     NativeExtension { id: "orca-prefill", crate_name: "maho-ext-orca-prefill", factory: orca_prefill },
-    NativeExtension { id: "quiet-model-profile", crate_name: "maho-ext-quiet-model-profile", factory: quiet_model_profile },
 ];
 
 pub fn user_extensions() -> &'static [NativeExtension] {
@@ -330,8 +385,12 @@ pub fn deferred_user_extensions() -> &'static [DeferredExtension] {
     &DEFERRED_USER_EXTENSIONS
 }
 
+/// senpi `getDefaultSourceInfoForPath` (resource-loader.ts:1146-1153): `<builtin:...>` is system
+/// scope, every other synthetic `<kind:...>` path is temporary.
 fn source_info(id: &str, kind: &str) -> SourceInfo {
-    SourceInfo { path: format!("<{kind}:{id}>"), source: kind.to_owned(), ..SourceInfo::default() }
+    let path = format!("<{kind}:{id}>");
+    if kind == "builtin" { return super::default_extensions::builtin_source_info(&path); }
+    SourceInfo { path, source: kind.to_owned(), origin: maho_ext_api::SourceOrigin::TopLevel, ..SourceInfo::default() }
 }
 
 /// Every linked constructor the CLI can register, builtin first then user ports, in pinned order.
@@ -344,14 +403,53 @@ pub fn assemble_extensions() -> Vec<(&'static str, &'static str, Box<dyn Extensi
         .collect()
 }
 
-/// The loader factories for [`assemble_extensions`].
+/// Package name a settings `packages` source installs (`git:host/owner/<name>[@ref]`,
+/// `npm:[@scope/]<name>[@version]`, a local path); the last path segment without ref or `.git`.
+fn package_name(source: &str) -> Option<&str> {
+    let last = source.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let last = last.strip_suffix(".git").unwrap_or(last);
+    last.split('@').next().filter(|name| !name.is_empty())
+}
+
+fn configured_package_names(agent_dir: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(agent_dir.join("settings.json")) else { return BTreeSet::new(); };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) else { return BTreeSet::new(); };
+    settings.get("packages").and_then(serde_json::Value::as_array).into_iter().flatten()
+        .filter_map(|package| package.as_str().or_else(|| package.get("source").and_then(serde_json::Value::as_str)))
+        .filter_map(package_name).map(str::to_owned).collect()
+}
+
+/// senpi loads a user extension only when it is installed: a file (or `<id>/index.*` directory) in
+/// `<agentDir>/extensions`, or a package listed in the global settings `packages`. A linked native
+/// port is registered only for the ids this returns, so uninstalling or deleting one disables it.
+pub fn installed_user_extension_ids(agent_dir: &Path) -> BTreeSet<&'static str> {
+    let packages = configured_package_names(agent_dir);
+    let extensions = agent_dir.join("extensions");
+    USER_FACTORIES.iter().map(|entry| entry.id).filter(|id| {
+        packages.contains(*id)
+            || ["ts", "js"].iter().any(|extension| {
+                extensions.join(format!("{id}.{extension}")).is_file()
+                    || extensions.join(id).join(format!("index.{extension}")).is_file()
+            })
+    }).collect()
+}
+
+/// The loader factories for [`assemble_extensions`], with user ports gated on installation in the
+/// process agent directory.
 pub fn native_extension_factories() -> Vec<NativeExtensionFactory> {
-    assemble_extensions()
-        .into_iter()
-        .map(|(id, kind, extension)| NativeExtensionFactory {
+    native_extension_factories_for(Path::new(&maho_core::config::get_agent_dir()))
+}
+
+/// [`native_extension_factories`] against an explicit agent directory.
+pub fn native_extension_factories_for(agent_dir: &Path) -> Vec<NativeExtensionFactory> {
+    let installed = installed_user_extension_ids(agent_dir);
+    BUILTIN_FACTORIES.iter().map(|entry| (entry.id, "builtin", entry))
+        .chain(USER_FACTORIES.iter().filter(|entry| installed.contains(entry.id)).map(|entry| (entry.id, "user", entry)))
+        .chain(INLINE_FACTORIES.iter().map(|entry| (entry.id, "inline", entry)))
+        .map(|(id, kind, entry)| NativeExtensionFactory {
             path: format!("<{kind}:{id}>"),
             source_info: source_info(id, kind),
-            extension,
+            extension: (entry.factory)(),
         })
         .collect()
 }

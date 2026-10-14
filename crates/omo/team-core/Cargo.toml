@@ -20,6 +20,9 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [dev-dependencies]
 filetime.workspace = true
 pretty_assertions.workspace = true

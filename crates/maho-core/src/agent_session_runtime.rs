@@ -70,6 +70,57 @@ impl std::fmt::Display for SessionImportFileNotFoundError {
 
 impl std::error::Error for SessionImportFileNotFoundError {}
 
+/// The errors senpi's runtime replacement methods throw, kept typed so a caller can tell an
+/// import of a missing file or a session whose cwd is gone from any other failure. Every variant
+/// displays the exact upstream message text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentSessionRuntimeError {
+    /// senpi `SessionImportFileNotFoundError`.
+    ImportFileNotFound(SessionImportFileNotFoundError),
+    /// senpi `MissingSessionCwdError` from `assertSessionCwdExists`.
+    MissingSessionCwd(crate::session_cwd::MissingSessionCwdError),
+    /// Any other upstream `Error` (for example `Invalid entry ID for forking`).
+    Other(String),
+}
+
+impl std::fmt::Display for AgentSessionRuntimeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ImportFileNotFound(error) => error.fmt(formatter),
+            Self::MissingSessionCwd(error) => error.fmt(formatter),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AgentSessionRuntimeError {}
+
+impl From<SessionImportFileNotFoundError> for AgentSessionRuntimeError {
+    fn from(error: SessionImportFileNotFoundError) -> Self { Self::ImportFileNotFound(error) }
+}
+impl From<crate::session_cwd::MissingSessionCwdError> for AgentSessionRuntimeError {
+    fn from(error: crate::session_cwd::MissingSessionCwdError) -> Self { Self::MissingSessionCwd(error) }
+}
+impl From<String> for AgentSessionRuntimeError {
+    fn from(message: String) -> Self { Self::Other(message) }
+}
+impl From<&str> for AgentSessionRuntimeError {
+    fn from(message: &str) -> Self { Self::Other(message.to_owned()) }
+}
+impl From<std::io::Error> for AgentSessionRuntimeError {
+    fn from(error: std::io::Error) -> Self { Self::Other(error.to_string()) }
+}
+impl From<maho_ext_api::ExtensionFailure> for AgentSessionRuntimeError {
+    fn from(error: maho_ext_api::ExtensionFailure) -> Self { Self::Other(error.message) }
+}
+
+/// Options of senpi `AgentSessionRuntime.switchSession`.
+#[derive(Clone, Default)]
+pub struct SwitchSessionOptions {
+    pub cwd_override: Option<String>,
+    pub with_session: Option<maho_ext_api::WithSession>,
+}
+
 /// Immutable flags selected when a runtime is first launched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentSessionLaunchProfile {
@@ -86,6 +137,13 @@ pub struct CreateAgentSessionRuntimeResult {
     pub services: MountedAgentSessionServices,
     pub diagnostics: Vec<AgentSessionRuntimeDiagnostic>,
     pub model_fallback_message: Option<String>,
+}
+
+/// The attachment transitions a shared host reports to a live session's extensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttachmentEvent {
+    SessionParked,
+    SessionResumed,
 }
 
 pub type RebindSession = Box<dyn Fn(&AgentSession) + Send + Sync>;
@@ -155,109 +213,112 @@ impl AgentSessionRuntime {
         self.before_session_invalidate = callback;
     }
 
-    pub async fn switch_session(&mut self, session_path: &str) -> Result<bool, String> {
-        let manager = crate::session_manager::SessionManager::open(session_path, None, None, None);
-        assert_session_cwd_exists(&manager, &self.services.cwd).map_err(|error| error.to_string())?;
+    /// Attachment transitions are ordered by the RPC entry's lifecycle owner.
+    pub async fn emit_attachment_event(&self, event: AttachmentEvent) {
+        self.session.runtime_emit_attachment(match event {
+            AttachmentEvent::SessionParked => maho_ext_api::ExtensionEvent::SessionParked,
+            AttachmentEvent::SessionResumed => maho_ext_api::ExtensionEvent::SessionResumed,
+        }).await;
+    }
+
+    /// senpi `finishSessionReplacement`: rebind the host to the new session, then run the
+    /// caller's `withSession` against a context bound to it.
+    async fn finish_session_replacement(&self, with_session: Option<maho_ext_api::WithSession>) -> Result<(), AgentSessionRuntimeError> {
+        if let Some(rebind) = &self.rebind_session { rebind(&self.session); }
+        if with_session.is_some() { self.session.run_replacement_callbacks(None, with_session).await?; }
+        Ok(())
+    }
+
+    /// Returns `Ok(false)` when `session_before_switch` cancelled (senpi `{ cancelled: true }`).
+    pub async fn switch_session(&mut self, session_path: &str, options: SwitchSessionOptions) -> Result<bool, AgentSessionRuntimeError> {
+        if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(session_path.to_owned())).await? { return Ok(false); }
+        let manager = crate::session_manager::SessionManager::open(session_path, None, options.cwd_override.as_deref(), None)?;
+        assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
-        self.replace_session(manager, cwd, maho_ext_api::SessionReason::Resume).await
-    }
-
-    pub async fn new_session(&mut self, cwd: Option<&str>, parent_session: Option<String>) -> Result<bool, String> {
-        let cwd = cwd.unwrap_or(&self.services.cwd).to_owned();
-        let options = Some(crate::session_manager::NewSessionOptions { id: None, parent_session });
-        let manager = self.session.with_session_manager(|current| {
-            if current.is_persisted() {
-                crate::session_manager::SessionManager::create(&cwd, Some(current.session_dir()), options)
-            } else {
-                crate::session_manager::SessionManager::in_memory(&cwd, options, None)
-            }
-        });
-        assert_session_cwd_exists(&manager, &cwd).map_err(|error| error.to_string())?;
-        self.replace_session(manager, cwd, maho_ext_api::SessionReason::New).await
-    }
-
-    async fn replace_session(&mut self, manager: crate::session_manager::SessionManager, cwd: String,
-        reason: maho_ext_api::SessionReason) -> Result<bool, String>
-    {
-        if self.session.runtime_before_switch(reason, manager.session_file().map(str::to_owned)).await? { return Ok(false); }
-        self.apply_replacement(manager, cwd, reason).await?;
+        self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume).await?;
+        self.finish_session_replacement(options.with_session).await?;
         Ok(true)
     }
 
-    pub async fn fork(&mut self, entry_id: &str, include_entry: bool) -> Result<crate::agent_session::AssistantEditResult, String> {
+    /// Returns `Ok(false)` when `session_before_switch` cancelled (senpi `{ cancelled: true }`).
+    pub async fn new_session(&mut self, options: maho_ext_api::NewSessionOptions) -> Result<bool, AgentSessionRuntimeError> {
+        if self.session.runtime_before_switch(maho_ext_api::SessionReason::New, None).await? { return Ok(false); }
+        let cwd = self.services.cwd.clone();
+        let new_options = options.parent_session.map(|parent_session| crate::session_manager::NewSessionOptions { id: None, parent_session: Some(parent_session) });
+        let manager = self.session.with_session_manager(|current| {
+            if current.is_persisted() {
+                crate::session_manager::SessionManager::create(&cwd, Some(current.session_dir()), new_options)
+            } else {
+                crate::session_manager::SessionManager::in_memory(&cwd, new_options, None)
+            }
+        });
+        self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::New).await?;
+        // senpi runs `setup` on the new manager, then rebuilds the agent messages from it.
+        if options.setup.is_some() { self.session.run_replacement_callbacks(options.setup, None).await?; }
+        self.finish_session_replacement(options.with_session).await?;
+        Ok(true)
+    }
+
+    pub async fn fork(&mut self, entry_id: &str, options: maho_ext_api::ForkOptions) -> Result<crate::agent_session::AssistantEditResult, AgentSessionRuntimeError> {
+        let include_entry = options.position.unwrap_or(maho_ext_api::ForkPosition::Before) == maho_ext_api::ForkPosition::At;
         if self.session.runtime_before_fork(entry_id, include_entry).await? {
             return Ok(crate::agent_session::AssistantEditResult { cancelled: true, ..Default::default() });
         }
         let entry = self.session.with_session_manager(|manager| manager.entry(entry_id))
             .ok_or_else(|| "Invalid entry ID for forking".to_owned())?;
         if !include_entry && (entry["type"] != "message" || entry["message"]["role"] != "user") {
-            return Err("Invalid entry ID for forking".to_owned());
+            return Err("Invalid entry ID for forking".into());
         }
         let leaf = if include_entry { Some(entry_id) } else { entry["parentId"].as_str() };
         let previous = self.session.session_file();
         if self.session.with_session_manager(|manager| manager.is_persisted()) {
             let file = previous.as_deref().ok_or("Persisted session is missing a session file")?;
             if leaf.is_some() && !std::path::Path::new(file).exists() {
-                return Err("This session has not been saved yet. Wait for the first assistant response before cloning or forking it.".to_owned());
+                return Err("This session has not been saved yet. Wait for the first assistant response before cloning or forking it.".into());
             }
         }
-        let manager = self.session.with_session_manager(|current| {
+        let (manager, cwd) = self.session.with_session_manager(|current| -> Result<_, String> {
             let options = Some(crate::session_manager::NewSessionOptions { parent_session: previous.clone(), ..Default::default() });
-            let mut manager = if current.is_persisted() {
-                crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
-            } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
-            if let Some(leaf) = leaf {
-                let persisted;
-                let current = if current.is_persisted() {
-                    persisted = crate::session_manager::SessionManager::open(previous.as_deref().expect("validated session file"), Some(current.session_dir()), None, None);
-                    &persisted
-                } else { current };
-                let mut parent = serde_json::Value::Null;
-                let mut pending_labels = Vec::new();
-                let mut replacements = std::collections::BTreeMap::new();
-                let mut retained_ids = Vec::new();
-                for mut entry in current.branch(Some(leaf)) {
-                    if entry["type"] == "label" {
-                        if let Some(id) = entry["id"].as_str() { pending_labels.push(id.to_owned()); }
-                        continue;
-                    }
-                    for id in pending_labels.drain(..) { replacements.insert(id, entry["id"].clone()); }
-                    entry["parentId"] = parent;
-                    if entry["type"] == "compaction"
-                        && let Some(replacement) = entry["firstKeptEntryId"].as_str().and_then(|id| replacements.get(id))
-                    { entry["firstKeptEntryId"] = replacement.clone(); }
-                    parent = entry["id"].clone();
-                    if let Some(id) = parent.as_str() { retained_ids.push(id.to_owned()); }
-                    manager.append_entry_raw(entry);
-                }
-                for id in retained_ids {
-                    if let Some(label) = current.label(&id) {
-                        let mut entry = serde_json::json!({"type":"label", "id":uuid::Uuid::new_v4().to_string(),
-                            "parentId":manager.leaf_id(), "targetId":id, "label":label});
-                        if let Some(timestamp) = current.label_timestamp(&id) {
-                            entry["timestamp"] = timestamp.into();
-                        }
-                        manager.append_entry_raw(entry);
-                    }
-                }
+            let Some(leaf) = leaf else {
+                let manager = if current.is_persisted() {
+                    crate::session_manager::SessionManager::create(&self.services.cwd, Some(current.session_dir()), options)
+                } else { crate::session_manager::SessionManager::in_memory(&self.services.cwd, options, None) };
+                return Ok((manager, self.services.cwd.clone()));
+            };
+            if current.is_persisted() {
+                let file = previous.as_deref().ok_or("Persisted session is missing a session file")?;
+                let mut manager = crate::session_manager::SessionManager::open(file, Some(current.session_dir()), None, None)?;
+                manager.create_branched_session(leaf)?.ok_or("Failed to create forked session")?;
+                let cwd = manager.cwd().to_owned();
+                Ok((manager, cwd))
+            } else {
+                let mut manager = current.clone();
+                manager.create_branched_session(leaf)?;
+                Ok((manager, self.services.cwd.clone()))
             }
-            manager
-        });
-        self.apply_replacement(manager, self.services.cwd.clone(), maho_ext_api::SessionReason::Fork).await?;
+        })?;
+        self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Fork).await?;
+        self.finish_session_replacement(options.with_session).await?;
         Ok(crate::agent_session::AssistantEditResult { editor_text: (!include_entry).then(|| extract_user_message_text(&entry["message"]["content"])),
             ..Default::default() })
     }
 
-    pub async fn import_from_jsonl(&mut self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, String> {
-        let base = std::env::current_dir().map_err(|error| error.to_string())?;
+    /// Import a session JSONL file and switch runtime state to the imported session.
+    ///
+    /// Returns `Ok(false)` when cancelled by `session_before_switch`. Fails with
+    /// [`AgentSessionRuntimeError::ImportFileNotFound`] when the input path does not exist and
+    /// [`AgentSessionRuntimeError::MissingSessionCwd`] when the imported session cwd cannot be
+    /// resolved and no override is provided.
+    pub async fn import_from_jsonl(&mut self, input_path: &str, cwd_override: Option<&str>) -> Result<bool, AgentSessionRuntimeError> {
+        let base = std::env::current_dir()?;
         let resolved = crate::paths::resolve_path(input_path, &base.to_string_lossy(),
             &crate::paths::PathInputOptions::expanding_tilde(crate::config::home_dir()));
         let source = std::path::Path::new(&resolved);
         if !source.exists() {
-            return Err(SessionImportFileNotFoundError { file_path: resolved }.to_string());
+            return Err(SessionImportFileNotFoundError { file_path: resolved }.into());
         }
         let directory = self.session.with_session_manager(|manager| manager.session_dir().to_owned());
-        std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&directory)?;
         let filename = source.file_name().ok_or("Invalid import filename")?;
         let mut destination = std::path::Path::new(&directory).join(filename);
         let stored = crate::paths::resolve_path(&destination.to_string_lossy(), &base.to_string_lossy(),
@@ -273,15 +334,18 @@ impl AgentSessionRuntime {
         }
         let destination = destination.to_string_lossy().into_owned();
         if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(destination.clone())).await? { return Ok(false); }
+        // senpi takes the shared host's write grant for the destination before copying into it.
+        crate::session_write_reservation::reserve_session_write(&destination);
         if !stored {
-            let mut input = std::fs::File::open(source).map_err(|error| error.to_string())?;
-            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination).map_err(|error| error.to_string())?;
-            std::io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+            let mut input = std::fs::File::open(source)?;
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination)?;
+            std::io::copy(&mut input, &mut output)?;
         }
-        let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None);
-        assert_session_cwd_exists(&manager, &self.services.cwd).map_err(|error| error.to_string())?;
+        let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None)?;
+        assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume).await?;
+        self.finish_session_replacement(None).await?;
         Ok(true)
     }
 
@@ -292,13 +356,13 @@ impl AgentSessionRuntime {
             &std::env::var("HOME").unwrap_or_default(), self.services.settings_manager.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_project_trusted());
         let (system_prompt, append_system_prompt) = self.session.system_prompt_sources();
         let target_session_file = manager.session_file().map(str::to_owned);
-        let context = manager.build_context(manager.leaf_id());
+        let context = manager.current_context();
         let restored_model = context.model.as_ref().and_then(|(provider, id)| self.services.model_registry.find(provider, id));
         let launch_model = self.launch_profile.as_ref().and_then(|profile| profile.creation_model.as_ref())
             .and_then(|(provider, id)| self.services.model_registry.find(provider, id));
         let launch_thinking = self.launch_profile.as_ref().and_then(|profile| profile.initial_thinking_level.as_deref())
             .and_then(maho_ai::types::ModelThinkingLevel::parse);
-        let thinking_selection = if manager.branch(manager.leaf_id()).iter().any(|entry| entry["type"] == "thinking_level_change") {
+        let thinking_selection = if manager.current_branch().iter().any(|entry| entry["type"] == "thinking_level_change") {
             None
         } else { self.session.thinking_selection() };
         let options = crate::sdk::CreateAgentSessionOptions {
@@ -312,7 +376,7 @@ impl AgentSessionRuntime {
             }).or(thinking_selection),
             scoped_models: self.session.scoped_models(), favorite_models: self.session.favorite_models(),
             session_manager: Some(manager), settings_manager: Some(settings), tools: Some(self.session.get_active_tool_names()),
-            custom_tools: self.session.replacement_custom_tools(),
+            custom_tools: self.session.replacement_custom_tools(), resource_inputs: self.session.resource_loader_inputs(),
             auto_title_sessions: self.launch_profile.as_ref().and_then(|profile| profile.auto_title).or(Some(self.session.replacement_auto_title())),
             session_start_event: Some(maho_ext_api::SessionStartEvent { reason, initial_model_provenance: None,
                 previous_session_file: self.session.session_file() }), ..Default::default()
@@ -327,6 +391,7 @@ impl AgentSessionRuntime {
             Err(error) => { created.session.dispose().await; return Err(error); }
         };
         if let Some(runner) = replacement {
+            self.session.report_removed_extensions(&runner, reason).await;
             created.session.set_extension_runner(runner).await;
             created.session.bind_extensions(Default::default()).await;
         }
@@ -334,7 +399,6 @@ impl AgentSessionRuntime {
         self.services.cwd = cwd;
         self.services.settings_manager = self.session.shared_settings_manager();
         self.model_fallback_message = created.model_fallback_message;
-        if let Some(rebind) = &self.rebind_session { rebind(&self.session); }
         Ok(())
     }
 
@@ -426,19 +490,19 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
         let assistant = manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
-        let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None);
-        durable.append_label(user["id"].as_str().expect("user"), Some("durable label"));
+        let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None).expect("open");
+        durable.append_label(user["id"].as_str().expect("user"), Some("durable label")).expect("label");
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
             session_manager: Some(manager), tools: Some(Vec::new()), ..Default::default()
         }).await.expect("session");
         let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
-        runtime.fork(assistant["id"].as_str().expect("assistant"), true).await.expect("persisted fork");
+        runtime.fork(assistant["id"].as_str().expect("assistant"), maho_ext_api::ForkOptions { position: Some(maho_ext_api::ForkPosition::At), with_session: None }).await.expect("persisted fork");
         assert_eq!(runtime.session().with_session_manager(|manager| manager.label(user["id"].as_str().expect("user")).map(str::to_owned)), Some("durable label".to_owned()));
     }
 
@@ -450,7 +514,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let manager = crate::session_manager::SessionManager::create(&cwd, None, None);
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
@@ -468,7 +532,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let entry = manager.append_message(serde_json::json!({"role":"user","content":"unsaved","timestamp":0}));
@@ -479,8 +543,8 @@ mod tests {
         let mut runtime = AgentSessionRuntime::new(created.session, services, Vec::new(), None, None);
         let id = runtime.session().session_id();
         assert!(!std::path::Path::new(&runtime.session().session_file().expect("path")).exists());
-        let error = runtime.fork(entry["id"].as_str().expect("entry"), true).await.expect_err("unsaved fork");
-        assert!(error.starts_with("This session has not been saved yet."));
+        let error = runtime.fork(entry["id"].as_str().expect("entry"), maho_ext_api::ForkOptions { position: Some(maho_ext_api::ForkPosition::At), with_session: None }).await.expect_err("unsaved fork");
+        assert!(error.to_string().starts_with("This session has not been saved yet."));
         assert_eq!(runtime.session().session_id(), id);
         assert_eq!(runtime.session().messages().len(), 1);
     }
@@ -492,7 +556,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
-            });
+            }).await;
         let provider = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
             models: Some(vec![
                 maho_ai::providers::faux::FauxModelDefinition { id: "original".to_owned(), ..Default::default() },
@@ -533,7 +597,7 @@ mod tests {
         let services = crate::agent_session_services::create_agent_session_services(
             crate::agent_session_services::CreateAgentSessionServicesOptions {
                 cwd: cwd.clone(), agent_dir: Some(agent_dir.clone()), ..Default::default()
-            });
+            }).await;
         let model = serde_json::from_value(serde_json::json!({
             "id":"faux-1", "name":"faux-1", "provider":"faux", "api":"faux", "baseUrl":"",
             "reasoning":false, "input":[], "contextWindow":128000, "maxTokens":4096,
@@ -555,11 +619,9 @@ mod tests {
         runtime.set_before_session_invalidate(Some(Box::new(move || {
             std::fs::write(&prompt_path, "prompt after teardown").expect("updated prompt fixture");
         })));
-        assert!(runtime.new_session(None, None).await.expect("replacement"));
-        let expected = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
-            cwd: cwd.clone(), custom_prompt: Some("prompt after teardown".to_owned()), ..Default::default()
-        });
-        assert_eq!(runtime.session().system_prompt(), expected);
+        assert!(runtime.new_session(Default::default()).await.expect("replacement"));
+        // senpi `_rebuildSystemPrompt`: a loader system prompt is used verbatim (agent-session.ts:3580).
+        assert_eq!(runtime.session().system_prompt(), "prompt after teardown");
         runtime.set_before_session_invalidate(None);
         assert!(!runtime.session().with_session_manager(|manager| manager.is_persisted()));
         assert!(runtime.session().get_tool_definition("retained").is_some());
@@ -569,34 +631,35 @@ mod tests {
         let entry = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
             "role":"user","content":[{"type":"text","text":"selected text"}],"timestamp":0
         })));
-        let before = runtime.fork(entry["id"].as_str().unwrap(), false).await.expect("fork before");
+        let before = runtime.fork(entry["id"].as_str().unwrap(), maho_ext_api::ForkOptions { position: Some(maho_ext_api::ForkPosition::Before), with_session: None }).await.expect("fork before");
         assert!(!before.cancelled);
         assert_eq!(before.editor_text.as_deref(), Some("selected text"));
         assert!(runtime.session().messages().is_empty());
         let entry = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
             "role":"user","content":[{"type":"text","text":"retained text"}],"timestamp":0
         })));
-        let at = runtime.fork(entry["id"].as_str().unwrap(), true).await.expect("fork at");
+        let at = runtime.fork(entry["id"].as_str().unwrap(), maho_ext_api::ForkOptions { position: Some(maho_ext_api::ForkPosition::At), with_session: None }).await.expect("fork at");
         assert!(!at.cancelled);
         assert!(at.editor_text.is_none());
         assert_eq!(runtime.session().messages().len(), 1);
         assert!(runtime.session().get_tool_definition("retained").is_some());
         let target_id = runtime.session().with_session_manager(|manager| manager.leaf_id().unwrap().to_owned());
-        let label = runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("old label")));
+        let label = runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("old label"))).expect("label");
         let descendant = runtime.session().with_session_manager_mut(|manager| manager.append_message(serde_json::json!({
             "role":"user","content":[{"type":"text","text":"descendant"}],"timestamp":0
         })));
-        runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("resolved label")));
-        let forked = runtime.fork(descendant["id"].as_str().unwrap(), true).await.expect("labeled fork");
+        runtime.session().with_session_manager_mut(|manager| manager.append_label(&target_id, Some("resolved label"))).expect("label");
+        let forked = runtime.fork(descendant["id"].as_str().unwrap(), maho_ext_api::ForkOptions { position: Some(maho_ext_api::ForkPosition::At), with_session: None }).await.expect("labeled fork");
         assert!(!forked.cancelled);
         runtime.session().with_session_manager(|manager| {
             assert_eq!(manager.label(&target_id), Some("resolved label"));
             assert!(manager.entry(label["id"].as_str().unwrap()).is_none());
             let child = manager.entry(descendant["id"].as_str().unwrap()).unwrap();
             assert_eq!(child["parentId"], target_id);
-            assert_eq!(manager.branch(manager.leaf_id()).iter().filter(|entry| entry["type"] == "message").count(), 2);
+            assert_eq!(manager.current_branch().iter().filter(|entry| entry["type"] == "message").count(), 2);
         });
-        assert!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err().contains("File not found"));
+        assert!(matches!(runtime.import_from_jsonl("/missing-import-fixture.jsonl", None).await.unwrap_err(),
+            AgentSessionRuntimeError::ImportFileNotFound(error) if error.to_string() == "File not found: /missing-import-fixture.jsonl"));
         let source = dir.path().join("import-fixture.jsonl");
         runtime.session().export_to_jsonl(source.to_str()).expect("export fixture");
         let import_directory = dir.path().join("imported");
@@ -609,6 +672,97 @@ mod tests {
         assert_eq!(runtime.session().messages().len(), 2);
         assert!(runtime.import_from_jsonl(source.to_str().unwrap(), None).await.expect("collision import"));
         assert!(runtime.session().session_file().unwrap().ends_with("import-fixture-1.jsonl"));
+    }
+
+    fn recording_extension(session: &AgentSession, path: &str, kinds: &[maho_ext_api::EventKind],
+        seen: std::sync::Arc<std::sync::Mutex<Vec<maho_ext_api::EventKind>>>) -> maho_ext_api::LoadedExtension {
+        let mut extension = maho_ext_api::LoadedExtension::new(path, session.cwd().into(), Default::default());
+        for kind in kinds {
+            let seen = seen.clone();
+            let kind = *kind;
+            extension.handlers.insert(kind, vec![std::sync::Arc::new(move |_, _| {
+                seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(kind);
+                Box::pin(async { Ok(maho_ext_api::EventResult::None) })
+            })]);
+        }
+        extension
+    }
+
+    async fn runtime_fixture() -> (tempfile::TempDir, AgentSessionRuntime) {
+        let dir = crate::test_support::isolated_tempdir();
+        let cwd = dir.path().to_string_lossy().into_owned();
+        let services = crate::agent_session_services::create_agent_session_services(
+            crate::agent_session_services::CreateAgentSessionServicesOptions {
+                cwd: cwd.clone(), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), ..Default::default()
+            }).await;
+        let provider = maho_ai::providers::faux::faux_provider(Default::default());
+        let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
+            cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
+            session_manager: Some(crate::session_manager::SessionManager::in_memory(&cwd, None, None)),
+            tools: Some(Vec::new()), ..Default::default()
+        }).await.expect("session");
+        (dir, AgentSessionRuntime::new(created.session, services, Vec::new(), None, None))
+    }
+
+    #[tokio::test]
+    async fn attachment_events_reach_registered_extensions() {
+        let (_dir, runtime) = runtime_fixture().await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let extension = recording_extension(runtime.session(), "<inline:attachment>",
+            &[maho_ext_api::EventKind::SessionParked, maho_ext_api::EventKind::SessionResumed], seen.clone());
+        let context = crate::sdk::extension_context::create(runtime.session());
+        runtime.session().set_extension_runner(maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context)).await;
+        runtime.emit_attachment_event(AttachmentEvent::SessionParked).await;
+        runtime.emit_attachment_event(AttachmentEvent::SessionResumed).await;
+        assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionParked, maho_ext_api::EventKind::SessionResumed]);
+    }
+
+    #[tokio::test]
+    async fn replacement_reports_extensions_the_new_runner_no_longer_loads() {
+        let (_dir, mut runtime) = runtime_fixture().await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let extension = recording_extension(runtime.session(), "<inline:removed>", &[maho_ext_api::EventKind::SessionExtensionsRemoved], seen.clone());
+        let context = crate::sdk::extension_context::create(runtime.session());
+        let mut runner = maho_ext_host::ExtensionRunner::new(vec![extension], Default::default(), Default::default(), context);
+        runner.set_runtime_factory(std::sync::Arc::new(|context| {
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context)) })
+        }));
+        runtime.session().set_extension_runner(runner).await;
+        assert!(runtime.new_session(Default::default()).await.expect("replacement"));
+        assert_eq!(*seen.lock().expect("seen"), [maho_ext_api::EventKind::SessionExtensionsRemoved]);
+    }
+
+    #[tokio::test]
+    async fn with_session_runs_against_the_replacement_and_switch_cwd_errors_stay_typed() {
+        let (dir, mut runtime) = runtime_fixture().await;
+        let context = crate::sdk::extension_context::create(runtime.session());
+        let mut runner = maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context);
+        runner.set_runtime_factory(std::sync::Arc::new(|context| {
+            Box::pin(async move { Ok(maho_ext_host::ExtensionRunner::new(Vec::new(), Default::default(), Default::default(), context)) })
+        }));
+        runtime.session().set_extension_runner(runner).await;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = seen.clone();
+        let with_session: maho_ext_api::WithSession = std::sync::Arc::new(move |ctx| {
+            *captured.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ctx.session_manager.session_id().to_owned());
+            Box::pin(async { Ok(()) })
+        });
+        let previous = runtime.session().session_id();
+        assert!(runtime.new_session(maho_ext_api::NewSessionOptions { with_session: Some(with_session), ..Default::default() }).await.expect("new"));
+        assert_ne!(runtime.session().session_id(), previous);
+        assert_eq!(*seen.lock().expect("seen"), Some(runtime.session().session_id()));
+
+        let gone = dir.path().join("gone");
+        let mut stored = crate::session_manager::SessionManager::create(&gone.to_string_lossy(), dir.path().join("stored").to_str(), None);
+        stored.append_message(serde_json::json!({"role":"user","content":"saved","timestamp":0}));
+        stored.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
+        let path = stored.session_file().expect("file").to_owned();
+        let error = runtime.switch_session(&path, SwitchSessionOptions::default()).await.expect_err("missing cwd");
+        assert!(matches!(error, AgentSessionRuntimeError::MissingSessionCwd(_)));
+        let cwd = runtime.cwd().to_owned();
+        assert!(runtime.switch_session(&path, SwitchSessionOptions { cwd_override: Some(cwd.clone()), with_session: None }).await.expect("override"));
+        assert_eq!(runtime.session().session_file().as_deref(), Some(path.as_str()));
+        assert_eq!(runtime.session().cwd(), cwd);
     }
 
     #[test]

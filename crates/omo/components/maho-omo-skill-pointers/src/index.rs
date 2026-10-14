@@ -10,6 +10,9 @@ pub const ULW_LOOP_CUSTOM_TYPE: &str = "omo-ulw-loop:skill-pointer";
 pub const ULW_RESEARCH_CUSTOM_TYPE: &str = "omo-ulw-research:skill-pointer";
 pub const ULTIMATE_BROWSING_CUSTOM_TYPE: &str = "omo-ultimate-browsing:skill-pointer";
 pub const SKILL_POINTERS_DISABLED_FLAG: &str = "omo-senpi-skill-pointers-disabled";
+/// Pin `77f3067f1` `components/mass-ulw/index.ts:6`: the pinned mass-ulw component's disable flag.
+/// Latest folds mass-ulw into this component, so the pinned flag suppresses only the mass-ulw target.
+pub const MASS_ULW_DISABLED_FLAG: &str = "omo-senpi-mass-ulw-disabled";
 
 pub const SKILL_COMMAND_PREFIX: &str = "/skill:";
 
@@ -181,7 +184,7 @@ pub fn normalize_ulw_loop_session_id(session_id: Option<&str>) -> Option<String>
 }
 
 pub fn ulw_loop_tool_sentence(session_scope: Option<&str>) -> String {
-    let base = " Drive every ulw-loop operation from a JS eval cell through the SDK: const { agentToolkit } = await import(`${env(\"OMO_AGENT_TOOLKIT_SDK_ROOT\")}/sdk.js`); never call a tool named omo_agent_toolkit and never spawn a CLI.";
+    let base = " Drive every ulw-loop operation through the native CLI from bash: `mhc ulw-loop <subcommand> --json` (create-goals, status, complete-goals, checkpoint, steer, add-goal, criteria, record-evidence, record-review-blockers); the session's bash binds PI_SESSION_ID, so the CLI targets this session's plan. There is no JS SDK to import and no tool named omo_agent_toolkit.";
     match session_scope {
         Some(scope) => format!("{base} This session's state lives under .omo/ulw-loop/{scope}/."),
         None => base.to_string(),
@@ -269,6 +272,11 @@ impl SkillPointersComponent {
 impl Extension for SkillPointersComponent {
     fn register(&self, api: &mut ExtensionApi) {
         let skills_root = self.normalized_skills_root();
+        api.register_flag(
+            MASS_ULW_DISABLED_FLAG,
+            FlagType::Boolean { default: Some(false) },
+            Some("Disable the omo-senpi mass-ulw skill pointer.".to_owned()),
+        );
         let runtime = api.runtime.clone();
 
         api.on(
@@ -303,9 +311,12 @@ impl Extension for SkillPointersComponent {
                     let command_skill = skill_command_name(&input.text);
                     let visible = strip_quoted_regions(&input.text);
 
+                    let mass_ulw_disabled =
+                        runtime.get_flag(MASS_ULW_DISABLED_FLAG) == Some(FlagValue::Boolean(true));
                     let targets = get_targets();
                     let invoked: Vec<&SkillPointerTarget> = targets
                         .into_iter()
+                        .filter(|target| !(mass_ulw_disabled && target.skill_name == TARGET_MASS_ULW.skill_name))
                         .filter(|target| target.pattern.is_match(&visible))
                         .collect();
 

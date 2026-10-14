@@ -38,7 +38,8 @@ async fn corrupt_plan_returns_failure() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(result.code, 1);
     let val: serde_json::Value = serde_json::from_str(&result.stdout)?;
     assert_eq!(val["ok"], false);
-    assert_eq!(val["error"]["code"], "ULW_LOOP_PLAN_MISSING");
+    // A goals.json that exists is never a missing plan (plan-io.ts:83-85).
+    assert_eq!(val["error"]["code"], "ULW_LOOP_PLAN_INVALID");
     Ok(())
 }
 

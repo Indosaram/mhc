@@ -50,7 +50,7 @@ async fn injected_probes_preserve_candidate_arguments_cache_and_resolution() {
     assert_eq!(detected,InterpreterDetection::Detected {path:"py -3".into(),version:"3.12.4".into(),resolved_path:Some("/fixture/py".into())});
     assert_eq!(detector.detect(EvalLanguage::Py).await,detected);
     detector.detect(EvalLanguage::Js).await;
-    assert_eq!(*calls.lock().unwrap(),vec![("python".into(),vec!["--version".into()],3000),("py".into(),vec!["-3".into(),"--version".into()],3000)]);
+    assert_eq!(*calls.lock().unwrap(),vec![("python".into(),vec!["--version".into()],3000),("py".into(),vec!["-3".into(),"--version".into()],3000),("bun".into(),vec!["--version".into()],3000)]);
 }
 #[test]
 fn resolves_python_on_path() {
@@ -125,4 +125,10 @@ async fn disabled_languages_are_unavailable_without_probing() {
             assert_eq!(status.detected, InterpreterDetection::Unavailable);
         }
     }
+}
+
+#[tokio::test]
+async fn javascript_is_unavailable_without_bun() {
+    let mut detector=InterpreterDetector::with_probes("24.1.0".into(),false,std::sync::Arc::new(|_,_,_|Box::pin(async {Err("missing".into())})),std::sync::Arc::new(|_|None));
+    assert_eq!(detector.detect(EvalLanguage::Js).await,InterpreterDetection::Unavailable);
 }
