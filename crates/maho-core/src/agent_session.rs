@@ -7920,10 +7920,12 @@ impl AgentSession {
             if message.get("role").and_then(Value::as_str) != Some("user") {
                 continue;
             }
-            let text = message
-                .get("content")
-                .and_then(|content| serde_json::from_value::<Vec<maho_ai::types::ContentBlock>>(content.clone()).ok())
-                .map_or_else(String::new, |content| maho_ai::utils::text::content_text(&content, ""));
+            let text = match message.get("content") {
+                Some(Value::String(text)) => text.clone(),
+                Some(content) => serde_json::from_value::<Vec<maho_ai::types::ContentBlock>>(content.clone())
+                    .map_or_else(|_| String::new(), |content| maho_ai::utils::text::content_text(&content, "")),
+                None => String::new(),
+            };
             if !text.is_empty() {
                 let entry_id = entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
                 result.push((entry_id, text));
