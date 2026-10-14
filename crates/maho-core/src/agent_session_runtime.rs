@@ -552,10 +552,8 @@ mod tests {
             std::fs::write(&prompt_path, "prompt after teardown").expect("updated prompt fixture");
         })));
         assert!(runtime.new_session(None, None).await.expect("replacement"));
-        let expected = crate::system_prompt::build_system_prompt(&crate::system_prompt::BuildSystemPromptOptions {
-            cwd: cwd.clone(), custom_prompt: Some("prompt after teardown".to_owned()), ..Default::default()
-        });
-        assert_eq!(runtime.session().system_prompt(), expected);
+        // senpi `_rebuildSystemPrompt`: a loader system prompt is used verbatim (agent-session.ts:3580).
+        assert_eq!(runtime.session().system_prompt(), "prompt after teardown");
         runtime.set_before_session_invalidate(None);
         assert!(!runtime.session().with_session_manager(|manager| manager.is_persisted()));
         assert!(runtime.session().get_tool_definition("retained").is_some());

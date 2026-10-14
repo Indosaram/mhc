@@ -4216,12 +4216,10 @@ impl AgentSession {
             Ok(Some(title)) if self.session_id() == session_id && self.session_name().is_none() => self.set_session_name(&title),
             Ok(_) => {}, Err(error) => {
                 let error = ExtensionError { extension_path: "<runtime>".to_owned(), event: "session_title_generation".to_owned(), error, stack: None };
-                // A bound runner forwards to the session error listener (pinned `runner.onError`).
-                let reported = match self.extension_runner.lock().await.as_mut() { Some(runner) => { runner.emit_error(error.clone()); runner.has_session_error_listener() }, None => false };
-                if !reported {
-                    let listener = self.state().extension_error_listener.clone();
-                    if let Some(listener) = listener { listener(&error); }
-                }
+                // A bound runner forwards to the session error listener through its `on_error` hook.
+                let emitted = match self.extension_runner.lock().await.as_mut() { Some(runner) => { runner.emit_error(error.clone()); true }, None => false };
+                let listener = if emitted { None } else { self.state().extension_error_listener.clone() };
+                if let Some(listener) = listener { listener(&error); }
             },
         }
     }
@@ -4564,11 +4562,7 @@ impl AgentSession {
         if let Err(error) = runner.invoke_command(name, args, &context).await {
             let error = ExtensionError { extension_path: format!("command:{name}"), event: "command".to_owned(),
                 error: error.message, stack: error.stack };
-            runner.emit_error(error.clone());
-            if !runner.has_session_error_listener() {
-                let listener = self.state().extension_error_listener.clone();
-                if let Some(listener) = listener { listener(&error); }
-            }
+            runner.emit_error(error);
         }
         Ok(true)
     }
@@ -6256,13 +6250,9 @@ impl AgentSession {
         {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error });
         }
-        let listener = self.state().extension_error_listener.clone();
         let error = {
             let mut runner = self.extension_runner.lock().await;
-            runner.as_mut().and_then(|runner| {
-                runner.set_session_error_listener(listener);
-                runner.set_extension_mode(mode, has_ui).err()
-            })
+            runner.as_mut().and_then(|runner| runner.set_extension_mode(mode, has_ui).err())
         };
         if let Some(error) = error {
             self.emit(AgentSessionEvent::ContinuationError { error_message: error.message });
@@ -8724,7 +8714,8 @@ mod tests {
             cwd: Some(cwds[0].clone()), agent_dir: Some(dir.path().join("agent").to_string_lossy().into_owned()), model: Some(model),
             session_manager: Some(SessionManager::in_memory(&cwds[0], None, None)), tools: Some(Vec::new()), ..Default::default()
         }).await.expect("session").session;
-        let skill_names = |session: &AgentSession| session.loaded_skills().expect("skills").skills.into_iter().map(|skill| skill.name).collect::<Vec<_>>();
+        // Project-scoped only: user-level ~/.agents skills on the host are outside this test.
+        let skill_names = |session: &AgentSession| session.loaded_skills().expect("skills").skills.into_iter().filter(|skill| skill.source_info.scope == crate::source_info::SourceScope::Project).map(|skill| skill.name).collect::<Vec<_>>();
         assert_eq!(skill_names(&session), ["first-skill"]);
         let header = |id: &str, cwd: &str| format!("{}\n", serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-01-01T00:00:00Z","cwd":cwd}));
         let gone = dir.path().join("gone").to_string_lossy().into_owned();
@@ -13602,7 +13593,9 @@ mod tests {
         assert!(session.set_model(model).await.is_err());
         assert_eq!(session.message_revision(), revision);
         assert_eq!(session.model().id, "faux-1");
-        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+        // senpi `appendModelChangeRejected`: the rejection is the only durable record; no message is added.
+        let kinds: Vec<String> = session.with_session_manager(|manager| manager.entries()).iter().map(|entry| entry["type"].as_str().unwrap_or_default().to_owned()).collect();
+        assert_eq!(kinds, ["model_change_rejected"]);
     }
 
     #[tokio::test]

@@ -1330,7 +1330,7 @@ mod tests {
         let models_path = dir.path().join("models.json");
         std::fs::write(&models_path, "{}").expect("config");
         let runtime = ModelRuntime::create(CreateModelRuntimeOptions { models_path: Some(models_path), providers: Some(Vec::new()), ..Default::default() }).await;
-        assert!(runtime.get_error().is_none());
+        assert_eq!(runtime.get_error(), None);
         assert!(!runtime.model_network_enabled);
         assert_eq!(runtime.model_refresh_timeout_ms(), 15_000);
     }
