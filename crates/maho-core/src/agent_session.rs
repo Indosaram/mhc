@@ -514,6 +514,7 @@ struct AgentSessionState {
     skills: Vec<crate::skills::Skill>,
     skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     prompt_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    theme_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     resource_loader_inputs: crate::resource_loader::ResourceLoaderInputs,
     skills_loaded: bool,
     discovered_resources: maho_ext_api::DiscoveredResources,
@@ -1747,6 +1748,7 @@ impl AgentSession {
             skills: Vec::new(),
             skill_diagnostics: Vec::new(),
             prompt_diagnostics: Vec::new(),
+            theme_diagnostics: Vec::new(),
             resource_loader_inputs: Default::default(),
             skills_loaded: false,
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
@@ -3931,7 +3933,15 @@ impl AgentSession {
         self.with_session_manager_mut(|manager| std::mem::replace(manager, target).dispose());
         self.state().cwd = self.with_session_manager(|manager| manager.cwd().to_owned());
         let cwd_changed = self.cwd() != previous_cwd;
-        if cwd_changed { self.rebind_cwd_services(); }
+        if cwd_changed {
+            self.rebind_cwd_services();
+            // senpi `createRuntime` re-runs the full `DefaultResourceLoader.reload` with the same
+            // resource loader options (package, CLI and auto-discovered resources) for the new cwd.
+            if self.state().skills_loaded {
+                self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
+                self.load_resources().await;
+            }
+        }
         self.finish_session_replacement(maho_ext_api::SessionReason::Resume, previous).await?;
         if cwd_changed { self.extend_resources_from_extensions(maho_ext_api::SessionReason::Resume).await; }
         Ok(true)
@@ -3939,8 +3949,9 @@ impl AgentSession {
 
     /// senpi recreates the cwd-bound services for the target cwd on a switch (agent-session-runtime.ts
     /// `createRuntime({ cwd: sessionManager.getCwd() })`): settings, built-in tools, and the prompt and
-    /// skill resources follow the resumed session's cwd. Extension discovery follows through the
-    /// runner renewal, whose context reads the new cwd.
+    /// skill resources follow the resumed session's cwd (reloaded by the caller through
+    /// [`Self::load_resources`]). Extension discovery follows through the runner renewal, whose
+    /// context reads the new cwd.
     fn rebind_cwd_services(&self) {
         let cwd = self.cwd();
         self.with_settings_manager_mut(|manager| manager.rebind_cwd(&cwd));
@@ -3963,21 +3974,6 @@ impl AgentSession {
                 .map(|entry| entry.source_info.clone()) else { continue; };
             drop(state);
             self.register_tool_definition(definition, source_info, tool);
-        }
-        if self.state().skills_loaded {
-            let (prompt_paths, skill_paths) = self.with_settings_manager(|manager| {
-                let paths = |key| manager.get_value(key).and_then(Value::as_array).map(|values|
-                    values.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>()).unwrap_or_default();
-                (paths("prompts"), paths("skills"))
-            });
-            let templates = crate::prompt_templates::load_prompt_templates(&crate::prompt_templates::LoadPromptTemplatesOptions {
-                cwd: cwd.clone(), agent_dir: self.agent_dir(), prompt_paths, include_defaults: true,
-            });
-            let skills = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
-                cwd, agent_dir: self.agent_dir(), skill_paths, include_defaults: true,
-            });
-            self.state().discovered_resources = maho_ext_api::DiscoveredResources::default();
-            self.set_prompt_resources_with_diagnostics(templates, skills.skills, skills.diagnostics);
         }
         self.set_active_tools_by_name(self.get_active_tool_names());
     }
@@ -4260,6 +4256,16 @@ impl AgentSession {
     /// Prompt-template load diagnostics, including name collisions (pinned `getPrompts().diagnostics`).
     pub fn prompt_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
         self.state().prompt_diagnostics.clone()
+    }
+
+    /// Theme load diagnostics, including name collisions (pinned `getThemes().diagnostics`). The
+    /// theme half of the resource load runs at the CLI startup seam, which records them here.
+    pub fn theme_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
+        self.state().theme_diagnostics.clone()
+    }
+
+    pub fn set_theme_diagnostics(&self, diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>) {
+        self.state().theme_diagnostics = diagnostics;
     }
 
     /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hook sources: package
@@ -6675,6 +6681,21 @@ impl AgentSession {
         drop(state);
         let mut templates = self.prompt_templates();
         let mut skills = self.state().skills.clone();
+        // senpi `updateSkillsFromPaths`/`updatePromptsFromPaths` recompute the diagnostics over the
+        // merged set: load diagnostics and name collisions of the discovered resources join them.
+        let mut skill_diagnostics = self.state().skill_diagnostics.clone();
+        let mut prompt_diagnostics = self.prompt_diagnostics();
+        let push_unique = |diagnostics: &mut Vec<crate::diagnostics::ResourceDiagnostic>, diagnostic: crate::diagnostics::ResourceDiagnostic| {
+            if !diagnostics.contains(&diagnostic) { diagnostics.push(diagnostic); }
+        };
+        let collision = |resource_type, message: String, winner: &str, loser: &str, name: &str| crate::diagnostics::ResourceDiagnostic {
+            diagnostic_type: crate::diagnostics::ResourceDiagnosticType::Collision,
+            message, path: Some(loser.to_owned()),
+            collision: Some(crate::diagnostics::ResourceCollision {
+                resource_type, name: name.to_owned(), winner_path: winner.to_owned(), loser_path: loser.to_owned(),
+                winner_source: None, loser_source: None,
+            }),
+        };
         let source_info = |path: &str, entry: &maho_ext_api::DiscoveredResourceEntry| {
             crate::source_info::create_synthetic_source_info(path,
                 crate::source_info::SyntheticSourceInfoOptions {
@@ -6697,21 +6718,32 @@ impl AgentSession {
                 template.source_info = source_info(&template.file_path, &entry);
                 if let Some(known) = templates.iter_mut().find(|known| known.name == template.name) {
                     if known.file_path == template.file_path { *known = template; }
+                    else {
+                        push_unique(&mut prompt_diagnostics, collision(crate::diagnostics::ResourceCollisionType::Prompt,
+                            format!("name \"/{}\" collision", template.name), &known.file_path, &template.file_path, &template.name));
+                    }
                 } else { templates.push(template); }
             }
         }
         for entry in resources.skill_paths.into_iter().filter(|_| refresh_skills) {
-            for mut skill in crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
+            let loaded = crate::skills::load_skills(&crate::skills::LoadSkillsOptions {
                 cwd: cwd.clone(), agent_dir: self.agent_dir(), skill_paths: vec![entry.path.clone()], include_defaults: false,
-            }).skills {
+            });
+            for diagnostic in loaded.diagnostics { push_unique(&mut skill_diagnostics, diagnostic); }
+            for mut skill in loaded.skills {
                 skill.source_info = source_info(&skill.file_path, &entry);
                 if let Some(known) = skills.iter_mut().find(|known| known.name == skill.name) {
                     if known.file_path == skill.file_path { *known = skill; }
+                    else {
+                        push_unique(&mut skill_diagnostics, collision(crate::diagnostics::ResourceCollisionType::Skill,
+                            format!("name \"{}\" collision", skill.name), &known.file_path, &skill.file_path, &skill.name));
+                    }
                 } else { skills.push(skill); }
             }
         }
         if rebuild_prompt {
-            self.set_prompt_resources(templates, skills);
+            self.set_prompt_resources_with_diagnostics(templates, skills, skill_diagnostics);
+            self.state().prompt_diagnostics = prompt_diagnostics;
             self.rebuild_system_prompt();
         }
     }

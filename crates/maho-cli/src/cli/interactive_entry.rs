@@ -429,9 +429,21 @@ async fn resolve_interactive_startup_theme(
     }
     // senpi `resolveCliPaths`: the `--theme` paths resolved against the launch cwd.
     let runtime_config = super::host_runtime::CliRuntimeConfiguration::from_parsed(parsed, &cwd, &agent_dir, maho_core::project_trust::AppMode::Interactive);
-    theme_paths.extend(runtime_config.resolved_theme_paths().into_iter().map(PathBuf::from));
-    let (registered, theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::detect_color_mode());
-    diagnostics.extend(theme_diagnostics);
+    let cli_theme_paths = runtime_config.resolved_theme_paths();
+    theme_paths.extend(cli_theme_paths.iter().map(PathBuf::from));
+    let (registered, mut theme_diagnostics) = super::startup_ui::load_theme_resources(theme_paths, maho_interactive::theme::detect_color_mode());
+    // senpi resource-loader.ts:765-770: a missing additional (`--theme`) path is an error unless
+    // the load already reported that path.
+    for path in cli_theme_paths {
+        if !std::path::Path::new(&path).exists() && !theme_diagnostics.iter().any(|diagnostic| diagnostic.path.as_deref() == Some(path.as_str())) {
+            theme_diagnostics.push(maho_core::diagnostics::ResourceDiagnostic {
+                diagnostic_type: maho_core::diagnostics::ResourceDiagnosticType::Error,
+                message: "Theme path does not exist".into(), path: Some(path), collision: None,
+            });
+        }
+    }
+    // senpi shows these in the loaded-resources "Theme conflicts" notice (interactive-mode.ts:2580).
+    session.set_theme_diagnostics(theme_diagnostics);
     let custom_directory = PathBuf::from(crate::config::get_custom_themes_dir());
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(
         setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered.clone(),

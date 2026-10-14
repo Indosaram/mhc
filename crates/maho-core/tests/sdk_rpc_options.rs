@@ -57,3 +57,43 @@ async fn native_session_switch_exposes_overridden_cwd_to_recreated_factory() {
     assert!(same_store);
     assert_eq!(seen.lock().expect("startup cwd").last(), Some(&std::path::PathBuf::from(replacement)));
 }
+
+#[tokio::test]
+async fn native_session_switch_to_new_cwd_keeps_resource_loader_inputs() {
+    let directory = tempfile::tempdir().expect("isolated SDK");
+    let original = directory.path().join("original");
+    let replacement = directory.path().join("replacement");
+    std::fs::create_dir(&original).expect("original cwd");
+    std::fs::create_dir(&replacement).expect("replacement cwd");
+    let skill = directory.path().join("cli-skill").join("SKILL.md");
+    std::fs::create_dir_all(skill.parent().expect("skill dir")).expect("skill dir");
+    std::fs::write(&skill, "---\nname: cli-skill\ndescription: CLI skill fixture\n---\nRead the fixture.").expect("skill");
+    let original = original.to_string_lossy().into_owned();
+    let replacement = replacement.to_string_lossy().into_owned();
+    let session_path = directory.path().join("resume.jsonl");
+    std::fs::write(&session_path, format!("{}\n", serde_json::json!({
+        "type":"session","version":3,"id":"rpc-resume-resources","timestamp":"2026-01-01T00:00:00Z","cwd":original
+    }))).expect("session header");
+    let model = serde_json::from_value(serde_json::json!({
+        "id":"fixture","name":"fixture","api":"faux","provider":"faux","baseUrl":"",
+        "reasoning":false,"input":[],"contextWindow":128000,"maxTokens":4096,
+        "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}
+    })).expect("model");
+    let session = maho_core::sdk::create_agent_session(maho_core::sdk::CreateAgentSessionOptions {
+        cwd: Some(original.clone()), agent_dir: Some(directory.path().join("agent").to_string_lossy().into_owned()),
+        model: Some(model), tools: Some(Vec::new()),
+        session_manager: Some(maho_core::session_manager::SessionManager::in_memory(&original, None, None)),
+        resource_inputs: maho_core::resource_loader::ResourceLoaderInputs {
+            additional_skill_paths: vec![skill.to_string_lossy().into_owned()], ..Default::default()
+        },
+        ..Default::default()
+    }).await.expect("SDK session").session;
+    let switched = tokio::time::timeout(std::time::Duration::from_secs(5),
+        session.switch_session_with_cwd(&session_path.to_string_lossy(), Some(&replacement))).await;
+    let skills = session.loaded_skills().unwrap_or_default().skills;
+    let cwd = session.cwd();
+    session.dispose().await;
+    assert!(switched.expect("bounded switch").expect("switch"));
+    assert_eq!(cwd, replacement);
+    assert!(skills.iter().any(|loaded| loaded.name == "cli-skill"), "CLI --skill input survives the cwd change");
+}
