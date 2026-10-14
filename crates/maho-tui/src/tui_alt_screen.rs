@@ -358,7 +358,7 @@ impl TuiAltScreen {
         self.layout_root = root.clone();
         self.base.set_mounted_roots_override(root.map(|r| vec![r]));
         self.current_layout = None;
-        self.base.request_render(true, 0);
+        self.base.request_render(false, 0);
     }
 
     pub fn apply_mouse_tracking(&mut self, enabled: bool, support: &MouseTrackingSupport, terminal: &mut dyn Terminal) {
@@ -482,6 +482,11 @@ impl TuiAltScreen {
     pub fn do_render(&mut self, terminal: &mut dyn Terminal) {
         if self.base.state.borrow().stopped || !self.alt_screen_active {
             return;
+        }
+        // senpi's `resetForcedRenderState()` calls this renderer's `resetRenderState()` override
+        // synchronously; `TuiBase` records it and the alt screen applies it before painting.
+        if self.base.take_reset_render_state_pending() {
+            self.reset_render_state();
         }
         let width = (terminal.columns() as usize).max(1);
         let height = (terminal.rows() as usize).max(1);

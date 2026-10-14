@@ -120,7 +120,7 @@ fn main() {
             let bot_message: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::new(response)));
             screen_mut.base.add_child(Rc::clone(&bot_message));
             *is_responding.borrow_mut() = false;
-            screen_mut.base.request_render(true, now);
+            screen_mut.base.request_render(false, now);
         }
 
         if screen.borrow().base.render_due(now) {
@@ -166,7 +166,7 @@ fn apply_submit(
             let target = screen_mut.base.children()[len - 2].clone();
             screen_mut.base.remove_child(&target);
         }
-        screen_mut.base.request_render(true, now);
+        screen_mut.base.request_render(false, now);
         return;
     }
 
@@ -175,7 +175,7 @@ fn apply_submit(
         for child in children.iter().skip(2).take(children.len().saturating_sub(3)) {
             screen_mut.base.remove_child(child);
         }
-        screen_mut.base.request_render(true, now);
+        screen_mut.base.request_render(false, now);
         return;
     }
 
@@ -198,7 +198,7 @@ fn apply_submit(
     let loader_component: Rc<RefCell<dyn Component>> = loader.clone() as Rc<RefCell<dyn Component>>;
     screen_mut.base.add_child(Rc::clone(&loader_component));
     *pending_loader.borrow_mut() = Some(Rc::clone(&loader));
-    screen_mut.base.request_render(true, now);
+    screen_mut.base.request_render(false, now);
 
     *pending_response_due_ms.borrow_mut() = Some(now + 1000);
 }
