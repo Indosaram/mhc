@@ -107,11 +107,16 @@ impl CredentialStore for AuthStorageCredentialStore {
     async fn modify(&self, provider_id: &str, f: ModifyFn, options: Option<AuthOperationOptions>) -> anyhow::Result<Option<Credential>> {
         check_abort(&options)?;
         let _mutation = self.credentials.account_mutation.lock().await;
-        let current = self.raw(provider_id).map(Self::decode).transpose()?;
-        let Some(next) = f(current.clone()).await? else { return Ok(current) };
-        let value = serde_json::to_value(&next)?;
-        self.credentials.set(provider_id, Some(value)).map_err(|error| anyhow::anyhow!(error))?;
-        Ok(Some(next))
+        let stored = self
+            .credentials
+            .modify_credential(provider_id, move |current: Option<serde_json::Value>| async move {
+                let current = current.map(Self::decode).transpose().map_err(|error| error.to_string())?;
+                let next = f(current).await.map_err(|error| error.to_string())?;
+                next.map(|next| serde_json::to_value(&next).map_err(|error| error.to_string())).transpose()
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+        stored.map(Self::decode).transpose()
     }
 
     async fn delete(&self, provider_id: &str, options: Option<AuthOperationOptions>) -> anyhow::Result<()> {
