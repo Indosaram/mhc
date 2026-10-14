@@ -53,7 +53,7 @@ pub fn create_write_tool_definition(cwd: PathBuf, options: WriteToolOptions) -> 
             Ok(ToolResult { content: vec![ToolContent::text(format!("Successfully wrote to {}", input.path))], details: create_write_details(&input.path, &input.content, baseline).map(serde_json::to_value).transpose()? })
         })
     });
-    let mut tool = ToolDefinition::new("write", "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.", json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}), execute);
+    let mut tool = ToolDefinition::new("write", "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.", json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to write (relative or absolute)"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}), execute);
     tool.prompt_snippet = Some("Create or overwrite files".into());
     tool.prompt_guidelines = Some(vec!["Use write only for new files or complete rewrites.".into()]);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
