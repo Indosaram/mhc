@@ -129,7 +129,8 @@ fn run() -> Result<(), String> {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
         return runtime.block_on(async {
             if command.kind != maho_cli::cli::auth_command::AuthCommandKind::Check {
-                let model_runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default() });
+                // senpi main.ts:238: `ModelRuntime.create({ allowModelNetwork: false })` restores the stored catalogs offline.
+                let model_runtime = maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions { models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), agent_dir: Some(agent.clone()), allow_model_network: Some(false), ..Default::default() }).await;
                 let credential = match maho_cli::cli::credential_print::resolve_credential_for_print(&parsed, &model_runtime, command.kind, command.min_expiry_ms).await {
                     Ok(credential) => credential,
                     Err(message) => { eprintln!("Error: {message}"); std::process::exit(1); }
@@ -202,7 +203,7 @@ fn run() -> Result<(), String> {
             usage_error(format!("Missing {} source.", package_command_name(command.command)), format!("Usage: {usage}"));
         }
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command)).map_err(|error| format!("Error: {error}"));
+        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command)).map_err(|error| error.to_string());
     }
     match argv.first().map(String::as_str) {
         Some("doctor") => {
@@ -297,6 +298,8 @@ fn run() -> Result<(), String> {
         if let Some(flags) = help_fast_path::cached_help_flags(&argv, grok, &cwd, &agent, version) {
             return output(&help_text(grok, &extension_flags_text(&flags)));
         }
+        // senpi main.ts:1030: migrations run before the help answer that main.ts produces.
+        maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), &agent).map_err(|error| error.to_string())?;
         report_startup_settings_diagnostics(&cwd)?;
         let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
         let help_runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
@@ -314,20 +317,27 @@ fn run() -> Result<(), String> {
         }
         return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
     }
-    if parsed.list_tips { report_startup_settings_diagnostics(&std::env::current_dir().map_err(|error| error.to_string())?)?; return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
+    if parsed.list_tips {
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        // senpi main.ts:1030: migrations run before the list-tips answer.
+        maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&maho_core::config::get_agent_dir())).map_err(|error| error.to_string())?;
+        report_startup_settings_diagnostics(&cwd)?;
+        return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?));
+    }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
         let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
         // senpi main.ts:1030: migrations run before any runtime service, model listing included.
         maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), &agent).map_err(|error| error.to_string())?;
         report_startup_settings_diagnostics(&cwd)?;
-        let runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
-            models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), ..Default::default()
-        });
+        let runtime_host = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        // senpi agent-session-services.ts:168: `ModelRuntime.create` restores the stored dynamic catalogs offline.
+        let runtime = runtime_host.block_on(maho_core::model_runtime::ModelRuntime::create(maho_core::model_runtime::CreateModelRuntimeOptions {
+            models_path: Some(agent.join("models.json")), auth_path: Some(agent.join("auth.json")), agent_dir: Some(agent.clone()), ..Default::default()
+        }));
         let auth_errors = runtime.credentials.errors();
         // senpi main.ts:1066-1092: model listing builds the full services, so every builtin
         // (OAuth lanes included) and every settings/`-e` extension contributes its providers.
-        let runtime_host = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
         let (loaded, settings) = runtime_host.block_on(async {
             let cwd_text = cwd.to_string_lossy();
             let agent_dir = maho_core::config::get_agent_dir();
@@ -343,7 +353,10 @@ fn run() -> Result<(), String> {
         })?;
         let providers = std::sync::Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(runtime)));
         loaded.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
-        let runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
+        let mut runtime = providers.0.lock().map_err(|error| error.to_string())?.clone();
+        // senpi agent-session-services.ts:218: after the extension providers register, an offline
+        // refresh restores their stored catalogs too.
+        runtime_host.block_on(runtime.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }));
         // senpi main.ts:1084-1089 `reportDiagnostics`: service, settings and auth diagnostics.
         // senpi main.ts:1071 passes `extensionFlagValues`, so unknown or value-less extension flags are
         // reported (`applyExtensionFlagValues`) before the listing, which still runs.
