@@ -531,7 +531,9 @@ async fn resolve_interactive_startup_theme(
     let resolution = super::startup_ui::resolve_startup_theme_with_registered(
         setting, std::env::var("COLORFGBG").ok().as_deref(), &custom_directory, registered.clone(),
     )?;
-    diagnostics.extend(resolution.diagnostics);
+    // senpi `applyFromSettings` reports a configured theme that fails to load in the TUI
+    // (`poll_terminal_theme`), so only the resource diagnostics go to stderr here.
+    diagnostics.extend(resolution.diagnostics.into_iter().filter(|diagnostic| resolution.load_error.as_ref() != Some(diagnostic)));
     for diagnostic in &diagnostics { maho_core::output_guard::maho_write_stderr(&format!("theme: {diagnostic}\n")); }
     Ok((resolution.theme, registered))
 }
