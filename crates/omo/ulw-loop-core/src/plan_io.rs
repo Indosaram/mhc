@@ -46,8 +46,16 @@ pub fn read_ulw_loop_plan_sync(
     let mut parsed = match reconcile_plan(&dir) {
         Some(p) => p,
         None => {
-            let session_ids = list_ulw_loop_session_ids(&repo_root);
             let rel = repo_relative(&path.to_string_lossy(), &repo_root.as_ref().to_string_lossy());
+            // Pin `plan-io.ts:73-81`: a goals.json that exists but is not a version-1 plan with a
+            // `goals` array is an invalid plan, never a missing one.
+            if fs::read_to_string(&path).is_ok() {
+                return Err(UlwLoopError::new(
+                    format!("Invalid ulw-loop plan at {rel}."),
+                    "ULW_LOOP_PLAN_INVALID",
+                ));
+            }
+            let session_ids = list_ulw_loop_session_ids(&repo_root);
             return Err(plan_missing_error(&rel, &session_ids, None));
         }
     };

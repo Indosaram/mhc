@@ -103,3 +103,14 @@ fn test_distinct_roots_independent() { let a=tempfile::tempdir().unwrap(); let b
 #[test]
 fn test_distinct_scopes_independent() { let tmp=tempfile::tempdir().unwrap(); let a=UlwLoopScope::new("session-a"); with_ulw_loop_mutation_lock(tmp.path(),Some(&a),None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); with_ulw_loop_mutation_lock(tmp.path(),None,None,||Ok::<_,ulw_loop_core::runtime::UlwLoopError>(())).unwrap(); }
 
+#[test]
+fn test_corrupt_or_wrong_shape_goals_json_is_invalid_not_missing() {
+    for raw in ["{not json", "{\"version\":1,\"goals\":{}}", "{\"version\":2,\"goals\":[]}"] {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ulw_loop_dir(tmp.path(), None)).unwrap();
+        fs::write(ulw_loop_goals_path(tmp.path(), None), raw).unwrap();
+        let e = read_ulw_loop_plan(tmp.path(), None).unwrap_err();
+        assert_eq!(e.code, "ULW_LOOP_PLAN_INVALID", "{raw}");
+        assert!(e.message.starts_with("Invalid ulw-loop plan at "), "{}", e.message);
+    }
+}
