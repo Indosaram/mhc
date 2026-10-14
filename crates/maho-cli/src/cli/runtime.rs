@@ -77,12 +77,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             Err(error) => { maho_core::output_guard::maho_write_stderr(&format!("{error}\n")); None }
         }
     });
-    let project_trusted = indicator.during_prompt(super::host_runtime::resolve_runtime_project_trust(
+    let (project_trusted, project_trust_warnings) = indicator.during_prompt(super::host_runtime::resolve_runtime_project_trust_with_warnings(
         &trust_config, &cwd_text, trust_mode, trust_mode == AppMode::Interactive, selector,
     )).await;
     let mut settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), project_trusted);
-    // senpi main.ts `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
-    let mut runtime_diagnostics = maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation");
+    // senpi main.ts:769-775 `projectTrustDiagnostics`, then `reportDiagnostics(collectSettingsDiagnosticsWithContext(..., "runtime creation"))`.
+    let mut runtime_diagnostics: Vec<_> = project_trust_warnings.into_iter().map(maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning).collect();
+    runtime_diagnostics.extend(maho_core::settings_diagnostics::collect_settings_diagnostics_with_context(&settings, "runtime creation"));
     // senpi main.ts:1254: re-apply the global `httpProxy` from the session settings (post-migration).
     // `apply` only writes keys that changed, and the bootstrap pass already set an unchanged proxy.
     {
