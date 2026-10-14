@@ -535,7 +535,7 @@ impl InteractiveMode {
 
     /// senpi `terminalMouseMode`.
     fn terminal_mouse_mode(&self) -> String {
-        self.session.with_settings_manager(|settings| settings.get_string("terminalMouse")).unwrap_or_else(|| "whilePending".to_owned())
+        self.session.with_settings_manager(|settings| settings.get_terminal_mouse())
     }
 
     /// senpi `syncQuestionMouseCapture`: hold a "pending-question" lease while any ask-user
@@ -638,7 +638,9 @@ impl InteractiveMode {
     pub fn commit_terminal_setting(&mut self) -> bool {
         let Some((key, value)) = self.pending_terminal_setting.take() else { return false; };
         let values: maho_core::settings_manager::Settings = [(key.clone(), value.clone())].into_iter().collect();
-        if let Err(error) = self.session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { self.show_error(&error); return false; }
+        // senpi `setTerminalMouse` writes the nested `terminal.mouse`.
+        let saved = self.session.with_settings_manager_mut(|settings| if key == "terminalMouse" { settings.set_terminal_mouse(value.as_str().unwrap_or_default()) } else { settings.set(maho_core::settings_manager::SettingsScope::Global, &values) });
+        if let Err(error) = saved { self.show_error(&error); return false; }
         if key == "tuiMode" && let Some(mode) = value.as_str() { self.show_status(format!("TUI mode: {mode}")); }
         true
     }
@@ -1004,7 +1006,7 @@ impl InteractiveMode {
     }
 
     pub(crate) fn terminal_settings(&self) -> (bool, bool, bool) {
-        self.session.with_settings_manager(|settings| (settings.get_bool("showHardwareCursor").unwrap_or(false), settings.get_bool("clearOnShrink").unwrap_or(false), settings.get_bool("showTerminalProgress").unwrap_or(true)))
+        self.session.with_settings_manager(|settings| (settings.get_show_hardware_cursor(), settings.get_clear_on_shrink(), settings.get_show_terminal_progress()))
     }
     fn keybindings(&self) -> maho_tui::keybindings::KeybindingsManager {
         maho_core::keybindings::KeybindingsManager::create(Some(&self.session.agent_dir())).inner().clone()
@@ -1030,7 +1032,7 @@ impl InteractiveMode {
         maho_tui::keybindings::set_keybindings(manager.clone());
         let keys = Arc::new(manager);
         let mut editor = CustomEditor::new(host.clone(), editor_theme(&theme), keys, CustomEditorOptions { embed_working_status: true, ..Default::default() });
-        let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+        let (padding, max_visible) = session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
         editor.set_padding_x(padding as usize); editor.editor.set_autocomplete_max_visible(max_visible as usize);
         editor.editor.set_autocomplete_provider(Rc::new(RefCell::new(Self::create_base_autocomplete_provider(&session, &session.cwd(), None))));
         let pending_images = Rc::new(RefCell::new(BTreeMap::<u64, maho_ai::types::ImageContent>::new()));
@@ -2043,7 +2045,7 @@ impl InteractiveMode {
     /// pair. senpi's `processImage` resize/conversion is skipped - the Rust port has no image codec
     /// (see `components/tool_execution_images.rs`) - so only an already-supported format reaches here.
     fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
-        if self.session.with_settings_manager(|settings| settings.get_bool("blockImages").unwrap_or(false)) {
+        if self.session.with_settings_manager(|settings| settings.get_block_images()) {
             self.show_status("Image paste blocked by the images.blockImages setting".into());
             return false;
         }
@@ -2456,7 +2458,7 @@ impl InteractiveMode {
                     // senpi `resetExtensionUI` once the reload proceeds: the reloaded extensions
                     // re-register their autocomplete wrappers (queued UI requests, drained afterwards).
                     self.autocomplete_wrappers.clear();
-                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_number("autocompleteMaxVisible").unwrap_or(10.0)));
+                    let (padding, max_visible) = self.session.with_settings_manager(|settings| (settings.get_number("editorPaddingX").unwrap_or(0.0), settings.get_autocomplete_max_visible()));
                     self.editor.set_padding_x(padding as usize); self.editor.editor.set_autocomplete_max_visible(max_visible as usize);
                     self.rebuild_history();
                     // `this.keybindings.reload()` and `themeController.applyFromSettings()`.
@@ -2949,13 +2951,13 @@ impl InteractiveMode {
                 macro_rules! boolean { ($field:ident, $key:literal) => { config.$field = settings.get_bool($key).unwrap_or(config.$field); }; }
                 macro_rules! number { ($field:ident, $key:literal) => { if let Some(value) = settings.get_number($key) { config.$field = value as _; } }; }
                 macro_rules! string { ($field:ident, $key:literal) => { if let Some(value) = settings.get_string($key) { config.$field = value; } }; }
-                boolean!(show_images, "showImages"); boolean!(auto_resize_images, "imageAutoResize"); boolean!(block_images, "blockImages"); boolean!(enable_skill_commands, "enableSkillCommands");
+                config.show_images = settings.get_show_images(); config.auto_resize_images = settings.get_image_auto_resize(); config.block_images = settings.get_block_images(); boolean!(enable_skill_commands, "enableSkillCommands");
                 boolean!(hide_thinking_block, "hideThinkingBlock"); boolean!(smooth_streaming, "smoothStreaming"); boolean!(show_cache_miss_notices, "showCacheMissNotices"); boolean!(collapse_changelog, "collapseChangelog");
-                boolean!(enable_install_telemetry, "enableInstallTelemetry"); boolean!(show_hardware_cursor, "showHardwareCursor"); boolean!(quiet_startup, "quietStartup"); boolean!(clear_on_shrink, "clearOnShrink"); boolean!(show_terminal_progress, "showTerminalProgress"); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
-                number!(image_width_cells, "imageWidthCells"); number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); number!(autocomplete_max_visible, "autocompleteMaxVisible");
+                boolean!(enable_install_telemetry, "enableInstallTelemetry"); config.show_hardware_cursor = settings.get_show_hardware_cursor(); boolean!(quiet_startup, "quietStartup"); config.clear_on_shrink = settings.get_clear_on_shrink(); config.show_terminal_progress = settings.get_show_terminal_progress(); boolean!(fullscreen_copy_on_select, "fullscreenCopyOnSelect");
+                config.image_width_cells = settings.get_image_width_cells() as usize; number!(http_idle_timeout_ms, "httpIdleTimeoutMs"); number!(smooth_streaming_fps, "smoothStreamingFps"); number!(editor_padding_x, "editorPaddingX"); number!(output_pad, "outputPad"); config.autocomplete_max_visible = settings.get_autocomplete_max_visible();
                 string!(steering_mode, "steeringMode"); string!(follow_up_mode, "followUpMode"); string!(transport, "transport"); string!(double_escape_action, "doubleEscapeAction"); string!(tree_filter_mode, "treeFilterMode"); string!(fullscreen_scrollbar, "fullscreenScrollbar");
                 use crate::components::settings_selector::{MermaidRenderingMode, TuiMode, FullscreenExitOutput, DefaultProjectTrust};
-                config.terminal_mouse = settings.get_string("terminalMouse");
+                config.terminal_mouse = Some(settings.get_terminal_mouse());
                 config.mermaid_rendering_mode = MermaidRenderingMode::from_name(settings.get_mermaid_rendering_mode().as_str()).unwrap_or(config.mermaid_rendering_mode);
                 config.tui_mode = settings.get_string("tuiMode").and_then(|value| TuiMode::from_name(&value)).unwrap_or(config.tui_mode);
                 config.fullscreen_exit_output = settings.get_string("fullscreenExitOutput").and_then(|value| FullscreenExitOutput::from_name(&value)).unwrap_or(config.fullscreen_exit_output);
@@ -2972,7 +2974,14 @@ impl InteractiveMode {
                     Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
                 }
             })); }}; }
-            persist!(on_show_images_change, "showImages", bool); persist!(on_image_width_cells_change, "imageWidthCells", usize); persist!(on_auto_resize_images_change, "imageAutoResize", bool); persist!(on_block_images_change, "blockImages", bool); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
+            macro_rules! persist_with { ($field:ident, $key:literal, $ty:ty, $set:expr) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
+                let set: fn(&mut maho_core::settings_manager::SettingsManager, $ty) -> Result<(), String> = $set;
+                match session.with_settings_manager_mut(|settings| set(settings, value)) {
+                    Ok(()) => { drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::SettingChanged($key.into(), serde_json::json!(value)))); }
+                    Err(error) => maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error),
+                }
+            })); }}; }
+            persist_with!(on_show_images_change, "showImages", bool, |settings, value| settings.set_show_images(value)); persist_with!(on_image_width_cells_change, "imageWidthCells", usize, |settings, value| settings.set_image_width_cells(u32::try_from(value).unwrap_or(u32::MAX))); persist_with!(on_auto_resize_images_change, "imageAutoResize", bool, |settings, value| settings.set_image_auto_resize(value)); persist_with!(on_block_images_change, "blockImages", bool, |settings, value| settings.set_block_images(value)); persist!(on_enable_skill_commands_change, "enableSkillCommands", bool);
             persist!(on_theme_change, "theme", String); persist!(on_hide_thinking_block_change, "hideThinkingBlock", bool);
             { let ui = self.extension_ui.clone(); callbacks.on_theme_preview = Some(Box::new(move |setting: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::ThemePreview(setting))))); }
             // senpi `onTransportChange`: persist, then `session.agent.transport = transport`.
@@ -2999,11 +3008,11 @@ impl InteractiveMode {
             })); }
             persist!(on_smooth_streaming_change, "smoothStreaming", bool); persist!(on_smooth_streaming_fps_change, "smoothStreamingFps", u32); persist!(on_show_cache_miss_notices_change, "showCacheMissNotices", bool); persist!(on_collapse_changelog_change, "collapseChangelog", bool); persist!(on_enable_install_telemetry_change, "enableInstallTelemetry", bool);
             persist!(on_double_escape_action_change, "doubleEscapeAction", String); persist!(on_tree_filter_mode_change, "treeFilterMode", String); persist!(on_show_hardware_cursor_change, "showHardwareCursor", bool); persist!(on_editor_padding_x_change, "editorPaddingX", usize); persist!(on_output_pad_change, "outputPad", u8); persist!(on_autocomplete_max_visible_change, "autocompleteMaxVisible", usize);
-            persist!(on_quiet_startup_change, "quietStartup", bool); persist!(on_clear_on_shrink_change, "clearOnShrink", bool); persist!(on_show_terminal_progress_change, "showTerminalProgress", bool); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
+            persist!(on_quiet_startup_change, "quietStartup", bool); persist_with!(on_clear_on_shrink_change, "clearOnShrink", bool, |settings, value| settings.set_clear_on_shrink(value)); persist_with!(on_show_terminal_progress_change, "showTerminalProgress", bool, |settings, value| settings.set_show_terminal_progress(value)); persist!(on_fullscreen_scrollbar_change, "fullscreenScrollbar", String); persist!(on_fullscreen_copy_on_select_change, "fullscreenCopyOnSelect", bool);
             // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
             // when no overlay is open; the setting is persisted once the host accepts the change.
             { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }
-            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); let values = [("compaction".into(), serde_json::json!({"enabled":enabled}))].into_iter().collect(); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
+            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
             let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
             let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
             let session = self.session.clone(); callbacks.on_thinking_level_change = Some(Box::new(move |level| session.set_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level.as_str()).expect("selector thinking level"))));
@@ -4715,7 +4724,7 @@ impl InteractiveMode {
     fn tool_component(&mut self, name: &str, id: &str, args: serde_json::Value) -> Rc<RefCell<ToolExecutionComponent>> {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
-        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:Some(settings.get_show_images()), image_width_cells:Some(settings.get_image_width_cells()) });
         self.pending_tools.get(id).cloned().unwrap_or_else(|| {
             let component = Rc::new(RefCell::new(ToolExecutionComponent::new(&name, id, args, options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())));
             self.chat.add_child(crate::components::exploration_transcript_container::TranscriptChild::Tool(component.clone()));
@@ -4774,7 +4783,7 @@ impl crate::replay_assistant_tools::ReplayToolHost for InteractiveMode {
     fn create_tool(&mut self, name: &str, id: &str, args: &serde_json::Map<String, serde_json::Value>) -> ToolExecutionComponent {
         let name = self.session.resolve_tool_call_name(name);
         let renderers = self.tool_renderers(&name);
-        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:settings.get_bool("showImages"), image_width_cells:settings.get_number("imageWidthCells").map(|width| width as u32) });
+        let options = self.session.with_settings_manager(|settings| ToolExecutionOptions { show_images:Some(settings.get_show_images()), image_width_cells:Some(settings.get_image_width_cells()) });
         ToolExecutionComponent::new(&name, id, serde_json::Value::Object(args.clone()), options, renderers, &self.host_cwd(), ToolExecutionPresentation::Classic, None, self.theme.clone())
     }
     fn add_pending(&mut self, id: &str, component: Rc<RefCell<ToolExecutionComponent>>) { self.pending_tools.insert(id.into(), component); }
