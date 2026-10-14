@@ -486,6 +486,9 @@ struct AgentSessionState {
     post_compaction_deferred_follow_up_messages: Vec<AgentMessage>,
     prompt_start_pending: bool,
     had_cleared_queued_messages: bool,
+    /// senpi `_triggerTurnAdmissionAbortGeneration`: the user-abort generation an idle
+    /// `triggerTurn` custom message is being admitted under.
+    trigger_turn_admission_abort_generation: Option<u64>,
     auto_compaction_session_override: Option<bool>,
     turn_index: u64,
     message_replacements: Vec<(AgentMessage, AgentMessage)>,
@@ -1719,6 +1722,7 @@ impl AgentSession {
             post_compaction_deferred_follow_up_messages: Vec::new(),
             prompt_start_pending: false,
             had_cleared_queued_messages: false,
+            trigger_turn_admission_abort_generation: None,
             auto_compaction_session_override: None,
             turn_index: 0,
             message_replacements: Vec::new(),
@@ -2265,18 +2269,7 @@ impl AgentSession {
         };
         let mut messages = vec![make_user_message(&text, images)];
         messages.extend(consumed.clone());
-        if let Some(before) = before {
-            self.state().system_prompt_override = before.system_prompt.clone();
-            self.agent.set_system_prompt(before.system_prompt.unwrap_or_else(|| self.state().base_system_prompt.clone()));
-            for message in before.messages {
-                messages.push(session_message_from_value(serde_json::json!({"role":"custom", "customType":message.custom_type,
-                    "content":message.content, "display":message.display, "details":message.details,
-                    "timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
-            }
-        } else {
-            self.state().system_prompt_override = None;
-            self.agent.set_system_prompt(self.state().base_system_prompt.clone());
-        }
+        self.apply_before_agent_start_result(&mut messages, before)?;
         if let Err(error) = self.enforce_final_provider_admission(&messages).await {
             self.state().pending_next_turn_messages.splice(0..0, consumed);
             self.dispatch_extension_event(maho_ext_api::ExtensionEvent::InputDisposition {
@@ -2311,6 +2304,28 @@ impl AgentSession {
         drop(_admission);
         self.emit_agent_settled().await;
         Ok(PromptDisposition::Started)
+    }
+
+    /// senpi `_applyBeforeAgentStartResult`.
+    fn apply_before_agent_start_result(
+        &self,
+        messages: &mut Vec<AgentMessage>,
+        result: Option<maho_ext_api::BeforeAgentStartCombinedResult>,
+    ) -> Result<(), String> {
+        if let Some(before) = result {
+            for message in before.messages {
+                messages.push(session_message_from_value(serde_json::json!({"role":"custom", "customType":message.custom_type,
+                    "content":message.content, "display":message.display, "details":message.details,
+                    "timestamp":maho_ai::utils::diagnostics::now_ms()})).map_err(|error| error.to_string())?);
+            }
+            self.state().system_prompt_override = before.system_prompt.clone();
+            self.agent.set_system_prompt(before.system_prompt.unwrap_or_else(|| self.state().base_system_prompt.clone()));
+        } else {
+            // Ensure the base prompt is used (in case a previous turn had modifications).
+            self.state().system_prompt_override = None;
+            self.agent.set_system_prompt(self.state().base_system_prompt.clone());
+        }
+        Ok(())
     }
 
     async fn enforce_final_provider_admission(&self, additions: &[AgentMessage]) -> Result<(), String> {
@@ -2435,7 +2450,10 @@ impl AgentSession {
         let streaming = self.is_streaming();
         let had_retry_backoff = self.state().retry_abort_controller.is_some();
         let was_mid_run = streaming && !had_retry_backoff;
-        let had_compaction_or_pending = !streaming && (self.is_compacting() || self.pending_message_count() > 0);
+        let has_pending_trigger_turn_admission = self.state().trigger_turn_admission_abort_generation
+            == Some(self.user_abort_generation.load(Ordering::SeqCst));
+        let had_compaction_or_pending = !streaming
+            && (self.is_compacting() || self.pending_message_count() > 0 || has_pending_trigger_turn_admission);
         let had_cleared_queues = std::mem::take(&mut self.state().had_cleared_queued_messages);
         let joined_agent_end_boundary = self.state().abort_provenance.has_open_agent_end_boundary();
         let should_emit_abort = !joined_agent_end_boundary && !was_mid_run
@@ -7217,25 +7235,86 @@ impl AgentSession {
             match options.deliver_as { Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(agent_message), _ => self.agent.steer(agent_message) }
         } else if self.is_streaming() {
             self.state().pending_custom_messages.push(message);
+        } else if options.trigger_turn {
+            let guard = self.work_barrier.begin();
+            let generation = self.user_abort_generation.load(Ordering::SeqCst);
+            let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
+            let session = self.clone();
+            let deliver_as = options.deliver_as;
+            tokio::spawn(async move {
+                if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
+                    drop(guard);
+                    return;
+                }
+                if let Err(error) = session.trigger_custom_message_turn(message, deliver_as, generation).await {
+                    session.emit(AgentSessionEvent::ContinuationError { error_message: error });
+                }
+                drop(guard);
+            });
         } else {
             self.append_extension_custom_message(message).map_err(maho_ext_api::ExtensionFailure::new)?;
-            if options.trigger_turn {
-                let guard = self.work_barrier.begin();
-                let generation = self.user_abort_generation.load(Ordering::SeqCst);
-                let runtime_generation = self.monitor_generation.load(Ordering::SeqCst);
-                let session = self.clone();
-                tokio::spawn(async move {
-                    if session.state().disposed || session.monitor_generation.load(Ordering::SeqCst) != runtime_generation {
-                        drop(guard);
-                        return;
-                    }
-                    if let Err(error) = session.continue_session_internal(Some(generation)).await {
-                        session.emit(AgentSessionEvent::ContinuationError { error_message: error });
-                    }
-                    drop(guard);
-                });
-            }
         }
+        Ok(())
+    }
+
+    /// senpi `sendCustomMessage` with `triggerTurn` while idle: enforce compaction before the
+    /// provider, emit `before_agent_start` for the message text, apply its result, run the final
+    /// provider admission, then prompt the agent with the batch. A user abort or an admission
+    /// rejection inside that window queues the message for later delivery instead of dropping it.
+    async fn trigger_custom_message_turn(
+        &self,
+        message: maho_agent::harness::messages::CustomMessage,
+        deliver_as: Option<maho_ext_api::DeliverAs>,
+        user_abort_generation: u64,
+    ) -> Result<(), String> {
+        let _admission = self.prompt_admission.lock().await;
+        let _work = self.work_barrier.begin();
+        let app_message = AgentMessage::Custom(maho_agent::types::CustomAgentMessage::Custom(message.clone()));
+        let queue_trigger_for_later = || match deliver_as {
+            Some(maho_ext_api::DeliverAs::FollowUp) => self.agent.follow_up(app_message.clone()),
+            _ => self.agent.steer(app_message.clone()),
+        };
+        // senpi returns without delivering when a user abort landed while waiting for session work.
+        if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) { return Ok(()); }
+        self.state().user_aborted = false;
+        let mut messages = vec![app_message.clone()];
+        self.state().trigger_turn_admission_abort_generation = Some(user_abort_generation);
+        let admitted: Result<bool, String> = async {
+            self.revalidate_continuation_admission(false).await?;
+            let prompt = match &message.content {
+                maho_agent::harness::messages::CustomMessageContent::Text(text) => text.clone(),
+                maho_agent::harness::messages::CustomMessageContent::Blocks(blocks) => blocks.iter()
+                    .filter_map(|block| match block { maho_ai::types::ContentBlock::Text(text) => Some(text.text.as_str()), _ => None })
+                    .collect::<String>(),
+            };
+            let base_system_prompt = self.state().base_system_prompt.clone();
+            let before = {
+                let mut runner = self.extension_runner.lock().await.clone();
+                match runner.as_mut() { Some(runner) => runner.emit_before_agent_start(maho_ext_api::BeforeAgentStartEvent {
+                    prompt, images: None, system_prompt: base_system_prompt,
+                    system_prompt_options: self.extension_system_prompt_options(),
+                }).await.map_err(|error| error.to_string())?, None => None }
+            };
+            if user_abort_generation != self.user_abort_generation.load(Ordering::SeqCst) { return Ok(false); }
+            self.apply_before_agent_start_result(&mut messages, before)?;
+            self.enforce_final_provider_admission(&messages).await?;
+            Ok(user_abort_generation == self.user_abort_generation.load(Ordering::SeqCst))
+        }.await;
+        self.state().trigger_turn_admission_abort_generation = None;
+        match admitted {
+            Ok(true) => {}
+            Ok(false) => { queue_trigger_for_later(); return Ok(()); }
+            Err(error) => { queue_trigger_for_later(); return Err(error); }
+        }
+        self.runtime_messages();
+        self.agent_run_active.store(true, Ordering::SeqCst);
+        self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
+        self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
+        self.finish_provider_turn().await?;
+        self.flush_pending_bash_messages();
+        drop(_work);
+        drop(_admission);
+        self.emit_agent_settled().await;
         Ok(())
     }
 
@@ -12379,9 +12458,9 @@ mod tests {
         drop(admission);
         tokio::time::timeout(std::time::Duration::from_secs(5), session.wait_for_idle()).await.expect("settled scheduled work");
         assert!(session.state().user_aborted);
-        assert_eq!(session.messages().len(), 1);
-        assert_eq!(session.messages()[0].role(), "custom");
-        assert_eq!(session.with_session_manager(|manager| manager.entries()).len(), 1);
+        assert!(session.messages().is_empty());
+        assert!(session.with_session_manager(|manager| manager.entries()).is_empty());
+        assert!(!session.agent.has_queued_messages());
     }
 
     #[tokio::test]
