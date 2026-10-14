@@ -63,6 +63,10 @@ async fn resolve_cloudflare_env(
         None
     };
 
+    let api_key = api_key.filter(|v| !v.is_empty());
+    let account_id = account_id.filter(|v| !v.is_empty());
+    let gateway_id = gateway_id.filter(|v| !v.is_empty());
+
     let (Some(api_key), Some(account_id)) = (api_key, account_id) else {
         return Ok(None);
     };
