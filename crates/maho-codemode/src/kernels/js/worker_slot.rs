@@ -28,9 +28,10 @@ impl WorkerSlot {
             self.worker=Some(worker);
             let initialized=self.worker.as_mut().expect("published worker").initialize(&options,signal).await;
             if initialized.is_ok() {self.mode=JavaScriptKernelMode::Worker;return Ok(());}
-            self.retire().await?;
+            // senpi worker-startup.ts:40 `hooks.retire(worker)` only unpublishes the failed worker; the
+            // kernel generation is kept so the inline fallback continues the same generation.
+            if let Some(mut failed)=self.worker.take() { let _ = failed.terminate().await; }
             if signal.aborted() {return initialized;}
-            options.generation=self.generation;
         }
         self.worker=Some(super::inline_worker::create_inline_worker(options.cwd,options.parallel_pool_width,&options.environment)?);
         self.mode=JavaScriptKernelMode::Inline;
