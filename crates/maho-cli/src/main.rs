@@ -297,6 +297,8 @@ fn run() -> Result<(), String> {
         if let Some(flags) = help_fast_path::cached_help_flags(&argv, grok, &cwd, &agent, version) {
             return output(&help_text(grok, &extension_flags_text(&flags)));
         }
+        // senpi main.ts:1030: migrations run before the help answer that main.ts produces.
+        maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), &agent).map_err(|error| error.to_string())?;
         report_startup_settings_diagnostics(&cwd)?;
         let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
         let help_runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
@@ -314,7 +316,13 @@ fn run() -> Result<(), String> {
         }
         return output(&help_text(grok, &extension_flags_text(&resolved.flags)));
     }
-    if parsed.list_tips { report_startup_settings_diagnostics(&std::env::current_dir().map_err(|error| error.to_string())?)?; return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?)); }
+    if parsed.list_tips {
+        let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+        // senpi main.ts:1030: migrations run before the list-tips answer.
+        maho_cli::migrations::run_migrations(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&maho_core::config::get_agent_dir())).map_err(|error| error.to_string())?;
+        report_startup_settings_diagnostics(&cwd)?;
+        return output(&format!("{}\n", serde_json::to_string_pretty(&maho_cli::cli::list_tips::collect_tips()).map_err(|e| e.to_string())?));
+    }
     if let Some(search) = parsed.list_models.as_deref() {
         let agent = PathBuf::from(maho_core::config::get_agent_dir());
         let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
