@@ -37,6 +37,15 @@ pub fn spawn_footer_ticker(wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring
     if spawned.is_err()&&let Ok(mut guard)=wiring.try_lock(){guard.footer_ticker=false;}
     spawned.map(|_|())
 }
+/// Pin `memory/index.ts:100-111` + `wiring-runtime.ts:51-52`: `session_start` replaces the session
+/// state, so a session that does not rebind (disabled, identity conflict) resolves no context.
+/// Registered before the component's own `session_start`, which rebinds through `after_bind`.
+fn register_session_reset_handler(api:&mut maho_ext_api::ExtensionApi,wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>){
+    api.on(maho_ext_api::EventKind::SessionStart,std::sync::Arc::new(move|_,context|{
+        let wiring=wiring.clone();
+        Box::pin(async move{wiring.lock().await.unbind(context.session_manager.session_id());Ok(maho_ext_api::EventResult::None)})
+    }));
+}
 /// Production settled handler (pin `wiring-static.ts:96-111` agent_settled: journal reconcile, facts, footer).
 fn register_settled_handler(
     api:&mut maho_ext_api::ExtensionApi,wiring:std::sync::Arc<tokio::sync::Mutex<MemoryWiring>>,handle:std::sync::Arc<maho_ext_api::ExtensionApi>,
@@ -62,8 +71,8 @@ impl MemoryWiring{
         let shutdown_wiring=wiring.clone();let shutdown_now=options.now.clone();let shutdown_warn=options.warn.clone();
         // Pin `wiring-static.ts:96-111`: the settled journal/facts/footer handler is registered before
         // the reflection trigger (:183) and dream trigger (:184), so a settle journals its final turn first.
-        let settled_wiring=wiring.clone();let settled_handle=handle.clone();let settled_now=options.now.clone();let settled_warn=options.warn.clone();
-        let register_static=move|api:&mut maho_ext_api::ExtensionApi|{register_settled_handler(api,settled_wiring,settled_handle,settled_now,settled_warn);register_static(api);};
+        let settled_wiring=wiring.clone();let settled_handle=handle.clone();let settled_now=options.now.clone();let settled_warn=options.warn.clone();let unbind_wiring=wiring.clone();
+        let register_static=move|api:&mut maho_ext_api::ExtensionApi|{register_session_reset_handler(api,unbind_wiring);register_settled_handler(api,settled_wiring,settled_handle,settled_now,settled_warn);register_static(api);};
         let registered=component.register(api,crate::index::MemoryComponentHooks{
             after_bind:std::sync::Arc::new(move|session,identity,context|{
                 let wiring=bind_wiring.clone();let api=bind_handle.clone();let identity=identity.clone();let facts=facts(&identity,context);let reconcile=reconcile.clone();let now=now.clone();let warn=journal_warn.clone();let initial=initial.clone();
@@ -144,11 +153,14 @@ impl MemoryWiring{
         self.reflection_live.on_settled(session,api,now,ui)
     }
     pub fn shutdown(&mut self,session:&str){let identity=self.runtime.resolve_context(session).map(|context|context.identity.clone());self.reflection_live.shutdown(identity.as_deref());}
+    /// Drops the session's bound context so later settles resolve nothing (pin `wiring-runtime.ts:51-52`).
+    pub fn unbind(&mut self,session:&str){self.runtime.contexts.remove(session);self.reflection_live.unbind(session);}
     pub async fn on_session_shutdown(&mut self,reason:crate::shutdown_drain::ShutdownReason,session:&str,deadline:f64,now:&(dyn Fn()->f64+Sync),warn:&mut (dyn FnMut(&str,Option<&str>)+Send)){
         self.maintenance.dispose();self.maintenance.settled().await;self.shutdown(session);
         let evaluators=std::mem::take(&mut self.evaluators);
         let evaluators={let mut drain=crate::shutdown_drain::create_shutdown_drain(MemoryShutdownSteps{wiring:self,now});for evaluator in evaluators{drain.register_evaluator(evaluator);}drain.run(reason,session,deadline,now,warn).await;std::mem::take(&mut drain.evaluators)};
         self.evaluators=evaluators;
+        self.unbind(session);
     }
     pub fn register_shutdown_evaluator(&mut self,evaluator:Box<dyn crate::shutdown_drain::ShutdownEvaluator>){self.evaluators.push(evaluator);}
     pub fn register_dream_triggers(&mut self,api:&mut maho_ext_api::ExtensionApi,dream:std::sync::Arc<crate::dream_trigger::DreamTriggerWiring>){

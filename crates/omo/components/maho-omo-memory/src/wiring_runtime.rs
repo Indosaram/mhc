@@ -3,7 +3,6 @@ use crate::{context::MemoryIdentityContext,identity_runtime::{MemoryIdentityRunt
 #[derive(Default)]pub struct MemoryRuntimeWiring{
     pub contexts:BTreeMap<String,MemoryIdentityContext>,runtimes:BTreeMap<String,MemoryIdentityRuntime>,
     journals:BTreeMap<String,MemoryJournalWiring>,facts:BTreeMap<String,MemoryFactsWiring>,
-    trigger_ledgers:BTreeMap<String,std::sync::Arc<std::sync::Mutex<crate::context::MemoryPendingLedger>>>,
 }
 pub type RuntimeReflectionLaunch=std::sync::Arc<dyn Fn(memory_core::reflection::ReservedRun)->Result<(),String>+Send+Sync>;
 pub struct RuntimeDreamInput<'a>{pub session:&'a str,pub origin:memory_core::reflection::DreamOrigin,pub request:&'a crate::dream_trigger_fire::ManualDreamRequest,pub settings:&'a serde_json::Value,pub now:&'a dyn Fn()->f64,pub aborted:&'a dyn Fn()->bool,pub warn:&'a mut dyn FnMut(&str)}
@@ -48,7 +47,7 @@ impl MemoryRuntimeWiring{
         let Some(identity)=self.resolve_context(session).cloned()else{return Ok(None);};let settings=settings()?;
         let enabled=crate::trigger_wiring::resolve_reflection_trigger_config(&settings,Some(&identity.identity))?.enabled;
         let store=self.runtime_for(&identity,||Ok(settings))?.store.clone();
-        let ledger=self.trigger_ledgers.entry(session.into()).or_insert_with(||std::sync::Arc::new(std::sync::Mutex::new(identity.ledger))).clone();
+        let ledger=identity.ledger.clone();
         Ok(Some(crate::trigger_wiring::ReflectionTriggerSession{conversation_id:session.into(),ledger,enabled,engine:std::sync::Arc::new(RuntimeTriggerEngine{store,launch})}))
     }
     pub fn resolve_context(&self,session:&str)->Option<&MemoryIdentityContext>{self.contexts.get(session)}
