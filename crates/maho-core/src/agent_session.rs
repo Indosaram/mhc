@@ -6452,10 +6452,22 @@ impl AgentSession {
                 };
                 match (parse("sessionShutdownHandlerWarnMs", 2_000), parse("sessionShutdownHandlerTimeoutMs", 10_000)) {
                     (Some(warn), Some(timeout)) => (warn, timeout),
-                    _ => (2_000, 10_000),
+                    (warn, _) => {
+                        // senpi runner.ts `resolveSessionShutdownBudget`: an invalid setting is reported.
+                        let (key, value) = if warn.is_none() { ("sessionShutdownHandlerWarnMs", manager.get_value("sessionShutdownHandlerWarnMs")) }
+                            else { ("sessionShutdownHandlerTimeoutMs", manager.get_value("sessionShutdownHandlerTimeoutMs")) };
+                        let value = value.map(|value| value.as_str().map_or_else(|| value.to_string(), str::to_owned)).unwrap_or_default();
+                        crate::output_guard::maho_write_stderr(&format!(
+                            "Using the default session_shutdown handler budget (warn 2000ms, hard cap 10000ms): Invalid {key} setting: {value}\n"));
+                        (2_000, 10_000)
+                    }
                 }
             })
         }));
+        // senpi runner.ts: a slow `session_shutdown` handler warns through `console.warn`.
+        runner.set_warning_listener(Some(Arc::new(|message: &str| {
+            crate::output_guard::maho_write_stderr(&format!("{message}\n"));
+        })));
         let weak = Arc::downgrade(&self.inner);
         *lock(&self.extension_rpc_event_forwarding) = Some(runner.events.on(crate::event_bus::EXTENSION_RPC_EVENT_CHANNEL, Arc::new(move |event: &Value| {
             let Some(inner) = weak.upgrade() else { return; };
