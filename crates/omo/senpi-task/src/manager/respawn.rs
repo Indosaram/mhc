@@ -30,6 +30,9 @@ pub struct RespawnInput<'a> {
     pub runners: &'a ManagedRunners,
     pub rpc_runner: &'a dyn RpcRespawnRunner,
     pub trusted_launch: Option<&'a TrustedRespawnLaunchResolver>,
+    /// TS `beforeLaunch`: the durable launch boundary, run once the spawn spec is rebuilt (and any
+    /// trusted launch resolved) and immediately before the child starts. `Err` refuses the launch.
+    pub before_launch: &'a dyn Fn() -> Result<(), RespawnResult>,
 }
 
 pub fn respawn_managed_task(input: &RespawnInput<'_>) -> RespawnResult {
@@ -57,21 +60,27 @@ fn respawn_fresh(input: &RespawnInput<'_>) -> RespawnResult {
         }
     };
     if input.record.execution_mode == "in-process" {
+        if let Err(refused) = (input.before_launch)() {
+            return refused;
+        }
         return match input.runners.in_process.start(&spec) {
             Ok(handle) => RespawnResult::Ok(handle),
             Err(error) => classify_resume_failure(&error),
         };
     }
-    let started = trusted(input).and_then(|trusted| {
-        input.rpc_runner.start(&rpc_spec(
-            input.record,
-            spec.cwd.clone(),
-            spec.state_dir.clone(),
-            spec.prompt.clone(),
-            None,
-            trusted,
-        ))
-    });
+    let started = match launch_trusted(input) {
+        Ok(trusted) => trusted.and_then(|trusted| {
+            input.rpc_runner.start(&rpc_spec(
+                input.record,
+                spec.cwd.clone(),
+                spec.state_dir.clone(),
+                spec.prompt.clone(),
+                None,
+                trusted,
+            ))
+        }),
+        Err(refused) => return refused,
+    };
     match started {
         Ok(handle) => RespawnResult::Ok(handle),
         Err(error) => {
@@ -99,6 +108,9 @@ fn respawn_in_process(input: &RespawnInput<'_>, session_path: &Path) -> RespawnR
             );
         }
     };
+    if let Err(refused) = (input.before_launch)() {
+        return refused;
+    }
     let Some(resumed) = input
         .runners
         .in_process
@@ -139,7 +151,11 @@ fn respawn_process(input: &RespawnInput<'_>, session_path: &Path) -> RespawnResu
         crate::state::TaskSpawnSpec::V1(spec) => spec.cwd.clone(),
     };
     let session = session_path.to_string_lossy().into_owned();
-    let started = trusted(input).and_then(|trusted| {
+    let started = match launch_trusted(input) {
+        Ok(trusted) => trusted,
+        Err(refused) => return refused,
+    }
+    .and_then(|trusted| {
         input.rpc_runner.start(&rpc_spec(
             input.record,
             cwd,
@@ -198,6 +214,19 @@ fn rpc_failure_after_start(
             RESPAWN_CLEANUP_FAILURE_REASON
         },
     )
+}
+
+/// Resolves the trusted launch, then crosses the launch boundary (TS order: `trustedLaunch`, then
+/// `beforeLaunch`). A resolver error is returned for the caller's failure classification without
+/// crossing the boundary; a refused boundary short-circuits the respawn.
+fn launch_trusted(
+    input: &RespawnInput<'_>,
+) -> Result<Result<Option<TrustedRespawnLaunch>, ManagedRunnerError>, RespawnResult> {
+    let trusted = trusted(input);
+    if trusted.is_ok() {
+        (input.before_launch)()?;
+    }
+    Ok(trusted)
 }
 
 fn trusted(input: &RespawnInput<'_>) -> Result<Option<TrustedRespawnLaunch>, ManagedRunnerError> {

@@ -291,6 +291,11 @@ fn session_path() -> &'static Path {
     Path::new("/tmp/session.jsonl")
 }
 
+/// TS `store.save(record)`: respawn's launch boundary stamps the persisted record.
+fn seed(project: &Project, record: &TaskRecord) {
+    project.store().save(record).expect("seed record");
+}
+
 // describe.each(["terminate", "dispose"]) respawn cleanup
 
 #[test]
@@ -299,7 +304,8 @@ fn given_cancelled_respawn_cleanup_rejects_when_respawn_returns_then_teardown_fa
         let handle = RpcFake::new(stage, true);
         let mut setup = Setup::new();
         setup.rpc = Some(CapturingRpcRunner::new(Arc::clone(&handle)));
-        let (manager, _project) = setup.build();
+        let (manager, project) = setup.build();
+        seed(&project, &respawn_record());
 
         let failed = expect_failed(manager.respawn(&respawn_record(), Some(session_path())));
 
@@ -331,7 +337,8 @@ fn given_persisted_extension_and_member_env_when_respawned_then_neither_reaches_
     let runner = CapturingRpcRunner::new(RpcFake::new(CleanupStage::None, false));
     let mut setup = Setup::new();
     setup.rpc = Some(Arc::clone(&runner) as Arc<dyn RpcRespawnRunner>);
-    let (manager, _project) = setup.build();
+    let (manager, project) = setup.build();
+    seed(&project, &record);
 
     expect_ok(manager.respawn(&record, Some(session_path())));
 
@@ -378,7 +385,8 @@ fn given_team_member_record_when_respawned_then_trusted_launch_replaces_persiste
     let mut setup = Setup::new();
     setup.rpc = Some(Arc::clone(&runner) as Arc<dyn RpcRespawnRunner>);
     setup.trusted = Some(trusted.clone());
-    let (manager, _project) = setup.build();
+    let (manager, project) = setup.build();
+    seed(&project, &record);
 
     expect_ok(manager.respawn(&record, Some(session_path())));
 
@@ -399,7 +407,8 @@ fn given_record_with_resolved_variant_when_respawned_then_variant_reaches_rpc_sp
     let runner = CapturingRpcRunner::new(RpcFake::new(CleanupStage::None, false));
     let mut setup = Setup::new();
     setup.rpc = Some(Arc::clone(&runner) as Arc<dyn RpcRespawnRunner>);
-    let (manager, _project) = setup.build();
+    let (manager, project) = setup.build();
+    seed(&project, &record);
 
     expect_ok(manager.respawn(&record, Some(session_path())));
 
@@ -478,7 +487,8 @@ fn given_resume_context_cannot_find_model_when_respawned_then_retryable_and_no_c
     );
     let mut setup = setup;
     setup.in_process = Some(managed);
-    let (manager, _project) = setup.build();
+    let (manager, project) = setup.build();
+    seed(&project, &record);
 
     let failed = expect_failed(manager.respawn(&record, Some(session_path())));
 
@@ -620,6 +630,7 @@ fn continuation_harness() -> Continuation {
     let mut setup = Setup::new();
     setup.rpc = Some(CapturingRpcRunner::new(Arc::clone(&handle)));
     let (manager, project) = setup.build();
+    seed(&project, &respawn_record());
     Continuation {
         manager,
         handle,

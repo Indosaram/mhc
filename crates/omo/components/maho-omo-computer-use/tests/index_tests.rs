@@ -696,11 +696,11 @@ async fn test_given_no_cua_adapter_activation_changes_only_activates_computer() 
 #[tokio::test]
 async fn test_given_telemetry_observers_when_tool_activated_and_command_off_runs_both_transitions_fire() {
     let obs = Arc::new(SharedComputerUseTelemetryObservers::new());
-    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
+    let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
 
+    // Subscribe before triggering so the spawned activation cannot be missed.
     let _unsub = obs.subscribe(Arc::new(move |item| {
-        events_clone.lock().expect("test value").push(item);
+        let _ = sender.send(item);
     }));
 
     let mut api = make_api();
@@ -719,10 +719,18 @@ async fn test_given_telemetry_observers_when_tool_activated_and_command_off_runs
     // Trigger tool activated via registered event bus boundary
     api.events.emit("tool_activated", &json!({ "toolNames": ["computer"] }));
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    let evs = events.lock().expect("test value").clone();
-    assert!(evs.iter().any(|e| matches!(e, ComputerUseTelemetryObservation::Activation { active: true, .. })));
+    // The activation runs on a spawned task: await the exact observation, bounded.
+    let activated = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        while let Some(event) = received.recv().await {
+            if matches!(event, ComputerUseTelemetryObservation::Activation { active: true, .. }) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    assert!(activated);
 }
 
 #[tokio::test]

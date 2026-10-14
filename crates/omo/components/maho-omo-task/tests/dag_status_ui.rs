@@ -16,8 +16,11 @@ impl DagStatusUiManager for Runs {
     fn list(&self,session:&str)->Vec<DagRunSummary> { self.0.lock().expect("run").iter().filter(|run| run.parent_session_id==session).map(|run| DagRunSummary { run_id:run.run_id.clone(),run_key:run.run_key.clone(),name:run.name.clone(),parent_session_id:run.parent_session_id.clone(),status:run.status,created_at:run.created_at.clone(),updated_at:run.created_at.clone(),counts:run.counts }).collect() }
     fn snapshot(&self,run:&str,session:&str)->Option<DagRunSnapshot> { self.0.lock().expect("run").as_ref().filter(|record| record.run_id==run && record.parent_session_id==session).cloned() }
 }
-fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,Arc<Runs>,tempfile::TempDir) {
-    let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let manager=create_dag_manager(DagManagerOptions { store:Arc::new(store),new_run_id:Some(Arc::new(|| "run-1".into())),now:Some(Arc::new(|| 1000)),materialize_skills:None,settings:None }); let deps=DagToolDeps { manager:manager.clone(),parent_session_id:Arc::new(|| "session".into()),root_session_id:Arc::new(|| "session".into()),wait:None,cancel:None,retry:None,send:None,amend:None }; run_dag_tool(&deps,serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release","nodes":[{"id":"a","prompt":"work","category":"quick"}]}})).expect("input")).expect("start"); let runs=Arc::new(Runs(Mutex::new(Some(manager.snapshot(&"run-1".into(),"session").expect("snapshot"))))); let ui=Arc::new(support::Ui::default()); let mut context=support::context(); context.ui=ui.clone(); context.mode=mode; let mut runtime=TaskRuntimeContext::new(root.path().into()); runtime.capture_from(&context); let timers=Arc::new(Timers::default()); (DagStatusUi::new(runs.clone(),Arc::new(Mutex::new(runtime)),timers.clone()),timers,ui,runs,root)
+fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,Arc<Runs>,tempfile::TempDir) { fixture_at(mode,None) }
+// TS dag-status-row-format.test.ts NOW: the render clock the waiting/elapsed labels are measured against.
+const NOW_MS:i64=1_787_572_800_000;
+fn fixture_at(mode:ExtensionMode,now:Option<Arc<dyn Fn()->i64+Send+Sync>>)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,Arc<Runs>,tempfile::TempDir) {
+    let root=tempfile::tempdir().expect("root"); let store=create_dag_file_store(&DagStoreConfig::new(root.path()),DagStoreOptions::default()).expect("store"); let manager=create_dag_manager(DagManagerOptions { store:Arc::new(store),new_run_id:Some(Arc::new(|| "run-1".into())),now:Some(Arc::new(|| 1000)),materialize_skills:None,settings:None }); let deps=DagToolDeps { manager:manager.clone(),parent_session_id:Arc::new(|| "session".into()),root_session_id:Arc::new(|| "session".into()),wait:None,cancel:None,retry:None,send:None,amend:None }; run_dag_tool(&deps,serde_json::from_value(json!({"action":"start","definition":{"key":"plan","name":"release","nodes":[{"id":"a","prompt":"work","category":"quick"}]}})).expect("input")).expect("start"); let runs=Arc::new(Runs(Mutex::new(Some(manager.snapshot(&"run-1".into(),"session").expect("snapshot"))))); let ui=Arc::new(support::Ui::default()); let mut context=support::context(); context.ui=ui.clone(); context.mode=mode; let mut runtime=TaskRuntimeContext::new(root.path().into()); runtime.capture_from(&context); let timers=Arc::new(Timers::default()); (DagStatusUi::with_options(runs.clone(),Arc::new(Mutex::new(runtime)),timers.clone(),None,now,None),timers,ui,runs,root)
 }
 #[test] fn live_run_renders_below_editor_and_reuses_refresh_timer() { let (status,timers,ui,_,_root)=fixture(ExtensionMode::Tui); status.sync_now(); assert_eq!(timers.count(),1); status.on_activity("run-1","a","reading"); assert_eq!(timers.count(),1); timers.fire(1000); let widgets=ui.widgets.lock().expect("widgets"); assert_eq!(widgets.len(),2); assert_eq!(widgets[0].1,WidgetPlacement::BelowEditor); assert!(matches!(&widgets[0].0,Some(WidgetContent::Lines(rows)) if rows.len()==2)); status.dispose(); assert_eq!(timers.count(),0); }
 #[test] fn terminal_run_clears_widget_and_live_refresh() { let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui); status.sync_now(); runs.0.lock().expect("run").as_mut().expect("run").status=DagRunStatus::Completed; timers.fire(1000); assert_eq!(timers.count(),0); assert!(ui.widgets.lock().expect("widgets").last().expect("widget").0.is_none()); }
@@ -30,11 +33,11 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 #[test] fn node_transitions_advance_wave_and_preserve_routes() {
     use senpi_task::dag::types::{DagNodeState,DagRoute,DagWave};
     let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
-    { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.nodes[0].id="plan".into(); let mut build=run.nodes[0].clone(); build.id="build".into(); build.route=DagRoute::Agent { agent:"coder".into(),model:None }; run.nodes.push(build); run.waves=vec![DagWave { index:0,node_ids:vec!["plan".into()] },DagWave { index:1,node_ids:vec!["build".into()] }]; }
+    { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.nodes[0].id="plan".into(); run.nodes[0].created_at=String::new(); let mut build=run.nodes[0].clone(); build.id="build".into(); build.route=DagRoute::Agent { agent:"coder".into(),model:None }; run.nodes.push(build); run.waves=vec![DagWave { index:0,node_ids:vec!["plan".into()] },DagWave { index:1,node_ids:vec!["build".into()] }]; }
     for (first,second,wave,rows) in [
-        (DagNodeState::Pending,DagNodeState::Pending,"wave 1/2",["  ○ plan category:quick","  ○ build agent:coder"]),
-        (DagNodeState::Running,DagNodeState::Blocked,"wave 1/2",["  ▶ plan category:quick","  ○ build agent:coder"]),
-        (DagNodeState::Completed,DagNodeState::Failed,"wave 2/2",["  ✓ plan category:quick","  ✗ build agent:coder"]),
+        (DagNodeState::Pending,DagNodeState::Pending,"wave 1/2",["  ◌ plan · category:quick","  ◌ build · agent:coder"]),
+        (DagNodeState::Running,DagNodeState::Blocked,"wave 1/2",["  ▶ plan · category:quick","  ⊟ build · agent:coder"]),
+        (DagNodeState::Completed,DagNodeState::Failed,"wave 2/2",["  ✗ build · agent:coder","  ✓ plan · category:quick"]),
     ] {
         { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.nodes[0].state=first; run.nodes[1].state=second; }
         status.sync_now(); let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(actual))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(actual[0].contains(wave)); assert_eq!(&actual[1..],rows);
@@ -45,7 +48,7 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
     use senpi_task::dag::types::DagNodeState;
     let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);
     { let mut run=runs.0.lock().expect("run"); let run=run.as_mut().expect("snapshot"); run.status=DagRunStatus::Paused; run.nodes[0].state=DagNodeState::Skipped; let mut second=run.nodes[0].clone(); second.id="b".into(); second.state=DagNodeState::Cancelled; run.nodes.push(second); }
-    status.sync_now(); { let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(rows[0].contains("⏸")); assert_eq!(&rows[1..],["  ⊘ a category:quick","  ⊘ b category:quick"]); } status.dispose(); assert_eq!(timers.count(),0);
+    status.sync_now(); { let widgets=ui.widgets.lock().expect("widgets"); let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else { panic!("rows"); }; assert!(rows[0].contains("paused")); assert!(!rows[0].contains("⏸")); assert_eq!(&rows[1..],["  ⊘ a · category:quick","  ⊘ b · category:quick"]); } status.dispose(); assert_eq!(timers.count(),0);
 }
 #[test] fn header_counts_come_from_current_node_states() {
     use senpi_task::dag::types::DagNodeState;
@@ -85,7 +88,7 @@ fn fixture(mode:ExtensionMode)->(Arc<DagStatusUi>,Arc<Timers>,Arc<support::Ui>,A
 }
 #[test] fn node_rows_rank_live_work_and_include_waiting_attempt_and_distinct_icons() {
     use senpi_task::dag::types::DagNodeState;
-    let (status,timers,ui,runs,_root)=fixture(ExtensionMode::Tui);let now="2026-08-24T12:00:00.000Z";
+    let (status,timers,ui,runs,_root)=fixture_at(ExtensionMode::Tui,Some(Arc::new(||NOW_MS)));let now="2026-08-24T12:00:00.000Z";
     {let mut locked=runs.0.lock().expect("run");let run=locked.as_mut().expect("run");let original=run.nodes[0].clone();let mut pending=original.clone();pending.id="wait".into();pending.created_at="2026-08-24T11:59:00.000Z".into();let mut retry=original.clone();retry.id="retry".into();retry.state=DagNodeState::Running;retry.attempt=3;retry.started_at=Some(now.into());run.nodes=vec![pending,retry];}
     status.sync_now();let widgets=ui.widgets.lock().expect("widgets");let Some(WidgetContent::Lines(rows))=&widgets.last().expect("widget").0 else {panic!("rows")};assert!(rows[1].contains("▶ retry"));assert!(rows[1].contains("x3"));assert!(rows[2].contains("◌ wait"));assert!(rows[2].contains("waiting 1m 0s"));drop(widgets);status.dispose();assert_eq!(timers.count(),0);
 }
