@@ -656,7 +656,7 @@ pub fn host_runtime_factory_with_mcp_registry(config: CliRuntimeConfiguration, m
         let model_runtime = model_runtime.clone();
         let mcp_registry = mcp_registry.clone();
         Box::pin(async move {
-            let session_manager = open_profile_session_manager(&config, &profile);
+            let session_manager = open_profile_session_manager(&config, &profile)?;
             // The profile's per-session startup choices feed the same resolver as
             // `--provider/--model/--thinking`: an open that names none keeps the CLI's own
             // (senpi `runtimeParsed` inside `createCliRuntimeFactory`).
@@ -758,10 +758,10 @@ pub async fn resolve_cli_initial_model(
 }
 
 /// senpi's per-open session manager: an explicit `sessionPath` opens it with the profile's cwd.
-pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> SessionManager {
+pub fn open_profile_session_manager(config: &CliRuntimeConfiguration, profile: &maho_rpc::session_registry::RpcSessionLaunchProfile) -> Result<SessionManager, String> {
     let identity = profile.durable_session_id.clone().map(|id| maho_core::session_manager::NewSessionOptions { id: Some(id), parent_session: None });
     match profile.session_path.as_deref() {
         Some(path) => SessionManager::open(path, config.session_dir.as_deref(), Some(profile.runtime.cwd.as_str()), identity),
-        None => SessionManager::create(&profile.runtime.cwd, config.session_dir.as_deref(), identity),
+        None => Ok(SessionManager::create(&profile.runtime.cwd, config.session_dir.as_deref(), identity)),
     }
 }

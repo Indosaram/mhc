@@ -568,7 +568,9 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    fn build(cwd: &str, session_dir: &str, session_file: Option<String>, persist: bool, options: Option<NewSessionOptions>) -> Self {
+    /// senpi's private constructor up to the session-file step: callers then load a file
+    /// (`set_session_file`, which can refuse a corrupt one) or start a new session.
+    fn build(cwd: &str, session_dir: &str, persist: bool) -> Self {
         let ownership = Arc::new(Mutex::new(SessionOwnership { session_file: None, persisted: persist }));
         let writer_token = Arc::new(SessionWriterToken(Arc::clone(&ownership)));
         // Lazily resolved: the session id only exists once the header loads or new_session() runs.
@@ -605,12 +607,6 @@ impl SessionManager {
         }
         if persist {
             crate::session_write_reservation::register_session_writer(&manager.writer_owner());
-        }
-        match session_file {
-            Some(session_file) => manager.set_session_file(&session_file, options),
-            None => {
-                manager.new_session(options);
-            }
         }
         manager
     }
@@ -656,7 +652,9 @@ impl SessionManager {
 
     pub fn create(cwd: &str, session_dir: Option<&str>, options: Option<NewSessionOptions>) -> Self {
         let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(cwd));
-        Self::build(cwd, &dir, None, true, options)
+        let mut manager = Self::build(cwd, &dir, true);
+        manager.new_session(options);
+        manager
     }
 
     pub fn fork_from(
@@ -705,16 +703,38 @@ impl SessionManager {
             }
         }
         drop(file);
-        Ok(Self::open(&new_session_file, Some(&dir), Some(&resolved_target_cwd), None))
+        Self::open(&new_session_file, Some(&dir), Some(&resolved_target_cwd), None)
     }
 
-    pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Self {
+    /// senpi `SessionManager.open`: fails (rather than panicking) on a non-empty file that does not
+    /// parse as a session, with senpi's `Session file is not a valid ... session` message.
+    pub fn open(path: &str, session_dir: Option<&str>, cwd_override: Option<&str>, options: Option<NewSessionOptions>) -> Result<Self, String> {
         crate::session_write_reservation::reserve_session_write(&resolve_path(path, path, &PathInputOptions::default()));
+        let process_cwd = std::env::current_dir().map(|cwd| cwd.to_string_lossy().into_owned()).unwrap_or_default();
+        let resolved_path = resolve_path(path, &process_cwd, &PathInputOptions::default());
         let entries = load_entries_from_file(path);
+        // This process opens the session for append; normalize a final unterminated JSONL entry
+        // here, never from read-only load_entries_from_file callers.
+        if Path::new(&resolved_path).exists() {
+            let mut file = std::fs::OpenOptions::new().read(true).append(true).open(&resolved_path).map_err(|error| error.to_string())?;
+            if file.metadata().map_err(|error| error.to_string())?.len() > 0 {
+                let mut last = [0u8; 1];
+                file.seek(SeekFrom::End(-1)).map_err(|error| error.to_string())?;
+                file.read_exact(&mut last).map_err(|error| error.to_string())?;
+                if last[0] != b'\n' {
+                    file.write_all(b"\n").map_err(|error| error.to_string())?;
+                }
+            }
+        }
         let header_cwd = entries.first().and_then(|header| header.get("cwd")).and_then(Value::as_str).map(str::to_owned);
-        let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| ".".to_owned());
-        let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(&cwd));
-        let mut manager = Self::build(&cwd, &dir, Some(path.to_owned()), true, options);
+        let cwd = cwd_override.map(str::to_owned).or(header_cwd).unwrap_or_else(|| process_cwd.clone());
+        // If no session_dir is provided, derive it from the file's parent directory.
+        let dir = match session_dir {
+            Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
+            None => Path::new(&resolved_path).parent().map(|parent| parent.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
+        let mut manager = Self::build(&cwd, &dir, true);
+        manager.set_session_file(path, options)?;
         if !entries.is_empty() {
             manager.file_entries = entries;
             manager.session_id = manager
@@ -732,19 +752,30 @@ impl SessionManager {
             manager.build_index();
             manager.flushed = true;
         }
-        manager
+        Ok(manager)
     }
 
-    pub fn continue_recent(cwd: &str, session_dir: Option<&str>) -> Self {
-        let dir = session_dir.map(str::to_owned).unwrap_or_else(|| get_default_session_dir(cwd));
-        match find_most_recent_session(&dir, Some(cwd)) {
-            Some(path) => Self::open(&path, Some(&dir), None, None),
-            None => Self::create(cwd, Some(&dir), None),
+    /// senpi `continueRecent`: the cwd filter applies only to a custom session dir, and a resumed
+    /// session keeps the launch cwd (no `open` newline repair).
+    pub fn continue_recent(cwd: &str, session_dir: Option<&str>) -> Result<Self, String> {
+        let dir = match session_dir {
+            Some(session_dir) => normalize_path(session_dir, &PathInputOptions::default()),
+            None => get_default_session_dir(cwd),
+        };
+        let filter_cwd = session_dir.is_some() && dir != get_default_session_dir_path(cwd, &get_agent_dir());
+        match find_most_recent_session(&dir, filter_cwd.then_some(cwd)) {
+            Some(path) => {
+                let mut manager = Self::build(cwd, &dir, true);
+                manager.set_session_file(&path, None)?;
+                Ok(manager)
+            }
+            None => Ok(Self::create(cwd, Some(&dir), None)),
         }
     }
 
     pub fn in_memory(cwd: &str, options: Option<NewSessionOptions>, entries: Option<Vec<Value>>) -> Self {
-        let mut manager = Self::build(cwd, "", None, false, options);
+        let mut manager = Self::build(cwd, "", false);
+        manager.new_session(options);
         if let Some(entries) = entries
             && !entries.is_empty() {
                 let header = entries.iter().find(|entry| entry_type(entry) == "session").cloned();
@@ -762,19 +793,19 @@ impl SessionManager {
         manager
     }
 
-    pub fn reload_from_disk(&mut self) {
-        let Some(session_file) = self.session_file.clone() else { return };
+    pub fn reload_from_disk(&mut self) -> Result<(), String> {
+        let Some(session_file) = self.session_file.clone() else { return Ok(()) };
         if !Path::new(&session_file).exists() {
-            return;
+            return Ok(());
         }
         let file_entries = load_entries_from_file(&session_file);
         if file_entries.is_empty() {
-            return;
+            return Ok(());
         }
-        self.set_session_file(&session_file, None);
+        self.set_session_file(&session_file, None)
     }
 
-    pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) {
+    pub fn set_session_file(&mut self, session_file: &str, options: Option<NewSessionOptions>) -> Result<(), String> {
         if self.persist {
             crate::session_write_reservation::reserve_session_write(&resolve_path(session_file, session_file, &PathInputOptions::default()));
         }
@@ -782,18 +813,18 @@ impl SessionManager {
         self.sync_session_file_ownership();
         self.mirror_trimmed = false;
         self.resident_store.clear();
-        let Some(current) = self.session_file.clone() else { return };
+        let Some(current) = self.session_file.clone() else { return Ok(()) };
         if Path::new(&current).exists() {
             let entries = load_entries_from_file(&current);
             if entries.is_empty() {
                 let size = std::fs::metadata(&current).map(|metadata| metadata.len()).unwrap_or(0);
                 if size > 0 {
-                    panic!("Session file is not a valid {} session: {current}", app_name());
+                    return Err(format!("Session file is not a valid {} session: {current}", app_name()));
                 }
                 self.reset_to_new_session(options);
                 self.rewrite_file();
                 self.flushed = true;
-                return;
+                return Ok(());
             }
             self.file_entries = entries;
             self.session_id = self
@@ -822,6 +853,7 @@ impl SessionManager {
                 self.flushed = true;
             }
         }
+        Ok(())
     }
 
     pub fn new_session(&mut self, options: Option<NewSessionOptions>) -> Option<String> {
@@ -1447,7 +1479,7 @@ impl SessionManager {
             return Ok(());
         };
         if !self.by_id.contains_key(id) && self.session_file.is_some() {
-            self.reload_from_disk();
+            self.reload_from_disk()?;
         }
         if !self.by_id.contains_key(id) {
             return Err(format!("Entry {id} not found"));
@@ -1759,7 +1791,7 @@ mod tests {
         manager.append_message(json!({ "role": "assistant", "content": [{"type": "text", "text": "hello"}], "stopReason": "stop", "timestamp": 2 }));
         assert_eq!(manager.get_entry_count(), 2);
         let path = manager.session_file().expect("session file").to_owned();
-        assert_eq!(SessionManager::open(&path, Some(&dir), None, None).get_entry_count(), 2);
+        assert_eq!(SessionManager::open(&path, Some(&dir), None, None).expect("open").get_entry_count(), 2);
         let mut updates = Vec::new();
         let sessions = SessionManager::list(&dir, Some(&dir), Some(&mut |loaded, total| updates.push((loaded, total))));
         assert_eq!(sessions.len(), 1);
@@ -1834,7 +1866,7 @@ mod tests {
         let mut first = SessionManager::create(&dir, Some(&dir), options.clone());
         first.append_message(json!({"role":"assistant","content":[]}));
         let session_file = first.session_file().expect("session file").to_owned();
-        let mut second = SessionManager::open(&session_file, Some(&dir), Some(&dir), None);
+        let mut second = SessionManager::open(&session_file, Some(&dir), Some(&dir), None).expect("open");
         let blobs = Path::new(&dir).join("resident-blobs").join("shared-session");
         std::fs::create_dir_all(&blobs).expect("blob directory");
         std::fs::write(blobs.join("blob"), b"resident").expect("blob");
@@ -1904,7 +1936,7 @@ mod tests {
             r#"{"type":"message","id":"a","parentId":null,"timestamp":"2026-09-24T01:00:01.000Z","message":{"role":"hookMessage","content":"x"}}"#,
         ];
         std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("write");
-        let manager = SessionManager::open(&path.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None);
+        let manager = SessionManager::open(&path.to_string_lossy(), Some(&tmp.path().to_string_lossy()), None, None).expect("open");
         assert_eq!(manager.header().expect("header")["version"], 3);
         let rewritten = std::fs::read_to_string(&path).expect("read");
         assert!(rewritten.contains("\"version\":3"));
@@ -1998,6 +2030,22 @@ mod tests {
         assert_eq!(manager.session_name(), Some("named"));
         manager.append_session_info(Some("   "));
         assert_eq!(manager.session_name(), None);
+    }
+
+    #[test]
+    fn open_derives_the_session_dir_from_the_file_and_terminates_the_last_line() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let custom = tmp.path().join("custom");
+        std::fs::create_dir_all(&custom).expect("dir");
+        let path = custom.join("s.jsonl");
+        let header = serialize_entry(&json!({ "type": "session", "version": CURRENT_SESSION_VERSION, "id": "s", "timestamp": "2026-01-01T00:00:00.000Z", "cwd": "/tmp" }));
+        std::fs::write(&path, &header).expect("unterminated header");
+        let mut manager = SessionManager::open(&path.to_string_lossy(), None, None, None).expect("open");
+        assert_eq!(manager.session_dir(), custom.to_string_lossy());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), format!("{header}\n"));
+        manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        assert_eq!(load_entries_from_file(&path.to_string_lossy()).len(), 3);
     }
 
     #[test]
@@ -2202,13 +2250,14 @@ mod tests {
         let dir = tmp.path().to_string_lossy().into_owned();
         let empty = tmp.path().join("empty.jsonl");
         std::fs::write(&empty, "").expect("write");
-        let manager = SessionManager::open(&empty.to_string_lossy(), Some(&dir), None, Some(NewSessionOptions { id: Some("kept-id".to_owned()), ..Default::default() }));
+        let manager = SessionManager::open(&empty.to_string_lossy(), Some(&dir), None, Some(NewSessionOptions { id: Some("kept-id".to_owned()), ..Default::default() })).expect("open");
         assert_eq!(manager.session_id(), "kept-id");
         assert_eq!(load_entries_from_file(&empty.to_string_lossy()).len(), 1);
         let corrupt = tmp.path().join("corrupt.jsonl");
         std::fs::write(&corrupt, "not json\n").expect("write");
-        let result = std::panic::catch_unwind(|| SessionManager::open(&corrupt.to_string_lossy(), Some(&dir), None, None));
-        assert!(result.is_err());
+        let error = SessionManager::open(&corrupt.to_string_lossy(), Some(&dir), None, None).err().expect("corrupt session refused");
+        assert_eq!(error, format!("Session file is not a valid {} session: {}", app_name(), corrupt.to_string_lossy()));
+        assert_eq!(std::fs::read_to_string(&corrupt).expect("unchanged"), "not json\n");
     }
 
     #[test]
@@ -2248,7 +2297,7 @@ mod tests {
         manager.append_message(json!({ "role": "user", "content": "next", "timestamp": 2 }));
         assert_eq!(count(&session_file), after_flush + 1);
         let before_open = count(&session_file);
-        drop(SessionManager::open(&session_file, Some(&dir), None, None));
+        drop(SessionManager::open(&session_file, Some(&dir), None, None).expect("open"));
         assert!(count(&session_file) >= before_open + 2);
     }
 

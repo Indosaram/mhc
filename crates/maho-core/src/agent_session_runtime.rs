@@ -232,7 +232,7 @@ impl AgentSessionRuntime {
     /// Returns `Ok(false)` when `session_before_switch` cancelled (senpi `{ cancelled: true }`).
     pub async fn switch_session(&mut self, session_path: &str, options: SwitchSessionOptions) -> Result<bool, AgentSessionRuntimeError> {
         if self.session.runtime_before_switch(maho_ext_api::SessionReason::Resume, Some(session_path.to_owned())).await? { return Ok(false); }
-        let manager = crate::session_manager::SessionManager::open(session_path, None, options.cwd_override.as_deref(), None);
+        let manager = crate::session_manager::SessionManager::open(session_path, None, options.cwd_override.as_deref(), None)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume).await?;
@@ -287,7 +287,7 @@ impl AgentSessionRuntime {
             };
             if current.is_persisted() {
                 let file = previous.as_deref().ok_or("Persisted session is missing a session file")?;
-                let mut manager = crate::session_manager::SessionManager::open(file, Some(current.session_dir()), None, None);
+                let mut manager = crate::session_manager::SessionManager::open(file, Some(current.session_dir()), None, None)?;
                 manager.create_branched_session(leaf)?.ok_or("Failed to create forked session")?;
                 let cwd = manager.cwd().to_owned();
                 Ok((manager, cwd))
@@ -341,7 +341,7 @@ impl AgentSessionRuntime {
             let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(&destination)?;
             std::io::copy(&mut input, &mut output)?;
         }
-        let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None);
+        let manager = crate::session_manager::SessionManager::open(&destination, Some(&directory), cwd_override, None)?;
         assert_session_cwd_exists(&manager, &self.services.cwd)?;
         let cwd = manager.cwd().to_owned();
         self.apply_replacement(manager, cwd, maho_ext_api::SessionReason::Resume).await?;
@@ -495,7 +495,7 @@ mod tests {
         let mut manager = crate::session_manager::SessionManager::create(&cwd, dir.path().join("sessions").to_str(), None);
         let user = manager.append_message(serde_json::json!({"role":"user","content":"durable","timestamp":0}));
         let assistant = manager.append_message(serde_json::to_value(maho_ai::providers::faux::faux_assistant_message("answer", Default::default())).expect("assistant"));
-        let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None);
+        let mut durable = crate::session_manager::SessionManager::open(manager.session_file().expect("file"), None, None, None).expect("open");
         durable.append_label(user["id"].as_str().expect("user"), Some("durable label")).expect("label");
         let created = crate::sdk::create_agent_session(crate::sdk::CreateAgentSessionOptions {
             cwd: Some(cwd.clone()), agent_dir: Some(services.agent_dir.clone()), model: provider.get_model(Some("faux-1")),
