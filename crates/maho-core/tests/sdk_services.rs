@@ -38,7 +38,7 @@ async fn services_mount_preserves_settings_and_consumes_loaded_factory_once() {
     let initial_calls = calls.load(Ordering::SeqCst);
     let shared_auth = created.services.auth_storage.clone();
     let mut host = maho_core::agent_session_runtime::AgentSessionRuntime::new(created.session, created.services, Vec::new(), None, None);
-    let replacement = tokio::time::timeout(std::time::Duration::from_secs(5), host.new_session(None, None)).await;
+    let replacement = tokio::time::timeout(std::time::Duration::from_secs(5), host.new_session(Default::default())).await;
     let same_auth = Arc::ptr_eq(&shared_auth, &host.session().model_runtime().credentials);
     host.session().dispose().await;
     assert_eq!(initial_calls, 1);

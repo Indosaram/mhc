@@ -4570,7 +4570,7 @@ impl AgentSession {
         Ok(true)
     }
 
-    async fn run_replacement_callbacks(&self, setup: Option<maho_ext_api::SessionSetup>, callback: Option<maho_ext_api::WithSession>) -> Result<(), maho_ext_api::ExtensionFailure> {
+    pub(crate) async fn run_replacement_callbacks(&self, setup: Option<maho_ext_api::SessionSetup>, callback: Option<maho_ext_api::WithSession>) -> Result<(), maho_ext_api::ExtensionFailure> {
         if setup.is_none() && callback.is_none() { return Ok(()); }
         let mut runner = self.extension_runner.lock().await.clone().ok_or_else(|| maho_ext_api::ExtensionFailure::new("Extension runner is not bound"))?;
         let actions = Arc::new(SessionExtensionActions(Arc::downgrade(&self.inner)));
