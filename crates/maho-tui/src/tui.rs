@@ -295,6 +295,159 @@ pub trait Component {
     fn render_virtual_row(&mut self, _width: usize, _index: usize) -> String {
         String::new()
     }
+
+    /// senpi `component.constructor.name`: the implementing type's name, used by render
+    /// containment to label a component whose render panicked.
+    fn component_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+}
+
+/// senpi `DIAGNOSTIC_LOG_MODE`: diagnostic logs hold rendered conversation text, so they are
+/// private to the owner.
+#[cfg(unix)]
+const DIAGNOSTIC_LOG_MODE: u32 = 0o600;
+
+/// senpi `renderErrorLoggedClasses`: component names whose render error was already logged.
+static RENDER_ERROR_LOGGED_CLASSES: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
+/// senpi `renderErrorLogDirectory`: render containment logs from module scope because
+/// `Container` has no TUI instance, so the host-resolved log directory is published here.
+static RENDER_ERROR_LOG_DIRECTORY: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`.
+fn default_diagnostic_log_directory() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".senpi").join("agent"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"))
+}
+
+/// senpi `new Date().toISOString()`.
+fn diagnostic_timestamp() -> String {
+    format!("{:.3}", jiff::Timestamp::now())
+}
+
+/// senpi `componentRenderErrorName`: the type name without its module path or generics.
+fn component_render_error_name(component: &Rc<RefCell<dyn Component>>) -> String {
+    let Ok(component) = component.try_borrow() else {
+        return "AnonymousComponent".to_owned();
+    };
+    let full = component.component_name();
+    let base = full.split('<').next().unwrap_or(full);
+    match base.rsplit("::").next() {
+        Some(name) if !name.is_empty() => name.to_owned(),
+        _ => "AnonymousComponent".to_owned(),
+    }
+}
+
+/// senpi `logRenderErrorOnce`: append one `render error` line per component name to
+/// `<logDir>/senpi-debug.log`.
+fn log_render_error_once(component: &Rc<RefCell<dyn Component>>, error: &(dyn std::any::Any + Send)) {
+    let component_name = component_render_error_name(component);
+    {
+        let mut logged = RENDER_ERROR_LOGGED_CLASSES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !logged.get_or_insert_with(HashSet::new).insert(component_name.clone()) {
+            return;
+        }
+    }
+    let error_text = error
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| error.downcast_ref::<String>().cloned())
+        .map_or_else(|| "panic".to_owned(), |message| format!("panic: {message}"));
+    let log_directory = RENDER_ERROR_LOG_DIRECTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(default_diagnostic_log_directory);
+    let log_path = log_directory.join("senpi-debug.log");
+    let msg = format!("[{}] render error: {component_name}: {error_text}\n", diagnostic_timestamp());
+    append_render_error_log_best_effort(&log_path, &msg);
+}
+
+/// `fs.appendFileSync`/`fs.writeFileSync` with `{ mode: DIAGNOSTIC_LOG_MODE }`.
+fn open_diagnostic_log(log_path: &std::path::Path, append: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(DIAGNOSTIC_LOG_MODE);
+    }
+    options.open(log_path)
+}
+
+/// senpi `appendRenderErrorLogBestEffort`.
+fn append_render_error_log_best_effort(log_path: &std::path::Path, msg: &str) {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    if let Ok(mut file) = open_diagnostic_log(log_path, true)
+        && file.write_all(msg.as_bytes()).is_ok()
+    {
+        chmod_diagnostic_log_best_effort(log_path);
+    }
+}
+
+/// senpi `writeRenderDiagnosticBestEffort`.
+fn write_render_diagnostic_best_effort(log_path: &std::path::Path, data: &str) -> bool {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let written = open_diagnostic_log(log_path, false).and_then(|mut file| file.write_all(data.as_bytes()));
+    if written.is_err() {
+        return false;
+    }
+    chmod_diagnostic_log_best_effort(log_path);
+    true
+}
+
+/// senpi `formatOverWideRenderDiagnostic`.
+fn format_over_wide_render_diagnostic(lines: &[String], terminal_width: usize, line_index: usize, line_width: usize) -> String {
+    let mut parts = vec![
+        format!("Crash at {}", diagnostic_timestamp()),
+        format!("Terminal width: {terminal_width}"),
+        format!("Line {line_index} visible width: {line_width}"),
+        String::new(),
+        "=== All rendered lines ===".to_owned(),
+    ];
+    parts.extend(lines.iter().enumerate().map(|(index, line)| format!("[{index}] (w={}) {line}", visible_width(line))));
+    parts.push(String::new());
+    parts.join("\n")
+}
+
+/// senpi `chmodDiagnosticLogBestEffort`: tighten a pre-existing file the open mode did not touch.
+fn chmod_diagnostic_log_best_effort(log_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(log_path, std::fs::Permissions::from_mode(DIAGNOSTIC_LOG_MODE));
+    }
+    #[cfg(not(unix))]
+    let _ = log_path;
+}
+
+/// The renderer locals senpi's `PI_TUI_DEBUG` dump reports for one differential frame.
+struct TuiDebugFrame {
+    first_changed: usize,
+    viewport_top: usize,
+    height: usize,
+    line_diff: i64,
+    hardware_cursor_row: usize,
+    render_end: usize,
+    final_cursor_row: usize,
+    cursor_pos: Option<(usize, usize)>,
 }
 
 /// Interface for components that can receive focus and display a hardware cursor.
@@ -414,7 +567,16 @@ impl Component for Container {
         let mut lines = Vec::new();
         let mut mouse_children = Vec::with_capacity(self.children.len());
         for child in &self.children {
-            let child_lines = child.borrow_mut().render(width);
+            let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| child.borrow_mut().render(width)));
+            let child_lines = match rendered {
+                Ok(child_lines) => child_lines,
+                Err(error) => {
+                    log_render_error_once(child, error.as_ref());
+                    let component_name = component_render_error_name(child);
+                    // Focus ownership stays unchanged; render containment must not steal or clear focus implicitly.
+                    vec![format!("[render error: {component_name}]")]
+                }
+            };
             mouse_children.push((Rc::clone(child), child_lines.len()));
             lines.extend(child_lines);
         }
@@ -1134,6 +1296,9 @@ pub struct TuiBase {
     /// senpi's `#muxDetector` (`TuiConstructorOptions.muxDetector`, default
     /// [`crate::mux::is_multiplexer_session`]).
     mux_detector: Box<dyn Fn() -> bool>,
+    /// senpi `logDirectory`: directory for debug/crash logs (`PI_DEBUG_REDRAW`, render errors),
+    /// defaulting to `~/.senpi/agent`.
+    log_directory: std::path::PathBuf,
 }
 
 impl TuiBase {
@@ -1153,7 +1318,30 @@ impl TuiBase {
             pending_osc11_background_queries: std::collections::VecDeque::new(),
             pending_terminal_color_scheme_queries: Vec::new(),
             mux_detector: Box::new(crate::mux::is_multiplexer_session),
+            log_directory: default_diagnostic_log_directory(),
         }
+    }
+
+    /// senpi's `logDirectory` constructor argument: the host-resolved log directory, also
+    /// published for module-scope render containment (`renderErrorLogDirectory`).
+    pub fn set_log_directory(&mut self, log_directory: std::path::PathBuf) {
+        *RENDER_ERROR_LOG_DIRECTORY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(log_directory.clone());
+        self.log_directory = log_directory;
+    }
+
+    /// senpi `doRender`'s `logRedraw` (`PI_DEBUG_REDRAW=1`): append each full-render reason to
+    /// `<logDirectory>/pi-debug.log`.
+    fn log_redraw(&self, reason: &str, new_lines_len: usize, height: usize) {
+        if crate::process_env::var("PI_DEBUG_REDRAW").as_deref() != Some("1") {
+            return;
+        }
+        let previous_lines_len = self.state.borrow().previous_lines.len();
+        let log_path = self.log_directory.join("pi-debug.log");
+        let msg = format!(
+            "[{}] fullRender: {reason} (prev={previous_lines_len}, new={new_lines_len}, height={height})\n",
+            diagnostic_timestamp(),
+        );
+        append_render_error_log_best_effort(&log_path, &msg);
     }
 
     /// senpi's `muxDetector` constructor option: overrides multiplexer detection for the
@@ -2675,11 +2863,13 @@ impl TuiBase {
 
         // First render: emit everything without clearing.
         if previous_lines_len == 0 && !width_changed && !height_changed {
+            self.log_redraw("first render", new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, false, false);
             return;
         }
 
         if width_changed {
+            self.log_redraw(&format!("terminal width changed ({previous_width} -> {width})"), new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
@@ -2688,6 +2878,7 @@ impl TuiBase {
         // but Termux changes height when the software keyboard shows or hides; there a full
         // redraw would replay the entire history on every toggle, so fall through to the diff.
         if height_changed && !is_termux_session() {
+            self.log_redraw(&format!("terminal height changed ({previous_height} -> {height})"), new_lines.len(), height);
             if preserve_mux_scrollback {
                 if !self.render_mux_viewport_repaint(terminal, &new_lines, &raw_lines, cursor_pos, width, height, None) {
                     self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
@@ -2705,6 +2896,8 @@ impl TuiBase {
                 && state.overlay_stack.is_empty()
         };
         if clear_on_shrink_needed {
+            let max_lines_rendered = self.state.borrow().max_lines_rendered;
+            self.log_redraw(&format!("clearOnShrink (maxLinesRendered={max_lines_rendered})"), new_lines.len(), height);
             self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
             return;
         }
@@ -3231,11 +3424,13 @@ impl TuiBase {
         if previous_lines_len > new_lines.len() {
             let target_row = new_lines.len().saturating_sub(1);
             if target_row < prev_viewport_top {
+                self.log_redraw(&format!("deleted lines moved viewport up ({target_row} < {prev_viewport_top})"), new_lines.len(), height);
                 self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
                 return;
             }
             let extra_lines = previous_lines_len - new_lines.len();
             if extra_lines > height {
+                self.log_redraw(&format!("extraLines > height ({extra_lines} > {height})"), new_lines.len(), height);
                 self.full_render(terminal, new_lines, raw_lines, cursor_pos, width, height, true, !preserve_mux_scrollback);
                 return;
             }
@@ -3277,6 +3472,47 @@ impl TuiBase {
         state.previous_width = width as i64;
         state.previous_height = height as i64;
         state.previous_viewport_top = prev_viewport_top;
+    }
+
+    /// The `PI_TUI_DEBUG` frame dump of senpi `doRender`.
+    fn write_tui_debug_dump(&self, frame: TuiDebugFrame, new_lines: &[String], buffer: &str) {
+        use std::hash::{BuildHasher, Hasher};
+        let debug_dir = std::path::Path::new("/tmp/tui");
+        if std::fs::create_dir_all(debug_dir).is_err() {
+            return;
+        }
+        let suffix = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let debug_path = debug_dir.join(format!("render-{}-{suffix:x}.log", jiff::Timestamp::now().as_millisecond()));
+        let state = self.state.borrow();
+        let cursor_pos = frame.cursor_pos.map_or_else(
+            || "null".to_owned(),
+            |(row, col)| serde_json::json!({ "row": row, "col": col }).to_string(),
+        );
+        let pretty = |lines: &[String]| serde_json::to_string_pretty(lines).unwrap_or_default();
+        let debug_data = [
+            format!("firstChanged: {}", frame.first_changed),
+            format!("viewportTop: {}", frame.viewport_top),
+            format!("cursorRow: {}", state.cursor_row),
+            format!("height: {}", frame.height),
+            format!("lineDiff: {}", frame.line_diff),
+            format!("hardwareCursorRow: {}", frame.hardware_cursor_row),
+            format!("renderEnd: {}", frame.render_end),
+            format!("finalCursorRow: {}", frame.final_cursor_row),
+            format!("cursorPos: {cursor_pos}"),
+            format!("newLines.length: {}", new_lines.len()),
+            format!("previousLines.length: {}", state.previous_lines.len()),
+            String::new(),
+            "=== newLines ===".to_owned(),
+            pretty(new_lines),
+            String::new(),
+            "=== previousLines ===".to_owned(),
+            pretty(&state.previous_lines),
+            String::new(),
+            "=== buffer ===".to_owned(),
+            serde_json::Value::String(buffer.to_owned()).to_string(),
+        ]
+        .join("\n");
+        write_render_diagnostic_best_effort(&debug_path, &debug_data);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3379,6 +3615,15 @@ impl TuiBase {
         }
 
         buffer = self.finish_frame(buffer, cursor_pos, new_lines.len(), final_cursor_row);
+
+        // senpi `PI_TUI_DEBUG=1`: dump each differential frame to `/tmp/tui/render-*.log`.
+        if crate::process_env::var("PI_TUI_DEBUG").as_deref() == Some("1") {
+            self.write_tui_debug_dump(TuiDebugFrame {
+                first_changed, viewport_top: *viewport_top, height, line_diff,
+                hardware_cursor_row: *hardware_cursor_row, render_end, final_cursor_row, cursor_pos,
+            }, new_lines, &buffer);
+        }
+
         write_bounded(terminal, &buffer);
 
         let mut state = self.state.borrow_mut();
@@ -3533,19 +3778,9 @@ impl TuiBase {
         if !strict && already_written {
             return;
         }
-        let mut body = format!(
-            "Terminal width: {terminal_width}\nLine {line_index} visible width: {line_width}\n\n=== All rendered lines ===\n",
-        );
-        for (index, line) in lines.iter().enumerate() {
-            body.push_str(&format!("[{index}] (w={}) {line}\n", visible_width(line)));
-        }
-        let log_dir = dirs::home_dir()
-            .map(|home| home.join(".senpi").join("agent"))
-            .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"));
-        let log_path = log_dir.join("senpi-crash.log");
-        if std::fs::create_dir_all(&log_dir).is_ok() {
-            let _ = std::fs::write(&log_path, body);
-        }
+        let body = format_over_wide_render_diagnostic(lines, terminal_width, line_index, line_width);
+        let crash_log_path = default_diagnostic_log_directory().join("senpi-crash.log");
+        write_render_diagnostic_best_effort(&crash_log_path, &body);
         self.state.borrow_mut().over_wide_crash_dump_written = true;
     }
 

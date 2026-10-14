@@ -126,12 +126,11 @@ pub fn show_startup_selector(
 ) -> Result<Option<String>, String> {
     use std::{cell::RefCell, rc::Rc, sync::Arc};
     use maho_interactive::components::extension_selector::{ExtensionSelectorComponent, ExtensionSelectorOptions};
-    use maho_tui::terminal::ProcessTerminal;
     let keybindings = Arc::new(maho_core::keybindings::KeybindingsManager::create(Some(&maho_core::config::get_agent_dir())).inner().clone());
     let outcome: Rc<RefCell<Option<Option<String>>>> = Rc::default();
     let selected = outcome.clone();
     let cancelled = outcome.clone();
-    run_startup_dialog(theme_setting, show_hardware_cursor, clear_on_shrink, ProcessTerminal::default(), move |theme, rows| {
+    run_startup_dialog(theme_setting, show_hardware_cursor, clear_on_shrink, maho_interactive::tui_renderer::create_process_terminal(), move |theme, rows| {
         Rc::new(RefCell::new(ExtensionSelectorComponent::new(
             theme, keybindings, title, options.to_vec(),
             Box::new(move |option| { *selected.borrow_mut() = Some(Some(option.to_owned())); }),
@@ -155,13 +154,12 @@ pub fn show_startup_input(
 ) -> Result<Option<String>, String> {
     use std::{cell::RefCell, rc::Rc};
     use maho_interactive::components::extension_input::{ExtensionInputComponent, ExtensionInputOptions};
-    use maho_tui::terminal::ProcessTerminal;
     let outcome: Rc<RefCell<Option<Option<String>>>> = Rc::default();
     let submitted = outcome.clone();
     let cancelled = outcome.clone();
     let mounted: Rc<RefCell<Option<Rc<RefCell<ExtensionInputComponent>>>>> = Rc::default();
     let built = mounted.clone();
-    let result = run_startup_dialog(theme_setting, show_hardware_cursor, clear_on_shrink, ProcessTerminal::default(), move |theme, _rows| {
+    let result = run_startup_dialog(theme_setting, show_hardware_cursor, clear_on_shrink, maho_interactive::tui_renderer::create_process_terminal(), move |theme, _rows| {
         let input = Rc::new(RefCell::new(ExtensionInputComponent::new(
             theme, title,
             Box::new(move |value| { *submitted.borrow_mut() = Some(Some(value.to_owned())); }),
@@ -242,8 +240,11 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
+    // senpi `startStartupTui` -> `ui.start()`.
+    screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         let theme = detect_startup_theme(theme_setting, &mut screen, &mut terminal, &input)?.unwrap_or(theme);
@@ -252,7 +253,9 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
         screen.base_mut().add_child(component.clone());
         screen.base_mut().set_focus(Some(component));
         while outcome.borrow().is_none() {
-            for chunk in std::mem::take(&mut *input.borrow_mut()) { dialog.borrow_mut().handle_input(&chunk); }
+            // senpi `TuiBase.handleTerminalInput`: protocol replies are consumed and key releases
+            // dropped unless the focused dialog wants them.
+            for chunk in std::mem::take(&mut *input.borrow_mut()) { screen.base_mut().handle_terminal_input(&chunk, maho_tui::keys::is_key_release(&chunk)); }
             let now = u64::try_from(clock.elapsed().as_millis()).map_err(|error| error.to_string())?;
             screen.base_mut().request_render(false, now);
             screen.do_render(&mut terminal);
@@ -260,9 +263,17 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
         }
         Ok(())
     })();
+    // senpi `clearStartupTui`: `ui.clear()` then render once so the dialog is erased.
+    screen.base_mut().clear();
+    screen.base_mut().request_render(false, u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+    screen.do_render(&mut terminal);
+    // senpi `ui.stop()`.
+    screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, false);
+    screen.base_mut().finish_stop_output(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     result.and(stopped)
 }
 
