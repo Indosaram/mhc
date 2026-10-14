@@ -50,6 +50,11 @@ fn in_tmux() -> bool {
     crate::process_env::var("TMUX").is_some_and(|value| !value.is_empty())
 }
 
+/// senpi's `isTermuxSession`: `Boolean(process.env.TERMUX_VERSION)`.
+fn is_termux_session() -> bool {
+    crate::process_env::var("TERMUX_VERSION").is_some_and(|value| !value.is_empty())
+}
+
 /// senpi's `CSI 6 ; height ; width t` cell-size reply (`/^\x1b\[6;(\d+);(\d+)t$/`), as
 /// `(height_px, width_px)`.
 fn parse_cell_size_response(data: &str) -> Option<(u32, u32)> {
@@ -2679,7 +2684,10 @@ impl TuiBase {
             return;
         }
 
-        if height_changed {
+        // Height changes normally need a full re-render to keep the visible viewport aligned,
+        // but Termux changes height when the software keyboard shows or hides; there a full
+        // redraw would replay the entire history on every toggle, so fall through to the diff.
+        if height_changed && !is_termux_session() {
             if preserve_mux_scrollback {
                 if !self.render_mux_viewport_repaint(terminal, &new_lines, &raw_lines, cursor_pos, width, height, None) {
                     self.full_render(terminal, &new_lines, &raw_lines, cursor_pos, width, height, true, false);
