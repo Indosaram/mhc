@@ -4347,7 +4347,7 @@ impl InteractiveMode {
                     why: format!("Retry switched models ({reason}); the turn continues on {to}."), extra: Vec::new(), expanded_line: None,
                 });
                 self.fallback_applied_before_retry_start = true;
-                self.set_extension_status(FALLBACK_STATUS_KEY, Some(&format!("fallback: {to}")));
+                self.set_extension_status(FALLBACK_STATUS_KEY, Some(format!("fallback: {to}").as_str()));
                 // Provider/model failover ends any external-owner delegation episode.
                 self.external_owner_compaction_notice_shown = false;
                 self.compaction_delegated = false;
@@ -4364,7 +4364,7 @@ impl InteractiveMode {
                 self.set_extension_status(FALLBACK_STATUS_KEY, None);
             }
             AgentSessionEvent::RetryFallbackExhausted { chain_key, last_error } => {
-                if crate::provider_error_presentation::is_network_provider_error(Some(last_error), false) {
+                if crate::provider_error_presentation::is_network_provider_error(Some(last_error.as_str()), false) {
                     self.finish_provider_error(last_error);
                 } else {
                     self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
@@ -4488,7 +4488,7 @@ impl InteractiveMode {
             self.compaction_delegated = false;
         } else if let Some(error_message) = error_message {
             let error_message = maho_tui::terminal_text::sanitize_terminal_label(error_message);
-            if crate::provider_error_presentation::is_network_provider_error(Some(&error_message), false) { self.finish_provider_error(&error_message); }
+            if crate::provider_error_presentation::is_network_provider_error(Some(error_message.as_str()), false) { self.finish_provider_error(&error_message); }
             else if manual { self.show_error(&error_message); }
             else { add_error_line(self, &error_message, false); }
         } else if accepted == Some(false) {
