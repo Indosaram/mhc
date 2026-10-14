@@ -20,6 +20,7 @@ impl MemoryFooterLive{
     pub fn stop(&mut self){self.active_identity=None;self.frame_index=0;self.last_fingerprint=None;}
     pub fn dispose(&mut self){self.disposed=true;self.stop();}
     pub fn is_animating(&self)->bool{!self.disposed&&self.active_identity.is_some()}
+    pub fn is_disposed(&self)->bool{self.disposed}
 }
 #[cfg(test)]mod tests{
     use super::*;
