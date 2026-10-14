@@ -1320,6 +1320,21 @@ impl SessionManager {
             .collect()
     }
 
+    /// senpi `getMessageEntryPosition`: the append position of the persisted entry carrying this exact
+    /// message. Native messages are values, so the runtime identity map becomes the latest entry whose
+    /// materialized message equals `message`.
+    pub fn message_entry_position(&self, message: &Value) -> Option<(String, usize)> {
+        self.file_entries.iter().enumerate().rev().find_map(|(order, entry)| {
+            if entry_type(entry) != "message" { return None; }
+            // Cheap identity prefilter before materializing resident strings.
+            if entry.get("message").and_then(|stored| stored.get("timestamp")) != message.get("timestamp") { return None; }
+            let materialized = self.materialize_entry(entry);
+            (materialized.get("message") == Some(message))
+                .then(|| materialized.get("id").and_then(Value::as_str).map(|id| (id.to_owned(), order)))
+                .flatten()
+        })
+    }
+
     /// senpi `getEntryOrder`: the runtime/file append position of an entry.
     pub fn entry_order(&self, entry_id: &str) -> Option<usize> {
         self.by_id.get(entry_id).copied()
