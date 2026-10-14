@@ -38,6 +38,11 @@ async fn shutdown_deadline(task:impl Future<Output=Result<(),String>>) -> Result
     tokio::time::timeout(std::time::Duration::from_secs(5),task).await
         .map_err(|_|"app-server shutdown exceeded 5000ms".to_owned())?
 }
+/// senpi `interruptActiveTurns`.
+async fn interrupt_active_turns(runtime: &AppServerRuntime) -> Result<(),String> {
+    runtime.turns.interrupt_active_turns(&runtime.threads).await;
+    Ok(())
+}
 async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAuth>, shutdown: impl Future<Output = ()>) -> Result<(), String> {
     let agent_dir = runtime.threads.agent_dir.clone();
     let app_name = maho_core::config::app_name();
@@ -45,9 +50,16 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
         eprint!("{}", listening_banner(&app_name, &BoundListen::Stdio));
         // senpi `startStdioTransport`: take over stdout before the transport owns the NDJSON stream.
         maho_core::output_guard::take_over_stdout();
+        // senpi `interruptActiveTurns` runs on the shutdown signal while the stdio connection is
+        // still registered, so its `turn/completed` reaches the client before the transport closes.
+        let interrupted = std::sync::Mutex::new(Ok(()));
+        let shutdown = async {
+            shutdown.await;
+            let result = shutdown_deadline(interrupt_active_turns(runtime)).await;
+            *interrupted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = result;
+        };
         super::stdio::run_shared_stdio_until(runtime.core.clone(),tokio::io::stdin(),super::stdio::RawStdoutWriter,shutdown,None).await.map_err(|error|error.message)?;
-        shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
-        return Ok(());
+        return interrupted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     // Pinned unix-socket.ts: the owner-only chmod applies only to the default socket directory
     // when no bearer auth is configured (the directory is then the only access guard).
@@ -66,7 +78,7 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
             let listener = start_unix_socket_listener(path,enforce_owner_only_directory,auth,runtime.core.clone(),None).await.map_err(|error|error.message)?;
             eprint!("{}", listening_banner(&app_name, &BoundListen::Unix { socket_path: listener.socket_path.clone(), token_file }));
             shutdown.await;
-            shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
+            shutdown_deadline(interrupt_active_turns(runtime)).await?;
             shutdown_deadline(async {listener.close().await.map_err(|error|error.message)}).await?;
             }
             #[cfg(not(unix))]
@@ -79,7 +91,7 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
             let listener = start_websocket_listener(&host,port,auth,runtime.core.clone(),None).await.map_err(|error|error.message)?;
             eprint!("{}", listening_banner(&app_name, &BoundListen::Ws { host, port: listener.address.port(), token_file }));
             shutdown.await;
-            shutdown_deadline(async {runtime.threads.abort_active_turns().await;Ok(())}).await?;
+            shutdown_deadline(interrupt_active_turns(runtime)).await?;
             shutdown_deadline(async {listener.close().await.map_err(|error|error.message)}).await?;
         },
         Listen::Stdio {..} => unreachable!("stdio was handled before auth resolution"),

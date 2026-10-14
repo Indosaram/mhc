@@ -15,7 +15,7 @@ pub struct CoreConnection {
     pub send: SendMessage,
     pub close: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// senpi `NotificationRouter` per-connection `pending` / `closed` slow-client state.
-    pending: AtomicUsize,
+    pending: Arc<AtomicUsize>,
     slow_closed: AtomicBool,
 }
 /// senpi `DEFAULT_OUTBOUND_QUEUE_LIMIT`.
@@ -30,9 +30,20 @@ impl CoreConnection {
             return Ok(());
         }
         self.pending.fetch_add(1, Ordering::SeqCst);
-        let result = (self.send)(message).await;
-        self.pending.fetch_sub(1, Ordering::SeqCst);
-        result
+        let result = (self.send)(message);
+        if self.transport_kind == TransportKind::Stdio {
+            let result = result.await;
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+            return result;
+        }
+        // senpi `NotificationRouter.enqueue` never awaits a non-stdio send: the ws/unix send queues
+        // its frame when called, and only the pending counter waits for delivery.
+        let pending = self.pending.clone();
+        tokio::spawn(async move {
+            if let Err(error) = result.await { eprintln!("app-server notification delivery: {}", error.message); }
+            pending.fetch_sub(1, Ordering::SeqCst);
+        });
+        Ok(())
     }
 }
 pub struct ServerCore {
@@ -56,7 +67,7 @@ impl ServerCore {
         self.add_connection_input(ConnectionInput {id, transport_kind:TransportKind::Stdio, send, close:None})
     }
     pub fn add_connection_input(&mut self, input: ConnectionInput) -> Arc<CoreConnection> {
-        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), transport_kind: input.transport_kind, send: input.send, close: input.close, pending: AtomicUsize::new(0), slow_closed: AtomicBool::new(false) });
+        let connection = Arc::new(CoreConnection { initialized: Mutex::new(InitializedConnection::default()), transport_kind: input.transport_kind, send: input.send, close: input.close, pending: Arc::new(AtomicUsize::new(0)), slow_closed: AtomicBool::new(false) });
         self.connections.insert(input.id, connection.clone());
         connection
     }

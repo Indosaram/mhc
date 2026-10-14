@@ -1,4 +1,4 @@
-use maho_server::app_server::{server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::serve_websocket};
+use maho_server::app_server::{connection::TransportKind, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::serve_websocket};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ fn core() -> Arc<RwLock<ServerCore>> { Arc::new(RwLock::new(ServerCore::new("/tm
 async fn websocket_real_handshake_and_text_initialize_remove_connection_on_close() {
     let core = core();
     let (client, server) = tokio::io::duplex(8192);
-    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), 1024));
+    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), TransportKind::WebSocket, 1024));
     let scenario = async {
         let (mut websocket, _) = client_async("ws://localhost/", client).await.unwrap();
         websocket.send(Message::Text(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}).to_string().into())).await.unwrap();
@@ -39,7 +39,7 @@ async fn websocket_dispatch_does_not_hold_the_core_lock_across_a_slow_handler() 
         })
     })});
     let (client, server) = tokio::io::duplex(8192);
-    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), 1024));
+    let running = tokio::spawn(serve_websocket(server, core.clone(), Arc::new(ResolvedWebSocketListenerAuth::Off), "ws-1".into(), TransportKind::WebSocket, 1024));
     let scenario = async {
         let (mut websocket, _) = client_async("ws://localhost/", client).await.unwrap();
         websocket.send(Message::Text(json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"c","version":"1"}}}).to_string().into())).await.unwrap();
@@ -59,7 +59,7 @@ async fn websocket_dispatch_does_not_hold_the_core_lock_across_a_slow_handler() 
 #[tokio::test]
 async fn websocket_rejects_origin_before_authentication() {
     let (client, server) = tokio::io::duplex(8192);
-    let running = tokio::spawn(serve_websocket(server, core(), Arc::new(ResolvedWebSocketListenerAuth::Bearer { token:"fixture".into(), path:None }), "ws-1".into(), 1024));
+    let running = tokio::spawn(serve_websocket(server, core(), Arc::new(ResolvedWebSocketListenerAuth::Bearer { token:"fixture".into(), path:None }), "ws-1".into(), TransportKind::WebSocket, 1024));
     let mut request = "ws://localhost/".into_client_request().unwrap();
     request.headers_mut().insert("origin", "https://example.test".parse().unwrap());
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), client_async(request, client)).await.unwrap();

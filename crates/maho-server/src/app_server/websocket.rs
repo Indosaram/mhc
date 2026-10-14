@@ -1,4 +1,4 @@
-use super::{errors::JsonRpcError, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::{serve_websocket, DEFAULT_OUTBOUND_QUEUE_BYTES}};
+use super::{connection::TransportKind, errors::JsonRpcError, server_core::ServerCore, websocket_auth::ResolvedWebSocketListenerAuth, websocket_connection_handler::{serve_websocket, DEFAULT_OUTBOUND_QUEUE_BYTES}};
 use std::{net::IpAddr, sync::Arc};
 use tokio::{io::{AsyncReadExt,AsyncWriteExt}, net::{TcpListener,TcpStream}, sync::{RwLock, watch}, task::JoinHandle};
 
@@ -58,7 +58,7 @@ async fn serve_tcp_connection(mut stream: TcpStream, core: Arc<RwLock<ServerCore
                 let upgrade = request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("upgrade"));
                 if upgrade {
                     let (reader,writer) = tokio::io::split(stream);
-                    return serve_websocket(tokio::io::join(std::io::Cursor::new(buffered).chain(reader),writer),core,auth,id,queue_limit).await;
+                    return serve_websocket(tokio::io::join(std::io::Cursor::new(buffered).chain(reader),writer),core,auth,id,TransportKind::WebSocket,queue_limit).await;
                 }
                 let (status,body) = if request.headers.iter().any(|header|header.name.eq_ignore_ascii_case("origin")) {("403 Forbidden","forbidden\n")}
                     else if matches!(request.path,Some("/readyz"|"/healthz")) {("200 OK","ok\n")}

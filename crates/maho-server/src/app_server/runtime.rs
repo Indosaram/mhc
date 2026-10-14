@@ -12,6 +12,8 @@ pub struct AppServerRuntime {
     pub approvals: Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>,
     pub user_input: Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>,
     pub lifecycle: Arc<super::handlers::ThreadLifecycleController>,
+    /// senpi `AppServerRuntime.turns`.
+    pub turns: super::turns::TurnEngine,
     provider_account_unsubscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
     /// senpi `createAppServerRuntime(requestShutdown)`: extension `ctx.shutdown()` lands here.
     pub shutdown_request: Arc<AppServerShutdownRequest>,
@@ -184,7 +186,7 @@ impl AppServerRuntime {
         let send: super::approval_types::SendToThreadSubscribers = Arc::new(move |id,message| {
             let sends = send_recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).map(|clients|clients.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
             let count = sends.len();
-            for send in sends {let message = super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64);tokio::spawn(async move {if let Err(error) = send(message).await {eprintln!("app-server request delivery: {}",error.message);}});}
+            for send in sends {let delivery = send(super::envelope::populate_outbound_notification(message.clone(),chrono::Utc::now().timestamp_millis() as u64));tokio::spawn(async move {if let Err(error) = delivery.await {eprintln!("app-server request delivery: {}",error.message);}});}
             count
         });
         let approvals = Arc::new(std::sync::Mutex::new(super::approval_bridge::ApprovalBridge::new(send.clone())));
@@ -192,9 +194,10 @@ impl AppServerRuntime {
         core.approvals = Some(approvals.clone());core.user_input = Some(user_input.clone());
         {
             let (ui_approvals,ui_input,ui_dir) = (approvals.clone(),user_input.clone(),ui_agent_dir.clone());
+            let ui_active_turns = threads.active_turn_ids();
             let ui_factory: super::thread_registry::SessionUiFactory = Arc::new(move |thread_id: &str| -> Option<Arc<dyn maho_ext_api::ExtensionUi>> {
-                let turn_thread_id = thread_id.to_owned();
-                super::approval_ui_context::AppServerUiContext::new(ui_approvals.clone(),ui_input.clone(),thread_id.to_owned(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_dir))
+                let (turn_thread_id, active) = (thread_id.to_owned(), ui_active_turns.clone());
+                super::approval_ui_context::AppServerUiContext::new(ui_approvals.clone(),ui_input.clone(),thread_id.to_owned(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_dir))
                     .map(|ui| Arc::new(ui) as Arc<dyn maho_ext_api::ExtensionUi>).map_err(|error| eprintln!("app-server UI context: {}",error.message)).ok()
             });
             let binder_inventory = mcp_inventory.clone();
@@ -275,30 +278,34 @@ impl AppServerRuntime {
                     if method == "thread/read" { return Ok(json!({"thread":wire})); }
                     let model = entry.session.model();
                     let tier = entry.session.service_tier().map(|tier| match tier { maho_ext_api::ServiceTier::Auto => "auto", maho_ext_api::ServiceTier::Flex => "flex", maho_ext_api::ServiceTier::Priority => "priority" });
-                    let mut response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":super::start_options::requested_approval_policy(params),"approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
+                    let mut response = json!({"thread":wire,"model":model.id,"modelProvider":model.provider,"serviceTier":tier,"cwd":entry.cwd,"runtimeWorkspaceRoots":[entry.cwd],"instructionSources":[],"approvalPolicy":if method == "thread/start" {super::start_options::requested_approval_policy(params)} else {json!("never")},"approvalsReviewer":"user","sandbox":{"type":"dangerFullAccess"},"activePermissionProfile":null,"reasoningEffort":entry.session.thinking_level(),"multiAgentMode":"explicitRequestOnly"});
                     if method == "thread/resume" { response["initialTurnsPage"] = Value::Null; }
                     let queued = std::mem::take(&mut entry.queued_terminal_notifications);
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
-                    let lifecycle = if method == "thread/start" {json!({"method":"thread/started","params":{"thread":response["thread"]}})} else {json!({"method":"thread/status/changed","params":{"threadId":entry.id,"status":{"type":"idle"}}})};
+                    // senpi `subscribe` (queued terminal flush, then pending approval/user-input replay)
+                    // and the resume `thread/status/changed` broadcast run before the response.
+                    if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
+                        let core = core.read().await;
+                        for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
+                        if let Some(connection) = core.get_connection(&client_id) {
+                            recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                            approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                        }
+                        if method == "thread/resume" && let Err(error) = core.broadcast_notification(json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}}),chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
+                    }
+                    let started = (method == "thread/start").then(|| json!({"method":"thread/started","params":{"thread":response["thread"]}}));
                     context.connection.defer_task_until_responded(move || tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
-                            let core = core.read().await;
-                            if let Some(connection) = core.get_connection(&client_id) {
-                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
-                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                            }
-                            if let Err(error) = core.broadcast_notification(lifecycle,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server terminal replay: {}",error.message);}}
-                        }
+                        if let Some(started) = started && let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
+                            && let Err(error) = core.read().await.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server lifecycle notification: {}",error.message);}
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let turn_thread_id = thread_id.clone();
-                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            let (turn_thread_id, active) = (thread_id.clone(), threads.active_turn_ids());
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                             register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
@@ -339,24 +346,26 @@ impl AppServerRuntime {
                     let client_id = context.connection.id.clone();
                     let thread_id = entry.id.clone();
                     let mcp_session = entry.session.clone();
+                    // senpi `subscribe` runs before the response; only `thread/started` is deferred.
+                    if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
+                        let core = core.read().await;
+                        for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
+                        if let Some(connection) = core.get_connection(&client_id) {
+                            recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
+                            approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                            user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
+                        }
+                    }
                     let started = json!({"method":"thread/started","params":{"thread":response["thread"]}});
                     context.connection.defer_task_until_responded(move || tokio::spawn(async move {
                         tokio::task::yield_now().await;
-                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade) {
-                            let core = core.read().await;
-                            if let Some(connection) = core.get_connection(&client_id) {
-                                recipients.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(thread_id.clone()).or_default().insert(client_id.clone(),connection.send.clone());
-                                approvals.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                                user_input.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replay_pending_for_thread(&thread_id);
-                            }
-                            if let Err(error) = core.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
-                            for notification in queued {if let Err(error) = core.send_thread_notification_to_connection(&client_id,notification,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork terminal replay: {}",error.message);}}
-                        }
+                        if let Some(core) = notification_core.get().and_then(std::sync::Weak::upgrade)
+                            && let Err(error) = core.read().await.broadcast_notification(started,chrono::Utc::now().timestamp_millis() as u64).await {eprintln!("app-server fork notification: {}",error.message);}
                         // Sessions are bound at creation (UI, then MCP inventory); an entry whose
                         // inventory was dropped is rebound here in the same order.
                         if mcp_inventory.lock().await.resolve(Some(&thread_id)).is_none() {
-                            let turn_thread_id = thread_id.clone();
-                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || turn_thread_id.clone()),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
+                            let (turn_thread_id, active) = (thread_id.clone(), threads.active_turn_ids());
+                            if let Ok(ui) = super::approval_ui_context::AppServerUiContext::new(approvals.clone(),user_input.clone(),thread_id.clone(),Arc::new(move || super::thread_registry::active_turn_id_or_default(&active,&turn_thread_id)),std::path::Path::new(&ui_agent_dir)) {let _ = mcp_session.rebind_extension_ui(Arc::new(ui)).await;}
                             register_mcp_inventory(&mcp_inventory,&thread_id,&mcp_session).await;
                         }
                     }));
@@ -378,8 +387,8 @@ impl AppServerRuntime {
         if thread_notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("thread notification core is initialized once");}
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
-        let turn_engine = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
-        if turn_engine_slot.set(turn_engine).is_err() {unreachable!("turn engine initialized once");}
+        let turns = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        if turn_engine_slot.set(turns.clone()).is_err() {unreachable!("turn engine initialized once");}
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
@@ -401,7 +410,7 @@ impl AppServerRuntime {
                 }
             }
         }));
-        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)), shutdown_request }
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle,turns, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)), shutdown_request }
     }
     pub async fn dispose(&self) {
         if let Some(unsubscribe) = self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {unsubscribe();}
