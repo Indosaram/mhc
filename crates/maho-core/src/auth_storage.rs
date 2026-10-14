@@ -1310,6 +1310,7 @@ mod tests {
         let providers = AuthStorage::in_memory(AuthStorageData::new()).get_oauth_providers();
         assert!(providers.iter().any(|p| p.id == "anthropic" && p.name == "Anthropic (Claude Pro/Max)"));
         assert!(providers.iter().any(|p| p.id == "radius"));
+        assert!(providers.iter().any(|p| p.id == "devin" && p.name == "Devin"));
     }
 
     #[test]
