@@ -386,6 +386,9 @@ impl senpi_task::host::SenpiModelRegistry for Registry {
 }
 impl Extension for Task {
     fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+        // pin `task/index.ts:51,61-71`: registerTaskFlags runs at load time (after the member-process
+        // early return) so `--omo-task`/`--omo-task-usage-hint` are known extension flags.
+        if !senpi_task::team::member_extension::identity::is_team_member_process_from_env() { maho_omo_task::registration::register_task_flags(api); }
         let parent = self.parent.clone(); let registered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shared = self.runtime.clone(); let engine_slot = self.engine.clone();
         let coordinator = self.coordinator.clone(); let environment = self.environment.clone();
