@@ -47,6 +47,13 @@ pub fn get_or_create_web_socket_debug_stats(session_id: &str) -> ChatGptSubscrip
     stats.entry(session_id.to_owned()).or_default().clone()
 }
 
+/// `getOrCreateWebSocketDebugStats` for a caller that mutates the stored stats in place (senpi hands
+/// out the live object).
+pub fn update_web_socket_debug_stats(session_id: &str, update: impl FnOnce(&mut ChatGptSubscriptionWebSocketDebugStats)) {
+    let mut stats = WEBSOCKET_DEBUG_STATS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    update(stats.entry(session_id.to_owned()).or_default());
+}
+
 /// `getWebSocketDebugStats`.
 pub fn get_web_socket_debug_stats(session_id: &str) -> Option<ChatGptSubscriptionWebSocketDebugStats> {
     WEBSOCKET_DEBUG_STATS
