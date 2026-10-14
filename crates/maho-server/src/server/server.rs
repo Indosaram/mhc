@@ -436,7 +436,8 @@ impl Server {
                                         let mut pending=pending.lock().await;
                                         if subscribing_id.as_ref()==Some(&subscription_id) && let Some(updates)=pending.as_mut() { updates.push((subscription_id,update));return Ok(()); }
                                         let mut encoders=encoders.lock().await;
-                                        let encoder=encoders.get_mut(&subscription_id).ok_or_else(||ServerError::new("invalid_request","Unknown service subscription"))?;
+                                        // Pinned `sendServiceUpdate`: an update without an encoder is dropped.
+                                        let Some(encoder)=encoders.get_mut(&subscription_id) else { return Ok(()); };
                                         let update=encoder.update(&update)?;
                                         send(&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max).await
                                     })
@@ -479,7 +480,7 @@ impl Server {
                                         if message["call"]["serviceId"]=="$chord.service" && message["call"]["member"]=="unsubscribe" { let subscription_id=message["call"]["args"][0].as_str().unwrap_or_default(); encoders.lock().await.remove(subscription_id); subscriptions.lock().await.remove(subscription_id); }
                                         let mut pending=queued.lock().await;
                                         if let Some(updates)=pending.take() { for (subscription_id,update) in updates {
-                                            let mut codecs=encoders.lock().await;let codec=codecs.get_mut(&subscription_id).ok_or_else(||ServerError::new("invalid_request","Unknown service subscription"))?;
+                                            let mut codecs=encoders.lock().await;let Some(codec)=codecs.get_mut(&subscription_id) else { continue; };
                                             let update=codec.update(&update)?;send(&connection,&json!({"type":"service_update","subscriptionId":subscription_id,"update":update}),max).await?;
                                         } }
                                     }
