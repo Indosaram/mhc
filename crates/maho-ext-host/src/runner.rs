@@ -393,6 +393,7 @@ impl ExtensionRunner {
         self.runtime.assert_active()?;
         for extension in &self.extensions {
             for activator in &extension.lazy_tool_activators { actions.register_lazy_tool_activator(Arc::clone(activator))?; }
+            for source in &extension.native_tool_search_injection_failure_sources { actions.register_native_tool_search_injection_failure_source(Arc::clone(source))?; }
             for (name, hint) in &extension.removed_tool_hints { actions.register_removed_tool_hint(name, hint)?; }
         }
         self.runtime.bind_session_actions(actions); Ok(())
