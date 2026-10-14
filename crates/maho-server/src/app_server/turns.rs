@@ -11,6 +11,30 @@ pub struct PendingTurn {
     pub interrupted: bool,
     pub completed: bool,
     resolve: Option<tokio::sync::oneshot::Sender<()>>,
+    /// senpi `PendingTurn.deferTerminalNotifications`: set by `turn/interrupt` so the idle status and
+    /// terminal notifications follow its response.
+    pub defer_terminal_notifications: Option<TerminalDeferral>,
+}
+/// Terminal emissions parked until the deferring request has been answered.
+#[derive(Default)]
+pub struct DeferredTerminal {
+    responded: bool,
+    parked: Vec<Box<dyn FnOnce() + Send>>,
+}
+pub type TerminalDeferral = Arc<std::sync::Mutex<DeferredTerminal>>;
+/// senpi `TurnNotificationDeferral` bound to one request: emissions run once its response is sent.
+fn terminal_deferral(connection: &super::registry::RegistryConnection) -> TerminalDeferral {
+    let deferral: TerminalDeferral = Arc::default();
+    let flush = deferral.clone();
+    connection.defer_until_responded(move || {
+        let parked = {
+            let mut state = flush.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.responded = true;
+            std::mem::take(&mut state.parked)
+        };
+        for emit in parked { emit(); }
+    });
+    deferral
 }
 /// One input of a thread's observer task. A `Complete` is queued behind every session event already
 /// emitted, so a turn never finishes ahead of its own projected items; it only settles its own turn.
@@ -121,7 +145,7 @@ impl TurnEngine {
             guard.set_active_turn(Some(turn_id.clone()));
             guard.interrupted = false;
             guard.updated_at = now_iso(now);
-            guard.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: None });
+            guard.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: None, defer_terminal_notifications: None });
             guard.id.clone()
         };
         self.log.lock().await.record_turn(&thread_id, RecordTurnOptions { turn_id: turn_id.clone(), started_at: now_iso(now), status: None, completed_at: None, error: None });
@@ -161,8 +185,17 @@ impl TurnEngine {
         let turn = build_turn(&pending.turn_id, wire_status, pending.started_at_ms, Some(completion.timestamp_millis() as f64), &items, message.as_deref());
         { let mut guard = entry.lock().await; guard.set_active_turn(None); guard.interrupted = false; guard.updated_at = now_iso(completion); }
         if let Some(core) = self.core.upgrade() {
-            emit(&core, entry, json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}})).await;
-            for notification in super::turn_terminal::turn_terminal_notifications(&thread_id, turn) { emit(&core, entry, notification).await; }
+            let terminal_entry = entry.clone();
+            let emit_terminal_notifications = async move {
+                emit(&core, &terminal_entry, json!({"method":"thread/status/changed","params":{"threadId":thread_id,"status":{"type":"idle"}}})).await;
+                for notification in super::turn_terminal::turn_terminal_notifications(&thread_id, turn) { emit(&core, &terminal_entry, notification).await; }
+            };
+            let mut emission = Some(emit_terminal_notifications);
+            if let Some(deferral) = pending.defer_terminal_notifications.take() {
+                let mut state = deferral.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !state.responded && let Some(deferred) = emission.take() { state.parked.push(Box::new(move || { tokio::spawn(deferred); })); }
+            }
+            if let Some(emission) = emission { emission.await; }
         }
         if let Some(resolve) = pending.resolve.take() { let _ = resolve.send(()); }
     }
@@ -245,15 +278,17 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                     let observer = {
                         let mut guard = entry.lock().await;
                         guard.interrupted = true;
-                        if let Some(pending) = guard.pending_turn.as_mut() { pending.interrupted = true; }
+                        // senpi `interruptTurn`: `pending.deferTerminalNotifications` is set before
+                        // `abort()`, so a completion on `agent_end` still follows the response.
+                        if let Some(pending) = guard.pending_turn.as_mut() && pending.turn_id == active {
+                            pending.interrupted = true;
+                            pending.defer_terminal_notifications = Some(terminal_deferral(&context.connection));
+                        }
                         guard.observer_events.clone()
                     };
-                    // senpi `interruptTurn` awaits `session.abort()` before answering; only the
-                    // terminal notifications are deferred until after the response.
                     session.abort().await;
-                    context.connection.defer_until_responded(move || {
-                        if let Some(observer) = observer && observer.send(ObservedEvent::Complete { turn_id:active, status:CompleteTurnStatus::Interrupted, message:None }).is_err() { eprintln!("app-server thread observer closed"); }
-                    });
+                    // Queued behind the already-observed events; settles only if the turn is still open.
+                    if let Some(observer) = observer && observer.send(ObservedEvent::Complete { turn_id:active, status:CompleteTurnStatus::Interrupted, message:None }).is_err() { eprintln!("app-server thread observer closed"); }
                     return Ok(json!({}));
                 }
                 let params = input_params.ok_or_else(||JsonRpcError::new(-32602,"Invalid params"))?;
@@ -287,7 +322,7 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
             {
                 let mut entry = entry.lock().await;
                 entry.set_active_turn(Some(turn_id.clone())); entry.interrupted = false; entry.updated_at = now_iso(now);
-                entry.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: Some(resolve) });
+                entry.pending_turn = Some(PendingTurn { turn_id: turn_id.clone(), started_at_ms: started, interrupted: false, completed: false, resolve: Some(resolve), defer_terminal_notifications: None });
             }
             log.lock().await.record_turn(&id, RecordTurnOptions { turn_id:turn_id.clone(), started_at:now_iso(now), status:None, completed_at:None, error:None });
             let user = build_user_message(params.client_user_message_id.as_deref(), &parsed.content);
@@ -326,6 +361,14 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 }),
             };
             let response = preflight.as_ref().map(|_| json!({"turn":turn.clone()})).map_err(|error| JsonRpcError::new(-32603, error.clone()));
+            if preflight.is_err() {
+                // senpi `preflightResult(false)`: `completeTurn("failed")` runs before the request
+                // rejects, and the deferred initial notifications are dropped with the error response.
+                engine.complete_turn(&entry, Some(turn_id.as_str()), CompleteTurnStatus::Failed, Some(PREFLIGHT_FAILED.to_owned())).await;
+                drop(gate);
+                drop(guard);
+                return response;
+            }
             let initial_entry = entry.clone(); let initial_engine = engine.clone(); let initial_id = id.clone(); let initial_turn = turn_id.clone();
             context.connection.defer_until_responded(move || { tokio::spawn(async move {
                 let _guard = guard;
@@ -335,10 +378,6 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
                 }
                 initial_engine.emit_user_message(&initial_entry, &initial_id, &initial_turn, started, user).await;
                 drop(gate);
-                if preflight.is_err() {
-                    let sender = initial_entry.lock().await.observer_events.clone();
-                    if let Some(sender) = sender && sender.send(ObservedEvent::Complete { turn_id:initial_turn, status:CompleteTurnStatus::Failed, message:Some(PREFLIGHT_FAILED.to_owned()) }).is_err() { eprintln!("app-server thread observer closed"); }
-                }
                 let _ = completion.await;
             }); });
             response
@@ -353,8 +392,10 @@ pub(super) async fn emit(core: &Arc<RwLock<ServerCore>>, entry: &Arc<Mutex<Threa
     }
     let subscribers = entry.lock().await.subscribers.clone();
     let mut delivered = false;
+    // senpi `NotificationRouter.toThread`: every initialized subscriber counts as routed, even
+    // when its opt-outs or the experimental filter drop the message.
     for id in subscribers {
-        match core.read().await.send_notification_to_connection(&id,notification.clone(),chrono::Utc::now().timestamp_millis() as u64).await {
+        match core.read().await.send_thread_notification_to_connection(&id,notification.clone(),chrono::Utc::now().timestamp_millis() as u64).await {
             Ok(sent) => delivered |= sent,
             Err(error) => eprintln!("app-server notification: {}",error.message),
         }

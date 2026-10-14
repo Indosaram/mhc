@@ -89,10 +89,15 @@ async fn a_turn_the_client_did_not_start_is_projected_and_completed() {
 async fn a_prompt_rejected_before_admission_fails_turn_start() {
     let mut harness = Harness::new(r#"{"compaction":{"reserveTokens":"invalid"}}"#).await;
     let thread = harness.start_thread().await;
-    let response = harness.call(json!({"id":3,"method":"turn/start","params":{"threadId":thread,"input":[{"type":"text","text":"hello"}]}})).await;
+    harness.runtime.core.read().await.receive("qa", classify_incoming(json!({"id":3,"method":"turn/start","params":{"threadId":thread,"input":[{"type":"text","text":"hello"}]}}))).await.expect("request dispatch succeeds");
+    let mut messages = Vec::new();
+    let response = loop {
+        let message = harness.next().await;
+        if message["id"] == 3 { break message; }
+        messages.push(message);
+    };
     assert_eq!(response["error"]["code"], -32603, "{response}");
-    let messages = harness.until("turn/completed").await;
-    assert_eq!(methods(&messages), ["thread/status/changed","turn/started","item/started","item/completed","thread/status/changed","error","turn/completed"]);
+    assert_eq!(methods(&messages), ["thread/status/changed","error","turn/completed"]);
     let completed = messages.last().expect("turn/completed");
     assert_eq!(completed["params"]["turn"]["status"], "failed");
     assert_eq!(completed["params"]["turn"]["error"]["message"], "Prompt preflight failed");

@@ -52,14 +52,19 @@ async fn run_mode(runtime: &AppServerRuntime, listen: Listen, auth: Option<WsAut
         maho_core::output_guard::take_over_stdout();
         // senpi `interruptActiveTurns` runs on the shutdown signal while the stdio connection is
         // still registered, so its `turn/completed` reaches the client before the transport closes.
-        let interrupted = std::sync::Mutex::new(Ok(()));
+        let interrupted = std::sync::Mutex::new(None);
         let shutdown = async {
             shutdown.await;
             let result = shutdown_deadline(interrupt_active_turns(runtime)).await;
-            *interrupted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = result;
+            *interrupted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
         };
         super::stdio::run_shared_stdio_until(runtime.core.clone(),tokio::io::stdin(),super::stdio::RawStdoutWriter,shutdown,None).await.map_err(|error|error.message)?;
-        return interrupted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // senpi stdio `end`/`close` calls `onShutdown` (`requestShutdown`), so stdin EOF also runs
+        // `interruptActiveTurns` under the shutdown deadline before the runtime is disposed.
+        return match interrupted.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            Some(result) => result,
+            None => shutdown_deadline(interrupt_active_turns(runtime)).await,
+        };
     }
     // Pinned unix-socket.ts: the owner-only chmod applies only to the default socket directory
     // when no bearer auth is configured (the directory is then the only access guard).
