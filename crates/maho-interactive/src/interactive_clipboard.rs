@@ -119,9 +119,8 @@ fn read_image_via_native() -> Option<(Vec<u8>, String)> {
 
 /// senpi `readClipboardImage`: the platform clipboard bitmap as (bytes, mimeType), or `None`.
 ///
-/// The WSL PowerShell backend and the Photon conversion of unsupported formats are omitted: the
-/// Rust port has no image codec (see `components/tool_execution_images.rs`), so an unsupported
-/// payload is reported as no image rather than attached mislabelled.
+/// The WSL PowerShell backend and the Photon conversion of unsupported formats are omitted here,
+/// so an unsupported payload is reported as no image rather than attached mislabelled.
 pub async fn read_image() -> Option<(Vec<u8>, String)> {
     if std::env::var("TERMUX_VERSION").is_ok_and(|value| !value.is_empty()) { return None; }
     let mut image = None;

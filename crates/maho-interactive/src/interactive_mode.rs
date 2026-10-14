@@ -2128,8 +2128,8 @@ impl InteractiveMode {
     }
 
     /// senpi's `attachClipboardImage`: the `blockImages` gate, the compaction drop, and the marker
-    /// pair. senpi's `processImage` resize/conversion is skipped - the Rust port has no image codec
-    /// (see `components/tool_execution_images.rs`) - so only an already-supported format reaches here.
+    /// pair. senpi's `processImage` resize/conversion is skipped here, so only an already-supported
+    /// format reaches here.
     fn attach_clipboard_image(&mut self, bytes: Vec<u8>, mime_type: String) -> bool {
         if self.session.with_settings_manager(|settings| settings.get_block_images()) {
             self.show_status("Image paste blocked by the images.blockImages setting".into());
