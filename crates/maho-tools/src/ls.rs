@@ -72,6 +72,6 @@ pub fn create_ls_tool_definition(cwd: PathBuf, options: LsToolOptions) -> ToolDe
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })
     });
-    let mut tool = ToolDefinition::new("ls", "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).", json!({"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number"}}}), execute);
+    let mut tool = ToolDefinition::new("ls", "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).", json!({"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: current directory)"},"limit":{"type":"number","description":"Maximum number of entries to return (default: 500)"}}}), execute);
     tool.prompt_snippet = Some("List directory contents".into()); tool
 }

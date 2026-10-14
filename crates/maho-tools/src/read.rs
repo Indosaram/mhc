@@ -161,7 +161,7 @@ pub fn create_read_tool_definition(cwd: PathBuf, options: ReadToolOptions) -> To
             tokio::select! { result = work => result, () = call.signal.cancelled() => Err(ToolError::Aborted) }
         })
     });
-    let mut tool = ToolDefinition::new("read", "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.", json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"number"},"limit":{"type":"number"}},"required":["path"]}), execute);
+    let mut tool = ToolDefinition::new("read", "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.", json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}), execute);
     tool.constrained_sampling = Some(maho_ai::types::ConstrainedSampling::Config(maho_ai::types::ConstrainedSamplingConfig::JsonSchema { strict: maho_ai::types::JsonSchemaStrictness::Prefer }));
     tool.prompt_snippet = Some("Read file contents".into()); tool.prompt_guidelines = Some(vec!["Use read to examine files instead of cat or sed.".into()]); tool
 }
