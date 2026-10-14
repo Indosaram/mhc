@@ -4175,7 +4175,8 @@ impl InteractiveMode {
             }
             AgentSessionEvent::AgentEnd { messages, .. } => self.handle_event(&AgentEvent::AgentEnd { messages: messages.clone() }),
             AgentSessionEvent::ContinuationError { error_message } => self.show_status(error_message.clone()),
-            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_status(notice.clone()),
+            // senpi `model_change_pending` / `resume_compaction_required` / `resume_context_reduced`: `showWarning`.
+            AgentSessionEvent::ModelChangePending { notice, .. } | AgentSessionEvent::ResumeCompactionRequired { notice, .. } | AgentSessionEvent::ResumeContextReduced { notice, .. } => self.show_warning(notice),
             AgentSessionEvent::ModelChangeRejected { detail, .. } => self.show_status(detail.clone()),
             AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
             AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
