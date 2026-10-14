@@ -106,7 +106,7 @@ fn builtin_cli_specifiers_resolve_to_linked_factories_and_keep_other_sources() {
 }
 
 #[test]
-fn package_entries_map_to_their_port_and_generated_shims_are_provided() {
+fn package_entries_map_to_their_port_beside_the_builtin_and_generated_shims_are_provided() {
     let root = tempfile::tempdir().expect("fixture root");
     let package = root.path().join("git/pi-ast-grep");
     std::fs::create_dir_all(package.join("src")).expect("package dir");
@@ -123,5 +123,5 @@ fn package_entries_map_to_their_port_and_generated_shims_are_provided() {
     let result = discover(&paths);
 
     assert!(result.errors.is_empty(), "{:?}", result.errors);
-    assert_eq!(result.factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>(), ["<user:pi-ast-grep>"]);
+    assert_eq!(result.factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>(), ["<user:pi-ast-grep>", "<user:pi-rules>"]);
 }

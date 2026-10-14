@@ -288,6 +288,35 @@ fn pi_ast_grep() -> Box<dyn Extension> {
 fn pi_nested_agents_md() -> Box<dyn Extension> {
     Box::new(maho_ext_pi_nested_agents_md::NestedAgentsMd)
 }
+fn pi_rules() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_rules::RulesExtension)
+}
+fn pi_websearch() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_websearch::WebsearchExtension { native_registry: None })
+}
+fn pi_webfetch() -> Box<dyn Extension> {
+    Box::new(maho_ext_pi_webfetch::WebfetchExtension)
+}
+/// pi-goal `src/index.ts` `goalExtension`: lifecycle, tools and command over `goalStoreRef`, with the
+/// hidden continuation sent through `pi.sendMessage` (`goal/lifecycle.ts` `queueHiddenGoalPrompt`).
+fn pi_goal() -> Box<dyn Extension> {
+    struct PiGoal;
+    impl Extension for PiGoal {
+        fn register(&self, api: &mut maho_ext_api::ExtensionApi) {
+            let handle = maho_ext_api::ExtensionApi::new(api.registered.clone(), api.profile.clone(), api.events.clone(), api.runtime.clone());
+            let resolve: maho_ext_pi_goal::goal::lifecycle::GoalStoreResolver = Arc::new(|context: &maho_ext_api::ExtensionContext| {
+                let session_dir = context.session_manager.session_file().and_then(|_| context.session_manager.get_session_dir());
+                maho_ext_pi_goal::index::goal_store_ref(&context.agent_dir, session_dir.as_deref(), &context.cwd.to_string_lossy(), context.session_manager.session_id())
+            });
+            let send: maho_ext_pi_goal::goal::lifecycle::GoalContinuationSender = Arc::new(move |content: String| handle.send_message(
+                maho_ext_api::CustomMessage { custom_type: "pi-goal-continuation".into(), content: vec![maho_ext_api::ToolContent::text(content)], display: false, details: None },
+                maho_ext_api::SendMessageOptions { trigger_turn: true, deliver_as: Some(maho_ext_api::DeliverAs::FollowUp) },
+            ));
+            if let Err(error) = maho_ext_pi_goal::index::register_goal_extension(api, resolve, send) { std::panic::panic_any(error); }
+        }
+    }
+    Box::new(PiGoal)
+}
 fn omo_zcode_oauth() -> Box<dyn Extension> {
     Box::new(maho_ext_omo_zcode_oauth::ZcodeOAuth)
 }
@@ -315,9 +344,13 @@ fn orca_prefill() -> Box<dyn Extension> {
 }
 
 /// Linked user/omo extension ports (`crates/extensions/*`) whose crate publishes the constructor.
-static USER_FACTORIES: [NativeExtension; 9] = [
+static USER_FACTORIES: [NativeExtension; 13] = [
     NativeExtension { id: "pi-ast-grep", crate_name: "maho-ext-pi-ast-grep", factory: pi_ast_grep },
     NativeExtension { id: "pi-nested-agents-md", crate_name: "maho-ext-pi-nested-agents-md", factory: pi_nested_agents_md },
+    NativeExtension { id: "pi-rules", crate_name: "maho-ext-pi-rules", factory: pi_rules },
+    NativeExtension { id: "pi-websearch", crate_name: "maho-ext-pi-websearch", factory: pi_websearch },
+    NativeExtension { id: "pi-webfetch", crate_name: "maho-ext-pi-webfetch", factory: pi_webfetch },
+    NativeExtension { id: "pi-goal", crate_name: "maho-ext-pi-goal", factory: pi_goal },
     NativeExtension { id: "ferryx-agent-state", crate_name: "maho-ext-ferryx-agent-state", factory: ferryx_agent_state },
     NativeExtension { id: "herdr-agent-state", crate_name: "maho-ext-herdr-agent-state", factory: herdr_agent_state },
     NativeExtension { id: "orca-agent-status", crate_name: "maho-ext-orca-agent-status", factory: orca_agent_status },
