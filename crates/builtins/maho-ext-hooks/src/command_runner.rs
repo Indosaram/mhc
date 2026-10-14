@@ -33,6 +33,14 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     #[cfg(unix)]
     process.process_group(0);
     let mut child=process.spawn()?;let pid=child.id();
+    let tracked_pid=pid.and_then(|pid|i32::try_from(pid).ok());
+    if let Some(pid)=tracked_pid {maho_tools::shell::track_detached_child_pid(pid);}
+    let result=run_spawned_hook(command,input,&options,start,timeout_seconds,&mut child,pid).await;
+    if let Some(pid)=tracked_pid {maho_tools::shell::untrack_detached_child_pid(pid);}
+    result
+}
+
+async fn run_spawned_hook(command:&str,input:&serde_json::Value,options:&CommandHookRunOptions<'_>,start:Instant,timeout_seconds:f64,child:&mut tokio::process::Child,pid:Option<u32>)->std::io::Result<CommandHookRunResult> {
     let stdout=child.stdout.take().ok_or_else(||std::io::Error::other("hook stdout unavailable"))?;
     let stderr=child.stderr.take().ok_or_else(||std::io::Error::other("hook stderr unavailable"))?;
     let stdout_limit=options.output_policy.and_then(|p|p.max_stdout_bytes).unwrap_or(DEFAULT_STDOUT_LIMIT_BYTES);
@@ -46,17 +54,17 @@ pub async fn run_command_hook(handler:&ExecutableHookHandler,input:&serde_json::
     let timeout=tokio::time::sleep(Duration::try_from_secs_f64(timeout_seconds).map_err(std::io::Error::other)?);tokio::pin!(timeout);
     let cancel=async {match options.signal {Some(signal)=>signal.cancelled().await,None=>std::future::pending::<()>().await}};tokio::pin!(cancel);
     let (status,timed_out,aborted)=loop {tokio::select! {
-        result=&mut write,if !written=>{written=true;if let Err(error)=result&&error.kind()!=std::io::ErrorKind::BrokenPipe {kill_child_tree(&mut child,pid).await?;child.wait().await?;return Err(error);}}
+        result=&mut write,if !written=>{written=true;if let Err(error)=result&&error.kind()!=std::io::ErrorKind::BrokenPipe {kill_child_tree(child,pid).await?;child.wait().await?;return Err(error);}}
         status=child.wait()=>break (status?,false,false),
-        _=&mut timeout=>{kill_child_tree(&mut child,pid).await?;break (child.wait().await?,true,false)},
-        _=&mut cancel=>{kill_child_tree(&mut child,pid).await?;break (child.wait().await?,false,true)},
+        _=&mut timeout=>{kill_child_tree(child,pid).await?;break (child.wait().await?,true,false)},
+        _=&mut cancel=>{kill_child_tree(child,pid).await?;break (child.wait().await?,false,true)},
     }};
     let stdout=out.await.map_err(std::io::Error::other)??;let stderr=err.await.map_err(std::io::Error::other)??;
     #[cfg(unix)]
     let signal={use std::os::unix::process::ExitStatusExt;status.signal().map(|signal|nix::sys::signal::Signal::try_from(signal).map_or_else(|_|format!("SIG{signal}"),|signal|signal.as_str().to_owned()))};
     #[cfg(not(unix))]
     let signal=None;
-    build_result(command,&options,start,if timed_out||aborted {None} else {status.code()},signal,timed_out,aborted,timeout_seconds,stdout,stderr)
+    build_result(command,options,start,if timed_out||aborted {None} else {status.code()},signal,timed_out,aborted,timeout_seconds,stdout,stderr)
 }
 
 async fn kill_child_tree(child:&mut tokio::process::Child,pid:Option<u32>)->std::io::Result<()> {

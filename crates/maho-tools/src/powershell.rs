@@ -25,8 +25,9 @@ impl BashOperations for LocalPowerShellOperations {
             resolve_timeout_ms(options.timeout)?;
             if options.signal.is_aborted() { return Err(ToolError::Message("aborted".into())); }
             let (shell, args) = get_powershell_config().await?;
-            let operations = LocalShellOperations { shell_name: "PowerShell".into(), shell, args, prefix: UTF8_OUTPUT_PREFIX.into() };
-            operations.exec(command, cwd, options).await
+            let config = crate::shell::ShellConfig { shell, args, command_transport: None, kind: None };
+            let operations = create_local_shell_operations("PowerShell", Arc::new(move || Ok(config.clone())));
+            operations.exec(&format!("{UTF8_OUTPUT_PREFIX}{command}"), cwd, options).await
         })
     }
 }
