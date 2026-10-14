@@ -23,7 +23,7 @@ fn wait_for_terminal_session_exit(runtime:&TerminalRuntimeSession,grace:Duration
     match runtime.wait(grace) {Err(RuntimeError::WaitTimeout)=>Ok(false),Err(RuntimeError::Poisoned)=>Err(RuntimeError::Poisoned),_=>runtime.exited()}
 }
 #[derive(Debug,thiserror::Error)]
-pub enum ManagerError {#[error("Cannot create terminal session: capacity limit ({0}) reached.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
+pub enum ManagerError {#[error("Cannot create terminal session: all {0} registry slots are live.")] Capacity(usize),#[error(transparent)] Runtime(#[from] RuntimeError)}
 struct Entry {runtime:TerminalRuntimeSession,created_at:u64,last_used_at:u64,stop_requested:bool,force_killed:bool}
 pub struct TerminalManager {entries:BTreeMap<String,Entry>,monitor_ids:BTreeMap<String,String>,max_sessions:usize,scrollback:usize,id_counters:BTreeMap<String,u64>,sequence:u64,reservations:std::sync::Arc<std::sync::atomic::AtomicUsize>}
 pub struct CapacityReservation(std::sync::Arc<std::sync::atomic::AtomicUsize>);
