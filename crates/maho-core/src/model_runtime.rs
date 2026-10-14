@@ -1328,7 +1328,7 @@ mod tests {
     async fn create_defaults_the_models_store_beside_models_json_and_restores_offline() {
         let dir = tempfile::tempdir().expect("tempdir");
         let models_path = dir.path().join("models.json");
-        std::fs::write(&models_path, "{}").expect("config");
+        std::fs::write(&models_path, r#"{"providers":{}}"#).expect("config");
         let runtime = ModelRuntime::create(CreateModelRuntimeOptions { models_path: Some(models_path), providers: Some(Vec::new()), ..Default::default() }).await;
         assert_eq!(runtime.get_error(), None);
         assert!(!runtime.model_network_enabled);
