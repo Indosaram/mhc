@@ -81,11 +81,17 @@ impl Drop for Delivery {
 
 fn provider_session(ctx: &ExtensionContext) -> Option<Value> {
     let id = ctx.session_manager.session_id();
-    let (id, path) = if id.is_empty() {
-        (std::env::var("PI_SESSION_ID").ok().filter(|value| !value.is_empty())?, std::env::var("PI_SESSION_FILE").ok())
-    } else { (id.to_owned(), ctx.session_manager.session_file().map(|path| path.to_string_lossy().into_owned())) };
+    if id.is_empty() { return provider_session_from_env(); }
     let mut value = json!({"key":"session_id","id":id});
-    if let Some(path) = path.filter(|value| !value.is_empty()) { value["transcriptPath"] = json!(path); }
+    if let Some(path) = ctx.session_manager.session_file().map(|path| path.to_string_lossy().into_owned()).filter(|value| !value.is_empty()) { value["transcriptPath"] = json!(path); }
+    Some(value)
+}
+
+/// `providerSessionFromContext` without a session manager: the identity the agent's own PTY carries.
+fn provider_session_from_env() -> Option<Value> {
+    let id = std::env::var("PI_SESSION_ID").ok().filter(|value| !value.is_empty())?;
+    let mut value = json!({"key":"session_id","id":id});
+    if let Some(path) = std::env::var("PI_SESSION_FILE").ok().filter(|value| !value.is_empty()) { value["transcriptPath"] = json!(path); }
     Some(value)
 }
 
@@ -124,7 +130,7 @@ impl Extension for FerryxAgentState {
             let subscription = api.events.on(channel, Arc::new(move |data| {
                 let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let changed = if channel == "ask-user:asked" { state.asked(data) } else { state.blocked(data) };
-                if changed { delivery.send(&mut state, false, None); }
+                if changed { delivery.send(&mut state, false, provider_session_from_env()); }
             }));
             subscriptions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(subscription);
         }
