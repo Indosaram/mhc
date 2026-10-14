@@ -791,7 +791,9 @@ async fn model_command_miss_refreshes_then_opens_a_prefiltered_selector() {
     assert_eq!(mode.submit("/model no-such-model", Default::default()).await.expect("model"), maho_core::agent_session::PromptDisposition::Handled);
     let rendered = mode.render(80).join("\n");
     assert!(rendered.contains("Refreshing model catalogs…"), "the catalog refresh precedes the selector: {rendered}");
-    assert!(rendered.contains("no-such-model"), "the selector opens with the term as its search: {rendered}");
+    // The focused search input draws its cursor (reverse video) on the first cell, so match plain text.
+    let plain = maho_tools::ansi::strip_ansi(&rendered);
+    assert!(plain.contains("> no-such-model"), "the selector opens with the term as its search: {plain}");
     mode.handle_input_at("\x1b", 0); mode.handle_input_at("draft", 1);
     assert_eq!(mode.editor.editor.get_text(), "draft");
 }

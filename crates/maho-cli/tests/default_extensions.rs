@@ -67,11 +67,14 @@ async fn oauth_lanes_sit_before_config_reload_and_mcp_stays_last_builtin() {
 async fn settings_allowlist_and_denylist_filter_builtin_ids_only() {
     let root = tempfile::tempdir().expect("isolated factory directory");
     let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
-    let global = serde_json::json!({"disabledBuiltinExtensions":["tps","cursor-cli-oauth"]});
+    // senpi resource-loader.ts:1211 filters only `builtinExtensions`/bundled ids; global defaults
+    // (`tps`, builtin/index.ts:55) load through agent-dir shims and ignore the denylist.
+    let global = serde_json::json!({"disabledBuiltinExtensions":["redraws","cursor-cli-oauth","tps"]});
     let settings = maho_core::settings_manager::SettingsManager::in_memory(global.as_object().expect("object").clone(), false);
     let factories = maho_cli::cli::default_extensions::assembled_factories(sender, std::sync::Arc::new(std::sync::OnceLock::new()), &settings, root.path(), &root.path().to_string_lossy());
     let paths = factories.iter().map(|factory| factory.path.as_str()).collect::<Vec<_>>();
-    assert!(!paths.contains(&"<builtin:tps>") && !paths.contains(&"<builtin:cursor-cli-oauth>"), "{paths:?}");
+    assert!(!paths.contains(&"<builtin:redraws>") && !paths.contains(&"<builtin:cursor-cli-oauth>"), "{paths:?}");
+    assert!(paths.contains(&"<builtin:tps>"), "{paths:?}");
     assert!(paths.contains(&"<builtin:claude-sdk-oauth>") && paths.contains(&"<builtin:omo>") && paths.contains(&"<inline:llama.cpp>"), "{paths:?}");
     let allow = maho_cli::cli::default_extensions::BuiltinExtensionSelection { enabled: Some(vec!["mcp".into()]), disabled: Vec::new() };
     assert!(allow.is_active("mcp") && !allow.is_active("help") && !allow.is_active("codemode") && allow.is_active("omo"));
