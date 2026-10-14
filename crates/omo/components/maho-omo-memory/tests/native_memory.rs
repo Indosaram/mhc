@@ -77,7 +77,7 @@ impl Extension for WiredRootExtension{
             initial_status:Arc::new(|_,_|{}),
             reconcile:Arc::new(move|identity|{reconciled.lock().unwrap_or_else(|error|panic!("reconcile capture: {error}")).push(identity.identity);Box::pin(async{Ok(())})}),
             now:Arc::new(||0.0),warn:Arc::new(|error|panic!("{error}")),
-        },|_|{}).unwrap_or_else(|error|panic!("native wiring registration: {error}"));
+        },|api|assert!(api.registered.handlers.contains_key(&EventKind::AgentSettled),"settled journal handler must precede static trigger wiring")).unwrap_or_else(|error|panic!("native wiring registration: {error}"));
     }
 }
 #[tokio::test]

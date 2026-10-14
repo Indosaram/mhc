@@ -69,7 +69,8 @@ fn title_from_objective(objective: &str, fallback: &str) -> String {
 pub fn normalize_goal_id(title: &str, index: usize) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
-    for c in title.to_ascii_lowercase().chars() {
+    // JS `toLowerCase` is full Unicode: U+0130 and U+212A lowercase into ASCII before the filter.
+    for c in title.to_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
             slug.push(c);
             last_dash = false;
