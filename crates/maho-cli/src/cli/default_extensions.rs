@@ -33,9 +33,15 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
     }));
 }
 
+/// senpi `getDefaultSourceInfoForPath` (resource-loader.ts:1146-1153) and `createExtension`
+/// (extensions/loader.ts:741-745): a `<builtin:...>` extension is a system-scope top-level resource.
+pub fn builtin_source_info(path: &str) -> maho_ext_api::SourceInfo {
+    maho_ext_api::SourceInfo { path: path.to_owned(), source: "builtin".into(), scope: maho_ext_api::SourceScope::System, origin: maho_ext_api::SourceOrigin::TopLevel, base_dir: None }
+}
+
 fn factory<E: Extension + 'static>(name: &str, extension: E) -> NativeExtensionFactory {
     let path = format!("<builtin:{name}>");
-    NativeExtensionFactory { source_info: maho_ext_api::SourceInfo { path: path.clone(), source: "builtin".into(), ..Default::default() }, path, extension: Box::new(extension) }
+    NativeExtensionFactory { source_info: builtin_source_info(&path), path, extension: Box::new(extension) }
 }
 
 pub fn async_factories(factories: Vec<NativeExtensionFactory>) -> Vec<NativeAsyncExtensionFactory> {
@@ -100,7 +106,7 @@ pub fn assembled_factories_with_mcp_registry(
     match super::omo_mount::OmoMount::for_parent(parent, &process_cwd, std::path::Path::new(&maho_core::config::get_agent_dir()), env) {
         Ok(mount) => assembled.extend(async_factories(vec![mount.factory()])),
         Err(error) => assembled.push(NativeAsyncExtensionFactory {
-            path: "<builtin:omo>".into(), source_info: Default::default(),
+            path: "<builtin:omo>".into(), source_info: builtin_source_info("<builtin:omo>"),
             factory: Arc::new(move |_| { let error = error.clone(); Box::pin(async move { Err(ExtensionFailure::new(error)) }) }),
         }),
     }
@@ -118,6 +124,13 @@ pub fn assembled_factories_with_mcp_registry(
     let native = super::extension_registry::native_extension_factories_for(agent_dir_path).into_iter()
         .filter(|factory| !paths.contains(&factory.path)).collect();
     assembled.extend(async_factories(native));
+    // senpi `getHarnessExtensionSourceInfo` (resource-loader.ts:1472-1480): the global defaults load
+    // through generated `<agentDir>/extensions` shims, a system-scope builtin based there.
+    for factory in &mut assembled {
+        if builtin_id(&factory.path).is_some_and(|id| super::extension_registry::GLOBAL_DEFAULT_EXTENSION_IDS.contains(&id)) {
+            factory.source_info.base_dir = Some(agent_dir_path.join("extensions").to_string_lossy().into_owned());
+        }
+    }
     let selection = BuiltinExtensionSelection::from_settings(settings);
     assembled.retain(|factory| builtin_id(&factory.path).is_none_or(|id| selection.is_active(id)));
     // `pi-nested-agents-md` is the package the builtin `nested-agents-md` ports: both register the

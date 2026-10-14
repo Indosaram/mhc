@@ -84,8 +84,8 @@ impl OmoMount {
     pub fn factory(&self) -> NativeExtensionFactory {
         let path = format!("<builtin:{OMO_EXTENSION_IDENTITY}>");
         NativeExtensionFactory {
-            path: path.clone(),
-            source_info: maho_ext_api::SourceInfo { path, source: "builtin".to_owned(), ..Default::default() },
+            source_info: super::default_extensions::builtin_source_info(&path),
+            path,
             extension: Box::new(SharedOmoExtension(Arc::clone(&self.extension))),
         }
     }

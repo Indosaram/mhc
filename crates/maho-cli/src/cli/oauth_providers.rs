@@ -193,8 +193,8 @@ pub fn runtime_oauth_factories(settings: &SettingsManager, cwd: &std::path::Path
 fn builtin_factory(id: &str, extension: Box<dyn Extension>) -> maho_ext_host::loader::NativeExtensionFactory {
     let path = format!("<builtin:{id}>");
     maho_ext_host::loader::NativeExtensionFactory {
-        path: path.clone(),
-        source_info: maho_ext_api::SourceInfo { path, source: "builtin".to_owned(), ..Default::default() },
+        source_info: super::default_extensions::builtin_source_info(&path),
+        path,
         extension,
     }
 }

@@ -338,8 +338,12 @@ pub fn deferred_user_extensions() -> &'static [DeferredExtension] {
     &DEFERRED_USER_EXTENSIONS
 }
 
+/// senpi `getDefaultSourceInfoForPath` (resource-loader.ts:1146-1153): `<builtin:...>` is system
+/// scope, every other synthetic `<kind:...>` path is temporary.
 fn source_info(id: &str, kind: &str) -> SourceInfo {
-    SourceInfo { path: format!("<{kind}:{id}>"), source: kind.to_owned(), ..SourceInfo::default() }
+    let path = format!("<{kind}:{id}>");
+    if kind == "builtin" { return super::default_extensions::builtin_source_info(&path); }
+    SourceInfo { path, source: kind.to_owned(), origin: maho_ext_api::SourceOrigin::TopLevel, ..SourceInfo::default() }
 }
 
 /// Every linked constructor the CLI can register, builtin first then user ports, in pinned order.
