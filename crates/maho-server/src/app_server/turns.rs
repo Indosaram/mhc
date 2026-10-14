@@ -311,8 +311,9 @@ pub async fn register_turn_methods(core: &Arc<RwLock<ServerCore>>, threads: Arc<
         Box::pin(async move {
             let params = super::turn_adapter::turn_input_params(&context.request,false)?;
             let id = params.thread_id;
-            let parsed = parse_input(&params.input)?;
+            // senpi `startTurn`: `getLoadedThreadOrThrow` runs before `parseInput`.
             let entry = threads.get_loaded_thread(&id).await.map_err(|error|JsonRpcError::new(-32600,error))?;
+            let parsed = parse_input(&params.input)?;
             engine.observe_thread(&entry).await;
             let (session, tasks, gate) = { let entry = entry.lock().await; (entry.session.clone(), entry.tasks.clone(), entry.emit_gate.clone()) };
             let guard = tasks.lock_owned().await;
