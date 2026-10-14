@@ -10,6 +10,12 @@ async fn real_print_entry_suppresses_project_context_when_requested() {
     run_print_entry(true, None).await;
 }
 
+/// senpi main.ts `readPipedStdin`: piped stdin is trimmed before it prefixes the first message.
+#[tokio::test]
+async fn real_print_entry_trims_piped_stdin() {
+    run_print_entry(false, Some("piped context\n")).await;
+}
+
 /// senpi `applyExtensionFlagValues` + `resolveModelScope`: an unregistered `--flag` is a runtime
 /// error (exit 1) and an unmatched `--models` pattern is a `Warning:` line.
 #[tokio::test]
