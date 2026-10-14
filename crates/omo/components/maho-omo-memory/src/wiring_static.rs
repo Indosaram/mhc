@@ -33,7 +33,7 @@ pub fn register_memory_static(api:&mut maho_ext_api::ExtensionApi,options:Memory
     let on_commit=crate::soul_notice::soul_commit_notice(api,options.resolve_tool_context.clone(),options.edit_notice.clone(),options.warn.clone());
     crate::soul_notice::register_soul_notice(api,options.resolve_context.clone(),options.edit_notice);
     match options.prompt_handler{Some(handler)=>crate::prompt::register_memory_prompt_handler_with_cache(api,options.prompt,handler),None=>crate::prompt::register_memory_prompt_handler(api,options.prompt)}
-    crate::tools::register_memory_tools_with_options(api,options.resolve_tool_context,crate::tools::MemoryToolsOptions{write_notice:options.write_notice,exposure:options.tool_exposure,on_commit:Some(on_commit),..Default::default()});
+    crate::tools::register_memory_tool_surface(api,options.resolve_tool_context,crate::tools::MemoryToolsOptions{write_notice:options.write_notice,exposure:options.tool_exposure,on_commit:Some(on_commit),..Default::default()});
     crate::guard::register_memory_guard(api,options.resolve_context.clone(),options.resolve_cwd,options.captured_tools,options.warn);
     crate::skills_scope::register_memory_skills_scope(api,options.resolve_context);
     let skills_usage=match options.skills_trackers{Some(trackers)=>{crate::skills_usage_wiring::register_skills_usage_with_trackers(api,options.skills_usage,trackers.clone());trackers},None=>crate::skills_usage_wiring::register_skills_usage(api,options.skills_usage)};
