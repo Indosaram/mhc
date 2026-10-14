@@ -489,11 +489,11 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             ("login_cancel",Ok(None))
         },
         RpcCommandBody::LoginApiKey{provider,key}=>{
-            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});Some(serde_json::Value::Null)});
+            let result=session.model_registry().auth_storage.set(provider,Some(serde_json::json!({"type":"api_key","key":key}))).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None});
             ("login_api_key",result)
         },
         RpcCommandBody::Logout{provider}=>{
-            let result=session.model_registry().auth_storage.logout(provider).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});Some(serde_json::Value::Null)});
+            let result=session.model_registry().auth_storage.logout(provider).map(|()|{let registry=session.model_registry();let mut runtime=registry.model_runtime.clone();tokio::spawn(async move{let _=runtime.refresh(Default::default()).await;});None});
             ("logout",result)
         },
         RpcCommandBody::GetProviderAccounts{provider}=>{
@@ -1144,13 +1144,13 @@ mod new_session_tests{
     async fn login_api_key_persists_api_key_credential(){
         let session=session();
         let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"login_api_key","provider":"fixture","key":"secret"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"login_api_key"); assert_eq!(response["success"],true); assert_eq!(session.model_registry().auth_storage.get("fixture"),Some(serde_json::json!({"type":"api_key","key":"secret"})));
+        assert_eq!(response["command"],"login_api_key"); assert_eq!(response["success"],true); assert!(response.get("data").is_none()); assert_eq!(session.model_registry().auth_storage.get("fixture"),Some(serde_json::json!({"type":"api_key","key":"secret"})));
     }
     #[tokio::test]
     async fn logout_removes_stored_credential(){
         let session=session(); session.model_registry().auth_storage.set("fixture",Some(serde_json::json!({"type":"api_key","key":"secret"}))).unwrap();
         let response=serde_json::to_value(handle_session_command(&session,&serde_json::from_value(serde_json::json!({"type":"logout","provider":"fixture"})).unwrap()).await.unwrap()).unwrap();
-        assert_eq!(response["command"],"logout"); assert_eq!(response["success"],true); assert_eq!(session.model_registry().auth_storage.get("fixture"),None);
+        assert_eq!(response["command"],"logout"); assert_eq!(response["success"],true); assert!(response.get("data").is_none()); assert_eq!(session.model_registry().auth_storage.get("fixture"),None);
     }
     #[tokio::test]
     async fn bash_dispatches_success(){
