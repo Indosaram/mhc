@@ -186,6 +186,9 @@ pub type UserEditResult = AssistantEditResult;
 
 #[derive(Debug, Clone)]
 pub struct MessageEditFailure { pub message: String, pub code: Option<&'static str> }
+
+/// senpi `_navigateTree`'s refusal while a compaction or tree navigation runs.
+const NAVIGATE_WHILE_COMPACTING: &str = "Wait for the current compaction or tree navigation to finish before navigating the session tree.";
 impl From<String> for MessageEditFailure {
     fn from(message: String) -> Self { Self { message, code: None } }
 }
@@ -4428,7 +4431,20 @@ impl AgentSession {
     }
 
     pub async fn navigate_tree(&self, target_id: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
-        self.navigate_tree_internal(target_id, options, None).await
+        self.navigate_tree_coded(target_id, options).await.map_err(|error| error.message)
+    }
+
+    /// `navigate_tree` keeping senpi's `SessionStreamingError` / `AssistantEditError` codes
+    /// (`streaming`, `stale_leaf`, `not_found`), checked in `_navigateTree` order.
+    pub async fn navigate_tree_coded(&self, target_id: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, MessageEditFailure> {
+        if self.is_streaming() { return Err(MessageEditFailure { message: crate::edited_assistant_message::SessionStreamingError.to_string(), code: Some("streaming") }); }
+        if self.is_compacting() { return Err(NAVIGATE_WHILE_COMPACTING.to_owned().into()); }
+        self.with_session_manager(|manager| crate::edited_assistant_message::assert_expected_leaf(
+            options.expected_leaf_id.as_deref(), manager.leaf_id())).map_err(|error| MessageEditFailure { code: Some(error.reason.code()), message: error.to_string() })?;
+        if !self.with_session_manager(|manager| manager.entry(target_id).is_some()) {
+            return Err(MessageEditFailure { message: format!("Entry {target_id} not found"), code: Some("not_found") });
+        }
+        self.navigate_tree_internal(target_id, options, None).await.map_err(Into::into)
     }
 
     pub async fn edit_assistant_message(&self, entry_id: &str, text: &str, options: TreeNavigationOptions) -> Result<AssistantEditResult, String> {
@@ -4472,11 +4488,13 @@ impl AgentSession {
     }
 
     async fn navigate_tree_internal(&self, target_id: &str, mut options: TreeNavigationOptions, replacement: Option<AgentMessage>) -> Result<AssistantEditResult, String> {
-        if self.is_streaming() { return Err("Cannot navigate the session tree while streaming".to_owned()); }
-        if self.is_compacting() { return Err("Cannot navigate the session tree while compacting".to_owned()); }
-        let entry = self.with_session_manager(|manager| manager.entry(target_id)).ok_or_else(|| format!("Entry {target_id} not found"))?;
+        if self.is_streaming() { return Err(crate::edited_assistant_message::SessionStreamingError.to_string()); }
+        if self.is_compacting() { return Err(NAVIGATE_WHILE_COMPACTING.to_owned()); }
         let old_leaf = self.with_session_manager(|manager| manager.leaf_id().map(str::to_owned));
-        if options.expected_leaf_id.is_some() && options.expected_leaf_id != old_leaf { return Err("Session leaf changed before edit".to_owned()); }
+        // Stale tokens fail even for a would-be no-op, before any extension hears about the navigation.
+        crate::edited_assistant_message::assert_expected_leaf(options.expected_leaf_id.as_deref(), old_leaf.as_deref())
+            .map_err(|error| error.to_string())?;
+        let entry = self.with_session_manager(|manager| manager.entry(target_id)).ok_or_else(|| format!("Entry {target_id} not found"))?;
         let collected = self.with_session_manager(|manager| crate::compaction::branch_summarization::collect_entries_for_branch_summary(
             manager, old_leaf.as_deref(), target_id,
         ));

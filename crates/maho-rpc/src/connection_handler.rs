@@ -419,8 +419,9 @@ async fn handle_session_command_with_sink(session:&AgentSession,command:&RpcComm
             if entry_id.is_none()&&target_id.is_none(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires entryId or targetId".into(),error_code:None}});}
             let selected=entry_id.as_deref().or(target_id.as_deref()).unwrap_or_default();
             if selected.is_empty(){return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error_data:default_error_data(session,"navigate_tree"),error:"navigate_tree requires a non-empty entryId or targetId".into(),error_code:None}});}
-            let result=session.navigate_tree(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
-            let result=result.map(|result|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id});if result.cancelled{value["cancelled"]=true.into();}
+            let result=session.navigate_tree_coded(selected,maho_core::agent_session::TreeNavigationOptions{intent:intent.map(|intent|match intent{crate::rpc_types::NavigationIntent::Select=>maho_core::agent_session::TreeNavigationIntent::Select,crate::rpc_types::NavigationIntent::Resume=>maho_core::agent_session::TreeNavigationIntent::Resume}),summarize:*summarize,custom_instructions:custom_instructions.clone(),replace_instructions:*replace_instructions,label:label.clone(),expected_leaf_id:expected_leaf_id.clone()}).await;
+            let result=match result{Ok(result)=>result,Err(error)=>return Some(RpcResponse{id:command.id.clone(),record_type:ResponseRecordType::Response,command:"navigate_tree".into(),session_id:command.session_id.clone(),result:RpcResponseResult::Error{error:error.message,error_code:error.code.map(str::to_owned),error_data:default_error_data(session,"navigate_tree")}})};
+            let result=Ok(result).map(|result:maho_core::agent_session::AssistantEditResult|{let leaf_id=session.with_session_manager(|manager|manager.leaf_id().map(str::to_owned));if target_id.is_some(){let mut value=serde_json::json!({"leafId":leaf_id,"cancelled":result.cancelled});
                 if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}
                 if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}
                 if let Some(summary_entry)=result.summary_entry{value["summaryEntry"]=summary_entry;}value}else if result.cancelled{let mut value=serde_json::json!({"outcome":"cancelled","leafId":leaf_id});if let Some(aborted)=result.aborted{value["aborted"]=aborted.into();}value}else{let mut value=serde_json::json!({"outcome":"navigated","leafId":leaf_id});if let Some(editor_text)=result.editor_text{value["editorText"]=editor_text.into();}
@@ -1047,6 +1048,24 @@ mod new_session_tests{
         let command:RpcCommand=serde_json::from_value(serde_json::json!({"type":"navigate_tree"})).expect("command");
         let response=serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire");
         assert_eq!(response["error"],"navigate_tree requires entryId or targetId");
+    }
+
+    #[tokio::test]
+    async fn navigate_tree_reports_coded_refusals_and_a_boolean_cancelled(){
+        let session=session();
+        let root=session.with_session_manager_mut(|manager|manager.append_custom("test",None));
+        let root_id=root["id"].as_str().expect("root").to_owned();
+        let send=|value:serde_json::Value|{let session=session.clone();async move{
+            let command:RpcCommand=serde_json::from_value(value).expect("command");
+            serde_json::to_value(handle_session_command(&session,&command).await.expect("response")).expect("wire")
+        }};
+        let stale=send(serde_json::json!({"type":"navigate_tree","targetId":"absent","expectedLeafId":"older"})).await;
+        assert_eq!(stale["errorCode"],"stale_leaf");
+        assert_eq!(stale["error"],format!("Session leaf moved (expected older, now {root_id})"));
+        let missing=send(serde_json::json!({"type":"navigate_tree","targetId":"absent"})).await;
+        assert_eq!(missing["errorCode"],"not_found");
+        let navigated=send(serde_json::json!({"type":"navigate_tree","targetId":root_id})).await;
+        assert_eq!(navigated["data"]["cancelled"],false);
     }
 
     #[tokio::test]
