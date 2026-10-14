@@ -95,9 +95,10 @@ async fn daemon_socket_faux_turn_detach_and_reattach_retains_transcript() {
     client.close(None).await.unwrap(); drop(client);
     let mut client = attach(&path).await;
     send(&mut client,json!({"id":5,"method":"thread/resume","params":{"threadId":id}})).await;
+    // senpi threads/handlers.ts resume: the idle `thread/status/changed` broadcast precedes the response.
+    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
     let resumed = read(&mut client).await;
     assert_eq!(resumed["result"]["thread"]["turns"][0]["items"],items);
-    assert_eq!(read(&mut client).await["method"],"thread/status/changed");
     send(&mut client,json!({"id":6,"method":"thread/turns/list","params":{"threadId":id,"itemsView":"full"}})).await;
     let history = read(&mut client).await;
     assert_eq!(history["result"]["data"][0]["items"],items);
