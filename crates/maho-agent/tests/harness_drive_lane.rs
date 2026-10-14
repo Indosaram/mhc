@@ -1052,7 +1052,7 @@ async fn typed_tool_context_env_reaches_a_real_read_invocation() {
             thinking_level: None,
             active_tool_names: None,
             tools,
-            tool_context: Some(ExecutionToolContext { env, post_mutate: None }),
+            tool_context: Some(maho_agent::harness::agent_harness::ToolContextSource::Value(ExecutionToolContext { env, post_mutate: None })),
             system_prompt: None,
             resources: None,
             stream_options: None,
@@ -1303,4 +1303,67 @@ async fn abort_forwards_the_deferred_handle_and_request_options_to_the_provider(
     // The abort never polled the deferred handle.
     assert_eq!(faux.state().deferred_fetch_count, 0, "abort must not poll the deferred handle");
     assert_eq!(faux.state().call_count, 1, "only the initial deferred request should reach the provider");
+}
+
+/// Pinned `resolveSystemPrompt` (`drive/generation.ts`): a lazy `toolContext` is resolved per
+/// request and handed to the `systemPrompt(toolContext, context)` callback.
+#[tokio::test]
+async fn system_prompt_receives_lazily_resolved_tool_context() {
+    use maho_agent::harness::agent_harness::{AgentHarnessOptions, AgentHarnessSystemPromptFn, ToolContextSource};
+    use maho_agent::harness::runtime::harness::create_agent_harness_with_options;
+    use maho_agent::harness::runtime::lane::{PromptInput, RunOutcome};
+
+    let faux = maho_ai::providers::faux::faux_provider(Default::default());
+    let model = faux.get_model(None).expect("faux provider ships a model");
+    let models = maho_ai::models::create_models(Some(maho_ai::models::CreateModelsOptions { auth: Some(Arc::new(FacadeAuth)), ..Default::default() }));
+    models.set_provider(faux.provider.clone());
+    faux.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("done", Default::default()).into()]);
+    let session = Arc::new(StorageBackedSession::new(
+        SessionMetadata { id: "lazy-context".into(), created_at: 1, storage_version: 1, cwd: None, parent_session_id: None, legacy_parent_session_path: None },
+        Arc::new(MemoryStorage::new(MemoryStorageOptions { now: Some(Arc::new(|| 10)) })),
+        StorageBackedSessionOptions::default(),
+    ));
+    session.attach();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let system_prompt: AgentHarnessSystemPromptFn<String> = Arc::new(move |tool_context, _context| {
+        let _ = sender.send(tool_context.clone());
+        Box::pin(async move { format!("prompt for {}", tool_context.unwrap_or_default()) })
+    });
+    let (harness, _open) = create_agent_harness_with_options(
+        AgentHarnessOptions::<String> {
+            session,
+            models,
+            model: model.clone(),
+            thinking_level: None,
+            active_tool_names: None,
+            tools: Vec::new(),
+            tool_context: Some(ToolContextSource::Resolve({
+                let resolve: maho_agent::harness::agent_harness::ToolContextResolver<String> =
+                    Arc::new(|_context| Box::pin(async { "lazy-context".to_owned() }));
+                resolve
+            })),
+            system_prompt: Some(system_prompt),
+            resources: None,
+            stream_options: None,
+            retry: None,
+            compaction: None,
+            steering_mode: None,
+            follow_up_mode: None,
+            tool_execution: None,
+            to_provider_messages: None,
+            entry_projectors: None,
+        },
+        &BACKGROUND_CONTEXT,
+    )
+    .await
+    .expect("the constructor attaches");
+    let lane = harness.lane("main", None, &BACKGROUND_CONTEXT).await.expect("lane");
+    let outcome = lane
+        .prompt(PromptInput::Text { text: "hi".into(), images: vec![] }, &BACKGROUND_CONTEXT)
+        .await
+        .expect("prompt does not fault")
+        .expect("prompt admits");
+    assert!(matches!(outcome, RunOutcome::Settled(_)));
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv()).await.expect("system prompt resolved").expect("sender alive");
+    assert_eq!(seen.as_deref(), Some("lazy-context"));
 }

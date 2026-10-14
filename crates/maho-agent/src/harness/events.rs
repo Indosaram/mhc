@@ -77,9 +77,9 @@ pub enum HarnessEventPayload {
     MessageStart { run_id: Option<String>, message: AgentMessage },
     MessageUpdate { run_id: String, message: AgentMessage, event: Box<maho_ai::types::AssistantMessageEvent>, frame: Option<maho_ai::utils::assistant_message_frame::AssistantMessageFrame> },
     MessageEnd { run_id: Option<String>, message: AgentMessage, entry_id: Option<String> },
-    ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String },
+    ToolStart { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, args: JsonValue },
     ToolUpdate { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, partial_result: AgentToolResult },
-    ToolEnd { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, is_error: bool, terminate: bool },
+    ToolEnd { run_id: String, turn_id: String, tool_call_id: String, tool_name: String, result: AgentToolResult, is_error: bool, terminate: bool },
     EntryAdded { entry: Box<Entry> },
     QueueUpdate { queues: Vec<LaneQueuedItem> },
     ValueUpdate { value: String, name: Option<String>, target_id: Option<String>, label: Option<String> },
@@ -354,11 +354,12 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
             object.insert("message".into(), wire_value_of(message));
             wire_insert_optional(&mut object, "entryId", entry_id.as_ref().map(|id| serde_json::json!(id)));
         }
-        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name } => {
+        HarnessEventPayload::ToolStart { run_id, turn_id, tool_call_id, tool_name, args } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
             object.insert("toolName".into(), serde_json::json!(tool_name));
+            object.insert("args".into(), args.clone());
         }
         HarnessEventPayload::ToolUpdate { run_id, turn_id, tool_call_id, tool_name, partial_result } => {
             object.insert("runId".into(), serde_json::json!(run_id));
@@ -367,11 +368,12 @@ pub fn event_to_value(event: &HarnessEvent) -> JsonValue {
             object.insert("toolName".into(), serde_json::json!(tool_name));
             object.insert("partialResult".into(), wire_value_of(partial_result));
         }
-        HarnessEventPayload::ToolEnd { run_id, turn_id, tool_call_id, tool_name, is_error, terminate } => {
+        HarnessEventPayload::ToolEnd { run_id, turn_id, tool_call_id, tool_name, result, is_error, terminate } => {
             object.insert("runId".into(), serde_json::json!(run_id));
             object.insert("turnId".into(), serde_json::json!(turn_id));
             object.insert("toolCallId".into(), serde_json::json!(tool_call_id));
             object.insert("toolName".into(), serde_json::json!(tool_name));
+            object.insert("result".into(), wire_value_of(result));
             object.insert("isError".into(), serde_json::json!(is_error));
             object.insert("terminate".into(), serde_json::json!(terminate));
         }
