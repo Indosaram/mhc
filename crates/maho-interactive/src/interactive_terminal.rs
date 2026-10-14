@@ -73,6 +73,7 @@ impl InteractiveTerminal {
         self.renderer.borrow_mut().base_mut().set_show_hardware_cursor(cursor);
         self.renderer.borrow_mut().base_mut().set_clear_on_shrink(shrink);
         terminal.set_progress(progress);
+        if self.mode.borrow_mut().take_pending_bell() { terminal.write("\x07"); }
         if let Some(title) = title { terminal.set_title(&title); }
         self.renderer.borrow_mut().do_render(terminal);
     }

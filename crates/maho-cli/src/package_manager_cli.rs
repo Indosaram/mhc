@@ -131,7 +131,7 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
         let mode = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             maho_core::project_trust::AppMode::Interactive
         } else { maho_core::project_trust::AppMode::Print };
-        let startup_ui = (global.get_string("theme"), global.get_bool("showHardwareCursor").unwrap_or(false), global.get_bool("clearOnShrink").unwrap_or(false));
+        let startup_ui = (global.get_string("theme"), global.get_show_hardware_cursor(), global.get_clear_on_shrink());
         let select_ui = startup_ui.clone();
         let selector: std::sync::Arc<crate::cli::project_trust::Selector> = std::sync::Arc::new(move |title: &str, options: &[String]| {
             match crate::cli::startup_ui::show_startup_selector(select_ui.0.as_deref(), select_ui.1, select_ui.2, title, options) {
@@ -283,8 +283,8 @@ fn select_config(settings: maho_core::settings_manager::SettingsManager, cwd: St
     use maho_interactive::{components::config_selector::{ConfigSelectorComponent, ConfigWriteScope}, tui_renderer::{create_interactive_tui, InteractiveTuiOptions}};
     use maho_tui::{terminal::Terminal, tui::Component};
     let theme = crate::cli::startup_ui::resolve_startup_theme(settings.get_string("theme").as_deref(), std::env::var("COLORFGBG").ok().as_deref())?;
-    let show_hardware_cursor = settings.get_bool("showHardwareCursor").unwrap_or(false);
-    let clear_on_shrink = settings.get_bool("clearOnShrink").unwrap_or(false);
+    let show_hardware_cursor = settings.get_show_hardware_cursor();
+    let clear_on_shrink = settings.get_clear_on_shrink();
     let available = settings.is_project_trusted();
     let closed = Rc::new(Cell::new(false)); let close = closed.clone(); let exit = closed.clone();
     let switch = Rc::new(Cell::new(false)); let toggle = switch.clone();

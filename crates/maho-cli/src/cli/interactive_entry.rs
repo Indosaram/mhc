@@ -134,7 +134,7 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
     });
     // senpi `TuiAltScreen` `mouse: terminalMouseMode !== "off"`; multiplexers get button-motion
     // tracking. The `TuiBase.start()` sequence brackets `terminal.start`.
-    let mut mouse_enabled = session.with_settings_manager(|settings| settings.get_string("terminalMouse")).as_deref() != Some("off");
+    let mut mouse_enabled = session.with_settings_manager(|settings| settings.get_terminal_mouse()) != "off";
     screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, mouse_enabled, maho_tui::tui_alt_screen::prefers_button_motion_mouse());
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
