@@ -263,3 +263,65 @@ async fn connection_count_observer_sees_each_connect_and_disconnect() {
     assert_eq!(counts.lock().unwrap().as_slice(),[1,0]);
     test.server.close().await.unwrap();
 }
+
+
+/// Delegates to the shared test host while exposing each client presentation to the test.
+struct PresentationCapturingHost {inner:Arc<TestServerHost>,presentations:std::sync::Mutex<Vec<Arc<dyn RoutedServerPresentation>>>}
+impl ServerHost for PresentationCapturingHost {
+    fn server_services(&self)->&dyn RoutedServerServiceHost {self}
+    fn resolve_session<'a>(&'a self,id:&'a str)->ServerFuture<'a,serde_json::Value> {self.inner.resolve_session(id)}
+    fn open_session(&self,metadata:serde_json::Value)->ServerFuture<'_,Arc<dyn RoutedSessionHandle>> {self.inner.open_session(metadata)}
+}
+impl RoutedServerServiceHost for PresentationCapturingHost {
+    fn attach_client(&self,presentation:Arc<dyn RoutedServerPresentation>)->ServerFuture<'_,Arc<dyn RoutedServerServiceAttachment>> {
+        self.presentations.lock().expect("test fixture").push(presentation.clone());
+        self.inner.server_services.attach_client(presentation)
+    }
+}
+
+#[tokio::test]
+async fn removing_another_session_keeps_the_current_attachment() {
+    let inner=Arc::new(TestServerHost::default());inner.seed(None,None).await.unwrap();
+    let host=Arc::new(PresentationCapturingHost {inner:inner.clone(),presentations:std::sync::Mutex::new(Vec::new())});
+    let test=create_test_server(TestServerOptions {host:Some(host.clone()),..Default::default()}).unwrap();
+    let id=test.server.server_id.clone();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(4);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    let serving=tokio::spawn(test.server.clone().serve(connection.clone(),inbound,signal));
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    sender.send(Ok(client_frame(json!({"type":"request","id":"a","target":{"serverId":id},"call":{"serviceId":"pi.session-management","member":"attach","args":["session-1"]}})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="response" && message["id"]=="a").await;
+    let presentation=host.presentations.lock().unwrap()[0].clone();
+    presentation.prepare_session_removal("session-2").await.unwrap();
+    assert!(!connection.frames().iter().any(|message|message["type"]=="attachment" && message["attachment"].is_null()));
+    assert_eq!(inner.latest_harness("session-1").await.unwrap().state.lock().await.attached_clients,1);
+    presentation.prepare_session_removal("session-1").await.unwrap();
+    connection.wait_for(|message|message["type"]=="attachment" && message["attachment"].is_null()).await;
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
+    test.server.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_detach_release_still_publishes_the_detach_and_surfaces_the_error() {
+    let host=Arc::new(TestServerHost::default());host.seed(None,None).await.unwrap();
+    let test=create_test_server(TestServerOptions {host:Some(host.clone()),..Default::default()}).unwrap();
+    let id=test.server.server_id.clone();
+    let connection=Arc::new(RecordingConnection::new());
+    let (sender,inbound)=tokio::sync::mpsc::channel(4);let (_shutdown,signal)=tokio::sync::watch::channel(false);
+    let serving=tokio::spawn(test.server.clone().serve(connection.clone(),inbound,signal));
+    sender.send(Ok(client_frame(json!({"type":"hello","version":8})))).await.unwrap();
+    sender.send(Ok(client_frame(json!({"type":"request","id":"a","target":{"serverId":id},"call":{"serviceId":"pi.session-management","member":"attach","args":["session-1"]}})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="response" && message["id"]=="a").await;
+    let harness=host.latest_harness("session-1").await.unwrap();
+    harness.state.lock().await.fail_attachment_release=Some(ServerError::new("internal_error","release failed"));
+    sender.send(Ok(client_frame(json!({"type":"request","id":"d","target":{"serverId":id},"call":{"serviceId":"pi.session-management","member":"detach","args":[]}})))).await.unwrap();
+    connection.wait_for(|message|message["type"]=="response" && message["id"]=="d").await;
+    let frames=connection.frames();
+    assert!(frames.iter().any(|message|message["type"]=="attachment" && message["attachment"].is_null()));
+    assert_eq!(frames.iter().find(|message|message["id"]=="d").unwrap()["ok"],false);
+    harness.state.lock().await.fail_attachment_release=None;
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(2),serving).await.unwrap().unwrap().unwrap();
+    test.server.close().await.unwrap();
+}
