@@ -30,5 +30,5 @@ pub struct PendingRun {
     pub resolve: oneshot::Sender<Result<Value, String>>,
     pub started_at: Option<tokio::time::Instant>,
     pub interrupt_reason: Option<String>,
-    pub resolve_state_retained: Option<oneshot::Sender<bool>>,
+    pub resolve_state_retained: Option<oneshot::Sender<(bool, Option<String>)>>,
 }

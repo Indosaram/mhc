@@ -16,9 +16,14 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
     // senpi catches `EvalBackgroundCapacityError` by type; the native abort reason carries its name.
     let capacity_cancelled=Arc::new(std::sync::atomic::AtomicBool::new(false));
     let capacity_abort=capacity_cancelled.clone();
+    // senpi settles `CodemodeSessionDisposedError` through `finalizeCancellation`; every other
+    // cancellation (timeouts, caller aborts, deadlines) is rethrown as a tool error.
+    let session_disposed=Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let disposed_abort=session_disposed.clone();
     let execution=CellExecution::new(invocation.signal.clone(),invocation.cell_id.clone(),None,Arc::new(move |reason| {
         active_abort.store(false,std::sync::atomic::Ordering::SeqCst);
         if reason.name=="EvalBackgroundCapacityError" {capacity_abort.store(true,std::sync::atomic::Ordering::SeqCst);}
+        if reason.name=="CodemodeSessionDisposedError" {disposed_abort.store(true,std::sync::atomic::Ordering::SeqCst);}
         controller.abort(Some(reason));
     }));
     let weak=Arc::downgrade(&execution);
@@ -258,7 +263,12 @@ pub async fn run_eval_cell(options:Arc<CreateEvalToolOptions>,invocation:EvalCel
                 cell.source.interrupt_note=note;
             }
         }
-        let final_result=match result {Ok(result)=>handler.builder.finalize(&result).await,Err(error)=>handler.builder.finalize_cancellation(&error).await};
+        let settles_as_result=capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst)||session_disposed.load(std::sync::atomic::Ordering::SeqCst);
+        let final_result=match result {
+            Ok(result)=>handler.builder.finalize(&result).await,
+            Err(error) if settles_as_result=>handler.builder.finalize_cancellation(&error).await,
+            Err(error)=>Err(error),
+        };
         let final_result=if capacity_cancelled.load(std::sync::atomic::Ordering::SeqCst) {final_result.map(|result|capacity_result(&result,handler.builder.state.duration_ms))} else {final_result};
         handler.builder.state.active=false;
         active.store(false,std::sync::atomic::Ordering::SeqCst);

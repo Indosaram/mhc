@@ -9,7 +9,7 @@ type QueueSnapshot = (Option<String>, Vec<String>);
 enum Command {
     Run(PythonKernelRunOptions, oneshot::Sender<Result<Value, String>>),
     Cancel(String, String, oneshot::Sender<bool>),
-    Interrupt(String, Option<String>, oneshot::Sender<bool>),
+    Interrupt(String, Option<String>, oneshot::Sender<(bool, Option<String>)>),
     Reset(oneshot::Sender<Result<(), String>>),
     Close(oneshot::Sender<Result<(), String>>),
 }
@@ -53,7 +53,7 @@ impl PythonKernel {
         receiver.await.unwrap_or(false)
     }
 
-    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<bool, String> {
+    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<(bool, Option<String>), String> {
         let (sender,receiver)=oneshot::channel();
         self.commands.send(Command::Interrupt(reason.into(),cell_id.map(str::to_owned),sender)).map_err(|_| "Python kernel is closed".to_string())?;
         receiver.await.map_err(|_| "Python interrupt outcome unavailable".to_string())
@@ -95,7 +95,7 @@ fn settle(mut run: PendingRun, mut result: Value, retained: bool) {
         result=failed_python_result(&run.input.cell_id,&message,stack.as_deref());
         result["durationMs"]=serde_json::json!(duration);
     } else if result["durationMs"]==0 { result["durationMs"]=serde_json::json!(duration); }
-    if let Some(sender)=run.resolve_state_retained.take() { let _=sender.send(retained); }
+    if let Some(sender)=run.resolve_state_retained.take() { let _=sender.send((retained,None)); }
     let _=run.resolve.send(Ok(result));
 }
 
@@ -136,18 +136,18 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                 }
                 Some(Command::Interrupt(reason,id,response))=>{
                     if id.as_ref().is_some_and(|id|active.as_ref().is_none_or(|run| &run.input.cell_id!=id)) {
-                        if let Some(index)=queue.iter().position(|run|Some(&run.input.cell_id)==id.as_ref()) && let Some(run)=queue.remove(index) {let result=failed_python_result(&run.input.cell_id,&reason,None);settle(run,result,true);}
-                        let _=response.send(true);
+                        let cancelled=if let Some(index)=queue.iter().position(|run|Some(&run.input.cell_id)==id.as_ref()) && let Some(run)=queue.remove(index) {let result=failed_python_result(&run.input.cell_id,&reason,None);settle(run,result,true);true} else {false};
+                        let _=response.send((true,(!cancelled).then(||"cell not found".to_owned())));
                     } else {
                         if id.is_none() {for mut run in queue.drain(..) {run.interrupt_reason=Some(reason.clone());let result=failed_python_result(&run.input.cell_id,"Eval interrupted",None);settle(run,result,true);}}
                         if let Some(run)=&mut active {
-                            if run.interrupt_reason.is_some() {let _=response.send(true);}
+                            if run.interrupt_reason.is_some() {let _=response.send((true,None));}
                             else {
                                 run.interrupt_reason=Some(reason.clone());run.resolve_state_retained=Some(response);
                                 deadline=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                                 if transport.interrupt(&reason).await.is_err() {deadline=Some(tokio::time::Instant::now());}
                             }
-                        } else {let _=response.send(true);}
+                        } else {let _=response.send((true,None));}
                     }
                 }
                 Some(Command::Reset(response))=>{
@@ -172,7 +172,7 @@ async fn run_actor(options: PythonTransportOptions, mut transport: PythonKernelT
                             settle(run,message,true);
                         }
                     } else if message["type"]=="interrupted" {
-                        if let Some(run)=&mut active && let Some(sender)=run.resolve_state_retained.take() {let _=sender.send(true);}
+                        if let Some(run)=&mut active && let Some(sender)=run.resolve_state_retained.take() {let _=sender.send((true,None));}
                     } else {
                         let active_callback=active.as_ref().and_then(|run|run.input.on_message.as_ref());
                         if let Some(callback)=active_callback.or(fallback.as_ref()) {callback(&message);}

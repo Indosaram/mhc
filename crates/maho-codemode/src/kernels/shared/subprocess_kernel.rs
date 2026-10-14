@@ -8,7 +8,7 @@ type QueueSnapshot = (Option<String>, Vec<String>);
 enum Command {
     Run(KernelRunInput, Option<KernelMessageCallback>, Option<KernelStartedCallback>, oneshot::Sender<Value>),
     Cancel(String, String, oneshot::Sender<bool>),
-    Interrupt(String, Option<String>, oneshot::Sender<Result<bool, String>>),
+    Interrupt(String, Option<String>, oneshot::Sender<Result<(bool, Option<String>), String>>),
     Reply(Value),
     NextToolCall(oneshot::Sender<oneshot::Receiver<Value>>),
     Reset(oneshot::Sender<Result<(), String>>),
@@ -69,7 +69,7 @@ impl SubprocessKernel {
         receiver.await.unwrap_or(false)
     }
 
-    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<bool, String> {
+    pub async fn interrupt(&self, reason: &str, cell_id: Option<&str>) -> Result<(bool, Option<String>), String> {
         let (response, receiver) = oneshot::channel();
         self.commands.send(Command::Interrupt(reason.into(), cell_id.map(str::to_owned), response)).map_err(|_| "Kernel is closed".to_string())?;
         receiver.await.map_err(|_| "Kernel interrupt outcome unavailable".to_string())?
@@ -182,12 +182,12 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                     let mut result = runs.enqueue(input, on_message, on_started);
                     tokio::spawn(async move { if let Ok(result) = (&mut result).await { let _ = response.send(result); } });
                 }
-                Some(Command::Interrupt(_, _, response)) if failure.is_some() => { let _ = response.send(Ok(true)); }
+                Some(Command::Interrupt(_, _, response)) if failure.is_some() => { let _ = response.send(Ok((true, None))); }
                 Some(Command::Cancel(id, reason, response)) => { let _ = response.send(runs.remove(&id, &reason, now())); }
                 Some(Command::Interrupt(reason, id, response)) => {
                     if id.as_ref().is_some_and(|id| runs.active().is_none_or(|run| &run.input.cell_id != id)) {
-                        if let Some(id) = id { runs.remove(&id, &reason, now()); }
-                        let _ = response.send(Ok(true));
+                        let cancelled = id.is_some_and(|id| runs.remove(&id, &reason, now()));
+                        let _ = response.send(Ok((true, (!cancelled).then(|| "cell not found".to_owned()))));
                     } else if let Some(mut run) = runs.release_active() {
                         let result = failure_result(&run, &format!("Cell interrupted: {reason}"), now());
                         settle_pending_run(&mut run, result);
@@ -195,8 +195,8 @@ async fn run_actor(options: SubprocessKernelOptions, mut process: SubprocessProc
                         let signal = if cfg!(windows) { "TERM" } else { "INT" };
                         let result = replace_process(&options, &mut process, signal, Duration::from_secs(5),&shutdown).await.map_err(|error| error.to_string());
                         failure = result.as_ref().err().cloned();
-                        let _ = response.send(result.map(|()| false));
-                    } else { runs.settle_all(&format!("Cell interrupted: {reason}"), now()); let _ = response.send(Ok(true)); }
+                        let _ = response.send(result.map(|()| (false, None)));
+                    } else { runs.settle_all(&format!("Cell interrupted: {reason}"), now()); let _ = response.send(Ok((true, None))); }
                 }
                 Some(Command::Reply(_)) if failure.is_some() => {}
                 Some(Command::Reply(message)) => { if let Err(error) = process.send(&message).await { failure = Some(error.to_string()); } }
