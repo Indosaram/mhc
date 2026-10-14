@@ -64,6 +64,7 @@ fn run() -> Result<(), String> {
             InternalProcessRole::Coordinator => run_coordinator_entry(&argv),
             InternalProcessRole::Server => run_mini_server_entry(&argv),
             InternalProcessRole::SessionWorker => run_mini_worker_entry(&argv),
+            InternalProcessRole::RpcSessionWorker => run_rpc_session_worker_entry(),
         };
     }
     // senpi main.ts:930: the internal supervisor route is answered before anything else runs. The
@@ -413,3 +414,11 @@ fn run_mini_worker_entry(argv: &[String]) -> Result<(), String> {
 }
 #[cfg(not(unix))]
 fn run_mini_worker_entry(_argv: &[String]) -> Result<(), String> { Err("The mini session worker requires the Unix socket transport".to_owned()) }
+/// senpi \`modes/rpc/session-worker.ts\`: one shared-host session in an isolated process. Stdout is the
+/// protocol channel, so every stray write is routed to stderr first (senpi \`takeOverStdout()\`).
+fn run_rpc_session_worker_entry() -> Result<(), String> {
+    maho_cli::cli::setup::register_builtin_apis();
+    maho_core::output_guard::take_over_stdout();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+    runtime.block_on(maho_rpc::session_worker::run_session_worker(Box::new(maho_cli::cli::host_runtime::session_worker_configuration)))
+}
