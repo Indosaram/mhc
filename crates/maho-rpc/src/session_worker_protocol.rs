@@ -7,8 +7,15 @@ pub const fn worker_credit_code(grant:SessionWriteGrant)->i32{match grant{Sessio
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub struct WorkerCreditCodes{pub granted:i32,pub conflict:i32,pub limit:i32}
 pub const WORKER_CREDIT_CODES:WorkerCreditCodes=WorkerCreditCodes{granted:worker_credit_code(SessionWriteGrant::Granted),conflict:worker_credit_code(SessionWriteGrant::Conflict),limit:worker_credit_code(SessionWriteGrant::Limit)};
+/// Decodes a JSON number into `f64` even inside an internally tagged enum: there serde buffers the
+/// payload, and with serde_json's `arbitrary_precision` (unified into the binary by other crates) a
+/// buffered non-integer number arrives as a map that a plain `f64` field rejects.
+fn json_f64<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<f64,D::Error>{
+    let number=serde_json::Number::deserialize(deserializer)?;
+    number.as_f64().ok_or_else(||serde::de::Error::custom("number is not representable as f64"))
+}
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
-pub struct WorkerDisplay{pub revision:f64,pub width:f64,pub rendered:bool,pub capabilities:Vec<String>}
+pub struct WorkerDisplay{#[serde(deserialize_with="json_f64")]pub revision:f64,#[serde(deserialize_with="json_f64")]pub width:f64,pub rendered:bool,pub capabilities:Vec<String>}
 #[derive(Debug,Clone,Serialize,Deserialize,PartialEq)]
 #[serde(rename_all="camelCase")]
 pub struct WorkerSnapshot{pub state:serde_json::Value,#[serde(skip_serializing_if="Option::is_none")]pub session_path:Option<String>,pub live_session_paths:Vec<String>,pub busy:bool,#[serde(skip_serializing_if="Option::is_none")]pub handoff_busy:Option<bool>,pub streaming:bool}
@@ -38,7 +45,7 @@ pub enum SessionWorkerWire{
     Snapshot{snapshot:WorkerSnapshot,signal:u64,#[serde(default,skip_serializing_if="Option::is_none")]settled:Option<bool>},
     ControlDone{control:WorkerControlKind},
     Output{record:serde_json::Value,#[serde(default,skip_serializing_if="Option::is_none")]connection:Option<String>,signal:u64,activity:WorkerActivity,#[serde(default,skip_serializing_if="Option::is_none")]snapshot:Option<WorkerSnapshot>},
-    Width{#[serde(default,skip_serializing_if="Option::is_none")]connection:Option<String>,width:f64,signal:u64},
+    Width{#[serde(default,skip_serializing_if="Option::is_none")]connection:Option<String>,#[serde(deserialize_with="json_f64")]width:f64,signal:u64},
     Capabilities{#[serde(default,skip_serializing_if="Option::is_none")]connection:Option<String>,capabilities:Vec<String>,signal:u64},
     RequestClose,Failure{error:String},
 }
