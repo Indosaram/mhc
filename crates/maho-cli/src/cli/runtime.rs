@@ -46,6 +46,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     if facts_bootstrap && !parsed.no_session { return Err("facts read-only bootstrap requires --no-session".into()); }
     let migrations = if facts_bootstrap { crate::migrations::MigrationResult { migrated_auth_providers: vec![], deprecation_warnings: vec![] } }
     else { indicator.during_surface_write(|| crate::migrations::run_migrations_with_lock(&cwd, std::path::Path::new(&maho_core::config::home_dir()), std::path::Path::new(&agent_dir),true)).map_err(|error| error.to_string())? };
+    maho_core::timings::time("runMigrations", maho_core::timings::TimingLabel::Main);
     if mode == AppMode::Rpc && parsed.multi_session {
         // senpi main.ts:1119 `resolveSessionRuntime`: stdio hosts default to one isolated worker per
         // session. The native host has no worker session registry yet, so a worker runtime
@@ -60,6 +61,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         let mut config = super::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, AppMode::Rpc);
         config.session_dir = resolve_session_dir(parsed.session_dir.as_deref(), std::env::var(maho_core::config::env_session_dir_var()).ok().as_deref(), None);
         let core = super::host_runtime::create_host_core(config, &cwd_text, parsed.listen.as_deref());
+        maho_core::timings::print_timings();
         return super::host_runtime::serve_multi_session_host(core, parsed.listen.clone()).await.map_err(|error| error.to_string());
     }
     // senpi `createCliRuntimeFactory`: resolve project trust for the launch cwd (override, saved
@@ -168,6 +170,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         Some(raw) => Some(super::args::normalize_session_name(raw).ok_or("Error: --name requires a non-empty value")?.to_owned()),
         None => None,
     };
+    maho_core::timings::time("createSessionManager", maho_core::timings::TimingLabel::Main);
     let (widget_sender, widget_requests) = tokio::sync::mpsc::unbounded_channel();
     let task_parent = Arc::new(std::sync::OnceLock::new());
     // Builtins with the OAuth provider lanes, filtered by the builtin-extension settings selection.
@@ -193,6 +196,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         &extensions.extensions.iter().map(|extension| std::path::PathBuf::from(&extension.identity.resolved_path)).collect::<Vec<_>>(),
         env!("CARGO_PKG_VERSION"),
     );
+    maho_core::timings::time("helpFlagsCache", maho_core::timings::TimingLabel::Main);
     runtime_diagnostics.extend(extensions.errors.iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("Failed to load extension \"{}\": {}", error.extension_path, error.error))));
     if mode != AppMode::Interactive {
         runtime_diagnostics.extend(models.credentials.errors().into_iter().map(|error| maho_core::settings_diagnostics::AgentSessionRuntimeDiagnostic::warning(format!("(runtime creation, auth storage) {error}"))));
@@ -266,10 +270,16 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         },
         ..Default::default()
     }).await.map_err(|error| if mode != AppMode::Interactive && error == "No model available" { maho_core::auth_guidance::format_no_models_available_message() } else { error })?;
+    maho_core::timings::time("createAgentSession", maho_core::timings::TimingLabel::Main);
     // senpi main.ts:1292-1295: print/json/rpc without a usable model exits 1 with the login help.
     let created_model = created.session.model();
     if mode != AppMode::Interactive && created_model.provider == "unknown" && created_model.id == "unknown" {
         return Err(maho_core::auth_guidance::format_no_models_available_message());
+    }
+    // senpi main.ts:1297-1301: the startup benchmark measures interactive startup only.
+    let startup_benchmark = super::shared_host::is_truthy_env_flag(maho_core::brand::env_value("STARTUP_BENCHMARK", &maho_core::config::current_env()).as_deref());
+    if startup_benchmark && mode != AppMode::Interactive {
+        return Err("Error: PI_STARTUP_BENCHMARK only supports interactive mode".into());
     }
     let session = Arc::new(created.session);
     // senpi main.ts:1253: `setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides())`.
@@ -317,6 +327,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             }
             // The connection handler performs the first extension bind with the RPC UI context
             // (senpi `createRpcConnectionHandler` -> `rebindSession`), so extensions see `hasUI`.
+            maho_core::timings::print_timings();
             let code = maho_rpc::rpc_mode::run_rpc_mode(&session, tokio::io::stdin(), tokio::io::stdout()).await.map_err(|error| error.to_string())?;
             // senpi `createRpcShutdown`: SIGTERM/SIGHUP (143/129) kill tracked detached children.
             #[cfg(unix)]
@@ -339,7 +350,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 tokio::io::stdin().read_to_string(&mut text).await.map_err(|error| error.to_string())?;
                 Some(text.trim().to_owned()).filter(|text| !text.is_empty())
             };
+            maho_core::timings::time("readPipedStdin", maho_core::timings::TimingLabel::Main);
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, session.with_settings_manager(|settings| settings.get_image_auto_resize()), stdin.as_deref()).await?;
+            maho_core::timings::time("prepareInitialMessage", maho_core::timings::TimingLabel::Main);
+            maho_core::timings::print_timings();
             // senpi print-mode.ts `runPrintMode`: the session header, session events (not raw agent
             // events) as JSON lines, fallback diagnostics and the text result all come from the
             // shared native print runner.
@@ -357,7 +371,9 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         }
         AppMode::Interactive => {
             let initial = startup::prepare_initial_message(&mut parsed, &cwd, session.with_settings_manager(|settings| settings.get_image_auto_resize()), None).await?;
-            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests, migrations.migrated_auth_providers.clone(), model_fallback_message.clone()).await.map(|()| 0)
+            maho_core::timings::time("prepareInitialMessage", maho_core::timings::TimingLabel::Main);
+            if !startup_benchmark { maho_core::timings::print_timings(); }
+            super::interactive_entry::run(session.clone(), &parsed, initial, extension_snapshot, widget_requests, migrations.migrated_auth_providers.clone(), model_fallback_message.clone(), startup_benchmark).await.map(|()| 0)
         },
         AppMode::AppServer => unreachable!("server mode rejected before session creation"),
     } };
