@@ -1612,6 +1612,15 @@ impl InteractiveMode {
         self.show_status(format!("Session name set: {}", self.host_session_name().unwrap_or_else(|| name.into())));
     }
 
+    /// The receiver of senpi's synchronous session setters (`setSteeringMode`, `setScopedModels`,
+    /// ...): the mounted host's proxy, else the local session.
+    fn session_setter_target(&self) -> Arc<dyn crate::interactive_session::InteractiveSession> {
+        match self.session_host.clone() {
+            Some(host) => host,
+            None => Arc::new(crate::interactive_session::LocalInteractiveSession::new(self.session.clone())),
+        }
+    }
+
     /// Fire-and-forget session thinking-level set for the synchronous paths.
     fn fire_set_session_thinking_level(&self, level: &str) {
         match self.session_host.clone() {
@@ -3355,10 +3364,10 @@ impl InteractiveMode {
             // senpi `onTerminalMouseChange`: the host applies it by recreating the renderer, and only
             // when no overlay is open; the setting is persisted once the host accepts the change.
             { let ui = self.extension_ui.clone(); callbacks.on_terminal_mouse_change = Some(Box::new(move |value: String| drop(ui.sender.send(crate::interactive_extension_ui::UiRequest::TerminalSetting("terminalMouse".into(), serde_json::json!(value)))))); }
-            let session = self.session.clone(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { session.set_auto_compaction_enabled(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
-            let session = self.session.clone(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| session.set_steering_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
-            let session = self.session.clone(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| session.set_follow_up_mode(if mode == "all" { maho_agent::types::QueueMode::All } else { maho_agent::types::QueueMode::OneAtATime })));
-            let session = self.session.clone(); callbacks.on_thinking_level_change = Some(Box::new(move |level| session.set_thinking_level(maho_ai::types::ModelThinkingLevel::parse(level.as_str()).expect("selector thinking level"))));
+            let session = self.session.clone(); let target = self.session_setter_target(); callbacks.on_auto_compact_change = Some(Box::new(move |enabled| { target.set_auto_compaction(enabled); if let Err(error) = session.with_settings_manager_mut(|settings| settings.set_compaction_enabled(enabled)) { session.emit(maho_ext_api::AgentSessionEvent::ContinuationError { error_message:error }); } }));
+            let target = self.session_setter_target(); callbacks.on_steering_mode_change = Some(Box::new(move |mode| target.set_steering_mode(mode)));
+            let target = self.session_setter_target(); callbacks.on_follow_up_mode_change = Some(Box::new(move |mode| target.set_follow_up_mode(mode)));
+            let target = self.session_setter_target(); callbacks.on_thinking_level_change = Some(Box::new(move |level| target.set_thinking_level(level.as_str().to_owned())));
             macro_rules! persist_enum { ($field:ident, $key:literal, $ty:ty, $value:expr) => {{ let session = self.session.clone(); let ui = self.extension_ui.clone(); callbacks.$field = Some(Box::new(move |value: $ty| {
                 let serialized = ($value)(value); let values = [($key.into(), serialized.clone())].into_iter().collect();
                 match session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) {
@@ -3417,7 +3426,7 @@ impl InteractiveMode {
             let enabled = if !entries.is_empty() { Some(entries.iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).collect()) }
                 else if stored.is_empty() { if favorites || configured.is_some() { Some(Vec::new()) } else { None } }
                 else { Some(resolution.pattern_resolutions.iter().flat_map(|item| if item.unresolved { vec![item.pattern.clone()] } else { item.owned_ids.clone() }).collect()) };
-            let session = self.session.clone(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
+            let target = self.session_setter_target(); let available = Rc::new(RefCell::new(models.clone())); let footer_data = self.footer_data.clone();
             // senpi `updateSessionModels`: applies the scope over the (refreshable) available snapshot
             // and recomputes the footer's provider count.
             let update_session_models: Rc<dyn Fn(Option<Vec<String>>)> = { let available = available.clone(); Rc::new(move |ids: Option<Vec<String>>| {
@@ -3425,11 +3434,10 @@ impl InteractiveMode {
                 let all_ids: Vec<_> = available.iter().map(|model| format!("{}/{}", model.provider, model.id)).collect();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(ids.as_deref().unwrap_or(&all_ids), &available);
                 let entries = resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.map(|level| serde_json::from_value(serde_json::json!(level.as_str())).expect("resolved thinking level")), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect();
-                if favorites { session.set_favorite_models(entries); return; }
-                else if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { session.set_scoped_models(Vec::new()); }
-                else { session.set_scoped_models(entries); }
+                if favorites { target.set_favorite_models(entries); return; }
+                let scoped = if ids.as_ref().is_some_and(|ids| available.iter().all(|model| ids.contains(&format!("{}/{}", model.provider, model.id)))) { Vec::new() } else { entries };
+                target.set_scoped_models(scoped.clone());
                 // senpi `updateAvailableProviderCount`: the scoped models when narrowed, else the snapshot.
-                let scoped = session.scoped_models();
                 let providers: std::collections::BTreeSet<_> = if scoped.is_empty() { available.iter().map(|model| model.provider.clone()).collect() } else { scoped.into_iter().map(|entry| entry.model.provider).collect() };
                 footer_data.set_available_provider_count(providers.len());
             }) };
@@ -3552,7 +3560,7 @@ impl InteractiveMode {
             let candidate_ids = models.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
             let session_favorites = self.host_favorite_models().into_iter().map(|entry| format!("{}/{}", entry.model.provider, entry.model.id)).filter(|id| candidate_ids.contains(id)).collect::<Vec<_>>();
             let favorite_ids = Some(if session_favorites.is_empty() { resolutions.iter().flat_map(|resolution| resolution.owned_ids.clone()).filter(|id| candidate_ids.contains(id)).collect() } else { session_favorites });
-            let session = self.session.clone(); let ui = self.extension_ui.clone();
+            let session = self.session.clone(); let ui = self.extension_ui.clone(); let target = self.session_setter_target();
             let favorite_callback = Box::new(move |ids: crate::components::favorite_model_ids::FavoriteModelIds, candidates: &[ModelEntry], _: &ModelEntry| {
                 let candidate_ids = candidates.iter().map(ModelEntry::full_id).collect::<Vec<_>>();
                 let merged = crate::components::model_favorites::merge_favorite_patterns_for_persist(crate::components::model_favorites::FavoritePatternsForPersist { stored_patterns:&stored, pattern_resolutions:&resolutions, selected_ids:&ids, candidate_ids:&candidate_ids });
@@ -3560,7 +3568,7 @@ impl InteractiveMode {
                 if let Err(error) = session.with_settings_manager_mut(|settings| settings.set(maho_core::settings_manager::SettingsScope::Global, &values)) { maho_ext_api::ExtensionUi::notify(ui.as_ref(), &error, maho_ext_api::NotificationType::Error); return; }
                 let patterns = merged.unwrap_or_default();
                 let resolved = maho_core::model_resolver::resolve_model_scope_from_models(&patterns, &catalog);
-                session.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
+                target.set_favorite_models(resolved.scoped_models.into_iter().map(|entry| maho_core::agent_session::SessionModelEntry { model:entry.model, thinking_level:entry.thinking_level.and_then(|level| serde_json::from_value(serde_json::json!(level.as_str())).ok()), thinking_selection:entry.thinking_selection, service_tier:entry.service_tier.map(|tier| match tier.as_str() { "auto" => maho_ext_api::ServiceTier::Auto, "flex" => maho_ext_api::ServiceTier::Flex, "priority" => maho_ext_api::ServiceTier::Priority, _ => unreachable!("resolved service tier") }) }).collect());
             });
             let scoped = self.host_scoped_models().into_iter().map(|entry| crate::components::model_selector::ScopedModelItem { model:ModelEntry { provider:entry.model.provider, id:entry.model.id, name:entry.model.name }, thinking_level:entry.thinking_level.map(|level| serde_json::to_value(level).expect("thinking level").as_str().expect("string level").to_owned()) }).collect();
             let mut selector = ModelSelectorComponent::new(&self.theme, Arc::new(self.keybindings()), 0, &models,
