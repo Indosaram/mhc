@@ -2156,9 +2156,9 @@ impl InteractiveMode {
             if let Some(text)=copy.filter(|text|!text.is_empty()) {
                 match crate::interactive_clipboard::copy(&text).await {
                     Ok(sequence)=>{if let Some(sequence)=sequence {maho_tui::process_stdio::stdout_write(&sequence);}self.show_status("Copied selected message to clipboard".into());}
-                    Err(error)=>self.show_status(error),
+                    Err(error)=>self.show_error(&error),
                 }
-            }else{self.show_status("Selected entry has no text to copy".into());}
+            }else{self.show_error("Selected entry has no text to copy");}
         }
         let text = self.submissions.borrow_mut().pop_front();
         let text = text?;
@@ -2638,11 +2638,11 @@ impl InteractiveMode {
                 }
                 KeybindingsEditOutcome::LaunchFailed { seeded } => {
                     if seeded { let _ = std::fs::remove_file(&config_path); }
-                    self.show_status(format!("Could not open {} with \"{editor_command}\".", config_path.display()));
+                    self.show_error(&format!("Could not open {} with \"{editor_command}\".", config_path.display()));
                 }
-                KeybindingsEditOutcome::Exited { code } => self.show_status(format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
-                KeybindingsEditOutcome::Invalid { message } => self.show_status(format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
-                KeybindingsEditOutcome::IoError { message } => self.show_status(format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
+                KeybindingsEditOutcome::Exited { code } => self.show_error(&format!("\"{editor_command}\" exited with code {code}; keybindings were not reloaded.")),
+                KeybindingsEditOutcome::Invalid { message } => self.show_error(&format!("Keybindings not reloaded - {} is not valid JSON: {message}", config_path.display())),
+                KeybindingsEditOutcome::IoError { message } => self.show_error(&format!("Could not open {} with \"{editor_command}\": {message}", config_path.display())),
             }
             return Ok(PromptDisposition::Handled);
         }
