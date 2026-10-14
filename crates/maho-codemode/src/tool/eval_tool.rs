@@ -29,7 +29,8 @@ pub fn create_eval_tool(options:Arc<CreateEvalToolOptions>) -> Result<ToolDefini
     let mut definition=ToolDefinition::new("eval",&prompt.description,parameters,Arc::new(move |call| {
         let options=options.clone();
         Box::pin(async move {
-            call.signal.check()?;
+            // senpi `runEvalCell` throws `abortError(signal.reason)` for a pre-aborted call.
+            if call.signal.is_aborted() {return Err(ToolError::Message(super::cell_execution::abort_error(maho_ai::utils::abort::AbortReason::dom_default()).message));}
             let request=parse_eval_request(&call.params).map_err(|error|ToolError::Message(error.to_string()))?;
             let result=match request {
                 EvalToolRequest::List=>{
