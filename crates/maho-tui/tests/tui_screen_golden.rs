@@ -103,7 +103,9 @@ fn replay(name: &str) -> (String, u16, u16) {
         out: String::new(),
     };
 
+    // senpi's test bootstrap scrubs multiplexer markers so fixtures follow the non-mux path.
     let mut main_screen = TuiMainScreen::new();
+    main_screen.base.set_mux_detector(Box::new(|| false));
     let mut alt_screen = TuiAltScreen::new();
     if mode == "alt" {
         alt_screen.before_terminal_start(&mut terminal, true, false);
@@ -213,6 +215,7 @@ fn main_screen_resize_shrink_leaves_no_stale_cells() {
             out: String::new(),
         };
         let mut screen = TuiMainScreen::new();
+        screen.base.set_mux_detector(Box::new(|| false));
         let child: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
         screen.base.add_child(child);
         screen.base.reset_forced_render_state();
@@ -226,6 +229,7 @@ fn main_screen_resize_shrink_leaves_no_stale_cells() {
         out: String::new(),
     };
     let mut screen = TuiMainScreen::new();
+    screen.base.set_mux_detector(Box::new(|| false));
     let child: Rc<RefCell<dyn Component>> = Rc::new(RefCell::new(Text::with_padding(long_line, 0, 0)));
     screen.base.add_child(child);
     screen.base.reset_forced_render_state();
