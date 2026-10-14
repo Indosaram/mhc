@@ -6373,6 +6373,12 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Rebinds how `reload`/session replacement recreate the bound extension runner (the CLI
+    /// installs senpi's resource-loader re-resolution here).
+    pub async fn set_extension_runtime_factory(&self, factory: maho_ext_host::runner::RuntimeFactory) {
+        if let Some(runner) = self.extension_runner.lock().await.as_mut() { runner.set_runtime_factory(factory); }
+    }
+
     async fn ensure_extension_recreation(&self) -> Result<(), String> {
         if let Some(runner) = self.extension_runner.lock().await.as_ref() {
             runner.ensure_recreation_available().map_err(|error| error.message)?;
