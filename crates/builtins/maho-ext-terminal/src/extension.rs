@@ -254,7 +254,7 @@ impl Extension for TerminalExtension {
             for id in ids {if let Some(task)=bind_completion(id,manager.clone(),backgrounds.clone(),sender.clone(),delivery.clone(),notifier.clone()) {tasks.lock().map_err(|_|ExtensionFailure::new("terminal completion tasks poisoned"))?.push(task);}}Ok(EventResult::None)
         })}));
         let bash_backgrounds=backgrounds.clone();
-        let mut bash=ToolDefinition::new("bash","Execute a shell command in a persistent PTY-backed session.",json!({"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"number"},"description":{"type":"string"},"run_in_background":{"type":"boolean"},"cols":{"type":"number"},"rows":{"type":"number"}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();let bash_configuration=bash_configuration.clone();let backgrounds=bash_backgrounds.clone();Box::pin(async move {
+        let mut bash=ToolDefinition::new("bash",r#"Execute a shell command in a persistent PTY-backed session. Set run_in_background:true for long-lived or interactive sessions; steer them with bash_input, snapshot with bash_output, tear down with kill_bash. To wait on observable state (a build finishing, a server coming up, a log line), never run sleep or poll loops — subscribe with the monitor tool instead. Foreground blocking stops at the ~60s window and a still-running command auto-detaches to a live background session; `timeout` is the process kill deadline in seconds."#,json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in a PTY-backed session."},"timeout":{"type":"number","description":"Process kill deadline in seconds (default 1800). Foreground blocking stops at the ~60s window: a command still running then auto-detaches to a live background session instead of being killed. Ignored for run_in_background sessions (they live until exit or kill_bash)."},"description":{"type":"string","description":"Short human-readable label for this command."},"run_in_background":{"type":"boolean","description":"Run as a persistent background session. Returns a bash_id immediately; query it with bash_output, steer with bash_input, tear down with kill_bash."},"cols":{"type":"number","description":"PTY width in columns (default 120)."},"rows":{"type":"number","description":"PTY height in rows (default 40)."}},"required":["command"]}),Arc::new(move |call| {let manager=Arc::clone(&bash_manager);let sender=bash_sender.clone();let delivery=completion_delivery.clone();let notifier=terminal_notifier.clone();let tasks=bash_tasks.clone();let bash_configuration=bash_configuration.clone();let backgrounds=bash_backgrounds.clone();Box::pin(async move {
             let (settings,shell)=bash_configuration.lock().map_err(|_|ToolError::Message("terminal configuration state poisoned".to_owned()))?.clone();
             let description=call.params.get("description").or_else(||call.params.get("command")).and_then(Value::as_str).unwrap_or("").to_owned();let started_at_ms=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error|ToolError::Message(error.to_string()))?.as_secs_f64()*1000.0;
             let result=crate::tools::bash::execute_configured_bash(manager.clone(),call,std::env::var("PI_BASH_FOREGROUND_SECONDS").ok().as_deref(),&settings,shell.as_deref()).await.map_err(ToolError::Message)?;
@@ -264,16 +264,16 @@ impl Extension for TerminalExtension {
             }
             tool_result(result)
         })}));
-        bash.exposure=Some(maho_tools::definition::ToolExposure::Eval);api.register_tool(bash);
-        for (name,description,properties,required) in [
-            ("bash_output","Read output from a background bash session without blocking.",json!({"bash_id":{"type":"string"},"filter":{"type":"string"},"view":{"type":"string","enum":["log","screen"]}}),vec!["bash_id"]),
-            ("bash_input","Write stdin or named keys to a live background bash session.",json!({"bash_id":{"type":"string"},"input":{"type":"string"},"keys":{"type":"array","items":{"type":"string"}},"submit":{"type":"boolean"}}),vec!["bash_id"]),
-            ("bash_resize","Resize a live background bash session's PTY.",json!({"bash_id":{"type":"string"},"cols":{"type":"number"},"rows":{"type":"number"}}),vec!["bash_id","cols","rows"]),
-            ("kill_bash","Terminate a background bash session and its process tree.",json!({"bash_id":{"type":"string"},"all":{"type":"boolean"}}),Vec::new()),
+        bash.exposure=Some(maho_tools::definition::ToolExposure::Eval);bash.prompt_snippet=Some("Run shell commands; run_in_background:true for long-lived/interactive PTY sessions".to_owned());bash.prompt_guidelines=Some(vec!["You can inspect PI_* environment variables for current model and session details.".to_owned()]);api.register_tool(bash);
+        for (name,description,prompt_snippet,properties,required) in [
+            ("bash_output","Read output from a background bash session without blocking: new output since the last read, the status line, or a rendered full-screen snapshot via view:'screen'. Pattern watches run through monitor; completion arrives as a notification carrying the exit code and output tail.","Peek at background bash session output (filter, screen view, status); watch patterns with monitor, completion arrives as a notification",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"filter":{"type":"string","description":"Only return output lines matching this regex."},"view":{"type":"string","enum":["log","screen"],"description":"'log' returns new raw output (default); 'screen' returns the rendered xterm grid."}}),vec!["bash_id"]),
+            ("bash_input","Write stdin or named keys (ctrl+c, enter, up, ...) to a live background bash session — e.g. drive a REPL or send SIGINT. This executes arbitrary shell input and is permission-gated like bash.","Send stdin/keys to a live background bash session (REPL steering, ctrl+c, etc.)",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"input":{"type":"string","description":"Literal text to write to the session's stdin."},"keys":{"type":"array","items":{"type":"string"},"description":"Named keys to send, e.g. ['ctrl+c'], ['enter'], ['up']. Sent after `input` when both are given."},"submit":{"type":"boolean","description":"Append Enter (\\r) after `input`. Default true when `input` is a non-empty string."}}),vec!["bash_id"]),
+            ("bash_resize","Resize a live background bash session's PTY (cols x rows) so full-screen TUIs reflow. No-ops with a note under the pipe fallback.","Resize a background bash session's PTY so TUIs reflow",json!({"bash_id":{"type":"string","description":"Session id returned by a run_in_background bash call."},"cols":{"type":"number","description":"New PTY width in columns."},"rows":{"type":"number","description":"New PTY height in rows."}}),vec!["bash_id","cols","rows"]),
+            ("kill_bash","Terminate a background bash session (or all of them) and its process tree cleanly.","Tree-kill a background bash session (or all) with no orphans",json!({"bash_id":{"type":"string","description":"Session id to tree-kill."},"all":{"type":"boolean","description":"Tree-kill every live background session."}}),Vec::new()),
         ] {
             let manager=Arc::clone(&manager);
             let monitors=monitors.clone();
-            let tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
+            let mut tool=ToolDefinition::new(name,description,json!({"type":"object","properties":properties,"required":required}),Arc::new(move |call| {let manager=Arc::clone(&manager);let monitors=monitors.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let id=call.params.get("bash_id").and_then(Value::as_str);
                 if name=="kill_bash" {
@@ -298,10 +298,11 @@ impl Extension for TerminalExtension {
                     "bash_resize"=>tool_result(execute_bash_resize(runtime.as_deref(),id,call.params.get("cols").and_then(Value::as_f64).unwrap_or(f64::NAN),call.params.get("rows").and_then(Value::as_f64).unwrap_or(f64::NAN))),_=>unreachable!(),
                 }
             })}));
+            tool.prompt_snippet=Some(prompt_snippet.to_owned());
             if name=="bash_output" {api.register_tool_with_renderers(tool,crate::tools::render::output_renderers()).expect("valid builtin bash_output registration");} else {api.register_tool(tool);}
         }
         let tool_manager=manager.clone();let tool_monitors=monitors.clone();let tool_notifier=notifier.clone();let tool_configuration=configuration.clone();
-        api.register_tool_with_renderers(ToolDefinition::new("monitor","Subscribe to command output or file changes instead of polling.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
+        let mut monitor_tool=ToolDefinition::new("monitor","Subscribe to a change instead of polling. Pass command XOR path, never both: command watches a PTY session, injecting matching newline-terminated output lines (stderr merged) plus an exit summary; path natively watches one file and fires once, where create (the default) fires only when the file appears after registration, so use event modify for an existing file, and filter is rejected. Returns a bash_id immediately; peek with bash_output, stop with kill_bash.",crate::tools::monitor::monitor_schema(),Arc::new(move |call| {
             let manager=tool_manager.clone();let monitors=tool_monitors.clone();let notifier=tool_notifier.clone();let configuration=tool_configuration.clone();Box::pin(async move {
                 let mut manager=manager.lock().map_err(|_|ToolError::Message("terminal manager state poisoned".to_owned()))?;
                 let mut monitors=monitors.lock().map_err(|_|ToolError::Message("monitor registry state poisoned".to_owned()))?;
@@ -314,7 +315,15 @@ impl Extension for TerminalExtension {
                 }
                 tool_result(result)
             })
-        })),crate::tools::render::monitor_renderers()).expect("valid builtin monitor registration");
+        }));
+        monitor_tool.prompt_snippet=Some("Subscribe to a command's output or a file's create/modify event as injected events instead of polling".to_owned());
+        monitor_tool.prompt_guidelines=Some(vec![
+            "Waiting on observable state (CI checks, builds, log patterns, deploys, a file landing) means a monitor, never a foreground sleep/poll loop.".to_owned(),
+            r#"Waiting for one file to appear or change is the path branch: `monitor({ description, path, event? })` beats wrapping `test -f` in a shell poll loop; a file that already exists needs `event: "modify"`, since `create` only fires on appearance, and registration needs the parent directory to exist already — when the run creates that directory too, use the `command` branch instead."#.to_owned(),
+            r#"Shape the command for the events you need: one-shot gate = `until <cond>; do sleep 1; done; printf 'READY\n'` with filter ^READY$; stream = `tail -n 0 -F <log> | grep --line-buffered <pat>` with persistent: true, then kill_bash."#.to_owned(),
+            "Sleep loops belong INSIDE the monitor command, never in your turn: about to sleep, re-poll bash_output, or foreground-block on a long command means register a monitor and keep working.".to_owned(),
+        ]);
+        api.register_tool_with_renderers(monitor_tool,crate::tools::render::monitor_renderers()).expect("valid builtin monitor registration");
         let activity=notifier.clone();
         let input_monitors=monitors.clone();
         api.on(EventKind::Input,Arc::new(move |event,_| {let notifier=activity.clone();let monitors=input_monitors.clone();Box::pin(async move {
