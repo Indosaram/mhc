@@ -17,6 +17,9 @@ pub struct RadiusGatewayModel {
     pub cost: ModelCost,
     pub context_window: u64,
     pub max_tokens: u64,
+    /// The validated gateway object as sent; upstream spreads `...model`, so extra per-model
+    /// fields (`compat`, `headers`, `serviceTier`, ...) reach the resulting `Model`.
+    pub raw: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +57,7 @@ fn gateway_model(value: &Value) -> RadiusGatewayModel {
         cost: model.get("cost").and_then(|cost| serde_json::from_value(cost.clone()).ok()).unwrap_or_default(),
         context_window: model["contextWindow"].as_u64().unwrap_or_default(),
         max_tokens: model["maxTokens"].as_u64().unwrap_or_default(),
+        raw: model.clone(),
     }
 }
 
@@ -85,27 +89,37 @@ pub fn get_radius_models_from_config(provider_id: &str, config: &RadiusGatewayCo
     config
         .models
         .iter()
-        .map(|model| Model {
-            id: model.id.clone(),
-            name: model.name.clone(),
-            api: "pi-messages".to_owned(),
-            provider: provider_id.to_owned(),
-            base_url: config.base_url.clone(),
-            reasoning: model.reasoning,
-            thinking_level_map: model.thinking_level_map.clone(),
-            input: model.input.clone(),
-            cost: model.cost.clone(),
-            context_window: model.context_window,
-            max_tokens: model.max_tokens,
-            sampling_params: None,
-            headers: None,
-            cache_retention: None,
-            upstream_model_id: None,
-            service_tier: None,
-            recover_text_tool_calls: None,
-            compat: None,
+        .map(|model| {
+            let mut spread = model.raw.clone();
+            spread.insert("api".to_owned(), Value::String("pi-messages".to_owned()));
+            spread.insert("provider".to_owned(), Value::String(provider_id.to_owned()));
+            spread.insert("baseUrl".to_owned(), Value::String(config.base_url.clone()));
+            serde_json::from_value::<Model>(Value::Object(spread)).unwrap_or_else(|_| typed_radius_model(provider_id, config, model))
         })
         .collect()
+}
+
+fn typed_radius_model(provider_id: &str, config: &RadiusGatewayConfig, model: &RadiusGatewayModel) -> Model {
+    Model {
+        id: model.id.clone(),
+        name: model.name.clone(),
+        api: "pi-messages".to_owned(),
+        provider: provider_id.to_owned(),
+        base_url: config.base_url.clone(),
+        reasoning: model.reasoning,
+        thinking_level_map: model.thinking_level_map.clone(),
+        input: model.input.clone(),
+        cost: model.cost.clone(),
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
+        sampling_params: None,
+        headers: None,
+        cache_retention: None,
+        upstream_model_id: None,
+        service_tier: None,
+        recover_text_tool_calls: None,
+        compat: None,
+    }
 }
 
 pub fn get_radius_models(provider_id: &str, credential: Option<&Credential>) -> Vec<Model> {
