@@ -53,6 +53,10 @@ async fn run_print_entry(no_context_files: bool, piped_stdin: Option<&str>) {
     std::fs::write(dir.path().join(".maho/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
     let agent = dir.path().join("agent");
     std::fs::create_dir(&agent).expect("print-entry fixture operation");
+    // Onboarding state lives under the agent home (`getOmoNativeStateDir` -> `<agentDir>/omo-senpi/omo-native`);
+    // headless startup claims and injects it like upstream onboarding/component.ts, so mark it complete there.
+    std::fs::create_dir_all(agent.join("omo-senpi/omo-native")).expect("print-entry fixture operation");
+    std::fs::write(agent.join("omo-senpi/omo-native/onboarding-completed"), "{}\n").expect("print-entry fixture operation");
     std::fs::create_dir(agent.join("prompts")).expect("print-entry fixture operation");
     std::fs::write(agent.join("prompts/default.md"), "default prompt must not load").expect("print-entry fixture operation");
     std::fs::write(dir.path().join("acceptance.md"), "expanded acceptance $1").expect("print-entry fixture operation");
