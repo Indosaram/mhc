@@ -2125,6 +2125,31 @@ impl AgentSession {
             return Err("Prompt cancelled".to_owned());
         }
         if text.starts_with('/') && self.try_execute_extension_command(text).await? { return Ok(PromptDisposition::Handled); }
+        // Bare "." on a session that already has messages is the manual-continue shortcut: it
+        // never becomes a visible user turn. Route it through the hidden custom-message path
+        // before extensions see an input event, so a "." cannot be echoed, transformed, or
+        // persisted as literal text.
+        if crate::manual_continue::is_manual_continue_submission(
+            text,
+            !self.agent.state().messages().is_empty(),
+            options.images.as_ref().is_some_and(|images| !images.is_empty()),
+        ) {
+            self.send_custom_message_content(
+                crate::manual_continue::MANUAL_CONTINUE_CUSTOM_TYPE.to_owned(),
+                maho_agent::harness::messages::CustomMessageContent::Text(crate::manual_continue::MANUAL_CONTINUE_DIRECTIVE.to_owned()),
+                false,
+                None,
+                maho_ext_api::SendMessageOptions {
+                    trigger_turn: true,
+                    deliver_as: Some(if options.streaming_behavior == Some(StreamingBehavior::FollowUp) {
+                        maho_ext_api::DeliverAs::FollowUp
+                    } else {
+                        maho_ext_api::DeliverAs::Steer
+                    }),
+                },
+            ).await?;
+            return Ok(PromptDisposition::Handled);
+        }
         let (pending_compaction, compaction_generation) = if options.source == Some(InputSource::Extension) {
             let state = self.state();
             (state.pending_compaction_admission.clone(),
