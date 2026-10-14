@@ -266,6 +266,27 @@ mod tests {
     }
 
     #[test]
+    fn pre_render_walk_renders_custom_result_stored_without_details() {
+        use std::sync::Arc;
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let lookup: super::super::tool_renderer::ToolRendererLookup = Arc::new(move |_| {
+            Some(Arc::new(RecordedRenderer(recorded.clone())) as Arc<dyn maho_ext_api::ErasedToolRenderers>)
+        });
+        let mut renderer = super::super::tool_renderer::ToolHtmlRenderer::new(super::super::tool_renderer::ToolHtmlRendererDeps {
+            get_tool_renderer: lookup,
+            theme: maho_ext_api::Theme::default(),
+            cwd: PathBuf::from("/work"),
+            width: None,
+        });
+        let entries = vec![
+            json!({"type":"message","message":{"role":"toolResult","toolCallId":"call-1","toolName":"custom","content":[{"type":"text","text":"ok"}],"isError":false}}),
+        ];
+        let rendered = pre_render_custom_tools(&entries, &mut renderer);
+        assert_eq!(rendered["call-1"]["resultHtmlExpanded"], "<div class=\"ansi-line\">expanded</div>");
+    }
+
+    #[test]
     fn pre_render_walk_leaves_template_rendered_tools_to_html_template() {
         use std::sync::Arc;
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));

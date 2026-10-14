@@ -103,13 +103,14 @@ impl StatusIndicator {
         attempt: usize,
         max: usize,
         delay: u64,
+        indicator: Option<LoaderIndicatorOptions>,
         trouble: bool,
         key: &str,
         theme: Theme,
         now: u64,
     ) -> Self {
         let message = retry_message(attempt, max, delay.div_ceil(1000), trouble, key);
-        let mut s = Self::new(StatusIndicatorKind::Retry, &message, theme, None, now);
+        let mut s = Self::new(StatusIndicatorKind::Retry, &message, theme, indicator, now);
         s.retry = Some((now.saturating_add(delay), attempt, max, trouble, key.into()));
         s
     }

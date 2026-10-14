@@ -12,10 +12,7 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
     let colorfgbg = std::env::var("COLORFGBG").ok();
     let session_ref = session.weak_accessor();
     session.set_html_theme_resolver(Arc::new(move |requested| {
-        let setting = requested.unwrap_or(&config_theme);
         let terminal_theme = maho_interactive::theme::detection::detect_terminal_background_from_env(colorfgbg.as_deref()).theme;
-        let name = maho_interactive::theme::resolve_theme_setting(Some(setting), terminal_theme)
-            .unwrap_or("dark");
         let mut registry = maho_interactive::theme::registry::ThemeRegistry::new(
             themes_dir.clone(), "dark", maho_interactive::theme::detect_color_mode(),
         ).map_err(|error|error.to_string())?;
@@ -25,7 +22,12 @@ pub fn configure_rpc_html_theme_with_paths(session: &maho_core::agent_session::A
         let mut themes = registered.clone();
         for theme in discovered { if !themes.iter().any(|known| known.name == theme.name) { themes.push(theme); } }
         registry.set_registered_themes(themes).map_err(|error|error.to_string())?;
-        let theme = registry.load_theme(name).map_err(|error|error.to_string())?;
+        // senpi `exportToHtml`: the first of the requested and configured themes that resolves;
+        // when neither does, the export falls back to the default (terminal background) theme.
+        let theme = [requested, Some(config_theme.as_str())].into_iter().flatten()
+            .filter_map(|setting| maho_interactive::theme::resolve_theme_setting(Some(setting), terminal_theme))
+            .find_map(|name| registry.load_theme(name).ok());
+        let theme = match theme { Some(theme) => theme, None => registry.load_theme(terminal_theme.name()).map_err(|error|error.to_string())? };
         let api_theme = maho_interactive::interactive_extension_ui::extension_theme(&theme);
         Ok((api_theme, Some((theme.resolved_colors(), theme.export_colors().clone()))))
     }));

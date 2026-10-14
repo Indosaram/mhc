@@ -501,6 +501,39 @@ fn session_selector_header_and_scope_toggle() {
     assert!(named.contains("Named"), "{named}");
 }
 
+/// senpi `loadScope`: loader progress reaches the header and requests a render per update.
+#[test]
+fn session_selector_loader_progress_requests_renders() {
+    let theme = theme();
+    let renders = Rc::new(std::cell::Cell::new(0));
+    let counter = Rc::clone(&renders);
+    let progress_seen = Rc::new(std::cell::Cell::new(false));
+    let seen = Rc::clone(&progress_seen);
+    let _component = SessionSelectorComponent::new(
+        &theme,
+        full_keybindings(),
+        Box::new(move |on_progress| {
+            let progress = on_progress.expect("selector passes a progress callback");
+            seen.set(true);
+            progress(1, 2);
+            progress(2, 2);
+            vec![session("a", "/s/a.jsonl", None, 1_000)]
+        }),
+        Box::new(|_| Vec::new()),
+        Box::new(|_| {}),
+        Box::new(|| {}),
+        Box::new(|| {}),
+        Box::new(move || counter.set(counter.get() + 1)),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(progress_seen.get());
+    // loading start + two progress updates + loaded.
+    assert_eq!(renders.get(), 4);
+}
+
 /// The session selector's rename mode swaps the list for a labelled input.
 #[test]
 fn session_selector_rename_mode_round_trip() {

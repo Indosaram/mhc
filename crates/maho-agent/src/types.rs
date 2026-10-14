@@ -425,7 +425,9 @@ impl AgentState {
 pub struct AgentToolResult {
     /// Text or image content returned to the model.
     pub content: Vec<ContentBlock>,
-    /// Arbitrary structured details for logs or UI rendering.
+    /// Arbitrary structured details for logs or UI rendering. senpi stores tool results whose
+    /// `details` is `undefined`, so a missing key reads as `null`.
+    #[serde(default)]
     pub details: Value,
     /// Usage from the final tool execution itself, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
