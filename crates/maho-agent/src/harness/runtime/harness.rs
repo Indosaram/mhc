@@ -367,7 +367,7 @@ impl<TContext: Clone + Send + Sync + 'static> Harness<TContext> {
         if *self.session_closed.lock().unwrap_or_else(|error| error.into_inner()) {
             return;
         }
-        let error = SessionError::new(SessionErrorKind::Closed, "AgentHarness is closed");
+        let error = SessionError::new(SessionErrorKind::Closed, crate::harness::result::HarnessClosed::MESSAGE);
         // Pinned `assertOpen`: a fault recorded before close stays the reported error.
         {
             let mut closed = self.closed_error.lock().unwrap_or_else(|e| e.into_inner());

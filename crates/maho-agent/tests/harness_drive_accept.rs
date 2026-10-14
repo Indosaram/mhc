@@ -444,8 +444,8 @@ async fn close_waits_for_admitted_idle_callback() {
 #[tokio::test]
 async fn acceptance_after_close_returns_expected_closed_rejection() {
     let lane = fixture().await.unwrap();
-    lane.seal(maho_agent::harness::session::session::SessionError::new(maho_agent::harness::session::session::SessionErrorKind::Closed, "AgentHarness is closed"));
-    assert_eq!(lane.accept_prompt(PromptInput::Text { text: "late".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::Closed { message: "AgentHarness is closed".into() }));
+    lane.seal(maho_agent::harness::session::session::SessionError::new(maho_agent::harness::session::session::SessionErrorKind::Closed, maho_agent::harness::HarnessClosed::MESSAGE));
+    assert_eq!(lane.accept_prompt(PromptInput::Text { text: "late".into(), images: vec![] }, None, settings(), &BACKGROUND_CONTEXT).await.unwrap(), Err(AdmissionError::Closed { message: maho_agent::harness::HarnessClosed::MESSAGE.into() }));
     assert!(lane.state().operation.is_none());
 }
 
