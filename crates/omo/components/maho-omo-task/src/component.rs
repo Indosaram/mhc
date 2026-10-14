@@ -62,6 +62,11 @@ impl TaskComponent {
         component.engine.store.set_mutation_listener(Some(Arc::new(move || {
             mutation_eval_handles.notify();
             if let Some(component) = weak.upgrade() {
+                // pin `task/index.ts:112-120` statusUi.scheduleSync() and `event-bridge.ts:36` taskRpc.sync()
+                // run on every store mutation, so child subscriptions attach before a fast first tool event.
+                component.status.schedule_sync();
+                let rpc = component.rpc.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                if let Some(rpc) = rpc { rpc.sync(); }
                 let mut pending = component.mutation_sync.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(handle) = pending.take() { component.status.timers.clear(handle); }
                 let weak = Arc::downgrade(&component);
