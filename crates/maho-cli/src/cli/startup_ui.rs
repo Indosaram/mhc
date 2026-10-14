@@ -242,8 +242,11 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
     screen.base_mut().set_clear_on_shrink(clear_on_shrink);
     let input = Rc::new(RefCell::new(Vec::<String>::new()));
     let captured = input.clone();
+    // senpi `startStartupTui` -> `ui.start()`.
+    screen.base_mut().prepare_start();
     screen.before_terminal_start(&mut terminal, false, false);
     terminal.start(Box::new(move |chunk| captured.borrow_mut().push(chunk.into())), Box::new(|| {}));
+    screen.base_mut().after_terminal_start(&mut terminal);
     let clock = std::time::Instant::now();
     let result = (|| {
         let theme = detect_startup_theme(theme_setting, &mut screen, &mut terminal, &input)?.unwrap_or(theme);
@@ -260,9 +263,17 @@ fn run_startup_dialog<C: maho_tui::tui::Component + 'static, T>(
         }
         Ok(())
     })();
+    // senpi `clearStartupTui`: `ui.clear()` then render once so the dialog is erased.
+    screen.base_mut().clear();
+    screen.base_mut().request_render(false, u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX));
+    screen.do_render(&mut terminal);
+    // senpi `ui.stop()`.
+    screen.base_mut().begin_stop(&mut terminal);
     screen.before_terminal_stop(&mut terminal, false);
+    screen.base_mut().finish_stop_output(&mut terminal, false);
     let stopped = terminal.stop().map_err(|error| error.to_string());
     screen.after_terminal_stop(&mut terminal, false);
+    screen.base_mut().reset_for_stop();
     result.and(stopped)
 }
 
