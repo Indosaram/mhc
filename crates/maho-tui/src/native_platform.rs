@@ -102,12 +102,18 @@ pub fn get_native_platform_helper() -> Option<Helper> {
 
 /// Registers this platform's built-in helper (the Rust port of senpi's prebuilt
 /// `native/<platform>` addon) under the path senpi loads it from. Call once at startup; Linux
-/// keeps senpi's command-line clipboard tools and registers nothing.
+/// registers the X11 clipboard helper, which [`get_native_clipboard`] loads only when `DISPLAY`
+/// is set.
 pub fn register_builtin_native_platform_helper() {
     #[cfg(target_os = "macos")]
     register_native_platform_helper(
         native_path("darwin", node_arch(), ""),
         Arc::new(crate::native_platform_darwin::DarwinPlatformHelper),
+    );
+    #[cfg(target_os = "linux")]
+    register_native_platform_helper(
+        native_path("linux", node_arch(), "-x11"),
+        Arc::new(crate::native_platform_linux_x11::LinuxX11PlatformHelper),
     );
     #[cfg(windows)]
     register_native_platform_helper(
