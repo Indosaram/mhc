@@ -1518,7 +1518,7 @@ async fn import_command_reports_a_missing_file_before_any_session_change() {
     assert_eq!(mode.submit(&format!("/import {}",missing.display()),Default::default()).await.expect("confirm dialog"),maho_core::agent_session::PromptDisposition::Handled);
     mode.handle_input_at("\r",0);
     let error = mode.submit_editor().await.expect_err("missing import file");
-    assert_eq!(error,format!("File not found: {}",missing.display()));
+    assert_eq!(error,format!("Failed to import session: File not found: {}",missing.display()));
 }
 
 #[tokio::test]
