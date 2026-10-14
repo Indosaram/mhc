@@ -203,7 +203,7 @@ fn run() -> Result<(), String> {
             usage_error(format!("Missing {} source.", package_command_name(command.command)), format!("Usage: {usage}"));
         }
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command)).map_err(|error| format!("Error: {error}"));
+        return runtime.block_on(maho_cli::package_manager_cli::run_package_command(command)).map_err(|error| error.to_string());
     }
     match argv.first().map(String::as_str) {
         Some("doctor") => {

@@ -183,7 +183,19 @@ async fn command_settings(trust_override: Option<bool>, saved_only: bool, contex
     Ok((cwd, agent_dir, settings))
 }
 
-pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), String> {
+/// senpi package-manager-cli.ts: a handled failure (`console.error(...)`, exit 1) prints its message
+/// as is, while a thrown error is caught at `:1131-1133` and printed as `Error: <message>`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PackageCommandError { Reported(String), Failed(String) }
+impl std::fmt::Display for PackageCommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self { Self::Reported(message) => f.write_str(message), Self::Failed(message) => write!(f, "Error: {message}") }
+    }
+}
+impl From<String> for PackageCommandError { fn from(message: String) -> Self { Self::Failed(message) } }
+impl From<&str> for PackageCommandError { fn from(message: &str) -> Self { Self::Failed(message.to_owned()) } }
+
+pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), PackageCommandError> {
     if options.command == PackageCommand::Update && options.update_target == Some(UpdateTarget::Models) {
         let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
         let mut runtime = maho_core::model_runtime::ModelRuntime::create_sync(maho_core::model_runtime::CreateModelRuntimeOptions {
@@ -194,7 +206,7 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
         })).await.map_err(|_| "Model catalog refresh timed out.".to_owned())?;
         if result.aborted { return Err("Model catalog refresh timed out.".into()); }
         if !result.errors.is_empty() {
-            return Err(format!("Could not refresh model catalogs: {}", result.errors.iter().map(|(provider, error)| format!("{provider}: {error}")).collect::<Vec<_>>().join("; ")));
+            return Err(format!("Could not refresh model catalogs: {}", result.errors.iter().map(|(provider, error)| format!("{provider}: {error}")).collect::<Vec<_>>().join("; ")).into());
         }
         maho_core::output_guard::maho_write_stdout("Model catalogs refreshed\n");
         return Ok(());
@@ -202,7 +214,7 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
     let (cwd, agent_dir, mut settings) = command_settings(options.project_trust_override, options.command == PackageCommand::Update, "package command").await?;
     let writes_project_package_config = matches!(options.command, PackageCommand::Install | PackageCommand::Remove) && options.local;
     if writes_project_package_config && !settings.is_project_trusted() {
-        return Err("Project is not trusted. Use --approve to modify local package config.".into());
+        return Err(PackageCommandError::Reported("Project is not trusted. Use --approve to modify local package config.".into()));
     }
     let mut manager = maho_core::package_manager::DefaultPackageManager::new(maho_core::package_manager::PackageManagerOptions {
         cwd: &cwd, agent_dir: &agent_dir, settings_manager: &mut settings,
@@ -215,7 +227,7 @@ pub async fn run_package_command(options: PackageCommandOptions) -> Result<(), S
 }
 
 /// The caller's settings manager is borrowed by the real resource manager throughout execution.
-pub async fn execute_package_command(options: &PackageCommandOptions, manager: &mut maho_core::package_manager::DefaultPackageManager<'_>) -> Result<(), String> {
+pub async fn execute_package_command(options: &PackageCommandOptions, manager: &mut maho_core::package_manager::DefaultPackageManager<'_>) -> Result<(), PackageCommandError> {
     use maho_core::package_manager::{InstalledSourceScope, PackageOptions};
     let text = match options.command {
         PackageCommand::Install => {
@@ -226,7 +238,7 @@ pub async fn execute_package_command(options: &PackageCommandOptions, manager: &
         PackageCommand::Remove => {
             let source = options.source.as_deref().ok_or("Missing remove source.")?;
             if !manager.remove_and_persist(source, Some(PackageOptions { local: options.local })).await.map_err(|error| error.to_string())? {
-                return Err(format!("No matching package found for {source}"));
+                return Err(PackageCommandError::Reported(format!("No matching package found for {source}")));
             }
             format!("Removed {source}\n")
         }
