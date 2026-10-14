@@ -2391,8 +2391,10 @@ impl AgentSession {
         // allows it and a configured fallback chain can take over.
         self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
         self.state().required_compaction_admission_error = None;
-        self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
-        self.finish_provider_turn().await?;
+        // Boxed: the agent run and its retry/compaction recovery futures are large enough that
+        // holding them inline in this frame overflows a 2 MiB runtime thread stack.
+        Box::pin(self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages))).await;
+        Box::pin(self.finish_provider_turn()).await?;
         self.flush_pending_bash_messages();
         let required_compaction_error = self.state().required_compaction_admission_error.take();
         let title_prompt = match options.session_title_prompt {
@@ -3356,7 +3358,7 @@ impl AgentSession {
     async fn finish_provider_turn(&self) -> Result<(), String> {
         loop {
             let mut retry_owned_deferred_queue = false;
-            self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue).await?;
+            Box::pin(self.finish_provider_turn_retrying(&mut retry_owned_deferred_queue)).await?;
             // senpi `retryExhaustionAllowsQueuedContinuation`: provider-timeout retries skip their
             // first queue poll so steering cannot be consumed by another doomed retry request. Once
             // the retry owner stops retrying, hand that retained queue back to the continuation
@@ -7592,8 +7594,10 @@ impl AgentSession {
         self.runtime_messages();
         self.agent_run_active.store(true, Ordering::SeqCst);
         self.agent.set_abort_server_side_fallback(Some(self.abort_server_side_fallback_enabled()));
-        self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages)).await;
-        self.finish_provider_turn().await?;
+        // Boxed: the agent run and its retry/compaction recovery futures are large enough that
+        // holding them inline in this frame overflows a 2 MiB runtime thread stack.
+        Box::pin(self.agent.prompt(maho_agent::agent::AgentPromptInput::Messages(messages))).await;
+        Box::pin(self.finish_provider_turn()).await?;
         self.flush_pending_bash_messages();
         drop(_work);
         drop(_admission);
