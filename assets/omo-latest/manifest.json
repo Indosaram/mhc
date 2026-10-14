@@ -1840,7 +1840,7 @@
     "ulw-loop": [
       {
         "path": "SKILL.md",
-        "bytes": 12630,
+        "bytes": 11045,
         "sha256": null,
         "source": "packages/omo-senpi/skills/ulw-loop/SKILL.md"
       },
@@ -1852,7 +1852,7 @@
       },
       {
         "path": "references/full-workflow.md",
-        "bytes": 31304,
+        "bytes": 31246,
         "sha256": null,
         "source": "packages/omo-senpi/skills/ulw-loop/references/full-workflow.md"
       }
@@ -1890,7 +1890,7 @@
       },
       {
         "path": "scripts/plan-templates.mjs",
-        "bytes": 7115,
+        "bytes": 6996,
         "sha256": null,
         "source": "packages/omo-senpi/skills/ulw-plan/scripts/plan-templates.mjs"
       },
@@ -1910,7 +1910,7 @@
       },
       {
         "path": "SKILL.md",
-        "bytes": 56360,
+        "bytes": 56205,
         "sha256": null,
         "source": "packages/omo-senpi/skills/ulw-research/SKILL.md"
       },
@@ -3614,7 +3614,7 @@
         },
         {
           "path": "ulw-loop/SKILL.md",
-          "bytes": 12630,
+          "bytes": 11045,
           "sha256": null
         },
         {
@@ -3624,7 +3624,7 @@
         },
         {
           "path": "ulw-loop/references/full-workflow.md",
-          "bytes": 31304,
+          "bytes": 31246,
           "sha256": null
         },
         {
@@ -3654,7 +3654,7 @@
         },
         {
           "path": "ulw-plan/scripts/plan-templates.mjs",
-          "bytes": 7115,
+          "bytes": 6996,
           "sha256": null
         },
         {
@@ -3669,7 +3669,7 @@
         },
         {
           "path": "ulw-research/SKILL.md",
-          "bytes": 56360,
+          "bytes": 56205,
           "sha256": null
         },
         {
@@ -4900,7 +4900,7 @@
         },
         {
           "path": "ulw-loop/SKILL.md",
-          "bytes": 12630,
+          "bytes": 11045,
           "sha256": null
         },
         {
@@ -4910,7 +4910,7 @@
         },
         {
           "path": "ulw-loop/references/full-workflow.md",
-          "bytes": 31304,
+          "bytes": 31246,
           "sha256": null
         },
         {
@@ -4940,7 +4940,7 @@
         },
         {
           "path": "ulw-plan/scripts/plan-templates.mjs",
-          "bytes": 7115,
+          "bytes": 6996,
           "sha256": null
         },
         {
@@ -4955,7 +4955,7 @@
         },
         {
           "path": "ulw-research/SKILL.md",
-          "bytes": 56360,
+          "bytes": 56205,
           "sha256": null
         },
         {
