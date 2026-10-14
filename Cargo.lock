@@ -4662,6 +4662,7 @@ dependencies = [
  "maho-core",
  "maho-ext-api",
  "maho-ext-host",
+ "maho-mcp-stdio-core",
  "maho-memory-core",
  "maho-model-core",
  "maho-omo-config-core",

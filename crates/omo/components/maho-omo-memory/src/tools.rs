@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use maho_ext_api::{ExtensionApi, ToolDefinition, ToolError, ToolExecutionMode, ToolExposure, ToolResult};
+use maho_ext_api::{ExtensionApi, McpExposure, McpServerDeclaration, McpTransport, ToolDefinition, ToolError, ToolExecutionMode, ToolExposure, ToolResult};
 use memory_core::tools::{memory::{MemoryToolParams, MemoryToolProvenanceInput, run_memory_tool}, memory_apply_patch::{MemoryApplyPatchParams, run_memory_apply_patch}};
 use crate::{context::MemoryIdentityContext, engine_session::{MemoryEngineSessionOptions, prepare_memory_engine_session}, tool_metadata::*};
 
@@ -112,12 +112,54 @@ pub fn register_memory_tools(api: &mut ExtensionApi, resolve: MemoryContextResol
     register_memory_tools_with_options(api, resolve, MemoryToolsOptions::default());
 }
 
+/// Pin `tools.ts` `registerMemoryToolSurface`: direct registration is the default surface; the
+/// search exposure registers the `omo-memory` stdio MCP server (served by this binary behind
+/// `MEMORY_MCP_ENTRY_FLAG`) with `exposure: search` and `enabled: true`, so the tools surface
+/// through tool_search as `mcp_omo-memory_*`. A host that cannot take the server falls back to
+/// direct registration.
+pub fn register_memory_tool_surface(api: &mut ExtensionApi, resolve: MemoryContextResolver, options: MemoryToolsOptions) {
+    if options.exposure == Some(ToolExposure::Search)
+        && let Ok(executable) = std::env::current_exe()
+        && api.try_register_mcp_server(MEMORY_MCP_SERVER_NAME, memory_mcp_server_declaration(&executable)).is_ok()
+    {
+        return;
+    }
+    register_memory_tools_with_options(api, resolve, options);
+}
+
+pub fn memory_mcp_server_declaration(executable: &std::path::Path) -> McpServerDeclaration {
+    McpServerDeclaration {
+        transport: Some(McpTransport::Stdio),
+        command: Some(executable.to_string_lossy().into_owned()),
+        args: Some(vec![crate::mcp_memory_server::MEMORY_MCP_ENTRY_FLAG.into()]),
+        exposure: Some(McpExposure::Search),
+        enabled: Some(true),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn call(params: serde_json::Value) -> maho_ext_api::ToolCall<'static> { maho_ext_api::ToolCall { id: "call", params, signal: Default::default(), on_update: None, context: None } }
     #[test] fn definitions_are_sequential_with_schemas() { let tools = create_memory_tools(Arc::new(|| None)); assert_eq!(tools[0].name, "memory"); assert_eq!(tools[1].name, "memory_apply_patch"); for tool in tools { assert_eq!(tool.execution_mode, Some(ToolExecutionMode::Sequential)); assert!(tool.parameters.is_object()); assert!(tool.prompt_snippet.is_some()); assert!(!tool.prompt_guidelines.unwrap().is_empty()); } }
     #[test] fn search_exposure_marks_both_tools() { for tool in create_memory_tools_with_options(Arc::new(|| None), MemoryToolsOptions { exposure: Some(ToolExposure::Search), ..Default::default() }) { assert_eq!(tool.exposure, Some(ToolExposure::Search)); } }
+    fn api() -> ExtensionApi { ExtensionApi::new(maho_ext_api::LoadedExtension::new("memory", Default::default(), Default::default()), Default::default(), Default::default(), Default::default()) }
+    #[test] fn search_surface_registers_the_memory_mcp_server_instead_of_tools() {
+        let mut api = api();
+        register_memory_tool_surface(&mut api, Arc::new(|| None), MemoryToolsOptions { exposure: Some(ToolExposure::Search), ..Default::default() });
+        assert!(api.registered.tools.is_empty());
+        let [server] = api.registered.mcp_servers.as_slice() else { panic!("expected one server") };
+        assert_eq!(server.name, "omo-memory");
+        assert_eq!(server.config, memory_mcp_server_declaration(&std::env::current_exe().unwrap()));
+        assert_eq!(server.config.args.as_deref(), Some(&["--omo-memory-mcp".to_owned()][..]));
+    }
+    #[test] fn direct_surface_registers_tools_and_no_server() {
+        let mut api = api();
+        register_memory_tool_surface(&mut api, Arc::new(|| None), MemoryToolsOptions::default());
+        assert!(api.registered.mcp_servers.is_empty());
+        assert_eq!(api.registered.tools.iter().map(|tool| tool.definition.name.as_str()).collect::<Vec<_>>(), ["memory", "memory_apply_patch"]);
+    }
     #[tokio::test] async fn unbound_tools_fail_before_storage() { for tool in create_memory_tools(Arc::new(|| None)) { assert!((tool.execute)(call(serde_json::json!({}))).await.is_err()); } }
     #[tokio::test] async fn real_create_and_patch_commit_clean_repo() {
         let root = tempfile::tempdir().unwrap();
