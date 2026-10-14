@@ -290,9 +290,16 @@ fn run() -> Result<(), String> {
         if let Some(flags) = help_fast_path::cached_help_flags(&argv, grok, &cwd, &agent, version) {
             return output(&help_text(grok, &extension_flags_text(&flags)));
         }
-        let resolved = resolve_help_extension_flags(&cwd, parsed.no_extensions);
+        let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
+        let help_runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
+        let resolved = help_runtime.block_on(async {
+            let cwd_text = cwd.to_string_lossy();
+            let agent_dir = agent.to_string_lossy();
+            let config = maho_cli::cli::host_runtime::CliRuntimeConfiguration::from_parsed(&parsed, &cwd_text, &agent_dir, maho_core::project_trust::AppMode::Print);
+            let settings = maho_core::settings_manager::SettingsManager::create(&cwd_text, &agent_dir, &maho_core::config::home_dir(), trusted);
+            resolve_help_extension_flags(&cwd, &agent_dir, settings, &config.resolved_extension_paths(), parsed.no_extensions).await
+        })?;
         if help_fast_path::is_plain_help_request(&parsed) {
-            let trusted = help_fast_path::resolve_help_project_trust(&parsed, &cwd.to_string_lossy(), &agent.to_string_lossy()).unwrap_or(false);
             let scope = help_fast_path::help_flags_scope(&parsed, &cwd, &agent, trusted);
             maho_cli::cli::help_flags_cache::write_help_flags_cache(&scope, &resolved.flags, &resolved.extension_paths, version);
         }
