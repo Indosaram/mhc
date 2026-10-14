@@ -12931,7 +12931,8 @@ mod tests {
             id: "orphan".to_owned(), name: "read".to_owned(), arguments: Map::new(), thought_signature: None,
             incomplete: None, error_message: None, namespace: None,
         }));
-        assert!(session.will_retry(Some(&failed)).await);
+        // senpi `_willRetryAfterAgentEnd`: quota exhaustion only announces a retry when a fallback exists.
+        assert!(!session.will_retry(Some(&failed)).await);
         session.with_session_manager_mut(|manager| {
             manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
             manager.append_message(serde_json::to_value(&failed).expect("quota failure"));
@@ -13091,12 +13092,11 @@ mod tests {
 
     #[tokio::test]
     async fn exhausted_transport_drop_ends_with_user_facing_failure_text() {
-        let (attempt, final_error) = terminal_retry_error(&retry_session(Vec::new(), 0), "senpi:no-turn-retry:WebSocket closed 1006 Connection ended").await;
+        let (attempt, final_error) = terminal_retry_error(&retry_session(Vec::new(), 0), "WebSocket closed 1006 Connection ended").await;
         assert_eq!(attempt, 0);
         let final_error = final_error.expect("final error");
         assert!(final_error.contains("dropped before the reply finished"), "{final_error}");
         assert!(final_error.contains("No fallback model is configured"), "{final_error}");
-        assert!(!final_error.contains("senpi:no-turn-retry:"));
     }
 
     #[tokio::test]
@@ -13111,6 +13111,10 @@ mod tests {
         let provider = maho_ai::providers::faux::faux_provider(Default::default());
         let mut runtime = session.model_runtime().clone();
         runtime.register_native_provider(provider.provider.clone());
+        let subscription = maho_ai::providers::faux::faux_provider(maho_ai::providers::faux::RegisterFauxProviderOptions {
+            provider: Some("anthropic-subscription".to_owned()), ..Default::default()
+        });
+        runtime.register_native_provider(subscription.provider.clone());
         runtime.register_provider("faux", crate::provider_composer::ProviderConfigInput {
             config: crate::model_config_schema::ModelsJsonProvider { api_key: Some("faux-test".to_owned()), ..Default::default() },
             ..Default::default()
