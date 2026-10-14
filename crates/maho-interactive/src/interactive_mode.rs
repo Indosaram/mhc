@@ -3279,7 +3279,7 @@ impl InteractiveMode {
                 Box::new(move |on_progress| maho_core::session_manager::SessionManager::list_all((!default_directory).then_some(directory.as_str()), on_progress).into_iter().map(convert).collect()),
                 Box::new(move |path| { submissions.borrow_mut().push_back(internal_command(format!("/resume \"{path}\""))); selected.borrow_mut().take(); }),
                 Box::new(move || { cancelled.borrow_mut().take(); }), Box::new(move || { exit_submissions.borrow_mut().push_back(internal_command("/quit")); exited.borrow_mut().take(); }),
-                Box::new(move || host.request_render()), Some(Box::new(|path, name| { let mut manager = maho_core::session_manager::SessionManager::open(path, None, None, None); manager.append_session_info(name); })), Some(true),
+                Box::new(move || host.request_render()), Some(Box::new(|path, name| { if let Ok(mut manager) = maho_core::session_manager::SessionManager::open(path, None, None, None) { manager.append_session_info(name); } })), Some(true),
                 self.host_session_file().as_deref(), std::env::var("HOME").ok())));
             return Ok(true);
         }

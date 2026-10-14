@@ -4311,7 +4311,7 @@ impl AgentSession {
         // senpi opens the target for its stored (or overridden) cwd and refuses one that is gone
         // before tearing anything down.
         let session_dir = Path::new(path).parent().map(|parent| parent.to_string_lossy().into_owned());
-        let target = crate::session_manager::SessionManager::open(path, session_dir.as_deref(), cwd_override, None);
+        let target = crate::session_manager::SessionManager::open(path, session_dir.as_deref(), cwd_override, None)?;
         crate::session_cwd::assert_session_cwd_exists(&target, &self.cwd())?;
         self.ensure_extension_recreation().await?;
         self.abort().await;

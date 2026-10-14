@@ -81,7 +81,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         else if let Some(argument) = &parsed.session {
             // senpi main.ts:477-513: a path opens as-is, an id/prefix resolves locally then globally.
             match resolve_session_path(argument, &cwd_text, session_dir.as_deref()) {
-                ResolvedSession::Path(path) | ResolvedSession::Local(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                ResolvedSession::Path(path) | ResolvedSession::Local(path) => open_session_or_exit(&path, session_dir.as_deref(), &mut indicator),
                 ResolvedSession::Global { path, cwd: session_cwd } => {
                     if mode != AppMode::Interactive {
                         return Err(format!("Session found in different project: {session_cwd}\nCannot confirm forking without an interactive session. Use --fork '{argument}' to fork it into the current directory, or re-run interactively from {session_cwd}."));
@@ -103,7 +103,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         else if parsed.resume {
             // senpi main.ts:515-531: the startup session picker; cancelling exits 0.
             match indicator.during_surface_write(|| super::session_picker::select_session(&cwd_text, session_dir.as_deref(), &startup_settings))? {
-                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
                 None => {
                     indicator.stop();
                     println!("\x1b[2mNo session selected\x1b[22m");
@@ -111,11 +111,11 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
                 }
             }
         }
-        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, session_dir.as_deref()) }
+        else if parsed.continue_session { SessionManager::continue_recent(&cwd_text, session_dir.as_deref())? }
         else if let Some(id) = parsed.session_id.as_deref() {
             // senpi main.ts:537-547: an existing exact-id project session is resumed, not duplicated.
             match find_local_session_by_exact_id(id, &cwd_text, session_dir.as_deref()) {
-                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None),
+                Some(path) => SessionManager::open(&path, session_dir.as_deref(), None, None)?,
                 None => {
                     indicator.during_surface_write(|| eprintln!("\x1b[33mWarning: No project session found with id '{id}'; creating a new session with that id.\x1b[39m"));
                     SessionManager::create(&cwd_text, session_dir.as_deref(), identity)
@@ -136,7 +136,7 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
             indicator.stop();
             std::process::exit(0);
         };
-        manager = SessionManager::open(&session_file, session_dir.as_deref(), Some(issue.fallback_cwd.as_str()), None);
+        manager = SessionManager::open(&session_file, session_dir.as_deref(), Some(issue.fallback_cwd.as_str()), None)?;
     }
     let session_cwd = manager.cwd().to_owned();
     // senpi `createCliRuntimeFactory`: resolve project trust for the session cwd (override, saved
@@ -474,6 +474,19 @@ pub fn resolve_session_dir(flag: Option<&str>, env: Option<&str>, setting: Optio
     let options = maho_core::paths::PathInputOptions::expanding_tilde(maho_core::config::home_dir());
     [flag, env, setting].into_iter().flatten().find(|value| !value.is_empty())
         .map(|value| maho_core::paths::normalize_path(value, &options))
+}
+
+/// senpi main.ts `openSessionOrExit`: a session file that cannot be opened prints a red
+/// `Error: <message>` and exits 1.
+fn open_session_or_exit(path: &str, session_dir: Option<&str>, indicator: &mut super::startup_loading_indicator::StartupLoadingIndicator) -> SessionManager {
+    match SessionManager::open(path, session_dir, None, None) {
+        Ok(manager) => manager,
+        Err(message) => {
+            indicator.stop();
+            eprintln!("\x1b[31mError: {message}\x1b[39m");
+            std::process::exit(1);
+        }
+    }
 }
 
 pub fn fork_session(source_path: &str, cwd: &str, session_dir: Option<&str>, session_id: Option<&str>) -> Result<SessionManager, String> {

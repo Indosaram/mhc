@@ -49,7 +49,7 @@ pub fn fork_from_session_file(source_file: &str, cwd: &str, session_dir: Option<
     let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&new_file).map_err(|error| error.to_string())?;
     std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|error| { drop(file); let _ = std::fs::remove_file(&new_file); error.to_string() })?;
     let path = new_file.to_string_lossy().into_owned();
-    Ok(SessionManager::open(&path, session_dir, Some(cwd), None))
+    SessionManager::open(&path, session_dir, Some(cwd), None)
 }
 
 pub struct ThreadEntry {
@@ -186,7 +186,7 @@ impl ThreadRegistry {
         if let Ok(entry) = self.get_loaded_thread(id).await { return Ok(entry); }
         if self.deleted.lock().await.contains(id) { return Err(format!("Thread not found: {id}")); }
         let info = self.list_session_infos().await.into_iter().find(|info| info.id == id).ok_or_else(|| format!("Thread not found: {id}"))?;
-        let manager = SessionManager::open(&info.path, self.session_dir.as_deref(), Some(&info.cwd), None);
+        let manager = SessionManager::open(&info.path, self.session_dir.as_deref(), Some(&info.cwd), None)?;
         let ui = self.session_ui(manager.session_id());
         let session = (self.factory)(CreateAgentSessionOptions { cwd: Some(info.cwd.clone()), agent_dir: Some(self.agent_dir.clone()), session_manager: Some(manager), extension_ui: ui.clone(), ..Default::default() }).await?;
         let timestamps = (info.created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true), info.modified.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));

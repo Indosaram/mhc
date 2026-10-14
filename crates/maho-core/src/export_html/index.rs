@@ -148,7 +148,7 @@ pub fn export_from_file(input_path: &str, output_path: Option<&str>, theme_name:
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
     let resolved = crate::paths::resolve_path(input_path, &cwd.to_string_lossy(), &crate::paths::PathInputOptions::default());
     if !Path::new(&resolved).exists() { return Err(format!("File not found: {resolved}")); }
-    let manager = crate::session_manager::SessionManager::open(&resolved, None, None, None);
+    let manager = crate::session_manager::SessionManager::open(&resolved, None, None, None)?;
     let output = match output_path {
         Some(path) => path.to_owned(),
         None => format!("{}-session-{}.html", app_name(), Path::new(&resolved).file_stem().map_or_else(|| "session".into(), |stem| stem.to_string_lossy().into_owned())),
