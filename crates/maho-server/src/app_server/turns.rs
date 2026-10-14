@@ -353,8 +353,10 @@ pub(super) async fn emit(core: &Arc<RwLock<ServerCore>>, entry: &Arc<Mutex<Threa
     }
     let subscribers = entry.lock().await.subscribers.clone();
     let mut delivered = false;
+    // senpi `NotificationRouter.toThread`: every initialized subscriber counts as routed, even
+    // when its opt-outs or the experimental filter drop the message.
     for id in subscribers {
-        match core.read().await.send_notification_to_connection(&id,notification.clone(),chrono::Utc::now().timestamp_millis() as u64).await {
+        match core.read().await.send_thread_notification_to_connection(&id,notification.clone(),chrono::Utc::now().timestamp_millis() as u64).await {
             Ok(sent) => delivered |= sent,
             Err(error) => eprintln!("app-server notification: {}",error.message),
         }
