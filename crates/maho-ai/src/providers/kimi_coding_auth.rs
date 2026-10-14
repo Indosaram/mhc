@@ -85,7 +85,7 @@ impl ApiKeyAuth for KimiCodeApiKeyAuth {
             env_region,
         });
 
-        let source = if credential.and_then(|c| c.key.as_ref()).is_some() {
+        let source = if credential.and_then(|c| c.key.as_ref()).is_some_and(|k| !k.is_empty()) {
             "stored credential".to_string()
         } else {
             KIMI_API_KEY_ENV.to_string()
