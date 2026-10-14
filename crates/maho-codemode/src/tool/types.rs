@@ -71,8 +71,8 @@ impl EvalKernel for crate::kernels::py::kernel::PythonKernel {
     fn cancel_queued<'a>(&'a self, cell_id: &'a str, reason: &'a str) -> EvalKernelFuture<'a, bool> {Box::pin(async move {Ok(self.cancel_queued(cell_id,reason).await)})}
     fn interrupt<'a>(&'a self, reason: &'a str, cell_id: Option<&'a str>) -> EvalKernelFuture<'a, KernelInterruptHandle> {
         Box::pin(async move {
-            let retained=self.interrupt(reason,cell_id).await?;
-            Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note:None})
+            let (retained,note)=self.interrupt(reason,cell_id).await?;
+            Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note})
         })
     }
     fn queue_snapshot(&self) -> (Option<String>,Vec<String>) {
@@ -89,7 +89,7 @@ impl EvalKernel for crate::kernels::shared::subprocess_kernel::SubprocessKernel 
     }
     fn cancel_queued<'a>(&'a self, cell_id:&'a str, reason:&'a str)->EvalKernelFuture<'a,bool> {Box::pin(async move {Ok(self.cancel_queued(cell_id,reason).await)})}
     fn interrupt<'a>(&'a self, reason:&'a str, cell_id:Option<&'a str>)->EvalKernelFuture<'a,KernelInterruptHandle> {
-        Box::pin(async move {let retained=self.interrupt(reason,cell_id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note:None})})
+        Box::pin(async move {let (retained,note)=self.interrupt(reason,cell_id).await?;Ok(KernelInterruptHandle {state_retained:Box::pin(async move {Ok(retained)}),note})})
     }
     fn queue_snapshot(&self)->(Option<String>,Vec<String>) {self.queue_snapshot()}
     fn deliver_tool_reply(&self,message:serde_json::Value)->Result<(),String> {self.deliver_tool_reply(message)}
