@@ -42,6 +42,10 @@ impl TurnEngine {
             let value = match event {
                 maho_ext_api::AgentSessionEvent::Agent(event) => serde_json::to_value(event),
                 maho_ext_api::AgentSessionEvent::AgentEnd { .. } => Ok(json!({"type":"agent_end"})),
+                // senpi `ensureSessionSubscription` forwards every session event; the projector turns
+                // `compaction_start` / `compaction_end` into `contextCompaction` items.
+                maho_ext_api::AgentSessionEvent::CompactionStart { .. } => Ok(json!({"type":"compaction_start"})),
+                maho_ext_api::AgentSessionEvent::CompactionEnd { .. } => Ok(json!({"type":"compaction_end"})),
                 _ => return,
             };
             match value {
