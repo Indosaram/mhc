@@ -2,9 +2,10 @@
 
 use std::collections::BTreeMap;
 
-/// `getShellEnv()`: the process environment with the agent bin dir prepended to PATH.
+/// `getShellEnv()`: the process environment (including extension `process.env` writes) with the
+/// agent bin dir prepended to PATH.
 pub fn get_shell_env() -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    let mut env = maho_ext_api::process_env::vars();
     let key = env.keys().find(|key| key.eq_ignore_ascii_case("path")).cloned().unwrap_or_else(|| "PATH".to_owned());
     let current = env.get(&key).cloned().unwrap_or_default();
     let bin = crate::config::get_bin_dir();
