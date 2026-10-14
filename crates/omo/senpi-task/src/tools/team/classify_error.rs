@@ -4,9 +4,9 @@
 //! mailbox errors carry a stable name, so the tool layer keys on the name rather than importing every
 //! error type (keeps the tools free of a direct team-mailbox dependency).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MailboxErrorKind {
     RecipientBackpressure,

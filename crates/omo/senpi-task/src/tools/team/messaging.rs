@@ -1,6 +1,6 @@
 //! Port of `tools/team/messaging.ts`.
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde::ser::{SerializeMap, Serializer};
 
 use crate::team::messaging::types::{SendTeamMessageInput, SendTeamMessageResult};
@@ -67,6 +67,35 @@ impl Serialize for TeamSendDetails {
                 map.serialize_entry("reason", reason)?;
                 map.end()
             }
+        }
+    }
+}
+
+/// Inverse of the hand-written `Serialize`: `kind` selects the variant, and every mailbox error kind
+/// decodes to [`TeamSendDetails::Mailbox`].
+impl<'de> Deserialize<'de> for TeamSendDetails {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Wire {
+            kind: String,
+            message_id: Option<String>,
+            recipients: Option<Vec<String>>,
+            to: Option<String>,
+            reason: Option<String>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let missing = |field: &'static str| serde::de::Error::missing_field(field);
+        match wire.kind.as_str() {
+            "to_lead" => Ok(Self::ToLead { message_id: wire.message_id.ok_or_else(|| missing("message_id"))? }),
+            "to_members" => Ok(Self::ToMembers {
+                message_id: wire.message_id.ok_or_else(|| missing("message_id"))?,
+                recipients: wire.recipients.ok_or_else(|| missing("recipients"))?,
+            }),
+            kind => Ok(Self::Mailbox {
+                kind: MailboxErrorKind::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(kind))?,
+                to: wire.to.ok_or_else(|| missing("to"))?,
+                reason: wire.reason.ok_or_else(|| missing("reason"))?,
+            }),
         }
     }
 }

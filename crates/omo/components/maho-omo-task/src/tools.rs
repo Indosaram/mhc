@@ -2,6 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use maho_ext_api::{ExtensionApi, ToolContent, ToolDefinition, ToolError, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use maho_ext_api::ToolRenderers;
+use maho_tui::tui::Component;
+use senpi_task::tools::{control::{renderers::{ToolRenderResultOptions as ControlRenderOptions, render_task_cancel_call, render_task_cancel_result, render_task_send_call, render_task_send_result}, tool_result::{AgentToolResult as ControlToolResult, ToolResultContent}, types::{CancelResultDetails, SendResultDetails}}, output::{renderers::{ToolRenderResultOptions as OutputRenderOptions, render_task_output_call, render_task_output_result}, types::TaskOutputDetails}, render::{Lines, LinesComponent, RendererTheme, ThemeColor, ToolContent as RenderContent, lines_component}, task::{call_renderer::{TaskCallArgs, render_task_call_lines}, renderers::render_task_result_component, types::TaskToolDetails}};
 use senpi_task::{agents::AgentDefinition, manager::TaskManager, tools::{control::{cancel::{TASK_CANCEL_DESCRIPTION, TaskCancelInput, run_task_cancel, task_cancel_params_schema}, send::{TASK_SEND_DESCRIPTION, run_task_send}, send_schema::{TaskSendInput, task_send_params_schema}, send_shutdown::TaskSendTeamRouting}, output::{output::{TASK_OUTPUT_DESCRIPTION, TaskOutputInput, run_task_output, task_output_params_schema}, types::TaskOutputDeps}, task::{argument_normalization::normalize_task_tool_arguments, description::{DescriptionInput, TASK_PROMPT_GUIDELINES, TASK_PROMPT_SNIPPET, build_task_tool_description}, execute::build_task_execute, execute_single::TaskExecuteDeps, execute_spec::TaskToolDeps, foreground_wait::{ForegroundWaitOptions, TaskToolContext}, params::TASK_TOOL_PARAMS, spawn_policy::SpawnPolicyDeps, validation::{SpawnItemInput, SpawnParamsInput}}}};
 
 #[derive(Clone)]
@@ -90,7 +93,7 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
     }));
     task.label = "Task".into(); task.prompt_snippet = Some(TASK_PROMPT_SNIPPET.into()); task.prompt_guidelines = Some(TASK_PROMPT_GUIDELINES.iter().map(|line| (*line).into()).collect());
     task.prepare_arguments = Some(Arc::new(|raw| normalize_task_tool_arguments(&raw).map_err(|error| ToolError::Message(error.message))));
-    register_synced_tool(api, task, sync.clone());
+    register_synced_tool(api, task, sync.clone(), task_tool_renderers());
     let send_deps = deps.clone();
     let mut send = ToolDefinition::new("task_send", TASK_SEND_DESCRIPTION, task_send_params_schema(), Arc::new(move |call| {
         let deps = send_deps.clone();
@@ -101,12 +104,12 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
             let result = run_task_send(deps.manager.as_ref(), &params, session, routing.as_ref()).map_err(|error| ToolError::Message(error.to_string()))?;
             native_result(result)
         })
-    })); send.label = "Task Send".into(); register_synced_tool(api, send, sync.clone());
+    })); send.label = "Task Send".into(); register_synced_tool(api, send, sync.clone(), task_send_renderers());
     let cancel_deps = deps.clone();
     let mut cancel = ToolDefinition::new("task_cancel", TASK_CANCEL_DESCRIPTION, task_cancel_params_schema(), Arc::new(move |call| {
         let deps = cancel_deps.clone();
         Box::pin(async move { let params: TaskCancelInput = serde_json::from_value(call.params)?; native_result(run_task_cancel(deps.manager.as_ref(), &params)) })
-    })); cancel.label = "Task Cancel".into(); register_synced_tool(api, cancel, sync.clone());
+    })); cancel.label = "Task Cancel".into(); register_synced_tool(api, cancel, sync.clone(), task_cancel_renderers());
     let mut output = ToolDefinition::new("task_output", TASK_OUTPUT_DESCRIPTION, task_output_params_schema(), Arc::new(move |call| {
         let deps = deps.clone();
         Box::pin(async move {
@@ -115,16 +118,118 @@ pub fn register_task_tools_with_sync(api: &mut ExtensionApi, deps: TaskToolsDeps
             let output_deps = TaskOutputDeps { manager: deps.manager.clone(), state_dir: deps.state_dir.clone(), transcript_reader: None, resolve_caller_session_id: None, now: None };
             native_result(run_task_output(&output_deps, &params, session)?)
         })
-    })); output.label = "Task Output".into(); register_synced_tool(api, output, sync);
+    })); output.label = "Task Output".into(); register_synced_tool(api, output, sync, task_output_renderers());
 }
-fn register_synced_tool(api: &mut ExtensionApi, mut tool: ToolDefinition, sync: Arc<dyn Fn() + Send + Sync>) {
+fn register_synced_tool(api: &mut ExtensionApi, mut tool: ToolDefinition, sync: Arc<dyn Fn() + Send + Sync>, renderers: ToolRenderers<(), Value>) {
         let execute = tool.execute.clone();
         tool.execute = Arc::new(move |call| {
             let future = execute(call);
             let sync = sync.clone();
             Box::pin(async move { let result = future.await; sync(); result })
         });
-        api.register_tool(tool);
+        if let Err(error) = api.register_tool_with_renderers(tool, renderers) { std::panic::panic_any(error); }
+}
+
+/// senpi `Theme` seen through the `Pick<Theme, "fg" | "italic">` slice the senpi-task renderers use.
+struct RenderTheme(maho_ext_api::Theme);
+impl RendererTheme for RenderTheme {
+    fn fg(&self, color: ThemeColor, text: &str) -> String { self.0.fg(color.as_str(), text) }
+    fn italic(&self, text: &str) -> String { if text.is_empty() { String::new() } else { format!("\x1b[3m{text}\x1b[23m") } }
+}
+
+/// `linesComponent`/the renderer components: lines produced for the width the host asks for.
+struct RenderedLines(Box<dyn Fn(usize) -> Vec<String>>);
+impl Component for RenderedLines {
+    fn render(&mut self, width: usize) -> Vec<String> { (self.0)(width) }
+}
+fn rendered(theme: &maho_ext_api::Theme, render: impl Fn(usize, &RenderTheme) -> Vec<String> + 'static) -> Box<dyn Component> {
+    let theme = RenderTheme(theme.clone());
+    Box::new(RenderedLines(Box::new(move |width| render(width, &theme))))
+}
+fn result_text(result: &maho_ext_api::AgentToolResult) -> Vec<RenderContent> {
+    result.content.iter().filter_map(|block| match block { maho_ext_api::ContentBlock::Text(text) => Some(RenderContent::Text { text: text.text.clone() }), _ => None }).collect()
+}
+/// senpi falls back to the default result body when a custom renderer throws; details that do not
+/// decode to the tool's typed details take that same fallback.
+fn fallback_result(result: &maho_ext_api::AgentToolResult) -> Box<dyn Component> {
+    let lines: Vec<String> = result_text(result).into_iter().flat_map(|RenderContent::Text { text }| text.split('\n').map(str::to_owned).collect::<Vec<_>>()).collect();
+    Box::new(RenderedLines(Box::new(move |_| lines.clone())))
+}
+fn typed_details<T: serde::de::DeserializeOwned>(result: &maho_ext_api::AgentToolResult) -> Option<T> { serde_json::from_value(result.details.clone()).ok() }
+fn string_arg(args: &Value, key: &str) -> Option<String> { args.get(key).and_then(Value::as_str).map(str::to_owned) }
+
+/// `tools/task/tool.ts` `renderCall`/`renderResult`.
+pub fn task_tool_renderers() -> ToolRenderers<(), Value> {
+    ToolRenderers {
+        render_call: Some(Arc::new(|args, theme, _| {
+            let args = TaskCallArgs {
+                prompt: string_arg(args, "prompt"), task_summary: string_arg(args, "task_summary"), category: string_arg(args, "category"),
+                subagent_type: string_arg(args, "subagent_type"), run_in_background: args.get("run_in_background").and_then(Value::as_bool),
+            };
+            rendered(theme, move |width, theme| render_task_call_lines(&args, theme, Some(width)).into_iter().map(|line| theme.fg(ThemeColor::ToolTitle, &line)).collect())
+        })),
+        render_result: Some(Arc::new(|result, options, theme, _| {
+            if options.is_partial {
+                // The live status line is drawn by senpi's own tool-progress renderer from
+                // details.progress; the partial content carries only the last-assistant row.
+                let live = result_text(result).into_iter().map(|RenderContent::Text { text }| text).next().filter(|text| !text.is_empty());
+                return rendered(theme, move |width, theme| {
+                    let lines = live.as_deref().map(|text| text.split('\n').map(|line| theme.fg(ThemeColor::Muted, line)).collect()).unwrap_or_default();
+                    lines_component(Lines::Static(lines)).render(width)
+                });
+            }
+            let Some(details) = typed_details::<TaskToolDetails>(result) else { return fallback_result(result) };
+            rendered(theme, move |width, theme| render_task_result_component(&details, theme).render(width))
+        })),
+    }
+}
+
+/// `tools/control/send.ts` `createTaskSendTool` renderers.
+pub fn task_send_renderers() -> ToolRenderers<(), Value> {
+    ToolRenderers {
+        render_call: Some(Arc::new(|args, theme, _| match serde_json::from_value::<TaskSendInput>(args.clone()) {
+            Ok(args) => rendered(theme, move |width, theme| render_task_send_call(&args, theme).render(width)),
+            Err(_) => Box::new(RenderedLines(Box::new(|_| vec!["task_send".into()]))),
+        })),
+        render_result: Some(Arc::new(|result, options, theme, _| {
+            let Some(details) = typed_details::<SendResultDetails>(result) else { return fallback_result(result) };
+            let result = ControlToolResult { content: result_text(result).into_iter().map(|RenderContent::Text { text }| ToolResultContent::Text { text }).collect(), details };
+            let options = ControlRenderOptions { expanded: options.expanded, is_partial: options.is_partial };
+            rendered(theme, move |width, theme| render_task_send_result(&result, &options, theme).render(width))
+        })),
+    }
+}
+
+/// `tools/control/cancel.ts` renderers.
+pub fn task_cancel_renderers() -> ToolRenderers<(), Value> {
+    ToolRenderers {
+        render_call: Some(Arc::new(|args, theme, _| {
+            let args = serde_json::from_value::<TaskCancelInput>(args.clone()).unwrap_or_default();
+            rendered(theme, move |width, theme| render_task_cancel_call(&args, theme).render(width))
+        })),
+        render_result: Some(Arc::new(|result, options, theme, _| {
+            let Some(details) = typed_details::<CancelResultDetails>(result) else { return fallback_result(result) };
+            let result = ControlToolResult { content: result_text(result).into_iter().map(|RenderContent::Text { text }| ToolResultContent::Text { text }).collect(), details };
+            let options = ControlRenderOptions { expanded: options.expanded, is_partial: options.is_partial };
+            rendered(theme, move |width, theme| render_task_cancel_result(&result, &options, theme).render(width))
+        })),
+    }
+}
+
+/// `tools/output/output.ts` renderers.
+pub fn task_output_renderers() -> ToolRenderers<(), Value> {
+    ToolRenderers {
+        render_call: Some(Arc::new(|args, theme, _| {
+            let args = serde_json::from_value::<TaskOutputInput>(args.clone()).unwrap_or_default();
+            rendered(theme, move |width, theme| render_task_output_call(&args, theme).render(width))
+        })),
+        render_result: Some(Arc::new(|result, options, theme, _| {
+            let Some(details) = typed_details::<TaskOutputDetails>(result) else { return fallback_result(result) };
+            let result = ControlToolResult { content: result_text(result).into_iter().map(|RenderContent::Text { text }| ToolResultContent::Text { text }).collect(), details };
+            let options = OutputRenderOptions { expanded: options.expanded, is_partial: options.is_partial };
+            rendered(theme, move |width, theme| render_task_output_result(&result, &options, theme).render(width))
+        })),
+    }
 }
 
 pub fn tool_text(text: String, details: Value) -> ToolResult { ToolResult { content: vec![ToolContent::text(text)], details: Some(details) } }
