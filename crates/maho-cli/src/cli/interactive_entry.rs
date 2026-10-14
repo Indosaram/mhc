@@ -151,8 +151,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
         if startup_benchmark {
             maho_core::timings::time("interactiveMode.init", maho_core::timings::TimingLabel::Main);
             rendered.borrow_mut().0 = mode.render(usize::from(terminal.columns()));
-            screen.base_mut().request_render(true, 0);
-            if screen.base_mut().take_due_render(0) { screen.do_render(&mut terminal); }
+            // senpi's `start()` requests an ordinary (unforced) first frame; paint it now.
+            screen.do_render(&mut terminal);
             terminal.pump(150).map_err(|error| error.to_string())?;
             return Ok(());
         }
@@ -275,7 +275,8 @@ pub async fn run(session: Arc<maho_core::agent_session::AgentSession>, parsed: &
                     mode.resume_question_mouse_capture(&mut screen, &mut terminal);
                     mode.rebind_terminal_theme(&mut screen, &mut terminal);
                     screen.base_mut().invalidate();
-                    screen.base_mut().request_render(true, now);
+                    // senpi `switchTuiMode` only calls `nextUi.start()`, whose render is unforced.
+                    screen.base_mut().request_render(false, now);
                 }
             }
             // senpi `applyFullscreenScrollbarSetting`.
