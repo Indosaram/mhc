@@ -180,9 +180,15 @@ impl ReceiveContext {
             ClassifiedIncoming::ProtocolInvalid(_) => json!({"id":null,"error":errors::invalid_request_error()}),
             ClassifiedIncoming::Notification(_) | ClassifiedIncoming::Response(_) => return Ok(()),
         };
-        (connection.send)(response).await?;
+        (connection.send)(response.clone()).await?;
         if let Some(connection) = dispatch_connection {
-            connection.finish_response().await;
+            // senpi `respondToRequest`: deferred actions run only after a successful response.
+            if response.get("error").is_some() {
+                connection.deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+                connection.async_deferred.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+            } else {
+                connection.finish_response().await;
+            }
         }
         Ok(())
     }
