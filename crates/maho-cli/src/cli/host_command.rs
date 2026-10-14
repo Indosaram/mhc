@@ -21,9 +21,25 @@ pub fn parse_host_args(args: &[String]) -> Result<ParsedHostArgs, String> {
     Ok(result)
 }
 
+const USAGE: &str = "usage: {app} host <ensure|status|stop|handoff> [options]
+
+  ensure   [--launch-spec <file>] [--policy upgrade|fallback|never] [--socket <path>]
+  status   [--include-workers] [--socket <path>]
+  stop     [--drain] [--force] [--socket <path>]
+  handoff  [--launch-spec <file>] [--socket <path>]
+
+  --json   accepted for symmetry; the answer is always one JSON line on stdout";
+
 pub async fn run_host_command(args: &[String]) -> Result<i32, String> {
     use std::io::Write;
-    let parsed = parse_host_args(args)?;
+    let parsed = match parse_host_args(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            let usage = USAGE.replace("{app}", &maho_core::config::app_name());
+            writeln!(std::io::stderr().lock(), "{message}\n{usage}").map_err(|error| error.to_string())?;
+            return Ok(maho_rpc::host_runner::HOST_EXIT_USAGE);
+        }
+    };
     let agent_dir = std::path::PathBuf::from(maho_core::config::get_agent_dir());
     let socket = parsed.socket.clone().unwrap_or_else(|| {
         maho_core::brand::env_value("RPC_SOCKET", &maho_core::config::current_env())
