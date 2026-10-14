@@ -201,15 +201,16 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let extension_load_failed = runtime_diagnostics.iter().any(|diagnostic| diagnostic.message.contains("Failed to load extension"));
     let providers = Arc::new(maho_core::agent_session_runtime::ExtensionModelRuntimeActions(std::sync::Mutex::new(models)));
     extensions.runtime.bind_providers(providers.clone()).map_err(|error| error.message)?;
-    for (name, value) in &parsed.unknown_flags {
-        if extensions.extensions.iter().any(|extension| extension.flags.iter().any(|flag| flag.name == *name)) {
-            let flag_value = match value {
-                super::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
-                super::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
-            };
-            extensions.runtime.set_flag(name, flag_value);
-        }
-    }
+    // senpi `createAgentSessionServices({ extensionFlagValues: parsed.unknownFlags })` ->
+    // `applyExtensionFlagValues`: registered flags are applied; an unregistered `--flag` or a string
+    // flag without a value is a runtime error diagnostic (main.ts `reportDiagnostics` then exit 1).
+    let flag_diagnostics = (!parsed.unknown_flags.is_empty()).then(|| {
+        let values = parsed.unknown_flags.iter().map(|(name, value)| (name.clone(), match value {
+            super::args::FlagValue::Boolean(value) => maho_ext_api::FlagValue::Boolean(*value),
+            super::args::FlagValue::String(value) => maho_ext_api::FlagValue::String(value.clone()),
+        })).collect::<std::collections::BTreeMap<_, _>>();
+        maho_core::agent_session_services::apply_extension_flag_values(Some(&extensions), Some(&values))
+    }).unwrap_or_default();
     let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
     // senpi `main.ts` `resolveModelScope` with `getModelNarrowingPatterns({ cliPatterns, legacyEnabledPatterns:
     // settings.getEnabledModels() })` (main.ts:825-828): scope patterns resolve against authenticated models.
@@ -217,7 +218,13 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
     let model_patterns = maho_core::model_resolver::get_model_narrowing_patterns(parsed.models.as_deref(), enabled_models.as_deref());
     let scope_models = if model_patterns.is_empty() { Vec::new() } else { models.get_available(None).await };
     let scope = maho_core::model_resolver::resolve_model_scope_from_models(model_patterns, &scope_models);
+    // senpi model-resolver.ts `resolveModelScope`: each scope diagnostic is a `Warning: ...` line.
+    indicator.during_surface_write(|| { for diagnostic in &scope.diagnostics { maho_core::output_guard::maho_write_stderr(&format!("Warning: {}\n", diagnostic.message)); } });
     let mut options = startup::build_session_options(&parsed, &scope.scoped_models, has_context_messages, &models, &settings);
+    options.diagnostics.splice(0..0, flag_diagnostics.into_iter().map(|diagnostic| super::args::Diagnostic {
+        error: matches!(diagnostic.kind, maho_core::agent_session_services::AgentSessionRuntimeDiagnosticType::Error),
+        message: diagnostic.message,
+    }));
     // senpi `main.ts`: `--api-key` is a runtime key for the selected model's provider.
     if let Some(api_key) = &parsed.api_key {
         match &options.options.model {
