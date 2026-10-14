@@ -40,7 +40,7 @@ async fn queued_cancellation_does_not_interrupt_active_cell() {
     assert!(matches!(std::future::poll_fn(|cx|Poll::Ready(queued.as_mut().poll(cx))).await,Poll::Pending));
     assert!(tokio::time::timeout(Duration::from_secs(5),kernel.cancel_queued("queued","cancelled queued")).await.unwrap());
     assert_eq!(queued.await.unwrap()["ok"],false);
-    assert!(tokio::time::timeout(Duration::from_secs(7),kernel.interrupt("test",Some("active"))).await.unwrap().unwrap());
+    assert!(tokio::time::timeout(Duration::from_secs(7),kernel.interrupt("test",Some("active"))).await.unwrap().unwrap().0);
     assert_eq!(active.await.unwrap()["ok"],false);
     assert_eq!(kernel.run(input("after","1+1")).await.unwrap()["valueRepr"],"2");
     kernel.close().await.unwrap();
