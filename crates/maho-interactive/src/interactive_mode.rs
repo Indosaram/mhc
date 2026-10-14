@@ -3928,7 +3928,7 @@ impl InteractiveMode {
                 options.push(AuthSelectorProvider { id, name: provider.name().to_owned(), auth_type: AuthSelectorAuthType::ApiKey, method_name: Some(api_key.name().to_owned()), login_label: None, method_has_login: api_key.has_login(), status });
             }
         }
-        options.sort_by(|left, right| left.name.cmp(&right.name));
+        options.sort_by(|left, right| locale_compare(&left.name, &right.name));
         options
     }
 
@@ -3950,7 +3950,7 @@ impl InteractiveMode {
                 status: Some(maho_ai::auth::types::AuthCheck { auth_type: maho_ai::auth::types::AuthType::from(auth_type), source: Some("stored credential".to_owned()) }),
             }
         }).collect::<Vec<_>>();
-        options.sort_by(|left, right| left.name.cmp(&right.name));
+        options.sort_by(|left, right| locale_compare(&left.name, &right.name));
         Ok(options)
     }
 
@@ -5476,8 +5476,14 @@ fn get_login_provider_completion_options(provider_options: &[crate::components::
         }
         by_id.push(LoginProviderCompletionOption { id: provider.id.clone(), name: provider.name.clone(), auth_types: vec![provider.auth_type] });
     }
-    by_id.sort_by(|left, right| left.name.cmp(&right.name));
+    by_id.sort_by(|left, right| locale_compare(&left.name, &right.name));
     by_id
+}
+
+/// senpi `String.prototype.localeCompare` (default ICU collation).
+fn locale_compare(left: &str, right: &str) -> std::cmp::Ordering {
+    let collator = icu_collator::Collator::try_new(Default::default(), Default::default()).expect("compiled collation data is available");
+    collator.compare(left, right)
 }
 
 /// senpi `getLoginProviderSearchText`.
