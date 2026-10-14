@@ -513,6 +513,7 @@ struct AgentSessionState {
     skills: Vec<crate::skills::Skill>,
     skill_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     prompt_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
+    theme_diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>,
     resource_loader_inputs: crate::resource_loader::ResourceLoaderInputs,
     skills_loaded: bool,
     discovered_resources: maho_ext_api::DiscoveredResources,
@@ -1742,6 +1743,7 @@ impl AgentSession {
             skills: Vec::new(),
             skill_diagnostics: Vec::new(),
             prompt_diagnostics: Vec::new(),
+            theme_diagnostics: Vec::new(),
             resource_loader_inputs: Default::default(),
             skills_loaded: false,
             discovered_resources: maho_ext_api::DiscoveredResources::default(),
@@ -4140,6 +4142,16 @@ impl AgentSession {
     /// Prompt-template load diagnostics, including name collisions (pinned `getPrompts().diagnostics`).
     pub fn prompt_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
         self.state().prompt_diagnostics.clone()
+    }
+
+    /// Theme load diagnostics, including name collisions (pinned `getThemes().diagnostics`). The
+    /// theme half of the resource load runs at the CLI startup seam, which records them here.
+    pub fn theme_diagnostics(&self) -> Vec<crate::diagnostics::ResourceDiagnostic> {
+        self.state().theme_diagnostics.clone()
+    }
+
+    pub fn set_theme_diagnostics(&self, diagnostics: Vec<crate::diagnostics::ResourceDiagnostic>) {
+        self.state().theme_diagnostics = diagnostics;
     }
 
     /// senpi `DefaultResourceLoader.reload()` for skills, prompt templates and hook sources: package

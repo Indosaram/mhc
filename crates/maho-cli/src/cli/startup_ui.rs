@@ -2,6 +2,7 @@
 //! (`loadThemes` / `loadStartupThemes` / `createStartupTui`) over the existing theme registry.
 use std::path::{Path, PathBuf};
 
+use maho_core::diagnostics::{ResourceCollision, ResourceCollisionType, ResourceDiagnostic, ResourceDiagnosticType};
 use maho_interactive::theme::{
     ColorMode, Theme, detection::detect_terminal_background_from_env, registry::ThemeRegistry,
     resolve_theme_setting,
@@ -13,22 +14,75 @@ pub struct StartupThemeResolution {
     pub diagnostics: Vec<String>,
 }
 
-/// senpi `loadThemes(resources)`: first occurrence of a name wins, a broken theme is reported.
+/// senpi `loadThemes(paths)` + `dedupeThemes` (resource-loader.ts): a missing path or a non-json
+/// file is a warning, a directory loads its `*.json` files, a broken theme is a warning, and the
+/// first occurrence of a name wins with later ones reported as collisions.
 pub fn load_theme_resources(
     paths: impl IntoIterator<Item = PathBuf>,
     mode: ColorMode,
-) -> (Vec<Theme>, Vec<String>) {
-    let mut themes = Vec::new();
+) -> (Vec<Theme>, Vec<ResourceDiagnostic>) {
+    let mut loaded = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
     for path in paths {
-        match Theme::load_from_path(&path, mode) {
-            Ok(theme) if seen.insert(theme.name.clone()) => themes.push(theme),
-            Ok(_) => {}
-            Err(error) => diagnostics.push(format!("{}: {error}", path.display())),
+        let resolved = path.display().to_string();
+        if !path.exists() {
+            diagnostics.push(theme_warning("theme path does not exist".into(), resolved));
+            continue;
+        }
+        match std::fs::metadata(&path) {
+            Ok(stats) if stats.is_dir() => load_themes_from_dir(&path, mode, &mut loaded, &mut diagnostics),
+            Ok(stats) if stats.is_file() && resolved.ends_with(".json") => load_theme_from_file(&path, mode, &mut loaded, &mut diagnostics),
+            Ok(_) => diagnostics.push(theme_warning("theme path is not a json file".into(), resolved)),
+            Err(error) => diagnostics.push(theme_warning(error.to_string(), resolved)),
+        }
+    }
+    let mut themes: Vec<Theme> = Vec::new();
+    for theme in loaded {
+        let source = |theme: &Theme| theme.source_path.as_ref().map_or_else(|| "<builtin>".to_owned(), |path| path.display().to_string());
+        if let Some(existing) = themes.iter().find(|existing| existing.name == theme.name) {
+            diagnostics.push(ResourceDiagnostic {
+                diagnostic_type: ResourceDiagnosticType::Collision,
+                message: format!("name \"{}\" collision", theme.name),
+                path: theme.source_path.as_ref().map(|path| path.display().to_string()),
+                collision: Some(ResourceCollision {
+                    resource_type: ResourceCollisionType::Theme,
+                    name: theme.name.clone(),
+                    winner_path: source(existing),
+                    loser_path: source(&theme),
+                    winner_source: None,
+                    loser_source: None,
+                }),
+            });
+        } else {
+            themes.push(theme);
         }
     }
     (themes, diagnostics)
+}
+
+fn theme_warning(message: String, path: String) -> ResourceDiagnostic {
+    ResourceDiagnostic { diagnostic_type: ResourceDiagnosticType::Warning, message, path: Some(path), collision: None }
+}
+
+/// senpi `loadThemesFromDir`: every `*.json` file (symlinks followed) in `dir`.
+fn load_themes_from_dir(dir: &Path, mode: ColorMode, themes: &mut Vec<Theme>, diagnostics: &mut Vec<ResourceDiagnostic>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return diagnostics.push(theme_warning(error.to_string(), dir.display().to_string())),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !entry.file_name().to_string_lossy().ends_with(".json") { continue; }
+        load_theme_from_file(&path, mode, themes, diagnostics);
+    }
+}
+
+/// senpi `loadThemeFromFile`: a theme that fails to load is a warning on its path.
+fn load_theme_from_file(path: &Path, mode: ColorMode, themes: &mut Vec<Theme>, diagnostics: &mut Vec<ResourceDiagnostic>) {
+    match Theme::load_from_path(path, mode) {
+        Ok(theme) => themes.push(theme),
+        Err(error) => diagnostics.push(theme_warning(error.to_string(), path.display().to_string())),
+    }
 }
 
 /// senpi `createStartupTui`: `setRegisteredThemes(loadStartupThemes())` then
