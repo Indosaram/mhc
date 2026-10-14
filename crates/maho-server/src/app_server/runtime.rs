@@ -12,6 +12,8 @@ pub struct AppServerRuntime {
     pub approvals: Arc<std::sync::Mutex<super::approval_bridge::ApprovalBridge>>,
     pub user_input: Arc<std::sync::Mutex<super::user_input_bridge::UserInputBridge>>,
     pub lifecycle: Arc<super::handlers::ThreadLifecycleController>,
+    /// senpi `AppServerRuntime.turns`.
+    pub turns: super::turns::TurnEngine,
     provider_account_unsubscribe: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
     /// senpi `createAppServerRuntime(requestShutdown)`: extension `ctx.shutdown()` lands here.
     pub shutdown_request: Arc<AppServerShutdownRequest>,
@@ -385,8 +387,8 @@ impl AppServerRuntime {
         if thread_notification_core.set(Arc::downgrade(&core)).is_err() {unreachable!("thread notification core is initialized once");}
         let lifecycle=super::handlers::ThreadLifecycleController::new(Arc::downgrade(&core),threads.clone(),mcp_inventory.clone(),std::time::Duration::from_secs(30*60));
         if lifecycle_slot.set(lifecycle.clone()).is_err() {unreachable!("lifecycle initialized once");}
-        let turn_engine = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
-        if turn_engine_slot.set(turn_engine).is_err() {unreachable!("turn engine initialized once");}
+        let turns = super::turns::register_turn_methods(&core, threads.clone(), turn_log.clone()).await;
+        if turn_engine_slot.set(turns.clone()).is_err() {unreachable!("turn engine initialized once");}
         super::goal_handlers::register_thread_goal_handlers(&core,threads.clone()).await;
         super::settings_handlers::register_thread_settings(&core,threads.clone()).await;
         let archive = Arc::new(super::archive_state::ThreadArchiveState::new(threads.session_dir.as_ref().map(Into::into)));
@@ -408,7 +410,7 @@ impl AppServerRuntime {
                 }
             }
         }));
-        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)), shutdown_request }
+        Self { core, threads, turn_log, fuzzy_search, mcp_inventory,approvals,user_input,lifecycle,turns, provider_account_unsubscribe:std::sync::Mutex::new(Some(provider_account_unsubscribe)), shutdown_request }
     }
     pub async fn dispose(&self) {
         if let Some(unsubscribe) = self.provider_account_unsubscribe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {unsubscribe();}
