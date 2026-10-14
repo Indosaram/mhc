@@ -11284,6 +11284,9 @@ mod tests {
         provider.set_responses(vec![maho_ai::providers::faux::faux_assistant_message("welcome", Default::default()).into()]);
         let streams = faux_streams(provider.core.clone());
         let session = test_session_with_stream_function(false);
+        // senpi test/suite/harness.ts: the faux provider is registered, so `prompt()`'s auth gate admits it.
+        let mut runtime = session.model_runtime().clone();
+        runtime.register_native_provider(provider.provider.clone());
         session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
         session.agent.set_stream_function(Arc::new(move |model, context, options| {
             streams.stream_simple(model, context, options.map(|options| options.simple))
@@ -13637,6 +13640,9 @@ mod tests {
             } else { failure().into() }]);
             let streams = faux_streams(provider.core.clone());
             let session = retry_session(Vec::new(), 1);
+            // senpi test/suite/harness.ts: the faux provider is registered, so `prompt()`'s auth gate admits it.
+            let mut runtime = session.model_runtime().clone();
+            runtime.register_native_provider(provider.provider.clone());
             session.agent.set_model(provider.get_model(Some("faux-1")).expect("model"));
             session.agent.set_stream_function(Arc::new(move |model, context, options| {
                 streams.stream_simple(model, context, options.map(|options| options.simple))
@@ -13876,6 +13882,10 @@ mod tests {
             let failed = maho_ai::providers::faux::faux_assistant_message("", maho_ai::providers::faux::FauxAssistantMessageOptions {
                 stop_reason: Some(StopReason::Error), error_message: Some("400 bad request".to_owned()), ..Default::default()
             });
+            // senpi `buildSessionContext` restores the model of the last assistant entry, so the
+            // rejected request must be recorded against the subscription model that produced it.
+            let mut failed = failed;
+            failed.provider = "anthropic-subscription".to_owned();
             session.with_session_manager_mut(|manager| {
                 manager.append_message(serde_json::json!({"role":"user","content":[{"type":"text","text":"task"}],"timestamp":0}));
                 manager.append_message(serde_json::to_value(failed).expect("failed"));
