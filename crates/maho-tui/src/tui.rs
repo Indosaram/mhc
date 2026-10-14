@@ -297,6 +297,96 @@ pub trait Component {
     }
 }
 
+/// senpi `DIAGNOSTIC_LOG_MODE`: diagnostic logs hold rendered conversation text, so they are
+/// private to the owner.
+#[cfg(unix)]
+const DIAGNOSTIC_LOG_MODE: u32 = 0o600;
+
+/// senpi `defaultDiagnosticLogDirectory`: `~/.senpi/agent`.
+fn default_diagnostic_log_directory() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".senpi").join("agent"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"))
+}
+
+/// senpi `new Date().toISOString()`.
+fn diagnostic_timestamp() -> String {
+    format!("{:.3}", jiff::Timestamp::now())
+}
+
+/// `fs.appendFileSync`/`fs.writeFileSync` with `{ mode: DIAGNOSTIC_LOG_MODE }`.
+fn open_diagnostic_log(log_path: &std::path::Path, append: bool) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(DIAGNOSTIC_LOG_MODE);
+    }
+    options.open(log_path)
+}
+
+/// senpi `appendRenderErrorLogBestEffort`.
+fn append_render_error_log_best_effort(log_path: &std::path::Path, msg: &str) {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    if let Ok(mut file) = open_diagnostic_log(log_path, true)
+        && file.write_all(msg.as_bytes()).is_ok()
+    {
+        chmod_diagnostic_log_best_effort(log_path);
+    }
+}
+
+/// senpi `writeRenderDiagnosticBestEffort`.
+fn write_render_diagnostic_best_effort(log_path: &std::path::Path, data: &str) -> bool {
+    use std::io::Write;
+    if let Some(parent) = log_path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let written = open_diagnostic_log(log_path, false).and_then(|mut file| file.write_all(data.as_bytes()));
+    if written.is_err() {
+        return false;
+    }
+    chmod_diagnostic_log_best_effort(log_path);
+    true
+}
+
+/// senpi `formatOverWideRenderDiagnostic`.
+fn format_over_wide_render_diagnostic(lines: &[String], terminal_width: usize, line_index: usize, line_width: usize) -> String {
+    let mut parts = vec![
+        format!("Crash at {}", diagnostic_timestamp()),
+        format!("Terminal width: {terminal_width}"),
+        format!("Line {line_index} visible width: {line_width}"),
+        String::new(),
+        "=== All rendered lines ===".to_owned(),
+    ];
+    parts.extend(lines.iter().enumerate().map(|(index, line)| format!("[{index}] (w={}) {line}", visible_width(line))));
+    parts.push(String::new());
+    parts.join("\n")
+}
+
+/// senpi `chmodDiagnosticLogBestEffort`: tighten a pre-existing file the open mode did not touch.
+fn chmod_diagnostic_log_best_effort(log_path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(log_path, std::fs::Permissions::from_mode(DIAGNOSTIC_LOG_MODE));
+    }
+    #[cfg(not(unix))]
+    let _ = log_path;
+}
+
 /// Interface for components that can receive focus and display a hardware cursor.
 pub trait Focusable {
     fn focused(&self) -> bool;
@@ -3533,19 +3623,9 @@ impl TuiBase {
         if !strict && already_written {
             return;
         }
-        let mut body = format!(
-            "Terminal width: {terminal_width}\nLine {line_index} visible width: {line_width}\n\n=== All rendered lines ===\n",
-        );
-        for (index, line) in lines.iter().enumerate() {
-            body.push_str(&format!("[{index}] (w={}) {line}\n", visible_width(line)));
-        }
-        let log_dir = dirs::home_dir()
-            .map(|home| home.join(".senpi").join("agent"))
-            .unwrap_or_else(|| std::path::PathBuf::from(".senpi/agent"));
-        let log_path = log_dir.join("senpi-crash.log");
-        if std::fs::create_dir_all(&log_dir).is_ok() {
-            let _ = std::fs::write(&log_path, body);
-        }
+        let body = format_over_wide_render_diagnostic(lines, terminal_width, line_index, line_width);
+        let crash_log_path = default_diagnostic_log_directory().join("senpi-crash.log");
+        write_render_diagnostic_best_effort(&crash_log_path, &body);
         self.state.borrow_mut().over_wide_crash_dump_written = true;
     }
 
