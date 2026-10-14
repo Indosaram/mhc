@@ -3890,6 +3890,24 @@ impl InteractiveMode {
         });
     }
 
+    /// senpi `showSettingsSourceSelected`.
+    fn show_settings_source_selected(&mut self, selection: &serde_json::Value) {
+        let path = selection["path"].as_str().unwrap_or_default();
+        let name = std::path::Path::new(path).file_name().map_or_else(|| path.to_owned(), |name| name.to_string_lossy().into_owned());
+        self.show_status(format!("Settings: {name} ({})", selection["format"].as_str().unwrap_or_default().to_uppercase()));
+    }
+
+    /// senpi `showHighReasoningWarning`.
+    fn show_high_reasoning_warning(&mut self, model_id: &str, provider: &str, thinking_level: maho_ai::types::ThinkingLevel) {
+        let content = maho_core::high_reasoning_warning::build_high_reasoning_warning(provider, model_id, thinking_level.into());
+        self.show_notice_box(crate::components::earendil_announcement::NoticeSpec {
+            title: content.title, tone: Some(crate::theme::ThemeColor::Error),
+            why: content.body.first().cloned().unwrap_or_else(|| "High reasoning may affect reliability or cost.".into()),
+            extra: content.body.iter().skip(1).map(|text| crate::components::earendil_announcement::NoticeLine { text: text.clone(), tone: Some(crate::theme::ThemeColor::Error) }).collect(),
+            expanded_line: None,
+        });
+    }
+
     /// senpi `maybeWarnAboutAnthropicSubscriptionAuth`: the auth lookup runs off the UI loop (senpi's
     /// `void` promise) and reports back through the auth UI channel; lookup failures are ignored.
     fn maybe_warn_about_anthropic_subscription_auth(&mut self, model: maho_ai::model::Model) {
@@ -4185,6 +4203,8 @@ impl InteractiveMode {
                 self.show_warning(&format!("Skipped {name}: current context needs {} more tokens for its {}-token window ({} usability budget).",
                     format_count(budget.shortfall_tokens), format_count(budget.context_window), budget.safety_margin_profile.as_deref().unwrap_or_default()));
             }
+            // senpi `high_reasoning_warning` -> `showHighReasoningWarning`.
+            AgentSessionEvent::HighReasoningWarning { model_id, provider, thinking_level } => self.show_high_reasoning_warning(model_id, provider, *thinking_level),
             AgentSessionEvent::ThinkingLevelChanged { level, .. } => self.show_status(format!("Thinking level: {}", serde_json::to_value(level).expect("level").as_str().expect("string"))),
             AgentSessionEvent::AutoRetryStart { attempt, max_attempts, delay_ms, error_message } => self.show_retry_status_indicator(*attempt, *max_attempts, *delay_ms, error_message),
             AgentSessionEvent::AutoRetryEnd { success, attempt, final_error } => {
