@@ -221,7 +221,10 @@ pub async fn run(mut parsed: Args, argv: &[String]) -> Result<(), String> {
         })).collect::<std::collections::BTreeMap<_, _>>();
         maho_core::agent_session_services::apply_extension_flag_values(Some(&extensions), Some(&values))
     }).unwrap_or_default();
-    let models = providers.0.lock().map_err(|error| error.to_string())?.clone();
+    let mut models = providers.0.lock().map_err(|error| error.to_string())?.clone();
+    // senpi agent-session-services.ts:218: once the extension providers are registered, an offline
+    // refresh restores their stored catalogs as well.
+    models.refresh(maho_ai::models::ModelsRefreshOptions { allow_network: Some(false), ..Default::default() }).await;
     // senpi `main.ts` `resolveModelScope` with `getModelNarrowingPatterns({ cliPatterns, legacyEnabledPatterns:
     // settings.getEnabledModels() })` (main.ts:825-828): scope patterns resolve against authenticated models.
     let enabled_models: Option<Vec<String>> = settings.get_value("enabledModels").and_then(|value| serde_json::from_value(value.clone()).ok());
