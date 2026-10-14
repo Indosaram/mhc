@@ -320,7 +320,7 @@ impl MemoryRuntime {
             resolve_model: Arc::new(move || worker::resolve_model::resolve_reflection_model("quick", &(this.host.load_config)()?, Some(&registry), None).map_err(|error| error.to_string())),
             env: self.child_env(), config_sources: (self.host.config_sources)(), launch: self.host.launcher.clone(),
             supervisor_command: self.host.supervisor_command.clone(), supervisor_args: self.host.supervisor_args.clone(),
-            deadline_ms: 15 * 60_000, termination_grace_ms: 5_000, max_output_bytes: 1024 * 1024,
+            deadline_ms: 15 * 60_000, termination_grace_ms: 5_000, max_output_bytes: 64 * 1024,
             people: memory_core::facts::person_routing::FactsPeopleRouting {
                 enabled: people["enabled"].as_bool().ok_or("people.enabled missing")?,
                 max_entries: people["max_entries"].as_u64().ok_or("people.max_entries missing")? as usize,
@@ -559,7 +559,7 @@ impl MemoryRuntime {
             }, &mut cache, worker::runner::NativeReflectionExecutionOptions {
                 env: &env, sources: &sources, launcher: &self.host.launcher, parent_session_file: context.session_manager.session_file(), parent_cwd: Some(&self.host.cwd), route: route.as_ref(),
                 sandbox: Some(&sandbox), deadline_ms: None,
-                child: worker::spawn_supervisor::ReflectionChildOptions { termination_grace_ms: 5_000.0, max_output_bytes: 1024 * 1024, supervisor_command: &self.host.supervisor_command, supervisor_args: &self.host.supervisor_args, launched_at: now },
+                child: worker::spawn_supervisor::ReflectionChildOptions { termination_grace_ms: 5_000.0, max_output_bytes: 64 * 1024, supervisor_command: &self.host.supervisor_command, supervisor_args: &self.host.supervisor_args, launched_at: now },
                 callbacks: worker::runner::NativeReflectionCallbacks { ensure_renderer: &ensure_renderer, health_alert: &health_alert, append_launched: &append_launched, warn: self.host.warn.as_ref() },
             }, Some(&mut live), |operation| terminal_gate(&dir, &run.run_id, operation)).await?;
             drop(cache); drop(runner);
