@@ -157,7 +157,7 @@ impl MemoryRuntime {
                 })
             })}),
             exec: Some(system_git_exec()),
-            env: Some(self.host.env.clone()),
+            env: Some(self.child_env()),
             // Upstream leaves `peopleAsk` unset in production: `/people --ask` builds its runner per
             // call from the live config and the invoking context's model registry.
             people_ask: None,
@@ -215,6 +215,13 @@ impl MemoryRuntime {
     pub fn capture_context(&self, context: &ExtensionContext) {
         self.contexts.lock().unwrap_or_else(PoisonError::into_inner).insert(context.session_manager.session_id().to_owned(), context.clone());
         *self.current.lock().unwrap_or_else(PoisonError::into_inner) = Some(context.clone());
+    }
+
+    /// The host environment with the `process.env` writes extensions made after it was captured.
+    fn child_env(&self) -> BTreeMap<String, String> {
+        let mut env = self.host.env.clone();
+        maho_ext_api::process_env::apply(&mut env);
+        env
     }
 
     pub fn settings(&self) -> Result<Value, String> {
@@ -311,7 +318,7 @@ impl MemoryRuntime {
         let sandbox_identity = identity.identity.clone();
         let attempt = NativeFactsAttemptOptions {
             resolve_model: Arc::new(move || worker::resolve_model::resolve_reflection_model("quick", &(this.host.load_config)()?, Some(&registry), None).map_err(|error| error.to_string())),
-            env: self.host.env.clone(), config_sources: (self.host.config_sources)(), launch: self.host.launcher.clone(),
+            env: self.child_env(), config_sources: (self.host.config_sources)(), launch: self.host.launcher.clone(),
             supervisor_command: self.host.supervisor_command.clone(), supervisor_args: self.host.supervisor_args.clone(),
             deadline_ms: 15 * 60_000, termination_grace_ms: 5_000, max_output_bytes: 1024 * 1024,
             people: memory_core::facts::person_routing::FactsPeopleRouting {
@@ -543,13 +550,14 @@ impl MemoryRuntime {
                     memory_core::journal::store::TranscriptJournal::new(memory_core::journal::store::TranscriptJournalOptions::new(identity.paths.transcripts.join(conversation))).get_state().map(Some).map_err(|error| error.to_string()))
             };
             let mut live = LiveSession { runtime: self, context: &context, identity: &identity.id };
+            let env = self.child_env();
             let mut runner = worker.runner.lock().await;
             let mut cache = worker.cache.lock().await;
             let dir = identity.paths.reflection.join("runs").join(&run.run_id);
             let result = runner.launch_native(worker::runner::ReflectionRunnerInput {
                 run: &run, identity: &identity, config: &config, resolution: &resolution, reservation: worker.store.as_ref(), started_at: &started, now_ms: &memory_core::support::time::now_millis,
             }, &mut cache, worker::runner::NativeReflectionExecutionOptions {
-                env: &self.host.env, sources: &sources, launcher: &self.host.launcher, parent_session_file: context.session_manager.session_file(), parent_cwd: Some(&self.host.cwd), route: route.as_ref(),
+                env: &env, sources: &sources, launcher: &self.host.launcher, parent_session_file: context.session_manager.session_file(), parent_cwd: Some(&self.host.cwd), route: route.as_ref(),
                 sandbox: Some(&sandbox), deadline_ms: None,
                 child: worker::spawn_supervisor::ReflectionChildOptions { termination_grace_ms: 5_000.0, max_output_bytes: 1024 * 1024, supervisor_command: &self.host.supervisor_command, supervisor_args: &self.host.supervisor_args, launched_at: now },
                 callbacks: worker::runner::NativeReflectionCallbacks { ensure_renderer: &ensure_renderer, health_alert: &health_alert, append_launched: &append_launched, warn: self.host.warn.as_ref() },

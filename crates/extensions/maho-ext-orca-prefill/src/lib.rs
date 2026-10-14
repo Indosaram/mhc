@@ -6,12 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const PREFILL_ENV: &str = "ORCA_PI_PREFILL";
 
 /// Process-global stand-in for upstream `delete process.env.ORCA_PI_PREFILL`: mutating the process
-/// environment is `unsafe` in Rust, so the first take latches and every later read sees nothing.
+/// environment is `unsafe` in Rust, so the first take latches, every later read sees nothing, and the
+/// deletion is recorded in `maho_ext_api::process_env` so spawned children do not inherit it.
 static PREFILL_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// Read the prefill once per process; `read` supplies the raw value on the first call only.
 pub fn take_process_prefill(read: impl FnOnce() -> Option<String>) -> Option<String> {
     if PREFILL_TAKEN.swap(true, Ordering::SeqCst) { return None; }
+    maho_ext_api::process_env::delete(PREFILL_ENV);
     read()
 }
 
@@ -59,6 +61,7 @@ mod tests {
     fn process_prefill_is_taken_once() {
         assert_eq!(take_process_prefill(|| Some("prompt".into())).as_deref(), Some("prompt"));
         assert!(process_prefill_taken());
+        assert!(!maho_ext_api::process_env::vars().contains_key(PREFILL_ENV));
         assert_eq!(take_process_prefill(|| Some("again".into())), None);
     }
 }

@@ -135,7 +135,7 @@ impl AgentEndState {
 pub struct OrcaAgentStatus;
 impl Extension for OrcaAgentStatus {
     fn register(&self, api: &mut ExtensionApi) {
-        let owner = std::env::var(crate::STATUS_OWNER_ENV).ok();
+        let owner = maho_ext_api::process_env::var(crate::STATUS_OWNER_ENV);
         if !crate::claim_status_owner(owner.as_deref(), std::process::id()) { return; }
         let metadata = Arc::new(Mutex::new(Map::new()));
         // Upstream `isOmpRuntime` inspects process.title, env._, argv[1] and argv[0] only; in a native
