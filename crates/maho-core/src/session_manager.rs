@@ -927,7 +927,7 @@ impl SessionManager {
             }
             if entry_type(entry) == "label" {
                 let target = entry.get("targetId").and_then(Value::as_str).unwrap_or_default().to_owned();
-                match entry.get("label").and_then(Value::as_str) {
+                match entry.get("label").and_then(Value::as_str).filter(|label| !label.is_empty()) {
                     Some(label) => {
                         self.labels_by_id.insert(target.clone(), label.to_owned());
                         if let Some(timestamp) = entry.get("timestamp").and_then(Value::as_str) {
@@ -1022,7 +1022,7 @@ impl SessionManager {
         }
         if entry_type(&entry) == "label" {
             let target = entry.get("targetId").and_then(Value::as_str).unwrap_or_default().to_owned();
-            match entry.get("label").and_then(Value::as_str) {
+            match entry.get("label").and_then(Value::as_str).filter(|label| !label.is_empty()) {
                 Some(label) => {
                     self.labels_by_id.insert(target.clone(), label.to_owned());
                     if let Some(timestamp) = entry.get("timestamp").and_then(Value::as_str) {
@@ -2030,6 +2030,22 @@ mod tests {
         assert_eq!(manager.session_name(), Some("named"));
         manager.append_session_info(Some("   "));
         assert_eq!(manager.session_name(), None);
+    }
+
+    #[test]
+    fn an_empty_label_clears_like_no_label_and_stays_cleared_after_reload() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let mut manager = SessionManager::create(&dir, Some(&dir), None);
+        let first = manager.append_message(json!({ "role": "user", "content": "a", "timestamp": 1 }));
+        manager.append_message(json!({ "role": "assistant", "content": [], "timestamp": 2 }));
+        let id = first["id"].as_str().unwrap_or_default().to_owned();
+        manager.append_label(&id, Some("start")).expect("label");
+        manager.append_label(&id, Some("")).expect("clear");
+        assert_eq!(manager.label(&id), None);
+        let session_file = manager.session_file().expect("session file").to_owned();
+        let reopened = SessionManager::open(&session_file, Some(&dir), None, None).expect("open");
+        assert_eq!(reopened.label(&id), None);
     }
 
     #[test]
