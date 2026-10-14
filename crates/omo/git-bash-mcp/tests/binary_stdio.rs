@@ -15,11 +15,14 @@ fn binary_stays_disabled_off_windows_and_writes_nothing() {
         .spawn()
         .expect("spawn omo-git-bash");
     let mut stdin = child.stdin.take().expect("stdin");
-    writeln!(
+    // The disabled server exits without reading stdin, so the write may race its exit.
+    let written = writeln!(
         stdin,
         "{{\"jsonrpc\":\"2.0\",\"id\":\"init\",\"method\":\"initialize\"}}"
-    )
-    .expect("write request");
+    );
+    if let Err(error) = written {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write request: {error}");
+    }
     drop(stdin);
 
     let output = child.wait_with_output().expect("wait");
